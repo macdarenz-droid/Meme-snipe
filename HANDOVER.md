@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:30 PM data-keep run 37585646367 SUCCESS on 9f7cf812: 1 entry kept, the 09-21 progress cache (data-rpc-2026-09-21-37360664411-1; last accessed 2026-10-05T23:08Z before the run). The restore refreshed its last access (the proof step passed). No assets entries exist. The paid 09-21 reads are safe; next scheduled keep 10 Oct 04:23Z.
 - 6:20 PM **#280 ops review FAIL on 10347648** (01QkAcbw; 1,748 ops+worker tests; 11 reverts each failing).
   - BLOCKING: no CI or e2e yet; the README pin is stale; the branch is behind 9f7cf812, with conflicts in README and recorder.ts.
   - HIGH: an old state dir latches the kill switch with no re-arm path (the same as R4-1).
