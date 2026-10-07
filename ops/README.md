@@ -6,20 +6,24 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 
 ## Setup (about 3 minutes)
 
-1. **Log in.** In Vultr, open the server's Overview page and copy the root password. Open **View Console**. At `login:` type `root` and press Enter. At `Password:` use the console's control bar → Clipboard → Paste, then press Enter.
+1. **Log in.** In Vultr, open the server's Overview page and copy its password. Open **View Console**. Vultr's Ubuntu 24.04 image logs in as `linuxuser`, not `root`: at `login:` type `linuxuser` and press Enter. At `Password:` use the console's control bar → Clipboard → Paste, then press Enter. Then type `sudo -i` and press Enter (if it asks for a password, paste the same one). The prompt now ends in `#`. Without `sudo -i` the install stops with "Install stopped: run as root".
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/3e768f465579d942f65273f52e4e4045ffd83555/ops/install.sh -o i && echo '400c42c445907b0308cb83014749ebdfeab10c22ec13e546c44633bf824d3726  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/3e768f465579d942f65273f52e4e4045ffd83555/ops/install.sh -o i && echo 'b14450d36fddbd376bc0f8c30e1efbcc14f10cddc59cd61f979cebd9d2fb8bc0  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
 3. **Keys.** In GitHub: Settings → Secrets and variables → Actions → New repository secret. Name `DEPLOY_CODE`, value: the 6 words, with spaces between them. Then Actions → **Deploy** → Run workflow.
 4. **Telegram.** Within a minute the console shows a 6-digit pairing code. Send `/pair` and the code to the bot in Telegram, for example `/pair 123456`. The bot answers "Paired" and the console says "Setup finished".
 
-The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
+The console screen can be left at any time (Ctrl+C); setup carries on in the background.
 
-SHA-256 of `install.sh`: `400c42c445907b0308cb83014749ebdfeab10c22ec13e546c44633bf824d3726`
+### Console access
+
+The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
+
+SHA-256 of `install.sh`: `b14450d36fddbd376bc0f8c30e1efbcc14f10cddc59cd61f979cebd9d2fb8bc0`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 

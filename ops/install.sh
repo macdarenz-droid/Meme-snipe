@@ -50,7 +50,7 @@ if [ -n "$SSH_KEY" ]; then
 fi
 
 # D07 preflight (docs/blueprint/ARCH.md D07 and M07): the bot's host is a 2 GB server, which the OS reports as
-# about 1.9 GiB (not measured), with a disk of at least 50 GB. Both are read from the host itself (/proc/meminfo,
+# about 1.9 GiB (not measured), with a 55 GB disk. Both are read from the host itself (/proc/meminfo,
 # and df on the filesystem that holds /var/lib); no option or variable changes them. The RAM floor is 1.5 GiB: it
 # refuses the 1 GB server (about 0.96 GiB) by a wide margin, no Vultr plan sits between 1 GB and 2 GB, and the
 # 2 GB server's exact MemTotal is not measured (a crash-dump reservation could lower it). The filesystem floor is
