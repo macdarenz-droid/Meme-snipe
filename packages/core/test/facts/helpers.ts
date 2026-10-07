@@ -124,8 +124,8 @@ export class FactWorld {
   readonly released: MarketEvent[] = [];
   readonly #queue: MarketEvent[] = [];
 
-  constructor(options: ProducerOptions = OPTIONS) {
-    this.producer = new FactProducer(options);
+  constructor(options: ProducerOptions = OPTIONS, note?: (line: string) => void) {
+    this.producer = new FactProducer(options, note);
   }
 
   push(...events: readonly MarketEvent[]): this {

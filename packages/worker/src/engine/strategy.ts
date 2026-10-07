@@ -21,7 +21,7 @@ import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
-import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments, flatCopy } from '../../../core/src/engine/index.ts';
+import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments, flatCopy, retireTail } from '../../../core/src/engine/index.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
@@ -340,6 +340,8 @@ export interface StrategyConfig {
   readonly maxTails: number;
   /** OOM-MINT: how long a create's facts are kept while its coin has not migrated (`CREATE_KEEP_MS`). */
   readonly createKeepMs: number;
+  /** MEM-FIXES: the most creates kept at once (default `CREATES_MAX`; tests set a smaller one). */
+  readonly createsMax?: number;
 }
 
 /**
@@ -356,6 +358,23 @@ export { CREATE_KEEP_MS } from '../../../core/src/gates/index.ts';
  * process never saw (the create lookup of CREATE-AFTER-RESTART).
  */
 export const EXPIRED_CREATE_KEEP_MS = 7 * 24 * 3_600_000;
+
+/**
+ * MEM-FIXES: how long a let-go mint or pool is remembered, so a fact released for it later is let go too: an hour, far
+ * past a batch read's timeout and a closing watch's last notifications.
+ */
+export const LATE_LET_GO_MS = 3_600_000;
+
+/**
+ * MEM-FIXES (supervisor ruling on the 200 creates a minute crash): the most creates kept at once. A create costs about
+ * 2.8 KB in the store while it is kept, so CREATE_KEEP_MS + CREATE_LATE_MS of creates grew with the create rate: at 200
+ * a minute (156,000 creates) the worker ran out of its 560 MB heap. 64,000 is above 13 hours at 75 a minute (58,500), so
+ * the live rate never reaches it, and it holds the window to about 180 MB at any rate. Past it the oldest creates not
+ * held or tailed are let go at once and marked expired: a coin of theirs that migrates is refused `create-expired`
+ * (fail closed), and the worker's log notes it once a minute. The deployer index keeps its own copy of every create, so
+ * H14 still sees them.
+ */
+export const CREATES_MAX = 64_000;
 
 /** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
 export interface SavedStateRef {
@@ -376,6 +395,8 @@ export interface StrategyDeps {
   readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
+  /** MEM-FIXES: where the strategy notes what it let go for memory (the worker's log); a note never changes a decision. */
+  readonly note?: (line: string) => void;
   /** Test seam: replaces the size `#riskSize` settled on (tests force the probe and risk to disagree); production never sets it. */
   readonly sizeProbe?: (sized: { readonly spend: Lamports; readonly notional: MicroUsd }) => { readonly spend: Lamports; readonly notional: MicroUsd };
 }
@@ -965,6 +986,7 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
+    this.#letGoLate(e);
     this.#gapBarsMerge(e.moment);
     this.#gapBarsClose(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
@@ -1487,6 +1509,56 @@ export class LiveStrategy implements Strategy {
     if (this.#held(mint) || this.#tail.has(mint)) return;
     this.#letGo.push(mint);
     if (pool !== null) this.#letGo.push(pool);
+    this.#forgetCoverage(pool === null ? [mint] : [mint, pool]);
+    this.#noteLetGo(mint, pool);
+  }
+
+  /**
+   * MEM-FIXES: mints and pools let go in the last LATE_LET_GO_MS, each with its mint, oldest first. A fact released for
+   * one after it was let go (a batch read that was in flight at its window's end, a watch's last swaps before it
+   * closed) would make its keys again in the store, the producer and the worker, and nothing would let them go again.
+   */
+  readonly #lateLetGo = new Map<string, { readonly mint: string; readonly at: number }>();
+
+  #noteLetGo(mint: string, pool: string | null): void {
+    const at = this.#lastMoment?.receivedAt ?? 0;
+    for (const id of pool === null ? [mint] : [mint, pool]) {
+      this.#lateLetGo.delete(id);
+      this.#lateLetGo.set(id, { mint, at });
+    }
+  }
+
+  /** MEM-FIXES: an event released for a recently let-go mint or pool (`#lateLetGo`) is let go again, unless its coin is live again. */
+  #letGoLate(e: MarketEvent): void {
+    for (const [id, x] of this.#lateLetGo) {
+      if (x.at + LATE_LET_GO_MS > e.moment.receivedAt) break;
+      this.#lateLetGo.delete(id);
+    }
+    if (this.#lateLetGo.size === 0) return;
+    const id = retireTail(e.key);
+    const x = id === null ? undefined : this.#lateLetGo.get(id);
+    if (x === undefined || this.#held(x.mint) || this.#tail.has(x.mint) || this.#cands.has(x.mint)) return;
+    this.#letGo.push(id!);
+    this.#forgetCoverage([id!]);
+  }
+
+  /**
+   * MEM-FIXES (red team C R2-H4): a let-go mint's and pool's own coverage streams (`coverage:trades:<pool>:*`,
+   * `coverage:mint-txs:<mint>:*`) leave the saved coverage and SEED-1's history: nothing watches them again, so a
+   * restart has nothing to fill for them, and the store retires their keys with the pool (`AsOfStore.retire`). Kept,
+   * every pool ever watched stayed for the process with every gap it had. The creates and rugs streams are untouched.
+   */
+  #forgetCoverage(ids: readonly string[]): void {
+    const gone = (key: string): boolean => {
+      const m = COVERAGE_FACT.exec(key);
+      if (m === null) return false;
+      const stream = key.slice('coverage:'.length, key.length - m[1]!.length - 1);
+      return ids.includes(stream.slice(stream.lastIndexOf(':') + 1)) && stream.includes(':');
+    };
+    let w = 0;
+    for (const e of this.#coverageFacts) if (!gone(e.key)) this.#coverageFacts[w++] = e;
+    this.#coverageFacts.length = w;
+    for (const k of [...this.#seedHistory.keys()]) if (gone(k)) this.#seedHistory.delete(k);
   }
 
   readonly #letGo: string[] = [];
@@ -1505,6 +1577,31 @@ export class LiveStrategy implements Strategy {
     // when it was released.
     const created = createOf(e.value)?.createdAtMs ?? e.moment.receivedAt;
     this.#creates.set(flatCopy(mint), created);
+    if (this.#creates.size > (this.#d.config.createsMax ?? CREATES_MAX)) this.#capCreates(e.moment.receivedAt);
+  }
+
+  /** MEM-FIXES: let-go creates (`CREATES_MAX`), kept as long as the expired marks, for the refusal's detail. */
+  readonly #capped = new HourTags(EXPIRED_CREATE_KEEP_MS);
+  #cappedSince = 0;
+  #cappedNotedAt = Number.NEGATIVE_INFINITY;
+
+  /** MEM-FIXES: past `CREATES_MAX` creates, the oldest released not held or tailed are let go and marked expired. */
+  #capCreates(now: number): void {
+    const max = this.#d.config.createsMax ?? CREATES_MAX;
+    for (const mint of this.#creates.keys()) {
+      if (this.#creates.size <= max) break;
+      if (this.#held(mint) || this.#tail.has(mint)) continue;
+      this.#creates.delete(mint);
+      this.#expired.add(mint, now);
+      this.#capped.add(mint, now);
+      this.#letGo.push(mint);
+      this.#cappedSince += 1;
+    }
+    if (this.#cappedSince > 0 && now - this.#cappedNotedAt >= 60_000) {
+      this.#d.note?.(`Creates over the cap of ${max}: ${this.#cappedSince} oldest let go since the last note; a coin of theirs that migrates is refused create-expired.`);
+      this.#cappedNotedAt = now;
+      this.#cappedSince = 0;
+    }
   }
 
   /**
@@ -1526,6 +1623,7 @@ export class LiveStrategy implements Strategy {
       this.#letGo.push(mint);
     }
     this.#expired.prune(now);
+    this.#capped.prune(now);
   }
 
   #createsCheckedAt = Number.NEGATIVE_INFINITY;
@@ -2368,7 +2466,12 @@ export class LiveStrategy implements Strategy {
     // from the facts as the backtest does; when its create's facts were let go, from the expired mark.
     const kept = createKeepVerdict(gctx, cand.mint, c.createKeepMs);
     if (kept?.expired === true) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: kept.detail }]);
-    if (kept === null && this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` }]);
+    if (kept === null && this.createExpired(cand.mint)) {
+      const detail = this.#capped.has(cand.mint)
+        ? `its create was let go at the cap of ${c.createsMax ?? CREATES_MAX} creates kept, before its coin migrated`
+        : `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen`;
+      return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail }]);
+    }
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
     // Served: while the set is on, every part it configures, whatever this candidate reached (API-1 N1'), so the card

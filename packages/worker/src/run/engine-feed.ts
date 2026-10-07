@@ -13,9 +13,13 @@ export interface EngineFeed {
   readonly sizes: () => Record<string, number>;
 }
 
-/** `onFact` sees every fact the producer releases, before the engine does. */
-export const engineFeed = (inner: Feed, policy: Policy, onFact?: (e: MarketEvent) => void): EngineFeed => {
-  const facts = new FactFeed(inner, new FactProducer(producerOptions(policy)));
+/**
+ * `onFact` sees every fact the producer releases, before the engine does. `onRetire` sees the mints and pools the
+ * strategy let go (`Strategy.retired`), after the producer dropped them (MEM-FIXES: the worker forgets its own copies).
+ * `note` gets the producer's notes on what it let go for memory (MEM-FIXES).
+ */
+export const engineFeed = (inner: Feed, policy: Policy, onFact?: (e: MarketEvent) => void, onRetire?: (ids: readonly string[]) => void, note?: (line: string) => void): EngineFeed => {
+  const facts = new FactFeed(inner, new FactProducer(producerOptions(policy), note));
   return {
     feed: {
       next: () => {
@@ -23,7 +27,10 @@ export const engineFeed = (inner: Feed, policy: Policy, onFact?: (e: MarketEvent
         if (onFact !== undefined && e !== null && e.kind === 'market' && e.id.includes(FACT_ID_SEPARATOR)) onFact(e);
         return e;
       },
-      retire: (ids) => facts.retire(ids),
+      retire: (ids) => {
+        facts.retire(ids);
+        onRetire?.(ids);
+      },
     },
     released: () => facts.released,
     sizes: () => ({ ...facts.sizes() }),

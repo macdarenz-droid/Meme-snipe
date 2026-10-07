@@ -9,14 +9,14 @@ import type { PoolState } from '../../core/src/amm/index.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
 import { POOL_FACT_KEEP_MS, liveCollapse, liveRetention } from '../src/run/store-rules.ts';
 import { DEV, POOL_ADDRESS, SUPPLY, makeWorker, passingMarket } from './worker-harness.ts';
-import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, SOL_USD_KEY, rugCheckKey, candlesKey, carryKey, poolKey, poolTradeKeys, streamKey } from '../../core/src/gates/index.ts';
+import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, SOL_USD_KEY, rugCheckKey, candlesKey, carryKey, holdersKey, lpKey, poolKey, poolTradeKeys, simKey, softKey, streamKey, xcheckKey } from '../../core/src/gates/index.ts';
 import { RAW, STREAMS } from '../../core/src/facts/index.ts';
 import { AsOfStore, SimClock } from '../../core/src/engine/index.ts';
 import { deepFreeze } from '../../core/src/engine/freeze.ts';
 import { eventsOfFrame } from '../src/providers/canonical.ts';
 import { readFileSync } from 'node:fs';
 import { liveForget, liveShape } from '../src/run/store-rules.ts';
-import { SOL_PRICE_KEY } from '../src/engine/strategy.ts';
+import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
 import { FACT_READS_KEY } from '../src/facts/source.ts';
 
 setFlagsFromString('--expose-gc');
@@ -117,13 +117,36 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
     await h.worker.stop();
   }, 180_000);
 
-  it('heads: the stream, candles and carry facts, the seen signatures, the slot notice, the account reads, the mint facts and the graduates fact keep only their newest value; every other gate fact keeps its whole series', () => {
-    for (const k of [streamKey(STREAMS.trades(POOL_ADDRESS)), streamKey('creates'), candlesKey('M'), carryKey('M'), `seen:logs:${POOL_ADDRESS}`, 'seen:pumpportal:create', 'chain:slot', 'read:accounts:M', 'gates/mint:M', 'gates/graduates']) {
+  it('MEM-FIXES (red team C R2-C1): every key of a candidate\'s batch re-read keeps a bounded series; a lookup as of now answers exactly as the whole series does, and an older moment never gets a newer value', () => {
+    const batch = [RAW.holders('M'), RAW.holdersAll('M'), RAW.sim('M'), RAW.rugcheck('M'), RAW.goplus('M'), RAW.jupiter('M'), feesKey('M'), holdersKey('M'), simKey('M'), lpKey('M'), softKey('M'), xcheckKey('M')];
+    const at = (t: number) => ({ slot: BigInt(t), txIndex: 0, ixIndex: 0, receivedAt: t * 60_000 });
+    const clock = new SimClock(at(0));
+    const live = new AsOfStore(clock, liveRetention, liveCollapse, liveShape, liveForget);
+    const whole = new AsOfStore(clock, liveRetention);
+    // A candidate's four-hour window, one batch read a minute (before: 240 entries a key at the window's end).
+    for (let t = 1; t <= 240; t++) {
+      clock.advanceTo(at(t));
+      for (const k of batch) for (const s of [live, whole]) s.record(k, { read: t }, at(t), `read-${t}`);
+      // At every read, every reader's question (as of now) gets the same entry, value and source event, as the gates log it.
+      for (const k of batch) expect(live.lookup(k), k).toEqual(whole.lookup(k));
+    }
+    for (const k of batch) {
+      expect(liveCollapse(k), k).not.toBeNull();
+      expect((live.history(k, at(0)) as readonly unknown[]).length, k).toBeLessThanOrEqual(2);
+      // As of an older moment: nothing (missing), never the newer read.
+      expect(live.lookup(k, at(100)), k).toEqual({ ok: false, reason: 'missing' });
+    }
+    expect(live.sizes().entries).toBeLessThanOrEqual(2 * batch.length);
+    expect(whole.sizes().entries).toBe(240 * batch.length);
+  });
+
+  it('heads: the stream, candles and carry facts, the seen signatures, the slot notice, the account reads, the mint facts, the graduates fact and the batch reads (MEM-FIXES) keep only their newest value; every other gate fact keeps its whole series', () => {
+    for (const k of [streamKey(STREAMS.trades(POOL_ADDRESS)), streamKey('creates'), candlesKey('M'), carryKey('M'), `seen:logs:${POOL_ADDRESS}`, 'seen:pumpportal:create', 'chain:slot', 'read:accounts:M', 'gates/mint:M', 'gates/graduates', 'gates/holders:M', 'read:holders:M']) {
       const keepOlder = liveCollapse(k);
       expect(keepOlder, k).not.toBeNull();
       expect(keepOlder!({ moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: 0 }, value: {}, source: 's' }), k).toBe(false);
     }
-    for (const k of ['gates/holders:M', 'read:holders:M', 'gates/create:M', 'gates/migration:M', 'coverage:creates:start', 'coverage:rugs:start', 'coverage:rugs:gap', 'chain:slots']) expect(liveCollapse(k), k).toBeNull();
+    for (const k of ['gates/insiders:M', 'gates/curve:M', 'gates/create:M', 'gates/migration:M', 'coverage:creates:start', 'coverage:rugs:start', 'coverage:rugs:gap', 'chain:slots']) expect(liveCollapse(k), k).toBeNull();
   });
 
   it('240 pool trade streams at 2.5 slot notices a second and 4,050 swaps a minute leave the heap flat (it grew 19 MB in two minutes; live, about 20 MB a minute)', async () => {

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { isUnresolved, type Effect } from '../src/lifecycle/index.ts';
 import {
   AsOfStore, canonical, checkCausality, compareEvents, createReplay, createRng, Engine, leakTest, OFF_CHAIN, ReconcileGuard, replayHashes,
-  replayOnce, runToEnd, shiftTest, SimClock, type AsOfEntry, type Decision, type Feed, type FeedEvent, type Marker, type Strategy,
+  replayOnce, retireTail, runToEnd, shiftTest, SimClock, type AsOfEntry, type Decision, type Feed, type FeedEvent, type Marker, type Strategy,
 } from '../src/engine/index.ts';
 import { CONFIG, MINT, SPEND } from './fixtures.ts';
 import { trapped } from './trap.ts';
@@ -140,6 +140,18 @@ describe('as-of store', () => {
     // Recorded again, it is retired again; an id retired twice forgets nothing more.
     expect(store.retire(new Set(['M1']))).toBe(1);
     expect(store.retire(new Set(['M1']))).toBe(0);
+  });
+
+  it('MEM-FIXES (red team C R2-H4): a pool\'s or mint\'s own coverage keys retire with it; streams with no subject and other pools stay', () => {
+    const { store } = setup();
+    const keys = ['coverage:trades:P1:start', 'coverage:trades:P1:gap', 'coverage:trades:P1:resume', 'coverage:mint-txs:M1:start'];
+    keys.forEach((k, i) => store.record(k, { fromSlot: 1n }, at(6, 0, 1 + i), `c${i}`));
+    for (const [i, k] of ['coverage:trades:P2:start', 'coverage:creates:start', 'coverage:creates:gap', 'coverage:rugs:start', 'coverage:rugs:deployer:P1x'].entries()) store.record(k, { fromSlot: 1n }, at(6, 0, 10 + i), `o${i}`);
+    // Before MEM-FIXES these were found by their last part (start, gap, resume) and never retired.
+    expect(store.retire(new Set(['M1', 'P1']))).toBe(4);
+    for (const k of keys) expect(store.lookup(k), k).toEqual({ ok: false, reason: 'missing' });
+    for (const k of ['coverage:trades:P2:start', 'coverage:creates:start', 'coverage:creates:gap', 'coverage:rugs:start', 'coverage:rugs:deployer:P1x']) expect(store.lookup(k).ok, k).toBe(true);
+    expect([retireTail('coverage:trades:P1:gap'), retireTail('coverage:creates:start'), retireTail('gates/pool:M1'), retireTail('chain:slot'), retireTail('k')]).toEqual(['P1', 'start', 'M1', 'slot', null]);
   });
 
   it('returns history inside the window, oldest first', () => {

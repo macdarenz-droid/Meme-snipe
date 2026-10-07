@@ -3500,3 +3500,40 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Review B1: shedding pool A's whole copy still gives held pool B its swap, whether B's copy came before or after the shed (both fail before the fix), and the replay equals live.
   - Ten runs give the same frames, releases, events and facts, and each replays to them. A recording with echoes is refused under the pre-echo rules and by `frameEvents`.
   - Parity: live (cut log on both watches, fetched, healed) ends with the same candles and coverage as the backtest of the full transaction on both pools. The recording, round-tripped through its JSON, replays to the same events and facts; a recording made before echoes replays as it did.
+
+## Re-read facts, retired mints' copies, coverage and heal tapes stay bounded (MEM-FIXES, `run/store-rules.ts` `BATCH`, `engine/asof.ts` `retireTail`, `run/worker.ts` `#forgetMints`, `engine/strategy.ts` `#forgetCoverage` `#letGoLate`, `facts/producer.ts` `#capHeals` `#ahead`)
+- **Why.** Red team C round 2 (`docs/redteam-c/REPORT.md` on `claude/redteam-c`): R2-C1 (critical), R2-H3, R2-H4, the heal-tape and create-memory notes, and the leak note on reads answered ahead of their release slot.
+- **R2-C1. A candidate's batch re-read keeps only its newest entry.**
+  - Keys: `read:holders`, `read:holders-all`, `read:sim`, `read:rugcheck`, `read:goplus`, `read:jupiter-audit`, `worker:fees`, `gates/holders`, `gates/sim`, `gates/lp`, `gates/soft`, `gates/xcheck`. Before, they kept one entry per read until the candidate retired.
+  - Why it is safe: every live reader looks these keys up as of now (the gates through `Evidence.read`, the strategy's `#market`; no as-of argument and no `history`). As of now the newest entry is the answer either way, so decisions and their logged inputs do not change. An as-of read of an older moment finds nothing, never a newer value.
+  - Only the live worker and its parity replay use these rules. The backtest's engine keeps every entry, so its study (U1 reads holders as of the past) is unchanged.
+- **R2-H3. A let-go mint leaves the worker's own copies:** `#pools`, `#poolReleasedAt`, `#carries`, `#fees` and `#snapshots` (through `engineFeed`'s `onRetire`). The strategy never lets a held or tailed mint go.
+- **R2-H4. Coverage is let go with its subject.**
+  - A let-go pool's `coverage:trades:<pool>:*` facts and a let-go mint's `coverage:mint-txs:<mint>:*` facts leave the strategy's saved coverage and SEED-1's history.
+  - The store now finds a per-subject coverage key by its subject (`retireTail`), so `retire` takes it too. Before, it was found by `start`, `gap` or `resume` and never retired.
+  - Creates and rugs coverage is untouched.
+- **Late facts.** A fact released for a mint or pool up to an hour after it was let go (`LATE_LET_GO_MS`) is let go again, unless its coin is live again.
+  - Example: a batch read still in flight at the window's end.
+  - Before, such a fact made the store keys, the producer chain and the worker's copies again, and nothing let them go. The probe's late-read case showed 719 against 120 live.
+- **Heal tapes.** All heals together keep at most `HEAL_TAPES_TOTAL` swaps: 20,000, one pool's own cap. Past it, the heal that grew is let go: its holes stay (fail closed), and the worker's log notes it.
+  - A held swap measured about 3.1 KB, so all heals together cost at most about 62 MB.
+  - Before, each pool had its own cap, so 240 pools could hold 4.8 million swaps between them.
+- **Reads ahead of their release slot.** A read (accounts, holders, holders-all, sim) answered for a slot after the slot it is released at makes no fact. It is noted once a minute of event time.
+  - The gates already refused such facts as `future`. But an exit's market and a paper fill read the pool fact without that check, so they could price from chain state after the decision's moment.
+  - Test data with reads dated hours after their release was corrected to the release slot. The assertions were not changed.
+- **The create window is bounded by count** (`engine/strategy.ts` `CREATES_MAX`, `#capCreates`; supervisor ruling on the 200 creates a minute crash).
+  - Before, a create was kept CREATE_KEEP_MS + CREATE_LATE_MS (13 h) whatever the rate. In the store it costs about 2.5 KB while kept. At 200 a minute (156,000 creates) the worker ran out of its 560 MB heap at about h17.
+  - Now at most 64,000 creates are kept: above 13 h at 75 a minute (58,500), so 25 and 75 a minute never reach it, and their runs are unchanged. At any rate the window stays at about 160 MB.
+  - Past the cap, the oldest released creates not held or tailed are let go at once and marked expired. A coin of theirs that migrates is refused `create-expired`, with the detail "let go at the cap" (fail closed, no trade). The worker's log notes the drops once a minute.
+  - **No creates coverage gap is opened.** The deployer index keeps its own copy of every create for H14's look-back, so H14's evidence is complete. A gap would be false, and it would block every candidate for up to 16 days after one burst. The coins whose create was let go are refused one by one instead.
+  - **Measured (real worker, heap after GC, 240 candidates read every minute):**
+    - 200 a minute: 24 h complete; h24 heap 436.9 MB, RSS 656.9 MB.
+    - 75 a minute: h16 223.4 MB.
+    - 25 a minute: h24 119.7 MB.
+    - The 75 and 25 a minute figures equal the runs before the cap.
+  - **Still growing with the rate:**
+    - the rug labeller, which keeps a launch for 2 × its 1-day window (about 530 B a launch), so it levels off at 48 h;
+    - the deployer index, about 100 B a create over its 17-day window.
+    - At 200 a minute the labeller alone would pass the heap at about h36.
+  - **The highest sustained rate that keeps 17 days under 80% of the heap (448 MB), with heal tapes full: about 45 creates a minute.** This is an estimate (about ±25%), from 99 MB fixed + 62 MB heal tapes + about 6.1 MB per create a minute: 2.45 MB index, 1.95 MB create window, 1.5 MB labeller, 0.16 MB expired marks. At the 560 MB limit itself it is about 65 a minute.
+- **Evidence.** In `worker/test/redteam-c/heap-growth.test.ts` (the red team's probe, run in the `heavy` project), `store-rules.test.ts`, `core/test/engine.test.ts`, `trade-heal.test.ts`, `producer.test.ts` and `create-keep.test.ts` (the cap). The numbers and mutants are in the PR.

@@ -6,11 +6,11 @@ import { describe, expect, it } from 'vitest';
 import { type PoolState, poolBuyExactBase, poolSell } from '../../src/amm/index.ts';
 import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { OFF_CHAIN, type MarketEvent, type Moment } from '../../src/engine/index.ts';
-import { HEAL_TAPE_MAX, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
+import { HEAL_TAPE_MAX, HEAL_TAPES_TOTAL, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
 import { observedFeeContext } from '../../src/fills/index.ts';
 import { Evidence, candlesKey, parseCandles, parsePool, poolKey, streamKey } from '../../src/gates/index.ts';
 import { bps } from '../../src/units/index.ts';
-import { FIX, FactWorld, MINT, POOL, coverage, offchain, slotNotice } from './helpers.ts';
+import { FIX, FactWorld, MINT, OPTIONS, POOL, coverage, offchain, slotNotice } from './helpers.ts';
 
 const policy = startSession(TRIAL_POLICY).policy;
 const R = BigInt(FIX.accountsRead.slot);
@@ -90,11 +90,10 @@ const lifecycleEv = (name: string, data: Record<string, unknown>, slot: bigint, 
 });
 
 /** The stream started, the coin graduated and migrated to POOL, and the fixture read (the chain's base) applied. */
-const opened = (): { world: FactWorld; state: PoolState } => {
+const opened = (world = new FactWorld()): { world: FactWorld; state: PoolState } => {
   const read = (): MarketEvent => offchain(RAW.accounts(MINT), { ...FIX.accountsRead, slot: R }, R, at(R), 'helius');
   const p = parsePool(new FactWorld().push(read()).last(poolKey(MINT)))!;
   const state: PoolState = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
-  const world = new FactWorld();
   const P = R - 5n;
   world.push(
     coverage(STREAM, 'start', { fromSlot: P - 1n, via: VIA }, P - 2n, at(P - 2n)),
@@ -161,8 +160,8 @@ const complete = () => {
 };
 
 /** The same tape with swap 3 (index 2) cut on the watch, its transaction fetched after swap 5, then the outcome. */
-const cut = (o: { found?: boolean; send?: 'none' | 'tx' | 'both'; fetchedSwaps?: (s: Swap[]) => Swap[] } = {}) => {
-  const { world, state } = opened();
+const cut = (o: { found?: boolean; send?: 'none' | 'tx' | 'both'; fetchedSwaps?: (s: Swap[]) => Swap[]; world?: FactWorld } = {}) => {
+  const { world, state } = opened(o.world);
   const s = tape(state);
   world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!));
   const arrives = R + 6n;
@@ -426,6 +425,24 @@ describe('a hole in a pool\'s trade stream, healed by its fetched transaction (T
     world.push(slotNotice(last + 2n, at(last + 2n) + 50));
     expect((world.last(streamKey(STREAM)) as { gapFreeSince: bigint }).gapFreeSince).toBe(s[2]!.slot + 1n);
   }, 120_000);
+
+  it('MEM-FIXES: past the total cap on every heal\'s swaps, the heal that grew is let go and noted: the hole stays; at the cap it heals', () => {
+    // The heal holds swaps 4 and 5 (taken after the hole) and the hole's own fetched swap 3: three swaps.
+    const run = (total: number) => {
+      const notes: string[] = [];
+      const { world } = cut({ world: new FactWorld({ ...OPTIONS, healTapesTotal: total }, (l) => notes.push(l)) });
+      return { gapFree: gapFree(world), verdicts: verdicts(world), notes, held: world.producer.sizes().healSwaps };
+    };
+    const healed = run(3);
+    expect(healed).toEqual({ gapFree: gapFree(complete().world), verdicts: { candles: 'ok', pool: 'ok' }, notes: [], held: 0 });
+    const capped = run(2);
+    expect(capped.gapFree).toBe(R + 3n + 1n);
+    expect(capped.verdicts.candles).not.toBe('ok');
+    expect(capped.held).toBe(0);
+    expect(capped.notes).toEqual([`Trade heal of pool ${POOL} let go: the heals held 3 swaps, over the total cap of 2; its holes stay.`]);
+    // The live default: one pool's own cap.
+    expect(HEAL_TAPES_TOTAL).toBe(HEAL_TAPE_MAX);
+  });
 
   it('review N4: a hole released behind the book\'s newest trade slot (before its mark) is never healed, even by a transaction with no swap on the pool', () => {
     const { world, state } = opened();
