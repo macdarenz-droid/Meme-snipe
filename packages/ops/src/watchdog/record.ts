@@ -65,7 +65,7 @@ const json = (body: unknown, status = 200): Response => new Response(JSON.string
 const KEYS = new Set(['v', 'op', 't', 'nonce', 'day', 'release', 'boot', 'file', 'size', 'sha256', 'asset_id']);
 const BOOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const BOOT_FILE_RE = /^(?:(?:frames|releases)-\d{3}\.jsonl\.zst|manifest\.json|deployer-state\.json(?:\.zst)?)$/;
+const BOOT_FILE_RE = /^(?:(?:frames|releases)-\d{3}\.jsonl\.zst|manifest\.json|deployer-state\.json(?:\.zst)?|gaps\.jsonl\.zst)$/;
 const JOURNAL_RE = /^journal-(\d{4}-\d{2}-\d{2})\.jsonl\.zst$/;
 const INDEX_RE = /^index-[1-9]\d{0,5}\.json$/;
 
@@ -77,7 +77,8 @@ const isDay = (d: unknown): d is string => {
 
 /**
  * The header's shape, strictly: exact keys, the file allowlist (frames, releases, manifest, the saved-state attachment,
- * a day's journal, a day's index; never raw or delays), the release of the header's day, a size within the body limit.
+ * the packed stream gaps, a day's journal, a day's index; never raw or delays), the release of the header's day, a size
+ * within the body limit.
  */
 export const parseRecordHeader = (text: string): RecordHeader | null => {
   let x: unknown;

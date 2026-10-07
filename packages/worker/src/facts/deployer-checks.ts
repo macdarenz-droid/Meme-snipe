@@ -10,6 +10,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { RugCheckConfig, RugConfig } from '../../../core/src/config/rugs.ts';
 import { RUG_PREFIX, rugCheckKey, type MintCheck, type RugCheckFact } from '../../../core/src/gates/index.ts';
 import { checkDeployer, type RugCheckRequest, type RugHistorySource } from '../providers/deployer-check.ts';
+import { farAhead } from '../run/budget-day.ts';
 
 /** Trial cap (supervisor ruling on review of #99): Helius credits all deployer checks may spend in a UTC day. */
 export const DEPLOYER_CHECK_CREDITS_PER_DAY = 5_000;
@@ -172,6 +173,14 @@ export class DeployerChecks {
     if (day > this.#day) {
       this.#day = day;
       this.#spent = 0;
+    } else if (farAhead(this.#day, day)) {
+      // RC-M3: a spend file (or this process) dated more than a day ahead: today counts as spent, not every day until
+      // that date. Written back so a restart reads the same; a write that fails leaves today spent in memory.
+      this.#day = day;
+      this.#spent = Number.MAX_SAFE_INTEGER;
+      try {
+        this.#save();
+      } catch {}
     }
   }
 }
