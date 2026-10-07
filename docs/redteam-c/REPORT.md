@@ -159,3 +159,53 @@ The first pass ran the three heads in parallel. There, r2-exit-crash failed on #
 | C1, H1, R2-1, R2-2, R2-4 | PR B claude/rc-state | **not verifiable**: the branch is not pushed. state-backup-restore, entry-evidence and r2-corrupt-state (18/85) still fail on every head, as expected. |
 | M2 NAV peak (SOL-BOOKS) | — | still fails on every head (not in these batches) |
 | Regressions | all | **none**. All 21 leak probes and both exit-crash probes pass on every head. |
+
+# Round 3: resume path (Deploy 1 on the stand-in, then Deploy 2 = #268)
+
+**Verdict: the resume is safe to run only with the conditions below. 2 HIGH, 2 MEDIUM, 2 LOW.**
+
+**Probe:** `packages/ops/test/redteam-c/r3-resume-sequence.test.ts` (1 sanity test passes, 6 probes fail). It runs the real `zeroed-update`, `logic.sh`, `alert`/`alert_clear` and the stand-in `worker.mjs`, with the files taken from:
+- e4a8c05 (integration with #271 merged) for Deploy 1, host-config `"stub"`;
+- #268 at 25c4d9b for Deploy 2, host-config `"release"`.
+
+All lines below are in `ops/host/files/...` at e4a8c05.
+
+## HIGH
+- **R3-6: a second failed deploy is silent on the stand-in.**
+  - **Code:** `alert worker-switch` (`zeroed-update:83`) is sent once per key until cleared (`common.sh:66-71`). The only `alert_clear worker-switch` is `:246`, after a successful hold.
+  - **Scenario:** D2 rolls back to D1, the stand-in. The fix D3 then also fails its hold. No alert and no "deployed" message are sent, and the stand-in's heartbeat raises no watchdog alert. The bot sits on the stand-in and nobody is told.
+  - **Probe:** R3-6.
+  - **Fix:** key the alert per commit, or clear the key before raising a new rollback alert.
+- **R3-1: a probation rollback lands on the stand-in with an open paper position.**
+  - **Code:** `zeroed-update:125-138` checks only `open_intents`.
+  - **Scenario:**
+    - The release holds an open position, so its entry is settled and `open_intents` reads 0.
+    - One restart within 2 h triggers the rollback to D1, the stand-in.
+    - The stand-in manages no exits and reports `open_position:null`, and the watchdog cannot see paper positions.
+    - The position has no stop until the next release deploys.
+  - **Probe:** R3-1. It reports `current: 'D1 (stand-in)'`, and no alert names the position.
+  - **Fix:** the worker writes an `open_positions` count. A rollback or switch onto the stand-in is held while that count is above 0 or unreadable, using the existing "rollback held" alert.
+
+## MEDIUM
+- **R3-2: rollback after a failed hold or start skips the intents check.** `zeroed-update:241-242` rolls onto the stand-in with no open-intent check, while probation does check.
+  - **Probe:** R3-2.
+  - **Fix:** `rollback()` holds the same way probation does when the target runs the stand-in.
+- **R3-5: the stand-in's reconcile always writes `open_intents` = 0.** `stub/worker.mjs:33` overwrites the release's count, which opens every later gate over a ledger the stand-in never settled.
+  - **Probe:** R3-5.
+  - **Fix:** keep an existing count, or write `unknown`.
+
+## LOW
+- **R3-3: the `worker-probation` key is never cleared** (`zeroed-update:114,119`), so later probation alerts are suppressed for good.
+- **R3-4: a failed newer deploy deletes the older release's probation** (`:70`, `:218`). This is the residual known in DECISIONS RC-R2-3.
+
+## Conditions and notes
+- **Order:** Deploy 1 must be confirmed deployed (Telegram "deployed e4a8c056d530") before #268 is tagged.
+  - If the tag jumps straight to a commit with both, the old `zeroed-update` switches to the release worker with no probation.
+  - In order, Deploy 2 runs under Deploy 1's script, and its rollback target has the same logic.
+- **Conflict:** the #268/#271 conflict cannot resolve wrongly in silence. A wrong side fails `host-logic.test.ts` in CI, and `tag.sh` skips the red commit.
+- **Checked, holding:**
+  - Helius stays bounded in restart storms (saved daily seed and fill budgets; smoke runs without keys).
+  - The stand-in's writes to `ledger.sqlite` are harmless.
+  - Watchdog/uploader skew is low risk: `reports.sh` deploys the watchdog from the tag before the switch; if it fails, the failed-runs alert fires after 3 runs.
+  - Disk retention is unchanged.
+- **Not run:** `ops/test/e2e.sh` (no Docker daemon). Whether a manual `systemctl restart` resets NRestarts on real systemd is unverified.
