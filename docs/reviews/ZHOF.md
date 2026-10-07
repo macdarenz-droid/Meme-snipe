@@ -250,3 +250,26 @@ Reviewer: FAIL. Rulings 1–13 and open points 1–4 are applied, and every numb
     - For batches 1 and 2, the storage check uses the measured PM-01 subset of the K2 days as the per-day figure. Add a test.
     - Mark ARCH M03 :943-947 and :3117 "(parked, D30; C-75 withdrawn)"; the holder-index part stays pending.
     - The MA-0b exit reads "the first migrations-only coverage result is recorded (D30 parked)".
+
+### Reviewer and red team on `d4079504`
+
+- Reviewer: PASS. Items 33–40 are applied; LOW-1..4 are closed. One optional NIT: the ARCH change-table row :3329 can point to :3333.
+- Red team round 6: 0 MAJOR, 2 MEDIUM, 1 MINOR. Nothing at MAJOR or above remains.
+  - W: CI cannot write `ARCHIVE_STORAGE_STOP` into `archive-limits.conf`, because the default-branch ruleset blocks it.
+  - X: K3 depends on earlier days' migration lists, so the trim and the K3 scan need that list as a pinned input.
+  - Y (minor): keep the "trimmed K2 = fresh K3 scan" fixture test next to the idempotence test.
+
+### Supervisor rulings for the final push (8 Oct 2026, about 8:30 AM)
+
+41. **W: a storage stop that CI can write.**
+    - The stop is an append-only `storage-stop` marker (a release or asset) in zeroed-data, written by OF-4.
+    - The plan job, `scan-day.sh`, `check-day.sh` and archive-check read it, and refuse if it is present or if the store cannot be read.
+    - Clearing it needs a reviewed change and the owner's OK.
+    - Add a test: the marker is present, so a manual dispatch is refused at the plan job.
+42. **X: the PM-01 universe is a pinned input.**
+    - The PM-01 universe is an explicit input: the migration list built from stored earlier days, with its sha256 recorded in each unit's stats and in the per-unit log. The trim and the K3 scan both take it, and the determinism proof and test-ci use the same input.
+    - Day D+1's list is built only after D is read done.
+43. **Y:** OF-3 lists both tests: "trimmed K2 unit = fresh K3 scan of the same unit, with the same pinned list" and "trimming twice gives identical bytes".
+44. **NIT:** point ARCH :3329 to :3333.
+
+After this push, the supervisor checks the diff, then merges on green CI. No new review round is needed for these items.
