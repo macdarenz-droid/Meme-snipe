@@ -2273,11 +2273,21 @@ export class Worker {
     // reservation is released, an exit's position re-triggers. Intents that may have been sent settle through the
     // restart's status reads first.
     const asked = new Set<string>();
+    // RB-8: the read asked in each unresolved state, once. No slot arrives before the feeds start, so no tick re-asks; an
+    // answer that raced the state before it (a balance read refused "from unknown") would otherwise never come again.
+    const reread = new Set<string>();
     for (;;) {
       if (this.#stopping) return { ok: false, code: this.#stopCode, message: 'stopped during the start reconcile' };
       this.step();
       const book = this.#engine.book;
       for (const i of Object.values(book.intents)) {
+        if (!isTerminal(i) && isUnresolved(i) && !reread.has(`${i.intent.id}:${i.status}`)) {
+          reread.add(`${i.intent.id}:${i.status}`);
+          const now = { slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: d.timers.now() };
+          if (i.status === 'submitted' || i.status === 'pending' || i.status === 'unknown') {
+            this.#world.run({ type: 'check_status', intentId: i.intent.id, signatures: i.attempts.map((a) => a.signature), searchHistory: true }, now);
+          } else this.#world.run({ type: 'reconcile_balances', intentId: i.intent.id }, now);
+        }
         if (isTerminal(i) || isUnresolved(i) || i.status === 'signed' || asked.has(i.intent.id)) continue;
         this.#report({ type: 'intent', intentId: i.intent.id, event: { type: 'cancel' } });
         asked.add(i.intent.id);

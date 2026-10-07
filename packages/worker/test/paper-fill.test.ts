@@ -14,7 +14,7 @@ import { createRng } from '../../core/src/engine/index.ts';
 import {
   attemptFee, drawAttempt, executeBuy, executeSell, type FillScenario, NetworkState, networkEnterPpm, type ObservedFees, observedFeeContext, providerDown, windowOf,
 } from '../../core/src/fills/index.ts';
-import type { Book, IntentState } from '../../core/src/lifecycle/index.ts';
+import type { Book, BookEvent, IntentState } from '../../core/src/lifecycle/index.ts';
 import { bps } from '../../core/src/units/index.ts';
 import { capVolume, type PaperAttempt, type PaperMarket, type PaperState, PaperWorld } from '../src/run/paper-world.ts';
 import { StateFile } from '../src/run/state.ts';
@@ -50,14 +50,15 @@ const world = (scenario: FillScenario, legs: readonly Leg[], market: () => Paper
   }
   const book = { intents, positions: {} } as unknown as Book;
   const failed: PaperAttempt[] = [];
+  const reports: BookEvent[] = [];
   const w = new PaperWorld({
-    report: () => undefined, book: () => book, seed, scenario, network: NET,
+    report: (e) => reports.push(e), book: () => book, seed, scenario, network: NET,
     ladderFees: TRIAL_POLICY.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint), exitRung: () => 0,
     market: () => market(), maxQuoteAgeMs: MAX_AGE, maxSolOut: () => 0n, simulate: null, journal: () => undefined, now: () => 0,
     file: new StateFile<PaperState>(dir, 'paper.json', (v) => v as PaperState), changed: () => undefined,
     landedFailed: (a) => failed.push(a),
   });
-  return { w, failed, send: (id: string) => w.run({ type: 'broadcast', intentId: id as IntentId, attemptId: `a:${id}` as AttemptId, signedBytesRef: '', signature: `sig:${id}` as Signature }, null as never) };
+  return { w, failed, reports, send: (id: string) => w.run({ type: 'broadcast', intentId: id as IntentId, attemptId: `a:${id}` as AttemptId, signedBytesRef: '', signature: `sig:${id}` as Signature }, null as never) };
 };
 
 const SLOT_MS = 400;
@@ -225,5 +226,60 @@ describe('N2 live paper fills as the backtest fills (conservative scenario)', ()
     // Both states occur on this tape, so the comparison above is not vacuous.
     expect(congested).toBeGreaterThan(0);
     expect(congested).toBeLessThan(n);
+  });
+});
+
+describe('RB-8 a restart proves its own never-landed attempts dead before any slot', () => {
+  const statusHeight = (reports: readonly BookEvent[]): bigint | null => {
+    const r = reports.at(-1);
+    return r?.type === 'intent' && r.event.type === 'status' ? r.event.blockHeight : null;
+  };
+  const down: FillScenario = { ...LANDS, congestion: { ...LANDS.congestion, providerFailPpm: 1_000_000n } };
+  const ask = (w: PaperWorld) => w.run({ type: 'check_status', intentId: 'ex1' as IntentId, signatures: ['sig:ex1' as Signature], searchHistory: true }, null as never);
+
+  test('RB-8a a dropped attempt: past its last valid height at the start reconcile; the live height once slots arrive', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'paper-fill-'));
+    const first = world(down, [SELL], () => null, 'paper-fill', dir);
+    first.w.onSlot(H0, at(H0));
+    first.send('ex1');
+    first.w.onSlot(LAND, at(LAND));
+    expect(first.w.attempts.get('sig:ex1')!.outcome).toBe('dropped');
+    // Same process, slots seen: a dropped attempt waits out its blockhash, as a real one does.
+    ask(first.w);
+    expect(statusHeight(first.reports)).toBe(LAND);
+    // A restart, before any slot: its own record proves it can never land.
+    const second = world(down, [SELL], () => null, 'paper-fill', dir);
+    ask(second.w);
+    expect(statusHeight(second.reports)).toBe(1_000_001n);
+    second.w.onSlot(LAND + 1n, at(LAND + 1n));
+    ask(second.w);
+    expect(statusHeight(second.reports)).toBe(LAND + 1n);
+  });
+
+  test('RB-8a fail-closed: an attempt that landed (filled or failed) is never reported dead from the restart rule', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'paper-fill-'));
+    let read: PaperMarket = { pool: pool(VAULT), ctx: CTX, atMs: at(ELAND) };
+    const first = world(LANDS, [BUY, SELL], () => read, 'paper-fill', dir);
+    funded(first.w, first.send);
+    read = { pool: pool(VAULT), ctx: CTX, atMs: at(LAND) };
+    first.w.onSlot(H0, at(H0));
+    first.send('ex1');
+    first.w.onSlot(LAND, at(LAND));
+    expect(first.w.attempts.get('sig:ex1')!.outcome).toBe('filled');
+    const second = world(LANDS, [BUY, SELL], () => null, 'paper-fill', dir);
+    ask(second.w);
+    const r = second.reports.at(-1);
+    expect(r).toMatchObject({ type: 'intent', event: { type: 'status', result: 'succeeded', blockHeight: LAND } });
+    // A landed failure is dated by its landing, not proven dead past its blockhash.
+    const fails: FillScenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
+    const dir2 = mkdtempSync(join(tmpdir(), 'paper-fill-'));
+    const third = world(fails, [SELL], () => null, 'paper-fill', dir2);
+    third.w.onSlot(H0, at(H0));
+    third.send('ex1');
+    third.w.onSlot(LAND, at(LAND));
+    expect(third.w.attempts.get('sig:ex1')!.outcome).toBe('failed');
+    const fourth = world(fails, [SELL], () => null, 'paper-fill', dir2);
+    ask(fourth.w);
+    expect(fourth.reports.at(-1)).toMatchObject({ type: 'intent', event: { type: 'status', result: 'failed', blockHeight: LAND } });
   });
 });

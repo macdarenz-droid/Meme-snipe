@@ -218,6 +218,10 @@ export class PaperWorld implements EffectRunner {
   #heightFor(sig: string, lastValid: bigint): bigint | null {
     const a = this.#attempts.get(sig);
     if (a === undefined || lostInRestart(a)) return lastValid + 1n;
+    // RB-8: before this process has seen a slot (the start reconcile runs ahead of the feeds), an attempt this paper
+    // chain already settled as never landing (drawn dropped, or expired) is proven dead by its own record: nothing can
+    // land it. Once slots arrive the live height decides, so a dropped attempt still waits out its blockhash as a real one.
+    if (this.#height === null && (a.outcome === 'dropped' || a.outcome === 'expired')) return lastValid + 1n;
     return this.#height;
   }
 
