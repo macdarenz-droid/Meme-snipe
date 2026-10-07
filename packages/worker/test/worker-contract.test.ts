@@ -471,13 +471,15 @@ describe('deployer index and rug labeller wiring (GATE-1b, RUG-1), and the confi
 describe('a cut trade log on a rug-covered stream (RUG-1 wiring rule)', () => {
   const PUMP = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
   const SIG = '5'.repeat(88);
-  const run = async (found: boolean, covered: boolean) => {
+  const run = async (found: boolean, covered: boolean, late = false) => {
     const fetched: string[] = [];
     const h = makeWorker({ fetched, found });
     await h.worker.reconcile();
     const m = new Market(h);
     m.slot(1_000n);
     if (covered) m.offchain('coverage:rugs:start', { fromSlot: 900n, via: `logs:${PUMP}` });
+    // LATE-LOG: the log of slot 1001 arrives after that slot was released (placed off-chain at a later slot).
+    if (late) await m.run(3_000, 200, () => m.slot());
     h.worker.feed.ingest('helius', { type: 'logs', signature: SIG, slot: 1_001n, err: null, via: `logs:${PUMP}`, logs: [`Program ${PUMP} invoke [1]`, 'Log truncated'] }, { receivedAt: h.timers.now() });
     await m.run(3_000, 200, () => m.slot());
     await m.run(3_000, 200, () => m.slot());
@@ -502,6 +504,13 @@ describe('a cut trade log on a rug-covered stream (RUG-1 wiring rule)', () => {
 
   it('is fetched, and when its transaction is not found it becomes a bounded coverage:rugs:gap at its slot', async () => {
     const r = await run(false, true);
+    expect(r.fetched).toEqual([SIG]);
+    expect(r.gaps).toHaveLength(1);
+    expect(JSON.stringify(r.gaps[0])).toContain('"fromSlot":{"$n":"1001"}');
+  });
+
+  it('LATE-LOG: delivered after its slot was released, the gap is still at the transaction\'s own slot', async () => {
+    const r = await run(false, true, true);
     expect(r.fetched).toEqual([SIG]);
     expect(r.gaps).toHaveLength(1);
     expect(JSON.stringify(r.gaps[0])).toContain('"fromSlot":{"$n":"1001"}');

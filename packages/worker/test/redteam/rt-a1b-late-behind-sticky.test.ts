@@ -10,8 +10,7 @@
 // LATE-LOG: a late frame is placed off-chain at the open slot (`late: true`) and released in order; the producer
 // judges the swap by its own slot. Still in order on its pool: the candles end exactly as the on-time run's (the
 // backtest of the full tape) and H11 refuses the spike. Behind a newer swap: the candles are partial and the pool is
-// stale; the candle book is rebuilt in chain order from its snapshot (RT-A1b), and goes partial only when the swaps do
-// not chain (fail closed). Nothing the engine is handed is ever refused.
+// stale (fail closed). Nothing the engine is handed is ever refused.
 import { describe, expect, it } from 'vitest';
 import { startSession, TRIAL_POLICY } from '../../../core/src/config/index.ts';
 import { Engine, type Clock, type Feed, type MarketEvent, type Strategy, type StrategyContext } from '../../../core/src/engine/index.ts';
@@ -80,7 +79,7 @@ const log = (r: Run, sig: string, s: bigint, logs: readonly string[], ms: number
  * released first). `on-time-behind` is that last tape delivered on time: the backtest of the full tape.
  */
 type Mode = 'on-time' | 'late' | 'late-behind' | 'on-time-behind';
-const scenario = (mode: Mode) => {
+const scenario = (mode: Mode, after = 0) => {
   const r = world();
   slot(r, S0 - 3n);
   r.feed.ingest('helius', { type: 'fact', key: `coverage:${STREAMS.trades(POOL)}:start`, value: { fromSlot: S0, via: VIA } }, { receivedAt: at(S0 - 3n) + 1 });
@@ -108,6 +107,14 @@ const scenario = (mode: Mode) => {
   slot(r, S0 + 8n); // released through S0 + 6: the newer sell is in
   if (mode === 'late-behind') lateFrame = log(r, 'spikebuy', S0 + 4n, spike.logs, at(S0 + 8n) + 50);
   for (let s = S0 + 9n; s <= S0 + 12n; s++) slot(r, s);
+  let pre = newer.after;
+  for (let k = 0; k < after; k++) {
+    const sl = S0 + 13n + BigInt(k) * 150n; // one small swap a minute
+    const x = swapLog({ pool: POOL, coinCreator: CREATOR, supply: SUPPLY, pre, side: k % 2 === 0 ? 'buy' : 'sell', base: 1_000_000_000n, atMs: at(sl) });
+    log(r, `later${k}`, sl, x.logs, at(sl) + 300);
+    for (let s2 = sl; s2 <= sl + 3n; s2++) slot(r, s2);
+    pre = x.after;
+  }
   const ctx = r.seen.ctx!;
   const gctx: GateContext = { now: ctx.now, observedTip: ctx.now.slot, lookup: (key, asOf) => ctx.lookup(key, asOf), history: (key, f, t) => ctx.history(key, f, t) };
   const hard = evaluateHardRejects(gctx, { session, mode: 'live' }, { mint: MINT, universe: 'U1', notional: 1_000_000n as MicroUsd, spend: 10_000_000n as Lamports, roundTrip: { ok: false, reason: 'unused', detail: '' } as never }, { only: ['H11'], stopAtFirst: false });
@@ -117,56 +124,19 @@ const scenario = (mode: Mode) => {
   return { r, hard, candles, faults, lateFrame };
 };
 
-describe('RT-A1 (LATE-LOG): a late confirmed pool log never loses its swap from the store', () => {
-  it('on time: the spike is in the candles and H11 refuses it (control)', () => {
-    const { hard, candles, faults } = scenario('on-time');
-    expect(faults).toEqual([]);
-    expect(candles?.candles.length).toBeGreaterThan(0);
-    // Two swaps of one slot are in order: the candles stay complete.
-    expect(candles?.obs.quality).toEqual([]);
-    expect(hard.reasons.map((x) => `${x.gate}:${x.code}`)).toEqual(['H11:candle-spike']);
-  });
 
-  it('late, still in order on its pool: placed off-chain, nothing refused, the candles and H11 end as the on-time run (fails on 959d801)', () => {
-    const live = scenario('late');
-    const full = scenario('on-time');
-    expect(live.lateFrame?.place).toEqual({ at: 'offchain', slot: S0 + 7n, arrival: true });
-    expect(live.lateFrame?.late).toBe(true);
-    expect(live.r.feed.status().late).toBe(1);
-    expect(live.r.releases.filter((x) => x.late)).toEqual([]);
-    // Nothing the engine was handed was refused: every fact made from the late swap is in the store.
-    expect(live.faults).toEqual([]);
-    expect(live.candles?.obs.quality).toEqual([]);
-    expect(live.candles?.candles).toEqual(full.candles?.candles);
-    expect(live.candles?.candles).toHaveLength(1);
-    expect(live.hard.pass).toBe(false);
-    expect(live.hard.reasons).toEqual(full.hard.reasons);
-  });
-
-  it('late behind a newer swap: the book is rebuilt in chain order and ends as the full tape, complete (RT-A1b)', () => {
-    const { hard, candles, faults, lateFrame } = scenario('late-behind');
-    const full = scenario('on-time-behind');
-    expect(lateFrame?.late).toBe(true);
-    expect(faults).toEqual([]);
-    expect(full.candles?.obs.quality).toEqual([]);
-    expect(candles?.obs.quality).toEqual([]);
-    expect(candles?.candles).toEqual(full.candles?.candles);
-    expect(hard.reasons).toEqual(full.hard.reasons);
-    expect(hard.reasons.map((x) => `${x.gate}:${x.code}`)).toContain('H11:candle-spike');
-  });
-
-  it('parity: the recording of the late run replays to the same decision log, 10 times', () => {
-    for (const mode of ['late', 'late-behind'] as const) {
-      const live = scenario(mode).r;
-      const hashes = new Set<string>();
-      for (let i = 0; i < 10; i++) {
-        const back = replayRecorded(live.frames, live.releases);
-        const engine = engineOn(back.clock, back.feed, { ctx: null });
-        engine.drain();
-        expect(engine.records.filter((x) => x.type === 'fault')).toEqual([]);
-        hashes.add(engine.logHash());
-      }
-      expect([...hashes]).toEqual([live.engine.logHash()]);
-    }
+// RED TEAM A round 3, RT-A1b (on #272 head c752a6d): LATE-LOG turns every late swap behind a newer one into a sticky
+// `partial` on the pool's candle book (producer.ts `#bookSwap`, `book.partial = true`; only a heal from an earlier mark
+// resets it, and no hole means no heal). H11 then refuses the coin (H16 degraded, candles) for the rest of its window,
+// although every swap was delivered and the late one chains exactly between its neighbours (its pre-trade reserves are
+// the earlier swap's post-trade ones), so the book could be rebuilt in chain order as TRADE-GAP-HEAL already does.
+// Rate: 0.24% and 0.68% of confirmed PumpSwap notifications were at or past the horizon on public mainnet (late-measure.mjs,
+// 60 s and 230 s samples); a busy candidate pool sees hundreds to thousands of swaps in its window, so most active coins
+// would be blocked for the whole window (the "never trades" class).
+describe('RT-A1b: a late swap behind a newer one blocks H11 for the rest of the window', () => {
+  it('after 30 more on-time swaps over 30 minutes, with every swap delivered, H11 is not refused for incomplete candles (fails on c752a6d)', () => {
+    const { hard, candles } = scenario('late-behind', 30);
+    const reasons = hard.reasons.map((x) => `${x.gate}:${x.code}:${x.input ?? ''}`);
+    expect({ quality: candles?.obs.quality, reasons }).toEqual({ quality: [], reasons: expect.not.arrayContaining(['H16:degraded:candles']) });
   });
 });

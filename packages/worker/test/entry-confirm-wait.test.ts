@@ -24,21 +24,27 @@ blockNetwork();
 interface Line { kind: string; ts: string; action?: string; reasons?: string[] }
 
 /** The passing market, with an optional change to the facts once the first pass is held (`during`). */
-const run = async (confirmLagSlots: number, during?: (m: Awaited<ReturnType<typeof passingMarket>>) => void, drop = false) => {
+const run = async (
+  confirmLagSlots: number, during?: (m: Awaited<ReturnType<typeof passingMarket>>) => void, drop = false,
+  again?: (m: Awaited<ReturnType<typeof passingMarket>>, lines: readonly Line[]) => boolean, steady = false,
+) => {
   const h = makeWorker({ strategy: { confirmLagSlots } });
   await h.worker.reconcile();
   const m = await passingMarket(h, { heldPoolFacts: true });
   let held = false;
   const journal = () => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Line).filter((l) => l.kind === 'decision');
   // As soon as the held pass is journaled (the wait has started), the test's change goes on the feed.
+  let restored = false;
   const hook = () => {
     if (during !== undefined && !held && journal().some((l) => (l.reasons ?? []).some((r) => r.startsWith(CONFIRM_WAIT)))) {
       held = true;
       during(m);
-    }
+    } else if (again !== undefined && held && !restored) restored = again(m, journal());
   };
+  // `steady`: a slot notice at every step from the start, so the slots move one per 400 ms through the wait.
   await m.run(4_000, 100, () => {
     hook();
+    if (steady) m.slot();
     m.pool();
   });
   await m.run(10_000, 400, () => {
@@ -92,6 +98,48 @@ describe('LATE-LOG: an entry waits confirmLagSlots and passes its gates again', 
     expect(r.lines.some((l) => (l.reasons ?? []).some((x) => x.includes('H11') && x.includes('candle-spike')))).toBe(true);
   });
 
+  it('a refusal inside the wait ends it: the next pass waits the full lag again from its own slot', async () => {
+    const f = passingFacts().get(candlesKey(MINT))!.value as { obs: Record<string, unknown>; candles: { open: { quote: bigint; base: bigint }; high: unknown }[] };
+    const spiky = (now: number) => ({ ...f, obs: { ...f.obs, receivedAt: now - 50 }, candles: f.candles.map((c, i) => (i === f.candles.length - 1 ? { ...c, high: { quote: c.open.quote * 3n, base: c.open.base } } : c)) });
+    let refusedAt: number | null = null;
+    const r = await run(CONFIRM_LAG_SLOTS, (m) => {
+      m.fact(candlesKey(MINT), spiky(m.now));
+      refusedAt = m.now;
+    }, false, (m, lines) => {
+      // Once the spike has been refused, the clean candles come back: a new pass.
+      if (refusedAt !== null && lines.some((l) => (l.reasons ?? []).some((x) => x.includes('candle-spike')))) {
+        m.fact(candlesKey(MINT), { ...f, obs: { ...f.obs, receivedAt: m.now - 50 } });
+        refusedAt = null;
+        return true;
+      }
+      return false;
+    });
+    const held = waits(r.lines).map((l) => l.reasons!.find((x) => x.startsWith(CONFIRM_WAIT))!);
+    // Two separate waits, the second from a later slot than the first.
+    expect(held).toHaveLength(2);
+    const slotOf = (x: string) => BigInt(/passed at slot (\d+)/.exec(x)![1]!);
+    expect(slotOf(held[1]!)).toBeGreaterThan(slotOf(held[0]!));
+    expect(enters(r.lines)).toHaveLength(1);
+    expect(Date.parse(enters(r.lines)[0]!.ts)).toBeGreaterThan(Date.parse(waits(r.lines)[1]!.ts));
+  });
+
+  it('with the slots moving steadily, the entry is at least the lag past the held pass, never a slot early', async () => {
+    const r = await run(CONFIRM_LAG_SLOTS, undefined, false, undefined, true);
+    const h = r.h;
+    const dir = join(h.stateDir, 'recorder', h.worker.boot);
+    const { clock, feed } = replayRecorded(rows(files(dir, /^frames-/), (l) => parseTyped(l) as Frame), rows(files(dir, /^releases-/), (l) => JSON.parse(l) as Release));
+    const strategy = new LiveStrategy({ session: h.session, rugs: RUG_CONFIG, config: h.worker.strategyConfig });
+    const engine = new Engine({ clock, feed: engineFeed(feed, h.session.policy).feed, strategy, runner: { run: () => undefined }, seed: 'confirm-wait', book: { maxOpenPositions: h.session.policy.positions.maxOpen } });
+    engine.drain();
+    const records = engine.records.flatMap((x) => (x.type === 'decision' ? [{ at: x.at, reasons: x.reasons }] : []));
+    const wait = records.find((x) => x.reasons.some((y) => y.startsWith(CONFIRM_WAIT)))!;
+    const enter = records.find((x) => x.reasons[0] === 'enter')!;
+    const gap = enter.at.slot - wait.at.slot;
+    expect(gap).toBeGreaterThanOrEqual(BigInt(CONFIRM_LAG_SLOTS));
+    // Evaluated every 2 s, about 5 slots: the entry comes at the second evaluation after the pass, not the first.
+    expect(gap).toBeLessThan(BigInt(3 * CONFIRM_LAG_SLOTS));
+  });
+
   it('exits never wait: the stop exit is at the same moment with and without the entry wait', async () => {
     const exitAt = (d: readonly Line[]) => d.filter((l) => l.action === 'trigger_exit').map((l) => l.ts);
     const now = await run(0, undefined, true);
@@ -108,6 +156,7 @@ describe('LATE-LOG: an entry waits confirmLagSlots and passes its gates again', 
     const releases = rows(files(dir, /^releases-/), (l) => JSON.parse(l) as Release);
     const hashes = new Set<string>();
     let reasons: string[][] = [];
+    let records: { at: { slot: bigint }; reasons: readonly string[] }[] = [];
     for (let i = 0; i < 10; i++) {
       const { clock, feed } = replayRecorded(frames, releases);
       const strategy = new LiveStrategy({ session: h.session, rugs: RUG_CONFIG, config: h.worker.strategyConfig });
@@ -115,9 +164,14 @@ describe('LATE-LOG: an entry waits confirmLagSlots and passes its gates again', 
       engine.drain();
       hashes.add(engine.logHash());
       reasons = engine.records.flatMap((x) => (x.type === 'decision' ? [[...x.reasons]] : []));
+      records = engine.records.flatMap((x) => (x.type === 'decision' ? [{ at: x.at, reasons: x.reasons }] : []));
     }
     expect(hashes.size).toBe(1);
     expect(reasons.some((x) => x.some((y) => y.startsWith(CONFIRM_WAIT)))).toBe(true);
     expect(reasons.some((x) => x[0] === 'enter')).toBe(true);
+    // The entry is proposed at a released slot at least the lag past the slot the held pass was made at.
+    const wait = records.find((x) => x.reasons.some((y) => y.startsWith(CONFIRM_WAIT)))!;
+    const enter = records.find((x) => x.reasons[0] === 'enter')!;
+    expect(enter.at.slot - wait.at.slot).toBeGreaterThanOrEqual(BigInt(CONFIRM_LAG_SLOTS));
   });
 });

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { type PoolState, poolBuyExactBase, poolSell } from '../../src/amm/index.ts';
 import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { OFF_CHAIN, type MarketEvent, type Moment } from '../../src/engine/index.ts';
-import { HEAL_TAPE_MAX, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
+import { BOOK_SNAPS_KEEP, HEAL_TAPE_MAX, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
 import { observedFeeContext } from '../../src/fills/index.ts';
 import { Evidence, candlesKey, parseCandles, parsePool, poolKey, streamKey } from '../../src/gates/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -207,6 +207,101 @@ describe('LATE-LOG review HIGH-1: two swaps of one slot out of chain order', () 
     const { world, state } = opened();
     const { a, b } = pair(state);
     head(world.push(logOf(b, 0), logOf(a, 1)));
+    expect(candles(world).obs.quality).toEqual(['partial']);
+    expect(verdicts(world).candles).not.toBe('ok');
+  });
+});
+
+describe('LATE-LOG RT-A1b: a swap out of chain order is put back in order from the book\'s snapshot', () => {
+  /** A first swap at R+1, then A and B (on A's reserves) at R+2, then C (on B's) at R+3. */
+  const tape3 = (state: PoolState) => {
+    const first = swap('buy', state, state.baseReserve / 1000n, R + 1n);
+    const a = swap('buy', first.after, state.baseReserve / 4n, R + 2n);
+    const b = swap('sell', a.after, state.baseReserve / 1000n, R + 2n);
+    const c = swap('buy', b.after, state.baseReserve / 500n, R + 3n);
+    return { first, a, b, c };
+  };
+  const inOrder = () => {
+    const { world, state } = opened();
+    const t = tape3(state);
+    head(world.push(logOf(t.first), logOf(t.a, 0), logOf(t.b, 1), logOf(t.c)));
+    return world;
+  };
+
+  it('two swaps of one slot in reverse arrival order: rebuilt, the candles equal the in-order run and stay complete', () => {
+    const { world, state } = opened();
+    const t = tape3(state);
+    head(world.push(logOf(t.first), logOf(t.b, 0), logOf(t.a, 1), logOf(t.c)));
+    expect(candles(world).obs.quality).toEqual([]);
+    expect(noReceipt(candles(world))).toEqual(noReceipt(candles(inOrder())));
+  });
+
+  it('a late swap behind two newer slots: rebuilt, equal to the in-order run (RT-A1b)', () => {
+    const { world, state } = opened();
+    const t = tape3(state);
+    head(world.push(logOf(t.first), logOf(t.b, 0), logOf(t.c), lateLog(t.a, R + 3n)));
+    expect(candles(world).obs.quality).toEqual([]);
+    expect(noReceipt(candles(world))).toEqual(noReceipt(candles(inOrder())));
+    expect(verdicts(world).candles).toBe('ok');
+  });
+
+  it('a rebuild never clears a partial it cannot replay: a trade refused as too old stays counted', () => {
+    const { world, state } = opened();
+    const t = tape3(state);
+    // A real swap stamped two hours before the newest trade (past the repeat window): refused, the candles partial.
+    const old = swap('buy', t.c.after, state.baseReserve / 3000n, R + 3n);
+    const stale = { ...old, sig: 'tooold', data: { ...old.data, timestamp: (old.data['timestamp'] as bigint) - 7_200n } };
+    head(world.push(logOf(t.first), logOf(t.b, 0), logOf(t.c, 0), logOf(stale, 1), lateLog(t.a, R + 3n)));
+    expect(candles(world).obs.quality).toEqual(['partial']);
+  });
+
+  it('a late swap that chains only after a swap of a later slot (an order the slots forbid): partial, never rebuilt', () => {
+    const { world, state } = opened();
+    const t = tape3(state);
+    // Its pre-trade reserves are c's post-trade ones (slot R+3), but it claims slot R+2; d (slot R+4) chains after it.
+    // Only a snapshot holding c (a later slot than its own) could rebuild that order, which the slots forbid.
+    const after = swap('buy', t.c.after, state.baseReserve / 3000n, R + 2n);
+    const d = swap('sell', after.after, state.baseReserve / 3000n, R + 4n);
+    head(world.push(logOf(t.first), logOf(t.a, 0), logOf(t.b, 1), logOf(t.c), logOf(d), lateLog(after, R + 4n)));
+    expect(candles(world).obs.quality).toEqual(['partial']);
+  });
+
+  it('after a heal, a late swap is still put back in order (the snapshots are retaken from the healed book)', () => {
+    const run = (late: boolean) => {
+      const { world, state } = opened();
+      const s = tape(state);
+      // s[2] cut, its transaction fetched and found: healed.
+      world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!));
+      world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, R + 6n, [s[2]!]), outcome(s[2]!.sig, true, R + 6n));
+      const d = swap('buy', s[4]!.after, state.baseReserve / 1000n, R + 7n);
+      const e = swap('sell', d.after, state.baseReserve / 2000n, R + 8n);
+      if (late) world.push(logOf(e), lateLog(d, R + 8n));
+      else world.push(logOf(d), logOf(e));
+      return world.push(slotNotice(R + 10n, at(R + 10n) + 50));
+    };
+    const healed = run(true);
+    expect(candles(healed).obs.quality).toEqual([]);
+    expect(noReceipt(candles(healed))).toEqual(noReceipt(candles(run(false))));
+  });
+
+  it(`a book keeps at most ${BOOK_SNAPS_KEEP} snapshots, and only the swaps since the oldest`, () => {
+    const { world, state } = opened();
+    let pre = state;
+    for (let k = 0; k < 40; k++) {
+      const x = swap(k % 2 === 0 ? 'buy' : 'sell', pre, state.baseReserve / 5000n, R + 1n + BigInt(k));
+      world.push(logOf(x));
+      pre = x.after;
+    }
+    const b = world.producer.candleBook(POOL)!;
+    expect(b.snaps).toBe(BOOK_SNAPS_KEEP);
+    expect(b.recent).toBe(BOOK_SNAPS_KEEP);
+  });
+
+  it('a late swap that does not chain (its reserves fit nowhere): not applied, partial for good (fail closed)', () => {
+    const { world, state } = opened();
+    const t = tape3(state);
+    const stray = swap('buy', state, state.baseReserve / 3000n, R + 2n);
+    head(world.push(logOf(t.first), logOf(t.a, 0), logOf(t.b, 1), logOf(t.c), lateLog(stray, R + 3n)));
     expect(candles(world).obs.quality).toEqual(['partial']);
     expect(verdicts(world).candles).not.toBe('ok');
   });
