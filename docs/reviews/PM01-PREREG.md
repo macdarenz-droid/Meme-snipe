@@ -124,3 +124,34 @@ Reviewer, about 9:46 AM. Rulings 1–20 are applied, and the lamport table and c
 - M3: "runs once" plus pending_data until P12 can throw the screen away.
 - m1: `d` as calendar or counted days. m2: which §12 rows the start condition requires. m3: drop the CLAUDE.md citation.
 Held for red team round 2, so both go in one push.
+
+## Round 4 red team (head `79f8c6a5`): 0 BLOCKER, 5 MAJOR, 8 MINOR
+
+All 19 round 1 findings are closed.
+- R2-M1: a fix-and-re-run after an engineering failure can change returns already seen.
+- R2-M2: the monthly cost can change after returns are seen.
+- R2-M3: the configs are not isolated (shared risk slots).
+- R2-M4: the frozen-parameter hash has nothing to compare against.
+- R2-M5: the before-signal side is thin, and it has no floor.
+- n1–n8: a stale PM01-P2 row; the P12 start condition; kill rule 4 and the effective size; the voided-W_R interval; the as-of tie-break and skipped slots; pinned program IDs and the economic fields hashed; P-9's implied bankroll; RNG ties between configs, and B-8 thin weeks.
+
+### Supervisor rulings for round 5 (8 Oct 2026, 9:47 AM)
+
+21. **Voided-W_R kill (V-M1, R-n4).** It uses the lean row without the monthly share, and the §6.4 kill-side interval (the highest upper bound over block lengths and interval types). Cite this ruling.
+22. **Benchmark sides (V-M2, R2-M5).** Each side needs n_side ≥ 0.5 n and ≥ 20 day clusters. Below that, the excess test is `pending_data`: it never passes and never triggers kill rule 1, and the owner is told the counts. A side that is computed with enough trades and a lower bound ≤ 0 still kills. Say it in §9 and kill rule 1.
+23. **Screen start (V-M3, V-m2, R-n2).** "P12 done" is part of the start condition. List which §12 rows the start check requires and what "fixed" means for each. The honeypot_sim/holder row is not in the screen's start condition, because the screen uses assumed-pass.
+24. **Days (V-m1).** Boundaries use calendar days; the counts use counted days only. Say where low_coverage days fall in the 80/20 split and the halves.
+25. **Citation (V-m3).** Drop the CLAUDE.md clause; cite the DECISIONS row and the owner's "Ok" at 9:28 AM.
+26. **Re-runs after a fix (R2-M1).**
+    - A re-run must reproduce every decision of the evaluated window except the trades the fix record names, each with its reason.
+    - If any return in a window already evaluated changes, that window is burned: the result counts as a new trial (B-3, B-5), and the gates run again only on unseen days.
+    - "Engineering check" means exactly B-9, B-10 and the M07 coverage and QA checks. Every other failed check is evidence.
+27. **Monthly figure (R2-M2).** The monthly USD figure is frozen for each window at the window's start and written in DECISIONS with the window dates. A later ruling applies only to windows that start after it.
+28. **Isolated configs (R2-M3).** Each config, the count-only one included, runs in its own engine instance with its own E_bt = 20 SOL and its own risk state. A test asserts A's trade list is identical whether B runs or not.
+29. **Frozen parameters (R2-M4).** Before the first run, add a fenced JSON block holding every affectsReturns value for A and B: §4.6, the frozen fill, cost and feature versions, the §12 numbers, the seeds, and the per-window monthly figure. Record its sha256 in §12. The run recomputes that sha256 and the configKey from the block in the merged file, and refuses on any mismatch.
+30. **R-n1.** Update the DECISIONS row PM01-P2 to "gate window, W_B or W_R".
+31. **R-n3.** Kill rule 4: "B-1, including effective size, not met by 90 counted days" goes to the owner, with a recommendation to stop.
+32. **R-n5.** The as-of sample is the last state by (slot, tx_index, inner_ix_index) with block time ≤ s. A skipped leader slot is not a missing block. Say that observedAtMs from block time gives zero observation lag, which is favourable to PM-01.
+33. **R-n6.** Pin the program IDs and config account addresses from the pinned IDLs in this repo. L-4 hashes only the listed economic fields. If a field list cannot be confirmed from the pinned IDLs, mark it VERIFY with its source.
+34. **R-n7.** Report the bankroll P-9 implies as PM-01's capital requirement (DERIVED, approximate).
+35. **R-n8.** The RNG sort key includes the config id. B-8 checks a week only when it holds ≥ 10 trades; a smaller edge week is merged into the next one.
