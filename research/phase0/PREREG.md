@@ -147,7 +147,7 @@ Failure class mix: 100% `unknown` (C-27). It does not change this forward-return
 - **Sensitivity line:** 414,009 lamports fixed (A07: "only as a sensitivity line").
 - **Stress line** (A16 "stress costs"): premium landing, ARCH §2.2 (CU price 1,000,000 µlamports, tip 1,000,000 per leg), with the rest of the row unchanged.
 
-**Fixed-cost cap `k` (A07, A23).** A size is "too small" when `fixed / x > k`. A too-small size is reported but cannot rescue MR-01 in §5.5. **OPEN-6.** Recommendation: `k` = 1%. With the row above, $5 is too small (394,247 / 33,333,333 = 1.18%, DERIVED), and $20 and above pass (0.30% at $20).
+**Fixed-cost cap `k` (A07, A23).** A size is "too small" when `fixed / x > k`. A too-small size is flagged in every table. **OPEN-6.** Recommendation: `k` = 1%. With the row above, $5 is too small (394,247 / 33,333,333 = 1.18%, DERIVED), and $20 and above pass (0.30% at $20).
 
 **Depth cap flag.** ARCH §2.4 (8) caps live entries at 0.5% of effective depth. Each size row reports how many trades exceed that cap; they are kept, not dropped, and are labelled.
 
@@ -208,13 +208,23 @@ For each kept signal: 10 random entries.
 ### 5.5 Kill rule
 
 Fixed now; it does not move after a look.
-- **Primary cell (OPEN-9):** delay 1 bar, horizon = the config's own `T` (30 min for MR-01-A, 60 min for MR-01-B). Delay 1 because a decision made at a bar close cannot fill at that same close. All other cells are shown, but they do not decide.
-- **A config survives** only if, at its primary cell, both hold:
-  - (a) mean `net` > 0 under the conservative row, at one or more sizes that are not "too small" (`k`, §4);
+Supervisor ruling (2026-10-07, before data): the PREREG declares **one** primary cell (configuration × horizon × delay). MR-01 survives the kill check only if that one cell clears both tests. Every other cell is reported only.
+
+- **Primary cell (OPEN-9; the supervisor confirms it before data).** Recommendation:
+
+  | Part | Value | Reason |
+  |---|---|---|
+  | Configuration | MR-01-A (`L` 5 min, `z` 3.0, `a` 4%, `T` 30 min) | The research behind A05 found most of the bounce falls in the first 5 minutes (`research/deep-pool-probe/RESULTS.md:25` on `ccr-7fae2302-drz4co`, cited in A05). The 5-min lookback is the config aimed at that. Its 30-min repeat block (§5.1) also lets more signals into one week than MR-01-B's 60 min |
+  | Horizon | 30 min | MR-01-A's own time stop `T`, the longest it would hold. A 5-min horizon would pick the best-looking slice after the fact; `T` is fixed by ARCH §3.3 |
+  | Delay | 1 bar (15 s) | A decision made at a bar close cannot fill at that same close (A-M08-01 closes bars 1.5 s after the end). Delay 0 is optimistic. The same research found a one-bar delay (5-min bars there) removed most of the bounce, so delay 1 is the honest test |
+  | Size for test (a) | $20 = 133,333,333 lamports | The owner's trial size, the first size the bot would trade. It passes the `k` cap (0.30%), and impact on a 300 SOL pool stays small. Every other size is reported only (CLAUDE.md "Size is not the trial") |
+
+- **MR-01 survives** only if, at the primary cell, both hold:
+  - (a) mean `net` > 0 under the conservative row at $20, meaning the raw return beats the conservative hurdle;
   - (b) mean excess `e` > 0.
+- **Otherwise MR-01 is killed**, both configurations together. MR-01-B and every other delay, horizon and size are reported only. They can neither kill nor save MR-01.
 - **Point estimates decide** (A05 as adopted). The intervals of §6 are reported beside them. A05's own caveat is that a week gives wide intervals.
-- **MR-01 is killed** if neither config survives. **OPEN-10.** Recommendation: if only one config fails, both stay registered for `W_B`. Dropping one on this week would be selection on the study data (C-26), and gate B judges both anyway.
-- **Too few signals (OPEN-11).** Recommendation: a config with fewer than 30 kept signals at its primary cell (the C-34 minimum for an interval) is "insufficient". It is neither killed nor passed by A05, and the report says so. The A-24 and A-24b rules still apply in full.
+- **Too few signals (OPEN-11).** Recommendation: with fewer than 30 kept signals at the primary cell (the C-34 minimum for an interval), A05 is "insufficient". It neither kills nor passes, and the report says so. The A-24 and A-24b rules still apply in full.
 - **Recording the result.** A kill is recorded in `docs/DECISIONS.md` with this file's sha. MR-01 then stops (INTEGRATION M1; MIGRATION "M1 exit"). Survival only means MR-01 may go on to `W_B` and its gates.
 
 ## 6. Statistics (A14, A12, A-M13-03)
@@ -280,7 +290,7 @@ The report is written to `docs/phase0/report-<D1>.md` plus CSVs (A-M13-01). It m
 - **T7** A05 raw return per config × delay (0, 1, 2) × horizon (5, 15, 30, 60): n, mean, median, interval, DEFF, effective n.
 - **T8** A05 excess `e`: same grid as T7, plus the seed 2–10 range.
 - **T9** Size sweep per config × delay × horizon × size: mean gross, fees, impact, fixed, net, in lamports and in bps of `x`; interval of net; "too small" flag; count over the 0.5% depth cap. One block each for the conservative, lean, 414,009 and stress lines.
-- **T10** A05 verdict per config at the primary cell; MR-01 verdict.
+- **T10** A05 verdict at the primary cell (MR-01's verdict); the same two tests for every other cell, marked "reported only".
 - **T11** `ENTRYRATE`-thinned line: T7 and T9 at the primary cell.
 - **T12** A-48 per stream and day; disk projection; provider reads against limits.
 - **T13** Exclusion table (A12), for A-24b and for A05.
@@ -332,6 +342,6 @@ The report is written to `docs/phase0/report-<D1>.md` plus CSVs (A-M13-01). It m
 | OPEN-6 | Fixed-cost cap `k` | 1% of the stake |
 | OPEN-7 | `REGIME` SOL/USD leg | Use it only if SOL/USD is recorded; else the basket leg alone, with a caveat |
 | OPEN-8 | Repeat signals and `ENTRYRATE` | Pool blocked for `T` after a signal; `ENTRYRATE` as a side line only |
-| OPEN-9 | A05 primary cell | Delay 1 bar, horizon = the config's `T` |
-| OPEN-10 | One config fails A05 | Keep both registered; kill MR-01 only if both fail |
+| OPEN-9 | A05 primary cell (one cell, per the supervisor's ruling) | MR-01-A × 30 min × delay 1 bar, test (a) at $20; reasons in §5.5 |
+| OPEN-10 | One config fails A05 | Closed by the supervisor's ruling: only the primary cell decides |
 | OPEN-11 | Fewer than 30 signals | "Insufficient": no kill and no pass from A05 |
