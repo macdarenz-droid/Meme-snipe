@@ -220,8 +220,32 @@ def coin(L):
     json.dump(rec, open(out_p + '.tmp', 'w')); os.replace(out_p + '.tmp', out_p)
     return rec
 
+def plan():
+    """Budget check from signature counts only: keep every draw if the fetch fits the cap with RESERVE kept back,
+    else drop whole draws at random (seed 20261073) from both windows in proportion until it fits."""
+    def cost(x):
+        n = 0
+        for L in x['launches']:
+            rows = json.load(open(_sigfile(L)))
+            n += sum(1 for r in rows if r['err'] is None and r['signature'] != L['sig'])
+        return n
+    d = {w: _load('sample_%s.json' % w) for w in DRAWS}
+    c = {w: [cost(x) for x in d[w]] for w in DRAWS}
+    left = (heli.CAP - RESERVE - heli.credits()['credits']) // heli.CREDITS_PER_CALL
+    keep = {w: list(range(len(d[w]))) for w in DRAWS}
+    rng = random.Random(20261073)
+    order = {w: rng.sample(range(len(d[w])), len(d[w])) for w in DRAWS}
+    while sum(c[w][i] for w in DRAWS for i in keep[w]) > left:
+        w = max(DRAWS, key=lambda w: len(keep[w]) / DRAWS[w][0])
+        keep[w].remove(order[w].pop())
+    out = {'kept_draws': keep, 'tx_calls_planned': sum(c[w][i] for w in DRAWS for i in keep[w]),
+           'calls_available': left, 'dropped': {w: len(d[w]) - len(keep[w]) for w in DRAWS}}
+    _save('plan.json', out)
+    print({k: v for k, v in out.items() if k != 'kept_draws'})
+
 def fetch_all():
-    Ls = [L for w in DRAWS for x in _load('sample_%s.json' % w) for L in x['launches']]
+    keep = _load('plan.json')['kept_draws']
+    Ls = [L for w in DRAWS for i, x in enumerate(_load('sample_%s.json' % w)) if i in keep[w] for L in x['launches']]
     random.Random(5).shuffle(Ls)
     done = 0
     for L in Ls:
@@ -247,7 +271,7 @@ if __name__ == '__main__':
     cmd = sys.argv[1]
     try:
         {'measure': lambda: measure(int(sys.argv[2])), 'sample': sample, 'list': listing,
-         'fetch': fetch_all, 'slots': slot_len}[cmd]()
+         'plan': plan, 'fetch': fetch_all, 'slots': slot_len}[cmd]()
         print(heli.credits())
     except Exception as e:
         print('error:', heli.scrub(type(e).__name__), heli.scrub(e)[:300], file=sys.stderr); raise SystemExit(1)
