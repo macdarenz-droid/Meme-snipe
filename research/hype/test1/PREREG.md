@@ -68,3 +68,12 @@ This file is committed and pushed, then its commit hash and time are added below
 
 ## Commit record
 - PREREG committed and pushed as `2349dfe263c13a2157d59fa5391de438790fe9f3` (remote ref checked with git ls-remote), recorded at 2026-10-07 20:22 AEDT (2026-10-07T09:22Z), before the first API call of this test.
+
+## Amendment A1 (after the fresh-context code review, before any outcome was viewed; 2026-10-07 21:39 AEDT)
+Only counts were looked at (HTTP statuses, usable-coin and flag counts on partial data); no return, difference or interval was opened.
+- Verdict order: kill (b) is checked before the sign-flip rule, so a "better" result that fails the +8% bar is a kill and is never deferred to Test 3 (the stricter reading; a kill cannot be loosened). The sign-flip rule uses PAID60's D times PAID's D below 0.
+- "Interval entirely above/below 0" is decided by the Holm step-down reject flag for PAID (bootstrap p at its Holm level), which equals the percentile-interval reading except at its edge or when a Test 2 hypothesis with a smaller p fails first. The interval at PAID's Holm level is reported beside it.
+- An empty PAID or UNPAID group gives "insufficient data" and the run still writes its output.
+- Bootstrap replicates with an empty group are dropped (same distribution as redrawing); the number kept is reported.
+- Orders: all 3,000 fresh mints (and all 900 exploration mints) answered HTTP 200 on the first pass, so the retry gap the review found in `../orders.py` (non-200 answers are not retried) did not apply.
+- The without-outcome-viewed run repeats the compare figures (means, D with its 95% and Holm-level day-block intervals, log D), not the random band or D_adj. Volume is in GeckoTerminal's units for currency=token (not checked as SOL); it is used only for strata ranks. Bankroll figures are a fixed $10-bet scale, not a SOL measure.
