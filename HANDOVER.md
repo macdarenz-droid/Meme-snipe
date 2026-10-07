@@ -149,6 +149,8 @@
     - Round 3 head `c7a5007d` (P1 split at a 60-min baseline; the P4 boundary voids W_B; §6.4 kill-only screen per config, optimistic fees). Reviewer `session_013E5iKPuZrpnyNX74jpF6ui`, red team `session_016GhUshWTj7tPMTadZoSCnF`. Open: with one config dropped, B-4 has no pair; the reviewer checks it is n/a, never a pass.
   - #293 round 2 head `e69fc5c6` (rulings 1–22). Delta review and red team round 2 were sent to the same sessions.
   - #293 round 1: red team 3 BLOCKER, 6 MAJOR, 4 MINOR; reviewer FAIL with 4 MAJOR. Rulings 9–22 (`docs/reviews/STRATEGY-INTAKE.md`) went to the researcher. A delta review and red team follow.
+  - **#296 OF-2** (draft, head `e1412b7c`): test-ci 186/0 (44 fail on the base), go vet and go test ok, lint ok; label `deps-reviewed:cc6e5baf393cbcb4043c5388822a8a06`. ARCHIVE_ARM and ARCHIVE_RETENTION are empty, and ARCHIVE_REARM_AT is 2026-10-07T22:30:00Z. Data reviewer `session_017x89LKh2CEx5Hwkte14btR`, red team `session_01LQHpKvikNEWAw96tHRnZq3`. OF-3 must record `retention` as the literal K2 or K3. The builder is on OF-1 (#214).
+  - #293 STRATEGY-INTAKE: delta review round 4 PASS at `5d1ec4c4` (one optional MINOR). Red team round 4 pending.
   - Each finished PR gets a fresh reviewer and a red team. Lockfile and DEPENDENCIES.md conflicts between Z02 and Z05 are settled at the second merge by a base merge and a regenerated lockfile, then a new label.
 - **8 Oct about 8:55 AM, why the server is still on `171a61ce` (owner's `journalctl -u zeroed-update` photo):**
   - 21:37:44Z: the host files of `94d55a84` were applied, and the worker restarted.
