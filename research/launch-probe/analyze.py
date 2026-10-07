@@ -18,20 +18,23 @@ LS = (2, 10, 40, 120, 480)
 EXITS = ('T1', 'T5', 'T15', 'T60', 'ST2', 'ST10', 'MG2', 'MG10')
 HOLD = {'T1': 60, 'T5': 300, 'T15': 900, 'T60': 3600}
 NBOOT = 10_000
+WINDOWS = {'discovery': (1784678400, 1787270400), 'validation': (1787270400, 1788739200)}
 BOOT_SEED = 20261074
 
 def slot_len_fn():
     d = json.load(open(os.path.join(DERIVED, 'slot_len.json')))['sec_per_slot_by_day_start']
     return lambda t: d[str(t // 86400 * 86400)]
 
-def create_reserves(sig):
-    """Initial curve state from the cached create transaction's CreateEvent."""
+SOL_QUOTES = (None, '11111111111111111111111111111111', 'So11111111111111111111111111111111111111112')
+
+def create_event(sig):
+    """The cached create transaction's CreateEvent."""
     sys.path.insert(0, HERE)
     import pumpdec
     t = json.load(open(os.path.join(SCR, 'raw', 'tx_' + sig + '.json')))
     for kind, k, e in pumpdec.events(t):
         if kind == 'create':
-            return e['vsol'], e['vtok'], 0, e['rtok']
+            return e
     raise RuntimeError('create event missing')
 
 class Coin:
@@ -40,7 +43,10 @@ class Coin:
         self.L = rec['launch']
         self.bad = sum(1 for r in rec['trades'] if r[-1] == 'undecodable')
         tr = [r for r in rec['trades'] if r[-1] != 'undecodable']
-        v0, t0, r0, rt0 = create_reserves(self.L['sig'])
+        ce = create_event(self.L['sig'])
+        v0, t0, r0, rt0 = ce['vsol'], ce['vtok'], 0, ce['rtok']
+        self.sol_quote = ce['quote_mint'] in SOL_QUOTES
+        self.creators = {ce['creator'], ce['user']}
         self.init = (v0, t0, r0, rt0, 95, 30)
         # chain check on real reserves: each trade's pre-state equals the previous post-state (a missing trade
         # breaks it). Virtual reserves are not used: in mayhem-mode coins they move outside the logged amounts.
@@ -68,7 +74,7 @@ class Coin:
             ev.append(('x', self.complete, self.complete_t, 0))
         ev.sort(key=lambda e: (e[1], {'c': 0, 'x': 1, 'p': 2}[e[0]]))
         self.ev = ev
-        self.unpriced = 0
+        self.unpriced = False
 
     def curve_at(self, key):
         i = bisect.bisect_right(self.tkeys, key) - 1
@@ -94,7 +100,7 @@ class Coin:
             s = self.swaps[0]
             Bq, Qq, V, f = s[4], s[5], s[6], s[9]
         else:                                   # completed, pool not traded in the horizon: last curve state
-            self.unpriced += 1
+            self.unpriced = True                # optimistic: sells at the final curve price though no sale was possible
             vs, vt, rs, rt, f, c = self.curve_at(key)
             gross = min(tokens * vs // (vt + tokens), rs + our_sol)
             return (gross - math.ceil(gross * f / 1e4) - math.ceil(gross * c / 1e4)) / 1e9
@@ -156,9 +162,9 @@ def exits(coin, en):
     return out
 
 def filters(coin, s_e):
-    cr = coin.L['creator']
-    buyers = {r[13] for r in coin.trades if r[0] <= s_e and r[4] and r[13] != cr}
-    dev = sum(r[5] for r in coin.trades if r[0] == coin.L['slot'] and r[1] == coin.L['idx'] and r[4] and r[13] == cr)
+    cr = coin.creators                          # CreateEvent creator and signer (user)
+    buyers = {r[13] for r in coin.trades if r[0] <= s_e and r[4] and r[13] not in cr}
+    dev = sum(r[5] for r in coin.trades if r[0] == coin.L['slot'] and r[1] == coin.L['idx'] and r[4] and r[13] in cr)
     return {'F1': len(buyers) >= 5, 'F2': dev >= 1_000_000_000}
 
 def ret(proceeds, stress):
@@ -194,20 +200,28 @@ def stats(rows):
 def load_window(w):
     d = json.load(open(os.path.join(DERIVED, 'sample_%s.json' % w)))
     keep = json.load(open(os.path.join(DERIVED, 'plan.json')))['kept_draws'][w]
-    coins = []
+    t0, t1 = WINDOWS[w]
+    coins, dropped = [], {'outside_window': 0, 'non_sol_quote': 0, 'missing_events': 0}
     for i, x in enumerate(d):
         if i not in keep:
             continue
         for L in x['launches']:
+            if not t0 <= L['time'] < t1:        # the anchor may sit up to 20 s after the drawn instant
+                dropped['outside_window'] += 1; continue
             p = os.path.join(SCR, 'events', L['sig'] + '.json')
-            coins.append(Coin(json.load(open(p))))
-    return coins
+            if not os.path.exists(p):
+                dropped['missing_events'] += 1; continue
+            c = Coin(json.load(open(p)))
+            if not c.sol_quote:
+                dropped['non_sol_quote'] += 1; continue
+            coins.append(c)
+    return coins, dropped
 
 def run(w):
     slotlen = slot_len_fn()
-    coins = load_window(w)
+    coins, dropped = load_window(w)
     per = {}
-    meta = {'launches': len(coins), 'chain_breaks_coins': sum(1 for c in coins if c.breaks),
+    meta = {'launches': len(coins), 'dropped': dropped, 'chain_breaks_coins': sum(1 for c in coins if c.breaks),
             'mayhem_coins': sum(1 for c in coins if c.mayhem),
             'virtual_jump_coins': sum(1 for c in coins if c.vjumps),
             'undecodable_coins': sum(1 for c in coins if c.bad),
@@ -228,7 +242,7 @@ def run(w):
             for k, v in ex.items():
                 per.setdefault((L, k), []).append((day, v, fl, bool(c.breaks)))
         meta['no_entry'][L] = ne
-    meta['unpriced_values'] = sum(c.unpriced for c in coins)
+    meta['unpriced_coins'] = sum(1 for c in coins if c.unpriced)
     res = {}
     for (L, k), rows in per.items():
         res['L%d_%s' % (L, k)] = {
@@ -249,7 +263,7 @@ def main(w):
     meta, res, per = run(w)
     out = {'window': w, 'meta': meta, 'pairs': res}
     if w == 'discovery':
-        best = max(res, key=lambda k: (res[k]['base']['ci95'][0], res[k]['base']['mean']))
+        best = max((k for k in res if res[k]['base']['n']), key=lambda k: (res[k]['base']['ci95'][0], res[k]['base']['mean']))
         json.dump({'primary': best, 'rule': 'highest discovery base-line bootstrap lower bound; ties by mean',
                    'discovery': res[best]}, open(os.path.join(DERIVED, 'primary.json'), 'w'), indent=1)
     else:
@@ -271,7 +285,7 @@ def main(w):
             b, s = fr[f]['base'], fr[f]['stress']
             fr[f]['passes'] = bool(b.get('n') and holm[f] < 0.05 and b['ci95'][0] > 0 and s['mean'] > 0)
         pb, psr = res[prim]['base'], res[prim]['stress']
-        prim_pass = pb['mean'] > 0 and pb['ci95'][0] > 0 and psr['mean'] > 0
+        prim_pass = pb['n'] > 0 and pb['mean'] > 0 and pb['ci95'][0] > 0 and psr['mean'] > 0
         out['primary'] = prim
         out['filters'] = fr
         out['verdict'] = 'promising' if prim_pass or any(fr[f]['passes'] for f in fr) else 'not supported'

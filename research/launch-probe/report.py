@@ -14,9 +14,9 @@ def main(w):
     r = json.load(open(os.path.join(HERE, 'derived', 'results_%s.json' % w)))
     m = r['meta']
     print('Launches %d; graduated within 60 min: %d (%.2f%%); pool traded within 60 min: %d; mayhem-mode: %d; '
-          'real-reserve chain breaks: %d coins; undecodable: %d; unpriced values: %d.' % (
+          'real-reserve chain breaks: %d coins; undecodable: %d; completed with no pool swap in the horizon (priced at the final curve state, optimistic): %d coins. Dropped: %s.' % (
               m['launches'], m['graduated_60m'], 100 * m['graduation_rate_60m'], m['migrated_pool_60m'],
-              m['mayhem_coins'], m['chain_breaks_coins'], m['undecodable_coins'], m['unpriced_values']))
+              m['mayhem_coins'], m['chain_breaks_coins'], m['undecodable_coins'], m['unpriced_coins'], m['dropped']))
     print('L in seconds (mean): ' + ', '.join('%s slots = %.2f s' % (k, v) for k, v in m['sec'].items()) +
           '. No entry (curve already complete): ' + ', '.join('L%s: %d' % kv for kv in m['no_entry'].items()) + '.')
     print()

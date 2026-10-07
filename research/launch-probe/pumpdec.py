@@ -52,7 +52,11 @@ def decode_create(b):
     ev['bonding_curve'], p = _pk(b, p)
     ev['user'], p = _pk(b, p)
     ev['creator'], p = _pk(b, p)
-    ev['timestamp'], ev['vtok'], ev['vsol'], ev['rtok'], ev['supply'] = struct.unpack_from('<q4Q', b, p)
+    ev['timestamp'], ev['vtok'], ev['vsol'], ev['rtok'], ev['supply'] = struct.unpack_from('<q4Q', b, p); p += 40
+    ev['quote_mint'] = None
+    if len(b) >= p + 32 + 2 + 32:
+        p += 32 + 1 + 1                                          # token_program, is_mayhem_mode, is_cashback_enabled
+        ev['quote_mint'], p = _pk(b, p)
     return ev
 
 def decode_complete(b):

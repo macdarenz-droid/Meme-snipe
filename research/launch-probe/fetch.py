@@ -66,31 +66,23 @@ def launch(sig):
     if not cr:
         return None
     c = cr[0]
-    return {'sig': sig, 'slot': t['slot'], 'idx': t.get('transactionIndex'), 'time': t['blockTime'],
+    assert t.get('transactionIndex') is not None
+    return {'sig': sig, 'slot': t['slot'], 'idx': t['transactionIndex'], 'time': t['blockTime'],
             'mint': c['mint'], 'bc': c['bonding_curve'], 'creator': c['creator']}
 
-def bc_sigs(L):
-    """Successful and failed signatures on the bonding curve from creation to creation + HORIZON, oldest first."""
-    out, before = [], None
-    for page_no in range(6):
-        params = {'until': L['sig'], 'limit': 1000, 'commitment': 'finalized'}
-        if before:
-            params['before'] = before
+def bc_sigs(L, before=None):
+    """Signatures on the bonding curve from creation to creation + HORIZON, oldest first. Paging starts at a
+    `before` anchor just after the horizon (never at today), so nothing after the cut-off is listed."""
+    if before is None:
+        before = heli.anchor_sig(L['time'] + HORIZON + 30)[0]
+    out = []
+    while True:
+        params = {'until': L['sig'], 'limit': 1000, 'commitment': 'finalized', 'before': before}
         page = heli.rpc('getSignaturesForAddress', [L['bc'], params])
         out += page
         if len(page) < 1000:
             break
         before = page[-1]['signature']
-    else:                                     # very long history: restart from an anchor at the horizon's end
-        a, _, _ = heli.anchor_sig(L['time'] + HORIZON + 30)
-        out, before = [], a
-        while True:
-            params = {'until': L['sig'], 'limit': 1000, 'commitment': 'finalized', 'before': before}
-            page = heli.rpc('getSignaturesForAddress', [L['bc'], params])
-            out += page
-            if len(page) < 1000:
-                break
-            before = page[-1]['signature']
     rows = [x for x in out if x.get('blockTime') is not None and x['blockTime'] <= L['time'] + HORIZON]
     return rows[::-1]
 
@@ -147,18 +139,22 @@ def _sigfile(L):
 def listing():
     """Bonding-curve signatures of every sampled launch (cached in the scratch directory); counts only."""
     os.makedirs(os.path.join(SCR, 'sigs'), exist_ok=True)
-    def one(L):
+    def one(arg):
+        L, before = arg
         p = _sigfile(L)
         if not os.path.exists(p):
-            json.dump(bc_sigs(L), open(p, 'w'))
+            json.dump(bc_sigs(L, before), open(p, 'w'))
         rows = json.load(open(p))
         return sum(1 for x in rows if x['err'] is None and x['signature'] != L['sig'])
+    def anchor(x):
+        return heli.anchor_sig(max(L['time'] for L in x['launches']) + HORIZON + 30)[0] if x['launches'] else None
     out = {}
     for w in DRAWS:
         d = _load('sample_%s.json' % w)
-        Ls = [L for x in d for L in x['launches']]
-        cnt = list(POOL.map(one, Ls))
-        out[w] = {'launches': len(Ls), 'tx_to_fetch': sum(cnt), 'max': max(cnt)}
+        anchors = list(POOL.map(anchor, d))
+        args = [(L, a) for x, a in zip(d, anchors) for L in x['launches']]
+        cnt = list(POOL.map(one, args))
+        out[w] = {'launches': len(args), 'tx_to_fetch': sum(cnt), 'max': max(cnt)}
     led = heli.credits()
     need = sum(v['tx_to_fetch'] for v in out.values()) * heli.CREDITS_PER_CALL
     out['credits_used'] = led['credits']; out['tx_credits_needed'] = need
@@ -252,7 +248,9 @@ def fetch_all():
         coin(L); done += 1
         if done % 100 == 0:
             print('coins', done, '/', len(Ls), heli.credits(), flush=True)
-    print('all coins', done, heli.credits())
+    missing = [L['sig'] for L in Ls if not os.path.exists(os.path.join(EV, L['sig'] + '.json'))]
+    _save('fetch_report.json', {'coins': len(Ls), 'missing_events': missing, 'credits': heli.credits()})
+    print('all coins', done, 'missing', len(missing), heli.credits())
 
 def slot_len():
     """Mean slot length per UTC day from block times at both ends of the day (derived/slot_len.json)."""
@@ -262,8 +260,8 @@ def slot_len():
     for d in range(0, (WINDOWS['validation'][1] - t0) // 86400 + 1):
         s, t = heli.slot_for_time(t0 + d * 86400, tol=5)
         pts.append((s, t))
-    for (s0, a), (s1, b) in zip(pts, pts[1:]):
-        out[str(a // 86400 * 86400)] = (b - a) / (s1 - s0)
+    for d, ((s0, a), (s1, b)) in enumerate(zip(pts, pts[1:])):
+        out[str(t0 + d * 86400)] = (b - a) / (s1 - s0)        # keyed by the intended UTC day, not the block's
     _save('slot_len.json', {'points': pts, 'sec_per_slot_by_day_start': out})
     print(min(out.values()), max(out.values()))
 

@@ -56,6 +56,18 @@ probe does, transaction by transaction. This file is fixed and pushed before any
 - Slot to seconds: per UTC day, block times of the first and last slot of the day give the mean slot length; L
   slots are reported in seconds with it. Entry time t_e = creation block time + L × slot length.
 
+### Amendment 2 (2026-10-07, after a fresh code review, before any return was computed)
+- The anchor block `heli.anchor_sig` finds lies within ±20 s of the drawn instant (not only before it); a
+  launch whose creation falls outside its window is dropped and counted.
+- Bonding-curve signatures are listed backwards from an anchor just after the horizon (one per draw), never from
+  today, so nothing after the cut-off is listed. (The 28 sizing launches were listed from today; signature lists
+  only, out of both windows.)
+- A launch whose CreateEvent `quote_mint` is not SOL (default key or wSOL) is left out and counted.
+- F1/F2 treat both the CreateEvent `creator` and its signer `user` as the creator.
+- After fetching, every kept launch must have an events file; any missing one is reported.
+- A completed curve whose pool has no swap in the horizon is priced at the final curve state (optimistic: no sale
+  was possible then); those coins are counted.
+
 ## Entry
 - A $10 buy: B = 10 / 119.26 SOL (`lottery.SOL_USD`), at entry slot s_e = creation slot + L, L ∈ {2, 10, 40, 120,
   480}, against the curve state after every trade in slots ≤ s_e (the create transaction's dev buy included).
