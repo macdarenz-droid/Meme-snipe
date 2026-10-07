@@ -474,7 +474,7 @@ MinTRL examples (DERIVED with the formula in [ST-32], one-sided 95%, SR_ref = 0,
 | | P-7 | Kill-switch drill passed in the last 7 days: HALT acknowledged by all components within 2 s; CLI kill with the engine stopped blocks signing |
 | | P-8 | Operator checklist (VM-18 `checklist[]`) ticked; typed phrase; step-up; 60 s delay (D-UI-13) |
 | | P-9 | Fixed monthly cost ≤ 3% of `E` (section 1.4), counting Helius Developer ($49) while the D04 question is open (C-77) |
-| | P-10 | Owner item 5: the section 16.5 failure-injection cases for timeouts, stale feeds, rate limits and restarts mid-trade pass on the exact build being promoted, each ending in its documented state (C-49). Every run of that build is recorded and listed; one failed run fails P-10 (Z0D round 4). Runs are kept per `configKey` across builds: a case that failed on an earlier build is cleared only by a valid fix record (a later reviewed commit naming the failure, with a test that fails before and passes after it) in the promoted build and 3 passing runs of that case in a row (Z0D rounds 5 and 8) |
+| | P-10 | Owner item 5: the section 16.5 failure-injection cases for timeouts, stale feeds, rate limits and restarts mid-trade pass on the exact build being promoted, each ending in its documented state (C-49). Every run of that build is recorded and listed; one failed run fails P-10 (Z0D round 4). Runs are kept per the promoted build's lineage, across `configKey`s: a case that failed on an earlier build is cleared only by a valid fix record (a later reviewed commit naming the failure, with a test that fails before and passes after it) in the promoted build and 3 passing runs of that case in a row (Z0D rounds 5 and 8) |
 | Live-small → Live (on `W_LS`) | LS-1 | ≥ max(MinTRL from live moments, 100) live round trips and ≥ 14 days in live-small |
 | | LS-2 | Realised explicit cost per trade ≤ 1.25 × modelled |
 | | LS-3 | Live net mean per trade: bootstrap 95% CI lower bound > 0, **and** a non-inferiority test rejects "live mean ≤ paper mean − δ" at 5%, with δ = 50% of the paper mean (POLICY). A test that merely fails to reject "live ≥ paper" is not evidence and is not used |
@@ -1544,7 +1544,7 @@ interface ReconcileReport { atMs: UnixMs; slot: Slot; solDiffLamports: SignedLam
 - **Interface.**
 
 ```ts
-interface CostItem { costId: Id; attemptId: Id; positionId: Id | null; kind: 'network_base' | 'priority' | 'tip' | 'venue_fee' | 'failed_tx' | 'rent_deposit' | 'rent_refund';
+interface CostItem { costId: Id; attemptId: Id; positionId: Id | null; kind: 'network_base' | 'priority' | 'tip' | 'venue_fee' | 'failed_tx' | 'rent_deposit' | 'rent_refund' | 'stuck_cost';
   lamports: SignedLamports; source: 'tx_meta' | 'event' | 'instruction' | 'model'; atMs: UnixMs }
 interface TradeRecord { tradeId: Id; positionId: Id; mode: Mode; simulated: boolean; strategyId: string; mint: Pubkey; decimals: number;
   openedMs: UnixMs; closedMs: UnixMs; holdMs: number; sizeBase: BaseUnits; entrySolPerToken: DecimalStr; exitSolPerToken: DecimalStr;
@@ -1555,6 +1555,8 @@ interface TradeRecord { tradeId: Id; positionId: Id; mode: Mode; simulated: bool
 interface SandwichCheck { fillId: Id; slot: Slot; sandwiched: boolean | null; samePoolTxBefore: number; samePoolTxAfter: number; method: 'block_order'; reason: string | null }
 interface Journal { detectSandwich(fill: FillRecord): Promise<SandwichCheck> }   // CB-13
 ```
+
+**Cost kinds (Z0D round 9).** `stuck_cost` holds the fees and tips spent on sells refused on a drained position (SPEC-B B-M20-04 step 5). A `recovery` sell after a write-off is not a cost item: its proceeds are booked through M22's ledger as realised proceeds of the written-off position (Z0D round 9).
 
 - **Invariant.** `netPnl = grossPnl − totalCosts` exactly (VM-06 contract test). To make this hold without double counting, the journal computes in this order:
   1. `netPnl` = the hot wallet's actual SOL change (SOL + wSOL) over all of the position's attempts and its janitor close (from transaction meta pre/post balances), **excluding** rent deposits and refunds (which are reported separately as `rent_deposit` / `rent_refund`). This is chain truth.
@@ -3195,3 +3197,11 @@ Not registered: the addendum's A06 trade rates of 8.3 and 4.7 trades a day (disc
 | The job's lease has a 15-minute TTL renewed per chunk; a stale lease is taken over only by compare-and-swap; spend stays bounded by the written-ahead ledger | SPEC-A A-M14-05 | M8-2 |
 | A valid fix links two CI runs of the cited test: failing on the fix commit's parent, passing on the fix | SPEC-A A-M13-06; SPEC-B B-M26-04 | M8-3 |
 | S = max(ledger, `dashUsed` + the ledger's spend since the reading's date) | D04; SPEC-A A-M14-05 | M8-4 |
+
+**Round 9 addendum (round 8 reviewer, R8-1 to R8-3).**
+
+| Change | Where | Source |
+|---|---|---|
+| P-5 and P-10 histories read "the promoted build's lineage, across configKeys" | 3.4 P-10; SPEC-A A-M13-06 | R8-1 |
+| `stuck_cost` added to M23 `CostItem.kind`; a `recovery` sell is booked through M22's ledger as realised proceeds, not as a cost | M23; SPEC-B B-M20-04 | R8-2 |
+| `botctl b10-reserve` publishes the reservation record to `b10/<ackId>/lease.json` in `zeroed-data`, where an off-host job reads it | SPEC-A A-M14-05 | R8-3 |
