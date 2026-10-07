@@ -15,6 +15,7 @@ RES-3: which as-of signals separate positive from negative net return in U1 and 
 
 ## Where an edge could clear costs ([edge.md](research/edge.md))
 RES-4: exact break-even moves per setup (conservative, rent back when the sell-and-close lands): $2 needs +4.98% on a young PumpSwap pool and +4.36% on a U1 pool at the $50k floor; $20 needs +3.09% and +2.21%. No cheaper venue is buildable today. Six hypotheses pre-registered before any practice day (`research/edge/preregistration.json`); U1 dip-reversal ranks first on small-coin reversal evidence. U2 setups likely cannot reach 300 holdout trades by 2026-10-20.
+- RES-6 (2026-10-06, research only, nothing registered): no verified source shows a long-only taker bot making money in memes; most likely no edge exists for this bot (judgement). The proof is a per-trade Sharpe test, so cost relative to volatility decides: the only candidate left (MR-LV, low-volume dips in 0.30%-tier pools at $20–50) gets a zero-alpha Phase 0 first. Needs rulings: holdout contamination of H8/H9/H11, the migration-price reference, and trial caps (3 entries a day, 28-day window) that make 300 trades unreachable.
 
 ## Venues and lifecycle ([venues.md](research/venues.md))
 - pump.fun is ~70–80% of launchpad volume ($177.5M/day curve); PumpSwap $321M/day. ~49.7k launches and ~2.6% graduation in the last 24 h (measured).

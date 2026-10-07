@@ -1,0 +1,1736 @@
+{
+ "note": "Exploration sample only (lottery-probe/sample.json, created 2026-07-22..08-20). Prices in SOL per token from GeckoTerminal hourly closes; bar times are bar START unix seconds; entry_ts = close of hour 1 after the migration bar. Do not add validation coins.",
+ "usable_coins": 492,
+ "winners_peak_ge_2x": [
+  {
+   "mint": "EsKJJ57YmEqpkG3bA6g527x8dznYfG2wArw5pKYNpump",
+   "pool": "3qFWj1FxVQV1oysJ7Td4fEicWEBMEwoVdxUjXRKadmtf",
+   "migration_bar_start": 1787158800,
+   "entry_ts": 1787166000,
+   "p0_hourly_close_sol": 4.39515587022198e-08,
+   "peak_close_multiple_14d": 900.8871941552192,
+   "R1_hourly": {
+    "exit_i": 36,
+    "exit_bar_start": 1787288400,
+    "p_exit": 6.10584099115836e-06,
+    "reason": "trail",
+    "peak_close": 1.35815952034217e-05,
+    "net_$10": 129.7522177209362
+   },
+   "R2_hourly": {
+    "exit_i": 49,
+    "exit_bar_start": 1787335200,
+    "p_exit": 1.06722220905593e-06,
+    "reason": "trail",
+    "peak_close": 3.95953963979912e-05,
+    "net_$10": 22.268466335959893
+   }
+  },
+  {
+   "mint": "HjoLebZzbqBHhBQCFwr3Fc2GCwVyTfHoULfjKuBnpump",
+   "pool": "Bkaxo2M8qfa3hCEx2UP71sgfRJ9h4WSbqbA73njdqes",
+   "migration_bar_start": 1786377600,
+   "entry_ts": 1786384800,
+   "p0_hourly_close_sol": 2.0305245566128e-08,
+   "peak_close_multiple_14d": 151.53340878850634,
+   "R1_hourly": {
+    "exit_i": 36,
+    "exit_bar_start": 1786507200,
+    "p_exit": 2.12268205238391e-08,
+    "reason": "trail",
+    "peak_close": 3.07692307692308e-06,
+    "net_$10": 0.00539022753258702
+   },
+   "R2_hourly": {
+    "exit_i": 36,
+    "exit_bar_start": 1786507200,
+    "p_exit": 2.12268205238391e-08,
+    "reason": "trail",
+    "peak_close": 3.07692307692308e-06,
+    "net_$10": 0.00539022753258702
+   }
+  },
+  {
+   "mint": "BTuxcD46tm8c8EmPbqJKzrwRk5GRVwUmTJtysMhRpump",
+   "pool": "BLq971NsSeE2tsQiYoxVhbNFJFnPzvMkAtYnZ4gFM1xw",
+   "migration_bar_start": 1787036400,
+   "entry_ts": 1787043600,
+   "p0_hourly_close_sol": 5.42340168788734e-08,
+   "peak_close_multiple_14d": 26.190157562805,
+   "R1_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1787054400,
+    "p_exit": 2.793147992988e-07,
+    "reason": "trail",
+    "peak_close": 1.42039744732152e-06,
+    "net_$10": 3.973019338692216
+   },
+   "R2_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1787054400,
+    "p_exit": 2.793147992988e-07,
+    "reason": "trail",
+    "peak_close": 1.42039744732152e-06,
+    "net_$10": 3.973019338692216
+   }
+  },
+  {
+   "mint": "CYni4rsou8DnyeW5rVY4pS31DLUnvVM2HDkTiPHHpump",
+   "pool": "72XoAECbtGKqn9kg9nzAbmFnHoe43ZnzDhTmnjfnByXp",
+   "migration_bar_start": 1785520800,
+   "entry_ts": 1785528000,
+   "p0_hourly_close_sol": 8.4636217784204e-08,
+   "peak_close_multiple_14d": 21.98767432342927,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785528000,
+    "p_exit": 5.924535244894279e-08,
+    "reason": "stop",
+    "peak_close": 8.4636217784204e-08,
+    "net_$10": -0.32504476254969994
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785528000,
+    "p_exit": 5.924535244894279e-08,
+    "reason": "stop",
+    "peak_close": 8.4636217784204e-08,
+    "net_$10": -0.32504476254969994
+   }
+  },
+  {
+   "mint": "2sQ7wuUtRWNir3CEu9HWfLDSut4AszDrcZXLobzJpump",
+   "pool": "4vqphqf4v7MSou7o57pTfzFcM7pJxtkmK3XRKBJP1jBK",
+   "migration_bar_start": 1785852000,
+   "entry_ts": 1785859200,
+   "p0_hourly_close_sol": 8.25268805948293e-07,
+   "peak_close_multiple_14d": 20.791504531638225,
+   "R1_hourly": {
+    "exit_i": 9,
+    "exit_bar_start": 1785884400,
+    "p_exit": 3.425491988e-06,
+    "reason": "trail",
+    "peak_close": 8.39198291112299e-06,
+    "net_$10": 3.0423419792783473
+   },
+   "R2_hourly": {
+    "exit_i": 63,
+    "exit_bar_start": 1786078800,
+    "p_exit": 6.14207214629457e-06,
+    "reason": "trail",
+    "peak_close": 1.71585801186936e-05,
+    "net_$10": 6.255881350862195
+   }
+  },
+  {
+   "mint": "LFEJTxJ9yi6ojGDFpjbGfABLbH55Fc3oEK8syJJpump",
+   "pool": "8TbYi38UqcedfptvjN2rURLbGbGub3itp2hgLvvS35hY",
+   "migration_bar_start": 1786543200,
+   "entry_ts": 1786550400,
+   "p0_hourly_close_sol": 7.36413750572141e-06,
+   "peak_close_multiple_14d": 16.704320575780088,
+   "R1_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1786557600,
+    "p_exit": 5.154896254004986e-06,
+    "reason": "stop",
+    "peak_close": 1.23890023799639e-05,
+    "net_$10": -0.31916097397022447
+   },
+   "R2_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1786557600,
+    "p_exit": 5.154896254004986e-06,
+    "reason": "stop",
+    "peak_close": 1.23890023799639e-05,
+    "net_$10": -0.31916097397022447
+   }
+  },
+  {
+   "mint": "GwVf6QvUtQ4Vxir5RFEwqApH6edJMh7PyG1wy7HVpump",
+   "pool": "B7n5JPcXwskXYeZyrvD3swE1AjdrCw335H2KUyVgd8MB",
+   "migration_bar_start": 1784890800,
+   "entry_ts": 1784898000,
+   "p0_hourly_close_sol": 8.59385425690718e-08,
+   "peak_close_multiple_14d": 14.238746731297592,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784898000,
+    "p_exit": 3.97062368264523e-08,
+    "reason": "stop",
+    "peak_close": 8.59385425690718e-08,
+    "net_$10": -0.5560132817688628
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784898000,
+    "p_exit": 3.97062368264523e-08,
+    "reason": "stop",
+    "peak_close": 8.59385425690718e-08,
+    "net_$10": -0.5560132817688628
+   }
+  },
+  {
+   "mint": "Ezft93o4o9vbhn6tf1QXYjR8C7tvto3YKahXPZR8pump",
+   "pool": "9N7jwifjNjM68JJuJ1YW8auWAor9KAKnEGZikPzDetxV",
+   "migration_bar_start": 1786723200,
+   "entry_ts": 1786730400,
+   "p0_hourly_close_sol": 2.31523714955368e-07,
+   "peak_close_multiple_14d": 10.778126245741605,
+   "R1_hourly": {
+    "exit_i": 11,
+    "exit_bar_start": 1786762800,
+    "p_exit": 9.0087476740536e-07,
+    "reason": "trail",
+    "peak_close": 1.98988600574507e-06,
+    "net_$10": 2.776599861564863
+   },
+   "R2_hourly": {
+    "exit_i": 39,
+    "exit_bar_start": 1786863600,
+    "p_exit": 9.43161447028612e-07,
+    "reason": "trail",
+    "peak_close": 2.49539182867205e-06,
+    "net_$10": 2.9538661597541753
+   }
+  },
+  {
+   "mint": "Qnzjdx18eskj8nqLcJGthfs4z3joMwDXCGvrSgcpump",
+   "pool": "8M1Sn71fj6xWPRy86xFwojprXGNF8H1GMsUds3gBNn6y",
+   "migration_bar_start": 1787198400,
+   "entry_ts": 1787205600,
+   "p0_hourly_close_sol": 1.62240484793178e-07,
+   "peak_close_multiple_14d": 9.73000506500088,
+   "R1_hourly": {
+    "exit_i": 7,
+    "exit_bar_start": 1787223600,
+    "p_exit": 1.09767053008218e-07,
+    "reason": "stop",
+    "peak_close": 1.85791183592018e-07,
+    "net_$10": -0.34705945777277447
+   },
+   "R2_hourly": {
+    "exit_i": 7,
+    "exit_bar_start": 1787223600,
+    "p_exit": 1.09767053008218e-07,
+    "reason": "stop",
+    "peak_close": 1.85791183592018e-07,
+    "net_$10": -0.34705945777277447
+   }
+  },
+  {
+   "mint": "Gj8pxESpdiirtBSuF8zQ4DWTAvK8TbpFvvTMLkk3pump",
+   "pool": "14VahfdBU85AFgT362rdKBnfXcSxhVUvkdQyEs1RMSTj",
+   "migration_bar_start": 1786201200,
+   "entry_ts": 1786208400,
+   "p0_hourly_close_sol": 3.92798621720885e-08,
+   "peak_close_multiple_14d": 9.712126954785626,
+   "R1_hourly": {
+    "exit_i": 299,
+    "exit_bar_start": 1787277600,
+    "p_exit": 1.30926371671843e-07,
+    "reason": "trail",
+    "peak_close": 3.81491008181805e-07,
+    "net_$10": 2.216323066517456
+   },
+   "R2_hourly": {
+    "exit_i": 299,
+    "exit_bar_start": 1787277600,
+    "p_exit": 1.30926371671843e-07,
+    "reason": "trail",
+    "peak_close": 3.81491008181805e-07,
+    "net_$10": 2.216323066517456
+   }
+  },
+  {
+   "mint": "8TvnJa1NAWb1VYA2GRETSC83U57Co4hykEDvGwpPpump",
+   "pool": "6Mn64qbWimfHciYJR2rwbFkTtuH6iDNTFdAo8XxamZJu",
+   "migration_bar_start": 1784876400,
+   "entry_ts": 1784883600,
+   "p0_hourly_close_sol": 3.18025177073254e-07,
+   "peak_close_multiple_14d": 8.557474774229718,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784883600,
+    "p_exit": 2.2261762395127777e-07,
+    "reason": "stop",
+    "peak_close": 3.18025177073254e-07,
+    "net_$10": -0.3237316003159041
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784883600,
+    "p_exit": 2.2261762395127777e-07,
+    "reason": "stop",
+    "peak_close": 3.18025177073254e-07,
+    "net_$10": -0.3237316003159041
+   }
+  },
+  {
+   "mint": "67dSkSauY69KT3uWEu2mYmA6hRbCieyiyLMUeEgppump",
+   "pool": "FB8cXFqE9H5nhNri7NFkXxcgqXC67PkRYjsq43fkno3g",
+   "migration_bar_start": 1786496400,
+   "entry_ts": 1786503600,
+   "p0_hourly_close_sol": 3.12130146344592e-06,
+   "peak_close_multiple_14d": 8.447887184661669,
+   "R1_hourly": {
+    "exit_i": 9,
+    "exit_bar_start": 1786528800,
+    "p_exit": 1.94834100461733e-08,
+    "reason": "trail",
+    "peak_close": 2.63684026325105e-05,
+    "net_$10": -0.9988435762943338
+   },
+   "R2_hourly": {
+    "exit_i": 9,
+    "exit_bar_start": 1786528800,
+    "p_exit": 1.94834100461733e-08,
+    "reason": "trail",
+    "peak_close": 2.63684026325105e-05,
+    "net_$10": -0.9988435762943338
+   }
+  },
+  {
+   "mint": "14doqPq3fLzx6kB4JRRnCMDPPLeGmGXd6QY5ZGXqpump",
+   "pool": "CB2X8djgPmjhudRR6gZmvPP9mXxqenSNMxVM388NnCGE",
+   "migration_bar_start": 1786006800,
+   "entry_ts": 1786014000,
+   "p0_hourly_close_sol": 1.94842822929897e-06,
+   "peak_close_multiple_14d": 6.867964747591369,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786014000,
+    "p_exit": 1.363899760509279e-06,
+    "reason": "stop",
+    "peak_close": 1.94842822929897e-06,
+    "net_$10": -0.32185928181597334
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786014000,
+    "p_exit": 1.363899760509279e-06,
+    "reason": "stop",
+    "peak_close": 1.94842822929897e-06,
+    "net_$10": -0.32185928181597334
+   }
+  },
+  {
+   "mint": "5sd8bKraewJNHFg72scxxYXNeLCASVct1gxqi3Xipump",
+   "pool": "HmVaoCt9AG9JPMxvKe8NBg2iEomREeZS3Yb3BgNa49fa",
+   "migration_bar_start": 1784912400,
+   "entry_ts": 1784919600,
+   "p0_hourly_close_sol": 1.60618762991677e-06,
+   "peak_close_multiple_14d": 6.602695312224913,
+   "R1_hourly": {
+    "exit_i": 9,
+    "exit_bar_start": 1784944800,
+    "p_exit": 2.65325856403149e-06,
+    "reason": "trail",
+    "peak_close": 1.06051675346051e-05,
+    "net_$10": 0.6081623956171309
+   },
+   "R2_hourly": {
+    "exit_i": 9,
+    "exit_bar_start": 1784944800,
+    "p_exit": 2.65325856403149e-06,
+    "reason": "trail",
+    "peak_close": 1.06051675346051e-05,
+    "net_$10": 0.6081623956171309
+   }
+  },
+  {
+   "mint": "AoAvxik5GG7ecgG2C71DuWsMmoBXwkd9qEMrZ8CDpump",
+   "pool": "EmhYAAuqJoNYMuXGxHACkjXFMkEPZmTyaifbVpSKE5JK",
+   "migration_bar_start": 1785538800,
+   "entry_ts": 1785546000,
+   "p0_hourly_close_sol": 4.16553645472415e-07,
+   "peak_close_multiple_14d": 5.893005207372356,
+   "R1_hourly": {
+    "exit_i": 12,
+    "exit_bar_start": 1785582000,
+    "p_exit": 9.91508432810322e-07,
+    "reason": "trail",
+    "peak_close": 2.45475280191888e-06,
+    "net_$10": 1.311594759548136
+   },
+   "R2_hourly": {
+    "exit_i": 20,
+    "exit_bar_start": 1785610800,
+    "p_exit": 9.75559358943359e-07,
+    "reason": "trail",
+    "peak_close": 2.45475280191888e-06,
+    "net_$10": 1.2743595731040893
+   }
+  },
+  {
+   "mint": "Co2PhQvBc1ooejr7bnV5M2iYuLUVDLtvWqwj9X7vpump",
+   "pool": "9qkEaLsnxewusnEiuvDDPr3NftScMr5Y7ekKcnMi5h9H",
+   "migration_bar_start": 1785578400,
+   "entry_ts": 1785585600,
+   "p0_hourly_close_sol": 3.55358909552486e-08,
+   "peak_close_multiple_14d": 5.815050182353965,
+   "R1_hourly": {
+    "exit_i": 9,
+    "exit_bar_start": 1785610800,
+    "p_exit": 6.95904567660632e-08,
+    "reason": "trail",
+    "peak_close": 1.39227078213163e-07,
+    "net_$10": 0.889449605591849
+   },
+   "R2_hourly": {
+    "exit_i": 15,
+    "exit_bar_start": 1785632400,
+    "p_exit": 7.99714453608348e-08,
+    "reason": "trail",
+    "peak_close": 2.06642989179429e-07,
+    "net_$10": 1.171308252638582
+   }
+  },
+  {
+   "mint": "3gFB6FeDb4Cm5CteVPrtq7EUFsiTppqqcyo7aigYpump",
+   "pool": "C9ouivyRbD5AtLgG2bHU2c8KgyiEWmwafvrFdTKvU694",
+   "migration_bar_start": 1785394800,
+   "entry_ts": 1785402000,
+   "p0_hourly_close_sol": 2.88083886267623e-08,
+   "peak_close_multiple_14d": 5.630882090992262,
+   "R1_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1785412800,
+    "p_exit": 9.2588362748349e-08,
+    "reason": "trail",
+    "peak_close": 1.62216639588781e-07,
+    "net_$10": 2.0968070866987003
+   },
+   "R2_hourly": {
+    "exit_i": 13,
+    "exit_bar_start": 1785441600,
+    "p_exit": 4.40798846291037e-08,
+    "reason": "trail",
+    "peak_close": 1.62216639588781e-07,
+    "net_$10": 0.47479834952104216
+   }
+  },
+  {
+   "mint": "HfWmpFUZsEVnVBCCDbzomfwAneG4xkjVBBPA483Rpump",
+   "pool": "FAmt1jpyWgyCjniNSp6U9Mz2YzwwxVZ6WfFUbodTXJ3N",
+   "migration_bar_start": 1786474800,
+   "entry_ts": 1786482000,
+   "p0_hourly_close_sol": 1.55385749696329e-06,
+   "peak_close_multiple_14d": 5.437471559980258,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786482000,
+    "p_exit": 1.0877002478743029e-06,
+    "reason": "stop",
+    "peak_close": 1.55385749696329e-06,
+    "net_$10": -0.3219273240742839
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786482000,
+    "p_exit": 1.0877002478743029e-06,
+    "reason": "stop",
+    "peak_close": 1.55385749696329e-06,
+    "net_$10": -0.3219273240742839
+   }
+  },
+  {
+   "mint": "7SP5NdZkTxiaEA5n1S4Qcr9Ch8PbgiqEZEV1TkEnpump",
+   "pool": "AwMoZVycT8U3mNebAVbtTmTJhQxhnx9fbXjnvvzyawdY",
+   "migration_bar_start": 1786500000,
+   "entry_ts": 1786507200,
+   "p0_hourly_close_sol": 1.01067317970759e-06,
+   "peak_close_multiple_14d": 5.413895172169719,
+   "R1_hourly": {
+    "exit_i": 18,
+    "exit_bar_start": 1786564800,
+    "p_exit": 2.80488196484388e-06,
+    "reason": "trail",
+    "peak_close": 5.47167864826034e-06,
+    "net_$10": 1.7023179179288979
+   },
+   "R2_hourly": {
+    "exit_i": 19,
+    "exit_bar_start": 1786568400,
+    "p_exit": 1.58426324027214e-06,
+    "reason": "trail",
+    "peak_close": 5.47167864826034e-06,
+    "net_$10": 0.5238084654956494
+   }
+  },
+  {
+   "mint": "GkBx7VC4FxXmAYYTvmqywg9XnMSBH2S9gs2C4VEJpump",
+   "pool": "DjWq5e7wa3F3WAH82dDwEyttTzBckPnVWyJbShDZLGGb",
+   "migration_bar_start": 1786723200,
+   "entry_ts": 1786730400,
+   "p0_hourly_close_sol": 3.25685909483042e-07,
+   "peak_close_multiple_14d": 4.801885416826792,
+   "R1_hourly": {
+    "exit_i": 44,
+    "exit_bar_start": 1786881600,
+    "p_exit": 9.28406985529345e-07,
+    "reason": "trail",
+    "peak_close": 1.56390641921259e-06,
+    "net_$10": 1.7680054615004444
+   },
+   "R2_hourly": {
+    "exit_i": 79,
+    "exit_bar_start": 1787007600,
+    "p_exit": 6.14419241043254e-07,
+    "reason": "trail",
+    "peak_close": 1.56390641921259e-06,
+    "net_$10": 0.8308338771817512
+   }
+  },
+  {
+   "mint": "ZzfW2ur19NBq2uGepqiQdG9V1Q6Ev9oJZCZBBBqpump",
+   "pool": "AfJbWSshDjXomy9F7GiboEUa86XWKkP3VjE2rCpg4pKM",
+   "migration_bar_start": 1785844800,
+   "entry_ts": 1785852000,
+   "p0_hourly_close_sol": 4.31762727563225e-08,
+   "peak_close_multiple_14d": 4.669791848356856,
+   "R1_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1785855600,
+    "p_exit": 2.87240269281144e-08,
+    "reason": "stop",
+    "peak_close": 4.31762727563225e-08,
+    "net_$10": -0.35976132894288526
+   },
+   "R2_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1785855600,
+    "p_exit": 2.87240269281144e-08,
+    "reason": "stop",
+    "peak_close": 4.31762727563225e-08,
+    "net_$10": -0.35976132894288526
+   }
+  },
+  {
+   "mint": "7eZujwW51R4afaBBi4L35Dy5K5DAr2DzZudeZHYVpump",
+   "pool": "E6LQWX1xf8XdU6kB8Twp1niXuWeUUf264qYeZ1GvoMgj",
+   "migration_bar_start": 1785333600,
+   "entry_ts": 1785340800,
+   "p0_hourly_close_sol": 1.48847725662551e-07,
+   "peak_close_multiple_14d": 4.491536304494175,
+   "R1_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1785348000,
+    "p_exit": 3.54412750023932e-07,
+    "reason": "trail",
+    "peak_close": 6.68554963654737e-07,
+    "net_$10": 1.3073045083319432
+   },
+   "R2_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1785351600,
+    "p_exit": 2.01720249565743e-07,
+    "reason": "trail",
+    "peak_close": 6.68554963654737e-07,
+    "net_$10": 0.3119314438431724
+   }
+  },
+  {
+   "mint": "EX15x3F5WWwjAtyM6ftDJBY9RDZTe8rQxouoLbWRrekt",
+   "pool": "A78oMCTqk4xQ3XeHB2nwV8Uu8WdF21w18hcU3prKUqYk",
+   "migration_bar_start": 1784815200,
+   "entry_ts": 1784822400,
+   "p0_hourly_close_sol": 1.69669092413612e-07,
+   "peak_close_multiple_14d": 4.438124003777663,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784822400,
+    "p_exit": 1.187683646895284e-07,
+    "reason": "stop",
+    "peak_close": 1.69669092413612e-07,
+    "net_$10": -0.32424851171081903
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784822400,
+    "p_exit": 1.187683646895284e-07,
+    "reason": "stop",
+    "peak_close": 1.69669092413612e-07,
+    "net_$10": -0.32424851171081903
+   }
+  },
+  {
+   "mint": "78DBj47j3BfW8WSJub3ToQ3m2X4RYzGtEtsmTvkfpump",
+   "pool": "GbuBzsep1AEUhhi9adsReEwvuSepuZsguhTKWWbG5bXy",
+   "migration_bar_start": 1787068800,
+   "entry_ts": 1787076000,
+   "p0_hourly_close_sol": 3.79533770871125e-07,
+   "peak_close_multiple_14d": 4.35130317241773,
+   "R1_hourly": {
+    "exit_i": 6,
+    "exit_bar_start": 1787090400,
+    "p_exit": 2.30457575100226e-07,
+    "reason": "stop",
+    "peak_close": 3.79533770871125e-07,
+    "net_$10": -0.4138903947232173
+   },
+   "R2_hourly": {
+    "exit_i": 6,
+    "exit_bar_start": 1787090400,
+    "p_exit": 2.30457575100226e-07,
+    "reason": "stop",
+    "peak_close": 3.79533770871125e-07,
+    "net_$10": -0.4138903947232173
+   }
+  },
+  {
+   "mint": "HXDwQkeJ7TTkmC9kZwy8vAzkAJHTvokUukMmLzDxpump",
+   "pool": "HfqJ4cyuLPWN5N9U6APK2oXt6cy9NuLMbbvuQvqjvPBT",
+   "migration_bar_start": 1787774400,
+   "entry_ts": 1787781600,
+   "p0_hourly_close_sol": 1.11134343641013e-07,
+   "peak_close_multiple_14d": 4.165038479245756,
+   "R1_hourly": {
+    "exit_i": 85,
+    "exit_bar_start": 1788080400,
+    "p_exit": 2.41469240455624e-07,
+    "reason": "trail",
+    "peak_close": 4.6287881763054e-07,
+    "net_$10": 1.1039447198272556
+   },
+   "R2_hourly": {
+    "exit_i": 123,
+    "exit_bar_start": 1788217200,
+    "p_exit": 1.83214350502598e-07,
+    "reason": "trail",
+    "peak_close": 4.6287881763054e-07,
+    "net_$10": 0.5957484918951457
+   }
+  },
+  {
+   "mint": "4LwHKRgKHLvYtTqJRLHfdMydzis4dHfPvxW8TcYhpump",
+   "pool": "5CTiUFCRMSRMsjMGb5WVSk8QGiRjSpBBDz9Fh4MXFDd8",
+   "migration_bar_start": 1786197600,
+   "entry_ts": 1786204800,
+   "p0_hourly_close_sol": 3.27276832033511e-08,
+   "peak_close_multiple_14d": 4.035174633576346,
+   "R1_hourly": {
+    "exit_i": 57,
+    "exit_bar_start": 1786402800,
+    "p_exit": 7.63702065673862e-08,
+    "reason": "trail",
+    "peak_close": 1.32061917077885e-07,
+    "net_$10": 1.2506263426925834
+   },
+   "R2_hourly": {
+    "exit_i": 80,
+    "exit_bar_start": 1786485600,
+    "p_exit": 4.70755664812198e-08,
+    "reason": "trail",
+    "peak_close": 1.32061917077885e-07,
+    "net_$10": 0.38700918015923036
+   }
+  },
+  {
+   "mint": "yiCuniPxFbw5jo92M5JUjhotNY1ANdiPhXu662Rpump",
+   "pool": "EShPY5UMHJz3sP5JwwQb257twDg4pmhi8gVzyHH7E2zR",
+   "migration_bar_start": 1787144400,
+   "entry_ts": 1787151600,
+   "p0_hourly_close_sol": 0.000608733399895149,
+   "peak_close_multiple_14d": 3.8242124734154768,
+   "R1_hourly": {
+    "exit_i": 15,
+    "exit_bar_start": 1787198400,
+    "p_exit": 1.68847496237867e-08,
+    "reason": "trail",
+    "peak_close": 0.00232792586086364,
+    "net_$10": -1.004910163417375
+   },
+   "R2_hourly": {
+    "exit_i": 15,
+    "exit_bar_start": 1787198400,
+    "p_exit": 1.68847496237867e-08,
+    "reason": "trail",
+    "peak_close": 0.00232792586086364,
+    "net_$10": -1.004910163417375
+   }
+  },
+  {
+   "mint": "G41eEd83UzwR3TWPG7KQMFamDojbt7vSvB6aCgXpump",
+   "pool": "FRpwG8EshfduKWw6odBQsfHinV1Ap3336JhkEc7yQYbN",
+   "migration_bar_start": 1785182400,
+   "entry_ts": 1785189600,
+   "p0_hourly_close_sol": 0.000377993197003223,
+   "peak_close_multiple_14d": 3.2478687002843127,
+   "R1_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1785196800,
+    "p_exit": 2.29945450120012e-08,
+    "reason": "trail",
+    "peak_close": 0.00122767227346717,
+    "net_$10": -1.004877580706174
+   },
+   "R2_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1785196800,
+    "p_exit": 2.29945450120012e-08,
+    "reason": "trail",
+    "peak_close": 0.00122767227346717,
+    "net_$10": -1.004877580706174
+   }
+  },
+  {
+   "mint": "FSNeNWpA2VPvYCmCgamRBVqi1CqPFy9CFPACfFYzpump",
+   "pool": "7Wg9HkYyRxoQHNgNbCHjn2QCnN1oe8uB9kgNY3Q6omKo",
+   "migration_bar_start": 1786921200,
+   "entry_ts": 1786928400,
+   "p0_hourly_close_sol": 1.20960520549874e-06,
+   "peak_close_multiple_14d": 2.9322619751841046,
+   "R1_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1786932000,
+    "p_exit": 1.55146371193829e-06,
+    "reason": "trail",
+    "peak_close": 3.54687934906871e-06,
+    "net_$10": 0.24618353052913292
+   },
+   "R2_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1786935600,
+    "p_exit": 1.38463546241084e-06,
+    "reason": "trail",
+    "peak_close": 3.54687934906871e-06,
+    "net_$10": 0.11112637219679324
+   }
+  },
+  {
+   "mint": "5KkyoeC18GTeWPEhdnGazx95Dhga7cZMV5FT92nspump",
+   "pool": "GuXaL7eAYuPpG5y7AnjyKmDTbQwuqnDY5yqfhDAKNH39",
+   "migration_bar_start": 1786024800,
+   "entry_ts": 1786032000,
+   "p0_hourly_close_sol": 2.78016140865092e-08,
+   "peak_close_multiple_14d": 2.9041227189061964,
+   "R1_hourly": {
+    "exit_i": 18,
+    "exit_bar_start": 1786089600,
+    "p_exit": 3.54484936893121e-08,
+    "reason": "trail",
+    "peak_close": 8.07392990908939e-08,
+    "net_$10": 0.22845853648835582
+   },
+   "R2_hourly": {
+    "exit_i": 19,
+    "exit_bar_start": 1786093200,
+    "p_exit": 3.17590089104368e-08,
+    "reason": "trail",
+    "peak_close": 8.07392990908939e-08,
+    "net_$10": 0.10033846673878612
+   }
+  },
+  {
+   "mint": "Crgxrddc8wLmDzD1nBVxGGbMFhtY4vxddJsQ9t8npump",
+   "pool": "HHhpBzMbzekTQPMSzf6pT8UxeXi39oZgtxToTh9ivoZ7",
+   "migration_bar_start": 1785225600,
+   "entry_ts": 1785232800,
+   "p0_hourly_close_sol": 6.82885237800843e-06,
+   "peak_close_multiple_14d": 2.642791820882706,
+   "R1_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1785240000,
+    "p_exit": 4.970859191767e-08,
+    "reason": "trail",
+    "peak_close": 1.80472352106161e-05,
+    "net_$10": -0.997823010357313
+   },
+   "R2_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1785240000,
+    "p_exit": 4.970859191767e-08,
+    "reason": "trail",
+    "peak_close": 1.80472352106161e-05,
+    "net_$10": -0.997823010357313
+   }
+  },
+  {
+   "mint": "HewQyEvrnAiGUEVHSSdh4A8Ws3PuWySTPjuzERvXpump",
+   "pool": "9cfoLA97CAAYzadvFQT11MaWsrtcwegRzJJpeT73LnP1",
+   "migration_bar_start": 1786748400,
+   "entry_ts": 1786755600,
+   "p0_hourly_close_sol": 9.52644467422011e-08,
+   "peak_close_multiple_14d": 2.6287070247609035,
+   "R1_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1786759200,
+    "p_exit": 6.00474193586379e-08,
+    "reason": "stop",
+    "peak_close": 9.52644467422011e-08,
+    "net_$10": -0.3925262136784248
+   },
+   "R2_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1786759200,
+    "p_exit": 6.00474193586379e-08,
+    "reason": "stop",
+    "peak_close": 9.52644467422011e-08,
+    "net_$10": -0.3925262136784248
+   }
+  },
+  {
+   "mint": "4jZHS1xtDZQVywWJoyLapHjnS4iAtJJohaFuZ9udpump",
+   "pool": "2uqqQK8ocfifnkNctB25Tf2ZzgvJ6MsMh5KDgM1KQYgn",
+   "migration_bar_start": 1784908800,
+   "entry_ts": 1784916000,
+   "p0_hourly_close_sol": 3.63802532942508e-07,
+   "peak_close_multiple_14d": 2.495071397819263,
+   "R1_hourly": {
+    "exit_i": 48,
+    "exit_bar_start": 1785081600,
+    "p_exit": 2.546617730597556e-07,
+    "reason": "stop",
+    "peak_close": 6.42050411538382e-07,
+    "net_$10": -0.32364046309912375
+   },
+   "R2_hourly": {
+    "exit_i": 48,
+    "exit_bar_start": 1785081600,
+    "p_exit": 2.546617730597556e-07,
+    "reason": "stop",
+    "peak_close": 6.42050411538382e-07,
+    "net_$10": -0.32364046309912375
+   }
+  },
+  {
+   "mint": "4Nz5VkHD4jxYCv1kW5oKQTrHbkqhtJ1gbvZHxNK7pump",
+   "pool": "7iydQ6c19LyJEXbJe6du5Jv4gnGjubjAMTvNob8ZVo6m",
+   "migration_bar_start": 1787198400,
+   "entry_ts": 1787205600,
+   "p0_hourly_close_sol": 0.000229896507402928,
+   "peak_close_multiple_14d": 2.46008467844163,
+   "R1_hourly": {
+    "exit_i": 8,
+    "exit_bar_start": 1787227200,
+    "p_exit": 2.22501911377808e-08,
+    "reason": "trail",
+    "peak_close": 0.000565564875489186,
+    "net_$10": -1.0048421883506176
+   },
+   "R2_hourly": {
+    "exit_i": 8,
+    "exit_bar_start": 1787227200,
+    "p_exit": 2.22501911377808e-08,
+    "reason": "trail",
+    "peak_close": 0.000565564875489186,
+    "net_$10": -1.0048421883506176
+   }
+  },
+  {
+   "mint": "V6qeHSCefAj4wWT9tfS3DYiTC9WTzDsTb9jvrT9pump",
+   "pool": "BLnHiqXe6VDckKVQPjJjWUFCqFPTZ2A2BqsxKXRcgJxM",
+   "migration_bar_start": 1787014800,
+   "entry_ts": 1787022000,
+   "p0_hourly_close_sol": 5.80154131546164e-08,
+   "peak_close_multiple_14d": 2.376070638530049,
+   "R1_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1787032800,
+    "p_exit": 3.67689030271028e-08,
+    "reason": "stop",
+    "peak_close": 5.80154131546164e-08,
+    "net_$10": -0.38980837880360986
+   },
+   "R2_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1787032800,
+    "p_exit": 3.67689030271028e-08,
+    "reason": "stop",
+    "peak_close": 5.80154131546164e-08,
+    "net_$10": -0.38980837880360986
+   }
+  },
+  {
+   "mint": "9khsvWZMUNi73ot9UbkgnuNgqtq2LWRJG2acVrhnpump",
+   "pool": "ANUtCAoZPnvDWWAjur9xUzkgf8HoECQsgsnCGXoYyUjF",
+   "migration_bar_start": 1786359600,
+   "entry_ts": 1786366800,
+   "p0_hourly_close_sol": 5.68693333481127e-06,
+   "peak_close_multiple_14d": 2.3492893330228357,
+   "R1_hourly": {
+    "exit_i": 57,
+    "exit_bar_start": 1786564800,
+    "p_exit": 4.78070587887932e-06,
+    "reason": "trail",
+    "peak_close": 1.33602518210841e-05,
+    "net_$10": -0.18143751608351086
+   },
+   "R2_hourly": {
+    "exit_i": 57,
+    "exit_bar_start": 1786564800,
+    "p_exit": 4.78070587887932e-06,
+    "reason": "trail",
+    "peak_close": 1.33602518210841e-05,
+    "net_$10": -0.18143751608351086
+   }
+  },
+  {
+   "mint": "TSpGoTQmrRjCeCLrYrpVsHx3PM4zH2bb72kJknfpump",
+   "pool": "CH8PAv2dBeWY6GRZbMKA8oqCK9Lnxk4qoyszum4XU6kf",
+   "migration_bar_start": 1786244400,
+   "entry_ts": 1786251600,
+   "p0_hourly_close_sol": 2.8922801984375e-05,
+   "peak_close_multiple_14d": 2.2803917084041103,
+   "R1_hourly": {
+    "exit_i": 56,
+    "exit_bar_start": 1786446000,
+    "p_exit": 1.87647837668839e-08,
+    "reason": "trail",
+    "peak_close": 6.59553178289827e-05,
+    "net_$10": -1.0043019946524063
+   },
+   "R2_hourly": {
+    "exit_i": 56,
+    "exit_bar_start": 1786446000,
+    "p_exit": 1.87647837668839e-08,
+    "reason": "trail",
+    "peak_close": 6.59553178289827e-05,
+    "net_$10": -1.0043019946524063
+   }
+  },
+  {
+   "mint": "36Pj26yhrBDc1ENzZHYNejt89x5mcBxJVYBihmDmpump",
+   "pool": "JB4pDipmCvn4jTdbfNdh4uRBifxry1Vb9vd38wHLyBUs",
+   "migration_bar_start": 1784739600,
+   "entry_ts": 1784746800,
+   "p0_hourly_close_sol": 1.51584559745321e-07,
+   "peak_close_multiple_14d": 2.237110435273342,
+   "R1_hourly": {
+    "exit_i": 6,
+    "exit_bar_start": 1784761200,
+    "p_exit": 1.061091918217247e-07,
+    "reason": "stop",
+    "peak_close": 1.95032884616221e-07,
+    "net_$10": -0.32435959141378046
+   },
+   "R2_hourly": {
+    "exit_i": 6,
+    "exit_bar_start": 1784761200,
+    "p_exit": 1.061091918217247e-07,
+    "reason": "stop",
+    "peak_close": 1.95032884616221e-07,
+    "net_$10": -0.32435959141378046
+   }
+  },
+  {
+   "mint": "BBFfwo3D5WfMC65ip5RwjxaVqme1o2tdoq6HgCzapump",
+   "pool": "CDag1DZVA167wCpjp6oEmWYhPAJnFy6ppmqYaksnY8Pw",
+   "migration_bar_start": 1785236400,
+   "entry_ts": 1785243600,
+   "p0_hourly_close_sol": 5.44801492388396e-07,
+   "peak_close_multiple_14d": 2.1884824222871475,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785243600,
+    "p_exit": 3.8136104467187717e-07,
+    "reason": "stop",
+    "peak_close": 5.44801492388396e-07,
+    "net_$10": -0.3230557280613816
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785243600,
+    "p_exit": 3.8136104467187717e-07,
+    "reason": "stop",
+    "peak_close": 5.44801492388396e-07,
+    "net_$10": -0.3230557280613816
+   }
+  },
+  {
+   "mint": "Fiw7B6u5XwdnxTfTYzX63deyiwpWdkqBqjjWjXSpump",
+   "pool": "ANmGrXDiSb4kHyw5PSFHvQDGfJProqqQeRzSJwFXyfVm",
+   "migration_bar_start": 1786460400,
+   "entry_ts": 1786467600,
+   "p0_hourly_close_sol": 2.40522175967273e-05,
+   "peak_close_multiple_14d": 2.149849634539528,
+   "R1_hourly": {
+    "exit_i": 27,
+    "exit_bar_start": 1786557600,
+    "p_exit": 3.97519000493672e-07,
+    "reason": "trail",
+    "peak_close": 5.17086512101894e-05,
+    "net_$10": -0.9887578108391128
+   },
+   "R2_hourly": {
+    "exit_i": 27,
+    "exit_bar_start": 1786557600,
+    "p_exit": 3.97519000493672e-07,
+    "reason": "trail",
+    "peak_close": 5.17086512101894e-05,
+    "net_$10": -0.9887578108391128
+   }
+  },
+  {
+   "mint": "z63LfWrur3VtVnB1bD9PXv5gVtYyAETkSM2GG9gpump",
+   "pool": "5eJ9kUB5n9bUzBjXzKrV6CePKKjErLZuYsH6ur4ntCpn",
+   "migration_bar_start": 1787209200,
+   "entry_ts": 1787216400,
+   "p0_hourly_close_sol": 7.1455407840495e-06,
+   "peak_close_multiple_14d": 2.11624926195353,
+   "R1_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1787227200,
+    "p_exit": 1.6779632747534e-08,
+    "reason": "trail",
+    "peak_close": 1.51217454105036e-05,
+    "net_$10": -1.0026423166763285
+   },
+   "R2_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1787227200,
+    "p_exit": 1.6779632747534e-08,
+    "reason": "trail",
+    "peak_close": 1.51217454105036e-05,
+    "net_$10": -1.0026423166763285
+   }
+  },
+  {
+   "mint": "H2gzMFk4e5URpaQAc1EQAYaCKnhZozLBZtBZdQAApump",
+   "pool": "eUeuuok121dwecuUugQi94Lee9Terkep8VJavbUXcuT",
+   "migration_bar_start": 1786536000,
+   "entry_ts": 1786543200,
+   "p0_hourly_close_sol": 4.1366689670257e-08,
+   "peak_close_multiple_14d": 2.044811387587543,
+   "R1_hourly": {
+    "exit_i": 56,
+    "exit_bar_start": 1786737600,
+    "p_exit": 4.93661017319534e-08,
+    "reason": "trail",
+    "peak_close": 8.45870781045415e-08,
+    "net_$10": 0.15125952805350076
+   },
+   "R2_hourly": {
+    "exit_i": 179,
+    "exit_bar_start": 1787180400,
+    "p_exit": 3.32108427892699e-08,
+    "reason": "trail",
+    "peak_close": 8.45870781045415e-08,
+    "net_$10": -0.22663706835830308
+   }
+  }
+ ],
+ "random_stop_outs_seed20261007": [
+  {
+   "mint": "BBPqpzNs81a2RU4WTmPRshVmK74EjVZjhezJQdBNpump",
+   "pool": "79XvANYKBYtnBkhCCikiadJuUKaTZcGy3KM2yeJdmhp3",
+   "migration_bar_start": 1786255200,
+   "entry_ts": 1786262400,
+   "p0_hourly_close_sol": 4.1281371445796e-07,
+   "peak_close_multiple_14d": 1.2837558475199888,
+   "R1_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1786266000,
+    "p_exit": 2.8896960012057197e-07,
+    "reason": "stop",
+    "peak_close": 5.29952019871853e-07,
+    "net_$10": -0.32356020634739235
+   },
+   "R2_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1786266000,
+    "p_exit": 2.8896960012057197e-07,
+    "reason": "stop",
+    "peak_close": 5.29952019871853e-07,
+    "net_$10": -0.32356020634739235
+   }
+  },
+  {
+   "mint": "86ghgckBUUhFEvqJ7b2tyMU2RZeXymD2sauFK8pNpump",
+   "pool": "HryjBVr14Fuc48CjNfXttf8N4NfCdF8HtASGF1xgkY6U",
+   "migration_bar_start": 1786356000,
+   "entry_ts": 1786363200,
+   "p0_hourly_close_sol": 2.88642989679266e-07,
+   "peak_close_multiple_14d": 1.000576898721909,
+   "R1_hourly": {
+    "exit_i": 10,
+    "exit_bar_start": 1786392000,
+    "p_exit": 3.19466164731491e-08,
+    "reason": "stop",
+    "peak_close": 2.888095074511e-07,
+    "net_$10": -0.8971775562787114
+   },
+   "R2_hourly": {
+    "exit_i": 10,
+    "exit_bar_start": 1786392000,
+    "p_exit": 3.19466164731491e-08,
+    "reason": "stop",
+    "peak_close": 2.888095074511e-07,
+    "net_$10": -0.8971775562787114
+   }
+  },
+  {
+   "mint": "4jZHS1xtDZQVywWJoyLapHjnS4iAtJJohaFuZ9udpump",
+   "pool": "2uqqQK8ocfifnkNctB25Tf2ZzgvJ6MsMh5KDgM1KQYgn",
+   "migration_bar_start": 1784908800,
+   "entry_ts": 1784916000,
+   "p0_hourly_close_sol": 3.63802532942508e-07,
+   "peak_close_multiple_14d": 2.495071397819263,
+   "R1_hourly": {
+    "exit_i": 48,
+    "exit_bar_start": 1785081600,
+    "p_exit": 2.546617730597556e-07,
+    "reason": "stop",
+    "peak_close": 6.42050411538382e-07,
+    "net_$10": -0.32364046309912375
+   },
+   "R2_hourly": {
+    "exit_i": 48,
+    "exit_bar_start": 1785081600,
+    "p_exit": 2.546617730597556e-07,
+    "reason": "stop",
+    "peak_close": 6.42050411538382e-07,
+    "net_$10": -0.32364046309912375
+   }
+  },
+  {
+   "mint": "7jFJmy6V96wvSvrjc6VU1cDu4JHmRESn4ZT2N2thpump",
+   "pool": "8o5FGuXYTYHcNUgapJc2sSAzTrAHon8Nb9cxQsKWjF9H",
+   "migration_bar_start": 1785880800,
+   "entry_ts": 1785888000,
+   "p0_hourly_close_sol": 6.91880780390216e-08,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785888000,
+    "p_exit": 4.50272329530507e-08,
+    "reason": "stop",
+    "peak_close": 6.91880780390216e-08,
+    "net_$10": -0.37305817430521204
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785888000,
+    "p_exit": 4.50272329530507e-08,
+    "reason": "stop",
+    "peak_close": 6.91880780390216e-08,
+    "net_$10": -0.37305817430521204
+   }
+  },
+  {
+   "mint": "drwEtFrKJ85CWaASajyvhWUEjtRYGA7dfqc2x7gpump",
+   "pool": "2CSULxv8AkqoBzucA18WALULgN7Az3DQRWLSzfEFbMk6",
+   "migration_bar_start": 1786543200,
+   "entry_ts": 1786550400,
+   "p0_hourly_close_sol": 6.51571681311676e-06,
+   "peak_close_multiple_14d": 1.6672536144607657,
+   "R1_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1786557600,
+    "p_exit": 8.13035773497563e-08,
+    "reason": "stop",
+    "peak_close": 1.08633524074717e-05,
+    "net_$10": -0.9927419555418899
+   },
+   "R2_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1786557600,
+    "p_exit": 8.13035773497563e-08,
+    "reason": "stop",
+    "peak_close": 1.08633524074717e-05,
+    "net_$10": -0.9927419555418899
+   }
+  },
+  {
+   "mint": "76HLfhuAXMvTGqQEFFGnYyCgypk3VkpGTzavxwA2pump",
+   "pool": "CNG7s9RWHJaTRRZUiajffzrMwerdC2DjfJeSrpzpEe3F",
+   "migration_bar_start": 1786989600,
+   "entry_ts": 1786996800,
+   "p0_hourly_close_sol": 1.745002492476e-06,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786996800,
+    "p_exit": 2.01297962808211e-08,
+    "reason": "stop",
+    "peak_close": 1.745002492476e-06,
+    "net_$10": -0.9936829519124174
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786996800,
+    "p_exit": 2.01297962808211e-08,
+    "reason": "stop",
+    "peak_close": 1.745002492476e-06,
+    "net_$10": -0.9936829519124174
+   }
+  },
+  {
+   "mint": "HVAYF7YvNjipReVh6SWmfagurhxvbdN8CQtn6qropump",
+   "pool": "7A85B1GJPRq8cYhYL5iHy2Bm88eSc9LhWaixcvobz4o9",
+   "migration_bar_start": 1786582800,
+   "entry_ts": 1786590000,
+   "p0_hourly_close_sol": 5.31457118633645e-08,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1786593600,
+    "p_exit": 3.52321468758311e-08,
+    "reason": "stop",
+    "peak_close": 5.31457118633645e-08,
+    "net_$10": -0.3616770818081273
+   },
+   "R2_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1786593600,
+    "p_exit": 3.52321468758311e-08,
+    "reason": "stop",
+    "peak_close": 5.31457118633645e-08,
+    "net_$10": -0.3616770818081273
+   }
+  },
+  {
+   "mint": "ABNJ7kXmi7SEUUExaE1MqnAbvrCZ5GBZfBeoX6qJpump",
+   "pool": "AzL6ZBysRZ1YjjTxaAbhjT8zZFSRJx9DTX3fVZR3S3Hv",
+   "migration_bar_start": 1784732400,
+   "entry_ts": 1784739600,
+   "p0_hourly_close_sol": 1.55171342763434e-07,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784739600,
+    "p_exit": 1.0861993993440379e-07,
+    "reason": "stop",
+    "peak_close": 1.55171342763434e-07,
+    "net_$10": -0.32433602741999434
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784739600,
+    "p_exit": 1.0861993993440379e-07,
+    "reason": "stop",
+    "peak_close": 1.55171342763434e-07,
+    "net_$10": -0.32433602741999434
+   }
+  },
+  {
+   "mint": "E8bAWZaFeyUAn7sNVm7cSB2TiHcHRs1pGdwfrCTtpump",
+   "pool": "Dpin97V7pdhqaF4a49HA9jVzdaubrgv6cptRCZJmiMZ",
+   "migration_bar_start": 1785153600,
+   "entry_ts": 1785160800,
+   "p0_hourly_close_sol": 8.72338819983581e-08,
+   "peak_close_multiple_14d": 1.0197341140443126,
+   "R1_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1785168000,
+    "p_exit": 4.18892742248717e-08,
+    "reason": "stop",
+    "peak_close": 8.89553653742418e-08,
+    "net_$10": -0.5383647774381304
+   },
+   "R2_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1785168000,
+    "p_exit": 4.18892742248717e-08,
+    "reason": "stop",
+    "peak_close": 8.89553653742418e-08,
+    "net_$10": -0.5383647774381304
+   }
+  },
+  {
+   "mint": "FfbwJrTfGMSGgcGtniTrcS6RpAVecmoDfMGqsL7Dpump",
+   "pool": "9uQ4noo8hjVkmGdLVnbPwomhtwZbqNgsD6DqZCwGoSKp",
+   "migration_bar_start": 1785866400,
+   "entry_ts": 1785873600,
+   "p0_hourly_close_sol": 3.28989912066653e-08,
+   "peak_close_multiple_14d": 1.0244578860739713,
+   "R1_hourly": {
+    "exit_i": 24,
+    "exit_bar_start": 1785952800,
+    "p_exit": 2.29868121473324e-08,
+    "reason": "stop",
+    "peak_close": 3.37036309855465e-08,
+    "net_$10": -0.32792694129686883
+   },
+   "R2_hourly": {
+    "exit_i": 24,
+    "exit_bar_start": 1785952800,
+    "p_exit": 2.29868121473324e-08,
+    "reason": "stop",
+    "peak_close": 3.37036309855465e-08,
+    "net_$10": -0.32792694129686883
+   }
+  },
+  {
+   "mint": "H3AxGgBvDhEaEGCihggB7oQbpxzCyD3FVZWcd7EWpump",
+   "pool": "9Dv5xX94NJ2VGKJzEwUkATLzQkzcN8X2d4gedf6m8vQq",
+   "migration_bar_start": 1786370400,
+   "entry_ts": 1786377600,
+   "p0_hourly_close_sol": 2.48432660728627e-07,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786377600,
+    "p_exit": 1.55418240965967e-07,
+    "reason": "stop",
+    "peak_close": 2.48432660728627e-07,
+    "net_$10": -0.396268179907339
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786377600,
+    "p_exit": 1.55418240965967e-07,
+    "reason": "stop",
+    "peak_close": 2.48432660728627e-07,
+    "net_$10": -0.396268179907339
+   }
+  },
+  {
+   "mint": "pXuKz4N58AEM6qkeUKusctSFMETKfnYEkcXDUPhpump",
+   "pool": "6HvygjMakW9sHkm9SFTavMof5oTuXFL7K7DAasWs4EHF",
+   "migration_bar_start": 1787144400,
+   "entry_ts": 1787151600,
+   "p0_hourly_close_sol": 8.11130307794536e-06,
+   "peak_close_multiple_14d": 1.641226390144249,
+   "R1_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1787158800,
+    "p_exit": 1.7682530866125e-08,
+    "reason": "stop",
+    "peak_close": 1.33124846699822e-05,
+    "net_$10": -1.0028067572014978
+   },
+   "R2_hourly": {
+    "exit_i": 4,
+    "exit_bar_start": 1787158800,
+    "p_exit": 1.7682530866125e-08,
+    "reason": "stop",
+    "peak_close": 1.33124846699822e-05,
+    "net_$10": -1.0028067572014978
+   }
+  },
+  {
+   "mint": "Qnzjdx18eskj8nqLcJGthfs4z3joMwDXCGvrSgcpump",
+   "pool": "8M1Sn71fj6xWPRy86xFwojprXGNF8H1GMsUds3gBNn6y",
+   "migration_bar_start": 1787198400,
+   "entry_ts": 1787205600,
+   "p0_hourly_close_sol": 1.62240484793178e-07,
+   "peak_close_multiple_14d": 9.73000506500088,
+   "R1_hourly": {
+    "exit_i": 7,
+    "exit_bar_start": 1787223600,
+    "p_exit": 1.09767053008218e-07,
+    "reason": "stop",
+    "peak_close": 1.85791183592018e-07,
+    "net_$10": -0.34705945777277447
+   },
+   "R2_hourly": {
+    "exit_i": 7,
+    "exit_bar_start": 1787223600,
+    "p_exit": 1.09767053008218e-07,
+    "reason": "stop",
+    "peak_close": 1.85791183592018e-07,
+    "net_$10": -0.34705945777277447
+   }
+  },
+  {
+   "mint": "FYqWB95ggm8bjCrPxnQ5GSNCgXxWKydyGzfasW17pump",
+   "pool": "8Mgt7X9pixiQn1THttpotub5dyuFdeKEnSmkGPudASgH",
+   "migration_bar_start": 1786946400,
+   "entry_ts": 1786953600,
+   "p0_hourly_close_sol": 9.32131833501409e-07,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786953600,
+    "p_exit": 2.77841839349922e-07,
+    "reason": "stop",
+    "peak_close": 9.32131833501409e-07,
+    "net_$10": -0.7144183162202327
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786953600,
+    "p_exit": 2.77841839349922e-07,
+    "reason": "stop",
+    "peak_close": 9.32131833501409e-07,
+    "net_$10": -0.7144183162202327
+   }
+  },
+  {
+   "mint": "Ar1MbX1Gp9qFkGiSGmw3cLNRZBRciEpyBc5vgSGbpump",
+   "pool": "7qH6iJV9jwewkJwiNJC8Pw2C1TqBgbGubxC7mwG5vno1",
+   "migration_bar_start": 1786348800,
+   "entry_ts": 1786356000,
+   "p0_hourly_close_sol": 1.23420652433854e-06,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786356000,
+    "p_exit": 2.87801194222313e-08,
+    "reason": "stop",
+    "peak_close": 1.23420652433854e-06,
+    "net_$10": -0.982201476913932
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786356000,
+    "p_exit": 2.87801194222313e-08,
+    "reason": "stop",
+    "peak_close": 1.23420652433854e-06,
+    "net_$10": -0.982201476913932
+   }
+  },
+  {
+   "mint": "ATT2mhMAZ1h5UKDR2CY7ir6i2xbXDHpMLqMErmPvpump",
+   "pool": "2ho2iUCtmd48vyWf5YdvTrpAPAajS83KET4uhf8iCUsv",
+   "migration_bar_start": 1786039200,
+   "entry_ts": 1786046400,
+   "p0_hourly_close_sol": 7.49062241180467e-08,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786046400,
+    "p_exit": 4.37476107433228e-08,
+    "reason": "stop",
+    "peak_close": 7.49062241180467e-08,
+    "net_$10": -0.43772941215217565
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786046400,
+    "p_exit": 4.37476107433228e-08,
+    "reason": "stop",
+    "peak_close": 7.49062241180467e-08,
+    "net_$10": -0.43772941215217565
+   }
+  },
+  {
+   "mint": "xstKLWfdmGdgf3arKFRWrFiMvqkWmR9oV1oqRbNreGL",
+   "pool": "CF35JKxtSHJhhXJka7pkt5eCDvSpkEbd2n8F2zNinUxY",
+   "migration_bar_start": 1785600000,
+   "entry_ts": 1785607200,
+   "p0_hourly_close_sol": 4.69255690594236e-08,
+   "peak_close_multiple_14d": 1.065386314596486,
+   "R1_hourly": {
+    "exit_i": 15,
+    "exit_bar_start": 1785654000,
+    "p_exit": 3.25007973057038e-08,
+    "reason": "stop",
+    "peak_close": 4.99938590805622e-08,
+    "net_$10": -0.3331387063914423
+   },
+   "R2_hourly": {
+    "exit_i": 15,
+    "exit_bar_start": 1785654000,
+    "p_exit": 3.25007973057038e-08,
+    "reason": "stop",
+    "peak_close": 4.99938590805622e-08,
+    "net_$10": -0.3331387063914423
+   }
+  },
+  {
+   "mint": "4Mt9rFRkHVz36wwEwncfGohcGRqazpaKcsErQLoFpump",
+   "pool": "9bt9nAcxDBDWep72SbZxNBfq669BP29WDsVjFitTNML1",
+   "migration_bar_start": 1786557600,
+   "entry_ts": 1786564800,
+   "p0_hourly_close_sol": 3.7606963371126e-07,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786564800,
+    "p_exit": 1.74515724413829e-07,
+    "reason": "stop",
+    "peak_close": 3.7606963371126e-07,
+    "net_$10": -0.553198011509593
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786564800,
+    "p_exit": 1.74515724413829e-07,
+    "reason": "stop",
+    "peak_close": 3.7606963371126e-07,
+    "net_$10": -0.553198011509593
+   }
+  },
+  {
+   "mint": "GjXJE3nEbrZezRUTVcTfbf9suRCgUWNWfzi8AzJ5pump",
+   "pool": "4Aq16rPCeK4B9UVaRcASbwsvAPQzfAkMRDRphofYTAVN",
+   "migration_bar_start": 1785823200,
+   "entry_ts": 1785830400,
+   "p0_hourly_close_sol": 1.36894154157066e-06,
+   "peak_close_multiple_14d": 1.3491034659211065,
+   "R1_hourly": {
+    "exit_i": 15,
+    "exit_bar_start": 1785877200,
+    "p_exit": 1.79439472061774e-08,
+    "reason": "stop",
+    "peak_close": 1.84684377837636e-06,
+    "net_$10": -0.9921564480521096
+   },
+   "R2_hourly": {
+    "exit_i": 15,
+    "exit_bar_start": 1785877200,
+    "p_exit": 1.79439472061774e-08,
+    "reason": "stop",
+    "peak_close": 1.84684377837636e-06,
+    "net_$10": -0.9921564480521096
+   }
+  },
+  {
+   "mint": "FkD1S9QujAMouUyvHwowrvoq1uTaJs1WPvT3rby6pump",
+   "pool": "9RCr7iacBC3NcBKVUkK6sYX3opL61wrYbGnFrvRPMFwn",
+   "migration_bar_start": 1786532400,
+   "entry_ts": 1786539600,
+   "p0_hourly_close_sol": 7.2836690350911e-07,
+   "peak_close_multiple_14d": 1.0106282614245956,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786539600,
+    "p_exit": 5.09856832456377e-07,
+    "reason": "stop",
+    "peak_close": 7.2836690350911e-07,
+    "net_$10": -0.32256550272024986
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786539600,
+    "p_exit": 5.09856832456377e-07,
+    "reason": "stop",
+    "peak_close": 7.2836690350911e-07,
+    "net_$10": -0.32256550272024986
+   }
+  },
+  {
+   "mint": "WgL9zKzdQ57R3qTVd4wgg8iXq79zBCD4rBJX31dpump",
+   "pool": "63DZC1SRackneerKrkt1gVrH4zdjmCVWieTsBqh4VwFE",
+   "migration_bar_start": 1786186800,
+   "entry_ts": 1786194000,
+   "p0_hourly_close_sol": 2.27714516190208e-07,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786194000,
+    "p_exit": 1.594001613331456e-07,
+    "reason": "stop",
+    "peak_close": 2.27714516190208e-07,
+    "net_$10": -0.3239862583258327
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786194000,
+    "p_exit": 1.594001613331456e-07,
+    "reason": "stop",
+    "peak_close": 2.27714516190208e-07,
+    "net_$10": -0.3239862583258327
+   }
+  },
+  {
+   "mint": "HFAEmjnBoRAETYiEq4fpF8hQFV69q3W826zaU7Tb4tFS",
+   "pool": "CRJiXv51dmhc7iuh2QNiCAAieWHg8MbyPVvPUzdeETmX",
+   "migration_bar_start": 1785999600,
+   "entry_ts": 1786006800,
+   "p0_hourly_close_sol": 5.13659562218919e-08,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 8,
+    "exit_bar_start": 1786028400,
+    "p_exit": 2.90642090877358e-08,
+    "reason": "stop",
+    "peak_close": 5.13659562218919e-08,
+    "net_$10": -0.45585575102662756
+   },
+   "R2_hourly": {
+    "exit_i": 8,
+    "exit_bar_start": 1786028400,
+    "p_exit": 2.90642090877358e-08,
+    "reason": "stop",
+    "peak_close": 5.13659562218919e-08,
+    "net_$10": -0.45585575102662756
+   }
+  },
+  {
+   "mint": "V6qeHSCefAj4wWT9tfS3DYiTC9WTzDsTb9jvrT9pump",
+   "pool": "BLnHiqXe6VDckKVQPjJjWUFCqFPTZ2A2BqsxKXRcgJxM",
+   "migration_bar_start": 1787014800,
+   "entry_ts": 1787022000,
+   "p0_hourly_close_sol": 5.80154131546164e-08,
+   "peak_close_multiple_14d": 2.376070638530049,
+   "R1_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1787032800,
+    "p_exit": 3.67689030271028e-08,
+    "reason": "stop",
+    "peak_close": 5.80154131546164e-08,
+    "net_$10": -0.38980837880360986
+   },
+   "R2_hourly": {
+    "exit_i": 5,
+    "exit_bar_start": 1787032800,
+    "p_exit": 3.67689030271028e-08,
+    "reason": "stop",
+    "peak_close": 5.80154131546164e-08,
+    "net_$10": -0.38980837880360986
+   }
+  },
+  {
+   "mint": "7W2qhTPr3dzK7fVwWkqkSt3ZRjtLjjimrDikpz37pump",
+   "pool": "FCa6AkxSbGQfN6v6zvfHfn9jrxS9Ucsi5SQiU2vPUmNu",
+   "migration_bar_start": 1784858400,
+   "entry_ts": 1784865600,
+   "p0_hourly_close_sol": 2.19216101386736e-07,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784865600,
+    "p_exit": 1.5345127097071518e-07,
+    "reason": "stop",
+    "peak_close": 2.19216101386736e-07,
+    "net_$10": -0.3240180346489372
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1784865600,
+    "p_exit": 1.5345127097071518e-07,
+    "reason": "stop",
+    "peak_close": 2.19216101386736e-07,
+    "net_$10": -0.3240180346489372
+   }
+  },
+  {
+   "mint": "D19eh8TdZJpMFKpW43wUSW8iFa4dVBFyatbNecaCpump",
+   "pool": "6uXc3U8HDRwVcZDvDJuucVNSToiaoRPHMCZtVqPMpBm8",
+   "migration_bar_start": 1787169600,
+   "entry_ts": 1787176800,
+   "p0_hourly_close_sol": 5.94916096382992e-06,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1787176800,
+    "p_exit": 2.02409442457727e-08,
+    "reason": "stop",
+    "peak_close": 5.94916096382992e-06,
+    "net_$10": -1.0016121913905556
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1787176800,
+    "p_exit": 2.02409442457727e-08,
+    "reason": "stop",
+    "peak_close": 5.94916096382992e-06,
+    "net_$10": -1.0016121913905556
+   }
+  },
+  {
+   "mint": "6WKA17NvTFEq9eNkGAQ72Hs2MsnVqrG9Vxg2twdJpump",
+   "pool": "256m4ZCB1j3kp2vzD9Hu68owDQ9XcHggzCuCspDQereY",
+   "migration_bar_start": 1786003200,
+   "entry_ts": 1786010400,
+   "p0_hourly_close_sol": 3.93370190156935e-08,
+   "peak_close_multiple_14d": 1.1011052375985506,
+   "R1_hourly": {
+    "exit_i": 12,
+    "exit_bar_start": 1786046400,
+    "p_exit": 2.7535913310985448e-08,
+    "reason": "stop",
+    "peak_close": 4.33141976696939e-08,
+    "net_$10": -0.3263073981185408
+   },
+   "R2_hourly": {
+    "exit_i": 12,
+    "exit_bar_start": 1786046400,
+    "p_exit": 2.7535913310985448e-08,
+    "reason": "stop",
+    "peak_close": 4.33141976696939e-08,
+    "net_$10": -0.3263073981185408
+   }
+  },
+  {
+   "mint": "A8HNfbMoU6m9UJrtnit8ZezxZSM8TbzHvSLWY5gZpump",
+   "pool": "44rnhEAQz8gz2sNcovUf3hQ8WKrn9H7z1i5n57i3BA2U",
+   "migration_bar_start": 1785754800,
+   "entry_ts": 1785762000,
+   "p0_hourly_close_sol": 1.99639440442931e-07,
+   "peak_close_multiple_14d": 1.8626921792304312,
+   "R1_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1785765600,
+    "p_exit": 1.0073727627565e-07,
+    "reason": "stop",
+    "peak_close": 3.71866824378987e-07,
+    "net_$10": -0.5140662393736621
+   },
+   "R2_hourly": {
+    "exit_i": 3,
+    "exit_bar_start": 1785765600,
+    "p_exit": 1.0073727627565e-07,
+    "reason": "stop",
+    "peak_close": 3.71866824378987e-07,
+    "net_$10": -0.5140662393736621
+   }
+  },
+  {
+   "mint": "7F85i7PjD8etYPhzphcnmbd3J38voA13y1qm48vhpump",
+   "pool": "CDw7fLF3aLyzTTWi1n8VJTSvqTd6mGzSSndw3AGJtq3n",
+   "migration_bar_start": 1785686400,
+   "entry_ts": 1785693600,
+   "p0_hourly_close_sol": 2.07557453933849e-07,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785693600,
+    "p_exit": 8.61871079013154e-08,
+    "reason": "stop",
+    "peak_close": 2.07557453933849e-07,
+    "net_$10": -0.6009316441086661
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785693600,
+    "p_exit": 8.61871079013154e-08,
+    "reason": "stop",
+    "peak_close": 2.07557453933849e-07,
+    "net_$10": -0.6009316441086661
+   }
+  },
+  {
+   "mint": "BYjCWd4XS7PTnDbou4Swwmj4XkAtreMKew8n2Pagpump",
+   "pool": "K1bRz7noCtMTsUTzvUVhNMAUCKwNCYLerxGbJS27geh",
+   "migration_bar_start": 1786377600,
+   "entry_ts": 1786384800,
+   "p0_hourly_close_sol": 5.87370085671743e-08,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786384800,
+    "p_exit": 3.72289201077902e-08,
+    "reason": "stop",
+    "peak_close": 5.87370085671743e-08,
+    "net_$10": -0.3897462174179984
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1786384800,
+    "p_exit": 3.72289201077902e-08,
+    "reason": "stop",
+    "peak_close": 5.87370085671743e-08,
+    "net_$10": -0.3897462174179984
+   }
+  },
+  {
+   "mint": "41iT1kcbKQDQmXDfPdnyKoJcboRjqfN6aiqhhsD7pump",
+   "pool": "8krpvekEtmKPdFkWwMG79VdfDBE67DFjQiiBoNSUxteQ",
+   "migration_bar_start": 1785430800,
+   "entry_ts": 1785438000,
+   "p0_hourly_close_sol": 2.65648593382775e-06,
+   "peak_close_multiple_14d": 1.0,
+   "R1_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785438000,
+    "p_exit": 2.21014690543628e-08,
+    "reason": "stop",
+    "peak_close": 2.65648593382775e-06,
+    "net_$10": -0.9968154672561065
+   },
+   "R2_hourly": {
+    "exit_i": 2,
+    "exit_bar_start": 1785438000,
+    "p_exit": 2.21014690543628e-08,
+    "reason": "stop",
+    "peak_close": 2.65648593382775e-06,
+    "net_$10": -0.9968154672561065
+   }
+  }
+ ]
+}
