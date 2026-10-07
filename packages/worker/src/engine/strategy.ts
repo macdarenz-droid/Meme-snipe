@@ -2316,7 +2316,7 @@ export class LiveStrategy implements Strategy {
       if (cf !== null) cand.creator = cf.creator;
       const r = this.#evaluate(cand, ctx, gctx, out);
       // LATE-LOG: any refusal ends a held pass; the next pass waits again from its own slot.
-      if (r !== null && !r.startsWith(CONFIRM_WAIT)) cand.confirmFrom = undefined;
+      
       cand.gates = r === null ? [] : this.#lastNeeds;
       // A reject is logged when its reason changes (numbers aside), so a long wait does not fill the journal.
       // The S0 diagnostic parts relied on count too: the same reason with a different set is a new line.

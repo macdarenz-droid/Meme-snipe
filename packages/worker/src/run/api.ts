@@ -14,7 +14,7 @@ import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } 
 import { type TradeUsd, tradeUsd } from '../../../core/src/fills/index.ts';
 import { type PaperLegs, type PaperTrade, paperTradeLamports, tradePnl, tradeSol } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
-import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
+import { CONFIRM_WAIT, SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 
 const MODE = 'paper' as const;
@@ -156,6 +156,9 @@ export const classify = (reason: string): { readonly check: string | null; reado
   if (reason === 'account snapshot unknown') return { check: 'H16', stage: 1 };
   if (reason.startsWith('stop:') || reason.startsWith('no round trip:')) return { check: 'size', stage: 1 };
   // Risk approval proves the cost gate passed before a size mismatch. A refusal, fault or failed mark does not.
+  // LATE-LOG: a held pass is no refusal and names no check. It passed the hard rejects; costs and risk are judged again
+  // when it is proposed after the wait, so the funnel counts it past the hard rejects only (never a stage it may lose).
+  if (reason.startsWith(`${CONFIRM_WAIT}:`)) return { check: null, stage: 1 };
   if (reason.startsWith('risk sized ')) return { check: 'size', stage: 2 };
   if (reason.startsWith('risk ')) return { check: 'risk', stage: 1 };
   return { check: null, stage: 0 };

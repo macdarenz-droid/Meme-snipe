@@ -448,7 +448,7 @@ interface Pending {
   readonly pool: string;
   readonly migratedAtMs: number;
   readonly slot: bigint;
-  /** LATE-LOG: the released slot when its survival mark was first reached; settled only `confirmLagSlots` after it. */
+  /** LATE-LOG: the slot of the first event at or after its survival mark; settled once the head is `confirmLagSlots` past it. */
   markSlot?: bigint;
 }
 
@@ -1799,7 +1799,8 @@ export class FactProducer {
       const through = this.#head !== null && this.#head < e.moment.slot ? this.#head : e.moment.slot;
       // LATE-LOG: a confirmed swap from before the mark can still arrive up to `confirmLagSlots` released slots later;
       // the entry is permanent and feeds the regime gate, so it waits that long (the read window still ends it).
-      p.markSlot ??= through;
+      // The mark's slot: this first event at or after it (never below the head; a late estimate only waits longer).
+      p.markSlot ??= e.moment.slot > through ? e.moment.slot : through;
       const settled = through >= p.markSlot + BigInt(this.#o.confirmLagSlots ?? CONFIRM_LAG_SLOTS);
       if (settled && r !== undefined && r.atMs <= mark && this.#covered(STREAMS.trades(p.pool), p.slot, through)) this.#resolve(p, r.effective);
       else if (now > mark + this.#o.survivalReadWindowMs) this.#settle(p.pool);
