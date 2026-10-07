@@ -31,6 +31,7 @@
   - The supervisor adds the `deps-reviewed:<hash>` label after the review.
   - The coverage gate after 14 Oct.
   - The 1.0.0 tag.
+- **8 Oct about 12:50 AM, owner chose "B" for the past-data test:** a capped Helius history download of 30 days, with the credit estimate shown to the owner before any credit is spent (CLAUDE.md "History for the past-data test"). Next: a Z-H estimate researcher measures the cost using held data and free providers only, no Helius credits. The Z0D round 3 builder records B-10 = (b) in the docs.
 - **History for owner item 2 (B-10, card Z-H):** zeroed-data holds only the old server's recordings for 4, 5 and 6 Oct (releases `rec-2026-10-04/05/06`, about 0.4 MB, 3 MB and 4.6 GB) and the summaries; this repo has no `data-day-*` release. Far below 30 clean days, so the owner is told before M2 starts.
 - **Owner, 7 Oct about 9:30 PM:** "When ur done archive all workers": after the map is done, every worker session is archived.
 
