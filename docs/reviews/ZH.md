@@ -459,3 +459,18 @@ I accept every finding: the reviewer's N1–N3 and M1–M4, and the red team's R
 9. **Owner summary.** At most 8 short lines in plain words, covering the options above, with no recommendation. I will add the recommendation.
 
 Push to the same branch, then send me the head sha and an item→section table.
+
+## Rounds 3 and 4 (heads `23eb1d6f`, `5e077a20` and `9b7d18cf`, 8 Oct 2026)
+
+- **Round 3:** the review PASSED with 3 MINOR findings; the red team found 1 MAJOR and 3 MINOR.
+  - R3-01: the 14-day margin must use the effective rate, which counts job restarts.
+  - R3-02: exclusivity wording.
+  - R3-03: the cost to M2.
+  - R3-04: Old Faithful needs #214 first.
+- **Round 4** (`5e077a20`) answered those findings:
+  - an effective-rate model;
+  - P10 as one full 300-minute job plus a restart, with a cap of 432k;
+  - P16, an auto-chain;
+  - total exposure of 9,454,478.
+- **Final check FAILED on F1:** the summary did not say that P10's 432k stays counted for 31 days. That was fixed in `9b7d18cf` along with M1–M3, and the supervisor checked the final text against the review.
+- **Result:** accepted at `9b7d18cfebdb426ffbaa4469215a14c7ff036b05`. The owner is told the three options (Helius, Old Faithful, drop) with a recommendation. Nothing is spent before Phase 0 survival and the owner's rulings.
