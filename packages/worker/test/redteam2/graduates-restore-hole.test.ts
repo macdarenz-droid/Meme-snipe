@@ -42,4 +42,33 @@ describe('RT2-REG-a: a restored graduates series and the downtime hole', () => {
     // ...or survival over a window the series did not observe is unknown.
     expect(datedHonestly || s.ok === null, `graduates fact dated ${g!.obs.receivedAt - A} ms after the series' as-of; survival at the check ${JSON.stringify(s)}`).toBe(true);
   });
+
+  it('review F1: a 20 h outage, 2 h up, then a quick restart: survival at A + 24 h is still unknown', () => {
+    const p = TRIAL_POLICY.regime;
+    const items = Array.from({ length: 16 * 12 }, (_, k) => ({ mint: `G${k}`, migratedAtMs: A - p.survivalAfterMs - k * 2 * HOUR, reserveAfter: p.survivalReserveFloor + 1_000_000_000n }));
+    // Restart 1 after 20 h down: the hole is [A, A + 20.5 h).
+    const w1 = new FactWorld().push(
+      offchain(RAW.graduatesSeed, { source: 'persist', asOfMs: A, items }, 1_000n, A + DOWN),
+      slotNotice(1_001n, A + DOWN + 1_000),
+    );
+    const g1 = parseGraduates(w1.last(GRADUATES_KEY))!;
+    expect(g1.unobserved).toEqual([{ fromMs: A, toMs: A + DOWN + p.survivalAfterMs }]);
+    // Up 2 h, saved at S2 = A + 22 h 30 min (the strategy saves the series with its stretches), restarted 1 min later.
+    const S2 = A + 22.5 * HOUR;
+    const saved = g1.items.filter((i) => i.migratedAtMs + p.survivalAfterMs <= S2);
+    const w2 = new FactWorld().push(
+      offchain(RAW.graduatesSeed, { source: 'persist', asOfMs: S2, items: saved, unobserved: g1.unobserved }, 2_000n, S2 + 60_000),
+      slotNotice(2_001n, S2 + 61_000),
+    );
+    const g2 = parseGraduates(w2.last(GRADUATES_KEY))!;
+    expect(g2.unobserved).toEqual([{ fromMs: A, toMs: A + DOWN + p.survivalAfterMs }, { fromMs: S2, toMs: S2 + 60_000 + p.survivalAfterMs }]);
+    // On 184e418 (newest hole only) this was judged ok:true "1/1".
+    expect(survivalCondition(g2, A + 24 * HOUR, p)).toMatchObject({ ok: null, code: 'not-covered' });
+    // Overlapping stretches are merged when carried: a seed repeating the first one adds nothing new.
+    const w3 = new FactWorld().push(
+      offchain(RAW.graduatesSeed, { source: 'persist', asOfMs: S2, items: saved, unobserved: [...g1.unobserved!, { fromMs: A + HOUR, toMs: A + 2 * HOUR }] }, 2_000n, S2 + 60_000),
+      slotNotice(2_001n, S2 + 61_000),
+    );
+    expect(parseGraduates(w3.last(GRADUATES_KEY))!.unobserved).toEqual(g2.unobserved);
+  });
 });

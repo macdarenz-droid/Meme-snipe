@@ -318,7 +318,8 @@ describe('PERSIST-1 in the worker', () => {
     timers.set(timers.now() + down);
     const h2 = makeWorker({ stateDir, timers, seed });
     const m2 = await boot(h2);
-    await m2.run(1_000, 200, () => m2.slot());
+    // Up 40 min: past the first stretch's end, so the next one does not overlap it (overlapping ones merge).
+    await m2.run(40 * 60_000, 60_000, () => m2.slot());
     const h1Stretch = h2.worker.strategy.persistable(0)!.state.graduates.unobserved!;
     expect(h1Stretch).toHaveLength(1);
     expect(h1Stretch[0]!.fromMs).toBe(save1.ok ? save1.asOf.receivedAt : 0);

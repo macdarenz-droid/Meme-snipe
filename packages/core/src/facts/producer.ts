@@ -1733,7 +1733,8 @@ export class FactProducer {
     // R2-6: the marks from the seed's as-of to one survival window after its release were not observed: the downtime,
     // and the marks the old process still had pending (not saved). Earlier restarts' stretches come with the seed and
     // are kept with it, so the regime sums every hole in a window (pruned with the series at its keep line).
-    this.#unobserved.push(...(r.unobserved ?? []), { fromMs: r.asOfMs, toMs: at + this.#o.survivalAfterMs });
+    const all = mergeStretches([...this.#unobserved, ...(r.unobserved ?? []), { fromMs: r.asOfMs, toMs: at + this.#o.survivalAfterMs }]);
+    this.#unobserved.splice(0, this.#unobserved.length, ...all);
     this.#graduatesChanged = true;
     return { accepted: true, added: add.length, reason: null };
   }
@@ -1779,6 +1780,18 @@ export class FactProducer {
 }
 
 type GraduateItem = GraduatesFact['items'][number];
+type Stretch = { readonly fromMs: number; readonly toMs: number };
+
+/** R2-6: stretches sorted and merged where they overlap or touch, so the carried list stays one entry per hole. */
+export const mergeStretches = (xs: readonly Stretch[]): Stretch[] => {
+  const out: Stretch[] = [];
+  for (const x of [...xs].sort((a, b) => a.fromMs - b.fromMs || a.toMs - b.toMs)) {
+    const last = out.at(-1);
+    if (last !== undefined && x.fromMs <= last.toMs) out[out.length - 1] = { fromMs: last.fromMs, toMs: Math.max(last.toMs, x.toMs) };
+    else out.push(x);
+  }
+  return out;
+};
 
 /**
  * The graduates fact as of `nowMs` (one implementation for the live producer and the backtest, supervisor ruling):
@@ -1796,7 +1809,7 @@ export const graduatesFact = (
       items: [...kept].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
       ...(() => {
         // R2-6: a stretch ending before the keep line covers no mark the series still holds.
-        const kept = unobserved.filter((u) => u.toMs >= keepFrom).sort((a, b) => a.fromMs - b.fromMs || a.toMs - b.toMs);
+        const kept = mergeStretches(unobserved.filter((u) => u.toMs >= keepFrom));
         return kept.length === 0 ? {} : { unobserved: kept };
       })(),
     },

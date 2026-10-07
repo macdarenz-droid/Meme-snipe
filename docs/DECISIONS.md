@@ -3533,7 +3533,7 @@ Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2"
     - Adding the field changes the trial policy's version hash (the pinned value in `config/policy.test.ts` is updated).
   - **Review F1 (S1 ruling, saved-shape change approved by S1: only the bot's own coverage record, no personal data).** Every restart's stretch is kept, not just the newest.
     - The stretches are saved with the series as `unobserved: [{ fromMs, toMs }]`, pruned at the series' keep line.
-    - The seed carries them, and the new restart adds its own.
+    - The seed carries them, and the new restart adds its own. Stretches that overlap or touch are merged when carried and when pruned.
     - The regime sums their overlap with each check window, current and earlier: the union, so a stretch saved twice counts once.
     - Why: with only the newest stretch known, after a second restart a check before it judged the first restart's missing marks as covered. **Fail-open.**
     - A file saved before the list loads as "none known" plus the new restart's stretch, which is what happened before.
@@ -3548,6 +3548,7 @@ Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2"
   - Now (review F2): a block time ahead of its receipt, by any amount, is taken as the receipt time. A host clock more than `CHAIN_SKEW_MS` behind would otherwise under-count H14's 24 h serial count. Clamping only counts more: the safe side.
 - **Evidence.**
   - Fail before (on 959d801), pass after, all 8: `core/test/redteam2/h15-sim-slot-unbound`, `core/test/redteam2/h16-xcheck-partial-field` (2), `worker/test/redteam2/graduates-restore-hole`, `rug-check-before-lookback`, `serial-chain-ahead`, `worker/test/redteam3/graduates-quote-mint`, `rugs-coverage-store-restart`.
+  - Review probes added: the second restart (20 h down, 2 h up, saved at A + 22 h 30 min, restarted 1 min later; survival at A + 24 h is not covered, while 184e418 judged it `1/1`); two 1.5 h restarts saved and summed end to end (`persist-worker.test.ts`); the save and load round trip (`persist.test.ts`).
   - Boundary tests added: H14 checked-rug look-back edge and the undated rug (`gates/deployer-index.test.ts`); the clamp's skew edge (same file); the H15 slot lag of 7 against 8, and a missing slot (`gates/hard.test.ts`); the 20 h outage, a 40 min hole, exactly 2 h and 2 h + 1 ms, and a hole sliding out of the window (`gates/regime.test.ts`); a seed that adds nothing still marks its hole (`facts/producer.test.ts`).
   - Fixtures changed to the real shape, with no assertion loosened:
     - The gate world's simulation carries a context slot, as live raw sim reads must.
