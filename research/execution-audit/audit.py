@@ -327,6 +327,29 @@ def report():
         e = r['entry']
         lines.append(f"| {k} | {fmt(e['P_e_over_close'], 3)} | {fmt(e['avg_fill_over_close'], 3)} | {fmt(e['fee_bps'], 0)} / {fmt(e['model_fee_bps'], 0)} | "
                      f"{fmt(e['tokens_vs_model'], 3)} | {fmt(e['quote_eff_sol'], 1)} | {r.get('realtime_swaps_read')} | {r.get('mismatch_rt')} |")
+    # aggregates per goal: mean multiple of the stake (network cost excluded) on trades where every line has a fill
+    seen, groups = set(), {'B (winners 1-9)': 'B-', 'C (stop-outs, duplicate coin counted once)': 'C-'}
+    lines += ['', '| set | rule | n | model mean | hourly replay mean L=' + ' / '.join(L) + ' | real-time mean L=' + ' / '.join(L) + ' |',
+              '|---|---|---|---|---|---|']
+    for name, pre in groups.items():
+        for rule in ('R1', 'R2'):
+            rows = []
+            for k, r in d['trades'].items():
+                if not k.startswith(pre) or 'fills' not in r.get(rule + '_rt', {}) or 'fills' not in r.get(rule + '_hourly', {}):
+                    continue
+                if pre == 'C-' and r['pool'] in seen:
+                    continue
+                rows.append(r)
+            if pre == 'B-':
+                seen |= {r['pool'] for r in rows}
+            n = len(rows)
+            if not n:
+                continue
+            mm = sum(r[rule + '_hourly']['model_net_$10'] + 1 + fixed_mult for r in rows) / n
+            hm = [sum(r[rule + '_hourly']['fills'][x]['mult'] for r in rows) / n for x in L]
+            rm = [sum(r[rule + '_rt']['fills'][x]['mult'] for r in rows) / n for x in L]
+            lines.append(f"| {name} | {rule} | {n} | {fmt(mm)} | {' / '.join(fmt(v) for v in hm)} | {' / '.join(fmt(v) for v in rm)} |")
+    lines.append('(model mean adds the network cost back so all three columns are before it.)')
     lines += ['', f"Credits counted: {d.get('credits')}", '', 'Skipped: ' + json.dumps(d.get('skipped', {}))]
     open(os.path.join(HERE, 'tables.md'), 'w').write('\n'.join(lines) + '\n')
     print('\n'.join(lines))
