@@ -800,7 +800,7 @@ export class Worker {
       onFrame: (f) => this.#onFrame(f),
       onRelease: (e, r) => this.#onRelease(e, r),
     });
-    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
+    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), volumeDaysMissing: (days) => this.#volumeDaysMissing(days), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
     // RC-H4: a restored intent that is not final keeps its age across the restart: its first ledger row's time, so a stuck
@@ -2561,6 +2561,21 @@ export class Worker {
     for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
     this.#noteCreates(result.creates);
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
+  }
+
+  /**
+   * NT-1: the regime judged curve volume without some days of its window (not published, uncovered or tampered): a named
+   * critical alert in the journal (counted in the daily summary) and the log; cleared once every day is present again.
+   */
+  #volumeDaysMissing(days: readonly number[]): void {
+    const names = days.map((d) => new Date(d * 86_400_000).toISOString().slice(0, 10));
+    if (days.length === 0) {
+      this.#journal.write('alert', { level: 'cleared', code: 'volume_days_missing', reasons: ['every curve volume day of the window is present again'] });
+      return;
+    }
+    const why = `curve volume judged without ${days.length} day(s) of its window: ${names.join(', ')}`;
+    this.#journal.write('alert', { level: 'critical', code: 'volume_days_missing', reasons: [why] });
+    this.#d.log(`ALERT ${why}`);
   }
 
   /** Trades with an exit planned, requested or signed and not yet final, or a due exit waiting for its first fresh quote (EXIT-1c): what a restart must not lose (RUN-1d). */

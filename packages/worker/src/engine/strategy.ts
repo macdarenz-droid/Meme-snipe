@@ -376,6 +376,11 @@ export interface StrategyDeps {
   readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
+  /**
+   * NT-1: told when the volume days the current regime check left out of its percentile change (empty when none are
+   * missing again), so the worker raises a named alert instead of judging silently on fewer days.
+   */
+  readonly volumeDaysMissing?: (days: readonly number[]) => void;
   /** Test seam: replaces the size `#riskSize` settled on (tests force the probe and risk to disagree); production never sets it. */
   readonly sizeProbe?: (sized: { readonly spend: Lamports; readonly notional: MicroUsd }) => { readonly spend: Lamports; readonly notional: MicroUsd };
 }
@@ -946,6 +951,18 @@ export class LiveStrategy implements Strategy {
       mintRows: this.#deployers.mintRows(retainFromMs, clamp),
       clamp,
     };
+  }
+
+  /** NT-1: the volume days the last judged check left out, as last told. */
+  #volumeMissing = '';
+
+  #noteVolumeMissing(v: { readonly ok: boolean | null; readonly missing?: readonly number[] } | undefined): void {
+    if (v === undefined || v.ok === null) return;
+    const days = v.missing ?? [];
+    const key = days.join(',');
+    if (key === this.#volumeMissing) return;
+    this.#volumeMissing = key;
+    this.#d.volumeDaysMissing?.(days);
   }
 
   /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
@@ -2373,6 +2390,7 @@ export class LiveStrategy implements Strategy {
     if (kept === null && this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` }]);
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
+    this.#noteVolumeMissing(regime.checks[0]?.conditions.find((x) => x.condition === 'volume'));
     // Served: while the set is on, every part it configures, whatever this candidate reached (API-1 N1'), so the card
     // never reads a plain "On" while any part (H14's creates coverage) is waived; set order, then anything else waived.
     const served = c.s0Diagnostic === true ? [...S0_DIAGNOSTIC_PARTS, ...regime.waived.filter((w) => !S0_DIAGNOSTIC_PARTS.includes(w))] : [...regime.waived];

@@ -22,7 +22,11 @@ export type RegimeCondition = 'survival' | 'volume' | 'sol-change';
 
 /** One condition at one check: its value and limit (logged as features), or why it could not be computed. */
 export type ConditionResult =
-  | { readonly condition: RegimeCondition; readonly ok: boolean; readonly value: string; readonly limit: string }
+  | {
+    readonly condition: RegimeCondition; readonly ok: boolean; readonly value: string; readonly limit: string;
+    /** NT-1: volume days inside the window left out of the percentile (not published, uncovered or tampered). */
+    readonly missing?: readonly number[];
+  }
   | { readonly condition: RegimeCondition; readonly ok: null; readonly code: EvidenceCode; readonly input: FactName; readonly detail: string };
 
 export interface RegimeCheck {
@@ -129,8 +133,10 @@ export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regim
 
 /**
  * Curve volume of day L = D - volumeLagDays (D is the check's UTC day) against the nearest-rank percentile of the
- * expanding window from max(series start, L - volumeWindowDays + 1) to L. Fewer than volumeMinDays days in the window,
- * or any day in it missing, is unknown. The lag leaves room for the archive to finish a day before it is read.
+ * expanding window from max(series start, L - volumeWindowDays + 1) to L. The lag leaves room for the archive to finish a
+ * day before it is read. NT-1 (S1 ruling): the percentile is taken over the days present; a day not published,
+ * uncovered or tampered is left out and named in `missing` (the worker raises an alert), never a block for the year it
+ * stays in the window. Day L itself missing, or fewer than volumeMinDays days present, is unknown.
  */
 export const volumeCondition = (v: CurveVolumeFact, at: number, p: Policy['regime']): ConditionResult => {
   const lastDay = Math.floor(at / DAY_MS) - p.volumeLagDays;
@@ -140,17 +146,22 @@ export const volumeCondition = (v: CurveVolumeFact, at: number, p: Policy['regim
   }
   const byDay = new Map<number, bigint>();
   for (const d of v.days) if ((d.day + 1) * DAY_MS <= at) byDay.set(d.day, d.volumeLamports);
+  const last = byDay.get(lastDay);
+  if (last === undefined) return unknown('volume', 'curve-volume', 'not-covered', `no curve volume for UTC day ${lastDay}`);
   const span: bigint[] = [];
+  const missing: number[] = [];
   for (let day = firstDay; day <= lastDay; day++) {
     const x = byDay.get(day);
-    if (x === undefined) return unknown('volume', 'curve-volume', 'not-covered', `no curve volume for UTC day ${day}`);
-    span.push(x);
+    if (x === undefined) missing.push(day);
+    else span.push(x);
   }
-  const last = byDay.get(lastDay)!;
+  if (span.length < p.volumeMinDays) {
+    return unknown('volume', 'curve-volume', 'not-covered', `${span.length} days of curve volume present up to UTC day ${lastDay} (${missing.length} missing); ${p.volumeMinDays} needed`);
+  }
   const sorted = [...span].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const rank = Math.ceil((p.volumePercentile * sorted.length) / 100);
   const pct = sorted[Math.max(rank, 1) - 1]!;
-  return { condition: 'volume', ok: last >= pct, value: String(last), limit: String(pct) };
+  return { condition: 'volume', ok: last >= pct, value: String(last), limit: String(pct), ...(missing.length === 0 ? {} : { missing }) };
 };
 
 /** SOL's change over the 24 h ending at `at`, in basis points (rounded down), must be above the floor. */

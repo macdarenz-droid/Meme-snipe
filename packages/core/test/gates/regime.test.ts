@@ -109,7 +109,9 @@ describe('regime gate', () => {
   });
 
   it('is off at once when the current check cannot be computed (unknown evidence)', () => {
-    const missingDay = patch(passingFacts(), CURVE_VOLUME_KEY, { days: volumeDays(Math.floor(T / DAY_MS) - 1, 400).filter((d) => d.day !== Math.floor(T / DAY_MS) - 50) });
+    // NT-1: an older missing day is left out; the day the check judges (L = check day - volumeLagDays) missing is unknown.
+    const judged = Math.floor(C0 / DAY_MS) - TRIAL_POLICY.regime.volumeLagDays;
+    const missingDay = patch(passingFacts(), CURVE_VOLUME_KEY, { days: volumeDays(Math.floor(T / DAY_MS) - 1, 400).filter((d) => d.day !== judged) });
     const r = run(missingDay);
     expect(r.on).toBe(false);
     expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'unknown', input: 'curve-volume' }));

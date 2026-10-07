@@ -3566,6 +3566,32 @@ Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2"
     - R2-6: no hole set; the hole without its survival window; the regime ignores the hole; `>=` for `>` against the limit; the overlap measured without clipping to the window.
     - R2-7: no clamp; an unbounded clamp.
 
+## One missing chain-volume day no longer blocks the regime for a year (NT-1, red team A round 3; `gates/regime.ts` `volumeCondition`, `engine/strategy.ts` `volumeDaysMissing`, `run/worker.ts`)
+
+- **2026-10-07 · Why.** Red team A round 3 (`claude/redteam-a` @ 1244422, probe `core/test/redteam3/volume-one-missing-day.test.ts`) showed a never-trades fault.
+  - `volumeCondition` needed every UTC day of its window (up to 365).
+  - A day is absent when it is never published, when one of its hours is uncovered, or when its release changed after it was verified ("tampered"; FACTS-1d keeps it unknown for good).
+  - So one such day turned the regime off on every check, live and in the backtest, until it left the window: up to 365 days. The percentile it feeds would still rest on hundreds of days.
+- **Rule (S1 ruling).**
+  - The 25th percentile is taken over the days present in the window, as long as at least `volumeMinDays` (28) are present.
+  - Day L itself (the check day less the lag), whose volume is the value compared, must be present; otherwise unknown, as before.
+  - The days left out are listed on the condition (`missing`). Fewer than 28 present is unknown, with the counts named.
+- **Alert, never silent.**
+  - When the left-out set of the current judged check changes, the strategy tells the worker (`volumeDaysMissing`).
+  - The worker writes a critical `volume_days_missing` alert to the journal, naming the days. The daily summary counts it under alerts.
+  - The worker logs an `ALERT` line. When every day is present again, it writes `cleared`.
+  - A tampered day keeps its own alert from the reader (FACTS-1d).
+- **Effect on parity.** Live and the backtest share `volumeCondition`, so they stay equal. A backtest with every day present decides exactly as before: the synthetic BT-3 decision-log hashes are equal at base and head.
+- **Evidence.**
+  - The probe fails before (unknown with 196 of 197 days) and passes after.
+  - `gates/regime-volume.test.ts` covers:
+    - a missing day left out and named;
+    - day L missing: unknown;
+    - exactly 28 present: judged; 27: unknown;
+    - the window cap with a missing day inside it named, and one outside it not.
+  - `gates/regime.test.ts`: the judged day missing turns the regime off at once.
+  - `worker/test/volume-days-alert.test.ts`: the journal alert, the log line and the summary count, with the coin still judged and entered.
+
 ## Red team C's provider findings fixed (RC-FIXES, `providers/socket.ts`, `run/sources.ts` `CreditBook`, `run/worker.ts` `FETCH_TX_CREDITS`, `facts/readers.ts` `#scanOwners`)
 
 - **2026-10-07 · Why.** Red team C reproduced these faults on 959d8017 (probes on `claude/redteam-c`, brought in as `worker/test/redteam-c/`):

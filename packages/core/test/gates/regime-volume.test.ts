@@ -54,9 +54,18 @@ describe('regime volume rule', () => {
     expect(r.reasons).toContainEqual({ code: 'unknown', input: 'curve-volume', detail: `no curve volume for UTC day ${D - 3}` });
   });
 
-  it('any missing day inside the window is unknown', () => {
+  it('NT-1: a missing day inside the window is left out and named; the day judged, or fewer than 28 present, is unknown', () => {
     const last = START + 60;
-    expect(volumeCondition(fact(series(START, last).filter((d) => d.day !== START)), checkFor(last), P).ok).toBeNull();
+    // The percentile is taken over the 60 days present; the missing one is named for the alert.
+    expect(volumeCondition(fact(series(START, last).filter((d) => d.day !== START)), checkFor(last), P)).toEqual({ condition: 'volume', ok: true, value: String(BIG), limit: String(BIG), missing: [START] });
+    // The day judged itself missing: unknown (its volume is the value compared).
+    expect(volumeCondition(fact(series(START, last).filter((d) => d.day !== last)), checkFor(last), P)).toMatchObject({ ok: null, code: 'not-covered' });
+    // Exactly 28 days present in a 40-day window: judged; 27: unknown.
+    const short = START + 39;
+    const holes = (n: number) => series(START, short).filter((d) => d.day === short || d.day - START >= n);
+    expect(holes(12)).toHaveLength(28);
+    expect(volumeCondition(fact(holes(12)), checkFor(short), P)).toMatchObject({ ok: true, missing: Array.from({ length: 12 }, (_, k) => START + k) });
+    expect(volumeCondition(fact(holes(13)), checkFor(short), P)).toMatchObject({ ok: null, code: 'not-covered', detail: expect.stringContaining('27 days of curve volume present') });
   });
 
   it('caps the window at 365 days', () => {
@@ -65,8 +74,8 @@ describe('regime volume rule', () => {
     // Days older than the cap are tiny (39% of the series) and one is missing: neither counts.
     const days = series(START, last, (d) => (d <= outside ? 1n : BIG)).filter((d) => d.day !== outside);
     expect(volumeCondition(fact(days), checkFor(last), P)).toEqual({ condition: 'volume', ok: true, value: String(BIG), limit: String(BIG) });
-    // The oldest day inside the cap is read: missing, it is unknown.
-    expect(volumeCondition(fact(days.filter((d) => d.day !== outside + 1)), checkFor(last), P).ok).toBeNull();
+    // The oldest day inside the cap is read: missing, it is left out and named (NT-1), while one outside is not named.
+    expect(volumeCondition(fact(days.filter((d) => d.day !== outside + 1)), checkFor(last), P)).toEqual({ condition: 'volume', ok: true, value: String(BIG), limit: String(BIG), missing: [outside + 1] });
   });
 
   it('a day not yet ended at the check is never read', () => {
