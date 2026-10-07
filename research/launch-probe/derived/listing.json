@@ -1,0 +1,15 @@
+{
+"discovery": {
+"launches": 2297,
+"tx_to_fetch": 221950,
+"max": 6488
+},
+"validation": {
+"launches": 1990,
+"tx_to_fetch": 206747,
+"max": 4012
+},
+"credits_used": 209710,
+"tx_credits_needed": 4286970,
+"fits": false
+}
