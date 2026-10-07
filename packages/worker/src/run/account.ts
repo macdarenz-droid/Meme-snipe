@@ -138,7 +138,16 @@ export interface AccountState {
    * files from before.
    */
   counts?: { readonly trades: number; readonly entries: number };
+  /**
+   * RC-FIXES: which of the fields that, once set, are never unset (`KEPT_FIELDS`) this file held when it was written. One
+   * listed but gone was lost (the setup rent paid again, R10's high-water mark or the day's and week's marks started
+   * again): refused. Absent in files from before.
+   */
+  present?: readonly string[];
 }
+
+/** Fields that, once set, stay set for the life of the account. */
+const KEPT_FIELDS = ['walletLamports', 'oneTimePaid', 'setup', 'navPeak', 'dayMark', 'weekMark'] as const;
 
 export interface StrayFee {
   readonly atMs: number;
@@ -167,10 +176,10 @@ const isTrade = (t: unknown): boolean => isObj(t) && typeof t['positionId'] === 
   && (t['closedAtMs'] === null || isTime(t['closedAtMs'])) && (t['netLamports'] === null || isInt(t['netLamports'])) && (t['netPnl'] === null || isInt(t['netPnl']));
 
 /**
- * RC-FIXES (R2-4): the whole file checked, not four fields. Every figure has its type and range, and a file that holds
- * a trade holds what a trade needs: the wallet, its one-time setup, the NAV peak and the day and week marks (without
- * them a restart pays the setup rent again, and R10's high-water mark and the day's and week's losses start again).
- * Lists shorter than their saved counts lost records. Anything else is damage: the start is refused.
+ * RC-FIXES (R2-4): the whole file checked, not four fields. Every figure has its type and range. Lists shorter than
+ * their saved counts lost records, and a field the file says it held but no longer does was lost (`present`): without
+ * them a restart books an entry twice, pays the setup rent again, or starts R10's high-water mark and the day's and
+ * week's losses again. Anything else is damage: the start is refused.
  */
 export const checkAccount = (v: unknown): AccountState | null => {
   if (!isObj(v) || !isTime(v['openedAtMs']) || !isInt(v['openingEquity']) || v['openingEquity'] <= 0n) return null;
@@ -186,7 +195,9 @@ export const checkAccount = (v: unknown): AccountState | null => {
   const counts = v['counts'];
   if (!opt(counts, (x) => isObj(x) && isTime(x['trades']) && isTime(x['entries']))) return null;
   if (isObj(counts) && (trades.length < (counts['trades'] as number) || entries.length < (counts['entries'] as number))) return null;
-  if (trades.length > 0 && (w === null || v['oneTimePaid'] !== true || v['setup'] === undefined || v['navPeak'] === undefined || v['dayMark'] === undefined || v['weekMark'] === undefined)) return null;
+  const present = v['present'];
+  if (!opt(present, (x) => Array.isArray(x) && x.every((k) => typeof k === 'string'))) return null;
+  if (Array.isArray(present) && present.some((k) => v[k as string] === undefined || v[k as string] === null)) return null;
   return v as unknown as AccountState;
 };
 
@@ -230,6 +241,7 @@ export class PaperAccount {
   /** Writes the file with its list counts (RC-FIXES). */
   #save(): void {
     this.#s.counts = { trades: this.#s.trades.length, entries: this.#s.entries.length };
+    this.#s.present = KEPT_FIELDS.filter((k) => this.#s[k] !== undefined && this.#s[k] !== null);
     this.#file.write(this.#s);
   }
 

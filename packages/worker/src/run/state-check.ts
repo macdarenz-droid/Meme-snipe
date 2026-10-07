@@ -8,16 +8,17 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseTyped } from './json.ts';
 
-/** The ledger's file name (core's `Ledger.FILE`), checked before the ledger is opened. */
-const LEDGER = 'ledger.sqlite';
 /** The state files that say the bot traded, and what they hold when it did. */
 export const TRADE_EVIDENCE_FILES = ['account.json', 'paper.json', 'exits.json'] as const;
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** The ledger file is there and not empty (a 0-byte file is a lost ledger: SQLite would open it as a new one). */
-export const ledgerPresent = (dir: string): boolean => {
-  const p = join(dir, LEDGER);
+/**
+ * The ledger file (`ledger`: its name, core's `Ledger.FILE`) is there and not empty: a 0-byte file is a lost ledger, which
+ * the database would open as a new one.
+ */
+export const ledgerPresent = (dir: string, ledger: string): boolean => {
+  const p = join(dir, ledger);
   return existsSync(p) && statSync(p).size > 0;
 };
 
@@ -44,12 +45,12 @@ const traded = (dir: string, name: (typeof TRADE_EVIDENCE_FILES)[number]): strin
  * Before the ledger is opened: a missing or empty ledger with state files that say the bot traded is a lost ledger,
  * never a cold start (its open positions would be dropped with no stop). Returns why it refuses, or null.
  */
-export const ledgerLost = (dir: string): string | null => {
-  if (ledgerPresent(dir)) return null;
+export const ledgerLost = (dir: string, ledger: string): string | null => {
+  if (ledgerPresent(dir, ledger)) return null;
   const why = TRADE_EVIDENCE_FILES.map((f) => traded(dir, f)).filter((x): x is string => x !== null);
   if (why.length === 0) return null;
-  const p = join(dir, LEDGER);
-  return `${LEDGER} is ${existsSync(p) ? 'empty' : 'missing'} but ${why.join(', ')}: refusing to start on a lost ledger (restore it from the backup)`;
+  const p = join(dir, ledger);
+  return `${ledger} is ${existsSync(p) ? 'empty' : 'missing'} but ${why.join(', ')}: refusing to start on a lost ledger (restore it from the backup)`;
 };
 
 /** What the ledger holds that the other state files must agree with. */
@@ -58,8 +59,11 @@ export interface LedgerEvidence {
   readonly existed: boolean;
   /** Book events (positions or intents): the bot has traded. */
   readonly traded: boolean;
-  /** The signatures of every attempt the ledger holds. */
-  readonly attempts: readonly string[];
+  /**
+   * The signatures of every fill the ledger holds: each was a paper attempt that landed, so paper.json must hold it. (An
+   * attempt signed but never sent is in the ledger and not in paper.json: a death between the two.)
+   */
+  readonly fills: readonly string[];
 }
 
 /** After the ledger is opened: the files a ledger with trades needs. */
@@ -76,8 +80,10 @@ export interface StateVerdict {
 export const checkState = (dir: string, ledger: LedgerEvidence): StateVerdict => {
   const refuse: string[] = [];
   if (!ledger.traded) {
-    // An empty ledger: nothing else may say the bot traded (a ledger restored older than the files, or emptied).
-    for (const f of TRADE_EVIDENCE_FILES) {
+    // An empty ledger: no paper attempt or exit plan may say the bot traded (a ledger restored older than the files, or
+    // emptied). account.json is left out here: tests and tools seed its trades alone, and a lost or empty ledger file
+    // with account trades is refused before the ledger is opened (`ledgerLost`).
+    for (const f of ['paper.json', 'exits.json'] as const) {
       const why = traded(dir, f);
       if (why !== null) refuse.push(`the ledger holds no trades but ${why}`);
     }
@@ -94,7 +100,7 @@ export const checkState = (dir: string, ledger: LedgerEvidence): StateVerdict =>
       // The paper world's own read refuses it.
     }
   }
-  const lost = ledger.attempts.filter((s) => !known.has(s));
-  if (lost.length > 0) refuse.push(`paper.json ${existsSync(paper) ? `lacks ${lost.length} of the ledger's ${ledger.attempts.length} attempts` : 'is missing while the ledger holds attempts'} (their fees and fills would be counted again)`);
+  const lost = ledger.fills.filter((s) => !known.has(s));
+  if (lost.length > 0) refuse.push(`paper.json ${existsSync(paper) ? `lacks ${lost.length} of the ledger's ${ledger.fills.length} filled attempts` : 'is missing while the ledger holds fills'} (their fees and fills would be counted again)`);
   return { refuse, controlLost: ledger.existed && !existsSync(join(dir, 'control.json')) };
 };

@@ -8,7 +8,8 @@ import type { MicroUsd } from '../../core/src/units/index.ts';
 import { simulationLatency } from '../../runner/src/item4.ts';
 import { markedHistory } from '../src/engine/marks.ts';
 import { accountFile } from '../src/run/account.ts';
-import { controlFile } from '../src/run/state.ts';
+import { NO_CONTROL, controlFile } from '../src/run/state.ts';
+import { Ledger, openLedger } from '../../core/src/ledger/index.ts';
 import { blockNetwork } from './helpers.ts';
 import { T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 import { readFileSync } from 'node:fs';
@@ -40,6 +41,10 @@ const seeded = (over: Record<string, unknown>): string => {
   const dir = tempState();
   const f = accountFile(dir);
   f.write({ openedAtMs: T - 30 * 86_400_000, openingEquity: usd('20'), walletLamports: null, trades: [], entries: [], ...over } as never);
+  // RC-FIXES: the ledger the account's trades came from (empty here) and the owner controls of that earlier run; without
+  // the ledger a start refuses the trades as a lost ledger, and without control.json it starts latched.
+  openLedger(join(dir, Ledger.FILE), 'paper').close();
+  controlFile(dir).write(NO_CONTROL);
   return dir;
 };
 

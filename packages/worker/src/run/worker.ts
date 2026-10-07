@@ -769,16 +769,16 @@ export class Worker {
     // paper position is not on chain, so nothing does. Marked until a full start journals its `recovered` line.
     // RC-FIXES: a missing or empty ledger is a cold start only when no other state file says the bot traded; otherwise
     // it is a lost ledger and the start is refused before anything writes (an empty file would open as a new ledger).
-    const lostLedger = ledgerLost(c.stateDir);
+    const lostLedger = ledgerLost(c.stateDir, Ledger.FILE);
     if (lostLedger !== null) throw new StateRefused(lostLedger);
-    const existed = ledgerPresent(c.stateDir);
+    const existed = ledgerPresent(c.stateDir, Ledger.FILE);
     if (!existed) writeFileSync(join(c.stateDir, COLD_START), new Date(now).toISOString());
     this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
     // RC-FIXES: a ledger with trades needs the files that go with it, checked before any of them is read with a default.
     const verdict = checkState(c.stateDir, {
       existed,
       traded: this.#ledger.allIntents().length > 0 || this.#ledger.allPositions().length > 0,
-      attempts: this.#ledger.allAttempts().map((a) => String(a.signature)),
+      fills: this.#ledger.allFills().map((f) => String(f.signature)),
     });
     if (verdict.refuse.length > 0) {
       this.#ledger.close();

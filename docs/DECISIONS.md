@@ -3509,13 +3509,15 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Choices.**
   - **One start-time check (`state-check.ts`), before anything writes a default.**
     - The ledger is lost when it is missing or empty while account.json, paper.json or exits.json say the bot traded. An unreadable file counts as saying so. The start is refused (`StateRefused`) before the ledger is opened, so an empty file stays empty and every later start refuses again. Otherwise it is a cold start, as before.
-    - A ledger that holds trades needs account.json, and paper.json must hold every attempt the ledger holds; otherwise the start is refused. A ledger with no trades refuses files that say the bot traded (an older ledger restored with newer files).
+    - A ledger that holds trades needs account.json, and paper.json must hold every fill the ledger holds; otherwise the start is refused. Attempts are not asked for: one signed but never sent is in the ledger and not in paper.json (a death between the two, TEST-3).
+    - A ledger with no trades refuses paper attempts or exit plans that say the bot traded (an older ledger restored with newer files). account.json's trades alone are not refused there, because tests and tools seed them without a ledger. With the ledger file missing or empty they are refused, as above.
     - control.json is written at every start. A start after an earlier one (the ledger was there) that finds it missing latches the kill switch, pauses entries and journals a critical `state_lost` alert. It does not wait for trades, since R10 can trip on a price move alone. A state dir from before this change that never wrote control.json gets that latch once; the owner re-arms and resumes.
     - Refusing to start is the safe side for the files that hold money: the paper wallet and the paper attempts. Under `Restart=always` the unit retries every 5 s and refuses each time, with the reason in the log, until the files are restored. No position is watched meanwhile, but none is booked wrong.
   - **account.json checked whole (`checkAccount`).**
     - Every figure is checked for its type and range: the wallet from 0 up to SOL's supply, the opening equity and NAV peak above 0, and times as whole non-negative numbers.
-    - A file with a trade must hold the wallet, the setup, the NAV peak and the day and week marks.
-    - Each write records how many trades and entries the file holds. Neither list ever shrinks, so lists shorter than their counts are refused. Files from before have no counts and skip that check.
+    - Each write also records how many trades and entries the file holds, and which of the wallet, setup, NAV peak and day and week marks it held (`present`). None of these is ever removed or unset.
+    - So lists shorter than their counts are refused, and so is a listed field that is gone (an entry booked twice, the setup rent paid again, R10's high-water mark or the day's and week's losses started again).
+    - Files from before have no counts and no `present` list, so they are checked by type and range only.
   - **Backup (`zeroed-backup`).**
     - Everything in the state dir is packed, except:
       - the journal and the recording;
@@ -3527,4 +3529,4 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - Before an entry's buy is sent, `Recorder.durable()` writes every buffered line and fsyncs each open file. A failure sets the recorder fault, and the entry is refused (fail closed). The cost is a flush and a few fsyncs per entry send, on the entry path only (a few a day), not per step.
     - The engine sends the buy while it applies `submit`, before that decision is logged. So a kill right after the send leaves a journal without `submit` while the recording replays it.
     - `checkBoot` forgives only that, and only for a boot whose journal has no stop line: the replay may run past the journal's end with lines of the journal's last event alone. A clean boot, and any line that differs before the end, are still compared strictly.
-- **Evidence.** The probes fail on 959d8017 and pass here: r2-corrupt-state's 87 damage cases (20 failed before), state-backup-restore, entry-evidence and backup-coverage. New tests: `state-check.test.ts` (26), `kill-cut.test.ts` (3) and `ops/test/backup-state.test.ts` (3).
+- **Evidence.** The probes fail on 959d8017 and pass here: r2-corrupt-state's 87 damage cases (20 failed before), state-backup-restore, entry-evidence and backup-coverage. New tests: `state-check.test.ts` (28), `kill-cut.test.ts` (3) and `ops/test/backup-state.test.ts` (3).
