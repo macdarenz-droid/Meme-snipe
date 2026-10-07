@@ -150,6 +150,9 @@
   - #293 round 2 head `e69fc5c6` (rulings 1–22). Delta review and red team round 2 were sent to the same sessions.
   - #293 round 1: red team 3 BLOCKER, 6 MAJOR, 4 MINOR; reviewer FAIL with 4 MAJOR. Rulings 9–22 (`docs/reviews/STRATEGY-INTAKE.md`) went to the researcher. A delta review and red team follow.
   - **#296 OF-2** (draft, head `e1412b7c`): test-ci 186/0 (44 fail on the base), go vet and go test ok, lint ok; label `deps-reviewed:cc6e5baf393cbcb4043c5388822a8a06`. ARCHIVE_ARM and ARCHIVE_RETENTION are empty, and ARCHIVE_REARM_AT is 2026-10-07T22:30:00Z. Data reviewer `session_017x89LKh2CEx5Hwkte14btR`, red team `session_01LQHpKvikNEWAw96tHRnZq3`. OF-3 must record `retention` as the literal K2 or K3. The builder is on OF-1 (#214).
+  - **#214 OF-1** (head `85bf868e`, merge commits only): base merged, OF-2 merged in, and test-ci's OF-1 cases added (armed and served → 07-22; unarmed → none; 09-20 never). test-ci 187/0; 2 fail on OF-2 alone. Label `deps-reviewed:cc6e5baf393cbcb4043c5388822a8a06`. The #296 reviewer and red team take it as a delta after #296. Merging it makes the 09-21 Helius cache stale (option a, accepted).
+  - The data builder moved on to OF-3 (`claude/of3-scanner`, stacked on `claude/archive-safe-b`).
+  - Owner question (9:46 AM): where owner-origin strategies live (A: private repo with public hash commitments, recommended; B: the whole repo private). #293 ruling 54. Pending.
   - #293 STRATEGY-INTAKE: delta review round 4 PASS at `5d1ec4c4` (one optional MINOR). Red team round 4 pending.
   - Each finished PR gets a fresh reviewer and a red team. Lockfile and DEPENDENCIES.md conflicts between Z02 and Z05 are settled at the second merge by a base merge and a regenerated lockfile, then a new label.
 - **8 Oct about 8:55 AM, why the server is still on `171a61ce` (owner's `journalctl -u zeroed-update` photo):**
