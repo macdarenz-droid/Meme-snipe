@@ -3393,6 +3393,26 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - No other unnamed event changes shape.
     - Tests: the same discriminator at ±8 bytes, at the other event's size, or with no size is stale. A DEDUP echo of a 104-byte ExtendAccount is stale. DEC-1 gives the size for these two only, and not for the pump program.
     - Mutants, 3 of 3 killed: size unchecked; size not given; size given for the pump program too.
+  - **RT-A4 (red team A, critical): a heal cleared the late book's partial flag.**
+    - `#bookTake` set `partial` only after its swap loop, so the marks taken inside it held `partial: false`, and `#heal` restores `partial` from its mark.
+    - The trigger: a late migration with more than 64 kept swaps (the oldest dropped), plus a late cut log at the last kept swap's slot. The heal gave candles with no partial flag and two swaps missing, and H11 passed.
+    - Now a book that opened late with swaps it needed dropped carries a separate sticky `dropped` flag, set before any swap is taken. The candles read partial while it is set, and no heal touches it, so only a book that never lost a swap can read complete.
+    - Test: red team A's probe (`core/test/redteam/heal-clears-sticky-partial.test.ts`) fails on 959d8017 and passes now.
+  - **RT-A5 (red team A, high, fail-closed): a hole seen before a late-opened book never healed.**
+    - `#holeHeal` returned with no book, and the hole's fetched swaps were then dropped. The gap stayed, so H11 refused a good coin for its whole window.
+    - Now, while the pool has no book, these are kept for it in release order under the same caps and horizon as its swaps: the hole, its fetched transaction's swaps, a PumpSwap event other than a swap in that transaction (`#preBookHoles` maps the signature to its pool, capped at `HOLE_SIGS_KEEP`), its fetch outcome, and any pool event other than a swap on its watch.
+    - When the book opens, they are replayed through the same calls a live heal takes (`#holeHeal`, `h.fetched`, `h.tainted`, `h.other`, `#holeOutcome`), so a heal that arrives in chain order closes the hole.
+    - Fail closed as live: not found, a tainted transaction, or a non-swap pool event since the mark leave the hole. Events dropped past the cap make the book partial (RT-A4).
+    - Tests: red team A's probe (`late-book-hole-never-heals.test.ts`) and `core/test/facts/late-book-heal.test.ts`. The heal test, with the outcome also before the book, fails on 959d8017. The three fail-closed cases are guards that held before.
+    - The worker late-migration parity test now starts the pool's watch at its migration, as PoolWatch does, rather than at the coin's creation, since the book-keeping horizon counts from the watch start.
+  - **Mutants for RT-A4 and RT-A5, 11 of 11 killed:**
+    - `dropped` not set;
+    - `dropped` not read;
+    - partial set after the loop (the old order);
+    - hole, fetched swaps, outcome or taint not kept;
+    - taint not applied;
+    - a non-swap pool event not kept for the book, or not applied;
+    - a not-found outcome healing.
   - **Not fixed: P6 (facts review).** After a pool leaves the watch list (`not watched`) without being retired, its trade stream stays. A swap of it seen later (from a fetched transaction) is kept again for its chain, and for its book within the horizon. This holds memory only, bounded by the caps, and changes no fact: the pool has no chain, and nothing reads it once unwatched.
 
 ## A candidate's missing stage-1 facts are read again under their own budget (FACTS-REREAD, `run/worker.ts` `#rereadFacts`, `REREAD_CREDITS_PER_DAY`)
