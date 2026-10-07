@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7ecacdd18481b8015ebf74c9d3adb0daeeeb57e7/ops/install.sh -o i && echo '77ceb83a70a1f75d7289ce9f8d9715a5c9632365e93f55ac2eb17a73b7d7672e  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7ecacdd18481b8015ebf74c9d3adb0daeeeb57e7/ops/install.sh -o i && echo '2dac29e8826d4b572b0430094095c83fcd60e1b55d14561a3e67fca6368dd222  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7ecacdd1
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `77ceb83a70a1f75d7289ce9f8d9715a5c9632365e93f55ac2eb17a73b7d7672e`
+SHA-256 of `install.sh`: `2dac29e8826d4b572b0430094095c83fcd60e1b55d14561a3e67fca6368dd222`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -74,7 +74,7 @@ First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). 
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It also copies the worker's other state files: the owner's pause and the risk latches, the paper wallet and attempts, exit plans and budgets. It leaves out the journal, the recording, the deployer store `deployers.jsonl` (rebuilt from the chain) and one-boot markers. It keeps `deployer-state.json`, which holds the regime's graduates series. The ledger and the files that must agree with it are taken as one cut. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
 **Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
 
@@ -88,7 +88,28 @@ To restore for real:
 1. `systemctl stop zeroed-worker`
 2. Decrypt and unpack the bundle into `/var/lib/zeroed`.
 3. `chown -R zeroed-worker: /var/lib/zeroed`
-4. `systemctl start zeroed-worker` (it reconciles first).
+4. `systemctl reset-failed zeroed-worker` (clears a refused start, below)
+5. `systemctl start zeroed-worker` (it reconciles first).
+
+### A refused start
+
+The worker checks its saved files against each other before it starts. If they disagree, it does not start on defaults. For example: the ledger is missing or empty while the other files show trades, account.json is missing, or paper.json lacks a fill. It then writes the reason to `/var/lib/zeroed/refused.json` and to the journal. The unit's `--reconcile` pre-step exits 0 after writing it, because systemd ignores RestartPreventExitStatus for a pre-step. The main start then checks again, refuses and exits with code 78 (`ExecMainStatus=78`). The unit does not restart it, so `systemctl status zeroed-worker` shows it failed.
+1. Read why: `cat /var/lib/zeroed/refused.json`
+2. Restore the files from the newest backup: the steps above, including `reset-failed`.
+3. If no backup holds them (one taken before this release packs only the ledger), the only safe way on is a cold start. The paper positions are not recovered, so they are written off, as on a host lost with no backup:
+   1. `systemctl stop zeroed-worker`
+   2. `mv /var/lib/zeroed /var/lib/zeroed.refused-$(date +%s)` (kept for study)
+   3. `systemctl reset-failed zeroed-worker`
+   4. `systemctl start zeroed-worker` (systemd makes a new, empty state folder)
+
+### Re-arming the kill switch by hand
+
+A start that finds control.json gone latches the kill switch and pauses entries, with a critical `state_lost` alert. This only happens once this release has run on the folder; before that, older releases wrote control.json only on a trip or a pause, so its absence is no loss. There is no re-arm command yet (#190, parked). After checking the account, the owner re-arms on the host:
+1. `systemctl stop zeroed-worker`
+2. `sudo -u zeroed-worker /usr/local/bin/node -e 'const fs=require("fs"),f="/var/lib/zeroed/control.json",c=JSON.parse(fs.readFileSync(f,"utf8"));c.latches.killRearmedAtMs=Date.now();c.paused=false;c.pausedAtMs=null;fs.writeFileSync(f+".tmp",JSON.stringify(c)+"\n");fs.renameSync(f+".tmp",f)'`
+3. `systemctl start zeroed-worker`
+
+The kill switch counts as re-armed once `killRearmedAtMs` is later than `killTrippedAtMs`. R10's NAV high-water mark starts again from that moment.
 
 ## Watchdog (OPS-1b)
 

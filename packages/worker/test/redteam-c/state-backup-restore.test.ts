@@ -24,7 +24,7 @@ const priced = (h: H, m: Market, ppm: bigint): void => {
 const hostLossRestore = (dir: string): string[] => {
   const gone: string[] = [];
   const kept = (name: string): boolean => /\.(sqlite|db)$/.test(name)
-    || (!/^journal\.jsonl/.test(name) && name !== 'recorder' && name !== 'deployers.jsonl' && name !== 'deployer-state.json'
+    || (!/^journal\.jsonl/.test(name) && name !== 'recorder' && name !== 'deployers.jsonl'
       && !/\.(lock|tmp|new)$/.test(name) && !/-(wal|shm|journal|writer\.lock)$/.test(name)
       && !['clean_stop', 'planned_restart', 'cold_start', 'drill.token', 'last_exit.json', 'refused.json'].includes(name));
   for (const name of readdirSync(dir)) {

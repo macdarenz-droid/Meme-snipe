@@ -3576,9 +3576,12 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **Backup (`zeroed-backup`).**
     - Everything in the state dir is packed, except:
       - the journal and the recording;
-      - the deployer index (`deployers.jsonl`, `deployer-state.json`): hundreds of MB at 15 days, × 72 hourly copies. Without it a restore starts the index from the live feed, the same as a cold boot. Under the gates, H14 stays not covered until the look-back passes (fail closed). In S0 diagnostic mode, H14 judges over the short unbroken coverage from the restore on, exactly as after a cold boot, by S0's design (review item 5);
+      - the deployer store (`deployers.jsonl`): hundreds of MB at 15 days, × 72 hourly copies. Without it a restore starts the index from the live feed, the same as a cold boot. Under the gates, H14 stays not covered until the look-back passes (fail closed). In S0 diagnostic mode, H14 judges over the short unbroken coverage from the restore on, exactly as after a cold boot, by S0's design (review item 5);
       - the one-boot markers (`clean_stop`, `planned_restart`, `cold_start`, `drill.token`, `last_exit.json`, `refused.json`): a stale one would mislabel the restored boot's last exit (review item 4);
       - WAL, lock and temp files.
+    - **`deployer-state.json` is kept (red team B, RB-14).** It holds the regime's graduates series and A2-GATE's saved holes (PERSIST-2). A restore from the backup brings the survival history back, so no entry is judged on a series rebuilt from nothing (`restore-graduates.test.ts`).
+      - Restored without it, survival is unknown and the regime fails closed until about 15 days of graduates are seen again: 14 daily shares and the last 24 h, by the regime rule. That figure comes from the rule; it was not measured live.
+      - Its size (it also holds the deployer index's saved state) is added to every hourly copy. This is not measured on the host yet. The disk guard and the 72-copy limit bound it.
     - The ledger and the files that must agree with it (account, paper, exits, control, entry seeds, exposure) are one cut. They are copied again, up to 5 times, until none of them changed while the ledger was copied.
     - The restore drill (checks added only) also parses every JSON file and still needs at least one database. The e2e drill checks the backup holds every JSON state file and never the journal or the recording.
   - **Entry evidence.**

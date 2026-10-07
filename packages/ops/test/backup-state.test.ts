@@ -52,14 +52,14 @@ case "$*" in *".backup '"*) d="\${3#.backup \\'}"; cp "$1" "\${d%\\'}";; *integr
 };
 
 describe.skipIf(!has('age') || !has('age-keygen'))('RC-FIXES: zeroed-backup packs the whole state', () => {
-  it('every state file and the ledger; never the journal, the recording, the deployer index, WAL, locks, temp files or one-boot markers', () => {
+  it('every state file and the ledger; never the journal, the recording, the deployer store (deployers.jsonl), WAL, locks, temp files or one-boot markers; the graduates series (deployer-state.json) is kept', () => {
     const r = rig('whole');
     const b = r.backup();
     expect(b.status, b.stderr + b.stdout).toBe(0);
-    expect(r.list()).toEqual(['MANIFEST.sha256', 'account.json', 'control.json', 'credits.json', 'exits.json', 'fill-budget.json', 'ledger.sqlite', 'paper.json']);
+    expect(r.list()).toEqual(['MANIFEST.sha256', 'account.json', 'control.json', 'credits.json', 'deployer-state.json', 'exits.json', 'fill-budget.json', 'ledger.sqlite', 'paper.json']);
     const d = r.drill();
     expect(d.status, d.stdout).toBe(0);
-    expect(d.stdout).toContain('7 file(s) (1 database(s))');
+    expect(d.stdout).toContain('8 file(s) (1 database(s))');
   });
 
   it('the ledger and its state files are one cut: a write while the ledger is copied makes it copy them again', () => {
