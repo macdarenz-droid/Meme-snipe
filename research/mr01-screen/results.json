@@ -1,0 +1,879 @@
+{
+ "verdict": "KILLED",
+ "results": {
+  "MR-01-5|$200|disc|main": {
+   "n": 11392,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0005467932519336096,
+   "mean_net": -0.007547233240731825,
+   "median_net": -0.008234765661894945,
+   "win": 0.09524227528089887,
+   "ci95": [
+    -0.007781180124730229,
+    -0.007300353549247881
+   ],
+   "rand_n": 227840,
+   "rand_mean_net": -0.008295899592636711,
+   "excess_over_rand": 0.0007486663519048866
+  },
+  "MR-01-5|$200|disc|stress+1pt": {
+   "n": 11392,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0005467932519336096,
+   "mean_net": -0.017547233240731822,
+   "median_net": -0.018234765661894945,
+   "win": 0.051878511235955056,
+   "ci95": [
+    -0.017781180124730237,
+    -0.01730035354924788
+   ]
+  },
+  "MR-01-5|$200|disc|delayed": {
+   "n": 9805,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00022740559917569357,
+   "mean_net": -0.007862596581382697,
+   "median_net": -0.008235793017265852,
+   "win": 0.10086690464048954,
+   "ci95": [
+    -0.00812656742665586,
+    -0.007597257196435513
+   ]
+  },
+  "MR-01-5|$200|disc|delayed+stress": {
+   "n": 9805,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00022740559917569357,
+   "mean_net": -0.017862596581382697,
+   "median_net": -0.018235793017265852,
+   "win": 0.051708312085670574,
+   "ci95": [
+    -0.018126567426655856,
+    -0.017597257196435515
+   ]
+  },
+  "MR-01-5|$200|disc|pess_stop": {
+   "n": 11392,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00027026313771795555,
+   "mean_net": -0.007823763354947479,
+   "median_net": -0.008234765661894945,
+   "win": 0.09524227528089887,
+   "ci95": [
+    -0.008093530060873093,
+    -0.007545311235430046
+   ]
+  },
+  "MR-01-5|$200|val|main": {
+   "n": 7368,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.00044651901431985594,
+   "mean_net": -0.007658334352525217,
+   "median_net": -0.008438369241935766,
+   "win": 0.1008414766558089,
+   "ci95": [
+    -0.007948630446682398,
+    -0.0073671516476550535
+   ],
+   "rand_n": 147357,
+   "rand_mean_net": -0.008251926890450637,
+   "excess_over_rand": 0.0005935925379254199
+  },
+  "MR-01-5|$200|val|stress+1pt": {
+   "n": 7368,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.00044651901431985594,
+   "mean_net": -0.017658334352525215,
+   "median_net": -0.018438369241935766,
+   "win": 0.05415309446254072,
+   "ci95": [
+    -0.017948630446682396,
+    -0.017367151647655055
+   ]
+  },
+  "MR-01-5|$200|val|delayed": {
+   "n": 6337,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0003043892565742953,
+   "mean_net": -0.0078028276942705395,
+   "median_net": -0.008438369241935766,
+   "win": 0.1033612119299353,
+   "ci95": [
+    -0.008093888743893166,
+    -0.0074934716028668006
+   ]
+  },
+  "MR-01-5|$200|val|delayed+stress": {
+   "n": 6337,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0003043892565742953,
+   "mean_net": -0.01780282769427054,
+   "median_net": -0.018438369241935766,
+   "win": 0.05570459207827048,
+   "ci95": [
+    -0.01809388874389316,
+    -0.0174934716028668
+   ]
+  },
+  "MR-01-5|$200|val|pess_stop": {
+   "n": 7368,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0001595728473531956,
+   "mean_net": -0.007945280519491877,
+   "median_net": -0.008438369241935766,
+   "win": 0.1008414766558089,
+   "ci95": [
+    -0.008322952351671527,
+    -0.007582178657763348
+   ]
+  },
+  "MR-01-5|$1000|disc|main": {
+   "n": 11392,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0005467932519336096,
+   "mean_net": -0.014738346091233562,
+   "median_net": -0.015993971966169262,
+   "win": 0.061446629213483143,
+   "ci95": [
+    -0.015057550540771148,
+    -0.014398331518576982
+   ],
+   "rand_n": 227840,
+   "rand_mean_net": -0.015407811179402328,
+   "excess_over_rand": 0.0006694650881687667
+  },
+  "MR-01-5|$1000|disc|stress+1pt": {
+   "n": 11392,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0005467932519336096,
+   "mean_net": -0.024738346091233564,
+   "median_net": -0.02599397196616926,
+   "win": 0.034673455056179775,
+   "ci95": [
+    -0.025057550540771144,
+    -0.024398331518576975
+   ]
+  },
+  "MR-01-5|$1000|disc|delayed": {
+   "n": 9805,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00022740559917569357,
+   "mean_net": -0.01503761218345626,
+   "median_net": -0.015993971966169262,
+   "win": 0.06262111167771545,
+   "ci95": [
+    -0.01535623395596622,
+    -0.014707439189048793
+   ]
+  },
+  "MR-01-5|$1000|disc|delayed+stress": {
+   "n": 9805,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00022740559917569357,
+   "mean_net": -0.025037612183456258,
+   "median_net": -0.02599397196616926,
+   "win": 0.0350841407445181,
+   "ci95": [
+    -0.02535623395596622,
+    -0.0247074391890488
+   ]
+  },
+  "MR-01-5|$1000|disc|pess_stop": {
+   "n": 11392,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00027026313771795555,
+   "mean_net": -0.015014876205449215,
+   "median_net": -0.015993971966169262,
+   "win": 0.061446629213483143,
+   "ci95": [
+    -0.015327778918780949,
+    -0.014677920514879506
+   ]
+  },
+  "MR-01-5|$1000|val|main": {
+   "n": 7368,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.00044651901431985594,
+   "mean_net": -0.014892754699745511,
+   "median_net": -0.017006853089518832,
+   "win": 0.06596091205211727,
+   "ci95": [
+    -0.015359903691243678,
+    -0.014390183814714151
+   ],
+   "rand_n": 147357,
+   "rand_mean_net": -0.015433974057604542,
+   "excess_over_rand": 0.0005412193578590314
+  },
+  "MR-01-5|$1000|val|stress+1pt": {
+   "n": 7368,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.00044651901431985594,
+   "mean_net": -0.02489275469974551,
+   "median_net": -0.027006853089518834,
+   "win": 0.038137893593919656,
+   "ci95": [
+    -0.02535990369124368,
+    -0.02439018381471416
+   ]
+  },
+  "MR-01-5|$1000|val|delayed": {
+   "n": 6337,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0003043892565742953,
+   "mean_net": -0.015046702377489883,
+   "median_net": -0.017006853089518832,
+   "win": 0.06706643522171374,
+   "ci95": [
+    -0.015520527079758963,
+    -0.014518870348270796
+   ]
+  },
+  "MR-01-5|$1000|val|delayed+stress": {
+   "n": 6337,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0003043892565742953,
+   "mean_net": -0.025046702377489884,
+   "median_net": -0.027006853089518834,
+   "win": 0.03834622060912104,
+   "ci95": [
+    -0.02552052707975896,
+    -0.0245188703482708
+   ]
+  },
+  "MR-01-5|$1000|val|pess_stop": {
+   "n": 7368,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0001595728473531956,
+   "mean_net": -0.015179700866712173,
+   "median_net": -0.017006853089518832,
+   "win": 0.06596091205211727,
+   "ci95": [
+    -0.01569094788338431,
+    -0.014648984531389719
+   ]
+  },
+  "MR-01-15|$200|disc|main": {
+   "n": 8375,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0005627049114827073,
+   "mean_net": -0.0075510127708443885,
+   "median_net": -0.008250579915805478,
+   "win": 0.09480597014925374,
+   "ci95": [
+    -0.007792841051483987,
+    -0.007313699004306997
+   ],
+   "rand_n": 167500,
+   "rand_mean_net": -0.008468795948592421,
+   "excess_over_rand": 0.0009177831777480326
+  },
+  "MR-01-15|$200|disc|stress+1pt": {
+   "n": 8375,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0005627049114827073,
+   "mean_net": -0.01755101277084439,
+   "median_net": -0.018250579915805476,
+   "win": 0.05408955223880597,
+   "ci95": [
+    -0.017792841051483987,
+    -0.017313699004306987
+   ]
+  },
+  "MR-01-15|$200|disc|delayed": {
+   "n": 6936,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00040453520206799745,
+   "mean_net": -0.007707375356809109,
+   "median_net": -0.008250579915805478,
+   "win": 0.10423875432525952,
+   "ci95": [
+    -0.007975431036569858,
+    -0.007415101124628704
+   ]
+  },
+  "MR-01-15|$200|disc|delayed+stress": {
+   "n": 6936,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00040453520206799745,
+   "mean_net": -0.01770737535680911,
+   "median_net": -0.018250579915805476,
+   "win": 0.05839100346020761,
+   "ci95": [
+    -0.017975431036569865,
+    -0.017415101124628705
+   ]
+  },
+  "MR-01-15|$200|disc|pess_stop": {
+   "n": 8375,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0002720733816646432,
+   "mean_net": -0.007841644300662453,
+   "median_net": -0.008250579915805478,
+   "win": 0.09480597014925374,
+   "ci95": [
+    -0.008139972897364818,
+    -0.007570258364564313
+   ]
+  },
+  "MR-01-15|$200|val|main": {
+   "n": 5377,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0005732502030842232,
+   "mean_net": -0.007559325031786842,
+   "median_net": -0.008453624818948615,
+   "win": 0.09391854193788358,
+   "ci95": [
+    -0.007877394503149962,
+    -0.007220481474321296
+   ],
+   "rand_n": 107538,
+   "rand_mean_net": -0.008372287442554138,
+   "excess_over_rand": 0.0008129624107672965
+  },
+  "MR-01-15|$200|val|stress+1pt": {
+   "n": 5377,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0005732502030842232,
+   "mean_net": -0.017559325031786845,
+   "median_net": -0.018453624818948616,
+   "win": 0.05876883020271527,
+   "ci95": [
+    -0.017877394503149967,
+    -0.017220481474321297
+   ]
+  },
+  "MR-01-15|$200|val|delayed": {
+   "n": 4457,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0004331818445169796,
+   "mean_net": -0.007700232747506375,
+   "median_net": -0.008453624818948615,
+   "win": 0.1076957594794705,
+   "ci95": [
+    -0.008046318158012997,
+    -0.0073182838745665885
+   ]
+  },
+  "MR-01-15|$200|val|delayed+stress": {
+   "n": 4457,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0004331818445169796,
+   "mean_net": -0.017700232747506373,
+   "median_net": -0.018453624818948616,
+   "win": 0.06349562485977114,
+   "ci95": [
+    -0.018046318158012997,
+    -0.017318283874566583
+   ]
+  },
+  "MR-01-15|$200|val|pess_stop": {
+   "n": 5377,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.00034865661410341073,
+   "mean_net": -0.007783918620767655,
+   "median_net": -0.008453624818948615,
+   "win": 0.09391854193788358,
+   "ci95": [
+    -0.008143163915334877,
+    -0.0074171451791950685
+   ]
+  },
+  "MR-01-15|$1000|disc|main": {
+   "n": 8375,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0005627049114827073,
+   "mean_net": -0.014820890379992773,
+   "median_net": -0.016069085123427255,
+   "win": 0.0626865671641791,
+   "ci95": [
+    -0.015236886794748997,
+    -0.014401817772973073
+   ],
+   "rand_n": 167500,
+   "rand_mean_net": -0.015644630762483274,
+   "excess_over_rand": 0.000823740382490501
+  },
+  "MR-01-15|$1000|disc|stress+1pt": {
+   "n": 8375,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0005627049114827073,
+   "mean_net": -0.024820890379992775,
+   "median_net": -0.026069085123427253,
+   "win": 0.041313432835820896,
+   "ci95": [
+    -0.025236886794749,
+    -0.024401817772973074
+   ]
+  },
+  "MR-01-15|$1000|disc|delayed": {
+   "n": 6936,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00040453520206799745,
+   "mean_net": -0.014970024472157539,
+   "median_net": -0.01606790645886739,
+   "win": 0.06632064590542099,
+   "ci95": [
+    -0.01534929867573879,
+    -0.014563003805839763
+   ]
+  },
+  "MR-01-15|$1000|disc|delayed+stress": {
+   "n": 6936,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.00040453520206799745,
+   "mean_net": -0.024970024472157536,
+   "median_net": -0.02606790645886739,
+   "win": 0.04469434832756632,
+   "ci95": [
+    -0.025349298675738798,
+    -0.024563003805839763
+   ]
+  },
+  "MR-01-15|$1000|disc|pess_stop": {
+   "n": 8375,
+   "days": 30,
+   "pools": 13,
+   "mean_gross": 0.0002720733816646432,
+   "mean_net": -0.015111521909810837,
+   "median_net": -0.016069085123427255,
+   "win": 0.0626865671641791,
+   "ci95": [
+    -0.015530343247526638,
+    -0.014686146869817444
+   ]
+  },
+  "MR-01-15|$1000|val|main": {
+   "n": 5377,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0005732502030842232,
+   "mean_net": -0.014904632851111104,
+   "median_net": -0.017083130974583072,
+   "win": 0.0678817184303515,
+   "ci95": [
+    -0.01542908322971279,
+    -0.014335361379862854
+   ],
+   "rand_n": 107538,
+   "rand_mean_net": -0.01565307270961392,
+   "excess_over_rand": 0.0007484398585028158
+  },
+  "MR-01-15|$1000|val|stress+1pt": {
+   "n": 5377,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0005732502030842232,
+   "mean_net": -0.024904632851111108,
+   "median_net": -0.02708313097458307,
+   "win": 0.0461223730704854,
+   "ci95": [
+    -0.02542908322971279,
+    -0.024335361379862856
+   ]
+  },
+  "MR-01-15|$1000|val|delayed": {
+   "n": 4457,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0004331818445169796,
+   "mean_net": -0.015048897995439795,
+   "median_net": -0.017083130974583072,
+   "win": 0.07247027148306036,
+   "ci95": [
+    -0.015561369656933046,
+    -0.014481889811761352
+   ]
+  },
+  "MR-01-15|$1000|val|delayed+stress": {
+   "n": 4457,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.0004331818445169796,
+   "mean_net": -0.025048897995439794,
+   "median_net": -0.02708313097458307,
+   "win": 0.049360556428090646,
+   "ci95": [
+    -0.025561369656933036,
+    -0.024481889811761345
+   ]
+  },
+  "MR-01-15|$1000|val|pess_stop": {
+   "n": 5377,
+   "days": 32,
+   "pools": 15,
+   "mean_gross": 0.00034865661410341073,
+   "mean_net": -0.015129226440091919,
+   "median_net": -0.017083130974583072,
+   "win": 0.0678817184303515,
+   "ci95": [
+    -0.01566353050789536,
+    -0.014546072135167676
+   ]
+  }
+ },
+ "coverage": [
+  {
+   "pool": "xs4LNS8m91yC3RvwEVpzgJr8su5igsKmPh75BNFENkN",
+   "sym": "CIGR",
+   "elig_days": 24,
+   "minutes": 35878,
+   "first_minute": 1787846520,
+   "wanted_from": 1787936400,
+   "traded_share_eligible": 0.21507656065959954,
+   "open_eq_prev_close": 0.9998327619366167
+  },
+  {
+   "pool": "6unnG2hL8udPjDpu3TchvAtptu3dq8AS7tymrWDN2LLC",
+   "sym": "TBB",
+   "elig_days": 40,
+   "minutes": 65074,
+   "first_minute": 1784582760,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.6054861111111111,
+   "open_eq_prev_close": 0.9995697140134926
+  },
+  {
+   "pool": "8N544CG9j44dkzu4CjSWHxpwekxHQPTR4R17Kw9y5FBk",
+   "sym": "NORMIE",
+   "elig_days": 15,
+   "minutes": 24015,
+   "first_minute": 1784627100,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.45782407407407405,
+   "open_eq_prev_close": 0.9996668609977513
+  },
+  {
+   "pool": "31ZmTzEufRDBGKsJ7NicCkEKxtPQgAEMQvdbCuUfE6GX",
+   "sym": "BOBO",
+   "elig_days": 25,
+   "minutes": 36819,
+   "first_minute": 1784809260,
+   "wanted_from": 1784826000,
+   "traded_share_eligible": 0.10880555555555556,
+   "open_eq_prev_close": 0.9999185181161389
+  },
+  {
+   "pool": "DPzKoJVewaH1wpchD3gWKeeGm7G2mXkBW48uRniAgbVx",
+   "sym": "Cupsey",
+   "elig_days": 33,
+   "minutes": 54661,
+   "first_minute": 1784861940,
+   "wanted_from": 1784912400,
+   "traded_share_eligible": 0.7957491582491583,
+   "open_eq_prev_close": 0.9993230881814855
+  },
+  {
+   "pool": "EuAKdgnHKKe9ETSx7wd4NVb3EhbUptFemRrLdQaSdrkH",
+   "sym": "Clash",
+   "elig_days": 47,
+   "minutes": 71203,
+   "first_minute": 1784560620,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.11071217494089834,
+   "open_eq_prev_close": 0.9999297772534479
+  },
+  {
+   "pool": "CqC3Hz1VLgRtoy8Kcahif6vxAcYNyQVM7SWxLXCQAfcK",
+   "sym": "CLAW",
+   "elig_days": 1,
+   "minutes": 3154,
+   "first_minute": 1788211560,
+   "wanted_from": 1788282000,
+   "traded_share_eligible": 0.28958333333333336,
+   "open_eq_prev_close": 1.0
+  },
+  {
+   "pool": "6e3jZLtf4tQbWZm3f7A66jF8tfZn6MRQVrbDFgcNWarA",
+   "sym": "PAID",
+   "elig_days": 5,
+   "minutes": 7996,
+   "first_minute": 1789519440,
+   "wanted_from": 1789578000,
+   "traded_share_eligible": 1.0,
+   "open_eq_prev_close": 0.9993746091307066
+  },
+  {
+   "pool": "Fex8CSkNXfaxAPRqQARKGchYAMVfwDg28sfmBXXGkNGX",
+   "sym": "KET",
+   "elig_days": 11,
+   "minutes": 20058,
+   "first_minute": 1784691720,
+   "wanted_from": 1784739600,
+   "traded_share_eligible": 0.8454545454545455,
+   "open_eq_prev_close": 0.9993019893304084
+  },
+  {
+   "pool": "FnzKY6x7entQ1eR3D225dQyT7ybfka4PskBMQhb8L3CC",
+   "sym": "ANSEM",
+   "elig_days": 62,
+   "minutes": 90172,
+   "first_minute": 1784588880,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.8307397383852052,
+   "open_eq_prev_close": 0.9991682469973716
+  },
+  {
+   "pool": "Nx9dcwNs3iJxM5YAxshMHE4aYJHdDyyGMhVcmaSgfu8",
+   "sym": "TOAD",
+   "elig_days": 7,
+   "minutes": 11189,
+   "first_minute": 1786260660,
+   "wanted_from": 1786294800,
+   "traded_share_eligible": 0.9816468253968254,
+   "open_eq_prev_close": 0.9991955666785842
+  },
+  {
+   "pool": "FmGbfThLpryD6irj9xwtoS4j7rRGnayuUmgHUNCBvxTr",
+   "sym": "DOPAMEME",
+   "elig_days": 1,
+   "minutes": 2037,
+   "first_minute": 1787500980,
+   "wanted_from": 1787504400,
+   "traded_share_eligible": 1.0,
+   "open_eq_prev_close": 1.0
+  },
+  {
+   "pool": "HMzvsEEmtzHhvZNw9uwbaG85HCTmFnkbhzUx16cy7ca3",
+   "sym": "CATE",
+   "elig_days": 51,
+   "minutes": 73692,
+   "first_minute": 1785577680,
+   "wanted_from": 1785603600,
+   "traded_share_eligible": 0.9901290499725426,
+   "open_eq_prev_close": 0.9990636577058257
+  },
+  {
+   "pool": "2DVbU5h8JCd37gaXAJUZ4t77HsjJW22LLduTZk7GSa43",
+   "sym": "MANIFEST",
+   "elig_days": 56,
+   "minutes": 89744,
+   "first_minute": 1784614560,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.8998375812093953,
+   "open_eq_prev_close": 0.9991085655705737
+  },
+  {
+   "pool": "3dcwhqJp6JBTJPq8ga335HWgSQVS7uQmdmeX7iGjMNpj",
+   "sym": "fone",
+   "elig_days": 8,
+   "minutes": 15048,
+   "first_minute": 1787929920,
+   "wanted_from": 1787936400,
+   "traded_share_eligible": 0.9973090277777777,
+   "open_eq_prev_close": 0.9991360404067255
+  },
+  {
+   "pool": "FFcYgSSgWHforA9rXXkA48p8YFoz8TSW85Jpo3CQHDyS",
+   "sym": "Buttcoin",
+   "elig_days": 61,
+   "minutes": 89201,
+   "first_minute": 1784647140,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.5956671251719394,
+   "open_eq_prev_close": 0.9995067264573991
+  },
+  {
+   "pool": "EvaonVTn4xg64wcKWvfoXR4xEfS6tMyAncmVioEvQg6g",
+   "sym": "Ducknana",
+   "elig_days": 0,
+   "minutes": 0
+  },
+  {
+   "pool": "22CfmLna8Bsh7xrbyvGSs6NdD31iFj1UFVnwB7EberWU",
+   "sym": "Pistacio",
+   "elig_days": 0,
+   "minutes": 0
+  },
+  {
+   "pool": "5PGhKctym6odbHGo2tKMST2AjmJsb2uZBQrKkn4ZuFT5",
+   "sym": "Jimothy",
+   "elig_days": 28,
+   "minutes": 61591,
+   "first_minute": 1784618940,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.9684771825396825,
+   "open_eq_prev_close": 0.9990907614872544
+  },
+  {
+   "pool": "5dvo7afWw1xVLcZzqofokjaEpsEzBb3UukYoEnFi6Le5",
+   "sym": "Chonketha",
+   "elig_days": 10,
+   "minutes": 22719,
+   "first_minute": 1785741660,
+   "wanted_from": 1785776400,
+   "traded_share_eligible": 0.7067361111111111,
+   "open_eq_prev_close": 0.9994277665287438
+  },
+  {
+   "pool": "3KFCgJ5R3zshW8hTDbzjSrrKSRYmKvsMfhc4Vo4iddxD",
+   "sym": "TripleT",
+   "elig_days": 44,
+   "minutes": 67164,
+   "first_minute": 1784630160,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.788147095959596,
+   "open_eq_prev_close": 0.9993746556883999
+  },
+  {
+   "pool": "Fsh341BW29hKREf9tuWqKBXxRSXNV3752E7pgH4LPXqU",
+   "sym": "GOLD",
+   "elig_days": 2,
+   "minutes": 8908,
+   "first_minute": 1789464720,
+   "wanted_from": 1789750800,
+   "traded_share_eligible": 0.11096491228070175,
+   "open_eq_prev_close": 1.0
+  },
+  {
+   "pool": "DA4pM4xSDY4M9V4CgAKKBVH1pw1yscTQQa5nEkGHuKpt",
+   "sym": "OTC",
+   "elig_days": 5,
+   "minutes": 8013,
+   "first_minute": 1788784020,
+   "wanted_from": 1788800400,
+   "traded_share_eligible": 0.9979166666666667,
+   "open_eq_prev_close": 0.99900149775337
+  },
+  {
+   "pool": "CNZagMjzi9CssDsWT8bSD4WbUj88xdrUk1RzgmMQbqsF",
+   "sym": "XTAL",
+   "elig_days": 0,
+   "minutes": 0
+  },
+  {
+   "pool": "7v2KMgkqKTt4xU9dPzkJFmtNgQbBwBvXY4uBXTt1ZfnG",
+   "sym": "UwU",
+   "elig_days": 41,
+   "minutes": 60087,
+   "first_minute": 1784622780,
+   "wanted_from": 1784653200,
+   "traded_share_eligible": 0.19493563685636855,
+   "open_eq_prev_close": 0.9998169290683354
+  }
+ ],
+ "manifest": [
+  {
+   "pool": "xs4LNS8m91yC3RvwEVpzgJr8su5igsKmPh75BNFENkN",
+   "sha256": "d42b12c0d63de5d3992ff75b313634be4284fb5528dcebd5cd425efbbb533d22"
+  },
+  {
+   "pool": "6unnG2hL8udPjDpu3TchvAtptu3dq8AS7tymrWDN2LLC",
+   "sha256": "037288d1021c5f4d8d92ad45257a8610a9e56785812033c68fd30441b363c6c2"
+  },
+  {
+   "pool": "8N544CG9j44dkzu4CjSWHxpwekxHQPTR4R17Kw9y5FBk",
+   "sha256": "7f561f08dd7d2d90e2aaf10f4a7ea499c43df5a67d33695b2cd0bd91b81073ce"
+  },
+  {
+   "pool": "31ZmTzEufRDBGKsJ7NicCkEKxtPQgAEMQvdbCuUfE6GX",
+   "sha256": "ad22d7bb964f795fb3b66da9026c295bfbfd951376e57dded3de34d1efb1ea09"
+  },
+  {
+   "pool": "DPzKoJVewaH1wpchD3gWKeeGm7G2mXkBW48uRniAgbVx",
+   "sha256": "df8618c7d16b439276db1231a2f8813d643bf9803cdc808465a20276c86a447d"
+  },
+  {
+   "pool": "EuAKdgnHKKe9ETSx7wd4NVb3EhbUptFemRrLdQaSdrkH",
+   "sha256": "b366a05a29a99408db286f3dddc2a788508cf199bc71667c5f32fbf81449f690"
+  },
+  {
+   "pool": "CqC3Hz1VLgRtoy8Kcahif6vxAcYNyQVM7SWxLXCQAfcK",
+   "sha256": "89b84be688fc002f55246dbd66e23b674d6ffe12135292f437caf85d59290eb9"
+  },
+  {
+   "pool": "6e3jZLtf4tQbWZm3f7A66jF8tfZn6MRQVrbDFgcNWarA",
+   "sha256": "84d26a659c48e6d550b3bd1462ec86d012e1b886ba1d794515f659d924530203"
+  },
+  {
+   "pool": "Fex8CSkNXfaxAPRqQARKGchYAMVfwDg28sfmBXXGkNGX",
+   "sha256": "4a7a74d098d9cf532d6bee059ea306a299f16a6cc99bbe7275a0fda8afa77c93"
+  },
+  {
+   "pool": "FnzKY6x7entQ1eR3D225dQyT7ybfka4PskBMQhb8L3CC",
+   "sha256": "3075562a78f778b32cbdfdf4c46be5d478b6e8953da38fa56274a454ccedf4a4"
+  },
+  {
+   "pool": "Nx9dcwNs3iJxM5YAxshMHE4aYJHdDyyGMhVcmaSgfu8",
+   "sha256": "dc3268650d7365a51a0b229433a2ee9dd03c2b1c747d0bdb897faa9a4e37f2ce"
+  },
+  {
+   "pool": "FmGbfThLpryD6irj9xwtoS4j7rRGnayuUmgHUNCBvxTr",
+   "sha256": "fb6ec6fb67afb430a6df6f83a1427e01062b4542847370734153e2ed3fc32731"
+  },
+  {
+   "pool": "HMzvsEEmtzHhvZNw9uwbaG85HCTmFnkbhzUx16cy7ca3",
+   "sha256": "7a2f2d4438693c3889be457776d0ec4288280819a4486d8e089144655e7d353a"
+  },
+  {
+   "pool": "2DVbU5h8JCd37gaXAJUZ4t77HsjJW22LLduTZk7GSa43",
+   "sha256": "3fad04b8bf9f66941f01435a39848bc5a09f4695920ab9c8d80e04b0ceef07b9"
+  },
+  {
+   "pool": "3dcwhqJp6JBTJPq8ga335HWgSQVS7uQmdmeX7iGjMNpj",
+   "sha256": "70a18531aa3abc109511837c45ecf6c9cfd034ff60362b726c6750b66475a748"
+  },
+  {
+   "pool": "FFcYgSSgWHforA9rXXkA48p8YFoz8TSW85Jpo3CQHDyS",
+   "sha256": "92d884838ce336ac453b0ef684d6b0985a81b4f9862fe2fd91db58c11892d8c2"
+  },
+  {
+   "pool": "5PGhKctym6odbHGo2tKMST2AjmJsb2uZBQrKkn4ZuFT5",
+   "sha256": "4eb0f7ee5037f691da41afd6fbbffc27d596014873b29c3e0377bc511fb940ba"
+  },
+  {
+   "pool": "5dvo7afWw1xVLcZzqofokjaEpsEzBb3UukYoEnFi6Le5",
+   "sha256": "f04497666465a386a68c7d8c98bd99adbfa21df389f8d74d0907171394f672b3"
+  },
+  {
+   "pool": "3KFCgJ5R3zshW8hTDbzjSrrKSRYmKvsMfhc4Vo4iddxD",
+   "sha256": "92ab5b66aa8a013caec473a63954bd4d8d7e09cd11119bd4f973f8f1e2699802"
+  },
+  {
+   "pool": "Fsh341BW29hKREf9tuWqKBXxRSXNV3752E7pgH4LPXqU",
+   "sha256": "ceac00932222fa596eedf63ce8d7865871d1b3a0d828111a5f1870844804a3ad"
+  },
+  {
+   "pool": "DA4pM4xSDY4M9V4CgAKKBVH1pw1yscTQQa5nEkGHuKpt",
+   "sha256": "4c0d073fe029da5b9bd7c7cc95474a550ee2aa7139b14c04954909a57351eab4"
+  },
+  {
+   "pool": "7v2KMgkqKTt4xU9dPzkJFmtNgQbBwBvXY4uBXTt1ZfnG",
+   "sha256": "61837d4073b6cd7c8c757cbee321005fb5fa3ce5efd4b74802f72990011a7452"
+  }
+ ]
+}

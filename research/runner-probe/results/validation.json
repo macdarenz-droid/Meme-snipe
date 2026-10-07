@@ -1,0 +1,1484 @@
+{
+ "counts": {
+  "ok": 443,
+  "dust": 287,
+  "start-missing": 159,
+  "no-data": 1,
+  "no-entry": 10,
+  "excluded-entry-near-cutoff": 1,
+  "series-short": 0
+ },
+ "primary": "R1",
+ "verdict_primary": "not supported",
+ "verdict_secondary": {
+  "R2": "not supported",
+  "R3": "not supported",
+  "R4": "not supported"
+ },
+ "notes": {
+  "hourly_line": "decisions at each hourly close with only data known then (executable approximation)",
+  "real_time_line": "optimistic bound: uses the unfinished hour high and its final volume; not an execution model",
+  "capped20x": "net return capped at +1900% (gross proceeds 20x stake), statistics only",
+  "units": "net returns in SOL terms; bankroll figures are $10 bets at the fixed SOL/USD of lottery.py"
+ },
+ "results": {
+  "R1|pess|$3": {
+   "n": 442,
+   "win": 0.027149321266968326,
+   "mean": -0.23153640995206412,
+   "median": -0.11774740877681189,
+   "best": 10.002199336856247,
+   "mean_wo_best": -0.25474215994482674,
+   "per100_total": -23.153640995206413,
+   "p100_positive": 0.0031,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|pess|$3|capped20x": {
+   "n": 442,
+   "win": 0.027149321266968326,
+   "mean": -0.23153640995206412,
+   "median": -0.11774740877681189,
+   "best": 10.002199336856247,
+   "mean_wo_best": -0.25474215994482674,
+   "per100_total": -23.153640995206413,
+   "p100_positive": 0.0031,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|pess|$10": {
+   "n": 442,
+   "win": 0.029411764705882353,
+   "mean": -0.22386540391515825,
+   "median": -0.11106652152272638,
+   "best": 9.999621210398004,
+   "mean_wo_best": -0.24704791324466657,
+   "per100_total": -22.386540391515826,
+   "p100_positive": 0.0043,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|pess|$10|capped20x": {
+   "n": 442,
+   "win": 0.029411764705882353,
+   "mean": -0.22386540391515825,
+   "median": -0.11106652152272638,
+   "best": 9.999621210398004,
+   "mean_wo_best": -0.24704791324466657,
+   "per100_total": -22.386540391515826,
+   "p100_positive": 0.0043,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|pess|$10|bankroll": {
+   "total_pnl_usd": -989.4850853049998,
+   "worst_drawdown_usd": -989.4850853049998,
+   "peak_capital_tied_usd": 3900.0,
+   "pnl_by_settle_month_usd": {
+    "2026-09": -989.4850853049998
+   }
+  },
+  "R1|pess|$50": {
+   "n": 442,
+   "win": 0.027149321266968326,
+   "mean": -0.2413140100963754,
+   "median": -0.131975440471291,
+   "best": 9.923572546468804,
+   "mean_wo_best": -0.2643636394763418,
+   "per100_total": -24.13140100963754,
+   "p100_positive": 0.0024,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|pess|$50|capped20x": {
+   "n": 442,
+   "win": 0.027149321266968326,
+   "mean": -0.2413140100963754,
+   "median": -0.131975440471291,
+   "best": 9.923572546468804,
+   "mean_wo_best": -0.2643636394763418,
+   "per100_total": -24.13140100963754,
+   "p100_positive": 0.0024,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|opt|$3": {
+   "n": 442,
+   "win": 0.049773755656108594,
+   "mean": -0.08629438195386985,
+   "median": -0.10418853368357761,
+   "best": 12.31683121941774,
+   "mean_wo_best": -0.11441938331752428,
+   "per100_total": -8.629438195386985,
+   "p100_positive": 0.1332,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|opt|$3|capped20x": {
+   "n": 442,
+   "win": 0.049773755656108594,
+   "mean": -0.08629438195386985,
+   "median": -0.10418853368357761,
+   "best": 12.31683121941774,
+   "mean_wo_best": -0.11441938331752428,
+   "per100_total": -8.629438195386985,
+   "p100_positive": 0.1332,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|opt|$10": {
+   "n": 442,
+   "win": 0.05203619909502263,
+   "mean": -0.07885223355206994,
+   "median": -0.09785826362912763,
+   "best": 12.309982643443648,
+   "mean_wo_best": -0.10694482964503076,
+   "per100_total": -7.885223355206994,
+   "p100_positive": 0.15,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|opt|$10|capped20x": {
+   "n": 442,
+   "win": 0.05203619909502263,
+   "mean": -0.07885223355206994,
+   "median": -0.09785826362912763,
+   "best": 12.309982643443648,
+   "mean_wo_best": -0.10694482964503076,
+   "per100_total": -7.885223355206994,
+   "p100_positive": 0.15,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|opt|$10|bankroll": {
+   "total_pnl_usd": -348.5268723001493,
+   "worst_drawdown_usd": -454.186304290894,
+   "peak_capital_tied_usd": 3900.0,
+   "pnl_by_settle_month_usd": {
+    "2026-09": -348.5268723001493
+   }
+  },
+  "R1|opt|$50": {
+   "n": 442,
+   "win": 0.049773755656108594,
+   "mean": -0.09757068083933351,
+   "median": -0.12222256401736459,
+   "best": 12.209767978856886,
+   "mean_wo_best": -0.12547847825361066,
+   "per100_total": -9.757068083933351,
+   "p100_positive": 0.1074,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R1|opt|$50|capped20x": {
+   "n": 442,
+   "win": 0.049773755656108594,
+   "mean": -0.09757068083933351,
+   "median": -0.12222256401736459,
+   "best": 12.209767978856886,
+   "mean_wo_best": -0.12547847825361066,
+   "per100_total": -9.757068083933351,
+   "p100_positive": 0.1074,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R2|pess|$3": {
+   "n": 442,
+   "win": 0.020361990950226245,
+   "mean": -0.24333648640645594,
+   "median": -0.11995174028912203,
+   "best": 7.137636717127274,
+   "mean_wo_best": -0.26007338709474104,
+   "per100_total": -24.333648640645595,
+   "p100_positive": 0.0002,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|pess|$3|capped20x": {
+   "n": 442,
+   "win": 0.020361990950226245,
+   "mean": -0.24333648640645594,
+   "median": -0.11995174028912203,
+   "best": 7.137636717127274,
+   "mean_wo_best": -0.26007338709474104,
+   "per100_total": -24.333648640645595,
+   "p100_positive": 0.0002,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|pess|$10": {
+   "n": 442,
+   "win": 0.02262443438914027,
+   "mean": -0.23564246502962236,
+   "median": -0.11276273529652679,
+   "best": 7.1398421117335085,
+   "mean_wo_best": -0.2523669198522145,
+   "per100_total": -23.564246502962234,
+   "p100_positive": 0.0003,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|pess|$10|capped20x": {
+   "n": 442,
+   "win": 0.02262443438914027,
+   "mean": -0.23564246502962236,
+   "median": -0.11276273529652679,
+   "best": 7.1398421117335085,
+   "mean_wo_best": -0.2523669198522145,
+   "per100_total": -23.564246502962234,
+   "p100_positive": 0.0003,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|pess|$10|bankroll": {
+   "total_pnl_usd": -1041.539695430931,
+   "worst_drawdown_usd": -1041.539695430931,
+   "peak_capital_tied_usd": 3900.0,
+   "pnl_by_settle_month_usd": {
+    "2026-09": -1041.539695430931
+   }
+  },
+  "R2|pess|$50": {
+   "n": 442,
+   "win": 0.020361990950226245,
+   "mean": -0.2529611821581032,
+   "median": -0.13320308958062227,
+   "best": 7.0908900502903265,
+   "mean_wo_best": -0.2696139060412062,
+   "per100_total": -25.29611821581032,
+   "p100_positive": 0.0001,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|pess|$50|capped20x": {
+   "n": 442,
+   "win": 0.020361990950226245,
+   "mean": -0.2529611821581032,
+   "median": -0.13320308958062227,
+   "best": 7.0908900502903265,
+   "mean_wo_best": -0.2696139060412062,
+   "per100_total": -25.29611821581032,
+   "p100_positive": 0.0001,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|opt|$3": {
+   "n": 442,
+   "win": 0.038461538461538464,
+   "mean": -0.1289554600844642,
+   "median": -0.10544091463957084,
+   "best": 7.86420312577091,
+   "mean_wo_best": -0.1470805362428664,
+   "per100_total": -12.89554600844642,
+   "p100_positive": 0.0191,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|opt|$3|capped20x": {
+   "n": 442,
+   "win": 0.038461538461538464,
+   "mean": -0.1289554600844642,
+   "median": -0.10544091463957084,
+   "best": 7.86420312577091,
+   "mean_wo_best": -0.1470805362428664,
+   "per100_total": -12.89554600844642,
+   "p100_positive": 0.0191,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|opt|$10": {
+   "n": 442,
+   "win": 0.04072398190045249,
+   "mean": -0.12138130384853806,
+   "median": -0.0990235355502979,
+   "best": 7.865252385775096,
+   "mean_wo_best": -0.1394915843238751,
+   "per100_total": -12.138130384853806,
+   "p100_positive": 0.0231,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|opt|$10|capped20x": {
+   "n": 442,
+   "win": 0.04072398190045249,
+   "mean": -0.12138130384853806,
+   "median": -0.0990235355502979,
+   "best": 7.865252385775096,
+   "mean_wo_best": -0.1394915843238751,
+   "per100_total": -12.138130384853806,
+   "p100_positive": 0.0231,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|opt|$10|bankroll": {
+   "total_pnl_usd": -536.5053630105383,
+   "worst_drawdown_usd": -539.4765849899065,
+   "peak_capital_tied_usd": 3900.0,
+   "pnl_by_settle_month_usd": {
+    "2026-09": -536.5053630105383
+   }
+  },
+  "R2|opt|$50": {
+   "n": 442,
+   "win": 0.04072398190045249,
+   "mean": -0.13937057919409002,
+   "median": -0.12321570887372185,
+   "best": 7.809748294176208,
+   "mean_wo_best": -0.15739579205887527,
+   "per100_total": -13.937057919409002,
+   "p100_positive": 0.0125,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R2|opt|$50|capped20x": {
+   "n": 442,
+   "win": 0.04072398190045249,
+   "mean": -0.13937057919409002,
+   "median": -0.12321570887372185,
+   "best": 7.809748294176208,
+   "mean_wo_best": -0.15739579205887527,
+   "per100_total": -13.937057919409002,
+   "p100_positive": 0.0125,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R3|pess|$3": {
+   "n": 442,
+   "win": 0.04524886877828054,
+   "mean": -0.25665267218139487,
+   "median": -0.10544091463957084,
+   "best": 10.002199336856247,
+   "mean_wo_best": -0.2799153751497342,
+   "per100_total": -25.665267218139487,
+   "p100_positive": 0.0036,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|pess|$3|capped20x": {
+   "n": 442,
+   "win": 0.04524886877828054,
+   "mean": -0.25665267218139487,
+   "median": -0.10544091463957084,
+   "best": 10.002199336856247,
+   "mean_wo_best": -0.2799153751497342,
+   "per100_total": -25.665267218139487,
+   "p100_positive": 0.0036,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|pess|$10": {
+   "n": 442,
+   "win": 0.04751131221719457,
+   "mean": -0.24891464566528973,
+   "median": -0.0990235355502979,
+   "best": 9.999621210398004,
+   "mean_wo_best": -0.272153955996499,
+   "per100_total": -24.891464566528974,
+   "p100_positive": 0.0045,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|pess|$10|capped20x": {
+   "n": 442,
+   "win": 0.04751131221719457,
+   "mean": -0.24891464566528973,
+   "median": -0.0990235355502979,
+   "best": 9.999621210398004,
+   "mean_wo_best": -0.272153955996499,
+   "per100_total": -24.891464566528974,
+   "p100_positive": 0.0045,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|pess|$10|bankroll": {
+   "total_pnl_usd": -1100.20273384058,
+   "worst_drawdown_usd": -1100.20273384058,
+   "peak_capital_tied_usd": 3900.0,
+   "pnl_by_settle_month_usd": {
+    "2026-09": -1100.20273384058
+   }
+  },
+  "R3|pess|$50": {
+   "n": 442,
+   "win": 0.04524886877828054,
+   "mean": -0.26598672394270134,
+   "median": -0.12275386271396005,
+   "best": 9.923572546468804,
+   "mean_wo_best": -0.28909230051959817,
+   "per100_total": -26.598672394270135,
+   "p100_positive": 0.0021,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|pess|$50|capped20x": {
+   "n": 442,
+   "win": 0.04524886877828054,
+   "mean": -0.26598672394270134,
+   "median": -0.12275386271396005,
+   "best": 9.923572546468804,
+   "mean_wo_best": -0.28909230051959817,
+   "per100_total": -26.598672394270135,
+   "p100_positive": 0.0021,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|opt|$3": {
+   "n": 442,
+   "win": 0.07239819004524888,
+   "mean": -0.18516289299715483,
+   "median": -0.09268232632842649,
+   "best": 12.31683121941774,
+   "mean_wo_best": -0.21351208599582808,
+   "per100_total": -18.51628929971548,
+   "p100_positive": 0.0383,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|opt|$3|capped20x": {
+   "n": 442,
+   "win": 0.07239819004524888,
+   "mean": -0.18516289299715483,
+   "median": -0.09268232632842649,
+   "best": 12.31683121941774,
+   "mean_wo_best": -0.21351208599582808,
+   "per100_total": -18.51628929971548,
+   "p100_positive": 0.0383,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|opt|$10": {
+   "n": 442,
+   "win": 0.0746606334841629,
+   "mean": -0.17760141272719474,
+   "median": -0.08644764820485239,
+   "best": 12.309982643443648,
+   "mean_wo_best": -0.20591792986136898,
+   "per100_total": -17.760141272719473,
+   "p100_positive": 0.0426,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|opt|$10|capped20x": {
+   "n": 442,
+   "win": 0.0746606334841629,
+   "mean": -0.17760141272719474,
+   "median": -0.08644764820485239,
+   "best": 12.309982643443648,
+   "mean_wo_best": -0.20591792986136898,
+   "per100_total": -17.760141272719473,
+   "p100_positive": 0.0426,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|opt|$10|bankroll": {
+   "total_pnl_usd": -784.9982442542006,
+   "worst_drawdown_usd": -788.9858460758473,
+   "peak_capital_tied_usd": 3900.0,
+   "pnl_by_settle_month_usd": {
+    "2026-09": -784.9982442542006
+   }
+  },
+  "R3|opt|$50": {
+   "n": 442,
+   "win": 0.07239819004524888,
+   "mean": -0.19564773224721904,
+   "median": -0.11230543707771107,
+   "best": 12.209767978856886,
+   "mean_wo_best": -0.22377792660346418,
+   "per100_total": -19.564773224721904,
+   "p100_positive": 0.0308,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R3|opt|$50|capped20x": {
+   "n": 442,
+   "win": 0.07239819004524888,
+   "mean": -0.19564773224721904,
+   "median": -0.11230543707771107,
+   "best": 12.209767978856886,
+   "mean_wo_best": -0.22377792660346418,
+   "per100_total": -19.564773224721904,
+   "p100_positive": 0.0308,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 1,
+   "n_ge_50x": 0
+  },
+  "R4|pess|$3": {
+   "n": 442,
+   "win": 0.02262443438914027,
+   "mean": -0.23753961328718762,
+   "median": -0.11958707303308813,
+   "best": 5.50864838069094,
+   "mean_wo_best": -0.25056951803543737,
+   "per100_total": -23.753961328718763,
+   "p100_positive": 0.0,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|pess|$3|capped20x": {
+   "n": 442,
+   "win": 0.02262443438914027,
+   "mean": -0.23753961328718762,
+   "median": -0.11958707303308813,
+   "best": 5.50864838069094,
+   "mean_wo_best": -0.25056951803543737,
+   "per100_total": -23.753961328718763,
+   "p100_positive": 0.0,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|pess|$10": {
+   "n": 442,
+   "win": 0.024886877828054297,
+   "mean": -0.22986241713502942,
+   "median": -0.11239769785541641,
+   "best": 5.513297816779958,
+   "mean_wo_best": -0.2428854562142017,
+   "per100_total": -22.98624171350294,
+   "p100_positive": 0.0001,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|pess|$10|capped20x": {
+   "n": 442,
+   "win": 0.024886877828054297,
+   "mean": -0.22986241713502942,
+   "median": -0.11239769785541641,
+   "best": 5.513297816779958,
+   "mean_wo_best": -0.2428854562142017,
+   "per100_total": -22.98624171350294,
+   "p100_positive": 0.0001,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|pess|$10|bankroll": {
+   "total_pnl_usd": -1015.9918837368302,
+   "worst_drawdown_usd": -1015.9918837368302,
+   "peak_capital_tied_usd": 3900.0,
+   "pnl_by_settle_month_usd": {
+    "2026-09": -1015.9918837368302
+   }
+  },
+  "R4|pess|$50": {
+   "n": 442,
+   "win": 0.02262443438914027,
+   "mean": -0.24727371483154997,
+   "median": -0.1326068449992947,
+   "best": 5.47820382421996,
+   "mean_wo_best": -0.2602566570969729,
+   "per100_total": -24.727371483154997,
+   "p100_positive": 0.0,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|pess|$50|capped20x": {
+   "n": 442,
+   "win": 0.02262443438914027,
+   "mean": -0.24727371483154997,
+   "median": -0.1326068449992947,
+   "best": 5.47820382421996,
+   "mean_wo_best": -0.2602566570969729,
+   "per100_total": -24.727371483154997,
+   "p100_positive": 0.0,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|opt|$3": {
+   "n": 442,
+   "win": 0.027149321266968326,
+   "mean": -0.12270223253795215,
+   "median": -0.11464334466519394,
+   "best": 5.869715056434471,
+   "mean_wo_best": -0.1362904803587513,
+   "per100_total": -12.270223253795216,
+   "p100_positive": 0.0155,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|opt|$3|capped20x": {
+   "n": 442,
+   "win": 0.027149321266968326,
+   "mean": -0.12270223253795215,
+   "median": -0.11464334466519394,
+   "best": 5.869715056434471,
+   "mean_wo_best": -0.1362904803587513,
+   "per100_total": -12.270223253795216,
+   "p100_positive": 0.0155,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|opt|$10": {
+   "n": 442,
+   "win": 0.029411764705882353,
+   "mean": -0.11521084557389707,
+   "median": -0.10836057688611332,
+   "best": 5.873841775076436,
+   "mean_wo_best": -0.12879146376131279,
+   "per100_total": -11.521084557389708,
+   "p100_positive": 0.021,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|opt|$10|capped20x": {
+   "n": 442,
+   "win": 0.029411764705882353,
+   "mean": -0.11521084557389707,
+   "median": -0.10836057688611332,
+   "best": 5.873841775076436,
+   "mean_wo_best": -0.12879146376131279,
+   "per100_total": -11.521084557389708,
+   "p100_positive": 0.021,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|opt|$10|bankroll": {
+   "total_pnl_usd": -509.23193743662506,
+   "worst_drawdown_usd": -509.23193743662506,
+   "peak_capital_tied_usd": 3900.0,
+   "pnl_by_settle_month_usd": {
+    "2026-09": -509.23193743662506
+   }
+  },
+  "R4|opt|$50": {
+   "n": 442,
+   "win": 0.027149321266968326,
+   "mean": -0.13365575016353504,
+   "median": -0.131975440471291,
+   "best": 5.835782991678331,
+   "mean_wo_best": -0.1471918924352853,
+   "per100_total": -13.365575016353503,
+   "p100_positive": 0.0097,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  },
+  "R4|opt|$50|capped20x": {
+   "n": 442,
+   "win": 0.027149321266968326,
+   "mean": -0.13365575016353504,
+   "median": -0.131975440471291,
+   "best": 5.835782991678331,
+   "mean_wo_best": -0.1471918924352853,
+   "per100_total": -13.365575016353503,
+   "p100_positive": 0.0097,
+   "p100_note": "share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed",
+   "n_ge_10x": 0,
+   "n_ge_50x": 0
+  }
+ },
+ "tails": {
+  "R1|pess|$10": {
+   "n": 442,
+   "mean_net": -0.22386540391515825,
+   "bins": [
+    {
+     "bin": "loss at or past the stop (net <= -30%)",
+     "count": 160,
+     "share": 0.36199095022624433,
+     "sum_net": -92.52876479540772,
+     "share_of_total": 0.9351203587559543
+    },
+    {
+     "bin": "small loss (-30%, 0]",
+     "count": 269,
+     "share": 0.6085972850678733,
+     "sum_net": -24.007295261612757,
+     "share_of_total": 0.24262412458913146
+    },
+    {
+     "bin": "up to 2x proceeds (0, +100%)",
+     "count": 10,
+     "share": 0.02262443438914027,
+     "sum_net": 3.5664198408397634,
+     "share_of_total": -0.03604318947102116
+    },
+    {
+     "bin": "2x-10x proceeds",
+     "count": 2,
+     "share": 0.004524886877828055,
+     "sum_net": 4.021510475282771,
+     "share_of_total": -0.04064245671821499
+    },
+    {
+     "bin": "10x-50x proceeds",
+     "count": 1,
+     "share": 0.0022624434389140274,
+     "sum_net": 9.999621210398004,
+     "share_of_total": -0.10105883715584975
+    },
+    {
+     "bin": "50x+ proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    }
+   ],
+   "loss_bill_below_10x": -108.94812974089795,
+   "freq_ge_10x": [
+    1,
+    [
+     5.727846808761773e-05,
+     0.012540530855026655
+    ]
+   ],
+   "freq_ge_50x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "sensitivity_mean": {
+    "without_best": -0.24704791324466657,
+    "best_payout_halved": -0.23517719261470352,
+    "non_winners_5pts_worse": -0.27375228174321253,
+    "every_second_10x_winner_lost": -0.22386540391515825
+   },
+   "weeks_with_10x_winner": 1,
+   "weekly": {
+    "2026-W34": {
+     "n": 87,
+     "sum_net": -14.647393872074051
+    },
+    "2026-W35": {
+     "n": 201,
+     "sum_net": -48.09388924288923
+    },
+    "2026-W36": {
+     "n": 153,
+     "sum_net": -36.154397952640636
+    },
+    "2026-W37": {
+     "n": 1,
+     "sum_net": -0.05282746289602445
+    }
+   },
+   "weekly_clustered": {
+    "weeks": 4,
+    "mean_of_weekly_means": -0.17419116185078515,
+    "approx_95": [
+     -0.26147748802488585,
+     -0.08690483567668444
+    ]
+   }
+  },
+  "R1|opt|$10": {
+   "n": 442,
+   "mean_net": -0.07885223355206994,
+   "bins": [
+    {
+     "bin": "loss at or past the stop (net <= -30%)",
+     "count": 151,
+     "share": 0.3416289592760181,
+     "sum_net": -48.609328472168364,
+     "share_of_total": 1.3947081942739359
+    },
+    {
+     "bin": "small loss (-30%, 0]",
+     "count": 268,
+     "share": 0.6063348416289592,
+     "sum_net": -23.883612439161805,
+     "share_of_total": 0.6852731980618524
+    },
+    {
+     "bin": "up to 2x proceeds (0, +100%)",
+     "count": 15,
+     "share": 0.033936651583710405,
+     "sum_net": 7.25559158503236,
+     "share_of_total": -0.20817882813879243
+    },
+    {
+     "bin": "2x-10x proceeds",
+     "count": 7,
+     "share": 0.01583710407239819,
+     "sum_net": 18.074679452839245,
+     "share_of_total": -0.5186021764563808
+    },
+    {
+     "bin": "10x-50x proceeds",
+     "count": 1,
+     "share": 0.0022624434389140274,
+     "sum_net": 12.309982643443648,
+     "share_of_total": -0.35320038774061496
+    },
+    {
+     "bin": "50x+ proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    }
+   ],
+   "loss_bill_below_10x": -47.16266987345856,
+   "freq_ge_10x": [
+    1,
+    [
+     5.727846808761773e-05,
+     0.012540530855026655
+    ]
+   ],
+   "freq_ge_50x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "sensitivity_mean": {
+    "without_best": -0.10694482964503076,
+    "best_payout_halved": -0.09277755328447226,
+    "non_winners_5pts_worse": -0.12873911138012423,
+    "every_second_10x_winner_lost": -0.07885223355206994
+   },
+   "weeks_with_10x_winner": 1,
+   "weekly": {
+    "2026-W34": {
+     "n": 87,
+     "sum_net": 7.896388707968821
+    },
+    "2026-W35": {
+     "n": 201,
+     "sum_net": -23.368603113197228
+    },
+    "2026-W36": {
+     "n": 153,
+     "sum_net": -19.327645361890482
+    },
+    "2026-W37": {
+     "n": 1,
+     "sum_net": -0.05282746289602445
+    }
+   },
+   "weekly_clustered": {
+    "weeks": 4,
+    "mean_of_weekly_means": -0.051162640204748484,
+    "approx_95": [
+     -0.15121741639740688,
+     0.0488921359879099
+    ]
+   }
+  },
+  "R2|pess|$10": {
+   "n": 442,
+   "mean_net": -0.23564246502962236,
+   "bins": [
+    {
+     "bin": "loss at or past the stop (net <= -30%)",
+     "count": 160,
+     "share": 0.36199095022624433,
+     "sum_net": -92.52876479540772,
+     "share_of_total": 0.8883844293339631
+    },
+    {
+     "bin": "small loss (-30%, 0]",
+     "count": 272,
+     "share": 0.6153846153846154,
+     "sum_net": -24.432686688879965,
+     "share_of_total": 0.2345823860200651
+    },
+    {
+     "bin": "up to 2x proceeds (0, +100%)",
+     "count": 7,
+     "share": 0.01583710407239819,
+     "sum_net": 1.6461293541783297,
+     "share_of_total": -0.01580476828103276
+    },
+    {
+     "bin": "2x-10x proceeds",
+     "count": 3,
+     "share": 0.006787330316742082,
+     "sum_net": 11.16135258701628,
+     "share_of_total": -0.1071620470729955
+    },
+    {
+     "bin": "10x-50x proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    },
+    {
+     "bin": "50x+ proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    }
+   ],
+   "loss_bill_below_10x": -104.15396954309308,
+   "freq_ge_10x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "freq_ge_50x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "sensitivity_mean": {
+    "without_best": -0.2523669198522145,
+    "best_payout_halved": -0.24371920949990913,
+    "non_winners_5pts_worse": -0.28564246502962237,
+    "every_second_10x_winner_lost": -0.23564246502962236
+   },
+   "weeks_with_10x_winner": 0,
+   "weekly": {
+    "2026-W34": {
+     "n": 87,
+     "sum_net": -18.188664589021062
+    },
+    "2026-W35": {
+     "n": 201,
+     "sum_net": -48.793160736770915
+    },
+    "2026-W36": {
+     "n": 153,
+     "sum_net": -37.11931675440509
+    },
+    "2026-W37": {
+     "n": 1,
+     "sum_net": -0.05282746289602445
+    }
+   },
+   "weekly_clustered": {
+    "weeks": 4,
+    "mean_of_weekly_means": -0.1868136325021659,
+    "approx_95": [
+     -0.27753252559617425,
+     -0.09609473940815752
+    ]
+   }
+  },
+  "R2|opt|$10": {
+   "n": 442,
+   "mean_net": -0.12138130384853806,
+   "bins": [
+    {
+     "bin": "loss at or past the stop (net <= -30%)",
+     "count": 151,
+     "share": 0.3416289592760181,
+     "sum_net": -48.609328472168364,
+     "share_of_total": 0.9060362080893787
+    },
+    {
+     "bin": "small loss (-30%, 0]",
+     "count": 273,
+     "share": 0.6176470588235294,
+     "sum_net": -24.24551411067692,
+     "share_of_total": 0.45191559641875717
+    },
+    {
+     "bin": "up to 2x proceeds (0, +100%)",
+     "count": 15,
+     "share": 0.033936651583710405,
+     "sum_net": 5.004846300907493,
+     "share_of_total": -0.09328604420323729
+    },
+    {
+     "bin": "2x-10x proceeds",
+     "count": 3,
+     "share": 0.006787330316742082,
+     "sum_net": 14.19945998088397,
+     "share_of_total": -0.2646657603048986
+    },
+    {
+     "bin": "10x-50x proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    },
+    {
+     "bin": "50x+ proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    }
+   ],
+   "loss_bill_below_10x": -53.65053630105382,
+   "freq_ge_10x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "freq_ge_50x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "sensitivity_mean": {
+    "without_best": -0.1394915843238751,
+    "best_payout_halved": -0.13027864817633794,
+    "non_winners_5pts_worse": -0.17138130384853803,
+    "every_second_10x_winner_lost": -0.12138130384853806
+   },
+   "weeks_with_10x_winner": 0,
+   "weekly": {
+    "2026-W34": {
+     "n": 87,
+     "sum_net": -2.3724322931688206
+    },
+    "2026-W35": {
+     "n": 201,
+     "sum_net": -28.367633163336592
+    },
+    "2026-W36": {
+     "n": 153,
+     "sum_net": -22.857643381652377
+    },
+    "2026-W37": {
+     "n": 1,
+     "sum_net": -0.05282746289602445
+    }
+   },
+   "weekly_clustered": {
+    "weeks": 4,
+    "mean_of_weekly_means": -0.09265641621772014,
+    "approx_95": [
+     -0.1543847677620261,
+     -0.030928064673414198
+    ]
+   }
+  },
+  "R3|pess|$10": {
+   "n": 442,
+   "mean_net": -0.24891464566528973,
+   "bins": [
+    {
+     "bin": "loss at or past the stop (net <= -30%)",
+     "count": 151,
+     "share": 0.3416289592760181,
+     "sum_net": -117.65175104719934,
+     "share_of_total": 1.0693642855849064
+    },
+    {
+     "bin": "small loss (-30%, 0]",
+     "count": 270,
+     "share": 0.6108597285067874,
+     "sum_net": -24.171411156353642,
+     "share_of_total": 0.21969961001620344
+    },
+    {
+     "bin": "up to 2x proceeds (0, +100%)",
+     "count": 15,
+     "share": 0.033936651583710405,
+     "sum_net": 5.409426151946033,
+     "share_of_total": -0.049167539632108015
+    },
+    {
+     "bin": "2x-10x proceeds",
+     "count": 5,
+     "share": 0.011312217194570135,
+     "sum_net": 16.393841457150884,
+     "share_of_total": -0.1490074597426546
+    },
+    {
+     "bin": "10x-50x proceeds",
+     "count": 1,
+     "share": 0.0022624434389140274,
+     "sum_net": 9.999621210398004,
+     "share_of_total": -0.09088889622634723
+    },
+    {
+     "bin": "50x+ proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    }
+   ],
+   "loss_bill_below_10x": -120.01989459445606,
+   "freq_ge_10x": [
+    1,
+    [
+     5.727846808761773e-05,
+     0.012540530855026655
+    ]
+   ],
+   "freq_ge_50x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "sensitivity_mean": {
+    "without_best": -0.272153955996499,
+    "best_payout_halved": -0.260226434364835,
+    "non_winners_5pts_worse": -0.298801523493344,
+    "every_second_10x_winner_lost": -0.24891464566528973
+   },
+   "weeks_with_10x_winner": 1,
+   "weekly": {
+    "2026-W34": {
+     "n": 87,
+     "sum_net": -19.40066281008415
+    },
+    "2026-W35": {
+     "n": 201,
+     "sum_net": -55.60007423172184
+    },
+    "2026-W36": {
+     "n": 153,
+     "sum_net": -34.96670887935604
+    },
+    "2026-W37": {
+     "n": 1,
+     "sum_net": -0.05282746289602445
+    }
+   },
+   "weekly_clustered": {
+    "weeks": 4,
+    "mean_of_weekly_means": -0.1952453631989059,
+    "approx_95": [
+     -0.29319590208249957,
+     -0.09729482431531224
+    ]
+   }
+  },
+  "R3|opt|$10": {
+   "n": 442,
+   "mean_net": -0.17760141272719474,
+   "bins": [
+    {
+     "bin": "loss at or past the stop (net <= -30%)",
+     "count": 141,
+     "share": 0.3190045248868778,
+     "sum_net": -108.25343847995472,
+     "share_of_total": 1.3790277783716893
+    },
+    {
+     "bin": "small loss (-30%, 0]",
+     "count": 268,
+     "share": 0.6063348416289592,
+     "sum_net": -23.883612439161805,
+     "share_of_total": 0.30425052048177237
+    },
+    {
+     "bin": "up to 2x proceeds (0, +100%)",
+     "count": 22,
+     "share": 0.049773755656108594,
+     "sum_net": 10.07922026204662,
+     "share_of_total": -0.12839799752192482
+    },
+    {
+     "bin": "2x-10x proceeds",
+     "count": 10,
+     "share": 0.02262443438914027,
+     "sum_net": 31.248023588206188,
+     "share_of_total": -0.39806488507364546
+    },
+    {
+     "bin": "10x-50x proceeds",
+     "count": 1,
+     "share": 0.0022624434389140274,
+     "sum_net": 12.309982643443648,
+     "share_of_total": -0.15681541625789153
+    },
+    {
+     "bin": "50x+ proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    }
+   ],
+   "loss_bill_below_10x": -90.80980706886372,
+   "freq_ge_10x": [
+    1,
+    [
+     5.727846808761773e-05,
+     0.012540530855026655
+    ]
+   ],
+   "freq_ge_50x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "sensitivity_mean": {
+    "without_best": -0.20591792986136898,
+    "best_payout_halved": -0.19152673245959706,
+    "non_winners_5pts_worse": -0.22748829055524902,
+    "every_second_10x_winner_lost": -0.17760141272719474
+   },
+   "weeks_with_10x_winner": 1,
+   "weekly": {
+    "2026-W34": {
+     "n": 87,
+     "sum_net": -5.567281070471175
+    },
+    "2026-W35": {
+     "n": 201,
+     "sum_net": -44.957145185125725
+    },
+    "2026-W36": {
+     "n": 153,
+     "sum_net": -27.922570706927143
+    },
+    "2026-W37": {
+     "n": 1,
+     "sum_net": -0.05282746289602445
+    }
+   },
+   "weekly_clustered": {
+    "weeks": 4,
+    "mean_of_weekly_means": -0.1307467626139314,
+    "approx_95": [
+     -0.21607034084491497,
+     -0.04542318438294782
+    ]
+   }
+  },
+  "R4|pess|$10": {
+   "n": 442,
+   "mean_net": -0.22986241713502942,
+   "bins": [
+    {
+     "bin": "loss at or past the stop (net <= -30%)",
+     "count": 160,
+     "share": 0.36199095022624433,
+     "sum_net": -91.84768460793059,
+     "share_of_total": 0.9040198654945326
+    },
+    {
+     "bin": "small loss (-30%, 0]",
+     "count": 271,
+     "share": 0.6131221719457014,
+     "sum_net": -24.22324966632727,
+     "share_of_total": 0.23841971627995565
+    },
+    {
+     "bin": "up to 2x proceeds (0, +100%)",
+     "count": 7,
+     "share": 0.01583710407239819,
+     "sum_net": 1.6461293541783297,
+     "share_of_total": -0.01620219000297371
+    },
+    {
+     "bin": "2x-10x proceeds",
+     "count": 4,
+     "share": 0.00904977375565611,
+     "sum_net": 12.825616546396514,
+     "share_of_total": -0.1262373917715144
+    },
+    {
+     "bin": "10x-50x proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    },
+    {
+     "bin": "50x+ proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    }
+   ],
+   "loss_bill_below_10x": -101.599188373683,
+   "freq_ge_10x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "freq_ge_50x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "sensitivity_mean": {
+    "without_best": -0.2428854562142017,
+    "best_payout_halved": -0.23609917937120584,
+    "non_winners_5pts_worse": -0.27986241713502946,
+    "every_second_10x_winner_lost": -0.22986241713502942
+   },
+   "weeks_with_10x_winner": 0,
+   "weekly": {
+    "2026-W34": {
+     "n": 87,
+     "sum_net": -18.659207141259785
+    },
+    "2026-W35": {
+     "n": 201,
+     "sum_net": -48.12107442042933
+    },
+    "2026-W36": {
+     "n": 153,
+     "sum_net": -34.766079349097865
+    },
+    "2026-W37": {
+     "n": 1,
+     "sum_net": -0.05282746289602445
+    }
+   },
+   "weekly_clustered": {
+    "weeks": 4,
+    "mean_of_weekly_means": -0.18348467885981187,
+    "approx_95": [
+     -0.2711823960097394,
+     -0.09578696170988432
+    ]
+   }
+  },
+  "R4|opt|$10": {
+   "n": 442,
+   "mean_net": -0.11521084557389707,
+   "bins": [
+    {
+     "bin": "loss at or past the stop (net <= -30%)",
+     "count": 160,
+     "share": 0.36199095022624433,
+     "sum_net": -51.47091905067915,
+     "share_of_total": 1.010755910357347
+    },
+    {
+     "bin": "small loss (-30%, 0]",
+     "count": 269,
+     "share": 0.6085972850678733,
+     "sum_net": -23.884501926667987,
+     "share_of_total": 0.4690299286195195
+    },
+    {
+     "bin": "up to 2x proceeds (0, +100%)",
+     "count": 5,
+     "share": 0.011312217194570135,
+     "sum_net": 0.4219457680675399,
+     "share_of_total": -0.008285925077510518
+    },
+    {
+     "bin": "2x-10x proceeds",
+     "count": 8,
+     "share": 0.01809954751131222,
+     "sum_net": 24.010281465617087,
+     "share_of_total": -0.4714999138993558
+    },
+    {
+     "bin": "10x-50x proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    },
+    {
+     "bin": "50x+ proceeds",
+     "count": 0,
+     "share": 0.0,
+     "sum_net": 0,
+     "share_of_total": -0.0
+    }
+   ],
+   "loss_bill_below_10x": -50.92319374366251,
+   "freq_ge_10x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "freq_ge_50x": [
+    0,
+    [
+     0.0,
+     0.008311150937233502
+    ]
+   ],
+   "sensitivity_mean": {
+    "without_best": -0.12879146376131279,
+    "best_payout_halved": -0.12185546296651749,
+    "non_winners_5pts_worse": -0.16521084557389706,
+    "every_second_10x_winner_lost": -0.11521084557389707
+   },
+   "weeks_with_10x_winner": 0,
+   "weekly": {
+    "2026-W34": {
+     "n": 87,
+     "sum_net": -4.109173158299024
+    },
+    "2026-W35": {
+     "n": 201,
+     "sum_net": -28.02463257163442
+    },
+    "2026-W36": {
+     "n": 153,
+     "sum_net": -18.73656055083304
+    },
+    "2026-W37": {
+     "n": 1,
+     "sum_net": -0.05282746289602445
+    }
+   },
+   "weekly_clustered": {
+    "weeks": 4,
+    "mean_of_weekly_means": -0.09048663776106866,
+    "approx_95": [
+     -0.13776814807362067,
+     -0.04320512744851665
+    ]
+   }
+  }
+ }
+}
