@@ -83,6 +83,24 @@ For any other clash between the Blueprint and an owner rule (for example, Telegr
   - Helius §3.2(xi) (business purpose only) is still the owner's question.
   - The Helius Developer plan is active: 126k of 10M credits used, cycle 6 Oct–6 Nov, autoscaling off.
 
+**No bugs migrate (owner, 2026-10-07).** Nothing is copied in bulk. A Zeroed module enters the Blueprint build only after the migration map marks it keep or adapt, and only when all three hold:
+1. it passes the Blueprint module's acceptance tests;
+2. every known bug that touches it has a test that fails on the old Zeroed code and passes on the migrated code;
+3. a fresh reviewer passes it.
+
+Known bugs to close or leave behind:
+- the restart loop and V8 out-of-memory on the 1 GB host;
+- Helius credit burn of about 80k an hour with zero trades;
+- `SLOT_MS = 400` hard-coded in four places, while slots run at 250 ms;
+- H8 counting post-BOOST virtual quote as depth;
+- risk limits in micro-USD instead of lamports (#197);
+- the watchdog cannot sell, because there is no exit takeover;
+- red team C's critical findings (fixes #271, #274 and #279 are merged but not deployed);
+- the fake 17.8% paper edge (#268);
+- holdout contamination.
+
+The server starts the Blueprint build from a clean state. Reuse the host, keys, Tailscale and the deploy gate. Do not reuse the old worker's saved state, ledgers or caches. Nothing runs on the server except the stand-in until the Blueprint's paper gates pass.
+
 **Do not:**
 - delete Zeroed code before the map marks it replaced and its replacement passes the same tests and replays;
 - resume the worker before the owner's resume order;
