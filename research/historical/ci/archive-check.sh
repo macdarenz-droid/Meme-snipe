@@ -1,47 +1,69 @@
 #!/usr/bin/env bash
-# ARCHIVE-CHECK (owner decision, 2026-10-04): every 3 hours, ask the Old Faithful
-# archive once whether it serves our scanner again, and if it does, dispatch the next
-# scan batch. Run by .github/workflows/archive-check.yml.
+# ARCHIVE-CHECK (owner decision, 2026-10-04; batches OF-2, research/z-h-estimate/
+# OLD-FAITHFUL.md §2): every 3 hours, ask the Old Faithful archive once whether it serves
+# our scanner again, and if it does, dispatch the next day of the allow-list. Run by
+# .github/workflows/archive-check.yml.
 #
-#   - While a data-scan run that may read the archive is active or queued, it does
-#     nothing (no request at all). A run counts as Helius-only (source helius, which
-#     never touches the archive) only when its title, set by data-scan.yml's run-name,
-#     is exactly "data-scan scan source=helius"; any other title (the archive source,
-#     a run dispatched before run-name existed, anything unexpected) counts as archive,
-#     unless its id is in HELIUS_RUNS (a manual dispatch input, digits and commas only,
-#     for Helius runs dispatched before run-name; scheduled checks never set it).
-#   - A served answer dispatches a scan beside any Helius-only runs: data-scan runs the
-#     two sources in separate concurrency groups ("data-scan" for the archive and
-#     assembly, "data-scan-helius" for Helius), each one at a time (ARCHIVE-LANE). The
-#     archive lane itself stays single: no request while a run that may read the archive
-#     is active or queued, so a dispatch never runs beside an archive scan and never
-#     replaces a pending chained archive run.
-#   - Otherwise it makes ONE request: a range GET of 64 bytes with the scanner's own
-#     User-Agent (read from scanner/archive.go), from the runner. Never another agent,
-#     host, address, proxy or client: that would be getting around the block, which
-#     Triton's terms bar.
+#   - Holds first, in this order; each one sends nothing, not even the 64-byte probe:
+#     1. not armed: ARCHIVE_ARM is empty or not the pinned B10-PULL id, or
+#        ARCHIVE_REARM_AT is not a past UTC time (archive-guard.sh);
+#     2. a back-off is running: less than ARCHIVE_BACKOFF_S (3 h) since the last
+#        failure (a blocked or failed batch, or a non-served check), or the run history
+#        cannot be read;
+#     3. the 3-failure stop is active (failures counted from ARCHIVE_REARM_AT with no
+#        successful batch after them), or the private store cannot be read or holds the
+#        storage-stop marker;
+#     4. the scanner's request cap (scanner/archive.go) is above ARCHIVE_MAX_RPS;
+#     5. a data-scan run that may read the archive is active or queued, or a dispatch
+#        marker younger than 15 min names a run not listed yet, or the markers cannot be
+#        listed. A run counts as Helius-only (it never touches the archive) only when its
+#        title, set by data-scan.yml's run-name, is exactly "data-scan scan
+#        source=helius", or its id is in HELIUS_RUNS (a manual dispatch input, digits and
+#        commas only, for Helius runs dispatched before run-name);
+#     6. less than 60 min since the last data-scan run outside the Helius lane ended;
+#     7. the queue is empty (every allow-listed day is read done in the private store,
+#        or the store cannot be read), or the next day has no retention value.
+#   - Then ONE request: a range GET of 64 bytes with the scanner's own User-Agent (read
+#     from scanner/archive.go), from the runner. Never another agent, host, address,
+#     proxy or client: that would be getting around the block, which Triton's terms bar.
 #   - Any answer but a 206 of at most 64 bytes is logged (status, bytes, cf-ray, time)
-#     and the check stops until the next one. No retries. No answer can stream: the
+#     and sets served=false: the workflow's step "Not served (counted failure)" then
+#     fails, which is how the failure is counted. No retries. No answer can stream: the
 #     body is cut after 65 bytes, which aborts the transfer.
-#   - On success it dispatches data-scan.yml (mode scan, max_mbps ARCHIVE_MAX_MBPS) for
-#     the next ARCHIVE_DAYS_PER_CHECK unpublished days (archive-limits.conf: 1 day, 40
-#     MB/s), and only while the scanner's request cap is at most ARCHIVE_MAX_RPS: pre-holdout days from 2026-09-21 back to 2026-07-20 first (run
-#     1's days lead), then the holdout days 2026-10-01 back to 2026-09-22. The scan
-#     keeps its own limits (archive-limits.conf): one job, any 429 stops the chain with
-#     a back-off of at least 3 h.
+#   - On a 206 it sets served=true, the day (the oldest allow-listed day not read done:
+#     day D+1 only after day D) and the dispatch marker's key
+#     (archive-dispatch-<UTC time>-<run id>), and writes the marker (time and day only)
+#     to $RUNNER_TEMP/archive-dispatch. The workflow saves the marker to the Actions
+#     cache, then runs `archive-check.sh --dispatch DAY`, which checks the day again and
+#     dispatches data-scan.yml (mode scan, one day, max_mbps ARCHIVE_MAX_MBPS).
 #
-# Env: GH_REPO (owner/repo), REF (branch to dispatch on), GH_TOKEN for gh;
-# GH_BIN, CURL_BIN and ARCHIVE_CHECK_URL (a local fake server) are for tests only; the
-# workflow sets none of them (test-ci.sh checks).
+# Env: GH_REPO (owner/repo), REF (branch to dispatch on), GH_TOKEN for gh, DATA_REPO and
+# DATA_STORE_TOKEN for the private store, GITHUB_RUN_ID, GITHUB_OUTPUT; GH_BIN, CURL_BIN,
+# AG_NOW and ARCHIVE_CHECK_URL (a local fake server) are for tests only; the workflow sets
+# none of them (test-ci.sh checks).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=archive-limits.conf
 . "$here/archive-limits.conf"
+# shellcheck source=archive-guard.sh
+. "$here/archive-guard.sh"
+ag_summary=/dev/null # holds are logged once, below
 gh=${GH_BIN:-gh}
 curl=${CURL_BIN:-curl}
 : "${GH_REPO:?}" "${REF:?}"
 summary=${GITHUB_STEP_SUMMARY:-/dev/stderr}
+output=${GITHUB_OUTPUT:-/dev/null}
 url="https://files.old-faithful.net/1047/epoch-1047.car"
+
+# --dispatch DAY: the workflow's last step, after the marker is saved. The day is checked
+# again (allow-list, arm, retention) before the dispatch.
+if [[ "${1:-}" == --dispatch ]]; then
+  [[ $# -eq 2 ]] || { echo "usage: archive-check.sh --dispatch DAY" >&2; exit 2; }
+  msg=$(ag_local "$2" 2>&1 >/dev/null) || { echo "archive-check: $msg; nothing dispatched" | tee -a "$summary"; exit 1; }
+  "$gh" workflow run data-scan.yml --repo "$GH_REPO" --ref "$REF" -f mode=scan -f days="$2" -f max_mbps="$ARCHIVE_MAX_MBPS"
+  echo "archive-check: served; dispatched data-scan for $2" | tee -a "$summary"
+  exit 0
+fi
 
 ua=$(sed -n 's/^const userAgent = "\(.*\)"$/\1/p' "$here/../scanner/archive.go")
 if [[ -z "$ua" || "$ua" != zeroed-historical-scanner/* ]]; then
@@ -54,19 +76,69 @@ if [[ -n "$named" && ! "$named" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
   echo "archive-check: helius_runs must be run ids separated by commas, got '$named'; no request made" | tee -a "$summary"
   exit 1
 fi
-runs=$("$gh" run list --repo "$GH_REPO" --workflow data-scan.yml --limit 50 --json databaseId,status,displayTitle \
-  --jq '.[] | select(.status != "completed") | "\(.databaseId)\t\(.displayTitle)"')
-active=0 archive=0
-while IFS=$'\t' read -r id title; do
-  [[ -n "$id" ]] || continue
-  active=$(( active + 1 ))
+# hold N REASON: log the hold and stop; no request, no dispatch.
+hold() { echo "archive-check $(date -u -d "@$(ag_now)" +%FT%TZ): held ($1): $2; no request made" | tee -a "$summary"; exit 0; }
+iso() { date -u -d "@$1" +%FT%TZ; }
+now=$(ag_now)
+
+# 1. armed
+msg=$(ag_armed 2>&1) || hold 1 "${msg#refused: }"
+# 2. back-off, 3. the 3-failure stop and the store
+ag_history || hold 2 "the run history cannot be read (fail closed)"
+if (( AG_LAST_FAIL > 0 && now - AG_LAST_FAIL < ARCHIVE_BACKOFF_S )); then
+  hold 2 "back-off: the last failure ended $(iso "$AG_LAST_FAIL"), so nothing goes out before $(iso $(( AG_LAST_FAIL + ARCHIVE_BACKOFF_S )))"
+fi
+(( AG_FAILS < 3 )) || hold 3 "the chain is stopped: $AG_FAILS failures since ARCHIVE_REARM_AT $ARCHIVE_REARM_AT with no successful batch between them; only a reviewed change re-arms it"
+msg=$(ag_store_ok 2>&1) || hold 3 "${msg#refused: }"
+# 4. ARCHIVE-SAFE: the scanner's request cap
+if ! cap=$("$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}"); then
+  hold 4 "the scanner's request cap ($cap/s, scanner/archive.go) is above $ARCHIVE_MAX_RPS/s (archive-limits.conf)"
+fi
+# 5. one archive lane: no run that may read the archive active or queued (Helius-only
+# runs read another host, in their own concurrency group, ARCHIVE-LANE) ...
+archive=0
+while IFS=$'\t' read -r id st _ _ _ title; do
+  [[ -n "$id" && "$st" != completed ]] || continue
   if [[ "$title" == "data-scan scan source=helius" || ",$named," == *",$id,"* ]]; then continue; fi
   archive=$(( archive + 1 ))
-done <<< "$runs"
-if (( archive > 0 )); then
-  echo "archive-check $(date -u +%FT%TZ): $archive data-scan run(s) that may read the archive active or queued; no request made" | tee -a "$summary"
+done <<< "$AG_DS_RUNS"
+(( archive == 0 )) || hold 5 "$archive data-scan run(s) that may read the archive active or queued"
+# ... and no fresh dispatch marker whose run is not listed yet. Only markers saved on the
+# default branch by an archive-check run of that branch count.
+ref="refs/heads/$AG_BRANCH"
+keys=$("$gh" api --paginate "repos/$GH_REPO/actions/caches?key=archive-dispatch-&ref=$ref&per_page=100" \
+  --jq ".actions_caches[] | select(.ref == \"$ref\") | .key" 2>/dev/null) || hold 5 "the dispatch markers cannot be listed (fail closed)"
+acids=" $(cut -f1 <<< "$AG_AC_RUNS" | tr '\n' ' ') "
+while read -r key; do
+  [[ "$key" =~ ^archive-dispatch-([0-9]{8})T([0-9]{2})([0-9]{2})([0-9]{2})Z-([0-9]+)$ ]] || continue
+  [[ "$acids" == *" ${BASH_REMATCH[5]} "* ]] || continue
+  d=${BASH_REMATCH[1]}
+  t=$(date -u -d "${d:0:4}-${d:4:2}-${d:6:2}T${BASH_REMATCH[2]}:${BASH_REMATCH[3]}:${BASH_REMATCH[4]}Z" +%s 2>/dev/null) || continue
+  (( now - t < 900 )) || continue
+  listed=0
+  while IFS=$'\t' read -r id _ _ cr _ title; do
+    [[ -n "$id" && "$title" != "data-scan scan source=helius" ]] || continue
+    c=$(ag_ts "$cr") && (( c >= t )) && { listed=1; break; }
+  done <<< "$AG_DS_RUNS"
+  (( listed )) || hold 5 "dispatch marker $key is $(( (now - t) / 60 )) min old and its data-scan run is not listed yet"
+done <<< "$keys"
+# 6. at least 60 min since the last archive-lane run ended
+if (( AG_LANE_END > 0 && now - AG_LANE_END < 3600 )); then
+  hold 6 "the last data-scan run outside the Helius lane ended $(iso "$AG_LANE_END"), less than 60 min ago"
+fi
+# 7. the queue: the oldest allow-listed day not read done in the private store
+readdone=$(ag_read_done) || hold 7 "the private store's day releases cannot be read (fail closed)"
+days=$(ag_days 2>/dev/null) || hold 7 "ARCHIVE_DAYS in archive-limits.conf is malformed"
+next=""
+while read -r d; do
+  grep -qx "$d" <<< "$readdone" && continue
+  next=$d; break
+done <<< "$days"
+if [[ -z "$next" ]]; then
+  echo "archive-check: every allow-listed day is read done; no request made" | tee -a "$summary"
   exit 0
 fi
+msg=$(ag_local "$next" 2>&1 >/dev/null) || hold 7 "${msg#refused: }"
 
 hdr=$(mktemp)
 body=$(mktemp)
@@ -85,49 +157,20 @@ rc=$(cat "$rcf")
 code=$(tr -d '\r' < "$hdr" | awk '/^HTTP\//{c=$2} END{print c}')
 got=$(wc -c < "$body")
 ray=$(tr -d '\r' < "$hdr" | sed -n 's/^[Cc][Ff]-[Rr][Aa][Yy]: *//p' | tail -1)
-now=$(date -u +%FT%TZ)
+at=$(date -u +%FT%TZ)
 {
   echo "| time (UTC) | status | bytes | curl exit | cf-ray |"
   echo "|---|---|---|---|---|"
-  echo "| $now | ${code:-none} | $got | $rc | ${ray:-none} |"
+  echo "| $at | ${code:-none} | $got | $rc | ${ray:-none} |"
 } >> "$summary"
-echo "archive-check $now: status ${code:-none}, $got bytes, curl exit $rc, cf-ray ${ray:-none}"
+echo "archive-check $at: status ${code:-none}, $got bytes, curl exit $rc, cf-ray ${ray:-none}"
 if ! [[ "$code" == 206 && $rc == 0 && $got -le 64 ]]; then
-  echo "archive-check: not served; nothing dispatched until the next check" | tee -a "$summary"
+  echo "served=false" >> "$output"
+  echo "archive-check: not served; counted as a failure, nothing dispatched until a later check after the back-off" | tee -a "$summary"
   exit 0
 fi
-# Helius-only runs (the $active counted above) do not block a dispatch: they run in their
-# own concurrency group (data-scan-helius), so an archive scan never waits behind one and
-# never replaces one's pending chained run (ARCHIVE-LANE).
-
-# The queue: pre-holdout days newest first, then the holdout days newest first.
-queue=()
-d=2026-09-21
-while [[ "$d" > 2026-07-19 ]]; do queue+=("$d"); d=$(date -u -d "$d - 1 day" +%F); done
-d=2026-10-01
-while [[ "$d" > 2026-09-21 ]]; do queue+=("$d"); d=$(date -u -d "$d - 1 day" +%F); done
-
-# ARCHIVE-SAFE hold: no dispatch while the scanner's request cap is above the limit.
-if ! cap=$("$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}"); then
-  echo "archive-check: served; held: the scanner's request cap ($cap/s, scanner/archive.go) is above $ARCHIVE_MAX_RPS/s (archive-limits.conf); nothing dispatched" | tee -a "$summary"
-  exit 0
-fi
-
-batch=()
-for d in "${queue[@]}"; do
-  # A Helius day is read over RPC, never from the archive (ARCHIVE-NODUP).
-  [[ " $HELIUS_DAYS " == *" $d "* ]] && continue
-  # A day with a release is published (data-scan's own check judges completeness).
-  if "$gh" api "repos/$GH_REPO/releases/tags/data-day-$d" --silent >/dev/null 2>&1; then
-    continue
-  fi
-  batch+=("$d")
-  (( ${#batch[@]} == ARCHIVE_DAYS_PER_CHECK )) && break
-done
-if (( ${#batch[@]} == 0 )); then
-  echo "archive-check: served, and every day of the window is published; nothing to dispatch" | tee -a "$summary"
-  exit 0
-fi
-days=$(IFS=,; echo "${batch[*]}")
-"$gh" workflow run data-scan.yml --repo "$GH_REPO" --ref "$REF" -f mode=scan -f days="$days" -f max_mbps="$ARCHIVE_MAX_MBPS"
-echo "archive-check: served; dispatched data-scan for $days" | tee -a "$summary"
+key="archive-dispatch-$(date -u -d "@$now" +%Y%m%dT%H%M%SZ)-${GITHUB_RUN_ID:?}"
+mkdir -p "${RUNNER_TEMP:-/tmp}/archive-dispatch"
+echo "$(iso "$now") $next" > "${RUNNER_TEMP:-/tmp}/archive-dispatch/marker"
+{ echo "served=true"; echo "day=$next"; echo "marker=$key"; } >> "$output"
+echo "archive-check: served; $next goes out after the dispatch marker $key is saved" | tee -a "$summary"

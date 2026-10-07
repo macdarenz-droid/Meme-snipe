@@ -4,7 +4,8 @@
 #   check-day.sh DAY OUT_DIR ASSET_DIR
 # Archive source: MAX_MBPS (default ARCHIVE_MAX_MBPS) caps the determinism rescan, like the
 # scan itself; above ARCHIVE_MAX_MBPS, or with the scanner's request cap above
-# ARCHIVE_MAX_RPS (archive-limits.conf), it exits 2 before anything else.
+# ARCHIVE_MAX_RPS (archive-limits.conf), or a day archive-guard.sh entry refuses (OF-2), it
+# exits 2 before anything else; the rescan runs with the retention the day's units record.
 set -euo pipefail
 day=$1 out=$2 assets=$3
 next=$(date -u -d "$day + 1 day" +%F)
@@ -22,6 +23,13 @@ if [ "${SOURCE:-archive}" != helius ]; then
   # ARCHIVE-NODUP: a Helius day is never read from the archive.
   [[ " $HELIUS_DAYS " == *" $day "* ]] &&
     { echo "refused: $day is a Helius day (HELIUS_DAYS in archive-limits.conf); it is never read from the archive" | tee -a "$summary"; exit 2; }
+  # OF-2: allow-listed, armed, a retention value, and a fresh pass of the job's guard
+  # step (store, storage-stop marker, 3-failure stop), before anything else.
+  "$here/archive-guard.sh" entry "$day" > /dev/null || exit 2
+  # The determinism rescan uses the day's recorded retention, never the current
+  # ARCHIVE_RETENTION.
+  rec=$("$here/archive-guard.sh" recorded "$out") || exit 2
+  [ -n "$rec" ] || { echo "refused: the units of $day record no retention" | tee -a "$summary"; exit 2; }
 fi
 # phase NAME CMD...: runs CMD and logs its duration to the summary (sizes the 45 min
 # QA-phase budget in data-scan.yml from real days).
@@ -75,7 +83,7 @@ if [ "${SOURCE:-archive}" = helius ]; then
     -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" || rc=$?
   "$here/rpc-credits.sh" add "$out" "$again/rpc-usage.json"
 else
-  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" || rc=$?
+  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -retention "$rec" -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" || rc=$?
 fi
 if [ "$rc" -eq 75 ] && [ "${SOURCE:-archive}" = helius ]; then
   echo "RPC rate-limit back-off ran out during the determinism rescan: stopping resumably; the next run redoes QA" | tee -a "$summary"

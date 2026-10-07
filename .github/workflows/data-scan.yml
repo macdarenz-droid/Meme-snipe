@@ -125,9 +125,15 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # the archive guard reads the run history (3-failure stop)
     outputs:
       days: ${{ steps.days.outputs.days }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - id: days
         env:
           MODE: ${{ inputs.mode }}
@@ -162,10 +168,34 @@ jobs:
                   days.append(d)
               if not days:
                   sys.exit(os.environ["MODE"] + " mode needs at least one day")
+              if os.environ["MODE"] == "scan" and os.environ["SOURCE"] == "archive":
+                  if len(days) != 1:
+                      sys.exit("an archive scan reads one UTC day per batch (OF-2)")
+                  print("archive_day=" + days[0])
           else:
               days = ["none"]  # the scan and volume jobs are skipped; a matrix may not be empty
           print("days=" + json.dumps(days))
           EOF
+      # OF-2: an archive day is refused here, before any job reads the archive, unless it
+      # is allow-listed and not a Helius day, the chain is armed, the day has a retention
+      # value, the private store is readable with no storage-stop marker, and the
+      # 3-failure stop is not active (research/historical/ci/archive-guard.sh full).
+      - name: Archive guard
+        if: inputs.mode == 'scan' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ steps.days.outputs.archive_day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" full "$DAY"
 
   scan:
     needs: plan
@@ -296,6 +326,26 @@ jobs:
       - name: Apply the shared back-off (the later end wins)
         if: steps.published.outputs.complete != 'true'
         run: research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/backoff/archive-429.state" "$RUNNER_TEMP/work/data/archive-429.state"
+      # OF-2: the same guard as the plan job, just before the scan, in a clean shell; its
+      # pass (a file in $RUNNER_TEMP/archive-guard) is what scan-day.sh requires, so the
+      # scan step itself never holds a token.
+      - name: Archive guard before the scan
+        id: guardscan
+        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard"
       # Exit 75 (the 300 min budget ran out, or a back-off did not fit it) is resumable:
       # progress is saved below and the `continue` job dispatches the next chained run.
       - name: Scan (one lane, stops on 429)
@@ -309,6 +359,7 @@ jobs:
           RPC_RPS: ${{ inputs.rpc_rps }}
           # Only a helius day gets the key; the archive scan never sees it.
           HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
+          ARCHIVE_GUARD_DIR: ${{ runner.temp }}/archive-guard
         # source helius: rpc-day.sh exits 75 like a back-off (resumable) and 3 when the
         # day's credit cap is spent (not resumable: the chain stops).
         run: |
@@ -351,6 +402,23 @@ jobs:
           research/historical/ci/time-left.sh "$JOB_START" 355 45 || rc=$?
           if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
           exit "$rc"
+      - name: Archive guard before QA
+        id: guardqa
+        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard"
       - name: QA and determinism
         id: qa
         if: steps.published.outputs.complete != 'true'
@@ -361,6 +429,7 @@ jobs:
           RPC_CREDIT_CAP: ${{ inputs.max_credits }}
           RPC_RPS: ${{ inputs.rpc_rps }}
           HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
+          ARCHIVE_GUARD_DIR: ${{ runner.temp }}/archive-guard
         # rc 75: the determinism rescan met a 429 (back-off persisted): resumable.
         run: |
           export DATASET_PARENT="$RUNNER_TEMP/work/qa"
@@ -522,6 +591,12 @@ jobs:
           resume=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '[.artifacts[].name | select(startswith("resume-"))] | join(",")')
           if [ -z "$resume" ]; then
             echo "a day failed for a reason other than time or back-off: chain stopped for review" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # OF-2: one resumable restart a day for the archive; a second exit 75 on the same
+          # day is a failure (archive-guard.sh counts this run: its continue job failed).
+          if [ "$SOURCE" != helius ] && [ "$CHAIN" -ge 1 ]; then
+            echo "second resumable stop on $DAYS: counted as a failure (one resumable restart a day for the archive); chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           if [ "$CHAIN" -ge "$MAX_CHAIN" ]; then
