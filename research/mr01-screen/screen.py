@@ -113,11 +113,13 @@ def simulate(b, i, cfg, delay=0, pess=False):
     """Enter at close of minute i+delay; returns (exit_index, gross) or None if the data ends first."""
     o, h, l, c = b['o'], b['h'], b['l'], b['c']
     k = i + delay
-    if k >= len(c) or k + cfg['T'] >= len(c):
+    if k >= len(c):
         return None
     p0 = c[k]
     stop = p0 * (1 - cfg['a'])
     for j in range(k + 1, k + cfg['T'] + 1):
+        if j >= len(c):                # data (the wall or the fetch end) reached before any exit
+            return None
         tgt = min(float(np.median(c[j - WIN:j])), p0 * (1 + TP))
         if o[j] >= tgt:
             return j, o[j] / p0 - 1
@@ -142,9 +144,9 @@ def run_line(b, sigs, cfg, elig, delay=0, pess=False):
         if not sim:
             continue
         busy = sim[0]
-        t = int(ts[i])
-        d = t - t % DAY
-        trades.append({'i': i, 't': t, 'day': d, 'g': float(sim[1]), 'mcap': elig[d]})
+        ti = int(ts[i])
+        t = int(ts[i + delay])         # period and clustering day from the entry minute
+        trades.append({'i': i, 't': t, 'day': t - t % DAY, 'g': float(sim[1]), 'mcap': elig[ti - ti % DAY]})
     return trades
 
 def period(t):
@@ -208,6 +210,7 @@ def summarize(trs, q, extra=0.0, bench=None):
     if bench is not None:
         out['rand_n'] = len(bench)
         out['rand_mean_net'] = statistics.fmean(net(t['g'], t['mcap'], q, extra) for t in bench) if bench else None
+        out['excess_over_rand'] = out['mean_net'] - out['rand_mean_net'] if bench else None
     return out
 
 def run(elig_path, ddir, mdir, out_path):
@@ -226,9 +229,11 @@ def run(elig_path, ddir, mdir, out_path):
         end = min(WALL, max(elig) + DAY + 2 * 3600)
         b = load(mp, end)
         if b is None:
+            cover.append({'pool': u['pool'], 'sym': u['symbol'], 'elig_days': len(elig), 'minutes': 0})
             continue
         inel = [i for i in range(len(b['t'])) if (int(b['t'][i]) - int(b['t'][i]) % DAY) in elig]
         cover.append({'pool': u['pool'], 'sym': u['symbol'], 'elig_days': len(elig), 'minutes': len(b['t']),
+                      'first_minute': int(b['t'][0]), 'wanted_from': min(elig) - 7 * 3600,
                       'traded_share_eligible': float(np.mean(b['v'][inel] > 0)) if inel else None,
                       'open_eq_prev_close': float(np.mean(np.isclose(b['o'][1:], b['c'][:-1], rtol=1e-9)))})
         for k, cfg in CONFIGS.items():

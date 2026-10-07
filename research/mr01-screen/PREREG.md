@@ -73,3 +73,9 @@ Discovery, $1,000, the stress lines and the benchmark are reported but do not ch
 
 ## Known limits (stated in advance)
 - Survivor-only coin list (see above). 1-minute OHLCV from an aggregator, not 15 s pool snapshots or fills. Fee tier from the 2026-10-03 snapshot assumed unchanged. Depth model ignores LP growth (overstates impact). Fewer than 31 validation days, so the bootstrap is somewhat liberal.
+
+## Amendments before the first run (2026-10-07, from the fresh-context code review; no return had been computed)
+Code made to match the text above; no rule changed:
+- A trade is dropped only when the data ends (the wall or the fetch end) before it exits, not whenever its full time window is past the data end.
+- Delayed line: the period (discovery or validation) and the bootstrap day come from its entry minute i+1; eligibility and market cap stay from the signal minute's day.
+- The benchmark reports the dip line's excess over it; coverage lists each pool's first fetched minute against the wanted start, so truncated history is visible.
