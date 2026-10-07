@@ -69,7 +69,6 @@ const facts = passingFacts();
 const poolT = (facts.get(poolKey(MINT))!.value) as { obs: Record<string, unknown>; pool: Record<string, unknown> } & Record<string, unknown>;
 const migT = (facts.get(migrationKey(MINT))!.value) as { obs: Record<string, unknown> } & Record<string, unknown>;
 
-process.stderr.write('mod\n');
 const READS = process.env['READS'] === '1';
 const LIFE_MIN = Number(process.env['LIFE_MIN'] ?? (READS ? 240 : 30));
 const accountsT = [POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount, MINT].map((a) => {
@@ -79,12 +78,10 @@ const accountsT = [POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenA
 /** 20 largest holders, fresh strings each read (a live read's addresses are new strings every time). */
 const holdersT = () => Array.from({ length: 20 }, (_, i) => ({ address: `${'H'.repeat(40)}${String(i).padStart(4, '0')}`, owner: `${'O'.repeat(40)}${String(i).padStart(4, '0')}`, ownerProgram: null, amount: BigInt(1_000_000 + i), delegate: null, delegatedAmount: 0n }));
 const timers = dueTimers(T - 16 * 86_400_000);
-const h = makeWorker({ timers, seedWaitMs: 0, config: { ZEROED_RECORDER: process.env['REC'] ?? 'on' } });
-process.stderr.write('made\n');
+const WINDOW_MIN = process.env['WINDOW_MIN'];
+const h = makeWorker({ timers, seedWaitMs: 0, config: { ZEROED_RECORDER: process.env['REC'] ?? 'on' }, ...(WINDOW_MIN === undefined ? {} : { strategy: { windowFromMs: 0, windowToMs: Number(WINDOW_MIN) * 60_000 } }) });
 const feed = h.worker.feed;
-process.stderr.write('starting\n');
 const started = h.worker.start();
-process.stderr.write('started call\n');
 while (!h.order.includes('start helius-ws')) {
   timers.set(timers.now() + 100);
   await new Promise<void>((r) => setImmediate(r));
@@ -110,7 +107,6 @@ while (!up) {
 const now = () => timers.now();
 feed.ingest('helius', { type: 'offchain', key: 'coverage:creates:start', value: { fromSlot: slot(), via: `logs:${CREATE_AUTH}` } }, { receivedAt: now() });
 
-process.stderr.write('up\n');
 const pools: { mint: string; pool: string; until: number }[] = [];
 let createsDone = 0;
 let migDone = 0;
@@ -175,7 +171,7 @@ while (now() - start < total) {
       feed.ingest('helius', { type: 'offchain', key: RAW.holders(p.mint), value: { mint: p.mint, slot: s - 1n, commitment: 'confirmed', supply: 1_000_000_000_000_000n, accounts: holdersT() } }, { receivedAt: now() });
       feed.ingest('helius', { type: 'offchain', key: RAW.sim(p.mint), value: { mint: p.mint, slot: s - 1n, spend: 13_333_334n, ok: true, paid: 13_400_000n, proceeds: 12_900_000n, error: null } }, { receivedAt: now() });
       feed.ingest('helius', { type: 'offchain', key: feesKey(p.mint), value: FEE_CONTEXT }, { receivedAt: now() });
-      for (const k of [lpKey, holdersKey, softKey, xcheckKey, simKey]) feed.ingest('worker', { type: 'fact', key: k(p.mint), value: o(k) }, { receivedAt: now() });
+      for (const k of (process.env['NODUP'] === '1' ? [lpKey, softKey, xcheckKey] : [lpKey, holdersKey, softKey, xcheckKey, simKey])) feed.ingest('worker', { type: 'fact', key: k(p.mint), value: o(k) }, { receivedAt: now() });
     }
   }
   if ((now() - start) % 600_000 < stepMs) {

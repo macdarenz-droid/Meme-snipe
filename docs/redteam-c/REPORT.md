@@ -62,3 +62,72 @@ Run them with `npx vitest run packages/worker/test/redteam-c packages/ops/test/r
   - Credits charged at grant (failed calls count).
   - Daily budget files count as spent when unreadable.
   - Uploader delete and upload checks.
+
+# Round 2 (same commit 959d801)
+
+**Verdict: NOT READY.** 2 new CRITICAL and 4 new HIGH. The 21 future-leak probes all pass (no leak), and the 80 kill points in the middle of an exit (40 crash points × 2 price paths) are all clean.
+
+## CRITICAL
+| # | Finding | Where | Probe | Smallest fix |
+|---|---|---|---|---|
+| R2-C1 | **Heap: every batch re-read of a candidate is kept whole in the store until the candidate retires.** Only `read:accounts` and `mintKey` collapse to the newest value; holders, holders-all, sim, `worker:fees` and gates holders/sim/lp/soft/xcheck keep one entry per read. Worst case is 240 candidates read once a minute. Heap after GC: 34 → 87 → 174 → 294 MB at h1 to h4, with RSS 468 MB at h4. A longer run reached 349 MB heap and 639 MB RSS at h8, still rising, against 560 MB heap and 800M MemoryMax. | `run/store-rules.ts:44,88` | `heap-growth.test.ts` › CRITICAL: a candidate's re-read facts keep a bounded series… | Add those keys to newest-only `READS`, after proving each reader looks them up only as of now; otherwise give them a short retention. |
+| R2-C2 | **0-byte or missing `ledger.sqlite` silently drops an open position.** The cold-start marker is written only when the file does not exist, and `openLedger` turns an empty file into a fresh database. The boot finds no positions, while `account.json` still holds the trade, and no stop protects the held tokens. | `worker.ts:762-763`; core `ledger.ts:768` | `r2-corrupt-state.test.ts` › ledger.sqlite zero length / missing | Treat 0 bytes as missing. If the ledger is empty while account, exits or paper hold trades, refuse to start. |
+
+## HIGH
+- **R2-H1. Missing control, account or paper file resets state.**
+  - **What resets:**
+    - missing `control.json`: the kill latch is lost;
+    - missing `account.json`: the NAV peak, the day and week marks and today's entries reset, the setup rent is paid again, and the wallet is rebuilt from $20 at today's SOL price;
+    - missing or emptied `paper.json`: paid fees are refunded (+30,000 lamports).
+  - **Root cause:** shared with round 1's C1. A missing file reads as its default while the ledger proves the folder is not fresh.
+  - **Fix:** one start-time check.
+  - **Where:** `worker.ts:765`, `state.ts:53`, `account.ts:181-204`, `paper-world.ts:161`.
+  - **Probe:** `r2-corrupt-state.test.ts` (18 failures out of 85 damages; the table is in `r2-corrupt-table.json`).
+- **R2-H2. A release that crashes at minute 10 stays deployed.**
+  - **Why no gate catches it:**
+    - `holds()` watches only 30 s (`logic.sh:14`);
+    - one restart per 600 s never reaches StartLimitBurst, and there is no `OnFailure=`;
+    - `zeroed-check` has no worker check;
+    - the watchdog ignores `restarts_24h` and `last_exit`.
+  - **Probe:** `ops/redteam-c/r2-late-crash.test.ts`. Observed: `{"deployed":"still B","unitFailed":false,"watchdogAlerts":[],"restarts":12}`.
+  - **Fix:**
+    - a probation window of about 2 h with an NRestarts baseline, then rollback;
+    - a watchdog alert on unplanned restarts of 2 or more, or on `last_exit` crash or oom.
+- **R2-H3. The worker's per-mint pool maps are never deleted.**
+  - **Maps:** `#pools`, `#poolReleasedAt`, `#fees`, `#carries` and `#snapshots` (`worker.ts:532-539,858,1230-1233,1487-1490`).
+  - **Probe:** `heap-growth.test.ts` › HIGH: per-mint pool maps… Observed: 719 entries at 120 live candidates.
+  - **Fix:** delete on retire unless held.
+- **R2-H4. Coverage facts and pool coverage keys never go away.**
+  - **In memory:** `#coverageFacts` is never pruned in memory (`strategy.ts:625,967,1335`).
+  - **In the store:** the `coverage:trades:<pool>:start|gap|resume` keys never retire, because retirement matches a key's last segment (`core/src/engine/asof.ts:188`).
+  - **Probe:** `heap-growth.test.ts` › HIGH: coverage facts… Observed: 2637 > 530, with 7,316 facts after 30 h.
+  - **Cost:** R2-H3 and R2-H4 together cost about 3.6 KB per pool, about 5 MB a day.
+
+## MEDIUM
+- **`account.json` check covers 4 fields** (`account.ts:151`).
+  - A missing `setup` pays the rent twice.
+  - An emptied `trades` debits the entry twice.
+- **Heal tapes have no total cap across pools** (`producer.ts:136,548`). Not measured.
+- **About 1.3 KB per create stays past the 13 h window** (likely `#createSig` and `#symbols` at a 60k cap). A plateau was not proven; the projected size at the caps is about 78 MB.
+
+## Heap budget (worst case)
+- **Day 1, R2-C1 not counted:** about 200 MB. Base 68 MB, create caps about 78 MB, holds about 20 MB, TxFetcher and tombstones about 30 MB (estimated).
+- **With R2-C1's worst case:** about 490 MB, plus about 5 MB a day from R2-H3 and R2-H4. Heal tapes are not counted.
+
+## Leak probes (all PASS)
+- **Files:**
+  - `core/test/redteam-c/leak-facts.test.ts`: pool, LP, mint, candles, preReads, bookPending, insiders, graduates, curve volume, SOL/USD, and 2 controls that fail when a leak is put in on purpose.
+  - `worker/test/redteam-c/leak-reread.test.ts`.
+  - `worker/test/redteam-c/leak-livefeed.test.ts`: shed, standIn, shedKeys, late echo.
+  - `backtest/test/redteam-c/leak-fills.test.ts`: the World's fills, with a control.
+- **Notes (not leaks):**
+  - Account reads answered ahead of their release slot are accepted (`producer.ts` around 1227 and 1338). Optional: clamp reads more than N slots ahead.
+  - `world.ts:186` `hasRows()` peeks at whether more data exists; only the drop reason changes, never a decision.
+  - FACTS-REREAD is a live-vs-backtest timing difference, not a leak.
+- **Not planted:**
+  - holders through the producer;
+  - `#completionWaits` while a chain is mid-read;
+  - a direct watch on the World's inputs, which needs a `wrapRunner` hook.
+
+## Branch note
+`pnpm typecheck` fails in packages/ops on this branch only, because of the probe files under `packages/ops/test/redteam-c` (rootDir). At 959d801 alone, ops typechecks clean.
