@@ -54,6 +54,11 @@ export interface MintPlan {
   readonly sellDivisor?: number;
   /** From this many slots after migration the pool charges these fees (a fee-config change such as B3). */
   readonly feesFrom?: { readonly since: number; readonly lp: number; readonly protocol: number; readonly creator: number };
+  /**
+   * Curve trades that carry this tail (hex) in their event (H5's curve half): the dev buy in the create transaction
+   * (`dev`), and the curve buys by their order (0 to 99; 99 is the completing buy, the one that empties the curve).
+   */
+  readonly curveTail?: { readonly dev?: boolean; readonly buys?: readonly number[]; readonly hex: string };
   /** The first swap at or after this many slots since migration carries this tail (hex) in its event (H5). */
   readonly tail?: { readonly after: number; readonly hex: string };
   /** Stop the mint's swaps this many slots after migration (dead pool). */
@@ -158,7 +163,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
           rows.push({
             kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 1, signature, mint: pl.mint, isBuy: true, solAmount: 30_000_000n, tokenAmount: dev,
             virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: CURVE_SOLD,
-            mayhem: false, quoteMint: '11111111111111111111111111111111', user: pl.creator, extraHex: '', userTokenAccount: devAta, userTokenOwner: pl.creator,
+            mayhem: false, quoteMint: '11111111111111111111111111111111', user: pl.creator, extraHex: p.curveTail?.dev === true ? p.curveTail.hex : '', userTokenAccount: devAta, userTokenOwner: pl.creator,
           });
         }
         // The chain state exists either way; only the record of it may be missing from the dataset.
@@ -188,7 +193,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         rows.push({
           kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 0, signature, mint: pl.mint, isBuy: true, solAmount: 30_000_000n, tokenAmount: amount,
           virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: CURVE_SOLD - BigInt(k + 1) * amount,
-          mayhem: false, quoteMint: '11111111111111111111111111111111', user, extraHex: '', userTokenAccount: key(`${seed}:ata:${user}:${p.label}`), userTokenOwner: user,
+          mayhem: false, quoteMint: '11111111111111111111111111111111', user, extraHex: p.curveTail?.buys?.includes(k) === true ? p.curveTail.hex : '', userTokenAccount: key(`${seed}:ata:${user}:${p.label}`), userTokenOwner: user,
         });
         owners.add(user);
         rows.push(raw(s, tx, signature, [pl.mint], move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: -amount }, { account: key(`${seed}:ata:${user}:${p.label}`), owner: user, delta: amount }]), []));

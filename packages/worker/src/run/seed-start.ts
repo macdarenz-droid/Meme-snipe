@@ -61,7 +61,7 @@ export const runSeed = async (r: SeedRequest, o: { readonly rpc: SeedRpc; readon
       fill: { fromSlot: last.slot + 1n > r.untilSlot + 1n ? r.untilSlot + 1n : last.slot + 1n, fromMs: last.ms, ...(r.close === null ? {} : { close: r.close }), ...(r.liveStart === null ? {} : { liveStart: r.liveStart }) },
     });
   const p = s.report;
-  o.budget?.refund(cap - (p.rpc === null ? 0 : p.rpc.result.creditsUsed), o.timers.now());
+  o.budget?.refund(cap - (p.rpc === null ? 0 : p.rpc.result.creditsUsed), now);
   const rpcText = p.rpc === null ? 'no RPC' : `RPC ${p.rpc.result.creditsUsed} credits, stopped by ${p.rpc.result.stoppedBy}`;
   return { mode: p.mode, creates: s.creates, coverage: s.coverage, report: `${p.creates} creates, ${p.gaps.length} gaps, ${rpcText}` };
 };

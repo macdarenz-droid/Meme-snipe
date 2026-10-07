@@ -526,10 +526,15 @@ export class DailyBudget {
     writeAtomic(this.#path, JSON.stringify({ version: 1, day: this.#day, spent: this.#spent }));
   }
 
-  /** Gives back credits reserved by `spend` and not used (never below zero). */
-  refund(credits: number, nowMs: number): void {
+  /**
+   * Gives back credits reserved by `spend` and not used (never below zero). `reservedAtMs` is the moment the matching
+   * `spend` was booked at: the refund goes back to that UTC day only, so a reserve taken before midnight and refunded
+   * after it never lowers the new day's count (RT-A9; FACTS-REREAD's `rereadRefund` rule). A day that has passed takes
+   * nothing back.
+   */
+  refund(credits: number, reservedAtMs: number): void {
     if (!Number.isSafeInteger(credits) || credits < 0) throw new RangeError('credits must be a non-negative integer');
-    this.#roll(nowMs);
+    if (dayOf(reservedAtMs) !== this.#day) return;
     this.#spent = Math.max(0, this.#spent - credits);
     writeAtomic(this.#path, JSON.stringify({ version: 1, day: this.#day, spent: this.#spent }));
   }

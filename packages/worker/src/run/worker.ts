@@ -35,7 +35,7 @@ import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
 import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
-import { bondingCurveAddress, transactionEvents, type Address } from '../../../core/src/chain/index.ts';
+import { bondingCurveAddress, transactionEvents, type Address, type TransactionRecord } from '../../../core/src/chain/index.ts';
 import { P2, P3 } from '../scheduler/scheduler.ts';
 import { callCost } from '../providers/solana-http.ts';
 import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
@@ -113,6 +113,14 @@ export const REREAD_CREDITS_PER_DAY = 6_000;
  * same curve before the migration); one more than COMPLETION_READS leaves room for the migration itself.
  */
 export const REREAD_CURVE_READS = COMPLETION_READS + 1;
+/**
+ * RT-A7: the signatures one curve page asks for. Failed transactions (late buys that hit a completed curve) fill a
+ * page but cost no read, and a page costs 1 credit at any size, so a wide page lets a read step past them; a page of
+ * only failed ones is followed by the next (`before` its last) while the read's own reserve can still pay for a page
+ * and a transaction. The reserves (COMPLETION_CREDITS, the re-read's chain cost) are unchanged: a further page is paid
+ * from the reads it did not make.
+ */
+export const CURVE_PAGE_LIMIT = 100;
 /** FACTS-REREAD: the stage-1 inputs whose `missing` reason asks for a re-read (H7 curve, H9/H14 create, H10 migration, H11 candles). */
 const STAGE1_INPUTS: ReadonlySet<string> = new Set(['migration', 'curve', 'candles', 'create']);
 /** FACTS-REREAD: candidates remembered with their re-read state (about 1,300 graduates a day; the oldest are forgotten first). */
@@ -266,7 +274,7 @@ export interface WorkerDeps {
    * while the worker was down are not candidates, and a migration whose completion is in its own transaction never forms
    * its migration fact.
    */
-  readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
+  readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, reservedAtMs: number): void } };
   /** Test seam: the pack of the recording's saved-state copy (persist's `packFile` unless a test holds it open). */
   readonly pack?: typeof packFile;
   /** Test seams (RECORD-BUDGET): the recorder disk's free bytes (statfs unless a test fakes it), and the rotation size. */
@@ -276,7 +284,7 @@ export interface WorkerDeps {
    * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
    * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
    */
-  readonly findCreate?: (mint: string, budget?: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void }) => Promise<CreateLookup>;
+  readonly findCreate?: (mint: string, budget?: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, reservedAtMs: number): void }) => Promise<CreateLookup>;
   /**
    * SEED-1: the deployer index's seed (first start: days and RPC up to the live creates watch's first slot) or the
    * downtime fill (restart from saved state), built by `buildSeed`. `untilSlot` is null when the live watch did not
@@ -1341,7 +1349,7 @@ export class Worker {
       }
       this.#d.log(`Downtime migrations: ${migrations} from slot ${from + 1n} to ${until}, ${used} credits, ${res.stoppedBy}${res.gaps.length > 0 ? `, ${res.gaps.length} unread` : ''}.`);
     } finally {
-      rr.budget.refund(Math.max(0, cap - used), this.#d.timers.now());
+      rr.budget.refund(Math.max(0, cap - used), now);
     }
   }
 
@@ -1386,7 +1394,7 @@ export class Worker {
     try {
       used = await this.#readCompletion(rr, curve, migration, COMPLETION_CREDITS);
     } finally {
-      rr.budget.refund(Math.max(0, COMPLETION_CREDITS - used), this.#d.timers.now());
+      rr.budget.refund(Math.max(0, COMPLETION_CREDITS - used), now);
     }
   }
 
@@ -1394,21 +1402,45 @@ export class Worker {
   async #readCompletion(rr: NonNullable<WorkerDeps['restartReads']>, curve: string, migration: string, credits: number): Promise<number> {
     const cost = callCost('helius', 'getSignaturesForAddress');
     if (credits < cost + COMPLETION_READS * callCost('helius', 'getTransaction')) return 0;
-    let used = cost;
+    let used = 0;
     try {
-      const sigs = await rr.rpc.getSignaturesForAddress(curve, { before: migration, limit: COMPLETION_READS }, P2);
-      for (const x of sigs) {
-        if (x.err !== null) continue;
-        used += callCost('helius', 'getTransaction');
-        const record = await rr.rpc.getTransaction(x.signature, P2);
-        if (record === null) continue;
+      await this.#readCurve(rr, curve, migration, credits, (n) => { used += n; }, () => false, (record) => {
         this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
-        if (transactionEvents(record).some((e) => e.name === 'CompleteEvent')) break;
-      }
+        return transactionEvents(record).some((e) => e.name === 'CompleteEvent');
+      });
     } catch (e) {
       this.#d.log(`Curve completion of ${curve} not read: ${e instanceof Error ? e.message : 'error'}.`);
     }
     return used;
+  }
+
+  /**
+   * RT-A7: a curve's successful transactions, newest first (before `before` when given), within `credits`: each page
+   * (CURVE_PAGE_LIMIT signatures) and each transaction read is counted through `count` before its call. Failed and
+   * `skip`ped signatures are passed over without a read; a page holding nothing more to read is followed by the next
+   * while the credits left pay for a page and a read. `take` sees each record read and answers true to stop. Throws
+   * what the RPC throws (the caller logs it; what was counted stays counted).
+   */
+  async #readCurve(rr: NonNullable<WorkerDeps['restartReads']>, curve: string, before: string | undefined, credits: number, count: (n: number) => void, skip: (signature: string) => boolean, take: (record: TransactionRecord) => boolean): Promise<void> {
+    const page = callCost('helius', 'getSignaturesForAddress');
+    const read = callCost('helius', 'getTransaction');
+    let used = 0;
+    let at = before;
+    while (used + page + read <= credits && !this.#stopping) {
+      used += page;
+      count(page);
+      const sigs = await rr.rpc.getSignaturesForAddress(curve, at === undefined ? { limit: CURVE_PAGE_LIMIT } : { before: at, limit: CURVE_PAGE_LIMIT }, P2);
+      for (const x of sigs) {
+        if (x.err !== null || skip(x.signature)) continue;
+        if (used + read > credits) return;
+        used += read;
+        count(read);
+        const record = await rr.rpc.getTransaction(x.signature, P2);
+        if (record !== null && take(record)) return;
+      }
+      if (sigs.length < CURVE_PAGE_LIMIT) return;
+      at = sigs.at(-1)!.signature;
+    }
   }
 
   /**
@@ -1569,19 +1601,21 @@ export class Worker {
     if (!this.#takeCutCreateFetch()) return;
     this.#cutCreateSeen.add(sig);
     if (this.#cutCreateSeen.size > CUT_CREATE_FETCHES_PER_DAY) this.#cutCreateSeen.delete(this.#cutCreateSeen.values().next().value!);
+    this.#cutCreateRunning.add(sig);
     this.#cutCreateTry(sig, 0);
   }
 
   /** One try for a cut creates log's transaction; on failure, the next after its wait (each try counted against the cap). */
   #cutCreateTry(sig: string, tried: number): void {
+    const end = (): void => void this.#cutCreateRunning.delete(sig);
     void this.#d.fetchTx(sig, 'cut-create').catch(() => false).then((found) => {
-      if (found || this.#stopping || !this.#strategy.deployers.isLost(sig)) return;
+      if (found || this.#stopping || !this.#strategy.deployers.isLost(sig)) return end();
       const wait = CUT_CREATE_RETRY_MS[tried];
-      if (wait === undefined) return this.#d.log(`Cut creates log ${sig}: its transaction was not read in ${tried + 1} tries; H14 stays not covered across it.`);
+      if (wait === undefined) return end(), this.#d.log(`Cut creates log ${sig}: its transaction was not read in ${tried + 1} tries; H14 stays not covered across it until the next UTC day's re-ask.`);
       const h = this.#d.timers.setTimeout(() => {
         this.#cutCreateTimers.delete(h);
-        if (this.#stopping || !this.#strategy.deployers.isLost(sig)) return;
-        if (!this.#takeCutCreateFetch()) return this.#d.log(`Cut creates log ${sig}: the day's ${CUT_CREATE_FETCHES_PER_DAY} fetches are spent; H14 stays not covered across it.`);
+        if (this.#stopping || !this.#strategy.deployers.isLost(sig)) return end();
+        if (!this.#takeCutCreateFetch()) return end(), this.#d.log(`Cut creates log ${sig}: the day's ${CUT_CREATE_FETCHES_PER_DAY} fetches are spent; H14 stays not covered across it until the next UTC day's re-ask.`);
         this.#cutCreateTry(sig, tried + 1);
       }, wait);
       this.#cutCreateTimers.add(h);
@@ -1827,24 +1861,21 @@ export class Worker {
         if (await this.#d.fetchTx(sig, 'reread').catch(() => false)) st.read.add('tx:migration');
       }
       if (st.read.has('tx:migration') && st.read.has('tx:complete')) return 'tried';
-      used += callCost('helius', 'getSignaturesForAddress');
-      const read = callCost('helius', 'getTransaction');
-      const sigs = await rr.rpc.getSignaturesForAddress(bondingCurveAddress(mint as Address), { limit: REREAD_CURVE_READS }, P2);
-      for (const x of sigs) {
-        if (st.read.has('tx:migration') && st.read.has('tx:complete')) break;
+      // RT-A7: the curve's newest successes, paged back past the failed late buys that follow a completion.
+      const migrationSig = this.#migrationSig.get(mint);
+      await this.#readCurve(rr, bondingCurveAddress(mint as Address), undefined, taken - used, (n) => { used += n; },
         // The migration already on the feed (by its signature) is not read again.
-        if (x.err !== null || (x.signature === this.#migrationSig.get(mint) && st.read.has('tx:migration'))) continue;
-        used += read;
-        const record = await rr.rpc.getTransaction(x.signature, P2);
-        if (record === null) continue;
-        const evs = transactionEvents(record);
-        const isMigration = evs.some((e) => e.name === 'CompletePumpAmmMigrationEvent' && e.data.mint === mint);
-        const isComplete = evs.some((e) => e.name === 'CompleteEvent' && e.data.mint === mint);
-        if (!isMigration && !isComplete) continue;
-        this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
-        if (isMigration) st.read.add('tx:migration');
-        if (isComplete) st.read.add('tx:complete');
-      }
+        (signature) => signature === migrationSig && st.read.has('tx:migration'),
+        (record) => {
+          const evs = transactionEvents(record);
+          const isMigration = evs.some((e) => e.name === 'CompletePumpAmmMigrationEvent' && e.data.mint === mint);
+          const isComplete = evs.some((e) => e.name === 'CompleteEvent' && e.data.mint === mint);
+          if (!isMigration && !isComplete) return false;
+          this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
+          if (isMigration) st.read.add('tx:migration');
+          if (isComplete) st.read.add('tx:complete');
+          return st.read.has('tx:migration') && st.read.has('tx:complete');
+        });
     } catch (e) {
       this.#d.log(`Candidate ${mint}: curve read for its migration failed: ${e instanceof Error ? e.message : 'error'}.`);
     } finally {
@@ -1865,17 +1896,25 @@ export class Worker {
     return r.found;
   }
 
-  #lostCreatesAsked = false;
+  /** H16-WHY C: the UTC day the lost creates were last asked for again (-1: not yet in this process). */
+  #lostCreatesDay = -1;
 
   /**
    * H16-WHY C (review B1): at boot, once the seed or restore is applied (the index is the
    * restored one only then), every hole on a creates watch inside H14's look-back is asked for again (its fetch may have
-   * been out, failed or capped when the last process ended), under the same cap and retries.
+   * been out, failed or capped when the last process ended), under the same cap and retries. RT-A8: and again at the
+   * first step of each later UTC day, when the cap is back: a hole refused by a spent cap, or whose tries all failed,
+   * is asked once more instead of blocking H14 for its whole look-back. The holes are the deployer index's own (saved
+   * with it), so a restart asks for the same list. A hole whose chain of tries is still running is left to it.
    */
   #readLostCreates(): void {
     const now = this.#d.timers.now();
     const lookback = Math.max(this.#d.session.policy.gates.deployerRugLookbackDays, 1) * 86_400_000;
-    for (const sig of this.#strategy.deployers.lostCreates(now - lookback, now)) this.#cutCreateLog(sig);
+    for (const sig of this.#strategy.deployers.lostCreates(now - lookback, now)) {
+      if (this.#cutCreateRunning.has(sig)) continue;
+      this.#cutCreateSeen.delete(sig);
+      this.#cutCreateLog(sig);
+    }
   }
 
   /**
@@ -1954,6 +1993,8 @@ export class Worker {
 
   /** Signatures of cut creates logs already being fetched or fetched (a truncated log names its signature on each event). */
   readonly #cutCreateSeen = new Set<string>();
+  /** RT-A8: cut creates logs whose chain of tries is still running (a day's re-ask leaves them to it). */
+  readonly #cutCreateRunning = new Set<string>();
 
   #paperMarket(mint: string): PaperMarket | null {
     const m = this.poolOf(mint);
@@ -2021,9 +2062,10 @@ export class Worker {
     this.#record((r) => r.flush());
     this.#watchOpened();
     this.#resumeRereads();
-    // H16-WHY C: once the seed (or the restore) is applied, the restored holes are the index's: ask for them again.
-    if (!this.#lostCreatesAsked && this.#strategy.seedApplied) {
-      this.#lostCreatesAsked = true;
+    // H16-WHY C: once the seed (or the restore) is applied, the restored holes are the index's: ask for them again,
+    // and at each new UTC day (RT-A8; the day only moves forward).
+    if (this.#strategy.seedApplied && Math.floor(now / 86_400_000) > this.#lostCreatesDay) {
+      this.#lostCreatesDay = Math.floor(now / 86_400_000);
       this.#readLostCreates();
     }
     // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order

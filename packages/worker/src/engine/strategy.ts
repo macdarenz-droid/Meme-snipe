@@ -412,6 +412,12 @@ interface Candidate {
   spend: bigint | null;
   /** The S0 diagnostic parts the last reject relied on (part of the reject line's dedupe key). */
   lastWaived: string;
+  /**
+   * Whether this process has written a reject line for it. A restored candidate keeps its saved `lastReason`, but its
+   * first reject after a restart is always written: that line is what starts FACTS-REREAD's `refused` re-read
+   * (worker.ts #afterRecord), and a new process holds no re-read chains (red team A's restart note).
+   */
+  rejectLogged: boolean;
   /** The mint's creator, from its released create (null until it is seen): RUG-1c checks this deployer. */
   creator?: string | null;
   /** ENTRY-MEMO: S0's drawn entry moment, drawn once (its window is fixed: the migration time and the config). */
@@ -1058,7 +1064,7 @@ export class LiveStrategy implements Strategy {
       if (this.#cands.has(c.mint)) continue;
       // The pool's trade coverage starts at the saved migration slot (S0-ZERO's catch-up), as for a candidate seen live.
       this.#noteMigrationSlot(c.mint, c.migrationSlot);
-      this.#cands.set(c.mint, { mint: c.mint, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, lastWaived: '', tries: c.tries, gates: null, spend: null });
+      this.#cands.set(c.mint, { mint: c.mint, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, lastWaived: '', rejectLogged: false, tries: c.tries, gates: null, spend: null });
       if (c.pool !== null) this.#notePool(c.mint, c.pool);
       // FEES-KEEP: the last swap's fee terms come back with it, so a restart does not leave it unpriced until its next swap.
       // Terms from a swap seen in this run are never replaced by saved ones (a candidate already listed is not restored at
@@ -1388,7 +1394,7 @@ export class LiveStrategy implements Strategy {
         this.#noteMigrationSlot(mint, f.obs.slot);
       }
       if (f !== null && !this.#cands.has(mint)) {
-        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
+        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', rejectLogged: false, tries: 0, gates: null, spend: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
       }
       return;
@@ -1408,7 +1414,7 @@ export class LiveStrategy implements Strategy {
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
-    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
+    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', rejectLogged: false, tries: 0, gates: null, spend: null });
     out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${migratedAtMs}`] });
   }
 
@@ -2310,10 +2316,11 @@ export class LiveStrategy implements Strategy {
       const waived = this.#waived.join(',');
       // A line that carries a trip is always written: risk reports a trip only while it is not latched, so it is never
       // swallowed as "the same reason" (after an owner's re-arm the same reject must latch again) and never repeats once latched.
-      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived || this.#lastTrips.length > 0)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#lastTrips, ...this.#diagnostic()] });
+      if (r !== null && (!cand.rejectLogged || key(r) !== key(cand.lastReason) || waived !== cand.lastWaived || this.#lastTrips.length > 0)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#lastTrips, ...this.#diagnostic()] });
       if (r !== null) {
         cand.lastReason = r;
         cand.lastWaived = waived;
+        cand.rejectLogged = true;
       }
       if (out.some((d) => d.action !== null)) return;
     }

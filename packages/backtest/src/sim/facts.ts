@@ -514,17 +514,27 @@ export class FactProjector {
    * event's pre-trade quote vault (H5-POOL-TAILS); it needs at least one pool event since migration and passes a curve
    * with no events. So the feed releases a pool's first event since migration and every event that carries a tail (the
    * only ones that can fail): the check sees the same answer as with every event, and the store does not hold millions
-   * of empty tails. Only the fields the check reads are kept: a pool event's vault is the dataset's
+   * of empty tails. A curve trade is released only when live's store would hold it too (`#curve`). Only the fields the
+   * check reads are kept: a pool event's vault is the dataset's
    * `pool_quote_token_reserves`, the field live reads from the decoded event.
    */
   #tail(id: string, key: string, row: TailRow, m: Moment, out: FeedEvent[], vault?: bigint): void {
     out.push(this.#fact(id, m, key, tradeTailValue(row, vault)));
   }
 
+  /**
+   * RT-A2 (H5's curve half, parity with live): live does not watch the curve (`tradeStreams: false`), so the curve
+   * trades its store holds are those of the transactions it reads: the create transaction (the creates watch, or the
+   * create fetched at shortlist; H9 needs it) and the completing buy (COMPLETION-READ or FACTS-REREAD; H7 needs it).
+   * The backtest releases the tails of those same trades only: the create transaction's and the one that empties the
+   * curve (`realTokenReserves` 0, the completing buy). A tail anywhere else on the curve is never seen live, so the
+   * backtest does not see it either: the two judge the same tape (DECISIONS "A-FACTS-FIXES").
+   */
   #curve(row: CurveTradeRow, m: Moment, out: FeedEvent[]): void {
     const s = this.#mints.get(row.mint);
     if (s === undefined) return;
-    if (row.extraHex !== '') this.#tail(`te:${row.signature}:${row.evIdx}`, `pump:TradeEvent:${row.mint}`, row, m, out);
+    const seenLive = row.signature === s.create?.signature || row.realTokenReserves === 0n;
+    if (row.extraHex !== '' && seenLive) this.#tail(`te:${row.signature}:${row.evIdx}`, `pump:TradeEvent:${row.mint}`, row, m, out);
     if (s.create !== null && row.slot <= s.create.slot + 2n && row.isBuy) s.creationBuyers.add(row.user);
     const data = {
       mint: row.mint, solAmount: row.solAmount, tokenAmount: row.tokenAmount, isBuy: row.isBuy, user: row.user, timestamp: BigInt(row.blockTime),

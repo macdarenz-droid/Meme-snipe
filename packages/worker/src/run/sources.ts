@@ -144,8 +144,9 @@ export const tradesFill = (o: {
     active++;
     FILLS.active++;
     try {
-      const cap = Math.min(TRADES_FILL_CREDITS, o.budget.remaining(o.timers.now()));
-      if (cap > 0) o.budget.spend(cap, o.timers.now());
+      const reservedAt = o.timers.now();
+      const cap = Math.min(TRADES_FILL_CREDITS, o.budget.remaining(reservedAt));
+      if (cap > 0) o.budget.spend(cap, reservedAt);
       let used = 0;
       const ok = await ingestingFill({
         feed: o.feed, rpc: o.rpc, timers: o.timers, provider: 'helius',
@@ -161,7 +162,7 @@ export const tradesFill = (o: {
         },
       })(gap);
       // A fill that threw keeps its whole reservation (fail safe on spend: what it read is not known).
-      if (cap > 0) o.budget.refund(Math.max(0, cap - used), o.timers.now());
+      if (cap > 0) o.budget.refund(Math.max(0, cap - used), reservedAt);
       return ok;
     } finally {
       active--;
@@ -243,7 +244,7 @@ export const findCreate = async (mint: string, o: {
   } catch {
     return done('error');
   } finally {
-    o.budget!.refund(cap - used, o.timers.now());
+    o.budget!.refund(cap - used, started);
   }
 };
 
