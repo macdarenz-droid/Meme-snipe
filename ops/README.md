@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/81ac30f66104f7b9daac92534c6b867ae76e7668/ops/install.sh -o i && echo 'b18eca94b57b35c4ff0e0a12f743f8ac4e2eabcb877784840bd637cbcee52050  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/81ac30f66104f7b9daac92534c6b867ae76e7668/ops/install.sh -o i && echo 'c4d0f725ebfd0855d3de36960409dd4cc39fceb34eb367c27c3adc857edf3d85  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/81ac30f6
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `b18eca94b57b35c4ff0e0a12f743f8ac4e2eabcb877784840bd637cbcee52050`
+SHA-256 of `install.sh`: `c4d0f725ebfd0855d3de36960409dd4cc39fceb34eb367c27c3adc857edf3d85`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -226,6 +226,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 
 - Serve the API on `ZEROED_API_ADDR` (`127.0.0.1:8788` on the host, loopback only; the health route for the runner stays on `ZEROED_HEALTH_ADDR`, `127.0.0.1:8787`). The API serves the app's paths (`/api/v1/<mode>/…`, ARCHITECTURE.md §12.4); a mode the worker does not run answers with `data: null` and a reason, and the app shows "Not running". Dry-run evidence stays in `/var/lib/zeroed-index/evidence.json`, which `zeroed-status` reads.
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
+- Write the number of open positions to `$STATE_DIRECTORY/open_positions` with it (RC-FIXES-2b). A probation rollback (`zeroed-update`) waits while either reads anything but `0`; the host's stand-in writes neither count, so a rollback onto it with a release before waits.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
 - Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.
 - Post the daily summary (`packages/ops/src/watchdog/summary.ts` shape) to `/summary` on the Melbourne wall-clock slots of `ZEROED_SUMMARY_MS` (default 30 minutes, so :00 and :30, about a minute after), just after Melbourne midnight, and about 3 minutes after each reconciled start unless the last accepted post (`last_posted_ms` in `summary.json`) was under 10 minutes before, signed over `t\nPOST\n/summary\nbody` with a signature time newer than the last one. Never wait on it.

@@ -1568,8 +1568,9 @@ const TAKEN = 'a different file has this name in the data repository';
 const BOOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATA_RE = /^days\/(\d{4}-\d{2}-\d{2})\/((?:frames|releases)-\d{3}\.jsonl\.zst)$/;
-// RC-H3: the recorder's packed stream gaps (gaps.jsonl.zst) go up with the manifest, like the saved state.
-const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst', 'gaps.jsonl.zst']);
+const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst']);
+// RC-H3: the recorder's packed stream-gap chunks (gaps-NNN.jsonl.zst) go up with the manifest, like the saved state.
+const GAPS_ATTACHMENT = /^gaps-\d{3,6}\.jsonl\.zst$/;
 const isSha = (s) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 const isBytes = (n) => Number.isSafeInteger(n) && n > 0;
 /** True for "no such file": RECORD-BUDGET deletes recordings on its own schedule, so any file may vanish mid-run. */
@@ -1808,7 +1809,7 @@ export const itemsOf = (b) => {
   if (!b.open && day !== null) {
     items.push({ key: `${b.boot}/manifest.json`, kind: 'manifest', boot: b.boot, day, path: join(b.dir, 'manifest.json'), rel: 'manifest.json', file: 'manifest.json', size: null, sha256: null, open: false });
     for (const a of Array.isArray(b.manifest.attachments) ? b.manifest.attachments : []) {
-      if (!ATTACHMENTS.has(a?.file) || !isSha(a.sha256) || !isBytes(a.bytes)) continue;
+      if (!(ATTACHMENTS.has(a?.file) || GAPS_ATTACHMENT.test(a?.file ?? '')) || !isSha(a.sha256) || !isBytes(a.bytes)) continue;
       items.push({ key: `${b.boot}/${a.file}`, kind: 'attachment', boot: b.boot, day, path: join(b.dir, a.file), rel: a.file, file: a.file, size: a.bytes, sha256: a.sha256, open: false });
     }
   }
@@ -3451,12 +3452,13 @@ rollback() {
 # hold. Any increase makes a rollback due, to the release that ran before, with one alert, as a failed hold does
 # (DECISIONS 2026-10-07, RC-R2-3):
 #   - during a qualifying dry run (its drills restart the worker on purpose) an increase is an alert, never a rollback;
-#   - a due rollback waits, like the forward switch, while the worker reports open intents (or the count cannot be
-#     read): one alert, checked again every run, also past the window, and done once the count reads 0;
+#   - a due rollback waits, like the forward switch, while the worker reports open intents or open positions (or a count
+#     cannot be read), and while a qualifying dry run is active: one alert, checked again every run, also past the
+#     window, and done once nothing is open;
 #   - when the release before runs the host's stand-in, the alert says the bot is now paused on it.
 # The probation ends with the window (unless a rollback is due), or when another release is deployed.
 probation_check() {
-  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open why note=""
+  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note=""
   [ -s "$f" ] || return 0
   IFS='|' read -r pc pprev pcur pstart pbase pdue < "$f" || true
   now="$(date +%s)"
@@ -3483,9 +3485,23 @@ probation_check() {
     pdue="it restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of the switch (probation $((PROBATION_S / 60)) min)"
     printf '%s|%s|%s|%s|%s|%s\n' "$pc" "$pprev" "$pcur" "$pstart" "$pbase" "${pdue//|/ }" > "$f"
   fi
+  # With no earlier release there is nothing to go back to and nothing moves: alert and drop at once (rollback()).
+  if [ -z "$pprev" ] || [ ! -d "$pprev" ]; then
+    rm -f "$f"
+    commit="$pc" prev="" current="$pcur" dest="/opt/zeroed/releases/$pc"
+    rollback "$pdue"
+  fi
+  # RC-FIXES-2b: a qualifying dry run that started while the rollback waited holds it too (never inside a run).
+  if [ -n "$(active_run)" ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: a qualifying dry run is active. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once the run has ended and nothing is open."
+    return 0
+  fi
+  # Open intents, and open positions (RC-FIXES-2b: a held position must not pass to older code or the stand-in); a
+  # count that cannot be read holds.
   open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
-  if [ "$open" != 0 ]; then
-    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once no intent is open."
+  pos="$(cat /var/lib/zeroed/open_positions 2>/dev/null || echo unknown)"
+  if [ "$open" != 0 ] || [ "$pos" != 0 ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents, $pos open positions. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once nothing is open."
     return 0
   fi
   why="$pdue"
@@ -3494,7 +3510,7 @@ probation_check() {
     "$STUB_ENTRY") note=" The bot is now paused on the stand-in worker: $(basename "$pprev" | cut -c1-12) replaced ${pc:0:12}, and the next deploy needs a new commit." ;;
     refused) note=" The release before, $(basename "$pprev" | cut -c1-12), names no worker the host can run, so the worker will not start: the bot is stopped." ;;
   esac
-  alert_clear worker-probation-held "CLEARED Zeroed host: no intent is open; the rollback of ${pc:0:12} goes ahead."
+  alert_clear worker-probation-held "CLEARED Zeroed host: nothing is open; the rollback of ${pc:0:12} goes ahead."
   commit="$pc" prev="$pprev" current="$pcur" dest="/opt/zeroed/releases/$pc"
   rollback "$why" "$note"
 }
