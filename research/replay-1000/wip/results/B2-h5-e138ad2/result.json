@@ -1,0 +1,606 @@
+{
+ "coins": 47,
+ "entered": 0,
+ "refused": 47,
+ "notEvaluated": 0,
+ "refusalsByGate": {
+  "H9:instant-graduation": 29,
+  "H16:missing": 10,
+  "H11:chase-at-5m": 3,
+  "H16:gap": 2,
+  "H16:not-covered": 1,
+  "worker:create-expired": 1,
+  "worker:no-pool-state": 1
+ },
+ "firstRefusalsByGate": {
+  "H9:instant-graduation": 20,
+  "worker:pool-flagged": 10,
+  "H16:missing": 10,
+  "H11:chase-at-5m": 3,
+  "H16:not-covered": 1,
+  "worker:create-expired": 1,
+  "H16:gap": 1,
+  "worker:no-pool-state": 1
+ },
+ "coinsFailingEachGate": {
+  "H16:not-covered": 43,
+  "H16:gap": 33,
+  "H9:instant-graduation": 29,
+  "worker:pool-flagged": 10,
+  "H16:missing": 10,
+  "H11:chase-at-5m": 5,
+  "H16:degraded": 4,
+  "worker:create-expired": 1,
+  "worker:no-pool-state": 1
+ },
+ "trades": 0,
+ "closedTrades": 0,
+ "wins": 0,
+ "winRate": null,
+ "meanNetSol": null,
+ "ci95": null,
+ "totalNetSol": 0,
+ "shortOf300": 300,
+ "results": [
+  {
+   "mint": "4BQRLLYacsUXmw3mn3v3LknZZvN4HbXdZhgHSGfUpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:ECVuPnoq3AiQ92WyPxBU9fHpqq3SLbFz8Y8Du81fw6ug had a gap after candles was observed at slot 453735603 (gap-free since 453762377); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "4NeDFVMYRvSEFciSDonoP1GEt77VFw9esaN52JZspump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:5ie3Rw1pN3ex3P9ERnVwRx4J19s6jDnWCdL9KSpBB5Wd had a gap after candles was observed at slot 453736804 (gap-free since 453742245); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "4y4WdyBfdpMvCU6kqQbwpC3ud5ZURGcun83t9br3pump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453764459; H16 missing no migration as of slot 453764459; H16 missing no migration as of slot 453764459; H16 missing no migration as of slot 453764459; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "BChjPToGLJnoDD5oYNo728Gh1yXkMQaS8uhnT6ebcSmk",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:5aVzRy7cxEYQNEzS78d3p63gm2KsJN77nvtZRGf7f9TU had a gap after candles was observed at slot 453746908 (gap-free since 453748321); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FZCKFJtMvqounLLsYSqZo445rwaiRYvyVU7Snx74FdZw",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453796848; H16 missing no migration as of slot 453796848; H16 missing no migration as of slot 453796848; H16 degraded candles flagged partial by helius; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:degraded",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "6CpVHSyCrqbCvHcP4jfQSqazuFKoFQ3u3SkgLX1opump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H14: H9 instant-graduation graduated 160000 ms after creation; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "12kcwsDTSpvanYqxDLfKcotfPApvDXpdyB7bzPVFpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:dJceD3p1N1MWPiraSFcs85Qo4Xm2etaqHnNFdPRHQJt had a gap after candles was observed at slot 453750064 (gap-free since 453766957); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "yoY7UEbsdU8eCs2chvphQR1bCjDjZrZaKqeQWJypump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:6JthWnk2Kde5vt7tu9uTg4tAgwj54g2VjuFUp1rYv6gW had a gap after candles was observed at slot 453754948 (gap-free since 453756700); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "DLzNQBJrpegDu3MJBrxBDow78E7257rcCRbbeMA4TsXz",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:G9HEMUxyHt56XNfModas8hSdkkpzVarqnNwf6KXnyjh6 had a gap after candles was observed at slot 453755165 (gap-free since 453759106); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "5XnBYUiFA9uGS3tNMa9XqrRZQCRz2AyExDSehbi6ZYsh",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H9,H11,H14: H16 missing no create as of slot 453781136; H16 gap stream trades:CxrXtFZbpEcjLdhqGTQkC7ZC7hL4kevQpPUgLRgsBzpW had a gap after candles was observed at slot 453756960 (gap-free since 453773315); H16 missing no create as of slot 453781136; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap"
+   ]
+  },
+  {
+   "mint": "Bm7Uxam9efqL8gu9CX5kZ3A7t5nj2v2titSC7nnpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:Hd9zdnVcpLXzz7t32Pneg996hY4uVLS2yJfH1JQE8DtH had a gap after candles was observed at slot 453759490 (gap-free since 453811110); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FSP9ApX4SGJQKkKGmfAjFusJuSrNWvwMrEp5bKyGpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:3VhQ6z7acuh5nv6wbWF8udv2qLxwhxDfN85EQfiM468b had a gap after candles was observed at slot 453762811 (gap-free since 453787321); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Bofxd8TmhgwrjJhatHk9GTjxHdWa84s1BRcCWPCc4MAL",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded candles flagged partial by helius; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:degraded",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "5rwFDakLcb643w2z5bQjhJHaTHNbsqqR5FfzrkVDpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:7BUkU6fcxdZBaJvtdzbjQHwARq7BeZG9V2Xv2yjowa4U had a gap after candles was observed at slot 453765057 (gap-free since 453798669); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "6JWKHs5hoNeNfenCXiBoEnZfXL2SZUexQKeBY5tzcRg",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:A9DyYcd35Gd3Nnii3Ejc5DUyanpAx9br8KRDNxsCGLvo had a gap after candles was observed at slot 453765284 (gap-free since 453767008); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "PUXx1iSexu15p8FLG4FoFyRpyVtARFEf6CYbUzopump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:FJZM5V1ZEEQzi2pAAp6VFsUqZrj6fuscdsjh1DnLDGQR had a gap after candles was observed at slot 453770296 (gap-free since 453818113); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "3Hpjq8qGcswo5cvfcqomefe4dF7hsJ7nLuipehZ2pump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "gap",
+   "reason": "hard reject H11,H14: H16 gap stream trades:HeJpqeGVUm55Bff9DRkrQxYXNo9dGKpqAFwpyWtwU6cm had a gap after candles was observed at slot 453777441 (gap-free since 453812961); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "G29GzPutVFUrD8trgf2b5ARzVTtT8C1CPB1k9rKoHbx3",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:Cy5kfmS3eLGBhd2Z5H4QEC8Dt5hSP2nEWCjzn2FTQHWR had a gap after candles was observed at slot 453781864 (gap-free since 453783187); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "53vnCpYytRzaMFENk53vTyim8EXDLLz5FRWoZ34Qpump",
+   "decision": "refused",
+   "gate": "H11",
+   "code": "chase-at-5m",
+   "reason": "hard reject H11,H14: H11 chase-at-5m price 59067696/164573970548044 at +5 min is above the migration price 46947919/206900000000000; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "6eG4H5JGdhA9ULnE6t6WhHYdkHxXCUd2gTfdf3VCpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 109500192844/161241003502353 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Dcth9jjLRFtB3TQu9TYtYVK13iMmz3gbUvthV2S1pump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:5VqEpaZYMM6of2xgE2Tcj8csjAYT5eyLrzf2hvUGS5qz had a gap after candles was observed at slot 453785984 (gap-free since 453798289); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FAmHbJ29gAkBX5Swa4JuT49fWL6dKtLvERA4woLepump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "not-covered",
+   "reason": "hard reject H14: H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Dm5fSm8dCKdHvmKVpXYTcWX5CJWbKCDs4yAnBhCspump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453840658; H16 missing no migration as of slot 453840658; H16 missing no migration as of slot 453840658; H16 gap stream trades:BmFnjpfYjG5MPfCxX8N5yg3Ya1aeR1MSwTNx2ykSsnz5 had a gap after candles was observed at slot 453786918 (gap-free since 453838432); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "CjpEKvhXz54gxwFsvEGrK2uMfYR98f7ab1XpunWdAiqS",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:GYZej3EV46CD1AzwfhjbkBhcbjvB2g1rqys4n15CX4nd had a gap after candles was observed at slot 453789712 (gap-free since 453791590); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "BLnMLkXs9HiBhnEUFG6Ci7Pbqi3Pfc1jZCjXotKqpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded candles flagged partial by helius; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:degraded",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Ay9ZgT7sCnUCnWGXYJdujf5hijkCZwcPeH2uPhLpNHjH",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:GGQMQf4RY4CqVRSbXrzqd8M3NBcMGLN1pcMnNbTpY8Mz had a gap after candles was observed at slot 453795988 (gap-free since 453798876); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "4iJPHQajzbT3p1QaHnF7Vk2PpYQsHDKJnyMJWX9gpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 5065625939769/3478212199046 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "51p3k4Sx3Jqv7YrFrrNSo4VRXDQGkPQf15qwdcz3pump",
+   "decision": "refused",
+   "gate": "H11",
+   "code": "chase-at-5m",
+   "reason": "hard reject H11,H14: H11 chase-at-5m price 47011703/162484637387845 at +5 min is above the migration price 36911671/206900000000000; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "6QpUDkVjSoR82h9tUiDVESH5bYR6GDbC8Zy3MSTdpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:6ic3jeGC4C9Dv5iwzTETWyWzMoxXFrXr6Qa8mRxAt3h had a gap after candles was observed at slot 453803880 (gap-free since 453805402); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "JDY19VWxjrUzeJ5k8mAZ1gYaRGyXQ6DvWFDUcHTepump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded candles flagged partial by helius; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:degraded",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "3cP2ZjY18F5C7qiBWE1iCU2DSW6NskeknuHpSr1qpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:GnPf3YkN4mySSmPQZeSwHHbAfG8c89iBNfJH9aGrv9me had a gap after candles was observed at slot 453817180 (gap-free since 453818779); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "b4xEsBGxmoaxugnNqQLpZbnyMVoYMDvToDRko7TEJb4",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453837859; H16 missing no migration as of slot 453837859; H16 missing no migration as of slot 453837859; H16 gap stream trades:7p4z6J352nsn4BNtPgSqcqrhH7NBpqCUR5NUoPiTVBnJ had a gap after candles was observed at slot 453817894 (gap-free since 453819715); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Ar5cTTBZy9qEZSzfD5PE7rHgnWCsFEtC1FX5QbZppump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:2LYQy2YqkrSSASgUv8AuvZygs9sK769wcF4B2N4dx3Sk had a gap after candles was observed at slot 453822008 (gap-free since 453822050); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "AL46dPwBW6NfS5zYzPPcTLPTGR5KmYhAXYtpmYUzpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:8zvJLDgzFCHf412xKSoJ7tvJnG8zznnGN3MUmWafaNKL had a gap after candles was observed at slot 453830093 (gap-free since 453846329); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "AvPRjFTt8bQvmcHLignh2CcK6kR6reRNQBVo5EghQNt6",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453883025; H16 missing no migration as of slot 453883025; H16 missing no migration as of slot 453883025; H16 gap stream trades:isFbNqM6SXmKg2zDKgzGuJBwxpuMmNKkMLxtn4WTjt5 had a gap after candles was observed at slot 453833488 (gap-free since 453883001); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FdmPdKjKBp1byYpRGS7BgEgXkCwduDJXGk3EN9nxpump",
+   "decision": "refused",
+   "gate": "worker",
+   "code": "create-expired",
+   "reason": "create expired",
+   "all": [
+    "worker:create-expired"
+   ]
+  },
+  {
+   "mint": "FVsnfKTgqiHy4SASVmvC6agDKBaidPJVWE5avY2Cpump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "gap",
+   "reason": "hard reject H11,H14: H16 gap stream trades:DKdULbUdXFvAmSKzq2QyyWWtdTWbzCfX7U1zoL1ds2Wf had a gap after candles was observed at slot 453839029 (gap-free since 453839794); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "DzhqzzxVWaj7Di24TY7EkqTbfVceCcoWpXzKJ3oRpump",
+   "decision": "refused",
+   "gate": "worker",
+   "code": "no-pool-state",
+   "reason": "pool state unknown",
+   "all": [
+    "worker:no-pool-state"
+   ]
+  },
+  {
+   "mint": "9U4khpsZDT8gByWCUNXJg9u76yiMGT4Ej2NjXr12pump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:GvhMJR5BafT6VoH6KGtY3rnc4iEh4LRr3bqKqE9XvfiW had a gap after candles was observed at slot 453846244 (gap-free since 453851858); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "DG4LMuC8hK3KR592csXkbEEM2dJNjUs3SpaeioQdpump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H9,H11,H14: H16 missing no create as of slot 453904549; H16 gap stream trades:CriR95aVFQfBsnrv8MSucjW4Tr4GkWxAB1eHbaQhiEts had a gap after candles was observed at slot 453852737 (gap-free since 453890210); H16 missing no create as of slot 453904549; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap"
+   ]
+  },
+  {
+   "mint": "2coPLYtPnAFmeUJCUbqJcveG1REUew6623A3xPhypump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453911277; H16 missing no migration as of slot 453911277; H16 missing no migration as of slot 453911277; H16 gap stream trades:FzWDXuHwNJw8LUmA8rJayLnUuDLDAEV4JKZW86TMSVH6 had a gap after candles was observed at slot 453858662 (gap-free since 453877397); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "eKTHF3ukbH4Yrk9GPfB7rfhScK9FTsLrKXp5i6npump",
+   "decision": "refused",
+   "gate": "H11",
+   "code": "chase-at-5m",
+   "reason": "hard reject H11,H14: H11 chase-at-5m price 81710814/170684469866256 at +5 min is above the migration price 67371652/206900000000000; H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "QdYUEyuaNeSNWBX6g5dGDtQwUSpApzvsLuYgUhVpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:HY9NwD7r1XfARAipyXnURfk97U6Tg4nonKozpxhnGZxf had a gap after candles was observed at slot 453863209 (gap-free since 453872722); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "HdD6EawTrXuAQnAAowF9hxomjTnrnDnjp6fw3jgupump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 36000 ms after creation; H16 gap stream trades:GvdB2gQFbxAGWWaFJrv6w9BipZXE6ZjFVmk8T5NP9goB had a gap after candles was observed at slot 453863538 (gap-free since 453865798); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "7369SFFekWNNpbz4sZrgpaykzd7rCJ1ssi5pwTtppump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453917499; H16 missing no migration as of slot 453917499; H16 missing no migration as of slot 453917499; H16 gap stream trades:AT1QCJ9z8wNAMT4Hwm8nErtiHMP6Kaj1YpCNGXtqyZoP had a gap after candles was observed at slot 453864590 (gap-free since 453910267); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "sJ8Yn4hwWzYZckrT7mPGqg3tQsZdUFx6CSs5CWJpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 82000 ms after creation; H16 gap stream trades:6YeNSju3cZDDnHZNFwduhYfKJdCWGQPYG5tfvn9LrixW had a gap after candles was observed at slot 453866584 (gap-free since 453868025); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FAW54fe7VfMcNo7Bcrf58LtzULKjTmHi3V5QRgXypump",
+   "decision": "refused",
+   "gate": "H16",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453922205; H16 missing no migration as of slot 453922205; H16 missing no migration as of slot 453922205; H16 gap stream trades:Db3ovt2mtUekp7yCRRNxGt5MMWRVDan4Xjng9Z9QFCb had a gap after candles was observed at slot 453877121 (gap-free since 453879211); H16 not-covered creates log UrrkW2VPGa3e2NkEcs1LcdVGQYdhQnUoRR75YU3mMHvPW59LpwFuibqUDYY99X1T17ZfypgCxsFUGPB75JtRNx9 on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791224470900 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  }
+ ],
+ "tradeRows": []
+}

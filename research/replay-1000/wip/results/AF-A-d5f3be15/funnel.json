@@ -1,0 +1,81 @@
+{
+ "coins": 47,
+ "byStage": {
+  "not-evaluated": 0,
+  "shortlisted": 0,
+  "refused-before-hard-gates": 2,
+  "failed-hard-gate": 45,
+  "passed-hard-gates": 0,
+  "risk-approved": 0,
+  "entered": 0
+ },
+ "reachedHardGates": 45,
+ "passedEveryHardGate": 0,
+ "passed": [],
+ "h16": [
+  {
+   "reason": "not-covered | input coverage | neededBy H14",
+   "coins": 43,
+   "lines": 2910
+  },
+  {
+   "reason": "missing | input create | neededBy H9",
+   "coins": 2,
+   "lines": 2
+  },
+  {
+   "reason": "missing | input create | neededBy H14",
+   "coins": 2,
+   "lines": 2
+  }
+ ],
+ "firstRefusal": {
+  "4BQRLLYacsUXmw3mn3v3LknZZvN4HbXdZhgHSGfUpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "4NeDFVMYRvSEFciSDonoP1GEt77VFw9esaN52JZspump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "BChjPToGLJnoDD5oYNo728Gh1yXkMQaS8uhnT6ebcSmk": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap strea",
+  "4y4WdyBfdpMvCU6kqQbwpC3ud5ZURGcun83t9br3pump": "H14: hard reject H14: H14 serial-deployer <addr> created 46 mints in 24 h; H16 not-covered rug ",
+  "Bm7Uxam9efqL8gu9CX5kZ3A7t5nj2v2titSC7nnpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "5XnBYUiFA9uGS3tNMa9XqrRZQCRz2AyExDSehbi6ZYsh": "H16: hard reject H9,H14: H16 missing no create as of slot N; H16 missing no create as of slot N",
+  "yoY7UEbsdU8eCs2chvphQR1bCjDjZrZaKqeQWJypump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "12kcwsDTSpvanYqxDLfKcotfPApvDXpdyB7bzPVFpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "PUXx1iSexu15p8FLG4FoFyRpyVtARFEf6CYbUzopump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "5rwFDakLcb643w2z5bQjhJHaTHNbsqqR5FfzrkVDpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "3Hpjq8qGcswo5cvfcqomefe4dF7hsJ7nLuipehZ2pump": "H16: hard reject H11,H14: H16 gap stream trades:<addr> had a gap after candles was observed at ",
+  "DLzNQBJrpegDu3MJBrxBDow78E7257rcCRbbeMA4TsXz": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap strea",
+  "FSP9ApX4SGJQKkKGmfAjFusJuSrNWvwMrEp5bKyGpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "FZCKFJtMvqounLLsYSqZo445rwaiRYvyVU7Snx74FdZw": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated N ms after creation; H16 degraded ",
+  "6CpVHSyCrqbCvHcP4jfQSqazuFKoFQ3u3SkgLX1opump": "H9: hard reject H9,H14: H9 instant-graduation graduated N ms after creation; H14 serial-deploy",
+  "G29GzPutVFUrD8trgf2b5ARzVTtT8C1CPB1k9rKoHbx3": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap strea",
+  "Bofxd8TmhgwrjJhatHk9GTjxHdWa84s1BRcCWPCc4MAL": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded ",
+  "6JWKHs5hoNeNfenCXiBoEnZfXL2SZUexQKeBY5tzcRg": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap strea",
+  "BLnMLkXs9HiBhnEUFG6Ci7Pbqi3Pfc1jZCjXotKqpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded ",
+  "Dm5fSm8dCKdHvmKVpXYTcWX5CJWbKCDs4yAnBhCspump": "H16: hard reject H11,H14: H16 gap stream trades:<addr> had a gap after candles was observed at ",
+  "4iJPHQajzbT3p1QaHnF7Vk2PpYQsHDKJnyMJWX9gpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "6eG4H5JGdhA9ULnE6t6WhHYdkHxXCUd2gTfdf3VCpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "53vnCpYytRzaMFENk53vTyim8EXDLLz5FRWoZ34Qpump": "H11: hard reject H11,H14: H11 chase-at-5m price N/N at +5 min is above the migration price N/N;",
+  "CjpEKvhXz54gxwFsvEGrK2uMfYR98f7ab1XpunWdAiqS": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap strea",
+  "Dcth9jjLRFtB3TQu9TYtYVK13iMmz3gbUvthV2S1pump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "FAmHbJ29gAkBX5Swa4JuT49fWL6dKtLvERA4woLepump": "H14: hard reject H14: H14 serial-deployer <addr> created 38 mints in 24 h; H16 not-covered rug ",
+  "b4xEsBGxmoaxugnNqQLpZbnyMVoYMDvToDRko7TEJb4": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated N ms after creation; H16 gap strea",
+  "51p3k4Sx3Jqv7YrFrrNSo4VRXDQGkPQf15qwdcz3pump": "H11: hard reject H11,H14: H11 chase-at-5m price N/N at +5 min is above the migration price N/N;",
+  "6QpUDkVjSoR82h9tUiDVESH5bYR6GDbC8Zy3MSTdpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "Ay9ZgT7sCnUCnWGXYJdujf5hijkCZwcPeH2uPhLpNHjH": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap strea",
+  "Ar5cTTBZy9qEZSzfD5PE7rHgnWCsFEtC1FX5QbZppump": "H9: hard reject H9,H14: H9 instant-graduation graduated 0 ms after creation; H16 not-covered r",
+  "JDY19VWxjrUzeJ5k8mAZ1gYaRGyXQ6DvWFDUcHTepump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded ",
+  "3cP2ZjY18F5C7qiBWE1iCU2DSW6NskeknuHpSr1qpump": "H16: pool state flagged partial (a pool transaction other than a swap (other))",
+  "DzhqzzxVWaj7Di24TY7EkqTbfVceCcoWpXzKJ3oRpump": "H16: pool state unknown",
+  "AL46dPwBW6NfS5zYzPPcTLPTGR5KmYhAXYtpmYUzpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "FdmPdKjKBp1byYpRGS7BgEgXkCwduDJXGk3EN9nxpump": "?: create expired",
+  "AvPRjFTt8bQvmcHLignh2CcK6kR6reRNQBVo5EghQNt6": "H16: hard reject H11,H14: H16 gap stream trades:<addr> had a gap after candles was observed at ",
+  "FVsnfKTgqiHy4SASVmvC6agDKBaidPJVWE5avY2Cpump": "H16: hard reject H11,H14: H16 gap stream trades:<addr> had a gap after candles was observed at ",
+  "9U4khpsZDT8gByWCUNXJg9u76yiMGT4Ej2NjXr12pump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "eKTHF3ukbH4Yrk9GPfB7rfhScK9FTsLrKXp5i6npump": "H11: hard reject H11,H14: H11 chase-at-5m price N/N at +5 min is above the migration price N/N;",
+  "QdYUEyuaNeSNWBX6g5dGDtQwUSpApzvsLuYgUhVpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-",
+  "DG4LMuC8hK3KR592csXkbEEM2dJNjUs3SpaeioQdpump": "H16: hard reject H9,H11,H14: H16 missing no create as of slot N; H11 chase-at-5m price N/N at +",
+  "HdD6EawTrXuAQnAAowF9hxomjTnrnDnjp6fw3jgupump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated N ms after creation; H16 gap strea",
+  "2coPLYtPnAFmeUJCUbqJcveG1REUew6623A3xPhypump": "H16: hard reject H11,H14: H16 gap stream trades:<addr> had a gap after candles was observed at ",
+  "sJ8Yn4hwWzYZckrT7mPGqg3tQsZdUFx6CSs5CWJpump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated N ms after creation; H16 gap strea",
+  "FAW54fe7VfMcNo7Bcrf58LtzULKjTmHi3V5QRgXypump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap strea",
+  "7369SFFekWNNpbz4sZrgpaykzd7rCJ1ssi5pwTtppump": "H9: hard reject H9,H11,H14: H9 instant-graduation graduated N ms after creation; H16 gap strea"
+ }
+}

@@ -1,0 +1,610 @@
+{
+ "coins": 47,
+ "entered": 0,
+ "refused": 47,
+ "notEvaluated": 0,
+ "refusalsByGate": {
+  "H9:instant-graduation": 29,
+  "H16/H7:missing": 8,
+  "H11:chase-at-5m": 3,
+  "worker:create-expired": 2,
+  "H16/H11:gap": 2,
+  "H14:serial-deployer": 1,
+  "worker:no-pool-state": 1,
+  "H16/H9:missing": 1
+ },
+ "firstRefusalsByGate": {
+  "H9:instant-graduation": 28,
+  "H16:missing": 10,
+  "H11:chase-at-5m": 3,
+  "H16:gap": 2,
+  "H14:serial-deployer": 1,
+  "worker:pool-flagged": 1,
+  "worker:create-expired": 1,
+  "worker:no-pool-state": 1
+ },
+ "coinsFailingEachGate": {
+  "H16:not-covered": 43,
+  "H9:instant-graduation": 29,
+  "H11:chase-at-5m": 20,
+  "H16:gap": 16,
+  "H16:missing": 10,
+  "H14:serial-deployer": 8,
+  "H16:degraded": 4,
+  "H14:prior-rug": 3,
+  "worker:create-expired": 2,
+  "worker:pool-flagged": 1,
+  "worker:no-pool-state": 1
+ },
+ "trades": 0,
+ "closedTrades": 0,
+ "wins": 0,
+ "winRate": null,
+ "meanNetSol": null,
+ "ci95": null,
+ "totalNetSol": 0,
+ "shortOf300": 300,
+ "results": [
+  {
+   "mint": "4BQRLLYacsUXmw3mn3v3LknZZvN4HbXdZhgHSGfUpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 4061338256552/4338219990872 at +5 min is above the migration price 84990359059/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453788715; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "4NeDFVMYRvSEFciSDonoP1GEt77VFw9esaN52JZspump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 249910448863/70464413166893 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453790301; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "4y4WdyBfdpMvCU6kqQbwpC3ud5ZURGcun83t9br3pump",
+   "decision": "refused",
+   "gate": "H16/H7",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453792961; H16 missing no migration as of slot 453792961; H16 missing no migration as of slot 453792961; H16 missing no migration as of slot 453792961; H14 serial-deployer D8na6cgPt5ndncmzZJNyofVMeRnRBnsj5VWjznY4C7yt created 87 mints in 24 h; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453792961; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H14:serial-deployer",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "BChjPToGLJnoDD5oYNo728Gh1yXkMQaS8uhnT6ebcSmk",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:5aVzRy7cxEYQNEzS78d3p63gm2KsJN77nvtZRGf7f9TU had a gap after candles was observed at slot 453746908 (gap-free since 453748321); H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453799853; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FZCKFJtMvqounLLsYSqZo445rwaiRYvyVU7Snx74FdZw",
+   "decision": "refused",
+   "gate": "H16/H7",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11: H16 missing no curve as of slot 453801639; H16 missing no migration as of slot 453801639; H16 missing no migration as of slot 453801639; H16 degraded candles flagged partial by helius; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:degraded",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "6CpVHSyCrqbCvHcP4jfQSqazuFKoFQ3u3SkgLX1opump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H14: H9 instant-graduation graduated 160000 ms after creation; H14 serial-deployer CG6w6Mg3Ex1YuQMhZfQTQFzwuutBEsigm12WzZ7gTFd6 created 80 mints in 24 h; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453802985; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H14:serial-deployer",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "12kcwsDTSpvanYqxDLfKcotfPApvDXpdyB7bzPVFpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 5045526082455/3492057159095 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453803705; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "yoY7UEbsdU8eCs2chvphQR1bCjDjZrZaKqeQWJypump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 5058572564244/3483075713979 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453807808; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "DLzNQBJrpegDu3MJBrxBDow78E7257rcCRbbeMA4TsXz",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:G9HEMUxyHt56XNfModas8hSdkkpzVarqnNwf6KXnyjh6 had a gap after candles was observed at slot 453755165 (gap-free since 453759106); H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453807808; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "5XnBYUiFA9uGS3tNMa9XqrRZQCRz2AyExDSehbi6ZYsh",
+   "decision": "refused",
+   "gate": "worker",
+   "code": "create-expired",
+   "reason": "create expired",
+   "all": [
+    "H16:missing",
+    "worker:create-expired"
+   ]
+  },
+  {
+   "mint": "Bm7Uxam9efqL8gu9CX5kZ3A7t5nj2v2titSC7nnpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 5063029134626/3479986449072 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453811753; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FSP9ApX4SGJQKkKGmfAjFusJuSrNWvwMrEp5bKyGpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 5063372169722/3479751359302 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453814391; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Bofxd8TmhgwrjJhatHk9GTjxHdWa84s1BRcCWPCc4MAL",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded candles flagged partial by helius; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453817705; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:degraded",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "5rwFDakLcb643w2z5bQjhJHaTHNbsqqR5FfzrkVDpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 266999483656/65975065447980 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453817705; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "6JWKHs5hoNeNfenCXiBoEnZfXL2SZUexQKeBY5tzcRg",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:A9DyYcd35Gd3Nnii3Ejc5DUyanpAx9br8KRDNxsCGLvo had a gap after candles was observed at slot 453765284 (gap-free since 453767008); H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453819073; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "PUXx1iSexu15p8FLG4FoFyRpyVtARFEf6CYbUzopump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 5062359106259/3480442151463 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453823983; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "3Hpjq8qGcswo5cvfcqomefe4dF7hsJ7nLuipehZ2pump",
+   "decision": "refused",
+   "gate": "H16/H11",
+   "code": "gap",
+   "reason": "hard reject H11,H14: H16 gap stream trades:HeJpqeGVUm55Bff9DRkrQxYXNo9dGKpqAFwpyWtwU6cm had a gap after candles was observed at slot 453777441 (gap-free since 453812961); H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: the check is 301 slots behind now (at most 300); not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "G29GzPutVFUrD8trgf2b5ARzVTtT8C1CPB1k9rKoHbx3",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:Cy5kfmS3eLGBhd2Z5H4QEC8Dt5hSP2nEWCjzn2FTQHWR had a gap after candles was observed at slot 453781864 (gap-free since 453783187); H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453834195; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "53vnCpYytRzaMFENk53vTyim8EXDLLz5FRWoZ34Qpump",
+   "decision": "refused",
+   "gate": "H11",
+   "code": "chase-at-5m",
+   "reason": "hard reject H11,H14: H11 chase-at-5m price 59067696/164573970548044 at +5 min is above the migration price 46947919/206900000000000; H14 serial-deployer DuqwG4tB3vTkVn6dbfxfgsm3eMD2Sfiqr5cqMehUU7Lc created 23 mints in 24 h; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453834195; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H11:chase-at-5m",
+    "H14:serial-deployer",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "6eG4H5JGdhA9ULnE6t6WhHYdkHxXCUd2gTfdf3VCpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 109500192844/161241003502353 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453837667; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Dcth9jjLRFtB3TQu9TYtYVK13iMmz3gbUvthV2S1pump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 271620264068/64852664017339 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453839362; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FAmHbJ29gAkBX5Swa4JuT49fWL6dKtLvERA4woLepump",
+   "decision": "refused",
+   "gate": "H14",
+   "code": "serial-deployer",
+   "reason": "hard reject H14: H14 serial-deployer 8Ad5ZAKVwgzp6nhw8ZoLD1iQb9TDp2Dv9g47Lh9QNitL created 38 mints in 24 h; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453840467; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H14:serial-deployer",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Dm5fSm8dCKdHvmKVpXYTcWX5CJWbKCDs4yAnBhCspump",
+   "decision": "refused",
+   "gate": "H16/H7",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453840580; H16 missing no migration as of slot 453840580; H16 missing no migration as of slot 453840580; H16 gap stream trades:BmFnjpfYjG5MPfCxX8N5yg3Ya1aeR1MSwTNx2ykSsnz5 had a gap after candles was observed at slot 453786918 (gap-free since 453838432); H14 prior-rug EEsAs8u84XwF7EoQqB8s2u7XshhX9JtLWWfCPedsrjqy rugged DMHZ31XHU1koULrrSi9UFhdEE244TEDEqHhp3UvgkaR7 (creator-dump) within 14 days; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered",
+    "H14:prior-rug"
+   ]
+  },
+  {
+   "mint": "CjpEKvhXz54gxwFsvEGrK2uMfYR98f7ab1XpunWdAiqS",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:GYZej3EV46CD1AzwfhjbkBhcbjvB2g1rqys4n15CX4nd had a gap after candles was observed at slot 453789712 (gap-free since 453791590); H16 not-covered creates log 5w3vdvZZH9rS3P1EZLf1zW2tTiUoe7EBpnuEJbPB8pJsC1bDQHKNcdngEyNZmZXdpytVAAiXdtSAjXCLcjecWsPt on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791274198394 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "BLnMLkXs9HiBhnEUFG6Ci7Pbqi3Pfc1jZCjXotKqpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded candles flagged partial by helius; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453849511; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:degraded",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Ay9ZgT7sCnUCnWGXYJdujf5hijkCZwcPeH2uPhLpNHjH",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 gap stream trades:GGQMQf4RY4CqVRSbXrzqd8M3NBcMGLN1pcMnNbTpY8Mz had a gap after candles was observed at slot 453795988 (gap-free since 453798876); H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453849735; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "4iJPHQajzbT3p1QaHnF7Vk2PpYQsHDKJnyMJWX9gpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 5065625939769/3478212199046 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453853366; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "51p3k4Sx3Jqv7YrFrrNSo4VRXDQGkPQf15qwdcz3pump",
+   "decision": "refused",
+   "gate": "H11",
+   "code": "chase-at-5m",
+   "reason": "hard reject H11,H14: H11 chase-at-5m price 47011703/162484637387845 at +5 min is above the migration price 36911671/206900000000000; H16 not-covered creates log rTHEer6qmsx8AcEuDnVGSdp2FmphEEUkWpM3uYuck2XvZHFFmRGGb6Bav3GvUSRX5PGeYK3PbbZvhMYyB5LB96C on logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM was cut or undecodable at 1791277495163 and its transaction is not fetched; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H11:chase-at-5m",
+    "H14:serial-deployer",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "6QpUDkVjSoR82h9tUiDVESH5bYR6GDbC8Zy3MSTdpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 3064092172662/5750092955481 at +5 min is above the migration price 84990359056/206900000000000; H14 serial-deployer FDkc2tnGXobjsKTnkMgb5XeSVu8LE6cELFw6W3avBLuv created 4 mints in 24 h; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453856755; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H14:serial-deployer",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "JDY19VWxjrUzeJ5k8mAZ1gYaRGyXQ6DvWFDUcHTepump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H16 degraded candles flagged partial by helius; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453863223; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:degraded",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "3cP2ZjY18F5C7qiBWE1iCU2DSW6NskeknuHpSr1qpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 259441687060/67892926762161 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453869836; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "worker:pool-flagged",
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "b4xEsBGxmoaxugnNqQLpZbnyMVoYMDvToDRko7TEJb4",
+   "decision": "refused",
+   "gate": "H16/H7",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11: H16 missing no curve as of slot 453871773; H16 missing no migration as of slot 453871773; H16 missing no migration as of slot 453871773; H16 gap stream trades:7p4z6J352nsn4BNtPgSqcqrhH7NBpqCUR5NUoPiTVBnJ had a gap after candles was observed at slot 453817894 (gap-free since 453817994); not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "Ar5cTTBZy9qEZSzfD5PE7rHgnWCsFEtC1FX5QbZppump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H14: H9 instant-graduation graduated 0 ms after creation; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453874447; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "AL46dPwBW6NfS5zYzPPcTLPTGR5KmYhAXYtpmYUzpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 271224741156/64949728480047 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453883247; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "AvPRjFTt8bQvmcHLignh2CcK6kR6reRNQBVo5EghQNt6",
+   "decision": "refused",
+   "gate": "H16/H7",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453887291; H16 missing no migration as of slot 453887291; H16 missing no migration as of slot 453887291; H16 gap stream trades:isFbNqM6SXmKg2zDKgzGuJBwxpuMmNKkMLxtn4WTjt5 had a gap after candles was observed at slot 453833488 (gap-free since 453833978); H14 prior-rug LT2viWLDkU7oVnMwkSwqoarajKKVXKxt2fCeAQv7apc rugged 4hpp7dPB1bdb46bsNpicn6APFe5HCGGQzFcGiLouxc3Q (collapse) within 14 days; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered",
+    "H14:prior-rug"
+   ]
+  },
+  {
+   "mint": "FdmPdKjKBp1byYpRGS7BgEgXkCwduDJXGk3EN9nxpump",
+   "decision": "refused",
+   "gate": "worker",
+   "code": "create-expired",
+   "reason": "create expired",
+   "all": [
+    "worker:create-expired"
+   ]
+  },
+  {
+   "mint": "FVsnfKTgqiHy4SASVmvC6agDKBaidPJVWE5avY2Cpump",
+   "decision": "refused",
+   "gate": "H16/H11",
+   "code": "gap",
+   "reason": "hard reject H11,H14: H16 gap stream trades:DKdULbUdXFvAmSKzq2QyyWWtdTWbzCfX7U1zoL1ds2Wf had a gap after candles was observed at slot 453839029 (gap-free since 453839794); H14 prior-rug HU8XTxfDjXRJy6HQJL45ptRn7m74UibRNx9FMJoWMwj3 rugged 5XzwLwLuRbdhZMkGWt3j87E2kgmJftc6jtq6zBtRpump (collapse) within 14 days; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:gap",
+    "H16:not-covered",
+    "H14:prior-rug"
+   ]
+  },
+  {
+   "mint": "DzhqzzxVWaj7Di24TY7EkqTbfVceCcoWpXzKJ3oRpump",
+   "decision": "refused",
+   "gate": "worker",
+   "code": "no-pool-state",
+   "reason": "pool state unknown",
+   "all": [
+    "worker:no-pool-state"
+   ]
+  },
+  {
+   "mint": "9U4khpsZDT8gByWCUNXJg9u76yiMGT4Ej2NjXr12pump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 254835951866/69115066025930 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453900220; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "DG4LMuC8hK3KR592csXkbEEM2dJNjUs3SpaeioQdpump",
+   "decision": "refused",
+   "gate": "H16/H9",
+   "code": "missing",
+   "reason": "hard reject H9,H11,H14: H16 missing no create as of slot 453897094; H11 chase-at-5m price 94110222253/186976396819013 at +5 min is above the migration price 84990360448/206900000000000; H16 missing no create as of slot 453897094; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H11:chase-at-5m"
+   ]
+  },
+  {
+   "mint": "2coPLYtPnAFmeUJCUbqJcveG1REUew6623A3xPhypump",
+   "decision": "refused",
+   "gate": "H16/H7",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11,H14: H16 missing no curve as of slot 453912286; H16 missing no migration as of slot 453912286; H16 missing no migration as of slot 453912286; H16 gap stream trades:FzWDXuHwNJw8LUmA8rJayLnUuDLDAEV4JKZW86TMSVH6 had a gap after candles was observed at slot 453858662 (gap-free since 453858683); H14 serial-deployer yTTd5qbuUTwvVb2sABCWuz2LMqC9R6nun9RjU9c2xsS created 4 mints in 24 h; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453912286; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H14:serial-deployer",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "eKTHF3ukbH4Yrk9GPfB7rfhScK9FTsLrKXp5i6npump",
+   "decision": "refused",
+   "gate": "H11",
+   "code": "chase-at-5m",
+   "reason": "hard reject H11,H14: H11 chase-at-5m price 81710814/170684469866256 at +5 min is above the migration price 67371652/206900000000000; H14 serial-deployer Hps4yWM2A2XBXBk2HVwvkXc4WMweD5gGGe5GbWWoZ8jU created 11 mints in 24 h; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453914733; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H11:chase-at-5m",
+    "H14:serial-deployer",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "QdYUEyuaNeSNWBX6g5dGDtQwUSpApzvsLuYgUhVpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 0 ms after creation; H11 chase-at-5m price 1309283591687/13455804604893 at +5 min is above the migration price 84990359056/206900000000000; H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453916576; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H11:chase-at-5m",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "HdD6EawTrXuAQnAAowF9hxomjTnrnDnjp6fw3jgupump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 36000 ms after creation; H16 gap stream trades:GvdB2gQFbxAGWWaFJrv6w9BipZXE6ZjFVmk8T5NP9goB had a gap after candles was observed at slot 453863538 (gap-free since 453863545); H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453917364; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "7369SFFekWNNpbz4sZrgpaykzd7rCJ1ssi5pwTtppump",
+   "decision": "refused",
+   "gate": "H16/H7",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11: H16 missing no curve as of slot 453918429; H16 missing no migration as of slot 453918429; H16 missing no migration as of slot 453918429; H16 gap stream trades:AT1QCJ9z8wNAMT4Hwm8nErtiHMP6Kaj1YpCNGXtqyZoP had a gap after candles was observed at slot 453864590 (gap-free since 453910267); not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "sJ8Yn4hwWzYZckrT7mPGqg3tQsZdUFx6CSs5CWJpump",
+   "decision": "refused",
+   "gate": "H9",
+   "code": "instant-graduation",
+   "reason": "hard reject H9,H11,H14: H9 instant-graduation graduated 82000 ms after creation; H16 gap stream trades:6YeNSju3cZDDnHZNFwduhYfKJdCWGQPYG5tfvn9LrixW had a gap after candles was observed at slot 453866584 (gap-free since 453866593); H16 not-covered rug labels unavailable (no reviewed labeller; RUG-1): RUG-1 coverage: no rugs coverage start; deployer check: no rug-check as of slot 453920482; not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H9:instant-graduation",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  },
+  {
+   "mint": "FAW54fe7VfMcNo7Bcrf58LtzULKjTmHi3V5QRgXypump",
+   "decision": "refused",
+   "gate": "H16/H7",
+   "code": "missing",
+   "reason": "hard reject H7,H9,H10,H11: H16 missing no curve as of slot 453930825; H16 missing no migration as of slot 453930825; H16 missing no migration as of slot 453930825; H16 gap stream trades:Db3ovt2mtUekp7yCRRNxGt5MMWRVDan4Xjng9Z9QFCb had a gap after candles was observed at slot 453877121 (gap-free since 453877134); not evaluated: H1,H2,H3,H4,H6,H8,H16,H5,H17,H12,H13,H15",
+   "all": [
+    "H16:missing",
+    "H16:gap",
+    "H16:not-covered"
+   ]
+  }
+ ],
+ "tradeRows": []
+}
