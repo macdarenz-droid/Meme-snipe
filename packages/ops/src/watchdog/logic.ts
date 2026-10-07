@@ -16,12 +16,18 @@ export interface Heartbeat {
   unresolved_intents: { count: number; oldest_age_s: number | null };
   signer: string;
   lease_epoch: number | null;
-  sol_reserve: number | null;
+  /** The wallet's SOL in lamports, as a decimal string (runner contract `Health.sol_reserve`); null when not known. */
+  sol_reserve: string | null;
   paused: boolean;
   /** The Telegram chat the server paired with (/pair); the watchdog learns it only from signed heartbeats. */
   owner_chat_id?: string | null;
   /** Critical alerts the worker raised (WATCH-1: a held position with no fresh price), one line each. */
   critical?: string[];
+  /** How the previous process ended (RESTART-ALERT; worker state.ts `exitKind` reads it), and this boot's age. */
+  last_exit?: string | null;
+  uptime_s?: number;
+  /** Restarts in the last 24 h by kind (RESTART-ALERT). */
+  restarts_24h?: { planned?: number; deploy?: number; unplanned?: number };
 }
 
 export interface Stored {
@@ -34,6 +40,7 @@ export interface Limits {
   slotLagMax: number;
   intentMaxAgeS: number;
   stopNoExitS: number;
+  /** In SOL (env SOL_RESERVE_FLOOR); compared in lamports (`reserveFloorLamports`). */
   solReserveFloor: number;
   repeatCriticalS: number;
 }
@@ -94,6 +101,38 @@ export async function verifySignature(header: string | null, method: string, pat
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
+const LAMPORTS_PER_SOL = 1_000_000_000n;
+const U64_MAX = (1n << 64n) - 1n;
+
+/** The floor in whole lamports: a SOL amount with at most 9 decimals is exact; more decimals round up (stricter). */
+export const reserveFloorLamports = (floorSol: number): bigint => {
+  // A floor no wallet can hold (or not a number) alerts on every reserve: fail closed, never throw in the cron.
+  if (!(floorSol >= 0 && floorSol < 1e10)) return U64_MAX + 1n;
+  const [whole = '0', frac = ''] = floorSol.toFixed(12).split('.');
+  const lamports = BigInt(whole) * LAMPORTS_PER_SOL + BigInt(frac.slice(0, 9).padEnd(9, '0'));
+  return /[1-9]/.test(frac.slice(9)) ? lamports + 1n : lamports;
+};
+
+/**
+ * The reported reserve in lamports. null: not known (the stub, a worker that has not read the wallet). 'unreadable':
+ * anything else that is not a plain u64 decimal string, including a number (no unit can be trusted for it).
+ */
+export const reserveLamports = (v: unknown): bigint | null | 'unreadable' => {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'string' || !/^(0|[1-9]\d{0,19})$/.test(v)) return 'unreadable';
+  const n = BigInt(v);
+  return n > U64_MAX ? 'unreadable' : n;
+};
+
+const solText = (lamports: bigint): string => `${lamports / LAMPORTS_PER_SOL}.${String(lamports % LAMPORTS_PER_SOL).padStart(9, '0')} SOL`;
+
+/** RC-R2-3: the worker's exitKind (worker run/state.ts) for the two kinds the watchdog alerts on. */
+export const deathKind = (lastExit: unknown): 'crash' | 'oom' | null =>
+  typeof lastExit !== 'string' ? null
+    : lastExit.startsWith('stop: crash') || lastExit.startsWith('fatal error (') ? 'crash'
+    : lastExit.startsWith('no clean stop (near ') ? 'oom'
+    : null;
+
 /** Shape check for a signed heartbeat. Signed by the host, but still never trusted blindly. */
 export function parseHeartbeat(body: string): Heartbeat | null {
   let x: unknown;
@@ -152,16 +191,32 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
     if (extra.length) out.push({ key: 'position_unreported', text: `Wallet holds ${extra.join(', ')} on chain, but the worker reports ${reported ? 'only ' + reported : 'no position'}.` });
   }
   const p = hb.open_position;
-  if (p && num(p.mark) && p.mark < p.stop) {
+  // RC-C5 sweep: the worker sends a null stop when it has no saved plan for the position (heartbeat `stop`), and
+  // `mark < null` is false: a position with no stop must alert, never read as above its stop.
+  if (p && !num(p.stop)) out.push({ key: 'stop', text: `${p.mint} has no stop the worker can report.` });
+  else if (p && num(p.mark) && p.mark < p.stop) {
     const since = num(p.last_exit_attempt_ts) ? Math.round((now - p.last_exit_attempt_ts) / 1000) : null;
     if (since === null || since > l.stopNoExitS) out.push({ key: 'stop', text: `${p.mint} is below its stop with no exit attempt in the last ${l.stopNoExitS} s.` });
   }
   const oldest = hb.unresolved_intents.oldest_age_s;
   if (hb.unresolved_intents.count > 0 && num(oldest) && oldest > l.intentMaxAgeS) {
     out.push({ key: 'intent', text: `${hb.unresolved_intents.count} unresolved intent(s), oldest ${oldest} s (blockhash expiry ${l.intentMaxAgeS} s).` });
+  } else if (hb.unresolved_intents.count > 0 && !num(oldest)) {
+    // RC-H4: an age the worker cannot give is never read as young.
+    out.push({ key: 'intent', text: `${hb.unresolved_intents.count} unresolved intent(s) of unknown age (blockhash expiry ${l.intentMaxAgeS} s).` });
   }
-  if (num(hb.sol_reserve) && hb.sol_reserve < l.solReserveFloor) out.push({ key: 'reserve', text: `SOL reserve ${hb.sol_reserve} is below the floor ${l.solReserveFloor}.` });
+  // RC-C5: the worker sends lamports as a decimal string; the floor is configured in SOL. Both compared in lamports.
+  const reserve = reserveLamports(hb.sol_reserve);
+  const floor = reserveFloorLamports(l.solReserveFloor);
+  if (reserve === 'unreadable') out.push({ key: 'reserve', text: `SOL reserve cannot be read (${JSON.stringify(hb.sol_reserve).slice(0, 40)}); floor ${solText(floor)}.` });
+  else if (reserve !== null && reserve < floor) out.push({ key: 'reserve', text: `SOL reserve ${solText(reserve)} is below the floor ${solText(floor)}.` });
   if (hb.signer === 'unreachable' || hb.signer === 'timeout') out.push({ key: 'signer', text: `Worker cannot reach the signer (${hb.signer}).` });
+  // RC-R2-3: a worker that keeps dying (unplanned restarts) or whose last process crashed or ran out of memory. A crash
+  // is reported for the first 24 h of the boot after it (the restart count covers repeats).
+  const unplanned = hb.restarts_24h?.unplanned;
+  if (num(unplanned) && unplanned >= 2) out.push({ key: 'restarts', text: `Worker restarted unplanned ${unplanned} times in 24 h.` });
+  const died = deathKind(hb.last_exit);
+  if (died !== null && !(num(hb.uptime_s) && hb.uptime_s >= 86_400)) out.push({ key: 'last_exit', text: `Worker's last process ended in ${died === 'oom' ? 'a memory limit' : 'a crash'} (${String(hb.last_exit).slice(0, 80)}).` });
   const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
   if (critical.length > 0) out.push({ key: 'worker_critical', text: `Worker critical: ${critical.join('; ')}.` });
   return out;
@@ -221,7 +276,8 @@ export function statusText(s: Stored | undefined, now: number, paused: { at: num
     lines.push(`Position: ${hb.open_position ? `${hb.open_position.mint}, stop ${hb.open_position.stop}` : 'none'}.`);
     lines.push(`Unresolved intents: ${hb.unresolved_intents.count}.`);
     lines.push(`Signer: ${hb.signer}.`);
-    lines.push(`SOL reserve: ${hb.sol_reserve ?? 'unknown'}.`);
+    const reserve = reserveLamports(hb.sol_reserve);
+    lines.push(`SOL reserve: ${reserve === null ? 'unknown' : reserve === 'unreadable' ? 'unreadable' : solText(reserve)}.`);
   }
   lines.push(`Entries: ${paused ? `paused since ${new Date(paused.at).toISOString().slice(0, 16)} UTC` : 'allowed'}.`);
   if (lease) lines.push(`Lease: ${lease.holder}, epoch ${lease.epoch}, ${lease.expiresAt > now ? 'valid' : 'expired'}.`);

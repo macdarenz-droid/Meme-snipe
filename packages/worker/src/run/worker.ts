@@ -200,11 +200,25 @@ import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../c
 import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
 import { BEHIND, BehindGuard, SHED_HELD_FRAMES } from './behind.ts';
 import { tradesStream } from './pool-watch.ts';
+import { farAhead } from './budget-day.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
 export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
+
+type DayCaps = { day: number; cutCreate: number; cutTrade: number; reread: number };
+
+/**
+ * The daily cut-log fetch and re-read counts on `day` (a UTC day number), or null when unchanged. A new UTC day starts
+ * every count at zero; the day only moves forward, except (RC-M3, budget-day.ts) from a day more than one day ahead of
+ * the clock, which a wrong clock wrote: then today counts as spent, never every day until that date.
+ */
+export const rolledFetchCaps = (caps: DayCaps, day: number): DayCaps | null => {
+  if (day > caps.day) return { day, cutCreate: 0, cutTrade: 0, reread: 0 };
+  if (farAhead(caps.day, day)) return { day, cutCreate: CUT_CREATE_FETCHES_PER_DAY, cutTrade: CUT_TRADE_FETCHES_PER_DAY, reread: REREAD_CREDITS_PER_DAY };
+  return null;
+};
 /** The window the paper execution statistics cover (WORKER-1e). */
 export const EXEC_STATS_WINDOW_MS = 86_400_000;
 
@@ -789,6 +803,10 @@ export class Worker {
     this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
+    // RC-H4: a restored intent that is not final keeps its age across the restart: its first ledger row's time, so a stuck
+    // entry or exit still reaches the watchdog's intent alert.
+    const live = new Set(Object.values(stored.book.intents).filter((i) => !isTerminal(i)).map((i) => i.intent.id as string));
+    if (live.size > 0) for (const e of this.#ledger.intentEvents()) if (live.has(e.intentId) && !this.#intentAt.has(e.intentId)) this.#intentAt.set(e.intentId, Number(e.ts));
     // RUN-1c: trades open or in flight when the previous process stopped writing, kept until a full start journals them.
     const killed = [...new Set([
       ...Object.values(stored.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id as string),
@@ -1623,8 +1641,16 @@ export class Worker {
 
   /** A new UTC day starts every count at zero; the day only moves forward. */
   #rollFetchCaps(): void {
-    const day = Math.floor(this.#d.timers.now() / 86_400_000);
-    if (day > this.#fetchCaps.day) this.#fetchCaps = { day, cutCreate: 0, cutTrade: 0, reread: 0 };
+    const next = rolledFetchCaps(this.#fetchCaps, Math.floor(this.#d.timers.now() / 86_400_000));
+    if (next === null) return;
+    const ahead = next.day < this.#fetchCaps.day;
+    this.#fetchCaps = next;
+    // RC-M3: written back, so a restart reads today spent, never the far date. A write that fails keeps today spent here.
+    if (ahead) {
+      try {
+        this.#fetchCapsFile?.write({ ...this.#fetchCaps });
+      } catch {}
+    }
   }
 
   /**
@@ -2225,6 +2251,8 @@ export class Worker {
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
+    // RC-H4: exits are timed too (the stuck-intent alert and the heartbeat's last exit attempt).
+    if (r.action?.type === 'trigger_exit' && r.result === 'applied' && !this.#intentAt.has(r.action.intentId)) this.#intentAt.set(r.action.intentId, r.at.receivedAt);
   }
 
   /** What the app's read API shows, as of now. */

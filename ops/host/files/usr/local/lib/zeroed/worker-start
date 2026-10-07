@@ -3,7 +3,7 @@
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
 # endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
 # publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
-# ops/host-config.json says "worker": "release"; until then the host's stand-in. The release's worker also takes the
+# ops/host-config.json says "worker": "release"; the host's stand-in only on "stub" (anything else is refused: RC-M4). The release's worker also takes the
 # S0 shakedown settings of that file's "shakedown" block (PRACTICE-ON). Live is never set here or in any environment
 # file: the worker refuses any mode but paper.
 set -euo pipefail

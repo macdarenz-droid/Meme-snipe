@@ -95,7 +95,7 @@ describe('checks', () => {
   });
 
   it('flags old unresolved intents, a low reserve and an unreachable signer', () => {
-    const keys = evaluate(stored(hb({ unresolved_intents: { count: 2, oldest_age_s: 91 }, sol_reserve: 0.01, signer: 'unreachable' })), T0, L, noChain).map((a) => a.key);
+    const keys = evaluate(stored(hb({ unresolved_intents: { count: 2, oldest_age_s: 91 }, sol_reserve: '10000000', signer: 'unreachable' })), T0, L, noChain).map((a) => a.key);
     expect(keys).toEqual(['intent', 'reserve', 'signer']);
   });
 });
