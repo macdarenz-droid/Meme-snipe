@@ -4,6 +4,8 @@ Zeroed is a personal Solana meme-token trading bot with an always-on worker, a w
 
 Where this document and `CLAUDE.md` differ, `CLAUDE.md` wins.
 
+Since 2026-10-07 the design authority is the Blueprint in `docs/blueprint/` (owner decision, `CLAUDE.md` "Blueprint"). This document stays as the record of what Zeroed built until `docs/MIGRATION.md` retires it section by section.
+
 ## 1. Summary
 
 1. **Our own measured study found no profitable rule.** We recorded 518 pump.fun graduations survivorship-free and tested 72 entry and exit rules after costs. **0 of 72 had a positive mean; 65 of 72 had a 95% CI entirely below zero.** The median graduate was **+101% at 5 minutes and −93% at 1 hour**; 71–76% lost at least 80% within the hour. An independent audit confirmed the result ([empirical.md](research/empirical.md), Bottom line and Audit). Published studies agree: in a 41k-token dataset, buying at the migration price and selling at a random time within the hour lost about 61–65% on average, before fees, on a rebalanced test sample, so it is a rough upper bound, not an executable P&L ([venues.md](research/venues.md) §5.3; corrected in [risk.md](research/risk.md) Fact-check F1).
