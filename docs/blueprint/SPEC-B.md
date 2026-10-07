@@ -2073,7 +2073,7 @@ interface OutboxRow { seq: bigint; topic: string; payloadJson: string; createdAt
 - **Depends on:** B-M25-01.
 - **Interfaces:** `validate(changes: Array<{ key: string; new: unknown }>): ValidateResult`; `parseDisplay(key, text): Result<{ stored: bigint | number | string; displayed: string; unit: string }, { code: 'E_UNIT' | 'E_PRECISION' | 'E_RANGE' }>`.
 - **Logic:**
-  1. Type and range checks per schema; ceilings (`E_CEILING`); cross-field rules (integration additions: `universe.screening_required = false` only while no strategy is enabled in any mode (C-44); `analytics.equity.includes_cold` must equal M22's cold-wallet setting (C-35); examples: `m15.blockhash_max_age_ms < 150 × slot time × 0.8`; tip lists equal the signer policy hash; `pump_curve_enabled` false in live; endpoint URLs `https:`/`wss:` only (M14 rule)).
+  1. Type and range checks per schema; ceilings (`E_CEILING`); cross-field rules (integration additions: `universe.screening_required = false` only while no strategy is enabled in any mode (C-44); `analytics.equity.includes_cold` must equal M22's cold-wallet setting (C-35); examples: `m15.blockhash_max_age_ms < 150 × slot time × 0.8`; tip lists equal the signer policy hash; `pump_curve_enabled` false in live; endpoint URLs `https:`/`wss:` only (M14 rule); `research.*` keys, `research.b10.assume_pass_unavailable` included, are research CLI keys and are refused in paper, live_small and live with `E_MODE_SCOPE` (C-78, SPEC-A A-M11-01 step 8)).
   2. Direction per change from `riskDirectionOnIncrease` and the sign of the change; action class: any risk increase → A3; else any neutral change → A2; else (all decreases) → A1; highest wins (VM-15 `derived_action_class`).
   3. `requiresFlatBook = any changed key has requiresRestart` (CA-32).
   4. `parseDisplay`: `sol` → decimal with ≤ 9 fractional digits → lamports exactly (`"0.30"` → `300000000`); `bps` → integer; `pct` → ≤ 2 fractional digits → bps; `count` → integer; `minutes` → integer minutes → ms. Exponents, separators and extra precision → `E_PRECISION`/`E_UNIT`. `displayed` shows the canonical display string; the preview shows "0.30 SOL = 300000000 lamports" (UC-05).
@@ -2081,7 +2081,7 @@ interface OutboxRow { seq: bigint; topic: string; payloadJson: string; createdAt
 - **Shared resources and concurrency:** Pure.
 - **Config:** none.
 - **Edge cases and failure handling:** `"3.0"` typed for a `sol` field whose current value is `0.30` → valid but warning "10× the current value".
-- **Acceptance criteria:** `parseDisplay('MAXPOS', '0.30')` → stored 300,000,000, displayed `0.30 SOL`; `'0.3000000001'` → `E_PRECISION`; a diff raising `MAXPOS` → A3.
+- **Acceptance criteria:** `parseDisplay('MAXPOS', '0.30')` → stored 300,000,000, displayed `0.30 SOL`; `'0.3000000001'` → `E_PRECISION`; a diff raising `MAXPOS` → A3; `research.b10.assume_pass_unavailable = true` in paper mode → `E_MODE_SCOPE`, the same in live_small mode → `E_MODE_SCOPE`, and in live mode → `E_MODE_SCOPE` (C-78).
 - **Tests:** unit; property (parse/format round trip for random lamport values).
 - **Observability:** none.
 - **Security notes:** Inputs are untrusted strings; strict regexes.
