@@ -17,7 +17,7 @@ export function scanGitattributes(text: string, file: string): Finding[] {
     const [pattern = '', ...attributes] = line.split(/\s+/);
     for (const a of attributes) {
       if (GITATTRIBUTES_REFUSED.some((re) => re.test(a))) {
-        findings.push(finding('E_GITATTRIBUTES', `${file}:${i + 1}`, `"${a}" on "${pattern}" changes how git diffs those files, so an edit could hide from the added-lines scan; not allowed`));
+        findings.push(finding('E_GITATTRIBUTES', `${file}:${i + 1}`, `"${a}" on "${pattern}" changes how git stores, reads or diffs those files, so an edit could hide from the added-lines scan; not allowed`));
       }
     }
   });

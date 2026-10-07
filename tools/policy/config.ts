@@ -65,8 +65,11 @@ export const GUARDED_DIRS = ['tools/', '.github/'];
  * (GITATTRIBUTES_REFUSED).
  */
 export const GITATTRIBUTES_PATTERN = /(^|\/)\.gitattributes$/;
-/** Attributes that turn a diff into "Binary files differ" or route it elsewhere: refused (E_GITATTRIBUTES). */
-export const GITATTRIBUTES_REFUSED = [/^-diff$/, /^binary$/, /^diff=/, /^-text$/];
+/**
+ * Attributes that turn a diff into "Binary files differ", route it elsewhere, or make the checked-out bytes differ from
+ * what git diffs (working-tree-encoding=, filter=, ident; red team RT4-04, ruling 6.4): refused (E_GITATTRIBUTES).
+ */
+export const GITATTRIBUTES_REFUSED = [/^-diff$/, /^binary$/, /^diff=/, /^-text$/, /^working-tree-encoding=/, /^filter=/, /^ident$/];
 /** tsconfig*.json, eslint.config.* and .gitattributes at any depth. */
 export const GUARDED_PATTERNS = [/(^|\/)tsconfig[^/]*\.json$/, ESLINT_CONFIG_PATTERN, GITATTRIBUTES_PATTERN];
 

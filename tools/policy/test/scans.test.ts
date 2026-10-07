@@ -18,7 +18,7 @@ import { readRepo, type RepoSnapshot } from '../repo.ts';
 import { scopeOf } from '../scope.ts';
 import { fingerprint, isRegularFile, readAllowlist, scanFiles, scanMain, scanText } from '../secrets.ts';
 import { checkTyposquats, editDistance, lookalikeOf, normalise } from '../typosquat.ts';
-import { checkRun, checkWorkflows, triggers } from '../workflows.ts';
+import { checkRun, checkWorkflows, triggers, yamlAnchors } from '../workflows.ts';
 import { capture, codes, goodSnapshot, REPO_ROOT, runBin } from './helpers.ts';
 
 const lockOf = (s: RepoSnapshot): PnpmLock => s.lock as PnpmLock;
@@ -327,6 +327,25 @@ describe('workflows', () => {
     assert.deepEqual(borrow(unparsable.replace("zeroed-${{ 'advisories' }}", 'plain'), '.github/workflows/backtest-trial.yml'), []);
   });
 
+  it('refuses YAML anchors and aliases in every workflow, Zeroed\'s included (ruling 6.3)', () => {
+    const other = 'name: other\non: [push]\npermissions:\n  contents: read\njobs:\n  x:\n    runs-on: x\n    steps:\n      - run: exit 1\n';
+    const borrow = (text: string, file = '.github/workflows/other.yml'): string[] =>
+      checkWorkflows({ ...ci(good), workflows: [...ci(good).workflows, { file, text }] }).map((f) => `${f.code} ${f.file}`);
+    // The policy's YAML reader also stops at an anchor (E_WORKFLOW_PARSE); E_YAML_ANCHOR names the line and holds
+    // whatever the reader does.
+    const anchors = (text: string, file?: string): string[] => borrow(text, file).filter((f) => f.startsWith('E_YAML_ANCHOR'));
+    assert.deepEqual(borrow(`x-env: &env\n  A: 1\n${other}`), ['E_WORKFLOW_PARSE .github/workflows/other.yml', 'E_YAML_ANCHOR .github/workflows/other.yml:1'], 'an anchor');
+    assert.deepEqual(anchors(other.replace('    runs-on: x\n', '    runs-on: x\n    env: *env\n')), ['E_YAML_ANCHOR .github/workflows/other.yml:8'], 'an alias');
+    assert.deepEqual(anchors(other.replace('    runs-on: x\n', '    runs-on: x\n    <<: *base\n')), ['E_YAML_ANCHOR .github/workflows/other.yml:8'],
+      'a merge key and its alias');
+    assert.deepEqual(yamlAnchors('  <<: {a: 1}\n'), [{ line: 1, token: '<<' }], 'a merge key alone');
+    assert.deepEqual(anchors(`x-env: &env\n  A: 1\n${other}`, '.github/workflows/deploy.yml'), ['E_YAML_ANCHOR .github/workflows/deploy.yml:1'], 'Zeroed\'s workflows too');
+    // Not anchors: a glob in a run block, a quoted value, a comment, and & or * inside a word.
+    assert.deepEqual(borrow(other.replace('      - run: exit 1\n', '      - run: |\n          ls *.ts && echo &x\n      - run: echo "*not"\n        # &comment\n        name: a&b *c\n')), []);
+    assert.deepEqual(yamlAnchors('a: &x 1\nb: *x\n- *y\nc: [*z]\n'), [{ line: 1, token: '&x' }, { line: 2, token: '*x' }, { line: 3, token: '*y' }, { line: 4, token: '*z' }]);
+    for (const w of ci(good).workflows) assert.deepEqual(yamlAnchors(w.text), [], `${w.file} has none`);
+  });
+
   it('runs a label event in a concurrency group of its own, so nothing cancels the labeled run (ruling 3.3)', () => {
     assert.ok(CI_CONCURRENCY_GROUP.includes('github.event.action') && CI_CONCURRENCY_GROUP.includes('github.event.label.name'));
     assert.ok(realCi.includes(`  group: ${CI_CONCURRENCY_GROUP}\n`), 'this repository\'s ci.yml');
@@ -452,7 +471,7 @@ describe('workflows', () => {
   });
 
   it('fails closed on a workflow the reader cannot follow', () => {
-    assert.deepEqual(codes(checkWorkflows(ci(`${good}x: &anchor y\n`))), ['E_WORKFLOW_PARSE']);
+    assert.deepEqual(codes(checkWorkflows(ci(`${good}x: &anchor y\n`))), ['E_WORKFLOW_PARSE', 'E_YAML_ANCHOR'], 'round 6: the anchor is named too (ruling 6.3)');
     assert.deepEqual(codes(checkWorkflows(ci('- a\n'))), ['E_WORKFLOW_PARSE']);
     assert.deepEqual(codes(checkWorkflows(ci(good, '- a\n'))), ['E_WORKFLOW_PARSE']);
     assert.deepEqual(codes(checkWorkflows(ci(`${good}      - with: {a: b}\n`))), ['E_WORKFLOW_PARSE'], 'flow mappings are read only in pnpm files');

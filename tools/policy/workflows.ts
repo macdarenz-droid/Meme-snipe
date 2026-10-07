@@ -281,6 +281,29 @@ function checkAuditSchedule(doc: YamlMap, findings: Finding[]): void {
   }
 }
 
+/**
+ * YAML anchors (`&name`), aliases (`*name`) and merge keys (`<<:`) in a workflow text, line by line. A value position is
+ * read: after `key:`, after a list dash, at the start of a line, or inside a flow collection. The lines of a block
+ * scalar (`run: |`) are literal text, so a shell `&` or glob `*` there is not one; comments are taken off first.
+ */
+export function yamlAnchors(text: string): Array<{ line: number; token: string }> {
+  const out: Array<{ line: number; token: string }> = [];
+  let block = -1;                                                       // indentation of the key that opened a block scalar
+  text.split(/\r?\n/).forEach((raw, i) => {
+    const indent = raw.length - raw.trimStart().length;
+    if (block >= 0) {
+      if (raw.trim() === '' || indent > block) return;
+      block = -1;
+    }
+    const line = raw.replace(/(^|\s)#.*$/, '');
+    const node = /(?:^\s*(?:-\s+)*|:\s+|[[{,]\s*)([&*][^\s,[\]{}]+)/.exec(line);
+    if (node !== null) out.push({ line: i + 1, token: node[1] as string });
+    else if (/^\s*(?:-\s+)?<<\s*:/.test(line)) out.push({ line: i + 1, token: '<<' });
+    if (/(?:^|:|-)\s*[|>][+-]?\d*\s*$/.test(line)) block = indent;
+  });
+  return out;
+}
+
 function checkWorkflow(file: string, text: string, findings: Finding[], scope: Scope): YamlMap | null {
   checkLines(file, text, findings);
   let doc: YamlValue;
@@ -324,6 +347,14 @@ export function checkWorkflows(snapshot: RepoSnapshot, scope: Scope = scopeOf(fa
   const findings: Finding[] = [];
   const docs = new Map<string, YamlMap | null>();
   for (const w of snapshot.workflows) if (scope(w.file)) docs.set(w.file, checkWorkflow(w.file, w.text, findings, scope));
+  // YAML anchors and aliases (red team RT4-03; ruling 6.3): an alias can carry a computed job name past the text
+  // search below, and the YAML reader refuses them in the workflows it checks, so no workflow, Zeroed's included, may
+  // use one.
+  for (const w of snapshot.workflows) {
+    for (const where of yamlAnchors(w.text)) {
+      findings.push(finding('E_YAML_ANCHOR', `${w.file}:${where.line}`, `"${where.token}" is a YAML anchor or alias; workflows spell every value out, so the checks read what runs`));
+    }
+  }
   // A computed job name could take the reserved name at run time and hide from the deploy gate, which matches check
   // runs by name (red team RT3-03, review M1; ruling 5.3): no job `name:` in any workflow, Zeroed's included, may hold
   // an expression. A workflow the reader cannot follow is searched as text for a job-level `name:` line with one.
