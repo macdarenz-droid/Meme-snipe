@@ -114,4 +114,14 @@ describe('RT-A7: the re-read reads only the curve\'s newest page, so failed late
     expect(r.caps.reread).toBeLessThanOrEqual(tries * reserve);
     expect(missingMigration(r.last.r)).toBe(true);
   }, 120_000);
+
+  it('successful transactions that are not the completion use up the reads: COMPLETION-READ stops at its reserve', async () => {
+    const other = Array.from({ length: 10 }, (_, i) => ({ signature: `otherOk${i}`, slot: migrate.slot - BigInt(i), err: null, blockTime: migrate.blockTime! }));
+    const { asked, rpc } = curveRpc([{ signature: migrate.signature, slot: migrate.slot, err: null, blockTime: migrate.blockTime }, ...other, ...before]);
+    const r = await run(rpc, { reread: null, fill: 10 * 6, window: false, runMs: 60_000 });
+    // One page and five reads: the reserve of 6, never a sixth read.
+    expect(asked.filter((a) => a.startsWith('tx otherOk'))).toEqual(other.slice(0, 5).map((o) => `tx ${o.signature}`));
+    expect(sigPages(asked)).toEqual([`sigs ${CURVE} before ${migrate.signature}`]);
+    expect(r.fillLeft()).toBe(10 * 6 - 6);
+  }, 120_000);
 });

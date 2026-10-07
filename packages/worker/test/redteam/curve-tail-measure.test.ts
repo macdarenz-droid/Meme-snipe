@@ -56,6 +56,7 @@ describe.skipIf(process.env['ZEROED_MEASURE'] !== '1')('RT-A2 measurement: curve
     const G = Number(process.env['ZEROED_MEASURE_G'] ?? 10);
     const migs = (await call('getSignaturesForAddress', [PUMP_MIGRATION_AUTHORITY, { limit: 200, commitment: 'confirmed' }]) as { signature: string; err: unknown }[]).filter((x) => x.err === null);
     const counts: number[] = [];
+    const completing: string[] = [];
     for (const m of migs) {
       if (counts.length >= G) break;
       const rec = await tx(m.signature).catch(() => null);
@@ -75,9 +76,21 @@ describe.skipIf(process.env['ZEROED_MEASURE'] !== '1')('RT-A2 measurement: curve
         before = sigs.at(-1)!.signature;
       }
       counts.push(n);
-      say(`GRADUATE ${curve}: ${n} successful and ${failed} failed curve transactions`);
+      // The completing buy: the newest successful curve transaction holding this mint's CompleteEvent.
+      let tail = 'not found';
+      const newest = (await call('getSignaturesForAddress', [curve, { limit: 20, commitment: 'confirmed' }]) as { signature: string; err: unknown }[]).filter((x) => x.err === null);
+      for (const x of newest) {
+        if (x.signature === m.signature) continue;
+        const c = await tx(x.signature).catch(() => null);
+        await sleep(150);
+        if (c === null || !transactionEvents(c).some((e) => e.name === 'CompleteEvent')) continue;
+        tail = curveTails(c).map((t) => t.extra).join('|');
+        break;
+      }
+      completing.push(tail);
+      say(`GRADUATE ${curve}: ${n} successful and ${failed} failed curve transactions; completing buy tail ${tail}`);
     }
     counts.sort((a, b) => a - b);
-    say(`GRADUATES: ${counts.length}, successful curve transactions median ${counts[Math.floor(counts.length / 2)]}, min ${counts[0]}, max ${counts.at(-1)}`);
+    say(`GRADUATES: ${counts.length}, successful curve transactions median ${counts[Math.floor(counts.length / 2)]}, min ${counts[0]}, max ${counts.at(-1)}; completing buys with a non-zero tail ${completing.filter((t) => /[^0|]/.test(t) && t !== 'not found').length} of ${completing.filter((t) => t !== 'not found').length}`);
   }, 30 * 60_000);
 });
