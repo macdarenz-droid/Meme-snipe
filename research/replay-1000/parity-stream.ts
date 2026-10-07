@@ -6,7 +6,7 @@
 // and replays are compared with each other by a running sha256. A first-start boot only (no saved state to restore).
 //   node research/replay-1000/parity-stream.ts <state-dir> <replays> [mode A|B]
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession, type PolicySession } from '../../packages/core/src/config/index.ts';
@@ -90,8 +90,13 @@ export const streamParity = (stateDir: string, replays: number, session: PolicyS
     const r = JSON.parse(l) as { kind: string; boot: string; action?: string };
     return r.kind === 'decision' && r.boot === start.boot && !(r.action !== undefined && NOT_REPLAYED.includes(r.action));
   }).map(normalise);
+  // The run's own strategy inputs (run.ts strategy.json); older runs: the host config's shakedown block.
+  const used = join(stateDir, '..', 'strategy.json');
   const shakedown = (JSON.parse(readFileSync(new URL('../../ops/host-config.json', import.meta.url), 'utf8')) as { shakedown: Record<string, string> }).shakedown;
-  const config = strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, BigInt(shakedown['ZEROED_PAPER_EDGE_PPM'] ?? '0'), { timing: 'random', salt: shakedown['ZEROED_RUN_ID'] ?? 'S0', s0Diagnostic: shakedown['ZEROED_S0_DIAGNOSTIC'] === 'on' });
+  const inputs = existsSync(used)
+    ? (JSON.parse(readFileSync(used, 'utf8')) as { paperEdgePpm: string; salt: string; s0Diagnostic: boolean })
+    : { paperEdgePpm: shakedown['ZEROED_PAPER_EDGE_PPM'] ?? '0', salt: shakedown['ZEROED_RUN_ID'] ?? 'S0', s0Diagnostic: shakedown['ZEROED_S0_DIAGNOSTIC'] === 'on' };
+  const config = strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, BigInt(inputs.paperEdgePpm), { timing: 'random', salt: inputs.salt, s0Diagnostic: inputs.s0Diagnostic });
   void PAPER_SCENARIO;
   const out: { replay: number; lines: number; sha256: string; divergence: { index: number; live: string | null; replay: string | null } | null }[] = [];
   for (let k = 0; k < replays; k++) {

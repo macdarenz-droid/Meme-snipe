@@ -3,7 +3,7 @@
 // virtual time, with the network swapped for the as-of world (world/*). Its journal and recorder land in a state folder
 // like the server's, so the TEST-1 parity replay can run on it afterwards (replay.ts).
 //
-//   node research/replay-1000/run.ts <out-dir> <coins.json> <startIso> <endIso> [--mode A|B]
+//   node research/replay-1000/run.ts <out-dir> <coins.json> <startIso> <endIso> [--mode A|B] [--no-edge]
 //
 // <coins.json>: [{ mint, pool, migrationSig, migrationSlot, migrationTime }] (coins.ts output, filtered).
 import { createHash } from 'node:crypto';
@@ -75,6 +75,8 @@ export interface RunOptions {
   readonly offline?: boolean;
   /** TEST-1 parity replays of the recording after the run (0: none). */
   readonly parityReplays?: number;
+  /** Leave the shakedown's ZEROED_PAPER_EDGE_PPM unset (the server resuming without a paper edge). */
+  readonly noEdge?: boolean;
 }
 
 /**
@@ -149,7 +151,7 @@ export const runReplay = async (o: RunOptions) => {
   const env: Record<string, string> = {
     ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on',
     ZEROED_HEALTH_ADDR: `127.0.0.1:${30_000 + (process.pid % 15_000) * 2}`, ZEROED_API_ADDR: `127.0.0.1:${30_001 + (process.pid % 15_000) * 2}`, ZEROED_GIT_SHA: 'replay-1000',
-    ...shakedown(),
+    ...Object.fromEntries(Object.entries(shakedown()).filter(([k]) => !(o.noEdge === true && k === 'ZEROED_PAPER_EDGE_PPM'))),
   };
   const parsed = parseConfig(env, () => null);
   if (!parsed.ok) throw new Error(parsed.message);
@@ -185,6 +187,8 @@ export const runReplay = async (o: RunOptions) => {
     record: (r) => worker?.journal.write('h15_sim', { ...r }),
   });
   const quietHttp: HttpClient = async () => ({ status: 200, text: '{}', header: () => null });
+  // The strategy inputs this run used, for parity-stream.ts (the paper edge may differ from the host config's).
+  writeFileSync(join(o.out, 'strategy.json'), JSON.stringify({ name: config.strategy.name, paperEdgePpm: String(config.strategy.paperEdgePpm ?? 0n), salt: config.runId ?? 'S0', s0Diagnostic: config.strategy.s0Diagnostic }));
   const strategy = strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG, config.strategy.paperEdgePpm ?? 0n, config.strategy.name === 'S0' ? { timing: 'random', salt: config.runId ?? 'S0', s0Diagnostic: config.strategy.s0Diagnostic } : { timing: 'gates', salt: '' });
   worker = new Worker({
     boot: o.boot ?? `replay-${o.mode}`,
@@ -256,7 +260,8 @@ const main = async () => {
   const createsFile = process.argv.includes('--creates') ? process.argv[process.argv.indexOf('--creates') + 1]! : null;
   const creates = createsFile === null ? [] : (JSON.parse(readFileSync(createsFile, 'utf8')) as RawSig[]);
   const parityReplays = process.argv.includes('--parity') ? Number(process.argv[process.argv.indexOf('--parity') + 1]) : 10;
-  const s = await runReplay({ out: resolve(out!), coins, others, startMs: Date.parse(startIso!), endMs: Date.parse(endIso!), creates, mode, parityReplays });
+  const noEdge = process.argv.includes('--no-edge');
+  const s = await runReplay({ out: resolve(out!), coins, others, startMs: Date.parse(startIso!), endMs: Date.parse(endIso!), creates, mode, parityReplays, noEdge });
   console.log(JSON.stringify({ end: s.virtualEnd, wall: s.wallSeconds, refusals: s.refusals }, null, 1));
   process.exit(0);
 };
