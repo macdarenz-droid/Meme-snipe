@@ -22,7 +22,7 @@ export const RPC = 'https://api.mainnet-beta.solana.com';
 const lastCall = new Map(), gaps = new Map();
 // Adaptive: each 429 widens the method's gap by 1.5x (up to 10 s); each success narrows it by 2% (down to RPC_GAP).
 const lastWiden = new Map(); // one widening per 2 s, so simultaneous 429s from several workers count once
-const widen = (m) => { const now = Date.now(); if (now - (lastWiden.get(m) || 0) < 2000) return; lastWiden.set(m, now);
+const widen = (m) => { if (process.env.ADAPT === '0') return; const now = Date.now(); if (now - (lastWiden.get(m) || 0) < 2000) return; lastWiden.set(m, now);
   gaps.set(m, Math.min(5000, (gaps.get(m) || Number(process.env.RPC_GAP || 330)) * 1.3)); };
 const narrow = (m) => gaps.set(m, Math.max(Number(process.env.RPC_GAP || 330), (gaps.get(m) || Number(process.env.RPC_GAP || 330)) * 0.99));
 export const gapOf = (m) => gaps.get(m);

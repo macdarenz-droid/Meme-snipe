@@ -12,7 +12,7 @@ const uniq = [...new Map(sigs.map(s => [s.sig, s])).values()]; sigs.length = 0; 
 const key = (s) => crypto.createHash('sha256').update(s.sig).digest('hex');
 sigs.sort((a, b) => (key(a) < key(b) ? -1 : 1));
 const outF = DATA + 'migrations.jsonl';
-const done = new Set(fs.existsSync(outF) ? fs.readFileSync(outF, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l).sig) : []);
+const done = new Set(fs.existsSync(outF) ? fs.readFileSync(outF, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(r => r.kind !== 'fetch_failed').map(r => r.sig) : []); // failed fetches are retried on the next run
 const out = fs.createWriteStream(outF, { flags: 'a' });
 export const frac = (s) => parseInt(key(s).slice(0, 8), 16) / 2 ** 32;
 const todo = sigs.filter(s => frac(s) < P && !done.has(s.sig));
