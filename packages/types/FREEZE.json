@@ -1,7 +1,7 @@
 {
   "package": "@bot/types",
   "version": "1.0.0",
-  "sha256": "5e0ba93cb7bb2c5c522f68044aae6b3fb7faa027df582c37bc0985087d6027e9",
+  "sha256": "c9d47f80a0ffab37cf8d4b785fac504c36195e7a1df478351ab08674b4ef4ef3",
   "files": [
     "package.json",
     "src/canon.ts",

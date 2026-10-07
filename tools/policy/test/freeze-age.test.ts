@@ -11,7 +11,7 @@ import {
 } from '../age.ts';
 import { checkDrift, guardedFiles, guardedHash, isGuarded, reviewLabel, type GuardedFile } from '../drift.ts';
 import {
-  buildFreeze, changelogSection, checkFreeze, freezeFiles, freezeHash, freezeMain, rootTsconfigChain, semverGreater, tsconfigChain, writeFreeze,
+  buildFreeze, changelogSection, checkFreeze, freezeFiles, freezeHash, freezeMain, rootTsconfigChain, rootTsconfigProjection, semverGreater, sortedJson, tsconfigChain, writeFreeze,
 } from '../freeze.ts';
 import type { Git } from '../git.ts';
 import { capture, codes, FIXTURES, REPO_ROOT, runBin } from './helpers.ts';
@@ -106,6 +106,39 @@ describe('freeze manifest', () => {
     writeFileSync(join(dir, 'tsconfig.strict.json'), '{ "compilerOptions": { "exactOptionalPropertyTypes": true } }\n');
     assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], fakeGit({ 'packages/types/FREEZE.json': JSON.stringify(recorded) }), 'base')),
       ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'a config reached only through an array extends counts');
+  });
+
+  it('freezes the root tsconfig.json\'s compilerOptions and extends only, not include/exclude/files/references (round 4 ruling)', () => {
+    const dir = fixtureCopy('tsconfig-root-projection');
+    writeFileSync(join(dir, 'tsconfig.bot.json'), '{ "compilerOptions": { "strict": true } }\n');
+    writeFileSync(join(dir, 'tsconfig.other.json'), '{ "compilerOptions": { "strict": true } }\n');
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ "include": ["src/**/*.ts"] }\n');
+    const rootConfig = (o: Record<string, unknown>): void => writeFileSync(join(dir, 'tsconfig.json'), `${JSON.stringify(o, null, 2)}\n`);
+    const base = { extends: './tsconfig.bot.json', compilerOptions: { noEmit: true, types: ['node'] }, include: ['packages/types/src/**/*.ts'] };
+    rootConfig(base);
+    const recorded = writeFreeze(dir, 'packages/types');
+    assert.ok(recorded.files.includes('../../tsconfig.json'));
+    const git = fakeGit({ 'packages/types/FREEZE.json': JSON.stringify(recorded) });
+    const check = (o: Record<string, unknown>): string[] => { rootConfig(o); return codes(checkFreeze(dir, ['packages/types'], git, 'base')); };
+    // Not frozen: what the root config compiles, and how it is laid out.
+    assert.deepEqual(check({ ...base, include: [...base.include, 'packages/engine/src/**/*.ts'] }), [], 'an added include entry');
+    assert.deepEqual(check({ ...base, exclude: ['node_modules'], files: ['x.ts'], references: [{ path: './packages/engine' }] }), [], 'exclude, files, references');
+    assert.deepEqual(check({ include: base.include, compilerOptions: { types: ['node'], noEmit: true }, extends: base.extends }), [], 'key order');
+    // Frozen: every compiler option and the extends chain.
+    assert.deepEqual(check({ ...base, compilerOptions: { ...base.compilerOptions, noEmit: false } }), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'a changed key');
+    assert.deepEqual(check({ ...base, compilerOptions: { ...base.compilerOptions, strict: false } }), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'an added key');
+    assert.deepEqual(check({ ...base, compilerOptions: { ...base.compilerOptions, types: ['node', 'x'] } }), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'a nested value');
+    assert.deepEqual(check({ ...base, extends: './tsconfig.other.json' }), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'a changed extends target, same content');
+    assert.deepEqual(check({ ...base, extends: ['./tsconfig.bot.json', './tsconfig.other.json'] }), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'an extends array');
+    rootConfig(base);
+    writeFileSync(join(dir, 'tsconfig.bot.json'), '{ "compilerOptions": { "strict": false } }\n');
+    assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], git, 'base')), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'an extended config is frozen whole');
+    writeFileSync(join(dir, 'tsconfig.bot.json'), '{ "compilerOptions": { "strict": true } }\n');
+    assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], git, 'base')), []);
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ "include": ["src/**/*.ts", "test/**/*.ts"] }\n');
+    assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], git, 'base')), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'the package tsconfig stays frozen whole');
+    assert.equal(rootTsconfigProjection('{ not json'), '{ not json', 'an unreadable root config is hashed whole');
+    assert.equal(sortedJson({ b: [{ d: 1, c: 2 }], a: null }), '{"a":null,"b":[{"c":2,"d":1}]}');
   });
 
   it('freezes this repository\'s root tsconfig.json for @bot/types (ruling 3.5)', () => {

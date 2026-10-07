@@ -54,6 +54,7 @@ export function tsconfigChain(root: string, dir: string, start = 'tsconfig.json'
 /**
  * The repository's root tsconfig.json, which is what `pnpm typecheck` compiles a frozen package's src/ with (it
  * includes packages/types/src), and every config it extends, relative to `dir` (red team RT2-06; supervisor ruling 3.5).
+ * The root file itself is hashed through rootTsconfigProjection (round 4); the configs it extends are hashed whole.
  */
 export function rootTsconfigChain(root: string, dir: string): string[] {
   return tsconfigChain(root, dir, posixRelative(dir, 'tsconfig.json'));
@@ -69,11 +70,39 @@ export function freezeFiles(root: string, dir: string): string[] {
   return ['package.json', ...src.sort(), ...configs.filter((c, i) => configs.indexOf(c) === i)];
 }
 
-/** sha256 over each file's relative path, byte length and bytes, in the given order. */
+/** JSON with every object's keys sorted, at every depth: the same settings always give the same text. */
+export function sortedJson(value: unknown): string {
+  const sort = (v: unknown): unknown => (Array.isArray(v) ? v.map(sort)
+    : typeof v === 'object' && v !== null ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort((v as Record<string, unknown>)[k])])) : v);
+  return JSON.stringify(sort(value));
+}
+
+/**
+ * What the freeze hashes of the repository's root tsconfig.json (supervisor ruling for round 4): its `compilerOptions`,
+ * as sorted JSON, and its `extends` (string or array, each config it names is frozen whole through the chain). Not its
+ * `include`, `exclude`, `files` or `references`: the root config lists every Blueprint package, and adding one must
+ * not need a @bot/types bump, while any compiler option still does (red team RT2-06). A root config that does not parse
+ * is hashed whole, so a change to it is still caught.
+ */
+export function rootTsconfigProjection(text: string): string {
+  try {
+    const json = JSON.parse(text) as { compilerOptions?: unknown; extends?: unknown };
+    return sortedJson({ compilerOptions: json.compilerOptions ?? null, extends: json.extends ?? null });
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * sha256 over each file's relative path, byte length and bytes, in the given order. The repository's root
+ * tsconfig.json counts only through rootTsconfigProjection; every other file, package tsconfigs included, is whole.
+ */
 export function freezeHash(root: string, dir: string, files: readonly string[]): string {
   const h = createHash('sha256');
+  const rootConfig = dir === '' ? null : posixRelative(dir, 'tsconfig.json');
   for (const f of files) {
-    const bytes = readFileSync(join(root, dir, f));
+    const raw = readFileSync(join(root, dir, f));
+    const bytes = f === rootConfig ? Buffer.from(rootTsconfigProjection(raw.toString('utf8'))) : raw;
     h.update(`${f}\n${bytes.length}\n`);
     h.update(bytes);
   }

@@ -1,6 +1,6 @@
 # Changelog
 
-`@bot/types` follows semantic versioning and is frozen (ARCH 18; B-M19-01 logic 2). Any change to `package.json`, `src/` or the tsconfig files it compiles with (its `tsconfig.json`, the repository root `tsconfig.json` that typechecks `src/`, and the shared `tsconfig.bot.json` both extend) needs a higher version, a section here with both group leads' sign-off lines, and a re-recorded `FREEZE.json` (`node tools/policy/bin/freeze.ts packages/types`). `pnpm lint` enforces this against the base branch.
+`@bot/types` follows semantic versioning and is frozen (ARCH 18; B-M19-01 logic 2). Any change to `package.json`, `src/` or the tsconfig files it compiles with (its `tsconfig.json` and the shared `tsconfig.bot.json`, whole; and the `compilerOptions` and `extends` of the repository root `tsconfig.json` that typechecks `src/`, not its `include`) needs a higher version, a section here with both group leads' sign-off lines, and a re-recorded `FREEZE.json` (`node tools/policy/bin/freeze.ts packages/types`). `pnpm lint` enforces this against the base branch.
 
 ## 1.0.0 — 2026-10-06
 
