@@ -243,3 +243,25 @@ H8 values liquidity as `quoteVault + virtualQuoteReserves` (`packages/core/src/g
 ### 7.5 What this changes
 
 Nothing replaces a proven price rule. Staking and all-or-nothing entries only stop the bot losing SOL to idleness and fees; the hygiene work stops false signals. Evidence files are in the RES-7 session scratchpad and were not committed (raw RPC reads).
+
+## 8. Longer horizons, speed and costs (RES-8, 2026-10-07)
+
+Owner, 7 Oct: "So ur giving up?" and "How do we solve this? Speed ... Costs ...". Both are answered with pre-registered tests on pre-wall data and a research pass with critics; nothing here is registered for the bot.
+
+### 8.1 Longer horizons (removes speed and cost, exposes direction)
+- **Daily probe** (`research/daily-probe/RESULTS.md`): five rules on 477 pump.fun coins, holds of 1–7 days: all **not supported**. Costs stop mattering at this horizon; the problem is that coins fall (buy-everything lost about 9% a week in 2026-08-16 to 09-20, even on a survivor-only list). D-REV3 (buy after a 22%+ daily fall, hold 3 days) was positive in both periods (+6.7%, +3.6%) but rests on a few big winners (median −11%), loses in the larger coins, and is the kind of result survivor bias creates: unproven until a survivorship-free re-test.
+- **Trend probe** (`research/trend-probe/RESULTS.md`): weekly time-series and cross-sectional momentum on 19 large memes in SOL, 2024 to the wall: all **not supported**. A basket of large memes rose 26% against SOL to mid-2025 and fell 51% after; every timing rule did worse than holding SOL.
+
+### 8.2 Speed: do not buy it
+- The money that needs speed is same-block arbitrage (about 99% of arbitrage value lands in the same block as its trigger; a few bots hold most of it). Competing needs leader shreds and co-located bare metal, an UNVERIFIED estimate of US$1,400–3,400 a month.
+- The bounce after a sharp drop fades over minutes, not seconds; the bot already enters 1–6 s after a 5-minute bar (base case 3–12 slots at about 0.27 s; the conservative case is about 6.2 s, not 9 s). Cutting that gains almost nothing, and a subscription adds cost per trade ($49 a month is about 0.27% of each $200 trade at 90 trades a month).
+- Pre-positioning instead of racing: a resting Meteora DLMM limit bid fills in the drop's own block, but only about 15 of 40 deep-pool coins have such a pool, fills that come through arbitrage save nothing, and adverse selection (it fills first on collapses) works against it. Research-only; it needs the owner (new venue and signer program) before any build.
+
+### 8.3 Costs: the venue fee is the floor
+Measured round trip (pool depths read on chain for 474 canonical pools on 2026-10-06): best PumpSwap seat about 0.66% at $100, 0.87% at $500. Cheaper seats exist only for older, larger pump coins on other venues (Raydium AMM v4 0.25%: about 0.51–0.65%; Fartcoin's Orca 0.16% pool: about 0.33–0.40%), which need the owner, and no bounce has been measured there. Real depth is 1.0–1.6× the repo's constant-product model (impact slightly overstated outside the 0.30% tier). Fixed costs (rent, failed exits) decide results only at $2–$20.
+
+### 8.4 A correctness risk for the supervisor
+Slot time is hard-coded as 400 ms (`packages/worker/src/engine/strategy.ts` line 1749, `packages/backtest/src/sim/world.ts` line 61, `packages/backtest/test/study-world.ts` line 21). Solana slots have run at 250 ms since epoch 1037 (2026-09-18) and 200 ms is scheduled from epoch 1052 (about 2026-10-08, UNVERIFIED estimate); the pre-wall data spans 400, 350, 300 and 250 ms. Pool updates dated from a slot anchor can be off by up to about 22.5 s (30 s at 200 ms). Suggested fix: derive slot duration from consecutive block-time anchors in the event stream, the same function live and in the backtest, with a test that fails before and passes after.
+
+### 8.5 Where this leaves the search
+Every horizon tested so far loses after costs in SOL: minutes (the bounce is smaller than the fee), days and weeks (memes drift down against SOL). The open threads are D-REV3 on a survivorship-free coin list (needs the dead coins' prices: the paid history month, or about 85,000 free calls), and the registered attempt 1.
