@@ -13,7 +13,7 @@
 // file is hashed once, from the bytes written when it is sealed; the manifest lists that hash and never re-reads it.
 import { createHash } from 'node:crypto';
 import { redactCounted } from './redact.ts';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { toBase64 } from '../../../core/src/chain/index.ts';
@@ -95,6 +95,8 @@ export class Recorder {
   #streamGaps = 0;
   /** Where the stream gaps are: GAPS_FILE while the boot runs, GAPS_PACKED after a clean stop. */
   #gapsPath = GAPS_FILE;
+  /** Bytes of GAPS_FILE written whole by this boot. */
+  #gapsBytes = 0;
   readonly #gapLines: string[] = [];
   readonly #attachments: Attachment[] = [];
   /** Sealed files' sizes and hashes, by path relative to the folder, as sealed (G4c: never re-read). */
@@ -174,7 +176,19 @@ export class Recorder {
 
   #flushGaps(): void {
     if (this.#gapLines.length === 0) return;
-    appendFileSync(join(this.#dir, GAPS_FILE), `${redactCounted(this.#gapLines.join('\n')).text}\n`);
+    const path = join(this.#dir, GAPS_FILE);
+    const text = `${redactCounted(this.#gapLines.join('\n')).text}\n`;
+    try {
+      appendFileSync(path, text);
+    } catch (e) {
+      // A part written before the failure (a full disk) is cut back off: the lines stay buffered for the next flush, so
+      // the file never holds a repeated or torn gap line. A cut that fails too leaves at most a torn tail.
+      try {
+        truncateSync(path, this.#gapsBytes);
+      } catch {}
+      throw e;
+    }
+    this.#gapsBytes += Buffer.byteLength(text);
     this.#gapLines.length = 0;
   }
 

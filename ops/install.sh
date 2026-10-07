@@ -1372,16 +1372,19 @@ unit_sandbox() {
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
 
-# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when
-# the release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the
-# host's stand-in when it says "worker": "stub", or when no release is deployed yet (RELEASE_DIR does not exist: a first
-# install). Switching the host to the real worker is a decision, not a side effect of a merge. RC-M4: anything else is
-# refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look healthy with
-# no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or "release" without
-# its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail, loudly.
+# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when the
+# release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the host's stand-in
+# when it says "worker": "stub", or when no release is deployed yet (RELEASE_DIR does not exist and is not a link: a
+# first install). Switching the host to the real worker is a decision, not a side effect of a merge. RC-M4: anything
+# else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
+# healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
+# "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
+# loudly.
+STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
 worker_entry() {
-  if [ ! -e "$1" ]; then
-    printf '%s\n' /opt/zeroed/stub/worker.mjs
+  # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+    printf '%s\n' "$STUB_ENTRY"
     return 0
   fi
   local w
@@ -1398,7 +1401,7 @@ worker_entry() {
         return 1
       fi
       ;;
-    stub) printf '%s\n' /opt/zeroed/stub/worker.mjs ;;
+    stub) printf '%s\n' "$STUB_ENTRY" ;;
     *)
       echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
       return 1
@@ -3423,7 +3426,7 @@ holds() {
 # rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
 # its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
 rollback() {
-  local why="$1"
+  local why="$1" note="${2:-}"
   # RC-R2-3: the release rolled back to is not on probation (the restarts were the failed release's).
   rm -f "$STATE_DIR/probation"
   if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
@@ -3438,42 +3441,62 @@ rollback() {
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
   systemctl restart zeroed-worker.service || true
   log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
-  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is."
+  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is.$note"
   exit 1
 }
 
 # RC-R2-3: probation. A release can pass the trial start and the switch hold, then crash at minute 10, and one restart
 # every 10 minutes never reaches the unit's start limit. For PROBATION_S after a switch, every run checks the unit's
-# automatic restarts (NRestarts) against the count right after the hold: any increase rolls back to the release that ran
-# before, with one alert, as a failed hold does. During a qualifying dry run (its drills restart the worker on purpose)
-# an increase is an alert, never a rollback. The probation ends with the window, or when another release is deployed.
+# automatic restarts (NRestarts, which a planned `systemctl restart` never raises) against the count right after the
+# hold. Any increase makes a rollback due, to the release that ran before, with one alert, as a failed hold does
+# (DECISIONS 2026-10-07, RC-R2-3):
+#   - during a qualifying dry run (its drills restart the worker on purpose) an increase is an alert, never a rollback;
+#   - a due rollback waits, like the forward switch, while the worker reports open intents (or the count cannot be
+#     read): one alert, checked again every run, also past the window, and done once the count reads 0;
+#   - when the release before runs the host's stand-in, the alert says the bot is now paused on it.
+# The probation ends with the window (unless a rollback is due), or when another release is deployed.
 probation_check() {
-  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase now n
+  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open why note=""
   [ -s "$f" ] || return 0
-  IFS='|' read -r pc pprev pcur pstart pbase < "$f" || true
+  IFS='|' read -r pc pprev pcur pstart pbase pdue < "$f" || true
   now="$(date +%s)"
   if [ "$pc" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ] || ! [[ "$pstart" =~ ^[0-9]+$ ]] || ! [[ "$pbase" =~ ^[0-9]+$ ]]; then
     rm -f "$f"
     return 0
   fi
-  if [ $((now - pstart)) -ge "$PROBATION_S" ]; then
-    rm -f "$f"
-    log "The worker of ${pc:0:12} stayed up through its probation."
+  if [ -z "$pdue" ]; then
+    if [ $((now - pstart)) -ge "$PROBATION_S" ]; then
+      rm -f "$f"
+      log "The worker of ${pc:0:12} stayed up through its probation."
+      return 0
+    fi
+    n="$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || true)"
+    if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+      alert worker-probation "ALERT Zeroed host: the worker's restart count cannot be read during the probation of ${pc:0:12}."
+      return 0
+    fi
+    [ "$n" -gt "$pbase" ] || return 0
+    if [ -n "$(active_run)" ]; then
+      alert worker-probation "ALERT Zeroed host: the worker of ${pc:0:12} restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of its switch, during a qualifying dry run, so it is not rolled back."
+      return 0
+    fi
+    pdue="it restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of the switch (probation $((PROBATION_S / 60)) min)"
+    printf '%s|%s|%s|%s|%s|%s\n' "$pc" "$pprev" "$pcur" "$pstart" "$pbase" "${pdue//|/ }" > "$f"
+  fi
+  open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
+  if [ "$open" != 0 ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once no intent is open."
     return 0
   fi
-  n="$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || true)"
-  if ! [[ "$n" =~ ^[0-9]+$ ]]; then
-    alert worker-probation "ALERT Zeroed host: the worker's restart count cannot be read during the probation of ${pc:0:12}."
-    return 0
-  fi
-  [ "$n" -gt "$pbase" ] || return 0
-  if [ -n "$(active_run)" ]; then
-    alert worker-probation "ALERT Zeroed host: the worker of ${pc:0:12} restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of its switch, during a qualifying dry run, so it is not rolled back."
-    return 0
-  fi
+  why="$pdue"
   rm -f "$f"
+  case "$(worker_entry "$pprev" 2>/dev/null || echo refused)" in
+    "$STUB_ENTRY") note=" The bot is now paused on the stand-in worker: $(basename "$pprev" | cut -c1-12) replaced ${pc:0:12}, and the next deploy needs a new commit." ;;
+    refused) note=" The release before, $(basename "$pprev" | cut -c1-12), names no worker the host can run, so the worker will not start: the bot is stopped." ;;
+  esac
+  alert_clear worker-probation-held "CLEARED Zeroed host: no intent is open; the rollback of ${pc:0:12} goes ahead."
   commit="$pc" prev="$pprev" current="$pcur" dest="/opt/zeroed/releases/$pc"
-  rollback "it restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of the switch (probation $((PROBATION_S / 60)) min)"
+  rollback "$why" "$note"
 }
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }

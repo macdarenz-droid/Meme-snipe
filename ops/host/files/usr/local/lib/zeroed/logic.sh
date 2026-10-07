@@ -104,16 +104,19 @@ unit_sandbox() {
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
 
-# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when
-# the release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the
-# host's stand-in when it says "worker": "stub", or when no release is deployed yet (RELEASE_DIR does not exist: a first
-# install). Switching the host to the real worker is a decision, not a side effect of a merge. RC-M4: anything else is
-# refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look healthy with
-# no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or "release" without
-# its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail, loudly.
+# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when the
+# release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the host's stand-in
+# when it says "worker": "stub", or when no release is deployed yet (RELEASE_DIR does not exist and is not a link: a
+# first install). Switching the host to the real worker is a decision, not a side effect of a merge. RC-M4: anything
+# else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
+# healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
+# "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
+# loudly.
+STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
 worker_entry() {
-  if [ ! -e "$1" ]; then
-    printf '%s\n' /opt/zeroed/stub/worker.mjs
+  # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+    printf '%s\n' "$STUB_ENTRY"
     return 0
   fi
   local w
@@ -130,7 +133,7 @@ worker_entry() {
         return 1
       fi
       ;;
-    stub) printf '%s\n' /opt/zeroed/stub/worker.mjs ;;
+    stub) printf '%s\n' "$STUB_ENTRY" ;;
     *)
       echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
       return 1

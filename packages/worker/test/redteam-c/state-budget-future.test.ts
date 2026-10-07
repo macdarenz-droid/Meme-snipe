@@ -64,7 +64,7 @@ describe('RC-M3: one rule for every daily budget dated in the future', () => {
     expect(DailyBudget.load(p, 5_000, NOW).remaining(NOW)).toBe(0);
   });
 
-  it('holder scans: a count file dated far ahead refuses today only; one dated tomorrow keeps refusing until that day has passed', async () => {
+  it('holder scans: a count file dated far ahead refuses today only; one dated tomorrow keeps its spend until that day has passed (never locked when unspent)', async () => {
     const today = Math.floor(NOW / DAY);
     const readers = (f: string, timers: ManualTimers) => new FactReaders({
       feed: { ingest: () => {} }, rpc: new FactRpc({ url: () => 'x', http: refuse, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 }),
@@ -82,9 +82,12 @@ describe('RC-M3: one rule for every daily budget dated in the future', () => {
     t.advance(DAY);
     expect(await scanned(readers(far, t))).toBe(true);
 
+    // Dated tomorrow and unspent: today's scan is granted and counts into tomorrow's record; then the cap (1) holds.
     const near = file();
     writeFileSync(near, JSON.stringify({ day: today + 1, scans: 0 }));
     const t2 = new ManualTimers(NOW);
+    expect(await scanned(readers(near, t2))).toBe(true);
+    expect(JSON.parse(readFileSync(near, 'utf8'))).toEqual({ day: today + 1, scans: 1 });
     expect(await scanned(readers(near, t2))).toBe(false);
     t2.advance(DAY);
     expect(await scanned(readers(near, t2))).toBe(false);

@@ -1,7 +1,7 @@
 // OPS-1e: the host's decision helpers (ops/host/files/usr/local/lib/zeroed/logic.sh) run in bash here, and
 // the scripts that use them are checked for the wiring the e2e (ops/test/e2e.sh) then drives on a real host.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -298,6 +298,10 @@ describe('worker start and API address', () => {
     refused(/cannot be read/);
     // worker-start and worker-smoke take it under `set -e`: a refusal stops them, never runs anything.
     expect(sh(`e="$(worker_entry "${rel}")"; echo "ran $e"`)).toMatchObject({ status: 1, out: '' });
+    // A dangling link (a current whose release folder went) is refused, never the stand-in.
+    const dangling = join(tmp, 'dangling-current');
+    symlinkSync(join(tmp, 'no-such-release'), dangling);
+    expect(sh(`worker_entry "${dangling}"`)).toMatchObject({ status: 1, out: '' });
     // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
     // PAUSE (owner, 2026-10-07): the host runs the stand-in until every blocker is fixed; back to 'release' then.
     expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');

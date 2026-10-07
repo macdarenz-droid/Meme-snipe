@@ -358,13 +358,9 @@ export class FactReaders {
         if (!Number.isSafeInteger(v['day']) || !Number.isSafeInteger(v['scans']) || (v['scans'] as number) < 0) throw new Error('bad scans file');
         this.#scanDay = v['day'] as number;
         this.#scans = v['scans'] as number;
-        // Dated after today (the clock stepped back since it was written): spent until that day has passed, never a
-        // fresh day's budget; written back so a later process reads the same. RC-M3: dated more than a day ahead (a
-        // wrong clock wrote it), #takeScan counts only today as spent, never every day until that date.
-        if ((v['day'] as number) > Math.floor(o.timers.now() / 86_400_000)) {
-          this.#scans = Number.MAX_SAFE_INTEGER;
-          this.#saveScans();
-        }
+        // Dated tomorrow (the clock stepped back since it was written): its spend counts, as the fill budget's and the
+        // deployer checks' do (S1 ruling on #271: never a fresh budget, never locked to the end of tomorrow). Dated
+        // further ahead (a wrong clock wrote it): #takeScan counts today as spent, never every day until that date.
       } catch {
         // Unreadable: today's cap counts as spent, written back so the next UTC day starts again.
         this.#scanDay = Math.floor(o.timers.now() / 86_400_000);

@@ -159,4 +159,39 @@ describe('RC-R2-3: probation after a switch', () => {
     expect(read('state/failed_release')).toBe('');
     expect(read('state/probation').trim()).toMatch(new RegExp(`^${B}\\|.*\\|${A}\\|1800000000\\|4$`));
   });
+
+  it('a due rollback waits while intents are open (one alert), also past the window, and goes ahead once they are 0', () => {
+    deploy();
+    set('var/lib/zeroed/open_intents', 1);
+    set('sd/now', 1_800_000_000 + 600);
+    set('sd/nrestarts', 1);
+    expect(run('zeroed-update').status).toBe(0);
+    expect(read('state/deployed').trim()).toBe(B);
+    expect(read('alerts')).toMatch(/^worker-probation-held\|ALERT Zeroed host: rollback held: 1 open intents\./);
+    // Still held next run; one alert per episode (the alert stand-in records each call, the real one dedupes by key).
+    set('sd/now', 1_800_000_000 + 8_000);
+    run('zeroed-update');
+    expect(read('state/deployed').trim()).toBe(B);
+    expect(read('state/probation')).toMatch(/\|it restarted 1 time\(s\) within 10 min/);
+    // Unreadable counts hold too.
+    rmSync(join(root, 'var/lib/zeroed/open_intents'));
+    run('zeroed-update');
+    expect(read('state/deployed').trim()).toBe(B);
+    expect(read('alerts')).toMatch(/rollback held: unknown open intents/);
+    // Past the window and with no intent open: the rollback goes ahead.
+    set('var/lib/zeroed/open_intents', 0);
+    expect(run('zeroed-update').status).toBe(1);
+    expect(read('state/deployed').trim()).toBe(A);
+    expect(read('state/failed_release').trim()).toBe(B);
+    expect(read('alerts')).toMatch(/worker-switch\|ALERT .*restarted 1 time\(s\) within 10 min/);
+  });
+
+  it('a rollback onto the stand-in says plainly that the bot is paused on it, with both commits', () => {
+    deploy();
+    writeFileSync(join(root, `opt/zeroed/releases/${A}/ops/host-config.json`), '{"worker":"stub"}');
+    set('sd/nrestarts', 1);
+    expect(run('zeroed-update').status).toBe(1);
+    expect(read('alerts')).toContain(`The bot is now paused on the stand-in worker: ${A.slice(0, 12)} replaced ${B.slice(0, 12)}, and the next deploy needs a new commit.`);
+  });
 });
+
