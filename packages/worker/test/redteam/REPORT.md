@@ -300,3 +300,153 @@ For each, how long the block lasts and whether it fails closed for a real reason
 ### Still runs in a loop
 
 - **RT-A1b on #272 (above):** per active coin, for its whole window. The worst of the "never trades" items once #272 merges.
+
+# Round 4: paralysis hunt (S1, 2026-10-07)
+
+**Scope.** Integration base cd4d7a6, plus these fix heads:
+
+| PR | Head |
+|---|---|
+| #197 | fcb6fc7a |
+| #272 | c752a6d5 |
+| #273 | b5875f91 |
+| #275 | 2720ee8b |
+| #276 | 58eb1422 |
+| #277 | 2f7409b1 |
+| #280 | 5bfc993d |
+
+**Probes.** This branch now merges cd4d7a6, so the round 4 probes run here directly:
+- `packages/worker/test/round4-latches/`
+- `packages/worker/test/round4-coverage/`
+- `packages/core/test/round4-coverage/`
+- `packages/worker/test/round4-restart/`
+
+Each asserts the non-paralysed behaviour and fails on cd4d7a6: 17 failing tests, plus `sweep.test.ts`, a measurement that prints `SWEEP` lines and always passes. The same 17 were run on every fix head. Only #197 closes one (`sol-price-kill`).
+
+**Scale.** TRIAL_POLICY allows at most 3 entries a day, so a global block that never clears costs all 3 trades every day.
+
+## Ranked by trades lost per day
+
+### 1. Third-party latency over about 0.4 s means no batch ever lands fresh: no entry, ever (all modes, the S0 run included)
+
+- **Where:** `packages/worker/src/facts/readers.ts`, `readBatch`.
+  - The bank (mint, pool, LP; judged by slot lag ≤ 2) starts in the same round as the cross-checks and the sim (judged by age ≤ 2 s).
+  - Frames reach the feed only after `await Promise.all(parts)`. The bank therefore ages by the slowest part's latency before the gates see it.
+- **Trigger:** RugCheck, GoPlus or the sim answering more than about one slot after the bank.
+  - Measured from this sandbox, through a proxy: RugCheck `/report` took 1.00–1.04 s and GoPlus 0.57–0.98 s.
+  - The free tiers allow 1 call per 4.5–5 s (`scheduler/limits.ts`), so a second candidate in the same window waits up to 15 s (P-2).
+- **Harness sweep** (`round4-restart/sweep.test.ts`, real LiveFacts, FactReaders and LiveStrategy):
+
+| Helius | Cross-checks | Sim | Entered |
+|---|---|---|---|
+| 400 ms | 400 ms | 400 ms | yes |
+| 400 ms | 500 ms | 400 ms | no |
+| 400 ms | 600 ms | 400 ms | no |
+| 400 ms | 1,200 ms | 400 ms | no |
+| 400 ms | 400 ms | 600 ms | no |
+
+- **Duration:** every coin, every window. **Clears:** nothing.
+- **Proven:** the ordering is in the code; the outcome is from the harness. The latency model is synthetic, so confirm on a live recording: compare the bank slot with the close moment.
+- **Probes:** `batch-coherence.test.ts` P-1a, P-1b and P-2.
+  - Their failure message shows the last journaled reject, which the strategy de-duplicates. It is not the close's own reason.
+- **Fix:** read the bank last, one round after the cross-checks and the sim have answered (both have a 2 s budget). Also do not hold the close for all three cross-check providers when H16 needs one.
+
+### 2. Exec-health keeps the regime off forever in any judged live run (qualifying run, or S0 without the diagnostic)
+
+Four separate gaps, any one of which is enough:
+
+- **(a) Not wired.** `main.ts:113` wires `execStats` only under `s0Diagnostic`. Without it there is no fact, so the regime reads exec-health as unknown.
+- **(b) No owner limits path.** No config path exists for the limits, so the fact always reads "no execution-health limits set by the owner", which is not green. This part is the known owner item.
+- **(c) Deadlock (new).** Zero attempts reads as red (`producer.ts` `#health`). Attempts need entries, and entries need the regime on.
+  - Probe: `regime-paralysis.test.ts` P-EXEC-ZERO.
+- **(d) Stale 80% of the time (new).** The fact is published every 10 s but judged against `maxQuoteAgeMs` = 2 s.
+  - Probe: P-EXEC-STALE.
+
+**Fix:**
+- always wire `execStats`;
+- read zero attempts as "no evidence" during a warm-up;
+- judge the fact by its own publish period.
+
+### 3. A slow complete holder scan burns the shared daily scan cap; then H12/H13 refuse every coin until 00:00 UTC
+
+- **Where:** `source.ts` `#batchFor`, with `#scanTurn`.
+  - `#scanTurn` is sticky: once a coin is in it, every batch whose only reasons are fact age scans again.
+  - Each such batch closes stale (item 1).
+- **Measured:** a 1.2 s scan gives 18 scans in 20 minutes with no entry. That is about 178 per window, against `HOLDER_SCANS_PER_DAY` = 100.
+- **Probes:** `scan-burn.test.ts` P-3a and P-3b.
+- **Fix:** item 1's ordering, plus do not rescan after a stale close (or cap scans per coin).
+
+### 4. A SOL/USD fall alone trips and latches the R10 kill switch
+
+- **Status:** known (DECISIONS:861, SOL-BOOKS #197). Still open on cd4d7a6 and every head except **#197, which closes it** (`round4-latches/sol-price-kill.test.ts` passes there).
+- **Clears:** only an owner re-arm with a restart.
+
+### 5. One late-landing buy halts entries for good
+
+- **Where:** `worker.ts:2306` checks `lateFillOf` over every position, closed ones included.
+- **Clears:** nothing, not even a restart.
+- **Probe:** `late-buy-forever.test.ts`.
+- **Fix:** look only at positions that are not closed.
+
+### 6. Sell-only halt outlives its position
+
+- **Where:** `worker.ts:818-823` fills `#sellOnly` once; `:2307` adds it to every halt.
+- **Clears:** only a restart.
+- **Probe:** `sell-only-sticky.test.ts`. The conflicting test `run1d.test.ts:147` currently asserts the halt stays.
+- **Fix:** keep each reason with its position id, and push it only while that position is open.
+
+### 7. One failed `fetch-caps.json` save spends that day's whole cap
+
+- **Where:** `worker.ts:1636` sets the count to the cap when the save throws.
+- **Effect:** for cut-create, every later hole that day stays, and each hole blocks H14 for every coin for 14 days. A file that cannot be read at boot does the same.
+- **Probe:** `fetch-caps-write.test.ts`.
+- **Fix:** refuse only that one fetch (roll its count back).
+
+### 8. SOL/USD hourly edge
+
+- **Where:** a bar is accepted only 2 h after its start (`readers.ts:986`), and the regime allows a newest point at most 2 h old.
+- **Effect:**
+  - Every hour, the regime is off for all coins until that hour's read lands.
+  - A failed read is not retried within the hour (`source.ts:205`), so one failure blocks for up to 1 h.
+- **Probes:** P-SOL-EDGE and P-SOL-HOUR.
+- **Fix:** accept a bar once it has closed, and retry within the hour.
+
+### 9. Unreadable `credits.json` halts entries for the rest of the UTC month
+
+- **Where:** `sources.ts:124` treats every provider as spent and saves that.
+- **Probe:** `credits-unreadable.test.ts`.
+  - On the base and on #275, #276 and #280 it fails with `halted: true`.
+  - On #197, #272, #273 and #277 it throws `SyntaxError` instead. The load path differs there; verify whether boot crashes.
+
+### 10. BEHIND trips on one 10 s stall but clears only after 30 s with every cycle under 2 s late
+
+- **Probe:** `behind-hysteresis.test.ts`. A 3 s hiccup every 20 s keeps entries off.
+- **Rate:** unknown; it depends on production step times.
+
+### 11. Survival needs a graduate in every one of the 14 median days
+
+- **Effect:** after an outage of 24 h or more, survival is unknown for about 14 days in judged runs. The median of the other 13 days would still be computable.
+- **Probe:** P-SURV-DAY.
+
+### 12. Under the S0 diagnostic, an old graduates fact still turns the regime off
+
+- **Where:** `regime.ts:187`, where `reached` takes the graduates fact's age into account even when survival is waived.
+- **Probe:** P-DIAG-GRAD.
+
+## Known items: status on the heads
+
+| Item | Status |
+|---|---|
+| NT-1 (`volume-one-missing-day`) | Closed only on #276 (58eb1422). Fails on the base and every other head. |
+| NT-2 (`creates-reconnect-14-days`) | Fails on the base and every head. H14-HOLES is pending. |
+| RT-A6 (`unstamped-swap-skipped`) | Fails everywhere (LOW, known). |
+| `curve-tail-parity` | My store-level probe fails everywhere, but #273 moved the fix into the backtest feed. Its own `backtest/test/curve-tail-parity.test.ts` is the valid check there, and RT-A2b (round 3) is still open on b5875f91. |
+| RT-A1b | Open (#272 unchanged at c752a6d5). |
+| Cut-create cap, deployer-check staleness, rugs downtime gap, H9, H5 curve tails | Not re-run (known). |
+
+## Notes
+
+- **Owner-review latches (R8, R9, R10) and `control.json`:** they re-arm only through `control.json`, which is read at boot. That is owner policy, not counted as a defect.
+- **Halts that last until a restart, with nothing that restarts the worker:** a recorder fault, a full journal disk, and a ledger divergence. The reasons are proven, but nothing triggers the restart that clears them.
+- **The batch close stamps every member with the close time:** a cross-check or sim answer up to about 25 s old is judged 0 ms old. This is a possible fail-open for the H15/H16 freshness rules; review it with item 1.
+- **No paralysis found in:** restart restore of LiveFacts state, `#historyDone`, `#inFlight`, deployer index `#first`, `REREAD_CREDITS_PER_DAY` and `CUT_TRADE_FETCHES_PER_DAY` (per coin).
