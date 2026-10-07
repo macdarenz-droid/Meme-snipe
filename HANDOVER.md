@@ -48,6 +48,15 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 5:38 PM **#271 RC-FIXES-2 merged** as e4a8c056 (head 5d5aefa2; ops review PASS on that head; check, historical-data and e2e green; merge tree = tested head tree; only #271 closed). Not deployed. #152 updated again onto e4a8c056 (CI re-runs). DEPLOY 1 must include #271 BEFORE #268 (see the 5:01 PM note).
+- 5:38 PM **OWNER: 'Continue atleast 3 workers, 2 researcher, 1 red team. Then do that in a loop every task. When all done start the paused task. prioritise work that u think highly important'.** Recorded in CLAUDE.md (Worker loop).
+  - **Running now:**
+    - builders: RC-FIXES 01WA1qeG (PR B CRITICAL first, then PR A review fixes), MEM-FIXES 01EtGSEd (create-window bound; the OOM path), SOL-BOOKS 016adoqh (F1/B1–B3/API);
+    - their reviewer 01NykdK5 (#277);
+    - researchers: REPLAY-1000 013usK4A (full day: cap, deployer lag, hole classes, H5) and U1-B 017PmchcqW;
+    - red team C 01MtW136, round 3 (re-verify its findings on the fix heads + attack the two-step resume deploy).
+  - **Priority = stays up first (the resume runs no entries), then money, then fail-open entry gates.**
+  - **Next builders in order, as slots free:** LATE-LOG 01Gv9TEz (#272), A2-GATE 01PSe97Q (#276 F1), A-FACTS 011dr7vM (#273, then H14-HOLES), EXIT-FILL 01NQr4cD (#275 haircut; resume its reviewers 01192sk8/01PmJncT), POOL-FIRST-READ-2 01JdQvXH (#269 report), RC-FIXES-2b 015cNHfA, CURVE-TAIL-PROOF 016uuBF8.
 - 5:36 PM **OWNER: 'Pause all bots u spawned for now. Im doing a research where we can come up with a strstegy.'** Done:
   - **Interrupted** (were running): U1-B 017PmchcqW, CURVE-TAIL-PROOF 016uuBF8, reviewers 01PmJncT, 01192sk8, 012MXi9d, and builders MEM-FIXES 01EtGSEd, A-FACTS 011dr7vM, LATE-LOG 01Gv9TEz, EXIT-FILL 01NQr4cD, SOL-BOOKS 016adoqh.
   - **PAUSE message** (stop background jobs, no pushes or messages, wait for RESUME; each ends its turn with 'Paused at <sha>'): those 10 plus A2-GATE 01PSe97Q, RC-FIXES 01WA1qeG (PR A fixes + PR B), RC-FIXES-2 015cNHfA (2b not started), POOL-FIRST-READ-2 01JdQvXH, REPLAY-1000 013usK4A (collector checkpointed), reviewers 01NykdK5, 019e71fz and 01Gb2gBU (background full tests).
