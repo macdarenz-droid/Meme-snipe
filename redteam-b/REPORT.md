@@ -175,3 +175,110 @@ The probes are in `redteam-b/round3/` because they compile only against the fix 
   With an 8% landing rate the entry never fills, which exercises the failed-entry fee path. Its stray fee is booked once, and the wallet equals the chain at ×1 and ×500.
   - The ×5 and ×500 policies are built in the test only. Their depth limits are opened so the harness's single 245-SOL pool can take the size: this probes the money path, not the gates.
   - A late fee (an attempt landing after its trade closed) did not occur in these draws and was not forced. PAPER-2's own tests cover it.
+
+# Round 4: integration attack (local merge, not pushed)
+
+**Verdict: 1 new CRITICAL (RB-17, RC-STATE × SOL-BOOKS: the worker can't start while account.json holds an unpriced stray fee). 2 new HIGH: RB-15 (the first start after #268 comes up with the kill switch latched and entries paused, which confirms red team C's r4-upgrade-latch) and RB-10 (still open on the merge). 2 new MEDIUM: RB-14 (the backup leaves out the regime series and its holes) and RB-16 (RB-5's slow-retry fees are outside R6's reservation). Typecheck passes; 47 of 7,146 tests fail, all attributed below. On the merge, the ledger is exact to the lamport and edge 0 is refused by risk.**
+
+## Merge
+Base `ccr-14987baf-i6lrsl` 9f7cf812, then in order:
+- rc-state 10347648
+- rc-fixes 99309169
+- mem-fixes 2f7409b1
+- exit-fill-fixes 1de9be63 (with fills-4, the haircut window)
+- sol-books fcb6fc7a
+- late-log c752a6d5
+- a-facts-fixes b5875f91
+- a2-gate-fixes 5540c2c3
+- pool-first-read-2 e225f112
+- resume-worker 25c4d9bf
+
+Result: local commit 4fe63e9e, never pushed.
+
+Heads that moved after the merge was built, and so are not tested here: base cd4d7a64, rc-state 5bfc993d, rc-fixes 3810ca3f, exit-fill 2720ee8b, a2-gate 58eb1422. RB-17's `isFee` is unchanged on rc-state 5bfc993d. Scripts: `round4/mergeloop2.sh` and `round4/keepboth.py`.
+
+### Conflicts
+| Step | File | Kind | Resolution |
+|---|---|---|---|
+| rc-state onto base | `ops/README.md` (install.sh commit and SHA-256 pin) | obvious, but must be regenerated | rc-state's pin taken. No pin can be right on an unpushed merge: `ops-files.test.ts` "SHA-256 in the README is current" fails on the merge for this reason only. The real merge must re-pin. |
+| rc-state onto base | `worker/src/run/recorder.ts` (fs imports) | obvious | union |
+| rc-fixes, mem-fixes, exit-fill, late-log, a-facts, a2-gate, resume-worker | `docs/DECISIONS.md` | obvious (both appended) | kept both |
+| sol-books | `worker/src/run/account.ts` (`#save()` vs `this.#file.write` and `seen`) | obvious textually, **semantic** next to it | `if (moved || folded || seen) this.#save()`. Also, by hand: SOL-BOOKS' `priceLate` writes with `this.#file.write` (line 494), which bypasses RC-FIXES' counts and `present`; changed to `#save()`. |
+| sol-books | `worker/test/worker-contract.test.ts` (imports) | obvious | union |
+| pool-first-read-2 | `core/src/facts/producer.ts` | **semantic** | Two hunks. The book shape takes both `dropped: false` (pfr-2) and `newestSlot: null` (late-log or mem). The hole fetch keeps `#capHeals` (HEAD) plus pfr-2's RT-A5 pre-read of a hole transaction for a pool with no book yet. The pre-read buffer is bounded (`PRE_READ_POOLS` 64 × `PRE_READ_KEEP` 64). |
+| pool-first-read-2 | `core/test/facts/trade-heal.test.ts` (imports) | obvious | union |
+| resume-worker | `ops/test/host-logic.test.ts` | **semantic** | #268's test expects an unreadable host-config to fall back to the stand-in. The base's RC-M4 refuses it (and a dangling link) instead. Kept the refusal checks plus #268's `"worker": "release"`. The merged `logic.sh` refuses. |
+
+## Full test run on the merge
+`pnpm typecheck` passes. `vitest run`: 47 failed, 7,097 passed, 2 skipped (7,146 tests, 318 files, 46 min).
+
+Each failure was attributed by running the 20 failing files after each merge step, then on single heads and on pairs:
+
+| Failing tests | Cause |
+|---|---|
+| `ops-files` README SHA (1) | merge artefact: the pin |
+| backtest `run.test.ts` "exit failure responds to congestion" (1) | **#275 by itself** (fails on 1de9be63 alone). Re-check on 2720ee8b. |
+| about 26 tests: facts-landing, facts-source, funnel-truth (14 reject sites against 13 classified), paper-settlement M4, position-market, read-coherent ×3, rec-same-event, retire ×2, worker-1e, worker-api, worker-flow ×5, core producer candles and graduate survival ×7, LATE-LOG survival | **#272 late-log by itself**: its head c752a6d fails the same tests alone |
+| redteam-b-sol RB-1b and RB-2a/b, RB-2c, size-step-up ×5, write-order ACCOUNT-RATE ×2, paper-settlement F2 | **RC-STATE × SOL-BOOKS**: they pass on sol-books alone and with rc-fixes, mem-fixes or exit-fill; they fail with rc-state. Two causes: (a) SOL-BOOKS' fixtures seed account.json with trades and no ledger, which RC-STATE refuses as a lost ledger (test-only, fixtures need a ledger); (b) **RB-17**, below (product). |
+| red team C entry-evidence | starts failing at the late-log step (late-log is red by itself) |
+| red team C state-backup-restore | starts failing at the exit-fill step on the merge; passes on rc-state 5bfc993 + exit-fill. Not pinned to a pair. |
+
+## Red team probes on the merge (70 tests, 27 fail)
+- **B pass:**
+  - the crash-anywhere fuzz (all 4 variants, including 30% landing): RB-8 and RB-11 closed, wallet = chain on every image;
+  - RB-12a: no-trade money path, with edge 0 refused as `expected_net_not_positive`;
+  - RB-13: one trade, exact to the lamport;
+  - RB-5 (original), RB-9, RB-11b (haircut window).
+- **B fail, real:** RB-14, RB-15a/b, RB-16, RB-10b/c (with a ledger added to the fixture), RB-17.
+- **B fail, stale probe, not a finding:** these use risk inputs from before SOL-BOOKS (`market.solPrice`, dollar helpers), or the 959d801 boot fixture that no longer reaches risk on the merge:
+  - RB-3w edge0 (its own control at 400k doesn't enter either);
+  - RB-4a (no entries allowed in the old helpers);
+  - RB-6c.
+  The edge-0 guarantee is covered on the merge by RB-12a instead.
+- **A fail:** unstamped-swap-skipped, volume-one-missing-day, curve-tail-parity, creates-reconnect-14-days. These are red team A's; not re-attributed here.
+- **C fail:**
+  - r3-resume-sequence R3-1 to R3-4: a probation rollback or failed switch hold lands on the stand-in while the release holds an open paper position. This is the RC-STATE/#271 probation × #268 switch interaction, still open on the merge.
+  - r4-cut-at-kill ×2, r4-refusal-visible, r4-upgrade-latch (= RB-15), state-navpeak (a BigInt TypeError in the probe against SOL-BOOKS).
+
+## Findings
+### CRITICAL: RB-17 (RC-STATE × SOL-BOOKS), the worker can't start while account.json holds an unpriced stray fee
+- **Where:**
+  - SOL-BOOKS `account.ts` `settle` books a stray entry fee by its lamports with `cost: null` when no SOL price is known (line 554 on the merge: a restart reconcile, or a stale price). `priceLate` values it later.
+  - RC-STATE's `checkAccount` `isFee` requires `cost` to be a non-negative bigint, for `strayFees` and `strayFolded` alike. So the whole file is refused.
+  - `new PaperAccount` throws on the next start, and the unit restarts into the same refusal, with any open position unmanaged.
+- **Evidence:**
+  - Probe `round4/account-check-stray.test.ts` RB-17a/b.
+  - write-order "a restart whose first price is stale charges the fee no second time" fails on the merge ("account.json is not a valid state file") and passes on each head alone.
+- **Fix:** `isFee` accepts `cost: null` (SOL-BOOKS' `StrayFee.cost: MicroUsd | null`). Keep every account write going through `#save()`.
+
+### HIGH: RB-15 (RC-STATE × #268 switch), the resume's first start comes up latched and paused
+- Confirms red team C's r4-upgrade-latch, and adds the stand-in's ledger.
+- **Why:** RC-STATE treats "ledger there, control.json missing" as lost controls: it latches the kill switch, pauses, and raises a critical alert. Workers before RC-STATE wrote control.json only on a latch or a pause, and the host stand-in never writes it. Both leave a `ledger.sqlite`; the stand-in creates its own with a `host_events` table.
+- **Effect:** the first start of the merged worker on the live host comes up latched and paused, with nothing lost. Entries stay blocked until the owner re-arms and resumes.
+- **Probes:** `round4/control-first-start.test.ts` RB-15a (an older worker's ledger) and RB-15b (the stand-in's ledger).
+- **Fix:** treat a missing control.json as lost only when the ledger records an earlier start of a release that writes it (for example, a start marker that RC-STATE writes into the ledger or account.json), not whenever a ledger exists. Otherwise, write control.json once in the deploy.
+
+### HIGH: RB-10 (#197), still open on the merge
+The migration's dollar day/week marks give a phantom loss: a false `daily_loss`, and R9 latched. Retested on the merge with a ledger and control.json in the fixture (`round4/redteam-b-migrate-merge.test.ts`). RB-10a and RB-10d pass; RB-10b and RB-10c fail.
+
+### MEDIUM: RB-14 (A2-GATE × RC-STATE backup), a restore loses the regime series and its holes
+- **Where:** RC-STATE's `zeroed-backup` leaves out `deployer-state.json` (with the deployer index). That file also holds the regime's graduates series and A2-GATE's saved restart holes (`unobserved`, PERSIST-2).
+- **Effect:** after a host-loss restore the regime has no survival history and must rebuild it before any entry is judged. This fails closed: the bot can't trade until then, and the rebuild time was not measured.
+- **Probe:** `round4/backup-graduates.test.ts`.
+- **Fix:** back up the graduates series, which is small, separately from the deployer index. Or include `deployer-state.json` and leave out only `deployers.jsonl`.
+
+### MEDIUM: RB-16 (SOL-BOOKS × EXIT-FILL), slow retries spend outside R6's reservation
+- **Where:** R6 reserves q + C, where C's exit part is (`ladder.maxAttempts` + `blockedRetryAttempts`) attempts. RB-5's slow retries are unbounded in count (log2 of the blocked time, then one per 1,024 × `blockedRetryMs`).
+- **Size:** a week blocked is about 12 slow retries, 6,120,000 lamports, about 4.6% of the trial bankroll, none of it reserved. The fees are booked in lamports when paid, so the limits see them afterwards, but not in advance.
+- **Probe:** `round4/slow-retry-cost.test.ts`.
+- **Fix:** cap slow retries per position (for example, as many as the fee room C holds), or reserve a bounded number of them in C.
+
+## Interactions asked for
+1. **SOL-BOOKS lamport books × EXIT-FILL slow retries and haircut:** the books stay exact. The crash fuzz on the merge (including 30% landing, slow retries and the haircut window) gives wallet = chain on every image. Finding: RB-16.
+2. **MEM-FIXES store collapse × LATE-LOG late frames and A-FACTS re-reads:**
+   - No new defect found. The store refuses any record older than its newest (`asof.ts` record: "must be recorded in time order"), so a late frame can never slip under the collapsed newest entry.
+   - The pfr-2 × mem pre-read buffer is bounded (64 pools × 64 events).
+   - Red team A's late-frame and re-read probes that fail on the merge (curve-tail-parity, creates-reconnect-14-days) are A's to attribute.
+   - Late-log's own head is red by itself, with about 26 tests.
+3. **RC-STATE refusal × #271 probation × #268 switch:** RB-15 (above). Red team C's R3-1 to R3-4 also fail on the merge: a probation rollback or failed switch hold lands on the stand-in while the release holds an open paper position.
+4. **A2-GATE saved holes × RC-STATE backup and restore:** RB-14.
