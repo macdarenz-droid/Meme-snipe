@@ -39,3 +39,11 @@ The review showed, on synthetic data, two ways the rules above could pass by cha
 4. **Real bars.** "At least 8 daily bars" counts bars with volume; closes are carried across no-trade days (an AMM price does not move without trades).
 
 Known limits, reported with the result: 2026-06-01 is data-limited (most histories start 2026-05-25); discovery trades entered 08-10 to 08-15 share price paths with early validation trades at H = 3 and 7; the A + B lines use ranks computed across A + B + C.
+
+## Survivorship-free re-test (registered 2026-10-07, before any new coin's prices were downloaded)
+
+The first run (RESULTS.md) used a survivor-only list. This re-test runs the same five rules, code, costs and amended verdict on a universe that includes dead coins:
+- Universe = the 481-coin list, plus every pump.fun coin created 2026-03-01 to the wall that graduated to a canonical PumpSwap SOL pool and whose all-time-high market cap, as reported by pump.fun's `coins/search-unrestricted` (USD), is at least US$589,809: 9,820 SOL (the group C floor) at the lowest SOL price from 2026-06-01 to the wall (US$60.06, Hyperliquid daily low). Any coin that ever reached group C before the wall passes this filter whatever SOL's price was then; coins that only grew after the wall pass it too and simply have no eligible days.
+- Daily prices fetched exactly as before (GeckoTerminal daily OHLCV in SOL, bars ending by the wall). Coins with no data are counted and reported.
+- Known remaining gap: coins created before 2026-03-01 that were large in June to September and are now below about $81k are still missing.
+- Both runs are reported side by side; the survivorship-free run is the one that counts.
