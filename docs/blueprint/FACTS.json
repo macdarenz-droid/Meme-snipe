@@ -1,6 +1,6 @@
 {
  "retrieved": "2026-10-06",
- "note": "Edited in Meme-snipe from 2026-10-07 (card Z0D); source commit 74e7258 of macdarenz-droid/Snipe-solana main. Verified fact register. Cite facts by ID. verification is confirmed, corrected or added_by_verifier; excluded claims must not be relied on. RS-* facts (added 2026-10-07) are this repo's own research results, cited as path:line @ sha on branch ccr-7fae2302-drz4co; they can stop work or set priors, never pass a gate.",
+ "note": "Edited in Meme-snipe from 2026-10-07 (card Z0D); source commit 74e7258 of macdarenz-droid/Snipe-solana main. Verified fact register. Cite facts by ID. verification is confirmed, corrected or added_by_verifier; excluded claims must not be relied on. RS-* facts (added 2026-10-07) are this repo's own research results, cited as path:line @ sha on branch ccr-7fae2302-drz4co; they can stop work or set priors, never pass a gate. VF-* facts (added 2026-10-07) come from the M0/M1 verification in research/verify-m0-m1/RESULTS.md @ 01438a5e. RS-* facts carry verification 'pending_review' until a fresh reviewer re-checks them.",
  "facts": [
   {
    "id": "EX-01",
@@ -1447,38 +1447,42 @@
   {
    "id": "LD-32",
    "topic": "Chainstack pricing",
-   "claim": "Developer: free, 3M requests/month, 25 req/s, WebSockets included. Growth: $49/month ($40 annually), 20M requests, 250 req/s. The Yellowstone gRPC Geyser add-on needs Growth or higher: $49/month for 2 concurrent streams, $149 for 7, $449 for 25, with unlimited events. Filter limits: up to 200 keys per filter, 5 account filters, 20 transaction filters per subscribe request.",
+   "claim": "Developer (free): Solana mainnet 5 RPS (25 RPS is the global plan limit and Solana devnet), 3M request units a month (a Solana call is 1 RU, archive-scope calls 2 RU); getProgramAccounts, getSupply and getTokenAccountsByOwner on paid plans only; getTokenLargestAccounts on dedicated nodes only; WebSockets included. Growth: $49/month ($40 annually), 20M requests, 250 req/s. The Yellowstone gRPC Geyser add-on needs Growth or higher: $49/month for 2 concurrent streams, $149 for 7, $449 for 25, with unlimited events. Filter limits: up to 200 keys per filter, 5 account filters, 20 transaction filters per subscribe request.",
    "sources": [
     "https://chainstack.com/pricing/",
     "https://docs.chainstack.com/docs/yellowstone-grpc-geyser-plugin"
    ],
    "source_type": "vendor_marketing",
-   "as_of": "2026-10-06",
+   "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "The cheapest flat-rate mainnet gRPC found is about $98/month (Growth $49 + gRPC $49). The free Developer tier is another failover RPC.",
-   "verification": "confirmed",
-   "note": "Developer: free, 3M requests, 25 rps, WebSockets. Growth: $49 ($40 annually), 20M, 250 rps. The Geyser add-on starts from Growth at $49 for 2 streams, $149 for 7 and $449 for 25, all with unlimited events. Filters allow 200 keys and 5 accounts / 20 transactions filters per request.",
+   "verification": "corrected",
+   "note": "Developer: free, 3M requests, 25 rps, WebSockets. Growth: $49 ($40 annually), 20M, 250 rps. The Geyser add-on starts from Growth at $49 for 2 streams, $149 for 7 and $449 for 25, all with unlimited events. Filters allow 200 keys and 5 accounts / 20 transactions filters per request. Corrected 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1) (VF-10).",
    "verifier_evidence": [
     "https://chainstack.com/pricing/",
-    "https://docs.chainstack.com/docs/yellowstone-grpc-geyser-plugin.md"
-   ]
+    "https://docs.chainstack.com/docs/yellowstone-grpc-geyser-plugin.md",
+    "research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1)"
+   ],
+   "original_claim": "Developer: free, 3M requests/month, 25 req/s, WebSockets included. Growth: $49/month ($40 annually), 20M requests, 250 req/s. The Yellowstone gRPC Geyser add-on needs Growth or higher: $49/month for 2 concurrent streams, $149 for 7, $449 for 25, with unlimited events. Filter limits: up to 200 keys per filter, 5 account filters, 20 transaction filters per subscribe request."
   },
   {
    "id": "LD-33",
    "topic": "Shyft pricing",
-   "claim": "Free: $0, unlimited credits, 10 RPC req/s, no gRPC, 1 API req/s. Build: $199/month, unlimited credits, 100 RPC req/s, Yellowstone gRPC with 10 connections (+$100 per 10 more), staked connections. Grow: $349/month. Accelerate: $649/month. A legacy 'Hack' plan costs $49/month for 10M credits and 50 req/s, with no gRPC.",
+   "claim": "Free: $0, unlimited credits, 10 RPC req/s, 0 index req/s (getProgramAccounts, getTokenAccountsByOwner, getTokenLargestAccounts, getTokenAccountsByDelegate), 1 sendTransaction/s, 1 API req/s, no gRPC, no staked connections; Accelerated getProgramAccounts is not on the free plan. Build: $199/month, unlimited credits, 100 RPC req/s, 10 index req/s, 20 sendTransaction/s, Yellowstone gRPC with 10 connections (+$100 per 10 more), staked connections. Grow: $349/month (150/20/40). Accelerate: $649/month (400/40/80). A legacy 'Hack' plan costs $49/month for 10M credits and 50 req/s, with no gRPC.",
    "sources": [
     "https://shyft.to/solana-rpc-grpc-pricing"
    ],
    "source_type": "vendor_marketing",
-   "as_of": "2026-10-06",
+   "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "Shyft's Free tier, with unlimited credits at 10 req/s, is a candidate for a no-cost polling or failover reader.",
-   "verification": "confirmed",
-   "note": "Free: $0, unlimited credits, 10 RPC rps, no gRPC, 1 API rps. Build: $199, 100 rps, gRPC with 10 connections and $100 per 10 more. Grow is $349 and Accelerate $649. Legacy Hack: $49, 10M credits, 50 rps, no gRPC. The comparison table appears to show sendTransaction/sec of 1 (Free), 20 (Build), 40 (Grow) and 80 (Accelerate), but column alignment is ambiguous.",
+   "verification": "corrected",
+   "note": "Free: $0, unlimited credits, 10 RPC rps, no gRPC, 1 API rps. Build: $199, 100 rps, gRPC with 10 connections and $100 per 10 more. Grow is $349 and Accelerate $649. Legacy Hack: $49, 10M credits, 50 rps, no gRPC. The comparison table appears to show sendTransaction/sec of 1 (Free), 20 (Build), 40 (Grow) and 80 (Accelerate), but column alignment is ambiguous. Corrected 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1) (VF-09).",
    "verifier_evidence": [
-    "https://shyft.to/solana-rpc-grpc-pricing"
-   ]
+    "https://shyft.to/solana-rpc-grpc-pricing",
+    "research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1)"
+   ],
+   "original_claim": "Free: $0, unlimited credits, 10 RPC req/s, no gRPC, 1 API req/s. Build: $199/month, unlimited credits, 100 RPC req/s, Yellowstone gRPC with 10 connections (+$100 per 10 more), staked connections. Grow: $349/month. Accelerate: $649/month. A legacy 'Hack' plan costs $49/month for 10M credits and 50 req/s, with no gRPC."
   },
   {
    "id": "LD-34",
@@ -1877,7 +1881,7 @@
   {
    "id": "DA-11",
    "topic": "pump.fun program interface (official IDL)",
-   "claim": "The official pump-public-docs IDL lists pump at 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P and PumpSwap (pump_amm) at pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA. pump instructions include create, create_v2, buy, sell, buy_exact_sol_in, buy_v2, sell_v2, buy_exact_quote_in_v2, migrate and migrate_v2. Events include CreateEvent, TradeEvent, CompleteEvent and CompletePumpAmmMigrationEvent. PumpSwap events include CreatePoolEvent, BuyEvent and SellEvent.",
+   "claim": "The official pump-public-docs IDL lists pump at 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P and PumpSwap (pump_amm) at pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA. pump instructions include create, create_v2, buy, sell, buy_exact_sol_in, buy_v2, sell_v2, buy_exact_quote_in_v2, migrate and migrate_v2. Events include CreateEvent, TradeEvent, CompleteEvent and CompletePumpAmmMigrationEvent. PumpSwap events include CreatePoolEvent, BuyEvent and SellEvent. The pinned commit is cb188ce08b5069196eef1f3e4a0c43b70099793b (2026-09-29T15:50:38+04:00); the pump_amm IDL there is newer than the copy in @pump-fun/pump-swap-sdk 1.20.0 (VF-02).",
    "sources": [
     "https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json",
     "https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump_amm.json"
@@ -1886,12 +1890,14 @@
    "as_of": "commit cb188ce08b5069196eef1f3e4a0c43b70099793b (2026-09-29)",
    "confidence": "high",
    "design_relevance": "The decoder must cover both v1 and v2 create and trade instructions. Pin the IDL version and alert on unknown discriminators.",
-   "verification": "confirmed",
-   "note": "The IDL addresses match. All the listed instructions and events exist (pump: create, create_v2, buy, sell, buy_exact_sol_in, buy_v2, sell_v2, buy_exact_quote_in_v2, migrate, migrate_v2; events CreateEvent, TradeEvent, CompleteEvent, CompletePumpAmmMigrationEvent; pump_amm events CreatePoolEvent, BuyEvent, SellEvent). The exact commit SHA and date could not be checked because the GitHub API was blocked in this session; the content was read from current main.",
+   "verification": "corrected",
+   "note": "The IDL addresses match. All the listed instructions and events exist (pump: create, create_v2, buy, sell, buy_exact_sol_in, buy_v2, sell_v2, buy_exact_quote_in_v2, migrate, migrate_v2; events CreateEvent, TradeEvent, CompleteEvent, CompletePumpAmmMigrationEvent; pump_amm events CreatePoolEvent, BuyEvent, SellEvent). The exact commit SHA and date could not be checked because the GitHub API was blocked in this session; the content was read from current main. Corrected 2026-10-07: the commit was checked on a fresh clone (research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1), VF-02).",
    "verifier_evidence": [
     "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump.json",
-    "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump_amm.json"
-   ]
+    "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump_amm.json",
+    "research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1)"
+   ],
+   "original_claim": "The official pump-public-docs IDL lists pump at 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P and PumpSwap (pump_amm) at pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA. pump instructions include create, create_v2, buy, sell, buy_exact_sol_in, buy_v2, sell_v2, buy_exact_quote_in_v2, migrate and migrate_v2. Events include CreateEvent, TradeEvent, CompleteEvent and CompletePumpAmmMigrationEvent. PumpSwap events include CreatePoolEvent, BuyEvent and SellEvent."
   },
   {
    "id": "DA-12",
@@ -4380,8 +4386,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Negative sub-hour proxy evidence for MR-01 (ARCH 3.2, A-23).",
-   "verification": "confirmed",
-   "note": "Addendum A04. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Survivor-only coin list (RS-05). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A04. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Survivor-only coin list (RS-05). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/deep-pool-probe/RESULTS.md:6 @ 72f1793f",
     "research/deep-pool-probe/RESULTS.md:13 @ 72f1793f",
@@ -4402,8 +4408,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Closest case to MR-01's universe; below the 65-71 bps lean g* of V5 (ARCH 2.2). Shows that an excess over random alone flatters (A05).",
-   "verification": "confirmed",
-   "note": "Addendum A04, A05. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A04, A05. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/deep-pool-probe/RESULTS.md:19 @ 72f1793f",
     "research/deep-pool-probe/results.json (MR-A, $50|A|val and $200|A|val) @ 72f1793f"
@@ -4420,8 +4426,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Sets the 0/1/2-bar delays of the Phase 0 kill-only check (C-48).",
-   "verification": "confirmed",
-   "note": "Addendum A05. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A05. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/deep-pool-probe/RESULTS.md:25 @ 72f1793f"
    ]
@@ -4437,8 +4443,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "No low-volume MR-01 configuration is pre-registered (ARCH 3.3, C-46).",
-   "verification": "confirmed",
-   "note": "Addendum A04. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A04. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/deep-pool-probe/RESULTS.md:17 @ 72f1793f"
    ]
@@ -4454,8 +4460,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "The proxy results are likely optimistic; the true result is likely worse (ARCH 3.2).",
-   "verification": "confirmed",
-   "note": "Addendum A04, A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A04, A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/daily-probe/RESULTS.md:28 @ 72f1793f"
    ]
@@ -4471,8 +4477,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Shown only as a sensitivity line beside the conservative cost row (ARCH 2.3, C-50).",
-   "verification": "confirmed",
-   "note": "Addendum A07. Model figures under Zeroed's design, not measured. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A07. Model figures under Zeroed's design, not measured. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:156 @ 72f1793f"
    ]
@@ -4488,8 +4494,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "ARCH 2.3 formula with q (C-50).",
-   "verification": "confirmed",
-   "note": "Addendum A07. Algebra re-derived by the Z0D builder from expectancy = 0; with q = 0 it equals ARCH 2.1's p* = (1 + c/a)/(R + 1). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A07. Algebra re-derived by the Z0D builder from expectancy = 0; with q = 0 it equals ARCH 2.1's p* = (1 + c/a)/(R + 1). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:274 @ 72f1793f"
    ]
@@ -4506,8 +4512,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "A-M11-04 reports a realistic line beside CS-1's optimistic one (C-64).",
-   "verification": "confirmed",
-   "note": "Addendum A13. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A13. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/deep-pool-probe/PREREG.md:41-47 @ 72f1793f",
     "research/deep-pool-probe/RESULTS.md:21 @ 72f1793f"
@@ -4524,8 +4530,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Gate intervals take the more conservative of the bootstrap and a calendar-day cluster t-interval; matched-random comparisons (C-65).",
-   "verification": "confirmed",
-   "note": "Addendum A14. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A14. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/daily-probe/PREREG.md:36-37 @ 72f1793f"
    ]
@@ -4541,8 +4547,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "One slot-to-time function, no fixed 400 ms (C-61).",
-   "verification": "confirmed",
-   "note": "Addendum A10. DERIVED by the Z0D builder: (t2 - t1)/(slot2 - slot1) on the first and last daily pairs; block time has 1 s resolution. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A10. DERIVED by the Z0D builder: (t2 - t1)/(slot2 - slot1) on the first and last daily pairs; block time has 1 s resolution. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/launch-probe/derived/slot_len.json (first and last day pairs of points) @ 72f1793f"
    ]
@@ -4558,8 +4564,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "Fresh-graduate studies count dust and start-missing exclusions with a -100% sensitivity line (C-63).",
-   "verification": "confirmed",
-   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/lottery-probe/RESULTS.md:3 @ 72f1793f"
    ]
@@ -4575,8 +4581,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "No field observed after the decision may enter a study (C-63).",
-   "verification": "confirmed",
-   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/brainstorm/RESULTS.md:32 @ 72f1793f"
    ]
@@ -4592,8 +4598,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "M13 keeps a viewed-window ledger (C-63).",
-   "verification": "confirmed",
-   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/hype/RESEARCH.md:154 @ 72f1793f"
    ]
@@ -4609,8 +4615,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "Regime breaks for studies (C-63) and L-4 boundaries (C-67).",
-   "verification": "confirmed",
-   "note": "Addendum A12, A16. Read from chain by the research; times UTC. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A12, A16. Read from chain by the research; times UTC. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/venues.md:157-165 @ 72f1793f"
    ]
@@ -4626,8 +4632,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "An unknown event length demotes the venue; this known one does not (C-67).",
-   "verification": "confirmed",
-   "note": "Addendum A16. One window on one day: evidence, not proof for every pool. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A16. One window on one day: evidence, not proof for every pool. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/tail-proof/README.md:5-26 @ 72f1793f"
    ]
@@ -4645,8 +4651,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "A-M01 quote fixtures (C-59).",
-   "verification": "confirmed",
-   "note": "Addendum A08. Goldens import under Meme-snipe's migration Rules (no bugs migrate). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A08. Goldens import under Meme-snipe's migration Rules (no bugs migrate). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/venues.md:146 @ 72f1793f",
     "docs/research/venues.md:94 @ 72f1793f",
@@ -4664,8 +4670,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Drained-pool fixture for M06 and M20 (C-60).",
-   "verification": "confirmed",
-   "note": "Addendum A09. One pool read. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A09. One pool read. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:225 @ 72f1793f"
    ]
@@ -4681,8 +4687,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "Limits are lamport config owned by the owner; SOL-only property test (C-62).",
-   "verification": "confirmed",
-   "note": "Addendum A11. About Zeroed's policy file, not the Blueprint's. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A11. About Zeroed's policy file, not the Blueprint's. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:164 @ 72f1793f"
    ]
@@ -4690,7 +4696,7 @@
   {
    "id": "RS-19",
    "topic": "Graduate count and credit burn",
-   "claim": "85,111 pump.fun graduates with canonical pools were created 2026-06-01 to 09-21. Zeroed's worker burned about 80k Helius credits an hour with zero trades.",
+   "claim": "85,111 pump.fun graduates with canonical pools were created 2026-06-01 to 09-21. The research bug list records Zeroed's worker burning about 80k Helius credits an hour with zero trades; this is a bug-list figure, not a measurement here, and CLAUDE.md records about 25,000 credits an hour (owner, 2026-10-06, item 21).",
    "sources": [
     "research/daily-probe/RESULTS.md:25 @ 72f1793f (branch ccr-7fae2302-drz4co)",
     "research/SUPERVISOR_MESSAGES.md:93 @ 72f1793f (branch ccr-7fae2302-drz4co)"
@@ -4699,8 +4705,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "D30 budget from the first enumeration count; burn-rate test (C-58).",
-   "verification": "confirmed",
-   "note": "Addendum A03. The all-time pool count is unmeasured. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A03. The all-time pool count is unmeasured. The 80k figure is from a bug list (SUPERVISOR_MESSAGES.md:93), not a measurement; CLAUDE.md's about 25,000 an hour is a different, owner-recorded figure. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/daily-probe/RESULTS.md:25 @ 72f1793f",
     "research/SUPERVISOR_MESSAGES.md:93 @ 72f1793f"
@@ -4718,8 +4724,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "PumpPortal not used for now; chain backfill on by default (D12, C-52).",
-   "verification": "confirmed",
-   "note": "Addendum A02. One sample. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A02. One sample. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/data.md:16 @ 72f1793f",
     "docs/research/data.md:225 @ 72f1793f"
@@ -4736,8 +4742,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "No request to any pump.fun-operated host; earlier pump.fun data serves research only (D12, C-52).",
-   "verification": "confirmed",
-   "note": "Addendum A02. Readings of terms, not legal advice. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A02. Readings of terms, not legal advice. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/hype/RESEARCH.md:141-143 @ 72f1793f"
    ]
@@ -4753,8 +4759,8 @@
    "as_of": "2026-10-07",
    "confidence": "low",
    "design_relevance": "End state with no edge (D08, C-56).",
-   "verification": "confirmed",
-   "note": "Addendum A17. Judgement, not a measurement. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A17. Judgement, not a measurement. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:116-117 @ 72f1793f"
    ]
@@ -4771,8 +4777,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "VM-09 shows hold-SOL and JitoSOL baselines (C-56).",
-   "verification": "confirmed",
-   "note": "Addendum A17. Staking itself is the owner's call. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A17. Staking itself is the owner's call. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:224 @ 72f1793f",
     "research/trend-probe/RESULTS.md:22 @ 72f1793f"
@@ -4785,18 +4791,22 @@
    "sources": [
     "research/runner-probe/RESULTS.md:6 @ 72f1793f (branch ccr-7fae2302-drz4co)",
     "research/runner-probe/RESULTS.md:9-14 @ 72f1793f (branch ccr-7fae2302-drz4co)",
-    "research/runner-probe/RESULTS.md:20 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+    "research/runner-probe/RESULTS.md:20 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/runner-probe/RESULTS.md:16 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/runner-probe/RESULTS.md:22 @ 72f1793f (branch ccr-7fae2302-drz4co)"
    ],
    "source_type": "repo_research",
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "PM-01 neighbour; PM-01 screened only on swap-level or 1 Hz data (C-68); families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A19, A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A19, A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/runner-probe/RESULTS.md:6 @ 72f1793f",
     "research/runner-probe/RESULTS.md:9-14 @ 72f1793f",
-    "research/runner-probe/RESULTS.md:20 @ 72f1793f"
+    "research/runner-probe/RESULTS.md:20 @ 72f1793f",
+    "research/runner-probe/RESULTS.md:16 @ 72f1793f",
+    "research/runner-probe/RESULTS.md:22 @ 72f1793f"
    ]
   },
   {
@@ -4811,8 +4821,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Mayhem and BOOST trades out of demand features; jackpot fixture (C-69).",
-   "verification": "confirmed",
-   "note": "Addendum A21. The swap-replay figure (26.9%) is from the unfinished execution audit and is not registered. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A21. The swap-replay figure (26.9%) is from the unfinished execution audit and is not registered. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:239 @ 72f1793f",
     "research/runner-probe/PREREG.md:39 @ 72f1793f"
@@ -4824,17 +4834,19 @@
    "claim": "In a simulation of runner-model returns (2,000 repetitions, true mean +5%), a t-interval with nominal 95% covered the true mean only 0.802 of the time at n = 300. The research proof gates cap the share of P&L from the top 1% of trades at 50%.",
    "sources": [
     "docs/research/quant.md:282 @ 72f1793f (branch ccr-7fae2302-drz4co)",
-    "docs/research/quant.md:390 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+    "docs/research/quant.md:390 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "docs/research/quant.md:272-274 @ 72f1793f (branch ccr-7fae2302-drz4co)"
    ],
    "source_type": "repo_research",
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "VM-09 reporting for skewed strategies (C-70).",
-   "verification": "confirmed",
-   "note": "Addendum A22. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A22. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/quant.md:282 @ 72f1793f",
-    "docs/research/quant.md:390 @ 72f1793f"
+    "docs/research/quant.md:390 @ 72f1793f",
+    "docs/research/quant.md:272-274 @ 72f1793f"
    ]
   },
   {
@@ -4848,8 +4860,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Sizing rules (C-71).",
-   "verification": "confirmed",
-   "note": "Addendum A23. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A23. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/sizing/RESULTS.md:28 @ 72f1793f"
    ]
@@ -4865,8 +4877,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Attention stays out of entry rules until a forward test passes (C-72).",
-   "verification": "confirmed",
-   "note": "Addendum A24. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A24. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/hype/RESEARCH.md:28-30 @ 72f1793f"
    ]
@@ -4878,18 +4890,20 @@
    "sources": [
     "docs/research/empirical.md:8 @ 72f1793f (branch ccr-7fae2302-drz4co)",
     "docs/research/empirical.md:35 @ 72f1793f (branch ccr-7fae2302-drz4co)",
-    "docs/research/edge.md:75 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+    "docs/research/edge.md:75 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "docs/research/edge.md:162 @ 72f1793f (branch ccr-7fae2302-drz4co)"
    ],
    "source_type": "repo_research",
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Holdout-contaminated window. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Holdout-contaminated window: edge.md §6.5 finding 1 (line 162) says the backfill window lies inside the sealed window [09-22, 10-20). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/empirical.md:8 @ 72f1793f",
     "docs/research/empirical.md:35 @ 72f1793f",
-    "docs/research/edge.md:75 @ 72f1793f"
+    "docs/research/edge.md:75 @ 72f1793f",
+    "docs/research/edge.md:162 @ 72f1793f"
    ]
   },
   {
@@ -4903,8 +4917,8 @@
    "as_of": "2026-10-07",
    "confidence": "high",
    "design_relevance": "Families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/copytrading.md:14-27 @ 72f1793f"
    ]
@@ -4916,18 +4930,20 @@
    "sources": [
     "research/lottery-probe/RESULTS.md:3 @ 72f1793f (branch ccr-7fae2302-drz4co)",
     "research/lottery-probe/RESULTS.md:6 @ 72f1793f (branch ccr-7fae2302-drz4co)",
-    "research/lottery-probe/RESULTS.md:12-15 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+    "research/lottery-probe/RESULTS.md:12-15 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/lottery-probe/RESULTS.md:8 @ 72f1793f (branch ccr-7fae2302-drz4co)"
    ],
    "source_type": "repo_research",
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/lottery-probe/RESULTS.md:3 @ 72f1793f",
     "research/lottery-probe/RESULTS.md:6 @ 72f1793f",
-    "research/lottery-probe/RESULTS.md:12-15 @ 72f1793f"
+    "research/lottery-probe/RESULTS.md:12-15 @ 72f1793f",
+    "research/lottery-probe/RESULTS.md:8 @ 72f1793f"
    ]
   },
   {
@@ -4943,8 +4959,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Coin list picked with hindsight. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Coin list picked with hindsight. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/trend-probe/RESULTS.md:3 @ 72f1793f",
     "research/trend-probe/RESULTS.md:6 @ 72f1793f",
@@ -4965,8 +4981,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested (C-51); derivatives and cross-chain are outside the owner's rules.",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/short-probe/RESULTS.md:9 @ 72f1793f",
     "research/short-probe/RESULTS.md:17-21 @ 72f1793f",
@@ -4985,8 +5001,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:238 @ 72f1793f"
    ]
@@ -5002,8 +5018,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Window not stated in the source. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Window not stated in the source. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:237 @ 72f1793f"
    ]
@@ -5019,8 +5035,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:175-176 @ 72f1793f"
    ]
@@ -5036,8 +5052,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:236 @ 72f1793f"
    ]
@@ -5045,7 +5061,7 @@
   {
    "id": "RS-38",
    "topic": "Daily holds, re-test running",
-   "claim": "Daily-horizon probe on 477 survivor pools, decisions 2026-06-01 to 09-20: all five rules not supported; a survivorship-free re-test on 16,367 coins is downloading.",
+   "claim": "Daily-horizon probe on 477 survivor pools, decisions 2026-06-01 to 09-20: all five rules not supported. A re-test is downloading on 16,367 coins selected by pump.fun all-time high and at least 9 days traded (dead coins included); that is a selected list, not a survivorship-free one.",
    "sources": [
     "research/daily-probe/RESULTS.md:3 @ 72f1793f (branch ccr-7fae2302-drz4co)",
     "research/daily-probe/RESULTS.md:6 @ 72f1793f (branch ccr-7fae2302-drz4co)",
@@ -5055,8 +5071,8 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested: open (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). The re-test's result enters only after its RESULTS.md and a fresh review. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). The re-test's result enters only after its RESULTS.md and a fresh review. Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "research/daily-probe/RESULTS.md:3 @ 72f1793f",
     "research/daily-probe/RESULTS.md:6 @ 72f1793f",
@@ -5074,10 +5090,315 @@
    "as_of": "2026-10-07",
    "confidence": "medium",
    "design_relevance": "Families tested: parked (C-51).",
-   "verification": "confirmed",
-   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verification": "pending_review",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
     "docs/research/edge.md:174 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "VF-01",
+   "topic": "PumpSwap canonical pool: pool-authority PDA seeds",
+   "claim": "The pump pool-authority PDA is derived with seeds [\"pool-authority\", base_mint] under the pump program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P. A PumpSwap pool is canonical when Pool.creator (not Pool.coin_creator) equals this PDA. The pump IDL's migrate instruction derives pool_authority from the const bytes of \"pool-authority\" and the mint account.",
+   "sources": [
+    "https://github.com/pump-fun/pump-public-docs/blob/cb188ce08b5069196eef1f3e4a0c43b70099793b/docs/PUMP_SWAP_CREATOR_FEE_README.md",
+    "https://github.com/pump-fun/pump-public-docs/blob/cb188ce08b5069196eef1f3e4a0c43b70099793b/docs/FEE_PROGRAM_README.md",
+    "https://github.com/pump-fun/pump-public-docs/blob/cb188ce08b5069196eef1f3e4a0c43b70099793b/idl/pump.json"
+   ],
+   "source_type": "official_repo_or_idl",
+   "as_of": "commit cb188ce08b5069196eef1f3e4a0c43b70099793b (2026-09-29), read 2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Resolves U-A01: A-M01-01 can compute isCanonical, so pools are no longer rejected for unknown seeds.",
+   "verification": "confirmed",
+   "note": "Rust snippet at PUMP_SWAP_CREATOR_FEE_README.md:4-13; isPumpPool at FEE_PROGRAM_README.md:7-11; pump.json:6082-6105 (migrate.pool_authority). The SDK uses the same rule (pump-swap-sdk 1.20.0 src/sdk/util.ts:26-31). Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "git clone https://github.com/pump-fun/pump-public-docs (HEAD cb188ce)",
+    "npm @pump-fun/pump-swap-sdk 1.20.0 src/sdk/util.ts"
+   ]
+  },
+  {
+   "id": "VF-02",
+   "topic": "pump-public-docs pin and IDL hashes",
+   "claim": "pump-public-docs main is at commit cb188ce08b5069196eef1f3e4a0c43b70099793b (2026-09-29T15:50:38+04:00). sha256: idl/pump.json ffe966c42f1af41652ee753fe2f1e3f7cd4077d7e6f49faf3138959c8b56064b; idl/pump_amm.json 2091433899b07d003d98118ae6cd3c628960fd393b40710b6e15bce6d0e7f2d1; idl/pump_fees.json d87b52305fd6b2ec487d4ba1e08a49990c23fa9b8b76092b2097df0164fa3859. The PPD pump_amm IDL is newer than the copy in @pump-fun/pump-swap-sdk 1.20.0: its Pool type has an extra field is_holder_reward, and the instruction lists differ (32 vs 34).",
+   "sources": [
+    "https://github.com/pump-fun/pump-public-docs/commit/cb188ce08b5069196eef1f3e4a0c43b70099793b",
+    "https://registry.npmjs.org/@pump-fun/pump-swap-sdk/-/pump-swap-sdk-1.20.0.tgz"
+   ],
+   "source_type": "official_repo_or_idl",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Resolves U-A09. A-M02-01 vendors these exact files; SDK golden tests must allow for the newer PPD IDL.",
+   "verification": "corrected",
+   "note": "Corrects DA-11, which says the commit could not be checked. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "git log -1 and sha256sum on a fresh clone; IDL type comparison against the SDK tarball"
+   ]
+  },
+  {
+   "id": "VF-03",
+   "topic": "PumpSwap account layouts: Pool, GlobalConfig, FeeConfig",
+   "claim": "Borsh layouts from pump_amm.json at cb188ce, offsets after the 8-byte discriminator. Pool [241,154,109,4,17,177,109,188]: pool_bump 8, index u16 9, creator 11, base_mint 43, quote_mint 75, lp_mint 107, pool_base_token_account 139, pool_quote_token_account 171, lp_supply u64 203, coin_creator 211, is_mayhem_mode 243, is_cashback_coin 244, virtual_quote_reserves i128 245, creator_fee_bps u64 261, can_edit_creator_fee 269, is_holder_reward 270 (271 bytes of fields; accounts are extended to 300 bytes, and pools with dataLen < 300 exist). GlobalConfig [149,8,156,202,160,252,176,217]: admin 8, lp_fee_basis_points 40, protocol_fee_basis_points 48, disable_flags u8 56, protocol_fee_recipients [pubkey;8] 57, coin_creator_fee_basis_points 313, admin_set_coin_creator_authority 321, whitelist_pda 353, reserved_fee_recipient 385, mayhem_mode_enabled 417, reserved_fee_recipients [pubkey;7] 418, is_cashback_enabled 642, buyback_fee_recipients [pubkey;8] 643, buyback_basis_points 899, boost_authority 907, boost_enabled 939, creator_fee_configurable 940, max_configurable_creator_fee_bps 941. FeeConfig [143,52,146,187,219,123,76,155] (fee program): bump 8, admin 9, flat_fees (lp, protocol, creator u64 bps) 41, fee_tiers Vec<FeeTier{market_cap_lamports_threshold u128, fees}> 65, then stable_fee_tiers Vec<FeeTier>, then exotic_flat_fees.",
+   "sources": [
+    "https://github.com/pump-fun/pump-public-docs/blob/cb188ce08b5069196eef1f3e4a0c43b70099793b/idl/pump_amm.json",
+    "https://github.com/pump-fun/pump-public-docs/blob/cb188ce08b5069196eef1f3e4a0c43b70099793b/idl/pump_fees.json",
+    "https://github.com/pump-fun/pump-public-docs/blob/cb188ce08b5069196eef1f3e4a0c43b70099793b/docs/PUMP_SWAP_CREATOR_FEE_README.md",
+    "https://docs.shyft.to/solana/accelerated-getprogramaccounts.md"
+   ],
+   "source_type": "official_repo_or_idl",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Addendum A08 and A-42: decoders (A-M02-02) and the enumeration filter (A-M03-03). Use memcmp on the discriminator at 0 and on wSOL at 75, not dataSize 300.",
+   "verification": "added_by_verifier",
+   "note": "Offsets are computed from the IDL type list (all three types are borsh). Shyft's accelerated gPA offsets for pAMMBay… are 43 and 75, which matches base_mint and quote_mint. Check offsets against one recorded account per type in the decoder fixtures. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "IDL type walk over pump_amm.json and pump_fees.json at cb188ce"
+   ]
+  },
+  {
+   "id": "VF-04",
+   "topic": "PumpSwap fee placement, rounding, market-cap input and schedule choice",
+   "claim": "Per the official @pump-fun/pump-swap-sdk 1.20.0, whose functions name the Rust code they mirror: each fee component is ceil(amount x bps / 10000), computed separately for lp, protocol and coin creator. Buy fees are added on top of the pre-fee quote input; sell fees are taken from the gross output. Buy exact quote in: q' = floor(quote x 10000 / (10000 + totalBps)), reduced if q' plus fees exceeds quote, and the swap input is q' - 1. Market cap for tier choice = floor(effective_quote x supply / base_reserve), with effective_quote = vault + virtual_quote_reserves, and supply fixed at 1e15 base units for mayhem pools. A tier applies when market cap >= threshold. Non-canonical pools pay flat_fees; canonical SOL-like quote (default key, wSOL, Token-2022 native) pays fee_tiers; canonical USDC pays stable_fee_tiers; other quotes pay exotic_flat_fees (flat_fees while exotic is all zero). The creator fee is 0 when Pool.coin_creator is the default key, and Pool.creator_fee_bps replaces the schedule's creator rate when GlobalConfig.creator_fee_configurable is true and creator_fee_bps > 0. Trade size does not affect the tier.",
+   "sources": [
+    "https://registry.npmjs.org/@pump-fun/pump-swap-sdk/-/pump-swap-sdk-1.20.0.tgz",
+    "https://github.com/pump-fun/pump-public-docs/blob/cb188ce08b5069196eef1f3e4a0c43b70099793b/docs/FEE_PROGRAM_README.md"
+   ],
+   "source_type": "official_repo_or_idl",
+   "as_of": "SDK 1.20.0 (2026-09-10), read 2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Resolves U-A03 for A-M01-02/03 and A-M10-03; replaces SPEC-A's lower-of-two market-cap rule and adds the per-pool creator fee, mayhem supply and exotic schedule.",
+   "verification": "added_by_verifier",
+   "note": "SDK src/sdk/util.ts:8-17,37-60; buy.ts:71-113,184-240; sell.ts:69-112; fees.ts:68-108,125-183. The buy.ts comment says floor but the code uses ceilDiv. The program source is not public; the 353 PumpSwap goldens (A08) are the on-chain check. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "Read of the SDK tarball source; not executed"
+   ]
+  },
+  {
+   "id": "VF-05",
+   "topic": "PumpSwap sells above the real quote vault are refused",
+   "claim": "The official SDK refuses a sell when the real quote vault balance is below gross_output - lp_fee, throwing 'Insufficient real quote reserves to cover the sell output', and tests this case. Sell-for-exact-quote also refuses a quote above the real vault. Proceeds are not clamped.",
+   "sources": [
+    "https://registry.npmjs.org/@pump-fun/pump-swap-sdk/-/pump-swap-sdk-1.20.0.tgz"
+   ],
+   "source_type": "official_repo_or_idl",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Settles the UNVERIFIED part of EX-V01 and A-09 / U-A04 as far as docs can: exits must size sells to the real vault; A09's 'proceeds clamped' model needs re-reading.",
+   "verification": "added_by_verifier",
+   "note": "SDK src/sdk/sell.ts:102-106 and src/__tests__/boost.spec.ts:84-99. Medium confidence because the on-chain program source is not public; confirm with one simulateTransaction near the boundary in the builder test (within the 50% rule). Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "Read of the SDK tarball source; not executed"
+   ]
+  },
+  {
+   "id": "VF-06",
+   "topic": "PumpSwap BuyEvent and SellEvent fields",
+   "claim": "BuyEvent [103,244,82,31,44,245,119,119] and SellEvent [62,47,55,10,165,3,220,42] carry pool_base_token_reserves and pool_quote_token_reserves (u64), virtual_quote_reserves (i128), base_supply, lp/protocol/coin_creator fee bps and amounts, buyback, cashback and holder_rewards fields, can_boost and ix_name. Buy adds quote_amount_in, quote_amount_in_with_lp_fee, user_quote_amount_in, base_amount_out; Sell adds quote_amount_out, quote_amount_out_without_lp_fee, user_quote_amount_out, base_amount_in. No official page says whether the pool reserves are pre- or post-trade.",
+   "sources": [
+    "https://github.com/pump-fun/pump-public-docs/blob/cb188ce08b5069196eef1f3e4a0c43b70099793b/idl/pump_amm.json"
+   ],
+   "source_type": "official_repo_or_idl",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "U-A05 field names for A-M02-03 and A-M01-04. Reserve timing (pre-trade per the repo's CORE-2 chain work) stays to be proven by the golden replay.",
+   "verification": "added_by_verifier",
+   "note": "pump_amm.json:6145 (BuyEvent), :7178 (SellEvent). Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "IDL read at cb188ce"
+   ]
+  },
+  {
+   "id": "VF-07",
+   "topic": "SPL Token and Token-2022 base layouts",
+   "claim": "Mint is 82 bytes: mint_authority COption<Pubkey> 0..36, supply u64 36, decimals 44, is_initialized 45, freeze_authority COption 46..82. Account is 165 bytes: mint 0, owner 32, amount u64 64, delegate COption 72..108, state 108, is_native COption<u64> 109..121, delegated_amount u64 121, close_authority COption 129..165. COption is a 4-byte tag [0,0,0,0] None or [1,0,0,0] Some, then the body, little-endian. Token-2022 keeps the same base; the account-type byte is at index 165 and TLV extensions follow.",
+   "sources": [
+    "https://github.com/solana-program/token/blob/8185db13640f0df038266c7cf4306c212d81380a/interface/src/state.rs",
+    "https://github.com/solana-program/token-2022/blob/2a3f277c9c5886cd5cbb60120454f8746576aeea/interface/src/extension/mod.rs"
+   ],
+   "source_type": "official_repo_or_idl",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Resolves U-A08 for A-M02-02.",
+   "verification": "added_by_verifier",
+   "note": "state.rs:38-42,132-136,253-289; extension/mod.rs:311-322. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "Source read at the named commits"
+   ]
+  },
+  {
+   "id": "VF-08",
+   "topic": "Node.js LTS and built-ins for the bot",
+   "claim": "On 2026-10-07 Node 24 is Active LTS until 2026-10-20 (maintenance to EOL 2028-04-30; latest 24.21.0); Node 26 becomes LTS on 2026-10-28; Node 22 is in maintenance (EOL 2027-04-30). On Node 24.21.0 node:sqlite is Stability 1.2 release candidate (since v24.15.0), with database.exec for BEGIN/COMMIT, database.isTransaction (v24.0.0) and sqlite.backup(sourceDb, path, {rate, progress}) wrapping the SQLite online backup API; on Node 22.23.3 it is Stability 1.1 and lacks isTransaction. node:zlib zstd (zstdCompress, ZstdCompress) exists but is Stability 1 Experimental. WAL is SQLite's PRAGMA journal_mode=WAL, which returns 'wal' on success; the Node docs do not mention it.",
+   "sources": [
+    "https://raw.githubusercontent.com/nodejs/Release/main/schedule.json",
+    "https://nodejs.org/dist/index.json",
+    "https://github.com/nodejs/node/blob/v24.21.0/doc/api/sqlite.md",
+    "https://github.com/nodejs/node/blob/v22.23.3/doc/api/sqlite.md",
+    "https://github.com/nodejs/node/blob/v24.21.0/doc/api/zlib.md",
+    "https://sqlite.org/wal.html"
+   ],
+   "source_type": "official_docs",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "A-18, A-45 and U-A22: pin Node 24 (>= 24.15.0) for B-M24-01; keep the gzip fallback for A-M07-02.",
+   "verification": "added_by_verifier",
+   "note": "sqlite.md v24.21.0 lines 3-18, 382-392, 511-517, 1436-1468; zlib.md lines 1712-1720. The repo's package.json engines (>=22.18) predates this. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "Docs read at the named tags"
+   ]
+  },
+  {
+   "id": "VF-09",
+   "topic": "Shyft plan limits by call type",
+   "claim": "Shyft Free: unlimited credits, 10 RPC req/s, 0 index req/s, 1 sendTransaction/s, no gRPC, no staked connections. Index calls (getProgramAccounts, getTokenAccountsByOwner, getTokenLargestAccounts, getTokenAccountsByDelegate) have their own limit; gPA has a 1-second timeout and unfiltered gPA is blocked; Accelerated gPA is not on the free plan. Build is 100/10/20, Grow 150/20/40, Accelerate 400/40/80 (RPC/index/sendTransaction per second). No fair-use limit is published for 'unlimited credits'.",
+   "sources": [
+    "https://docs.shyft.to/solana/solana-rpc-limits.md",
+    "https://docs.shyft.to/solana/accelerated-getprogramaccounts.md",
+    "https://shyft.to/solana-rpc-grpc-pricing"
+   ],
+   "source_type": "official_docs",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "A-M14-02 buckets for the Phase 0 provider (standard reads <= 5 req/s at 50%). Shyft Free cannot run D30 enumeration or holder index calls.",
+   "verification": "corrected",
+   "note": "Corrects LD-33, which lists only RPC and API rates. A-07 (fair use) stays unverified: no text found. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "Docs pages read 2026-10-07"
+   ]
+  },
+  {
+   "id": "VF-10",
+   "topic": "Chainstack Developer plan on Solana mainnet",
+   "claim": "Chainstack Developer (free): Solana Mainnet 5 RPS (the 25 RPS figure is the global plan limit and Solana Devnet), 3M request units a month, Solana calls 1 RU except archive-scope calls at 2 RU. getProgramAccounts, getSupply and getTokenAccountsByOwner are paid plans only; getTokenLargestAccounts is dedicated-node only. Per-method cap getMultipleAccounts 300 RPS. Over-limit returns HTTP 429 with JSON-RPC -32005. Pricing lists extra usage at $20 per 1M RUs on Developer.",
+   "sources": [
+    "https://docs.chainstack.com/docs/limits.md",
+    "https://docs.chainstack.com/docs/rps-plan-limits.md",
+    "https://docs.chainstack.com/docs/request-units.md",
+    "https://chainstack.com/pricing/"
+   ],
+   "source_type": "official_docs",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Backup reader bucket <= 2.5 req/s. One read every 2 s uses about 1.3M RU per 30 days.",
+   "verification": "corrected",
+   "note": "Corrects LD-32 (25 req/s is not the Solana mainnet figure on Developer). Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "Docs pages read 2026-10-07"
+   ]
+  },
+  {
+   "id": "VF-11",
+   "topic": "getProgramAccounts on Helius and the getMultipleAccounts cap",
+   "claim": "Helius Free allows getProgramAccounts at 5/s (Developer 25, Business 50, Professional 75). getProgramAccounts costs 10 credits; getProgramAccountsV2 costs 1 credit and pages 1-10,000 accounts per request with paginationKey and changedSinceSlot; pagination ends only when no accounts are returned / paginationKey is null. Solana's getMultipleAccounts takes up to 100 pubkeys. No provider page read (Shyft, Chainstack, Helius) states a lower per-call cap.",
+   "sources": [
+    "https://www.helius.dev/docs/billing/rate-limits.md",
+    "https://www.helius.dev/docs/billing/credits.md",
+    "https://www.helius.dev/docs/api-reference/rpc/http/getprogramaccountsv2.md",
+    "https://solana.com/docs/rpc/http/getmultipleaccounts.md"
+   ],
+   "source_type": "official_docs",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "D30 / A-M03-03 provider choice and cost; A-06 batch size (<= 90 fits).",
+   "verification": "added_by_verifier",
+   "note": "V2 docs do not mention dataSlice. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "Docs pages read 2026-10-07"
+   ]
+  },
+  {
+   "id": "VF-12",
+   "topic": "Solana RPC field facts for the slot clock",
+   "claim": "getBlockTime returns an i64 Unix timestamp in seconds (or null). getEpochInfo returns absoluteSlot and blockHeight in the same result. getRecentPerformanceSamples returns slot, numTransactions, numSlots, samplePeriodSecs and numNonVoteTransactions, the last null for older samples. accountSubscribe takes a pubkey and {encoding, commitment} and sends accountNotification messages.",
+   "sources": [
+    "https://solana.com/docs/rpc/http/getblocktime.md",
+    "https://solana.com/docs/rpc/http/getepochinfo.md",
+    "https://solana.com/docs/rpc/http/getrecentperformancesamples.md",
+    "https://solana.com/docs/rpc/websocket/accountsubscribe.md"
+   ],
+   "source_type": "official_docs",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "A-36, A-37, register #84 for B-M15-01; A-31 / U-A28 for A-M04-03.",
+   "verification": "added_by_verifier",
+   "verifier_evidence": [
+    "Docs pages read 2026-10-07"
+   ],
+   "note": "Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1)."
+  },
+  {
+   "id": "VF-13",
+   "topic": "MinBTL expression",
+   "claim": "Bailey, Borwein, Lopez de Prado and Zhu, Theorem 3.1: MinBTL ~ ( ((1-g) Zinv(1 - 1/N) + g Zinv(1 - 1/(N e))) / E[max_N] )^2 < 2 ln(N) / E[max_N]^2 years, g = 0.5772156649 (Euler-Mascheroni), Zinv the inverse standard normal CDF. N = 45 gives 4.998 years and N = 7 gives 1.923 years at E[max_N] = 1.",
+   "sources": [
+    "https://www.davidhbailey.com/dhbpapers/backtest-pseudo.pdf"
+   ],
+   "source_type": "paper",
+   "as_of": "authors' version dated 2014-04-01, read 2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Resolves A-44 for A-M13-03; SPEC-A's expression is right.",
+   "verification": "added_by_verifier",
+   "note": "Equation (3.2). The ams.org copy returned 403 through this session's proxy; the authors' hosted copy was used. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "pdftotext of the PDF; numeric check with Python statistics.NormalDist"
+   ]
+  },
+  {
+   "id": "VF-14",
+   "topic": "Helius Sender key placement, regional limit and SWQOS-only",
+   "claim": "A keyed Sender request carries the key as the api-key URL query parameter (https://sender.helius-rpc.com/fast?api-key=...); with a key the limit is 50 requests per second per region. SWQOS-only is selected with ?swqos_only=true on any endpoint URL; minimum tip 0.000005 SOL (Sender Max 0.001 SOL). Sender uses no credits and is on all plans.",
+   "sources": [
+    "https://www.helius.dev/docs/sending-transactions/sender.md"
+   ],
+   "source_type": "official_docs",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "A-40 / U-A26 for A-M14-03/04 (redact URLs in logs); integration item 121 for B-M18-02.",
+   "verification": "added_by_verifier",
+   "verifier_evidence": [
+    "Docs page read 2026-10-07"
+   ],
+   "note": "Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1)."
+  },
+  {
+   "id": "VF-15",
+   "topic": "DexScreener token-pairs endpoint and API terms",
+   "claim": "GET https://api.dexscreener.com/tokens/v1/{chainId}/{tokenAddresses}, chainId 'solana', up to 30 comma-separated addresses, 300 requests per minute; pair fields include chainId, dexId, pairAddress, baseToken, quoteToken, priceNative, priceUsd, txns, volume, priceChange, liquidity {usd, base, quote}, fdv, marketCap, pairCreatedAt. The API terms (updated 2023-08-18) allow commercial use, keep data rights with DEX Screener, and forbid making the API or any portion available to third parties; they do not address private storage.",
+   "sources": [
+    "https://docs.dexscreener.com/api/reference",
+    "https://docs.dexscreener.com/api/api-terms-and-conditions"
+   ],
+   "source_type": "official_docs",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "U-A14 for A-M03-04; A-32 stays open (store privately, never redistribute).",
+   "verification": "added_by_verifier",
+   "verifier_evidence": [
+    "Docs pages read 2026-10-07"
+   ],
+   "note": "Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1)."
+  },
+  {
+   "id": "VF-16",
+   "topic": "Build tooling and UI package facts for M0",
+   "claim": "pnpm 10: --ignore-scripts / ignoreScripts disables project and dependency scripts; since v10 dependency lifecycle scripts run only when listed in onlyBuiltDependencies; strictDepBuilds (v10.3.0+) fails installs with unreviewed build scripts. npm latest on 2026-10-07: zod 4.6.5 MIT; fast-check 4.10.2 MIT; @solana/kit 8.4.0 MIT; lucide-react 1.52.0 ISC, which contains trending-up, trending-down, triangle-alert, octagon-alert, octagon-x, flask-conical, radio, history, clock-alert, unplug and lock-keyhole. UI-F32 versions all still latest except next 16.4.0. Licences: vitest MIT, @playwright/test Apache-2.0, storybook MIT, eslint MIT, typescript-eslint MIT, next MIT, axe-core MPL-2.0, @axe-core/playwright MPL-2.0. cmdk 1.1.1 was published 2025-03-14 (2025-08-27 is the registry modified time). react 19.3.0 published 2026-09-09; vite 8.3.3 published 2026-10-06.",
+   "sources": [
+    "https://pnpm.io/10.x/cli/install",
+    "https://pnpm.io/10.x/settings",
+    "https://registry.npmjs.org/zod",
+    "https://registry.npmjs.org/fast-check",
+    "https://registry.npmjs.org/lucide-react",
+    "https://registry.npmjs.org/axe-core",
+    "https://registry.npmjs.org/@axe-core/playwright",
+    "https://registry.npmjs.org/cmdk"
+   ],
+   "source_type": "official_docs",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Register items 94, 95, 116, 117, 123 and UI U-04, U-11 for B-M30-01, B-M28-01 and UI-T01/T04. MPL-2.0 needs a DEPENDENCIES.md ruling.",
+   "verification": "corrected",
+   "note": "Corrects UI-F32's cmdk date and fills its unchecked licences. Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
+   "verifier_evidence": [
+    "npm registry metadata and the lucide-react 1.52.0 tarball file list"
    ]
   }
  ],
