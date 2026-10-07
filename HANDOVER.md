@@ -57,6 +57,12 @@
     1. Before merging any PR that touches `tools/**` or `.github/**`, run the base branch's `drift.ts` and `check.ts` locally against the PR merge commit. Use `git show origin/<base>:tools/policy/...` into a temp folder.
     2. Add `deps-reviewed:<hash>` last, after reading the diff.
     3. The labeled run must pass every step. Record the `check` duration it took.
+- **8 Oct about 4:15 AM, state:**
+  - #289 Z0D-2: rounds 3–6 converged at `49703939`. Round 6 review PASS with 1 MINOR (the bound applies as of each in-window reading). Red team round 6 pending. CI running on `49703939`. Rulings and records are in `docs/reviews/Z0D2.md`.
+    - Key design: window-only key mode (owner sets it in the B10-ACK row); default-branch ruleset as an owner step; a pin marker and `closed.json` in zeroed-data; P17, P18 and P19 checks; four ledger counts with the P10 calibration.
+    - Only needed if the owner picks route B for B-10.
+  - #287 Z01: the round 3 builder is applying rulings 1–7 (`docs/reviews/Z01.md` @ `b0a29e1d`).
+  - Known risk (Z0D-2 F1, 8 Oct): the default branch `ccr-14987baf-i6lrsl` is unprotected (`"protected": false`). "Never push to the default branch" is enforced by practice only. A ruleset is an owner step listed in SPEC-A A-M14-05; it is required before any B-10 key is placed.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
