@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkState, ledgerLost, ledgerPresent } from '../src/run/state-check.ts';
-import { checkAccount } from '../src/run/account.ts';
+import { accountFile, checkAccount } from '../src/run/account.ts';
+import { refusedAccountWrites } from './account-roundtrip.ts';
 import { typedText } from '../src/run/json.ts';
 import { NO_CONTROL, controlFile } from '../src/run/state.ts';
 import { StateRefused } from '../src/run/worker.ts';
-import { makeWorker } from './worker-harness.ts';
+import { makeWorker, passingMarket } from './worker-harness.ts';
 import { EXIT } from '../../runner/src/contract.ts';
 
 const dir = (files: Record<string, string> = {}): string => {
@@ -180,5 +181,28 @@ describe('RC-STATE: a refused start is not restarted', () => {
     const unit = readFileSync(new URL('../../../ops/host/files/etc/systemd/system/zeroed-worker.service', import.meta.url), 'utf8');
     expect(unit).toMatch(new RegExp(`^RestartPreventExitStatus=${EXIT.stateRefused}$`, 'm'));
     expect(unit).toMatch(/^Restart=always$/m);
+  });
+});
+
+describe('RC-STATE (RB-17): every account.json write is checked by the start\'s check', () => {
+  it('a write the checker refuses is recorded (the setup file then fails the test); a good write is not', () => {
+    const d = dir();
+    const f = accountFile(d);
+    f.write({ openedAtMs: 1, openingEquity: 20_000_000n, walletLamports: null, trades: [], entries: [] } as never);
+    expect(refusedAccountWrites).toEqual([]);
+    f.write({ openedAtMs: 1, openingEquity: 20_000_000n, walletLamports: -1n, trades: [], entries: [] } as never);
+    expect(refusedAccountWrites).toHaveLength(1);
+    refusedAccountWrites.length = 0;
+  });
+
+  it('the real writers round-trip: price, setup, marks, a reservation and an entry fill pass the check', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    await m.run(6_000, 100, () => m.pool());
+    await h.worker.stop();
+    const a = accountFile(h.stateDir).read(null as never);
+    expect(a.entries.length).toBeGreaterThan(0);
+    expect(refusedAccountWrites).toEqual([]);
   });
 });

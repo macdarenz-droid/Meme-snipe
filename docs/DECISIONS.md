@@ -3570,6 +3570,9 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - Each write also records how many trades and entries the file holds, and which of the wallet, setup, NAV peak and day and week marks it held (`present`). None of these is ever removed or unset.
     - So lists shorter than their counts are refused, and so is a listed field that is gone (an entry booked twice, the setup rent paid again, R10's high-water mark or the day's and week's losses started again).
     - Files from before have no counts and no `present` list, so they are checked by type and range only.
+    - **Writers and the checker stay in step (red team B, RB-17).** A test setup file (`worker/test/account-roundtrip.ts`, in vitest.config.ts `setupFiles`) reads back every account.json written through its StateFile in every test, and runs it through `checkAccount`. A test that wrote a shape the checker refuses then fails at its end.
+      - So a later type change one side makes and the other does not (SOL-BOOKS' stray fee with `cost: null`) fails a test, not the next start. The refusal itself stays strict.
+      - A check that refuses stray fees fails 10 settlement tests; one that refuses the NAV peak fails the worker round-trip test.
   - **Backup (`zeroed-backup`).**
     - Everything in the state dir is packed, except:
       - the journal and the recording;

@@ -56,6 +56,7 @@ export default defineConfig({
       },
     ],
     // Runtime trap around engine code: clock, randomness, timers, Intl and module loading throw (ENG-1).
-    setupFiles: ['packages/core/test/setup.ts'],
+    // RC-STATE: every account.json a test writes through the real writers is checked by the start's check.
+    setupFiles: ['packages/core/test/setup.ts', 'packages/worker/test/account-roundtrip.ts'],
   },
 });
