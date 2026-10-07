@@ -13,7 +13,7 @@ import { runChecks } from '../check.ts';
 import { ZEROED_DIRS, ZEROED_FILES_MANIFEST } from '../config.ts';
 import { finding } from '../finding.ts';
 import type { Git } from '../git.ts';
-import { checkHosts, scanHosts } from '../hosts.ts';
+import { checkHosts, hostScanned, scanHosts } from '../hosts.ts';
 import type { PnpmLock } from '../lockfile.ts';
 import { checkManifests } from '../manifests.ts';
 import { checkPnpmConfig } from '../pnpmconfig.ts';
@@ -49,6 +49,27 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     assert.deepEqual(f.map((x) => `${x.file} ${x.message}`), [`a.ts:2 "//frontend-api.${HOST}" is a pump.fun-operated host; bot and research code makes no request to pump.fun (owner rule A02)`]);
   });
 
+  it('reads code and configuration only, never docs/ or Markdown: evidence keeps its wording (supervisor ruling, 2026-10-08)', () => {
+    const CAPS = ['Pump', 'fun'].join('.');
+    const repo = goodRepo();
+    try {
+      const quoted = `{ "route": "'${CAPS}'", "note": "the '${CAPS}' label" }\n`;
+      const files = ['docs/blueprint/FACTS.json', 'docs/x/feed.ts', 'packages/x/config.json', 'packages/x/a.yaml', 'packages/x/b.yml', 'packages/x/c.toml',
+        'packages/x/.env', 'packages/x/.env.local', 'research/x/probe.py', 'ops/x/run.sh', 'packages/x/a.tsx', 'packages/x/notes.txt', 'packages/x/data.jsonl',
+        'packages/x/README.md'];
+      for (const f of files) write(repo.dir, f, quoted);
+      assert.deepEqual(checkHosts(repo.dir, files).map((x) => x.file), ['ops/x/run.sh:1', 'packages/x/.env:1', 'packages/x/.env.local:1', 'packages/x/a.tsx:1',
+        'packages/x/a.yaml:1', 'packages/x/b.yml:1', 'packages/x/c.toml:1', 'packages/x/config.json:1', 'research/x/probe.py:1']);
+      for (const f of ['docs/blueprint/FACTS.json', 'docs/x/feed.ts', 'packages/x/README.md', 'packages/x/notes.txt']) assert.equal(hostScanned(f), false, f);
+      assert.equal(hostScanned('packages/x/config.json'), true);
+    } finally { repo.remove(); }
+    // The real evidence file passes as it is, quoted labels and all.
+    const facts = readFileSync(join(REPO_ROOT, 'docs/blueprint/FACTS.json'), 'utf8');
+    assert.ok(facts.includes(`'${CAPS}'`), 'FACTS.json quotes the route label verbatim');
+    assert.deepEqual(checkHosts(REPO_ROOT, ['docs/blueprint/FACTS.json']), []);
+    assert.notDeepEqual(scanHosts(facts, 'packages/x/config.json'), [], 'the same text in package configuration fails');
+  });
+
   it('reads every checked file but Markdown and the fixtures; only the Zeroed manifest\'s own files are skipped', () => {
     const repo = goodRepo();
     try {
@@ -80,16 +101,10 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     const files = gitFiles();
     assert.deepEqual(checkHosts(REPO_ROOT, files), []);
     const zeroed = [...new Set(checkHosts(REPO_ROOT, files, scopeOf(true)).map((x) => x.file.replace(/:\d+$/, '')))];
-    // The forms red team RT-04 found (a trailing dot, any letter case, a bare domain as a value) add six Zeroed files
-    // to this list; none is in scope, and none is fixed (docs/MIGRATION.md: Zeroed code is not fixed further).
+    // Code and configuration only (supervisor ruling, 2026-10-08): docs/** and Markdown are never read, so the sandbox
+    // notes under docs/handover/ that the first version reported are out; the RT-04 forms add research/brainstorm.
     assert.deepEqual(zeroed, ['apps/web/src/components/TokenActions.tsx', 'apps/web/test/app-trade.test.ts',
-      'docs/handover/sandbox/supervisor/files/bundle_probe.py', 'docs/handover/sandbox/supervisor/files/fc/swy.json',
-      'docs/handover/sandbox/supervisor/files/jrec.json', 'docs/handover/sandbox/supervisor/files/jrec2.json',
-      'docs/handover/sandbox/supervisor/files/rep.json', 'docs/handover/sandbox/supervisor/files/rep1.json',
-      'docs/handover/sandbox/supervisor/files/research/empirical-data/live/new_tokens.jsonl',
-      'docs/handover/sandbox/supervisor/files/research/empirical-data/live/snapshots.jsonl',
-      'docs/handover/sandbox/supervisor/files/rug.json', 'research/brainstorm/collect.py',
-      'research/empirical/backfill/meta.json']);
+      'research/brainstorm/collect.py', 'research/empirical/backfill/meta.json']);
   });
 });
 

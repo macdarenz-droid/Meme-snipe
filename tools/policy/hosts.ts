@@ -8,9 +8,12 @@
 // list of other domains pump.fun operates was available, so none is listed; a new one is added here in review.
 // Third parties that serve pump.fun data (PumpPortal, RPC providers, GitHub, npm) are not pump.fun-operated hosts.
 //
-// Where: every text file in scope (the Zeroed manifest's own files, config.ts ZEROED_FILES_MANIFEST, are skipped
-// unless the run includes them) except Markdown,
-// whose prose names the venue; the policy fixtures are data. What: a pump.fun host written as a request target:
+// Where (supervisor ruling, 2026-10-08): code and configuration only, because A02 is about request targets in bot and
+// research code. Code: .ts, .tsx, .mts, .cts, .js, .jsx, .mjs, .cjs, .py and .sh files anywhere outside docs/.
+// Configuration: .json, .yaml, .yml, .toml and .env files (`.env` and `.env.*`) outside docs/. Nothing under docs/ and
+// no Markdown is read: evidence and prose keep their verbatim wording (docs/blueprint/FACTS.json quotes the Jupiter
+// route label as it was observed). The Zeroed manifest's own files (config.ts ZEROED_FILES_MANIFEST) are skipped
+// unless the run includes them; the policy fixtures are data. What: a pump.fun host written as a request target:
 // - after `//` (a URL, any scheme, or a protocol-relative URL): https: // frontend-api.pump[.]fun/coins without the gaps;
 // - any subdomain of pump.fun anywhere (frontend-api.pump[.]fun in a host or header field), with or without a trailing
 //   dot;
@@ -19,19 +22,31 @@
 //   Markdown-style link label ([Pump[.]fun](url)) in a JSON or TypeScript string is prose, so a bracket is not one of
 //   these positions.
 // The venue's name in prose or comments ("the pump.fun bonding curve") is not a target, because words follow it on the
-// line; a quoted label (Pump[.]fun on its own inside quotes) is, so a label and a possessive are written another way
-// or live in Markdown, which is
-// not read. A host assembled at run time from pieces (`'pump' + '.fun'`) is not found: review catches that.
+// line; a quoted label (Pump[.]fun on its own inside quotes) in code or configuration is, so a user-facing label is
+// written another way there. A host assembled at run time from pieces (`'pump' + '.fun'`) is not found: review catches that.
 // Red team RT-04 closed the forms this missed: a trailing dot, upper case in the bare domain, and the bare domain as a
 // YAML or .env value.
 import { readFileSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { DATA_DIRS } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import { scopeOf, type Scope } from './scope.ts';
 
-/** File types that are prose, not code or configuration. */
-export const PROSE_EXTENSIONS = ['.md'];
+/** Code the host check reads, wherever it sits outside docs/. */
+export const CODE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.py', '.sh'];
+/** Configuration the host check reads outside docs/; `.env` files are matched by name (hostScanned). */
+export const CONFIG_EXTENSIONS = ['.json', '.yaml', '.yml', '.toml'];
+/** Never read: documentation and evidence, whatever the file type. */
+export const HOST_SKIPPED_DIRS = ['docs/'];
+
+/** True when the host check reads `file` (a repository path): code or configuration outside docs/. */
+export function hostScanned(file: string): boolean {
+  if (HOST_SKIPPED_DIRS.some((d) => file.startsWith(d))) return false;
+  const name = basename(file).toLowerCase();
+  if (name === '.env' || name.startsWith('.env.')) return true;
+  const ext = extname(name);
+  return CODE_EXTENSIONS.includes(ext) || CONFIG_EXTENSIONS.includes(ext);
+}
 
 /**
  * A pump.fun host in a request-target position (see the header): a URL host or any subdomain, in any case, with or
@@ -60,11 +75,11 @@ export function scanHosts(text: string, file: string): Finding[] {
   return findings;
 }
 
-/** Checks every non-prose file of `files` (paths relative to `root`, regular files only) that `scope` admits. */
+/** Checks every code and configuration file of `files` (paths relative to `root`, regular files only) that `scope` admits. */
 export function checkHosts(root: string, files: readonly string[], scope: Scope = scopeOf(false)): Finding[] {
   const findings: Finding[] = [];
   for (const file of [...files].sort()) {
-    if (!scope(file) || DATA_DIRS.some((d) => file.startsWith(d)) || PROSE_EXTENSIONS.includes(extname(file).toLowerCase())) continue;
+    if (!scope(file) || DATA_DIRS.some((d) => file.startsWith(d)) || !hostScanned(file)) continue;
     findings.push(...scanHosts(readFileSync(join(root, file)).toString('utf8'), file));
   }
   return findings;
