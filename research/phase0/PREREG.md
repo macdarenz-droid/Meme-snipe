@@ -139,7 +139,7 @@ The per-bar count of RT-05 is shown beside it.
 
 **Deciding line (RT-01; A-M13-01 steps 4–5):** the lean row of §4, plus the fixed monthly term at 10 trades a day with `M` = $10. My reading of RT-01, since it makes the lean row deciding and puts the $10 and $59 lines beside it, is that the $10 term decides, as the lower of the two real costs. The reviewer should confirm this (see §10).
 
-**Shown beside it:** the strict row of §4, the $10 line and the $59 line (OPEN-3, LD-27).
+**Shown beside it:** the strict row of §4, the $12 line (ARCH §2.4) and the $59 line (OPEN-3, LD-27).
 
 **Move rule:**
 - **Size verdict:**
@@ -304,7 +304,7 @@ For each kept signal and each size, there are 10 random entries.
 
 **Candidates.** A candidate entry bar must:
 - be in the same pool, on the same UTC day and in the same clock hour;
-- be in the same 6 h MAD decile, with deciles cut over that day's eligible complete pool-bars. The supervisor cited C-65 for this matching; I could not find C-65 in `docs/blueprint` at `94d55a84` (VERIFY the citation);
+- be in the same 6 h MAD decile, with deciles cut over that day's eligible complete pool-bars. Matching rule: C-65 (Z0D, pending merge).
 - be complete, with non-null features, and the pool eligible (RT-05);
 - pass the same entry-time filters as a signal: depth fall, fee-config, real/effective, `REGIME` and the depth cap at size `x`;
 - pass the common-window rule (F5);
@@ -454,7 +454,7 @@ Written to `docs/phase0/report-<D1>.md` plus CSVs (A-M13-01). The report must be
 - a week gives few signals (A05);
 - the missing M06 and M21 checks;
 - the `regime_basket_only` count;
-- the VERIFY items: the stuck probability and its valuation, and the C-65 citation;
+- the VERIFY items: the stuck probability and its valuation;
 - the lost-rent rate is unmeasured.
 
 ## 9. Review and run
@@ -519,4 +519,4 @@ The map from each item to its section is in the supervisor reply for this commit
 - **Sandwich term (RT-07).** It is an expected value: 0.10 × the MR entry bound (50 bps) on the buy and 0.10 × the normal exit bound (100 bps) on the sell (ARCH §8.3). There is no random draw, so the run stays deterministic.
 - **Bracketing (RT-07).** It applies to exit fills as well as entries, as ARCH §9.3(2) says "for our side".
 - **`k` cap.** With lost rent out of the strict row, the fixed cost at $5 is 0.52%, so $5 is no longer too small.
-- **C-65 (F2).** It is not in `docs/blueprint` at `94d55a84`. The matching rule itself is A14's.
+- **C-65 (F2).** Cited as "C-65 (Z0D, pending merge)": it is defined on `claude/z0d-blueprint-docs` (SPEC-A C-65) and lands with that PR. Supervisor accepted all seven readings on 2026-10-07; `M` = $10 confirmed as the real host cost.
