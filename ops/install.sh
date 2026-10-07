@@ -50,14 +50,15 @@ if [ -n "$SSH_KEY" ]; then
 fi
 
 # D07 preflight (docs/blueprint/ARCH.md D07 and M07): the bot's host is a 2 GB server, which the OS reports as
-# about 1.9 GiB, with a disk of at least 50 GB. Both are read from the host itself (/proc/meminfo, and df on
-# the filesystem that holds /var/lib); no option or variable changes them. The RAM floor is 1.5 GiB: it refuses
-# the 1 GB server (about 0.96 GiB) by a wide margin, no Vultr plan sits between 1 GB and 2 GB, and the 2 GB
-# server's exact MemTotal is not measured (a crash-dump reservation could lower it). The disk counts by its
-# size, so a host that already holds data passes a re-run. A full install refuses a host below either, before it changes
+# about 1.9 GiB (not measured), with a disk of at least 50 GB. Both are read from the host itself (/proc/meminfo,
+# and df on the filesystem that holds /var/lib); no option or variable changes them. The RAM floor is 1.5 GiB: it
+# refuses the 1 GB server (about 0.96 GiB) by a wide margin, no Vultr plan sits between 1 GB and 2 GB, and the
+# 2 GB server's exact MemTotal is not measured (a crash-dump reservation could lower it). The filesystem floor is
+# 40 GB by size (docs/DECISIONS.md): it refuses the 25 GB server (about 23 GB) widely, while the 55 GB disk's
+# filesystem, smaller than the disk and not measured, keeps a margin. Size, so a host holding data passes a re-run. A full install refuses a host below either, before it changes
 # anything; an update only warns, so zeroed-update never rolls a running server back over it.
 D07_MEM_MIN_KB=1572864   # 1.5 GiB in kB
-D07_DISK_MIN_KB=48828125 # 50 GB (50 × 10^9 bytes) in kB
+D07_DISK_MIN_KB=39062500 # 40 GB (40 × 10^9 bytes) in kB
 d07_shortfalls() { # MemTotal kB, size kB of the filesystem holding /var/lib: one line per shortfall
   if ! [[ "$1" =~ ^[0-9]{1,12}$ ]]; then echo "its RAM could not be read from /proc/meminfo"
   elif [ "$1" -lt "$D07_MEM_MIN_KB" ]; then
@@ -65,7 +66,7 @@ d07_shortfalls() { # MemTotal kB, size kB of the filesystem holding /var/lib: on
   fi
   if ! [[ "$2" =~ ^[0-9]{1,15}$ ]]; then echo "the size of the disk that holds /var/lib could not be read"
   elif [ "$2" -lt "$D07_DISK_MIN_KB" ]; then
-    awk -v k="$2" 'BEGIN { printf "the disk that holds /var/lib is %.1f GB; the bot needs at least 50 GB\n", k * 1024 / 1e9 }'
+    awk -v k="$2" 'BEGIN { printf "the disk that holds /var/lib is %.1f GB; the bot needs at least 40 GB\n", k * 1024 / 1e9 }'
   fi
 }
 d07_short="$(d07_shortfalls "$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo 2>/dev/null || true)" \
@@ -1316,7 +1317,7 @@ WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RU
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
-SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
+SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back

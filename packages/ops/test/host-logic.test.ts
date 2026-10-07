@@ -962,9 +962,11 @@ describe('D07 host preflight (Z00)', () => {
   const twoGb = '2014180'; // a typical 2 GB VM's MemTotal (1.92 GiB)
   const disk55 = '52700000'; // a 55 GB disk's filesystem, in kB (53.96 GB)
 
-  it('passes the 2 GB, 55 GB host and the boundaries: 1.5 GiB and 50 GB exactly', () => {
+  it('passes the 2 GB, 55 GB host and the boundaries: 1.5 GiB and 40 GB exactly', () => {
     expect(run(0, twoGb, disk55)).toEqual({ status: 0, out: 'went-on', err: '' });
-    expect(run(0, String(1.5 * GIB), '48828125')).toEqual({ status: 0, out: 'went-on', err: '' });
+    // The low estimate of the 55 GB disk's filesystem (about 50.6 GB, not measured; review F1) passes with a margin.
+    expect(run(0, twoGb, '49414063')).toEqual({ status: 0, out: 'went-on', err: '' });
+    expect(run(0, String(1.5 * GIB), '39062500')).toEqual({ status: 0, out: 'went-on', err: '' });
   });
 
   it('a full install refuses below either minimum, says why, and stops before any change', () => {
@@ -975,8 +977,9 @@ describe('D07 host preflight (Z00)', () => {
     expect(run(0, String(1.5 * GIB - 1), disk55).status).toBe(1);
     const smallDisk = run(0, twoGb, '24413000'); // 25 GB
     expect(smallDisk.status).toBe(1);
-    expect(smallDisk.err).toContain('the disk that holds /var/lib is 25.0 GB; the bot needs at least 50 GB.');
-    expect(run(0, twoGb, '48828124').status).toBe(1);
+    expect(smallDisk.err).toContain('the disk that holds /var/lib is 25.0 GB; the bot needs at least 40 GB.');
+    expect(run(0, twoGb, '22460938').status).toBe(1); // the 25 GB server's filesystem, about 23 GB
+    expect(run(0, twoGb, '39062499').status).toBe(1);
     const both = run(0, '1004316', '24413000');
     expect(both.err).toContain('it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported); the disk that holds /var/lib is 25.0 GB');
     // Unreadable or odd values refuse too.
@@ -993,7 +996,7 @@ describe('D07 host preflight (Z00)', () => {
     expect(r.out).toBe('went-on');
     expect(r.err.split('\n')).toEqual([
       "Warning: this server is below the bot's host minimum (D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported).",
-      "Warning: this server is below the bot's host minimum (D07): the disk that holds /var/lib is 25.0 GB; the bot needs at least 50 GB.",
+      "Warning: this server is below the bot's host minimum (D07): the disk that holds /var/lib is 25.0 GB; the bot needs at least 40 GB.",
     ]);
     expect(run(1, twoGb, disk55)).toEqual({ status: 0, out: 'went-on', err: '' });
   });
@@ -1003,14 +1006,13 @@ describe('D07 host preflight (Z00)', () => {
     expect(block).toContain("df -P -k /var/lib 2>/dev/null | awk 'NR == 2 { print $2 }'");
     expect(block).not.toMatch(/ZEROED_|E2E|\$\{[A-Z_]+:-/);
     expect(block).toMatch(/^D07_MEM_MIN_KB=1572864 /m);
-    expect(block).toMatch(/^D07_DISK_MIN_KB=48828125 /m);
+    expect(block).toMatch(/^D07_DISK_MIN_KB=39062500 /m);
     // After the root, OS and option checks; before the journal, apt, files or users.
     const at = script.indexOf('D07_MEM_MIN_KB=');
     expect(script.indexOf('die "needs an x86_64 server"')).toBeLessThan(at);
     expect(script.indexOf('--ssh-key must be one public key line')).toBeLessThan(at);
-    for (const later of ['JOURNAL=/var/lib/zeroed-host/update-journal', 'say "Packages"', 'say "Users"', '# @@FILES@@', 'install_file /']) {
-      const i = script.indexOf(later);
-      if (i >= 0) expect(i, later).toBeGreaterThan(at);
+    for (const later of ['JOURNAL=/var/lib/zeroed-host/update-journal', 'say "Packages"', 'say "Users"', 'say "Files"', 'install_file /']) {
+      expect(script.indexOf(later), later).toBeGreaterThan(at);
     }
   });
 });

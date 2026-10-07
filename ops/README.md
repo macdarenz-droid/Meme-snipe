@@ -2,7 +2,7 @@
 
 How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a to OPS-1e). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
 
-Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports about 1.9 GiB) / 55 GB SSD, image **Ubuntu 24.04 LTS x64** (`docs/blueprint/ARCH.md` D07). The older 1 GB server `zeroed` is not used for the bot. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026.
+Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports about 1.9 GiB, not measured) / 55 GB SSD, image **Ubuntu 24.04 LTS x64** (`docs/blueprint/ARCH.md` D07). The older 1 GB server `zeroed` is not used for the bot. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026.
 
 ## Setup (about 3 minutes)
 
@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/543d5dcfe09e35e1d4aaf979a6283293245a241b/ops/install.sh -o i && echo '473e2b48330a666837e0d636f19df75b1f4bcfc7f01fd4fa415eb85c324c3f99  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/543d5dcfe09e35e1d4aaf979a6283293245a241b/ops/install.sh -o i && echo 'd2889a0cf7ea5b5aa0015d7dccb9ebc12ff9862bacec89a576da684c445d7465  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,13 +19,13 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/543d5dcf
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `473e2b48330a666837e0d636f19df75b1f4bcfc7f01fd4fa415eb85c324c3f99`
+SHA-256 of `install.sh`: `d2889a0cf7ea5b5aa0015d7dccb9ebc12ff9862bacec89a576da684c445d7465`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
 ## What the installer does
 
-- Checks the host first (D07): a server with under 1.5 GiB of RAM (`MemTotal` in `/proc/meminfo`; a 1 GB server has about 0.96 GiB) or whose disk for `/var/lib` is under 50 GB is refused before anything changes, with the reason. `--update` only warns, so a running server keeps its updates. No option skips the check.
+- Checks the host first (D07): a server with under 1.5 GiB of RAM (`MemTotal` in `/proc/meminfo`; a 1 GB server has about 0.96 GiB) or whose filesystem for `/var/lib` is under 40 GB by size (a 25 GB server has about 23 GB; the 55 GB disk's filesystem is smaller than 55 GB, not measured) is refused before anything changes, with the reason. `--update` only warns, so a running server keeps its updates. No option skips the check.
 - Installs `age`, `git`, `jq`, `nftables`, `sqlite3` and `unattended-upgrades` from Ubuntu, and Node 22.23.3 from nodejs.org (checked against its pinned SHA-256).
 - Creates the `zeroed-worker` and `zeroed-signer` users and their systemd units with the §12.1 hardening. The signer has no network at all; the worker may only use HTTPS and DNS.
 - Turns on unattended security updates (no automatic reboot).

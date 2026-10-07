@@ -142,7 +142,7 @@ docker cp "$ROOT/ops/install.sh" "$C:/root/i"
 in_c "cd /root && echo '$hash  i' | sha256sum -c" >"$LOGS/console/hash-check.txt" 2>&1 || fail "hash check in the container"
 pass "README line: ${#line} ASCII characters, pinned to ${pin:0:12} which holds install.sh with the same SHA-256; checked in the container"
 # D07 preflight (Z00), through the same file: a full install on a host below 1.5 GiB of RAM or
-# with a /var/lib disk under 50 GB stops before it changes anything. This container has the runner's RAM and disk,
+# with a /var/lib filesystem under 40 GB stops before it changes anything. This container has the runner's RAM and disk,
 # so the small host is staged with mounts inside it (a 1 GB server's /proc/meminfo, a 25.6 GB tmpfs on /var/lib),
 # never with an option or variable of the installer: it has none.
 in_c "awk '\$1 == \"MemTotal:\" { \$2 = 1004316 } { print }' /proc/meminfo > /root/meminfo-1gb"
@@ -153,7 +153,7 @@ in_c "umount /proc/meminfo"
 in_c "mount -t tmpfs -o size=25000000k zeroed-e2e-small /var/lib"
 rc=0; in_c "ZEROED_NO_WAIT=1 bash /root/i" >"$LOGS/console/install-d07-disk.txt" 2>&1 || rc=$?
 in_c "umount /var/lib"
-[ "$rc" = 1 ] && grep -qF "Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): the disk that holds /var/lib is 25.6 GB; the bot needs at least 50 GB." "$LOGS/console/install-d07-disk.txt" || { cat "$LOGS/console/install-d07-disk.txt"; fail "D07: a 25 GB disk was not refused (exit $rc)"; }
+[ "$rc" = 1 ] && grep -qF "Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): the disk that holds /var/lib is 25.6 GB; the bot needs at least 40 GB." "$LOGS/console/install-d07-disk.txt" || { cat "$LOGS/console/install-d07-disk.txt"; fail "D07: a 25 GB disk was not refused (exit $rc)"; }
 grep -q '^==>' "$LOGS/console/install-d07-ram.txt" "$LOGS/console/install-d07-disk.txt" && fail "D07: a refused install started a step"
 in_c "! test -e /etc/zeroed && ! test -e /var/lib/zeroed-host && ! test -e /usr/local/bin/node && ! getent passwd zeroed-worker >/dev/null && ! grep -q 'MemTotal: *1004316 ' /proc/meminfo && test -d /var/lib/dpkg" || fail "D07: a refused install changed the server, or the staged mounts stayed"
 pass "D07 preflight: a 1 GB server and a 25.6 GB disk are refused with the reason, before any change"
