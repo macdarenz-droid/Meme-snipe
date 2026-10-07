@@ -8,6 +8,7 @@ import {
   type EntryPlan, type ExitDecision, type ExitMarket, type ExitObservation, type ExitTracker, type FlowMinute, type Holding,
   type PriceBar, PRICE_SCALE, atOrBelow, atr, checkStopDistance, decideExit, execPrice, exitBookEvents, exitSettings,
   exitAttemptsOf, liquidationValue, maxExitTransactions, newTracker, noteAttempt, planAttempt, quoteReserve,
+  slowRetriesWithin,
 } from '../../src/exits/index.ts';
 import { type ObservedFees, observedFeeContext } from '../../src/fills/index.ts';
 import { type Book, applyBookEvent, emptyBook, isIllegal, newPosition, applyPositionEvent, type PositionState } from '../../src/lifecycle/index.ts';
@@ -1028,5 +1029,18 @@ describe('EXIT-1c: an exit with no quote yet waits for the first fresh quote, ne
     expect(waiting.decision.kind).toBe('hold');
     const after = decide(used, obs(X.tMaxMs + 400), plan(), waiting.tracker);
     expect(after.decision).toMatchObject({ kind: 'exit', blocked: `exit ladder used: ${G.ladder.maxAttempts} attempts on this position` });
+  });
+});
+
+describe('RB-5 slow retries a horizon can hold (R4 reserve sizing)', () => {
+  test('waits of 64, 128, 256, 512 then 1,024 × blockedRetryMs: 4 fit in a day at one minute, none before the first wait', () => {
+    const M = 60_000;
+    expect(slowRetriesWithin(M, 64 * M - 1)).toBe(0);
+    expect(slowRetriesWithin(M, 64 * M)).toBe(1);
+    expect(slowRetriesWithin(M, (64 + 128 + 256 + 512) * M)).toBe(4);
+    expect(slowRetriesWithin(M, (64 + 128 + 256 + 512 + 1_024) * M - 1)).toBe(4);
+    expect(slowRetriesWithin(M, 86_400_000)).toBe(4);
+    expect(slowRetriesWithin(M, (64 + 128 + 256 + 512 + 1_024) * M)).toBe(5);
+    expect(() => slowRetriesWithin(0, 1)).toThrow(RangeError);
   });
 });

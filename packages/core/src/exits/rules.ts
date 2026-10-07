@@ -259,6 +259,18 @@ export const SLOW_RETRY_MAX_DOUBLINGS = 10;
 export const slowRetryWaitMs = (blockedRetryMs: number, done: number): number =>
   blockedRetryMs * 2 ** Math.min(SLOW_RETRY_FIRST_DOUBLINGS + Math.max(0, done), SLOW_RETRY_MAX_DOUBLINGS);
 
+/**
+ * The most slow retries a position can send within `horizonMs` of its bounded retries being spent: the waits alone, each
+ * counted from the one before (the time a failed attempt takes to settle only spaces them further). R4's reserve covers
+ * the first day of them (RB-5 risk ruling).
+ */
+export const slowRetriesWithin = (blockedRetryMs: number, horizonMs: number): number => {
+  if (!(blockedRetryMs > 0)) throw new RangeError('blockedRetryMs must be above zero');
+  let k = 0;
+  for (let t = slowRetryWaitMs(blockedRetryMs, 0); t <= horizonMs; t += slowRetryWaitMs(blockedRetryMs, k)) k++;
+  return k;
+};
+
 /** One update of one position. Pure: the same inputs always give the same step. */
 export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: ExitTracker, obs: ExitObservation): ExitStep => {
   const g = s.exits;

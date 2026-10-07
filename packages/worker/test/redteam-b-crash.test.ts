@@ -4,10 +4,10 @@
 //  - no fill booked twice: each landed paper attempt (the simulated chain, paper.json) is one book fill, and back;
 //  - the paper wallet reconciles to the lamport with the chain: W0 + exits - entries - every landed attempt's fee
 //    - entry rent + rent back on the closing sell (scenario with no dust and closes that always succeed).
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { feeParts } from '../../core/src/fills/index.ts';
 import { isTerminal } from '../../core/src/lifecycle/index.ts';
@@ -95,7 +95,24 @@ const VARIANTS: { name: string; land: bigint; path: bigint[]; haircutPpm?: bigin
   // sends miss ends its ladder and bounded retries blocked; the slow retry, sent an hour later, starts from no haircut.
   { name: 'haircut on (15% a send), 60% land: slow retries fill', land: 600_000n, path: [1_400_000n, 1_400_000n, 700_000n], haircutPpm: 150_000n, images: 400, untilBlocked: true, driveMs: 12 * 3_600_000, slow: true },
 ];
+/** Crash images left by an earlier run that was killed (every image of a finished test is deleted as it ends). */
+const RUN_STARTED_MS = Date.now();
+const removeStaleImages = (): void => {
+  for (const name of readdirSync(tmpdir())) {
+    if (!name.startsWith('rb-crash-')) continue;
+    const dir = join(tmpdir(), name);
+    try {
+      if (statSync(dir).mtimeMs < RUN_STARTED_MS) rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Gone already.
+    }
+  }
+};
+
 describe('RB-7 crash at any state-file write during a trade, then restart', () => {
+  beforeAll(() => {
+    if (!process.env.RB_DEBUG) removeStaleImages();
+  });
   it.each(VARIANTS)('$name: every image restarts to a closed, reconciled, non-duplicated trade', async ({ land, path, haircutPpm, images: sample, untilBlocked, driveMs, slow }) => {
     const SCEN = scen(land, haircutPpm);
     const images: { dir: string; label: string }[] = [];

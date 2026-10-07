@@ -94,7 +94,8 @@ export interface PaperWorldDeps {
   readonly ladderFees: readonly bigint[];
   /** The rung #sendExit recorded for this signed attempt, across partial owners and blocked retries. */
   readonly exitRung: (i: IntentState) => number;
-  readonly market: (mint: string) => PaperMarket | null;
+  /** The pool read an attempt landing at `slot` executes against (worker: `landingMarket`). */
+  readonly market: (mint: string, slot: bigint) => PaperMarket | null;
   /** The policy's quote age (gates.maxQuoteAgeMs): the freshness rule the attempt's own quote met. */
   readonly maxQuoteAgeMs: number;
   readonly maxSolOut: (i: IntentState) => bigint;
@@ -382,7 +383,7 @@ export class PaperWorld implements EffectRunner {
       this.#d.report({ type: 'intent', intentId: a.intentId as IntentId, event: { type: 'status', signature: a.signature as Signature, result: 'failed', commitment: 'finalized', blockHeight: slot, searchedHistory: false } });
     };
     if (a.fate === 'fails') return failed('landed failed (drawn)');
-    const m = this.#d.market(a.mint);
+    const m = this.#d.market(a.mint, slot);
     if (m === null) return failed('pool state unknown');
     // N1: the price at landing is known only from a read as fresh as the attempt's own quote had to be. An older one
     // (a feed gap) is no price: the attempt fails and pays its fee, as a real one can, and never fills at the old read.

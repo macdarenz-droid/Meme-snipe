@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseTyped } from '../src/run/json.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
-import { poolKey } from '../../core/src/gates/index.ts';
+import { parsePool, poolKey } from '../../core/src/gates/index.ts';
+import { MINT as WORLD_MINT, passingFacts } from '../../core/test/gates/world.ts';
+import { type CarryFact, landingMarket } from '../src/engine/strategy.ts';
 import { LANDS, MINT, type Market, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -67,5 +69,25 @@ describe('F2 a paper entry lands on a carry-dated read', () => {
     const a = await quietLanding({ covered: true, moved: true });
     expect(a.outcome).toBe('failed');
     expect(a.reason).toMatch(/^pool state stale/);
+  });
+});
+
+describe('F2 the landing rule (landingMarket): a carry dates a landing only through its own slot', () => {
+  const pool = parsePool(passingFacts().get(poolKey(WORLD_MINT))!.value)!;
+  const state = { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n };
+  const slot = pool.obs.slot ?? 0n;
+  const carry = (o: Partial<CarryFact> = {}): CarryFact => ({ pool: pool.address, slot: slot + 3n, state, obs: { receivedAt: pool.obs.receivedAt + 1_200 }, ...o });
+  const own = { kind: 'pool', pool, atMs: pool.obs.receivedAt, carried: false, confirmedAtMs: null };
+
+  it('a carry through the landing slot dates it (at the landing slot or before it)', () => {
+    for (const landing of [slot + 3n, slot + 1n]) expect(landingMarket(pool, null, carry(), landing)).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt + 1_200, carried: true, confirmedAtMs: null });
+  });
+
+  it('a carry that ends before the landing slot does not: the pool fact keeps its own date', () => {
+    expect(landingMarket(pool, null, carry(), slot + 4n)).toEqual(own);
+  });
+
+  it('a carry of other reserves does not, whatever its slot', () => {
+    expect(landingMarket(pool, null, carry({ state: { ...state, quoteVault: state.quoteVault + 1n } }), slot + 1n)).toEqual(own);
   });
 });

@@ -23,7 +23,7 @@ import type { DryRunRecord } from '../dryrun/index.ts';
 import { CANDIDATE_RESTORED, GATE_REASONS_PREFIX, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY, HOLE_FETCH_PREFIX } from '../../../core/src/facts/producer.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, landingMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, HELIUS_EXHAUSTED, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
@@ -850,7 +850,7 @@ export class Worker {
       seed, scenario: d.scenario, network: d.network,
       ladderFees: d.session.policy.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint),
       exitRung: (i) => this.#strategy.signedRung(i.intent.positionId, this.#engine.book),
-      market: (mint) => this.#paperMarket(mint),
+      market: (mint, slot) => this.#paperMarket(mint, slot),
       maxQuoteAgeMs: d.session.policy.gates.maxQuoteAgeMs,
       maxSolOut: (i) => {
         const n = d.network;
@@ -1511,9 +1511,15 @@ export class Worker {
     this.#poolReleasedAt.set(mint, this.#d.timers.now());
   }
 
-  /** The mint's newest whole market by the strategy's own rule (`chooseMarket`). */
-  #choice(mint: string): MarketChoice {
-    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, this.#carries.get(mint)?.carry ?? null);
+  /**
+   * The mint's newest whole market by the strategy's own rule (`chooseMarket`); with `landingSlot`, the market a paper
+   * attempt lands on at that slot (`landingMarket`).
+   */
+  #choice(mint: string, landingSlot?: bigint): MarketChoice {
+    const pool = parsePool(this.#pools.get(mint));
+    const snap = this.#snapshots.get(mint) ?? null;
+    const carry = this.#carries.get(mint)?.carry ?? null;
+    return landingSlot === undefined ? chooseMarket(pool, snap, carry) : landingMarket(pool, snap, carry, landingSlot);
   }
 
   /**
@@ -1543,8 +1549,8 @@ export class Worker {
     return { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
   }
 
-  poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
-    const c = this.#choice(mint);
+  poolOf(mint: string, landingSlot?: bigint): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
+    const c = this.#choice(mint, landingSlot);
     if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
     if (c.kind !== 'pool') return null;
     const p = c.pool;
@@ -1986,12 +1992,13 @@ export class Worker {
   readonly #cutCreateSeen = new Set<string>();
 
   /**
-   * N1: the read a paper attempt lands on and its date. A carry dates it for entries too (BT-parity F2): it proves the
-   * reserves unchanged through its slot, which is all a landing needs. An entry's decision still never prices from a
-   * carry (#sendEntry, WATCH-1c risk review): that is about judging a candidate without a verify read.
+   * N1: the read a paper attempt lands on at `slot`, and its date. A carry dates it for entries too (BT-parity F2), but
+   * only a carry through the landing slot: it proves the reserves unchanged up to the landing, which is all a landing
+   * needs. An entry's decision still never prices from a carry (#sendEntry, WATCH-1c risk review): that is about judging
+   * a candidate without a verify read.
    */
-  #paperMarket(mint: string): PaperMarket | null {
-    const m = this.poolOf(mint);
+  #paperMarket(mint: string, slot: bigint): PaperMarket | null {
+    const m = this.poolOf(mint, slot);
     return m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs };
   }
 
