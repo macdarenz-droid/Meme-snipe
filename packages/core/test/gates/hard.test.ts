@@ -220,10 +220,18 @@ describe('unknown, stale or degraded input rejects with a reason (H16)', () => {
   });
 
   it('off-chain reads older than 2 s reject (live)', () => {
-    const f = patch(passingFacts(), simKey(MINT), { obs: obs({ slot: null, receivedAt: T - 2_001 }) });
+    const f = patch(passingFacts(), simKey(MINT), { obs: obs({ slot: SLOT - 2n, receivedAt: T - 2_001 }) });
     expect(reasonsOf(f)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'stale', input: 'sim', neededBy: 'H15', value: '2001', limit: '2000' }));
-    const ok = patch(passingFacts(), simKey(MINT), { obs: obs({ slot: null, receivedAt: T - 2_000 }) });
+    const ok = patch(passingFacts(), simKey(MINT), { obs: obs({ slot: SLOT - 2n, receivedAt: T - 2_000 }) });
     expect(codesFor(reasonsOf(ok), 'H15')).toEqual([]);
+  });
+
+  it('R2-4: a simulation needs a context slot within the state lag plus its receipt age of the tip (live)', () => {
+    // 2 slots of state lag + 2,000 ms / 400 ms = 7 slots.
+    const sim = (slot: bigint | null) => reasonsOf(patch(passingFacts(), simKey(MINT), { obs: obs({ slot, receivedAt: T - 500 }) }));
+    expect(codesFor(sim(SLOT - 7n), 'H15')).toEqual([]);
+    expect(sim(SLOT - 8n)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'stale', input: 'sim', neededBy: 'H15', value: '8', limit: '7' }));
+    expect(sim(null)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'sim', neededBy: 'H15' }));
   });
 
   it('a value whose own stamp is after now rejects as future', () => {

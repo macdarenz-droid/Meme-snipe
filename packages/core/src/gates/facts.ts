@@ -210,6 +210,11 @@ export interface CurveVolumeFact {
 export interface GraduatesFact {
   readonly obs: FactObs;
   readonly items: readonly { readonly mint: string; readonly migratedAtMs: number; readonly reserveAfter: bigint }[];
+  /**
+   * R2-6: survival marks in [fromMs, toMs) this series did not observe (a restart: the downtime, and the pending marks
+   * the old process held). Survival over a window that touches it is not judged.
+   */
+  readonly unobserved?: { readonly fromMs: number; readonly toMs: number };
 }
 
 /** Live only: the bot's own execution health (failure share, landing delay, quote-versus-fill error). */
@@ -405,6 +410,7 @@ export const parseCurveVolume = (v: unknown): CurveVolumeFact | null =>
 
 export const parseGraduates = (v: unknown): GraduatesFact | null =>
   withObs(v) && every(v['items'], (i): i is GraduatesFact['items'][number] => isObj(i) && isStr(i['mint']) && isMs(i['migratedAtMs']) && isBig(i['reserveAfter']))
+  && (v['unobserved'] === undefined || (isObj(v['unobserved']) && isMs(v['unobserved']['fromMs']) && isMs(v['unobserved']['toMs']) && v['unobserved']['fromMs'] <= v['unobserved']['toMs']))
     ? (v as unknown as GraduatesFact) : null;
 
 export const parseExecHealth = (v: unknown): ExecHealthFact | null =>

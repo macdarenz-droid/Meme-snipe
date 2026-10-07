@@ -31,7 +31,7 @@ import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
-import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
+import { DeployerStore, liveWatchToClose, startedWatches, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
 import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
@@ -2479,6 +2479,14 @@ export class Worker {
     if (result.mode !== 'fill' && saved.last !== null && close !== null) {
       // A restart without a fill: the downtime is an open gap on the saved watch, settled by its new start as lossy.
       extra.push({ kind: 'market', id: 'worker:downtime-gap', moment: { ...asOf }, key: 'coverage:creates:gap', value: { value: { fromSlot: saved.last.slot + 1n, toSlot: null, reason: 'worker down; no downtime fill', via: close.via }, source: 'worker', backfilled: false, seq: 0 } });
+    }
+    if (saved.last !== null) {
+      // R2-1: every other started watch, rugs included, gets the downtime gap too (the downtime fill reads the live creates
+      // watch only), as `loadState` does on the persist path, which already left those gaps open so none is added twice.
+      for (const w of startedWatches(saved.coverage)) {
+        if (w.stream === 'creates' && w.via === close?.via) continue;
+        extra.push({ kind: 'market', id: `worker:downtime-gap:${w.stream}:${w.via}`, moment: { ...asOf }, key: `coverage:${w.stream}:gap`, value: { value: { fromSlot: saved.last.slot + 1n, toSlot: null, reason: 'worker down', via: w.via }, source: 'worker', backfilled: false, seq: 0 } });
+      }
     }
     const order = (xs: readonly MarketEvent[]) => {
       const byId = new Map(xs.map((e) => [e.id, e]));

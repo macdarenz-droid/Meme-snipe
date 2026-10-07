@@ -121,7 +121,7 @@ export class MintJudge {
 export const rugCheckFromMs = (lookbackStartMs: number, rugs: RugConfig): number =>
   lookbackStartMs - Math.max(rugs.creatorDump.windowMs, rugs.collapse.windowMs);
 
-export type CheckCover = { readonly covered: true; readonly rugs: readonly { readonly mint: string; readonly kind?: string }[] } | { readonly covered: false; readonly detail: string };
+export type CheckCover = { readonly covered: true; readonly rugs: readonly { readonly mint: string; readonly kind?: string; readonly atMs?: number }[] } | { readonly covered: false; readonly detail: string };
 
 /**
  * Whether a deployer's check covers H14's rug half at `now`: made for this creator, listing mints from at or before
@@ -144,5 +144,8 @@ export const deployerCheckCovers = (
     if (m.status === 'unfetched' || m.status === 'unjudged') return { covered: false, detail: `${mint} ${m.status}: ${m.detail}` };
   }
   const rugs = fact.mints.filter((m) => m.status === 'rug').sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0));
-  return { covered: true, rugs: rugs.map((m) => (m.label === undefined ? { mint: m.mint } : { mint: m.mint, kind: m.label.rule })) };
+  // R2-2: the label's chain time goes with it, so H14 applies the same look-back as to the stream's labels. A label
+  // without a usable date carries none (H14 counts it: the safe side).
+  const atOf = (m: MintCheck): { atMs?: number } => (m.label !== undefined && isMs(m.label.atMs) ? { atMs: m.label.atMs } : {});
+  return { covered: true, rugs: rugs.map((m) => (m.label === undefined ? { mint: m.mint } : { mint: m.mint, kind: m.label.rule, ...atOf(m) })) };
 };

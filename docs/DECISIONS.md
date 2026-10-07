@@ -3497,3 +3497,34 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Review B1: shedding pool A's whole copy still gives held pool B its swap, whether B's copy came before or after the shed (both fail before the fix), and the replay equals live.
   - Ten runs give the same frames, releases, events and facts, and each replays to them. A recording with echoes is refused under the pre-echo rules and by `frameEvents`.
   - Parity: live (cut log on both watches, fetched, healed) ends with the same candles and coverage as the backtest of the full transaction on both pools. The recording, round-tripped through its JSON, replays to the same events and facts; a recording made before echoes replays as it did.
+
+## Red team A round 2: H14, H15, H16 and the regime's survival series (A2-GATE-FIXES)
+
+Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2", branch `claude/redteam-a` @ 00a517b) found seven gates or facts that passed on partial data or differed between live and the backtest. Each probe is now a test; each failed on 959d801. Every change below makes a gate stricter or makes live equal the backtest; no limit is loosened.
+
+- **R2-1, H14's rug half after a store-seeded restart** (`run/worker.ts` `#seedIndex`, `run/deployer-store.ts` `startedWatches`).
+  - Before: a restart seeded from `deployers.jsonl` alone (no usable state file) gave only the live creates watch a downtime gap. The saved `coverage:rugs:*` start read as continuous across the downtime, so H14 counted labels the labeller never had the trades for. **Fail-open** (latent: `tradeStreams` is off in `main.ts`).
+  - Now: every started watch on both streams (the seed's backfill aside) without an open gap gets an open `worker down` gap at the saved moment, as `loadState` does on the persist path. The live creates watch keeps its own rule: no gap when the downtime fill read it. On the persist path those gaps are already open, so none is added twice.
+- **R2-2, the on-demand rug check's look-back** (`gates/deployer-check.ts` `deployerCheckCovers`, `gates/hard.ts` H14).
+  - Before: a rug the check found counted whatever its date. Stream labels count only from `now - 14 d`. Live (check only) refused coins the backtest (stream) traded.
+  - Now: a checked rug carries its label's chain time (`atMs`) and counts only when `atMs >= now - lookback`, the stream's rule.
+  - **A rug with no usable date (no label, or `atMs` not a whole ms) is counted, and a `rug-undated` note is journalled.** Counting it refuses more coins. Dropping it could pass a serial rugger. The check's labeller always dates its labels (`RugLabel.atMs`, the chain time of the event that met the rule), so this only matters for a malformed fact.
+- **R2-3, non-SOL graduates in the survival series** (`facts/producer.ts` `#migration`).
+  - Before: a USDC-quoted pool's raw quote reserve was compared with the 30 SOL floor. Live and the backtest share the producer, so both were wrong the same way.
+  - Now: the producer keeps each created pool's quote mint, and only a wrapped-SOL pool (`NATIVE_MINT`, the mint H5 accepts) gets a survival mark. The migration fact is unchanged (H5 refuses such a pool as a candidate).
+- **R2-4, H15's simulation slot** (`gates/hard.ts` H15, `gates/evidence.ts` `tip`).
+  - Before: only the 2 s receipt age was checked; a simulation 5,000 slots behind the tip passed.
+  - Now: a simulation with no context slot is `malformed`. One more than `maxStateSlotLag + ceil(maxQuoteAgeMs / 400)` slots behind the tip (7 with the trial policy) is `stale`. 400 ms is Solana's nominal slot time; slower slots only put a fresh simulation fewer slots behind, so no fresh simulation is refused. Live raw sim reads always carry the node's context slot (`parseSimRead` requires it).
+  - Rejected: binding the slot to the pool read's slot. In one read batch the account read can land a slot after the simulation, so it would refuse sound simulations.
+- **R2-5, H16 cross-check per field** (`gates/hard.ts` H16).
+  - Before: a source counted when it reported either authority, so an authority no third party reported passed unchecked.
+  - Now: each of mint authority and freeze authority needs at least one source that reported it; otherwise H16 `missing`.
+- **R2-6, a restart's hole in the graduates series** (`facts/producer.ts` `#seedGraduates`, `graduatesFact`; `gates/facts.ts` `GraduatesFact.unobserved`; `gates/regime.ts` `survivalCondition`).
+  - Before: a restored series was released as current, and survival over a 24 h window that was mostly downtime was judged (after a 20 h outage, from 4 h of data).
+  - Now: an accepted seed marks survival marks in `[seed asOfMs, release + survivalAfterMs)` as unobserved. That covers the downtime and the marks the old process still had pending, which are not saved. The graduates fact carries the stretch (`unobserved`) while it is inside the keep window. Survival over a 24 h window that touches it is `not-covered`, so the regime stays off until 24 h of observed marks exist after each restart. Item dates are the graduates' real migration times, as before.
+  - Only the newest stretch is kept. A contiguous 24 h window that touches an older stretch and reaches past the newest covers the newest too. So no new saved data is needed: the saved series stays `{ asOfMs, items }`.
+  - A seed that adds no graduate now still releases a fact, which carries the stretch.
+  - **Residual, named:** the 14 daily shares the median is taken from are not gated on the stretch. Gating them would keep the regime off for 15 days after every restart. A day with a hole is a share from a smaller sample, not a share of missing data read as zero. The backtest has no restarts, so its results do not change.
+- **R2-7, the serial count and block time ahead of the clock** (`gates/deployer-index.ts` `observe`).
+  - Before: a create whose block time was ahead of the local clock was in the index but left out of H14's 24 h count until the clock passed it.
+  - Now: a block time up to `CHAIN_SKEW_MS` ahead of its receipt is taken as the receipt time, as `seed` and `fill` clamp to their as-of. Further ahead is no clock skew and keeps its chain time.

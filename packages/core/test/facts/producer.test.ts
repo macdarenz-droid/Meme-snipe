@@ -1030,17 +1030,22 @@ describe('graduate survival', () => {
       expect(built).toHaveLength(1);
       for (const source of ['persist', 'data-1']) {
         expect(items(new FactWorld().push(seed(built, mark + 30_000, mark + 30_000, source)))).toEqual(built);
-        // The same graduate from the live build and the seed: counted once.
+        // The same graduate from the live build and the seed: counted once. The seed adds no graduate but still marks
+        // its hole (R2-6), so a new fact goes out.
         const both = live().push(seed(built, mark + 30_000, mark + 40_000, source));
-        expect(both.facts(GRADUATES_KEY)).toHaveLength(1);
+        expect(both.facts(GRADUATES_KEY)).toHaveLength(2);
         expect(items(both)).toEqual(built);
+        expect((both.last(GRADUATES_KEY) as { unobserved?: unknown }).unobserved).toEqual({ fromMs: mark + 30_000, toMs: mark + 40_000 + 30 * 60_000 });
       }
     });
 
     it('is as-of honest: a seed dated after its release is refused, and an entry whose mark is after the seed\'s moment does not count', () => {
       const built = items(live())!;
       expect(new FactWorld().push(seed(built, mark + 30_000, mark + 29_999)).facts(GRADUATES_KEY)).toEqual([]);
-      expect(new FactWorld().push(seed(built, mark - 1, mark + 30_000)).facts(GRADUATES_KEY)).toEqual([]);
+      // R2-6: the entry does not count, but the seed's hole is marked.
+      expect(new FactWorld().push(seed(built, mark - 1, mark + 30_000)).facts(GRADUATES_KEY).map((f) => f.value)).toEqual([
+        expect.objectContaining({ items: [], unobserved: { fromMs: mark - 1, toMs: mark + 30_000 + 30 * 60_000 } }),
+      ]);
       expect(items(new FactWorld().push(seed(built, mark, mark + 30_000)))).toEqual(built);
     });
 

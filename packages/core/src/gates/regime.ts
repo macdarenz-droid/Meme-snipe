@@ -95,6 +95,9 @@ export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regim
     if (inWindow.length === 0) return null;
     return { n: BigInt(inWindow.filter((i) => i.reserveAfter > p.survivalReserveFloor).length), d: BigInt(inWindow.length) };
   };
+  // R2-6: the 24 h share is judged only on a window the series observed whole (a restart's hole reads as not covered).
+  const u = g.unobserved;
+  if (u !== undefined && u.fromMs <= at && u.toMs > at - DAY_MS) return unknown('survival', 'graduates', 'not-covered', `survival marks from ${u.fromMs} to ${u.toMs} were not observed; the 24 h before ${at} needs them`);
   const recent = share(at - DAY_MS, at);
   if (recent === null) return unknown('survival', 'graduates', 'not-covered', `no graduate reached +${p.survivalAfterMs} ms in the 24 h before ${at}`);
   const days: Frac[] = [];
