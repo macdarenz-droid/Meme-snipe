@@ -63,6 +63,7 @@
     - Only needed if the owner picks route B for B-10.
   - #287 Z01: the round 3 builder is applying rulings 1–7 (`docs/reviews/Z01.md` @ `b0a29e1d`).
   - B-10 merge freeze (Z0D-2 round 7 ruling 4; SPEC-A A-M14-05): from the moment a B10-ACK row is pinned until P17 unblocks (its `closed.json` exists and the first credit-cycle reset after the later of `to` and the job's last request has passed; Z0D-2 round 8), the supervisor merges no PR that touches `.github/**` or `tools/policy/**`. At pin time the supervisor writes `pin.json` with the sha256 of the guarding files: the B-10 workflow, the guard action, `tools/policy/**` and `ci.yml`, taken from the reviewed default-branch commit.
+  - Helius workflows (Z0D-2 round 9 ruling 1, until MIGRATION P21 lands): no workflow that reads a `HELIUS*` secret is dispatched unless the supervisor first records its maximum credits here. Reason: those workflows reserve nothing in the account ledger.
   - Known risk (Z0D-2 F1, 8 Oct): the default branch `ccr-14987baf-i6lrsl` is unprotected (`"protected": false`). "Never push to the default branch" is enforced by practice only. A ruleset is an owner step listed in SPEC-A A-M14-05; it is required before any B-10 key is placed.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
