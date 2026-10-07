@@ -248,7 +248,7 @@ export const eventsOfFrame = (f: Frame, ranks: Pick<Ranks, 'get'>): FeedEvent[] 
       try {
         read = logEvents(b.logs, b.err);
       } catch (e) {
-        return [{ kind: 'market', id: `log:${b.signature}${cs}:undecodable${sfx}`, moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE, receivedAt: f.receivedAt } : off, key: `logs:undecodable:${b.via}`, value: { signature: b.signature, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) } }];
+        return [{ kind: 'market', id: `log:${b.signature}${cs}:undecodable${sfx}`, moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE, receivedAt: f.receivedAt } : off, key: `logs:undecodable:${b.via}`, value: { signature: b.signature, txSlot: b.slot, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) } }];
       }
       const events: FeedEvent[] = read.events.map((e): FeedEvent => {
         const subject = e.name === 'other' ? e.program : ('mint' in e.data ? e.data.mint : 'pool' in e.data ? e.data.pool : e.program);
@@ -260,7 +260,7 @@ export const eventsOfFrame = (f: Frame, ranks: Pick<Ranks, 'get'>): FeedEvent[] 
         };
       });
       if (read.truncated && events.length === 0) {
-        events.push({ kind: 'market', id: `log:${b.signature}${cs}:truncated${sfx}`, moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE, receivedAt: f.receivedAt } : off, key: `logs:truncated:${b.via}`, value: { signature: b.signature, ...meta(f) } });
+        events.push({ kind: 'market', id: `log:${b.signature}${cs}:truncated${sfx}`, moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: LOG_IX_BASE, receivedAt: f.receivedAt } : off, key: `logs:truncated:${b.via}`, value: { signature: b.signature, txSlot: b.slot, ...meta(f) } });
       }
       return events;
     }

@@ -97,8 +97,21 @@ export interface ProducerOptions {
   readonly insiderSlots: number;
   /** Funder lookups cover the first this many distinct buyers (§16.3: 20). */
   readonly firstBuyers: number;
+  /**
+   * LATE-LOG: slots past a graduate's survival mark (in released slots) before its survival is settled, so a confirmed
+   * pool log delivered late cannot change a permanent survival entry (default `CONFIRM_LAG_SLOTS`).
+   */
+  readonly confirmLagSlots?: number;
   readonly execHealth?: ExecHealthLimits;
 }
+
+/**
+ * LATE-LOG (S1 ruling, 2026-10-07): how many released slots a confirmed pool log can still arrive after its own slot was
+ * released. Measured on the 6 Oct recordings (boot muwxcwu3, docs/DECISIONS.md "LATE-LOG"): at most 5 slots past the
+ * release point, so 6. A survival mark waits this long before it is settled, and an entry that passed its gates waits
+ * this long and passes them again before it is proposed (`StrategyConfig.confirmLagSlots`). Exits never wait.
+ */
+export const CONFIRM_LAG_SLOTS = 6;
 
 /**
  * OOM-SEEN (supervisor ruling, Option A): the candle book remembers each trade's id for an hour behind the pool's newest
@@ -171,6 +184,7 @@ export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): Produ
   volumeKeepMs: (p.regime.volumeWindowDays + p.regime.volumeLagDays + 2) * 24 * HOUR_MS,
   insiderSlots: 2,
   firstBuyers: 20,
+  confirmLagSlots: CONFIRM_LAG_SLOTS,
   ...(execHealth === undefined ? {} : { execHealth }),
 });
 
@@ -434,6 +448,8 @@ interface Pending {
   readonly pool: string;
   readonly migratedAtMs: number;
   readonly slot: bigint;
+  /** LATE-LOG: the released slot when its survival mark was first reached; settled only `confirmLagSlots` after it. */
+  markSlot?: bigint;
 }
 
 /** Effective quote reserves (vault + virtual) of a pool, as of a time. */
@@ -594,7 +610,8 @@ export class FactProducer {
     if (pe !== null) this.#program(pe.ev, pe.seen, pe.truncated, e, put);
     else if (e.key === 'chain:slot') this.#slot(e, put);
     else if (e.key.startsWith('coverage:')) this.#coverage(e, put);
-    else if (e.key.startsWith('logs:truncated:') || e.key.startsWith('logs:undecodable:')) this.#hole(e.key.slice(e.key.indexOf(':', 5) + 1), e.moment.slot, put, e);
+    // LATE-LOG (review LOW-3): at the transaction's own slot, which an off-chain (late) placement does not show.
+    else if (e.key.startsWith('logs:truncated:') || e.key.startsWith('logs:undecodable:')) this.#hole(e.key.slice(e.key.indexOf(':', 5) + 1), isObj(e.value) && typeof e.value['txSlot'] === 'bigint' ? e.value['txSlot'] : e.moment.slot, put, e);
     else if (e.key.startsWith(HOLE_FETCH_PREFIX)) this.#holeFetched(e.key.slice(HOLE_FETCH_PREFIX.length), e, put);
     else this.#raw(e, put);
     this.#flushGraduates(e, put);
@@ -795,13 +812,16 @@ export class FactProducer {
     // transaction the watch never delivered) cannot be applied in chain order: a candle's close would be the wrong
     // trade's. Not applied, and the candles are no longer proven complete (fail closed, as an earlier-stamped trade).
     // A heal still keeps it on its tape, and puts it in chain order.
-    if (!replay && book.newestSlot !== null && seen.slot < book.newestSlot) {
+    // Review HIGH-1: in the newest slot itself, a swap that does not start where the last applied one ended is not in
+    // chain order (or something else moved the pool between them): not applied either, and the candles go partial.
+    if (!replay && book.newestSlot !== null && (seen.slot < book.newestSlot || (seen.slot === book.newestSlot && !this.#chainsOn(book, ev)))) {
       book.partial = true;
       this.#took(book, ev, seen, replay);
       this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
       return;
     }
     if (book.newestSlot === null || seen.slot > book.newestSlot) book.newestSlot = seen.slot;
+    book.lastSwap = ev;
     this.#took(book, ev, seen, replay);
     if (atMs > book.newestMs) book.newestMs = atMs;
     this.#sweepSeen(book);
@@ -818,11 +838,22 @@ export class FactProducer {
     if (!replay) this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
   }
 
+  /** LATE-LOG: the swap's pre-trade reserves (base, and vault + virtual) are the last applied swap's post-trade ones. */
+  #chainsOn(book: CandleBook, ev: SwapEv): boolean {
+    if (book.lastSwap === null) return false;
+    const last = swapEventState(book.lastSwap);
+    if (!last.ok) return false;
+    const d = ev.data;
+    return d.poolBaseTokenReserves === last.after.baseReserve && d.poolQuoteTokenReserves + (d.virtualQuoteReserves ?? 0n) === effectiveOf(last.after);
+  }
+
   // ---------- Healing a pool's trade stream (TRADE-GAP-HEAL) ----------
 
-  /** A swap the book took (applied, or refused as too old): kept since the mark, and by a waiting heal. */
+  /**
+   * A swap the book took (applied, or refused as too old or out of order): kept since the mark, and by a waiting heal.
+   * LATE-LOG (review LOW-4): `lastSwap`, a heal's anchor, is set only by a swap the book applied (`#bookSwap`).
+   */
   #took(book: CandleBook, ev: SwapEv, seen: Seen, replay: boolean): void {
-    book.lastSwap = ev;
     book.mark?.tape.push({ ev, seen });
     if (replay) return;
     const h = this.#heals.get(book.pool);
@@ -1766,7 +1797,11 @@ export class FactProducer {
       // With every trade of the pool seen from migration to the mark, the last reserve before the mark is the reserve at it.
       const r = this.#reserves.get(p.pool);
       const through = this.#head !== null && this.#head < e.moment.slot ? this.#head : e.moment.slot;
-      if (r !== undefined && r.atMs <= mark && this.#covered(STREAMS.trades(p.pool), p.slot, through)) this.#resolve(p, r.effective);
+      // LATE-LOG: a confirmed swap from before the mark can still arrive up to `confirmLagSlots` released slots later;
+      // the entry is permanent and feeds the regime gate, so it waits that long (the read window still ends it).
+      p.markSlot ??= through;
+      const settled = through >= p.markSlot + BigInt(this.#o.confirmLagSlots ?? CONFIRM_LAG_SLOTS);
+      if (settled && r !== undefined && r.atMs <= mark && this.#covered(STREAMS.trades(p.pool), p.slot, through)) this.#resolve(p, r.effective);
       else if (now > mark + this.#o.survivalReadWindowMs) this.#settle(p.pool);
     }
     this.#flushGraduates(e, put);

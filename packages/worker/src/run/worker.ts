@@ -1550,7 +1550,8 @@ export class Worker {
     if (this.#createVias.has(via) && !this.#rugVias.has(via)) return this.#cutCreateLog(v['signature']);
     if (!this.#rugVias.has(via)) return;
     const sig = v['signature'];
-    const slot = m.moment.slot;
+    // LATE-LOG: the transaction's own slot; an off-chain (late) placement's slot is later.
+    const slot = typeof v['txSlot'] === 'bigint' ? v['txSlot'] : m.moment.slot;
     void this.#d.fetchTx(sig, 'cut-log').catch(() => false).then((found) => {
       if (found || this.#stopping) return;
       this.#feed.ingest('worker', { type: 'offchain', key: 'coverage:rugs:gap', value: { fromSlot: slot, toSlot: slot, reason: `cut trade log ${sig}, transaction not found`, via } }, { receivedAt: this.#d.timers.now() });
