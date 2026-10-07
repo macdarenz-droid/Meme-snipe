@@ -194,7 +194,7 @@ describe('checked writes (#159 review N2)', () => {
     writeFileSync(path, text);
     expect(() => new DeployerStore(dir, shortWrite(100)).load(0)).toThrow(/short write/);
     expect(readFileSync(path, 'utf8')).toBe(text);
-    expect(readdirSync(dir)).toEqual(['deployers.jsonl']);
+    expect(readdirSync(dir).sort()).toEqual(['deployers.jsonl', 'deployers.jsonl.reserve']);
     expect(new DeployerStore(dir, oneByte).load(0).creates).toHaveLength(20);
     expect(readFileSync(path, 'utf8')).toBe(text);
   });
