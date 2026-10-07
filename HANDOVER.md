@@ -114,6 +114,7 @@
 - **8 Oct about 7:50 AM:** #292 head `60612d8b`, which adds the C-76 commit. The reviewer and red team were told to review that head.
   - Rulings on the builder's open points are in `docs/reviews/ZHOF.md` (`35880d11`): C-56 with MR-01 parked; retention K3; D30 parked, so the owner's D30 question is withdrawn; A-24b parked.
   - Owner waits now: none open on strategy or data. The host move is the owner's to do.
+- **8 Oct about 8:36 AM, host move:** Vultr's Ubuntu 24.04 image on the 2 GB server logs in as `linuxuser` (with sudo), not `root`. The owner got in as `linuxuser`. `ops/README.md` step 1 says "type root"; it needs fixing (card **README-LOGIN**: say `linuxuser`, then `sudo -i` before the install line, and how to read the deploy code with `zeroed-status` after SSH closes). The owner was told to run `sudo -i` first, then the install line, preferably over SSH from a computer, where paste works.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
