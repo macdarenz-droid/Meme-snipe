@@ -49,7 +49,7 @@ Already tested and lost: dip-buying, breakouts, launch sniping (all 40 versions)
 - **Sealed test window (22 Sep–20 Oct, opens after 21 Oct):** no idea has earned it yet, so it stays sealed.
 
 ## Update 09:40: your answers
-- **Helius price settled.** Your dashboard rose 549,779 credits while our tests made about 241,000 calls. That fits 1 credit for normal calls and about 10 for each large history call (10 per 100 transactions returned). Our flat 10 per call overstated past spend about 2–5 times. About 9.3M credits are left this month.
+- **Helius price settled.** Your dashboard rose 549,779 credits while our tests made about 241,000 calls. That fits 1 credit for normal calls and about 10 for each large history call (10 per 100 transactions returned). Our counters booked about 3.3M for these tests, about 6 times the real spend. About 9.3M credits are left this month.
 - **Shared tape: approved.** A builder session is building it and will run one small first step (Phase 0), then stop for a check.
 
 ## What I need from you (only you can do these)
