@@ -118,9 +118,10 @@ export const REREAD_CURVE_READS = COMPLETION_READS + 1;
  * page but cost no read, and a page costs 1 credit at any size, so a wide page lets a read step past them; a page of
  * only failed ones is followed by the next (`before` its last) while the read's own reserve can still pay for a page
  * and a transaction. The reserves (COMPLETION_CREDITS, the re-read's chain cost) are unchanged: a further page is paid
- * from the reads it did not make.
+ * from the reads it did not make. 1,000 is the RPC's largest page: graduates sampled on 7 Oct had up to 8,001 failed
+ * curve transactions (DECISIONS "A-FACTS-FIXES"), so the re-read's newest pages reach about 6,000 signatures deep.
  */
-export const CURVE_PAGE_LIMIT = 100;
+export const CURVE_PAGE_LIMIT = 1_000;
 /** FACTS-REREAD: the stage-1 inputs whose `missing` reason asks for a re-read (H7 curve, H9/H14 create, H10 migration, H11 candles). */
 const STAGE1_INPUTS: ReadonlySet<string> = new Set(['migration', 'curve', 'candles', 'create']);
 /** FACTS-REREAD: candidates remembered with their re-read state (about 1,300 graduates a day; the oldest are forgotten first). */
