@@ -48,6 +48,19 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 8:56 PM **Red team B integration verdict** (claude/redteam-b 30aae66, REPORT "Round 4"; local merge of the old fix heads on base 9f7cf812; 47/7,146 tests fail, all attributed; ledger exact to the lamport; edge 0 refused by risk). Routed:
+  - CRITICAL RB-17 → SOL-BOOKS + RC-STATE (as above).
+  - HIGH RB-15 (= C's r4-upgrade-latch: no control.json read as lost controls on the first start after #268) → RC-STATE. Ruling: lost only when the ledger records a start of a release that writes it.
+  - HIGH RB-10 still open → SOL-BOOKS (RB-10b/c probes).
+  - MEDIUM RB-14 (backup omits deployer-state.json = graduates series + saved holes) → RC-STATE. Back it up and restore it; if missing, the regime fails closed until rebuilt (measure).
+  - MEDIUM RB-16 (slow-retry fees outside R6, about 4.6% of the bankroll per blocked week) → EXIT-FILL. Ruling: counted in R6 and daily loss; the first day reserved; then C's room; when the room is out, NEW ENTRIES stop but exit retries never stop. Risk reviewer 01192sk8.
+  - #275's congestion test fails on 1de9be6 → confirm on 2720ee8.
+  - #272 c752a6d red alone (about 26 tests) → LATE-LOG's round.
+  - C's probes R3-1..4, r4-* → RC-STATE runs them on its head (the merge used the pre-#279 base).
+  - state-navpeak → SOL-BOOKS judges stale vs real.
+  - A's probes: volume-one-missing-day → #276 checks it on 58eb1422; curve-tail-parity → A-FACTS BT; creates-reconnect-14-days → H14-HOLES; unstamped-swap-skipped = RT-A6, LOW, unreachable, known.
+  - Red team B parked (not archived) for round 5: the final integration attack on the settled heads before Deploy 1.
+  - **Red team slot → red team A round 4, PARALYSIS HUNT** (012Ke512): every path where one event blocks every candidate for long, ranked by trades lost per day, with probes; the known ones listed.
 - 8:54 PM **#281 review CHANGES NEEDED** on 1af9484 (01QkAcbw).
   - The rugs side finding was false: the seed `history` carries every stream, including rugs, to H14. The test read the filtered field, so it asserted wrong behaviour as right.
   - The true finding is a HIGH latent fail-open: no rugs downtime gap. After 15 days of rugs coverage, a restart reads as continuous, and rugs during downtime go unseen.
