@@ -14,7 +14,7 @@ Every number below cites one of these:
 - `research/BLUEPRINT_ADDENDUM.md` at `72f1793f` (branch `ccr-7fae2302-drz4co`).
 - `CLAUDE.md`: "Size is not the trial", "Profit is counted in SOL", "No knowingly losing trades", "Discipline, not paralysis".
 
-Labels: **DERIVED** = arithmetic on cited numbers. **OPEN** = the spec leaves it open; it is "to be fixed by the supervisor before data", with my recommendation. The list of OPEN points is at the end.
+Labels: **DERIVED** = arithmetic on cited numbers. **OPEN-n** = a point the spec left open, ruled by the supervisor before data; the rulings are listed under "Amendments".
 
 ## 1. Data
 
@@ -31,7 +31,7 @@ All days are UTC days, because the manifest and coverage report close at 00:00 U
 - **Phase 0 window** = D1 to D7, the first 7 complete recorded days (A-M13-01 step 1; ARCH §3.2 "first week of M07 data").
 - **Wall** = 00:00 UTC at the end of D7. No bar, snapshot or manifest after the wall is read by this study.
 - **Low-coverage days** (`lowCoverage = true`, gap time > 5% of watched pool-time, A-M07-03) are shown but left out of every decision (A-M13-01 step 1).
-- **Extension (OPEN-1).** A-M13-01 says fewer than 7 complete days gives `insufficient_days` and no decision, but not whether the window may grow. Recommendation: if D1–D7 hold fewer than 7 days with good coverage, the window grows one whole day at a time until it holds 7 good days, up to D14. The wall moves to the end of the last added day. Past D14 the report is `insufficient_days`.
+- **Extension (ruling OPEN-1).** A-M13-01 says fewer than 7 complete days gives `insufficient_days` and no decision, but not whether the window may grow. Rule: if D1–D7 hold fewer than 7 days with good coverage, the window grows one whole day at a time until it holds 7 good days, up to D14. The wall moves to the end of the last added day. Past D14 the report is `insufficient_days`.
 - **Warm-up.** Features need 6 h of bars (A-M08-02). Pools first enumerated count as old enough only 24 h after first enumeration, unless the migration slot is known from the chain backfill (C-15, A-M05-01, A02). Both are rules of the bot, so they are kept; early-day counts may be low, and the report says so.
 - **After the window.** These days are never part of `W_B` (C-26; A05). `W_B` starts only after MR-01's two configurations are registered in M13 (A-M13-02), and after the wall.
 
@@ -56,7 +56,7 @@ These `affectsReturns` keys stay at their spec defaults for the whole study (A-M
 | Bar length | 15 s | A-M08-01 |
 | `bars.close_grace_ms` | 1,500 | A-M08-01 |
 | `bars.incomplete_missing_bps` | 2,000 (bar complete if missing ≤ 20%) | A-M08-01 |
-| `features.robust_z_scaling` | `sqrt_time` (**OPEN-2**: C-20 says fix it at pre-registration; I recommend the default `sqrt_time`) | A-M08-02, C-20 |
+| `features.robust_z_scaling` | `sqrt_time` (C-20: fixed at pre-registration; supervisor ruling OPEN-2) | A-M08-02, C-20 |
 | `features.min_coverage_bps` | 5,000 | A-M08-02 |
 | `features.median_window_ms` | 21,600,000 (6 h) | A-M08-02 |
 | `features.dump_window_ms` | 1,800,000 (30 min) | A-M08-02 |
@@ -93,7 +93,11 @@ Two hurdle lines are shown for the move rule:
 
 The move rule is judged on the conservative row (A07: "B-2 must pass under it until each parameter is measured"). The lean line is shown for reference.
 
-**Fixed monthly cost (OPEN-3).** ARCH uses $12. Today's real stack is the $10 Vultr host (CLAUDE.md "Host"), plus the Helius Developer plan while the owner's O7 ruling is open (A03 says it counts until then). I cannot verify the Helius price from the repo. Recommendation: the supervisor writes the two monthly USD figures from the bills before data; the report shows both lines ($10 only, and $10 + Helius). The decision uses the higher one, because it is stricter.
+**Fixed monthly cost `M` (ruling OPEN-3).** ARCH uses $12. The report shows two lines instead:
+- `M` = $10 (the Vultr host; CLAUDE.md "Host");
+- `M` = $10 + $49 = $59 (the host plus Helius Developer, $49 a month per FACTS LD-27). This line counts while the owner's O7 ruling is open (A03).
+
+The decision uses the higher line ($59), because it is stricter. `M` is converted to lamports at `P_SOL` $150 (ARCH §1.5).
 
 ## 4. Costs: conservative row and size sweep
 
@@ -111,7 +115,7 @@ All money is in lamports; profit is counted in SOL (CLAUDE.md). USD labels are f
 
 DERIVED: USD ÷ 150 × 1e9, rounded to the nearest lamport.
 
-**OPEN-4.** ARCH fixes `P_SOL` = $150 only for tables. Recommendation: keep the sizes in lamports as above, so the study never depends on a SOL/USD feed, and add the recorded SOL/USD of D1 to the report as a note.
+**Ruling OPEN-4.** The sizes are fixed in lamports as above, at `P_SOL` $150 (ARCH §1.5), so the study never depends on a SOL/USD feed. The dollar labels are approximate. The recorded SOL/USD of D1 is added to the report as a note.
 
 ### The four cost parts
 
@@ -140,16 +144,16 @@ Built from Blueprint parameters, pessimistic where the Blueprint gives a range. 
 
 Failure class mix: 100% `unknown` (C-27). It does not change this forward-return study, which models no cannot-sell path; it is recorded so the row matches A07.
 
-**OPEN-5.** A07 asks for "janitor-failure and dust rates", but the Blueprint gives no number. Recommendation: lost-rent probability 0.145, the rate behind Zeroed's 414,009 figure ("about 53% is modelled lost rent (14.5% of 1,513,840)", `docs/research/edge.md` §6.4 on `ccr-7fae2302-drz4co`). It already covers dust and failed closes. It is not measured: only a measured value may replace it, and only before data or as a new trial.
+**Ruling OPEN-5, unmeasured.** A07 asks for "janitor-failure and dust rates", but the Blueprint gives no number. The lost-rent probability is 0.145, the rate behind Zeroed's 414,009 figure ("about 53% is modelled lost rent (14.5% of 1,513,840)", `docs/research/edge.md` §6.4 on `ccr-7fae2302-drz4co`). It already covers dust and failed closes. It is not measured: only a measured value may replace it, and only before data or as a new trial.
 
 **Other lines shown beside the row** (none decides anything):
 - **Lean line:** ARCH Table 2-A inputs (35,000 lamports fixed per round trip).
 - **Sensitivity line:** 414,009 lamports fixed (A07: "only as a sensitivity line").
 - **Stress line** (A16 "stress costs"): premium landing, ARCH §2.2 (CU price 1,000,000 µlamports, tip 1,000,000 per leg), with the rest of the row unchanged.
 
-**Fixed-cost cap `k` (A07, A23).** A size is "too small" when `fixed / x > k`. A too-small size is flagged in every table. **OPEN-6.** Recommendation: `k` = 1%. With the row above, $5 is too small (394,247 / 33,333,333 = 1.18%, DERIVED), and $20 and above pass (0.30% at $20).
+**Fixed-cost cap `k` (A07, A23).** A size is "too small" when `fixed / x > k`. **Ruling OPEN-6: `k` = 1%.** With the row above, $5 is too small (394,247 / 33,333,333 = 1.18%, DERIVED), and $20 and above pass (0.30% at $20). A too-small size is excluded from the A05 decision (§5.5) and is still shown in every table, marked "excluded (k)".
 
-**Depth cap flag.** ARCH §2.4 (8) caps live entries at 0.5% of effective depth. Each size row reports how many trades exceed that cap; they are kept, not dropped, and are labelled.
+**Depth cap.** ARCH §2.4 (8) caps live entries at 0.5% of effective depth. At each size, a signal whose `x` is more than 0.5% of its pool's effective quote at entry is excluded from that size's A05 test. The check is made at entry time (A12). The count is shown per size, marked "excluded (depth)". Matched random entries (§5.4) are a benchmark: they are not dropped by this cap.
 
 **Fixed monthly term.** `ceil(M × 10,000 / (30 × tradesPerDay × x))` bps (A-M10-03 step 7). It is shown at 1, 2, 5, 10, 20 trades a day and at the observed signal rate, with `M` from OPEN-3. It is not part of the A05 decision; it is part of the A-24b move rule.
 
@@ -171,11 +175,16 @@ From ARCH §3.3. No other values are run.
 2. Effective depth has not fallen more than 10% over `L` (`depthLamportsClose` now vs `L` ago).
 3. No fee-config change in the last 10 min (ARCH §8.4 `fee_config_known`).
 4. Real/effective quote ≥ 0.5 (ARCH §8.4).
-5. `REGIME` is clear: the basket 30-min return (`basketReturn`, watched pools) is not below −5%, and a null basket counts as blocked (ARCH §8.1; C-21). **OPEN-7.** The SOL/USD leg of `REGIME` needs a D20 price feed, which Phase 0 may not record. Recommendation: apply the SOL/USD leg only if the recorder stores SOL/USD; else apply the basket leg alone and say so in the caveats.
+5. `REGIME` is clear: the basket 30-min return (`basketReturn`, watched pools) is not below −5%, and a null basket counts as blocked (ARCH §8.1; C-21); **and** the SOL/USD 30-min return is not below −3% (ARCH §8.1, D20).
+
+**Ruling OPEN-7.** `REGIME` is applied in full. The recorder stores SOL/USD once a minute from Jupiter Price V3 (D20; ARCH M23 "Fiat"; within the ≤ 50% read rule; a Z08 item). On a UTC day without it:
+- that day's signals are flagged `regime_basket_only`;
+- the primary line uses the basket leg alone for that day;
+- the report carries a caveat with the count of flagged signals.
 
 Not applied, because Phase 0 has no M06 or M21: authority checks, holder checks, honeypot simulation and the soft dump flag. The report shows how many signals carried a dump flag.
 
-**Repeats (OPEN-8).** ARCH does not say how signals from one pool are counted while a position would still be open. Recommendation: after a signal, the same config ignores that pool for `T` (30 or 60 min), as a real position would block it. `ENTRYRATE` (≤ 1 MR entry per 10 min, all pools; ARCH §8.1) is **not** applied to the primary line, because it is a risk limit and it would cut a small sample further. An `ENTRYRATE`-thinned line (first signal in time wins; ties by pool id) is shown beside it.
+**Repeats (ruling OPEN-8).** ARCH does not say how signals from one pool are counted while a position would still be open. Rule: after a signal, the same config ignores that pool for `T` (30 or 60 min), as a real position would block it. `ENTRYRATE` (≤ 1 MR entry per 10 min, all pools; ARCH §8.1) is **not** applied to the primary line, because it is a risk limit and it would cut a small sample further. An `ENTRYRATE`-thinned line (first signal in time wins; ties by pool id) is shown beside it.
 
 The stop `a` and the median target are not used: this check measures fixed-horizon forward returns, as A05 defines it, not the config's exit path.
 
@@ -202,29 +211,39 @@ For each kept signal: 10 random entries.
 - **Draws:** 10 without replacement if there are at least 10 candidates, else with replacement.
 - **Too few candidates:** with 0 candidates, widen to the same day ±1 h, then ±3 h. Still none: the signal stays in the raw-return test and is left out of the excess test, and is counted.
 - The same delay, horizon and price rules as the signal apply.
-- **Excess** `e = r − mean(r of its 10 random entries)`.
+- **Raw excess** `e = r − mean(r of its 10 random entries)`. It is shown in every cell.
+- **Excess at size `x`** (ruling OPEN-9, test (b)) `e(x) = net(x) − mean(net(x) of its 10 random entries)`. Each random entry is charged the same per-size costs (§4) on its own entry state. It is shown in lamports and in bps of `x`.
 - **Seeds:** the draw uses the A-M10-01 RNG with seed 1. Seeds 2–10 are run as a sensitivity range; only seed 1 decides.
 
 ### 5.5 Kill rule
 
-Fixed now; it does not move after a look.
-Supervisor ruling (2026-10-07, before data): the PREREG declares **one** primary cell (configuration × horizon × delay). MR-01 survives the kill check only if that one cell clears both tests. Every other cell is reported only.
+Fixed now; it does not move after a look. Supervisor rulings of 2026-10-07 (before data): the PREREG declares **one** primary cell; MR-01 survives only if that cell clears both tests; every other cell is reported only.
 
-- **Primary cell (OPEN-9; the supervisor confirms it before data).** Recommendation:
+- **Primary cell (ruling OPEN-9):**
 
   | Part | Value | Reason |
   |---|---|---|
   | Configuration | MR-01-A (`L` 5 min, `z` 3.0, `a` 4%, `T` 30 min) | The research behind A05 found most of the bounce falls in the first 5 minutes (`research/deep-pool-probe/RESULTS.md:25` on `ccr-7fae2302-drz4co`, cited in A05). The 5-min lookback is the config aimed at that. Its 30-min repeat block (§5.1) also lets more signals into one week than MR-01-B's 60 min |
   | Horizon | 30 min | MR-01-A's own time stop `T`, the longest it would hold. A 5-min horizon would pick the best-looking slice after the fact; `T` is fixed by ARCH §3.3 |
   | Delay | 1 bar (15 s) | A decision made at a bar close cannot fill at that same close (A-M08-01 closes bars 1.5 s after the end). Delay 0 is optimistic. The same research found a one-bar delay (5-min bars there) removed most of the bounce, so delay 1 is the honest test |
-  | Size for test (a) | $20 = 133,333,333 lamports | The owner's trial size, the first size the bot would trade. It passes the `k` cap (0.30%), and impact on a 300 SOL pool stays small. Every other size is reported only (CLAUDE.md "Size is not the trial") |
 
-- **MR-01 survives** only if, at the primary cell, both hold:
-  - (a) mean `net` > 0 under the conservative row at $20, meaning the raw return beats the conservative hurdle;
-  - (b) mean excess `e` > 0.
-- **Otherwise MR-01 is killed**, both configurations together. MR-01-B and every other delay, horizon and size are reported only. They can neither kill nor save MR-01.
+- **Sizes** (CLAUDE.md "Size is not the trial"): all five declared sizes, $5, $20, $100, $1,000 and $10,000 (§4).
+  - A size flagged too small by the `k` cap is excluded as a whole. With the row in §4, that is $5.
+  - At each remaining size, signals beyond the pool's 0.5% depth cap are excluded at entry (§4).
+- **The two tests,** at the primary cell, for each remaining size `x`:
+  - (a) mean `net(x)` > 0 under the conservative row: the raw return beats the conservative hurdle;
+  - (b) mean `e(x)` > 0: the excess over matched random entries, with the same per-size costs (§5.4).
+- **Verdict per size:**
+  - **pass** if both tests hold;
+  - **fail** if either does not;
+  - **excluded** if the size is too small (`k`);
+  - **insufficient** if fewer than 30 signals are left after the depth cap. This is ruling OPEN-11 and the C-34 minimum for an interval.
+- **MR-01 verdict:**
+  - **Survives** if one or more sizes pass.
+  - **Killed** if no size passes and one or more sizes fail. Both configurations are killed together.
+  - **Insufficient** if no size passes or fails. A05 then neither kills nor passes MR-01, and the A-24 and A-24b rules still apply in full.
 - **Point estimates decide** (A05 as adopted). The intervals of §6 are reported beside them. A05's own caveat is that a week gives wide intervals.
-- **Too few signals (OPEN-11).** Recommendation: with fewer than 30 kept signals at the primary cell (the C-34 minimum for an interval), A05 is "insufficient". It neither kills nor passes, and the report says so. The A-24 and A-24b rules still apply in full.
+- **Reported only:** MR-01-B, every other delay and horizon, the raw excess `e`, and the lean, 414,009 and stress lines. None of them can kill or save MR-01.
 - **Recording the result.** A kill is recorded in `docs/DECISIONS.md` with this file's sha. MR-01 then stops (INTEGRATION M1; MIGRATION "M1 exit"). Survival only means MR-01 may go on to `W_B` and its gates.
 
 ## 6. Statistics (A14, A12, A-M13-03)
@@ -289,8 +308,8 @@ The report is written to `docs/phase0/report-<D1>.md` plus CSVs (A-M13-01). It m
 - **T6** A05 counts per config: signals, kept, dropped by reason; dump-flag count; signals per day.
 - **T7** A05 raw return per config × delay (0, 1, 2) × horizon (5, 15, 30, 60): n, mean, median, interval, DEFF, effective n.
 - **T8** A05 excess `e`: same grid as T7, plus the seed 2–10 range.
-- **T9** Size sweep per config × delay × horizon × size: mean gross, fees, impact, fixed, net, in lamports and in bps of `x`; interval of net; "too small" flag; count over the 0.5% depth cap. One block each for the conservative, lean, 414,009 and stress lines.
-- **T10** A05 verdict at the primary cell (MR-01's verdict); the same two tests for every other cell, marked "reported only".
+- **T9** Size sweep per config × delay × horizon × size: mean gross, fees, impact, fixed, net, in lamports and in bps of `x`; interval of net; "excluded (k)" flag; count "excluded (depth)". One block each for the conservative, lean, 414,009 and stress lines.
+- **T10** A05 at the primary cell: per size, tests (a) and (b), n after the depth cap, and the verdict (pass, fail, excluded, insufficient); then MR-01's verdict. The same two tests for every other cell, marked "reported only".
 - **T11** `ENTRYRATE`-thinned line: T7 and T9 at the primary cell.
 - **T12** A-48 per stream and day; disk projection; provider reads against limits.
 - **T13** Exclusion table (A12), for A-24b and for A05.
@@ -328,20 +347,27 @@ The report is written to `docs/phase0/report-<D1>.md` plus CSVs (A-M13-01). It m
 - Filling in the "Record when recording starts" table is not an amendment.
 - Ruling an OPEN point is an amendment. Each ruling is written into this file before R0.
 
-(none yet)
+### 2026-10-07: supervisor rulings on the open points (before R0, no data recorded)
 
-## OPEN points for the supervisor (before R0)
+Rulings by the supervisor (session_01UQmXJHSgmb2Tj7PK7VDKRz) on head `1b933ef6`, applied in the next commit. A fresh reviewer checks them before R0.
 
-| # | Point | Recommendation |
+| # | Point | Ruling |
 |---|---|---|
-| OPEN-1 | Window extension when coverage is low | Grow day by day to 7 good days, up to D14; else `insufficient_days` |
-| OPEN-2 | `features.robust_z_scaling` (C-20) | `sqrt_time` |
-| OPEN-3 | Fixed monthly cost `M` | $10 host, and $10 + Helius Developer (from the bill); decide on the higher |
-| OPEN-4 | Size conversion | Lamports at `P_SOL` $150, as in §4 |
-| OPEN-5 | Lost-rent (janitor-failure and dust) rate | 0.145 of 1,513,840, giving a 394,247-lamport fixed row |
-| OPEN-6 | Fixed-cost cap `k` | 1% of the stake |
-| OPEN-7 | `REGIME` SOL/USD leg | Use it only if SOL/USD is recorded; else the basket leg alone, with a caveat |
-| OPEN-8 | Repeat signals and `ENTRYRATE` | Pool blocked for `T` after a signal; `ENTRYRATE` as a side line only |
-| OPEN-9 | A05 primary cell (one cell, per the supervisor's ruling) | MR-01-A × 30 min × delay 1 bar, test (a) at $20; reasons in §5.5 |
-| OPEN-10 | One config fails A05 | Closed by the supervisor's ruling: only the primary cell decides |
-| OPEN-11 | Fewer than 30 signals | "Insufficient": no kill and no pass from A05 |
+| OPEN-1 | Window when coverage is low | Accepted: grow day by day to 7 good days, up to D14; else `insufficient_days` |
+| OPEN-2 | `features.robust_z_scaling` (C-20) | Accepted: `sqrt_time` |
+| OPEN-3 | Fixed monthly cost `M` | Accepted: two lines, $10 and $59 ($10 + Helius Developer $49, LD-27, while O7 is open); decide on the higher |
+| OPEN-4 | Sizes | Accepted: lamports at `P_SOL` $150; dollar labels approximate |
+| OPEN-5 | Lost-rent rate | Accepted: 0.145, marked unmeasured |
+| OPEN-6 | Fixed-cost cap `k` | Accepted: 1% |
+| OPEN-7 | `REGIME` | Changed: applied in full, with SOL/USD recorded once a minute (D20, Jupiter Price V3, Z08). A day without it: signals flagged, basket leg only, caveat |
+| OPEN-8 | Repeats and `ENTRYRATE` | Accepted |
+| OPEN-9 | Primary cell | Changed on size: MR-01-A × 30 min × delay 1 bar, at all five sizes. Too-small (`k`) sizes and signals beyond the depth cap are excluded. MR-01 is killed unless the cell clears both tests at one or more remaining sizes. Per size: pass, fail or excluded. Test (b) uses the same per-size costs |
+| OPEN-10 | One config fails | Closed: only the primary cell decides |
+| OPEN-11 | Fewer than 30 signals | Accepted: "insufficient" |
+
+My reading, for the reviewer to check:
+- The depth cap is applied per signal at entry, because pool depth varies by signal.
+- A size with fewer than 30 signals left after the cap is "insufficient" (OPEN-11 applied per size).
+- MR-01 is killed when no size passes and at least one size fails. It is "insufficient" when no size passes or fails.
+
+No open points remain.
