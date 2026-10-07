@@ -10,7 +10,7 @@ Key hygiene and the credit cap are those of research/execution-audit/heli.py (ke
 errors scrubbed, ledger in the scratch directory, 10 credits counted per call, hard stop at CAP). Raw responses
 are cached in LP_SCRATCH, never in the repo.
 """
-import json, os, random, sys
+import json, os, random, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCR = os.environ.get('LP_SCRATCH')
 if not SCR:
@@ -110,6 +110,7 @@ AMM = heli.AMM
 CREATE_POOL = bytes([233, 146, 209, 142, 207, 104, 64, 188])
 DRAWS = {'discovery': (300, 20261071), 'validation': (250, 20261072)}
 RESERVE = 150_000
+STOP_RESERVE = 100_000                            # no new coin is started past CAP - this (amendment 3)
 EV = os.path.join(SCR, 'events')
 
 def _save(name, obj):
@@ -172,6 +173,31 @@ def _pool_of(t, mint):
                     return acc[0]
     return None
 
+THIN_BUCKET = 10                                   # seconds
+MG_SLOTS = 12                                      # every swap within this many slots of the pool's first swap
+
+def thin(prow, L):
+    """Pool signatures to fetch (amendment 3): every slot that holds (a) a swap within MG_SLOTS slots of the first
+    swap, (b) the last swap of each THIN_BUCKET-second block-time bucket, or (c) the last swap at or before each
+    time-exit checkpoint (creation + L x slot length + 1/5/15/60 min, for every L). All successful signatures of a
+    chosen slot are fetched, so the order within the slot is exact."""
+    if not prow:
+        return prow
+    sl = json.load(open(os.path.join(DERIVED, 'slot_len.json')))['sec_per_slot_by_day_start']
+    sec = sl.get(str(L['time'] // 86400 * 86400), 0.4)
+    slots = {s['slot'] for s in prow if s['slot'] <= prow[0]['slot'] + MG_SLOTS}
+    last = {}
+    for s in prow:
+        last[s['blockTime'] // THIN_BUCKET] = s['slot']
+    slots |= set(last.values())
+    for Lg in (2, 10, 40, 120, 480):
+        for h in (60, 300, 900, 3600):
+            t = L['time'] + Lg * sec + h
+            before = [s['slot'] for s in prow if s['blockTime'] <= t]
+            if before:
+                slots.add(before[-1])
+    return [s for s in prow if s['slot'] in slots]
+
 def coin(L):
     """Fetch and decode one launch; writes <scratch>/events/<create sig>.json (derived event streams)."""
     out_p = os.path.join(EV, L['sig'] + '.json')
@@ -205,12 +231,14 @@ def coin(L):
         import audit
         prow = heli.pool_sigs(pool, mig[3] - 5, L['time'] + HORIZON)
         prow = [x for x in prow if x['err'] is None and x['slot'] >= mig[0]]
+        prow = thin(prow, L)
         got = list(POOL.map(lambda x: audit.swaps_of(x, pool), prow))
         for g in got:
             for s in g:
                 swaps.append([s.slot, s.idx, s.k, s.t, s.B0, s.Q0, s.V, s.B1, s.Q1, s.f, s.kind])
         swaps.sort(key=lambda r: r[:3])
     rec = {'launch': L, 'trades': trades, 'completes': completes, 'pool': pool, 'migrate': mig, 'swaps': swaps,
+           'pool_thinned': bool(pool),
            'n_sig_ok': len(rows)}
     os.makedirs(EV, exist_ok=True)
     json.dump(rec, open(out_p + '.tmp', 'w')); os.replace(out_p + '.tmp', out_p)
@@ -242,16 +270,26 @@ def plan():
 def fetch_all():
     keep = _load('plan.json')['kept_draws']
     Ls = [L for w in DRAWS for i, x in enumerate(_load('sample_%s.json' % w)) if i in keep[w] for L in x['launches']]
-    random.Random(5).shuffle(Ls)
-    done = 0
+    random.Random(5).shuffle(Ls)                  # the fetch order; the analysed sample is a prefix of it
+    _save('fetch_order.json', [L['sig'] for L in Ls])
+    stop_at = heli.CAP - STOP_RESERVE
     outer = ThreadPoolExecutor(4)                 # coins in parallel; the shared limiter keeps <= ~9.5 calls/s
-    for _ in outer.map(coin, Ls):
-        done += 1
-        if done % 100 == 0:
-            print('coins', done, '/', len(Ls), heli.credits(), flush=True)
-    missing = [L['sig'] for L in Ls if not os.path.exists(os.path.join(EV, L['sig'] + '.json'))]
-    _save('fetch_report.json', {'coins': len(Ls), 'missing_events': missing, 'credits': heli.credits()})
-    print('all coins', done, 'missing', len(missing), heli.credits())
+    futs, i = [], 0
+    while i < len(Ls) and heli.credits()['credits'] < stop_at:
+        while sum(not f.done() for f in futs) < 4 and i < len(Ls) and heli.credits()['credits'] < stop_at:
+            futs.append(outer.submit(coin, Ls[i])); i += 1
+            if i % 100 == 0:
+                print('submitted', i, '/', len(Ls), heli.credits(), flush=True)
+        time.sleep(0.2)
+        for f in futs:
+            if f.done() and f.exception() and not isinstance(f.exception(), heli.CapReached):
+                raise f.exception()
+    outer.shutdown(wait=True)                     # in-flight coins finish, or stop at the hard cap (CapReached)
+    done = [os.path.exists(os.path.join(EV, L['sig'] + '.json')) for L in Ls]
+    prefix = done.index(False) if False in done else len(done)
+    _save('fetch_report.json', {'coins_planned': len(Ls), 'prefix_complete': prefix,
+                                'completed_beyond_prefix': sum(done[prefix:]), 'credits': heli.credits()})
+    print('prefix complete', prefix, 'of', len(Ls), heli.credits())
 
 def slot_len():
     """Mean slot length per UTC day from block times at both ends of the day (derived/slot_len.json)."""

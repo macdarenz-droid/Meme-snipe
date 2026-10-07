@@ -68,6 +68,21 @@ probe does, transaction by transaction. This file is fixed and pushed before any
 - A completed curve whose pool has no swap in the horizon is priced at the final curve state (optimistic: no sale
   was possible then); those coins are counted.
 
+### Amendment 3 (2026-10-07, during the fetch, before any return was computed)
+- Measured cost: graduated launches' PumpSwap pools averaged about 3,100 successful swaps in the horizon (7 pools,
+  21,859 swaps among the first 276 launches fetched), which the budget plan did not count. At that rate the kept
+  draws do not fit the cap. Two changes, decided from costs only:
+  1. **Pool thinning.** For each pool only the slots holding (a) any swap within 12 slots of the first swap, (b)
+     the last swap of each 10-second block-time bucket, (c) the last swap at or before every time-exit checkpoint
+     are fetched, every successful transaction of a chosen slot included. T1–T60 and MG2/MG10 stay exact. On the
+     pool, stop/trail marks are taken only at fetched swaps (at most 10 s apart), and an ST sell is priced at the
+     first fetched swap at or after trigger slot + 2 / + 10 (a later state, never an earlier one). The 7 pools
+     already fetched in full are thinned by the same rule.
+  2. **Sample = completed prefix of the fetch order.** Launches are fetched in a fixed random order (seed 5 over
+     the kept draws, `derived/fetch_order.json`). No new launch starts once 1,400,000 credits are counted; the
+     analysed sample is the longest prefix of that order whose launches are all fetched. A prefix of a random
+     order is a uniform random subset, so the draw stays survivorship-free.
+
 ## Entry
 - A $10 buy: B = 10 / 119.26 SOL (`lottery.SOL_USD`), at entry slot s_e = creation slot + L, L ∈ {2, 10, 40, 120,
   480}, against the curve state after every trade in slots ≤ s_e (the create transaction's dev buy included).

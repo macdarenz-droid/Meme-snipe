@@ -67,6 +67,7 @@ class Coin:
         self.complete = tuple(rec['completes'][0][:3]) if rec['completes'] else None
         self.complete_t = rec['completes'][0][3] if rec['completes'] else None
         self.swaps = rec['swaps']
+        self.thinned = bool(rec.get('pool_thinned'))
         self.skeys = [tuple(s[:3]) for s in self.swaps]
         ev = [('c', tuple(r[:3]), r[3], i) for i, r in enumerate(tr)]
         ev += [('p', tuple(s[:3]), s[3], i) for i, s in enumerate(self.swaps)]
@@ -120,6 +121,18 @@ def last_key_by_time(coin, t):
             break
     return k
 
+def fill_key(coin, slot):
+    """State a sell landing in `slot` sees. Exact on the curve and on fully fetched pools. On a thinned pool
+    (amendment 3) the swaps up to `slot` may be unfetched, so the sell is priced at the first fetched swap at or
+    after `slot` (the last one if none): a later, never earlier, state."""
+    key = last_key_by_slot(coin, slot)
+    if not (coin.thinned and coin.completed(key)):
+        return key
+    for k in coin.skeys:
+        if k[0] >= slot:
+            return k
+    return coin.skeys[-1] if coin.skeys else key
+
 def entry(coin, L, slotlen):
     s_e = coin.L['slot'] + L
     key = last_key_by_slot(coin, s_e)
@@ -151,7 +164,7 @@ def exits(coin, en):
             trig = e[1][0]
             break
     for d in (2, 10):
-        out['ST%d' % d] = t60 if trig is None else coin.value(tok, sol, last_key_by_slot(coin, trig + d))
+        out['ST%d' % d] = t60 if trig is None else coin.value(tok, sol, fill_key(coin, trig + d))
     # first pool swap after migration
     first = coin.swaps[0] if coin.swaps else None
     for d in (2, 10):
@@ -199,13 +212,15 @@ def stats(rows):
 
 def load_window(w):
     d = json.load(open(os.path.join(DERIVED, 'sample_%s.json' % w)))
-    keep = json.load(open(os.path.join(DERIVED, 'plan.json')))['kept_draws'][w]
+    # the analysed sample: the completed prefix of the random fetch order (amendment 3)
+    order = json.load(open(os.path.join(DERIVED, 'fetch_order.json')))
+    prefix = set(order[:json.load(open(os.path.join(DERIVED, 'fetch_report.json')))['prefix_complete']])
     t0, t1 = WINDOWS[w]
     coins, dropped = [], {'outside_window': 0, 'non_sol_quote': 0, 'missing_events': 0}
-    for i, x in enumerate(d):
-        if i not in keep:
-            continue
+    for x in d:
         for L in x['launches']:
+            if L['sig'] not in prefix:
+                continue
             if not t0 <= L['time'] < t1:        # the anchor may sit up to 20 s after the drawn instant
                 dropped['outside_window'] += 1; continue
             p = os.path.join(SCR, 'events', L['sig'] + '.json')
