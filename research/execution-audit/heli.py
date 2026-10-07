@@ -6,7 +6,9 @@ the repo. Credits: every RPC request that leaves the machine counts CREDITS_PER_
 survives restarts (ledger file in the scratch directory).
 """
 import base64, hashlib, json, os, struct, sys, time
+import threading
 import requests
+_lock = threading.Lock()
 
 SCRATCH = os.environ.get('EA_SCRATCH') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '_scratch_not_committed')
 RAW = os.path.join(SCRATCH, 'raw')
@@ -55,15 +57,16 @@ def rpc(method, params, cache_name=None):
     if os.path.exists(path):
         return json.load(open(path))
     for attempt in range(6):
-        led = _ledger()
-        if led['credits'] + CREDITS_PER_CALL > CAP:
-            raise CapReached(f"credit cap {CAP} reached ({led['credits']} counted)")
-        led['calls'] += 1; led['credits'] += CREDITS_PER_CALL
-        json.dump(led, open(LEDGER, 'w'))
-        wait = _last[0] + MIN_GAP - time.time()
-        if wait > 0:
-            time.sleep(wait)
-        _last[0] = time.time()
+        with _lock:                                    # credit count and pacing are shared by all threads
+            led = _ledger()
+            if led['credits'] + CREDITS_PER_CALL > CAP:
+                raise CapReached(f"credit cap {CAP} reached ({led['credits']} counted)")
+            led['calls'] += 1; led['credits'] += CREDITS_PER_CALL
+            json.dump(led, open(LEDGER + '.tmp', 'w')); os.replace(LEDGER + '.tmp', LEDGER)
+            wait = _last[0] + MIN_GAP - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            _last[0] = time.time()
         try:
             r = requests.post(_url(), json={'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}, timeout=60)
             if r.status_code == 429 or r.status_code >= 500:
@@ -78,7 +81,8 @@ def rpc(method, params, cache_name=None):
             raise RuntimeError(scrub(json.dumps(j['error']))[:300])
         res = j['result']
         if res is not None:
-            json.dump(res, open(path, 'w'))
+            tmp = path + '.%d.tmp' % threading.get_ident()
+            json.dump(res, open(tmp, 'w')); os.replace(tmp, path)
         return res
     raise RuntimeError('rpc retries exhausted for ' + method)
 
