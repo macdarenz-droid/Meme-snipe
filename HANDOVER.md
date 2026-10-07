@@ -62,6 +62,7 @@
     - Key design: window-only key mode (owner sets it in the B10-ACK row); default-branch ruleset as an owner step; a pin marker and `closed.json` in zeroed-data; P17, P18 and P19 checks; four ledger counts with the P10 calibration.
     - Only needed if the owner picks route B for B-10.
   - #287 Z01: the round 3 builder is applying rulings 1–7 (`docs/reviews/Z01.md` @ `b0a29e1d`).
+  - B-10 merge freeze (Z0D-2 round 7 ruling 4; SPEC-A A-M14-05): from the moment a B10-ACK row is pinned until its `closed.json` is written, the supervisor merges no PR that touches `.github/**` or `tools/policy/**`. At pin time the supervisor writes `pin.json` with the sha256 of the guarding files: the B-10 workflow, the guard action, `tools/policy/**` and `ci.yml`, taken from the reviewed default-branch commit.
   - Known risk (Z0D-2 F1, 8 Oct): the default branch `ccr-14987baf-i6lrsl` is unprotected (`"protected": false`). "Never push to the default branch" is enforced by practice only. A ruleset is an owner step listed in SPEC-A A-M14-05; it is required before any B-10 key is placed.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
