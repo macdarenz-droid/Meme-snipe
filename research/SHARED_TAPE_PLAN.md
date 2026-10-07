@@ -2,6 +2,10 @@
 
 From the advisor-six-ideas workflow, as corrected by its adversarial review. **Not started.** It needs owner and supervisor decisions; see the preconditions.
 
+**Owner decision (2026-10-08, about 09:40 AEDT): "Yes shared tape."** This covers P0's owner question, the stepwise research pull, and the exception to the 2026-10-06 "no bulk historical downloads" rule for this plan only. P2–P5 still apply as written.
+
+**P1 evidence so far (dashboard, owner screenshots).** 125,629 credits at about 2026-10-07T07:50Z and 675,408 at about 22:30Z: a rise of 549,779. Our ledgers logged at least 233,559 calls in between (audit 63,136; launch 140,741; absorption 11,880; squeeze 17,802; liquidation not yet counted). A flat 10 credits a call would need at least 2.34M, so it is ruled out. The average is at most 2.35 credits a call. Phase 0 still measures getBlock's own price.
+
 SHARED TAPE (corrected 2026-10-08 after adversarial review). One Helius full-block read per chain day, for research only. Nothing is read until P0-P6 hold.
 
 PRECONDITIONS (go/no-go)
