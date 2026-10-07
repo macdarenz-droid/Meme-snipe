@@ -26,6 +26,12 @@ What the owner gives the supervisor when a piece of research looks usable. Plain
 
 **Who started it.** Every strategy version has an `origin`: `owner` or `agent` (round 2 ruling 9; round 3 ruling 25). It comes only from the PREREG, which never changes after it is pushed, and from the append-only registry row; config cannot set it, and the validator refuses any key that tries. `owner` needs a DECISIONS line, written by the supervisor on main, that names `id@version` and cites the owner's message; a CI check binds a PREREG's `origin: owner` to that line, and `preRegister` copies its reference into the append-only registry row the validator reads (round 4 ruling 47). The origin is fixed for the life of the version. Starting an `agent` strategy is a new task that needs the owner's OK (`CLAUDE.md` "Focused queue"). An `agent` strategy stops at 2026-12-31T23:59:59 Australia/Melbourne by wall-clock time, in every mode including backtest and replay: at that moment every mode is removed by an audited A1 action, the host emits nothing and the validator refuses switching it on; after it, `preRegister` refuses new `agent` registrations; open positions keep their exits (ARCH D08, C-56 as re-keyed by card Z-H-OF item 14).
 
+**Owner strategies stay private** (round 5 ruling 54). An owner-origin PREREG, its evidence and its plugin source live only in a private location; this repository is public. The public repo holds only a commitment: the sha256 of the PREREG and of the plugin's closure, plus the private commit sha. `git ls-remote` on the private repo proves when the PREREG was pushed, and CI checks the hashes. Where the private copy lives, and how the server gets the plugin, is the owner's choice (a new kind of stored data and a deploy path), put to the owner at 9:45 AM:
+- a private repository, either the existing private `zeroed-data` or a new private strategies repository, with a fetch path for the server; or
+- this whole repository becoming private.
+
+Until the owner answers, no owner strategy is merged anywhere public. Agent-origin strategies may stay public.
+
 **The data the idea came from cannot prove it.** A strategy is tested on data it was not tuned on (`CLAUDE.md` "MR-01 parked"; ARCH D08: no further search on the same data). The owner's own data shapes the rules; the gates run on days recorded after the rules are fixed (section 5).
 
 ## 2. Pre-registration
@@ -44,7 +50,7 @@ Turning the handover into a pre-registration (PREREG): the rules written down an
 | Exit plan | `stopBps` (negative), `targetBps`, `trailingBps`, `targetPriceSolPerToken`, `timeStopMs` (> 0), `maxExitSlippageBps`; the universal exits of ARCH 8.6 apply on top | A-M09-01 `ExitPlan`, step 4 |
 | Size | The `sizing` rule; the risk engine (M21) caps it. Live sizing uses `kellyFractionLowerBound`, which is 0 without an edge estimate | A-M09-01 step 6; ARCH 3.5, D21 |
 | Configurations | The full set to test. The budget is set by MinBTL: 2 configurations on a 30-day `W_B` at an assumed best annualised Sharpe of 2; a third is refused (`E_BUDGET`) | A-M13-02 step 4; ARCH 3.4 table |
-| Settings that change results | Every config key with `affectsReturns = true` is part of `configKey`; a later change is a new trial. `configKey` also holds `featuresImplHash()`, the hash of the features package, kept apart from the plugin's pin hash (section 3): a change in the middle of a window resets that window through `E_TRIAL_MISMATCH`, and the reset is recorded, unless section 3's "Changes after freezing" re-freezes it | A-M13-02 steps 1–3, 6; B-M25-01 step 2; round 2 ruling 5; round 4 rulings 41, 42 (amendments to A-M13-02 step 2) |
+| Settings that change results | Every config key with `affectsReturns = true` is part of `configKey`; a later change is a new trial. `configKey` also holds `runtimeDepsHash()`, the hash of every runtime dependency outside the plugin's own package directory (the features package and the `@bot/types` runtime modules the plugin imports), kept apart from the plugin's pin hash (section 3): a change in the middle of a window resets that window through `E_TRIAL_MISMATCH`, and the reset is recorded, unless section 3's "Changes after freezing" re-freezes it | A-M13-02 steps 1–3, 6; B-M25-01 step 2; round 2 ruling 5; round 4 rulings 41, 42; round 5 ruling 51 (amendments to A-M13-02 step 2) |
 | Costs | In SOL (lamports). Pass decisions use the conservative cost row with the stricter fixed cost ($59 a month while D04 is open) | ARCH 3.4 "Cost row" (C-77); `CLAUDE.md` "Profit is counted in SOL" |
 | Sizes | Results shown at $5, $20, $100, $1,000 and $10,000, with gross return, fixed costs, percentage fees and price impact apart | `CLAUDE.md` "Size is not the trial"; MIGRATION Z09 |
 | Selected configuration | From `backtest_passed` on, only the configuration selected at gate B (its frozen `configKey`) may run in paper and live | A-M13-05 step 1; round 2 ruling 11 |
@@ -55,7 +61,7 @@ Turning the handover into a pre-registration (PREREG): the rules written down an
 
 **Registration.** `TrialIdentity.preRegister({ strategyId, strategyVersion, configs, config, costModelVersion, fillModelVersion, atMs })` records the set and returns the `configKeys` (A-M13-02). The strategy's stage becomes `research` (A-M13-05 step 1). `W_B` begins only after this (C-26).
 
-**Order** (round 4 ruling 48). The PREREG is pushed first; then the plugin is built and its pin merged on main; then `preRegister` records the configurations with the pinned source hash; only then does `W_B` begin. Because the PREREG comes before the code, the CI pin check reads the registry export, not the PREREG file.
+**Order** (round 4 ruling 48). The PREREG is pushed first; then the plugin is built and its pin merged on main; then `preRegister` records the configurations with the pinned source hash; only then does `W_B` begin. Because the PREREG comes before the code, the CI pin check reads the registry export, not the PREREG file. The runner refuses a second `preRegister`, or a registration, of the same `id@version` until its export entry is on main (round 5 ruling 58).
 
 **Optional early stop.** A coarse screen on vendor price bars (gate CS-1) can stop a strategy whose every configuration loses with a 95% CI upper bound below zero. It can never pass one (ARCH 3.4 "Coarse screens can only kill").
 
@@ -76,7 +82,7 @@ interface Strategy { id: string; version: string; params: Readonly<Record<string
 
 **Identity.** `paramsHash = sha256(canonical JSON of params)`. Registering the same `(id, version)` with other params is refused with `E_PARAMS_CHANGED`: any change is a new version and new trials (A-M09-01 step 1; ARCH 3.4). A version's PREREG may register more than one configuration (up to the MinBTL budget, section 2); each configuration's params are fixed in the PREREG, and each has its own `configKey` (round 3 ruling 24). Config never sets free params: `strategy.<id>.params.*` must equal exactly one registered configuration of the running version, so config can only pick one of them. The validator refuses anything else (`E_PARAMS_CHANGED` at validate time), and the host re-checks `paramsHash` against the registered set on every config swap and disables the strategy on a mismatch (round 2 ruling 3). Config is authoritative; the `strategy` table (`strategy_id` + `version`, `params_hash`, `enabled_modes`; ARCH 15) is a projection rebuilt from config at start (round 2 ruling 10).
 
-**Code pin** (ruling 3; round 2 ruling 4; round 3 rulings 26 and 28; round 4 rulings 42 and 48). An append-only pin file (PROPOSED path `packages/strategies/PINS.json`) maps each `id@version` to a source hash. The hash covers only the plugin's own import closure as the build computes it; the features package is not in it (its hash, `featuresImplHash()`, is part of `configKey` instead, section 2), so a features fix breaks no pin. The pin stays immutable for the life of the version. CI fails:
+**Code pin** (ruling 3; round 2 ruling 4; round 3 rulings 26 and 28; round 4 rulings 42 and 48; round 5 ruling 51). An append-only pin file (PROPOSED path `packages/strategies/PINS.json`) maps each `id@version` to a source hash. The hash covers only the files inside the plugin's own package directory. Every runtime dependency outside it (the features package and the `@bot/types` runtime modules the plugin imports, as the build computes them) goes into one group P hash in `configKey`, `runtimeDepsHash()`, which is re-frozen through B-9 (section 2; round 5 ruling 51), so a fix there breaks no pin. The pin stays immutable for the life of the version. CI fails:
 - a plugin change under an unchanged pin;
 - a pin entry that changes or disappears, compared with the base branch;
 - an `id@version` that appears with another hash in the trial registry export.
@@ -103,19 +109,24 @@ The runner, on the research host too, refuses to register an `id@version` whose 
 - At stage `failed` or `archived` the host emits nothing in any mode, and the validator refuses every mode. The move to `failed` removes every mode from `enabled_modes` as an audited A1 action (actor `system`; B-M26-04 carries it out).
 - A violation that belongs to one strategy (a staging mismatch, `failed` or `archived`, the agent stop, a missing PREREG) disables only that strategy, at start as at run time, with a critical alert and the audited A1 removal; its open positions keep their exits. The other strategies keep running.
 
-**Changes after freezing** (round 3 ruling 26; round 4 rulings 43 and 49). `configKey` has two groups:
-- **Group P, which changes proposals:** the features implementation (`featuresImplHash()`), the universe and the registered configuration. When a group P change alters the `configKey` of a strategy in paper or live, a B-9 replay on its `W_B` data decides:
+**Changes after freezing** (round 3 ruling 26; round 4 rulings 43 and 49; round 5 rulings 52, 53, 56 and 59). Every `affectsReturns` key in the B-M25-01 schema carries a group tag; a CI test fails any key without one, and until it is tagged the key counts as group P. `configKey` has two groups:
+- **Group P, which changes which trades happen:** `runtimeDepsHash()`, the universe, the registered configuration, and every admission key (exit ladder, cooldown, entry rate, regime, dump window, maximum open positions, the per-token rule). When a group P config change alters the `configKey` of a strategy in paper or live, a B-9 replay on its `W_B` data decides:
   - the proposals are byte-identical and the change is A1: re-freeze by an audited A1 action, and the stage stands;
   - the proposals differ and the change is A1: drop one stage and restart that window;
   - the change is A2 or A3: back to `research`.
-- **Group S, which scales or costs proposals:** sizing, caps, and the cost and fill model.
-  - A config change in group S is re-frozen by an audited action of its own class, and the stage stands. An owner A3 raise also re-runs the current gate's stress and size table ($5 to $10,000, with price impact; "Capital and trade size scale").
-  - A deploy of new cost- or fill-model code re-runs the current gate's statistics on the window's data with the new model. If the gate still passes, it is re-frozen by an audited A2 action. If not, the strategy is demoted one stage.
+- **Group S, which changes only a trade's size or cost, never which trades happen:** sizing, caps, and the cost and fill model.
+  - An A1 lowering carries its own re-freeze in the same `apply_config`, at the same class, so a live strategy never goes dark waiting for a second action.
+  - A raise (A3) is applied only if the re-run gate statistics, and the size table at the new size ($5 to $10,000, with price impact; "Capital and trade size scale"), still pass with the CI lower bound above 0. Otherwise the server refuses the A3, at preview or at `effective_at`, with the blocking reason, and the stage and limit stay as they were. When it passes, it is re-frozen by the same audited action, and the stage stands.
 
-Rules for both groups:
+**Code deploys** (round 5 ruling 53). A deploy that changes `configKey` (new runtime dependencies, or new cost- or fill-model code) has its own rule:
+- B-9 is byte-identical and the model outputs are not more favourable: re-frozen by an audited A2 with actor `system`.
+- Otherwise every gate already passed is re-run on its own recorded window with the new code. If all still pass, it is re-frozen by an audited A2; if not, the strategy is demoted through B-M26-04 to the last stage whose gate still passes.
+- An open window continues under the new key from the deploy time, and the reset is recorded.
+
+Rules for every change:
 - The class of changes that piled up is the server-derived maximum over every change since the frozen `configKey`, recorded in the re-freeze audit.
 - Every stage drop of a live strategy goes through B-M26-04 as a demotion: the signer's mode is lowered first, then `cancelAllPendingA3`, then the cooldown.
-- On a mismatch, the host disables the strategy (no emission, exits kept) and raises a critical alert, and the research runner starts the B-9 decision on its own. If no decision arrives within 24 h, a second critical alert goes to the owner.
+- On a mismatch, the host disables the strategy (no emission, exits kept) and raises a critical alert, and the research runner starts the B-9 decision on its own. If no decision arrives within 24 h, a second critical alert goes to the owner; it then repeats daily, and the supervisor records a decision in DECISIONS within 2 days.
 
 ## 4. Template plugin
 
@@ -158,7 +169,11 @@ The earliest live-small date is at least about 65 days after recording starts (A
 
 **Start and bootstrap** (round 2 ruling 7; round 3 ruling 29). The first config (`/etc/bot/config.json`, B-M25-01 step 4) and every later start run the full cross-key validator, with the PREREG snapshot and the stages. Only a global violation (schema, ceilings, live modes in the bootstrap config) gives `start_refused` or `exits_only` (B-M25-03). A violation that belongs to one strategy disables only that strategy (section 3, "Staging rules"). Bootstrap refuses `live_small` and `live` in any `enabled_modes`; only an A3 action can add them.
 
-**Live only after the gates.** Live needs all of: the strategy's stage `paper_passed` or later (B-M21-02 step 1; B-M26-04 step 2), the system promoted to live-small by the A3 `set_mode` flow with P-1..P-9 passing and no cooldown, the signer's own `max_mode` raised on the host, and at most 1 strategy live at once (ARCH 8.1 "Strategies live at once", short code `MAXSTRAT`, CL-64; B-M26-04 step 2). For `MAXSTRAT`, "live" means a strategy at stage `live_small` or `live` while the system mode is live, not a left-over entry in `enabled_modes` (round 3 ruling 31). Card PLUGIN-SANDBOX applies in every mode, the research host included, so the gates run the same path that trades: the plugin runs in a process with no provider secrets and no network. The A3 enable refuses live unless the host's `status()` shows a runtime attestation of that (empty environment, network denied), not a config flag (round 3 ruling 27; round 4 ruling 45).
+**Live only after the gates.** Live needs all of: the strategy's stage `paper_passed` or later (B-M21-02 step 1; B-M26-04 step 2), the system promoted to live-small by the A3 `set_mode` flow with P-1..P-9 passing and no cooldown, the signer's own `max_mode` raised on the host, and at most 1 strategy live at once (ARCH 8.1 "Strategies live at once", short code `MAXSTRAT`, CL-64; B-M26-04 step 2). For `MAXSTRAT`, "live" means a strategy at stage `live_small` or `live` while the system mode is live, not a left-over entry in `enabled_modes` (round 3 ruling 31).
+
+**Sandbox before live** (round 3 ruling 27; round 4 ruling 45). Card PLUGIN-SANDBOX applies in every mode, the research host included, so the gates run the same path that trades: the plugin runs in a process with no provider secrets and no network. The A3 enable refuses live unless the host's `status()` shows a runtime attestation of that (empty environment, network denied), not a config flag.
+
+**Version-bound command** (round 5 ruling 55). The scheduled A3 enable names `id@version`; at `effective_at`, B-M26-03's re-validation cancels it if the running version differs.
 
 **Upgrading a live strategy** (round 4 ruling 50). With X@1 live, upgrading means demoting X@1 to paper first and running X@2's full gates, so live trading pauses until X@2 passes. A3 actions are not offered on the phone view and the server refuses them from mobile sessions (UI D-UI-11). Raising money from paper to live stays the owner's alone (AGENTS.md "Only the owner").
 
@@ -181,7 +196,7 @@ The earliest live-small date is at least about 65 days after recording starts (A
 2. If your rule needs data the bot does not record yet (holders, wallets, social), say so. The supervisor asks you to approve a card that adds it first.
 3. Say which data you used and what results you saw. The average result after costs must be above zero, or the PREREG is refused.
 4. List every version you tried, kept or dropped.
-5. Send it to the supervisor. Agents write the PREREG; you read it and say yes. Agents may only start a strategy of their own if you say yes first, and theirs stop on 31 Dec 2026.
+5. Send it to the supervisor. Agents write the PREREG; you read it and say yes. Your rules, evidence and code are kept private, never in the public repository. Agents may only start a strategy of their own if you say yes first, and theirs stop on 31 Dec 2026.
 6. The PREREG is pushed before any test day is recorded. Nothing in it changes after that.
 7. Agents build the plugin from the template. A reviewer checks it matches your rules.
 8. Switch it on in paper on the strategies screen. They are marked shadow and do not count for any gate yet.
@@ -198,7 +213,8 @@ Z-STRAT builds its own side and tests it against fakes; what other tickets own i
 - The A-M09-01 runtime host, with the staging, params, origin and fresh-instance rules of section 3.
 - The two template plugins of section 4.
 - The pure `enabled_modes` validator (rulings 1, 2, 4, 5; round 2 rulings 1–3, 7–9, 11; round 3 rulings 24, 25, 29).
-- `featuresImplHash()`, the hash of the features package, kept apart from the pin hash (round 3 rulings 26 and 35; round 4 ruling 42).
+- `runtimeDepsHash()`, the hash of the plugin's runtime dependencies outside its package directory, kept apart from the pin hash (round 3 rulings 26 and 35; round 4 ruling 42; round 5 ruling 51).
+- The CI checks for the group tag on every `affectsReturns` key and for owner-strategy commitments (round 5 rulings 52 and 54).
 - The pin file, its CI checks (including the `origin: owner` check against DECISIONS) and the runner's pin check (ruling 3; round 2 ruling 4; round 3 rulings 26 and 28; round 4 rulings 47 and 48).
 - The globals allow-list lint (round 2 ruling 6; round 3 ruling 27).
 - This document.
@@ -212,7 +228,7 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | `Config`, `ConfigFieldSchema` with `affectsReturns`, the frozen config snapshot; schema entries for `strategy.<id>.enabled_modes`, `strategy.<id>.params.*`, `strategy.runtime.onbar_warn_ms` | Z02, B-M25-01 | Blocking. The host reads config only through the B-M25-01 `Config` type |
 | Wiring of the `enabled_modes` validator into M25 validation | B-M25-02 cross-key rules (ruling 5; Phase 2 in SPEC-B) | Z-STRAT ships the validator as a pure function with tests; B-M25-02 calls it |
 | Registered-set snapshot for the validator and host: `preRegistered(strategyId, strategyVersion, paramsHash): boolean`, each configuration's `configKey`, the version's `origin` and pinned source hash | A-M13-02 (M2) | **NEW, PROPOSED name** (ruling 1; A-M13-02 has `preRegister` but no read). B-M25-02 is pure, so M25 passes a read-only snapshot taken at validation time, never a live database call. Until A-M13-02 exists, tests use a fake behind the same type |
-| `configKey` including the features hash and the source hash; `E_TRIAL_MISMATCH`; window reset and its record | A-M13-02, A-M13-05, A-M13-06 (M2) | Z-STRAT supplies `featuresImplHash()` and the pinned source hash; the key, mismatch and reset criteria are those tickets' |
+| `configKey` including `runtimeDepsHash()` and the source hash; `E_TRIAL_MISMATCH`; window reset and its record | A-M13-02, A-M13-05, A-M13-06 (M2) | Z-STRAT supplies `runtimeDepsHash()` and the pinned source hash; the key, mismatch and reset criteria are those tickets' |
 | Stage records keyed by `(id, version)`, with the selected `configKey` and source hash | A-M13-05 (M2); ARCH 15 | A fake stage store behind the A-M13-05 type |
 | The B-9 replay decision after a `configKey` change (section 3, "Changes after freezing") | A-M13-06, A-M11-01 | Z-STRAT tests only the host's side: mismatched means no emission until a fake re-freeze or demotion event arrives |
 | Audited A1 removal of every mode (at `failed`, at the agent stop, on a strategy-scoped start violation) | B-M26-04 | Z-STRAT tests that the host and validator raise the removal request and handle a fake M26's removal event |
@@ -225,6 +241,9 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | Global start outcome (`start_refused` / `exits_only`) | B-M25-03 | A fake start coordinator that records the outcome (round 4 ruling 40) |
 | The B-9 decision run, started by the research runner on a mismatch; the group S gate re-run after a model deploy | A-M11-01, A-M13-06 | The host's side only: the request it raises and its handling of fake decision events |
 | `preRegister` copying the DECISIONS reference into the registry row; refusing new `agent` registrations after the stop | A-M13-02 | A fake registry behind the same type |
+| Group tag on every `affectsReturns` key; the group S raise check at preview and `effective_at`; the same-apply re-freeze of a group S lowering | B-M25-01, B-M25-02, B-M26-02, B-M26-03 | Z-STRAT ships the CI tag check and tests its validator's side against fakes |
+| The code-deploy re-run of every passed gate on its own window | A-M13-06, A-M11-01 | The host's side only, against fake decision events |
+| The private location of owner strategies and the server's fetch path | The owner (pending, round 5 ruling 54) | No owner strategy is merged anywhere public; tests use an agent-origin fixture and a fake commitment |
 | `canonicalJson()` | Z01, B-M19-01 (`@bot/types` `canon.ts`, merged #287) | Available |
 | Lint and dependency policy | Z01, B-M30-01 | Available; add the allow-list lint and the pin checks |
 
@@ -252,7 +271,7 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | AC-18 | Rollback: switching back to X@1 emits only if X@1's version, source hash and `configKey` match its stage record; otherwise `E_VERSION_NOT_STAGED` | Round 2 ruling 1 |
 | AC-19 | At stage `failed` or `archived` (fake stage store), the host emits nothing in any mode, the validator refuses every mode, and the host raises the removal request; on a fake M26 removal event, `status()` shows no modes. The audited A1 action itself is B-M26-04's | Round 2 ruling 2; round 3 ruling 35 |
 | AC-20 | `strategy.<id>.params.*` that equal no registered configuration of the running version are refused at validate time with `E_PARAMS_CHANGED`; a config swap that changes `paramsHash` to an unregistered value disables the strategy with a critical alert | Round 2 ruling 3; round 3 ruling 24 |
-| AC-21 | `featuresImplHash()` is stable across two builds of the same features package and changes when one line of it changes. The `configKey`, `E_TRIAL_MISMATCH` and window-reset criteria are A-M13-02's and A-M13-05/06's | Round 2 ruling 5; round 3 ruling 35 |
+| AC-21 | `runtimeDepsHash()` is stable across two builds with the same runtime dependencies and changes when one line of the features package or of an imported `@bot/types` runtime module changes. The `configKey`, `E_TRIAL_MISMATCH` and window-reset criteria are A-M13-02's and A-M13-05/06's | Round 2 ruling 5; round 3 ruling 35; round 5 ruling 51 |
 | AC-22 | The validator classifies each violation as global (schema, ceilings, `live_small` or `live` in the bootstrap config) or strategy-scoped (template in paper, paper without PREREG, a mode at `failed`, a staging mismatch, the agent stop). Against a fake B-M25-03 start coordinator: a global violation is reported as global; a strategy-scoped one disables only that strategy in the host, with a critical alert and the removal request. The outcome `start_refused` / `exits_only` is B-M25-03's | Round 2 ruling 7; round 3 ruling 29; round 4 ruling 40 |
 | AC-23 | `origin` is read from the registered set, never from config: a config key that sets it is refused. `owner` without a DECISIONS line naming `id@version` is refused (fake registry). For an `agent` strategy, with a fake wall clock one second before and after 2026-12-31T23:59:59 Australia/Melbourne, the host emits nothing after the moment in every mode (backtest and replay included), raises the removal request, and keeps open positions' exits; the validator refuses switching it on | Round 2 ruling 9; round 3 ruling 25 |
 | AC-24 | From `backtest_passed` on, a configuration other than the selected `configKey` is refused in paper and live; at `research`, any `configKey` in the registered set is accepted | Round 2 ruling 11; round 3 ruling 24 |
@@ -263,15 +282,23 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | AC-29 | On the live host, `backtest` and `replay` in any `enabled_modes` are refused by the validator; they run only on the research host (UC-12) | Ruling 19 |
 | AC-30 | `live_small` or `live` for a strategy below stage `paper_passed` is refused by the validator; the host also emits nothing for it (A-M09-01 step 5) | Ruling 20; B-M21-02 step 1 |
 | AC-31 | Configuration 2 of a version's registered set is selected at gate B (fake stage store): in paper the host emits for configuration 2 and refuses configuration 1 with `E_VERSION_NOT_STAGED` | Round 3 ruling 24 |
-| AC-32 | "A1 limit lowered while live" (group S): the host disables the strategy on the `configKey` mismatch and keeps exits; on a fake audited A1 re-freeze event it resumes at the same stage, with no B-9 run requested. A group P change with byte-identical proposals and class A1 resumes on a fake re-freeze event; with differing proposals, a fake demotion event leaves it one stage lower | Round 3 ruling 26; round 4 ruling 43 |
+| AC-32 | "A1 limit lowered while live" (group S): the same `apply_config` carries the re-freeze at class A1, so the host never enters mismatch and keeps emitting at the same stage, with no B-9 run requested. A group P A1 change with byte-identical proposals resumes on a fake re-freeze event; with differing proposals, a fake demotion event leaves it one stage lower | Round 3 ruling 26; round 4 ruling 43; round 5 ruling 56 |
 | AC-33 | Upgrade restart: with X@1 live and strategy Y in paper, a restart after deploying X@2 while config still names X disables only X in the host (strategy-scoped violation), Y keeps emitting, and the fake start coordinator records no global violation | Round 3 ruling 29; round 4 ruling 40 |
 | AC-34 | The runner, on the research host as well, refuses to register an `id@version` whose source hash is not in main's pin file; the pinned hash is written to the stage record, and a running build whose source hash differs from the stage record's is disabled with `E_VERSION_NOT_STAGED` | Round 3 ruling 28 |
-| AC-35 | A features-package change under existing pins passes CI; every strategy whose `configKey` holds the old `featuresImplHash()` goes into mismatch (no emission, exits kept, critical alert) and the host raises the B-9 decision request | Round 4 ruling 42 |
-| AC-36 | Group S: an owner A3 raise of a cap re-freezes on a fake audited A3 event with the stage unchanged, and the host requests the stress and size table re-run; a cost-model deploy with a fake gate re-run that passes resumes after a fake A2 re-freeze, and one that fails leaves the strategy one stage lower via a fake B-M26-04 demotion | Round 4 ruling 43 |
-| AC-37 | On a mismatch with no decision event, a fake clock 24 h later gives a second critical alert addressed to the owner; none before 24 h | Round 4 ruling 43 |
+| AC-35 | A features-package change, and a `@bot/types` runtime change, under existing pins pass CI; every strategy whose `configKey` holds the old `runtimeDepsHash()` goes into mismatch (no emission, exits kept, critical alert) and the host raises the B-9 decision request | Round 4 ruling 42; round 5 ruling 51 |
+| AC-36 | Group S raise, validator side against fakes: an owner A3 raise of a cap whose fake gate re-run and size table pass at the new size is re-frozen with the stage unchanged; a fake failing result gives a blocking reason at preview and again at `effective_at` | Round 4 ruling 43; round 5 ruling 52 |
+| AC-37 | On a mismatch with no decision event, a fake clock gives a second critical alert to the owner at 24 h (none before), then one each further day | Round 4 ruling 43; round 5 ruling 59 |
 | AC-38 | A demotion event for X@1 while X@2 exists changes only X@1's stage record and emission; X@2's record and `status()` are unchanged | Round 4 ruling 44 |
 | AC-39 | Three piled-up changes since the frozen `configKey` (A1, A3, A1) give class A3 for the re-freeze, and the audit request lists all three | Round 4 ruling 49 |
 | AC-40 | CI fails a PREREG with `origin: owner` whose `id@version` has no supervisor DECISIONS line on main; the validator reads the DECISIONS reference only from the registry row (fake registry) | Round 4 ruling 47 |
+| AC-41 | "A3 `MAXPOS` raise where the size table shows a negative mean at the new size": refused, with the stage and the limit unchanged | Round 5 ruling 52 |
+| AC-42 | CI fails an `affectsReturns` key with no group tag; an untagged key is treated as group P; each admission key named in section 3 is tagged P | Round 5 ruling 52 |
+| AC-43 | Code deploy, byte-identical: B-9 identical and model outputs not more favourable → a fake audited A2 `system` re-freeze, stage unchanged | Round 5 ruling 53 |
+| AC-44 | Code deploy, differing but still passing: every passed gate re-run on its own window passes (fake) → audited A2 re-freeze, stage unchanged, the open window continuing under the new key with the reset recorded | Round 5 ruling 53 |
+| AC-45 | Code deploy, differing and failing: the fake re-run fails gate R → the strategy is demoted through a fake B-M26-04 to `backtest_passed`, the last stage whose gate still passes | Round 5 ruling 53 |
+| AC-46 | CI fails an `origin: owner` strategy whose PREREG or plugin source is in the public tree; a public commitment whose sha256 does not match the fixture's private copy fails | Round 5 ruling 54 |
+| AC-47 | A scheduled A3 enable named for X@1 is cancelled at `effective_at` when X@2 is running (fake B-M26-03 re-validation) | Round 5 ruling 55 |
+| AC-48 | The runner refuses a second `preRegister`, or a registration, of an `id@version` whose export entry is not on main | Round 5 ruling 58 |
 
 ### Tests
 
@@ -295,7 +322,7 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | Host unit with a fake stage store keyed by `(id, version)`: upgrade, rollback, configuration 2 | AC-17, AC-18, AC-31 |
 | Host and validator unit with a fake M26: `failed` and `archived`, removal request and event | AC-19 |
 | Validator and host unit: params not in the registered set; config swap | AC-20 |
-| Unit: `featuresImplHash()` stability and one-line change | AC-21 |
+| Unit: `runtimeDepsHash()` stability and one-line changes | AC-21 |
 | Start-up unit against a fake B-M25-03 coordinator: global and strategy-scoped violations; upgrade restart with two strategies | AC-22, AC-33 |
 | Host and validator unit with a fake wall clock and fake registry: origin rules and the agent stop in every mode | AC-23 |
 | Validator unit: selected and unselected `configKey`s by stage | AC-24 |
@@ -306,12 +333,17 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | Validator unit: `backtest` and `replay` on the live host | AC-29 |
 | Host unit with fake re-freeze and demotion events | AC-32 |
 | Runner unit: unpinned `id@version`; source-hash mismatch against the stage record | AC-34 |
-| CI fixture: features-package change with pins unchanged; host unit with a fake `featuresImplHash()` change | AC-35 |
-| Host unit with fake re-freeze, gate re-run and demotion events (group S) | AC-36 |
-| Host unit with a fake clock: 24 h second alert | AC-37 |
+| CI fixture: features-package and `@bot/types` changes with pins unchanged; host unit with a fake `runtimeDepsHash()` change | AC-35 |
+| Validator unit with fake gate re-run and size-table results (group S raise) | AC-36, AC-41 |
+| Host unit with a fake clock: 24 h second alert, then daily | AC-37 |
 | Host unit with a fake stage store holding X@1 and X@2 | AC-38 |
 | Validator unit: maximum class over piled-up changes | AC-39 |
 | CI fixture: owner PREREG with and without its DECISIONS line | AC-40 |
+| CI fixture: untagged and tagged schema keys | AC-42 |
+| Host unit with fake B-9 and gate re-run events: the three code-deploy cases | AC-43 to AC-45 |
+| CI fixtures: owner strategy in the public tree; matching and mismatching commitments | AC-46 |
+| Unit with a fake B-M26-03: version-bound A3 cancelled | AC-47 |
+| Runner unit: export entry missing from main | AC-48 |
 | Metrics: `signals_total{strategy}`, `proposal_dropped_total{reason}`, `strategy_onbar_ms{strategy}`; log `M09.strategy_disabled` | A-M09-01 observability |
 
 Every bug-fix test must fail before and pass after (AGENTS.md "Builders"). MIGRATION row A-M09-01 marks `core/src/engine/engine.ts:17-40` and `core/test/purity.test.ts` as adapt; under "No bugs migrate" its B1 and B5 probes are AC-27 and AC-28.
@@ -323,6 +355,9 @@ A follow-up card (round 3 ruling 27; round 4 ruling 45). Plugins run in a separa
 Acceptance criteria named now; the rest is written when the card is opened, and it changes a SPEC-B ticket, so it needs the supervisor's carding:
 1. Parity, in CI: the same bars and seed give byte-identical proposals and `featuresHash` in-process and sandboxed.
 2. The host's `status()` carries a runtime attestation (empty environment, network denied) measured from the running sandbox, never a config flag; the A3 enable refuses `live_small` and `live` without it.
+3. Features reach the plugin with the bar, or through a synchronous proxy, and give the same `featuresHash` as in-process (round 5 ruling 57).
+4. Before the first A3, B-9 runs on the strategy's own `W_B` data through the sandbox.
+5. Timing: per-bar IPC time is measured against `strategy.runtime.onbar_warn_ms`.
 
 ## Card Z-STRAT-UI
 
@@ -343,7 +378,7 @@ The owner's switch button (owner, 2026-10-08: "Like a switch button where this l
 
 **Depends on.** Z05 (UI-T04 primitives, UI-T07 dialogs); UI-T09 (step-up); UI-T13 (command framework); UI-T26 (S-10 config path); backend B-M25-02, B-M26-02, and A-M09-01 `status()` through M28.
 
-**Contract gap (PROPOSED).** VM-03 `strategies[]` holds only `strategy_id`, `name`, `enabled` and `modes`. To show the disabled switch and its reason before a click, the screen needs per strategy: whether a PREREG is registered, the stage, and per-mode blocking reasons. VM-03 `name` also has no source today: A-M09-01 `status()` returns no name. Proposed: add `prereg_registered: boolean`, `stage: StrategyStage` and `mode_blocking_reasons: { mode, code, message }[]` to `strategies[]`, with `name` taken from the PREREG's strategy name, projected by M28 (B-M28-03). This changes a contract, so a reviewer of `@bot/contract` must pass it.
+**Contract gap (PROPOSED).** VM-03 `strategies[]` holds only `strategy_id`, `name`, `enabled` and `modes`. To show the disabled switch and its reason before a click, the screen needs per strategy: whether a PREREG is registered, the stage, and per-mode blocking reasons. VM-03 `name` also has no source today: A-M09-01 `status()` returns no name. Proposed: add `version` (round 5 ruling 55), `prereg_registered: boolean`, `stage: StrategyStage` and `mode_blocking_reasons: { mode, code, message }[]` to `strategies[]`, with `name` taken from the PREREG's strategy name, projected by M28 (B-M28-03). This changes a contract, so a reviewer of `@bot/contract` must pass it.
 
 **Acceptance criteria.**
 1. Given two strategies with PREREGs, when the operator switches strategy 1 on in paper, then the A2 dialog opens; after confirmation exactly one `apply_config` is sent with `enabled_modes` containing `paper`, and the switch shows `on` only after VM-03 reports it.
@@ -437,7 +472,7 @@ Reviewer at `d5a43d18` (FAIL on 1 MAJOR and 3 MINOR) and red team round 3 at `d5
 
 40. Reviewer M1: Z-STRAT tests the global or strategy-scoped classification and the host's disabling against a fake B-M25-03 start coordinator; the outcome is B-M25-03's ("Dependencies"; AC-22, AC-33).
 41. Reviewer m1–m3: section 2's row now names only the features package; the process claim cites ARCH 4.3 (D25), which puts M09 and M14 in one engine process (card PLUGIN-SANDBOX); A-M11-01 and the B-M26-02/B-M26-04 readiness amendments are in open point 6.
-42. P1: two hashes. The pin covers only the plugin's own closure and stays immutable; `featuresImplHash()` is in `configKey` and can be re-frozen (section 3; AC-16, AC-35).
+42. P1: two hashes. The pin covers only the plugin's own closure and stays immutable; `featuresImplHash()` (replaced by `runtimeDepsHash()`, ruling 51) is in `configKey` and can be re-frozen (section 3; AC-16, AC-35).
 43. P2: `configKey` groups P and S, the owner A3 raise with the stress and size table, the model-deploy gate re-run, B-M26-04 demotions, and the 24 h second alert (section 3, "Changes after freezing"; AC-32, AC-36, AC-37).
 44. P3: every stage-machine interface and VM-18 keyed by `(id, version)` (section 3; AC-38; open point 6).
 45. P4: PLUGIN-SANDBOX in every mode, with a parity criterion and a runtime attestation in `status()` (section 6; card PLUGIN-SANDBOX; Z-STRAT-UI criterion 12).
@@ -447,6 +482,21 @@ Reviewer at `d5a43d18` (FAIL on 1 MAJOR and 3 MINOR) and red team round 3 at `d5
 49. p4: the class of piled-up changes is the maximum since the frozen `configKey` (section 3; AC-39).
 50. p5: upgrading a live strategy pauses live trading (section 6).
 
+### Round 5
+
+Reviewer at `5d1ec4c4` (PASS, one optional MINOR) and red team round 4 at `5d1ec4c4` (0 BLOCKER, 4 MAJOR, 5 MINOR), rulings about 9:45 AM:
+
+51. Q1: the pin covers only the plugin's own package directory; `runtimeDepsHash()` (the features package and the `@bot/types` runtime modules) replaces `featuresImplHash()` in group P (sections 2 and 3; AC-21, AC-35).
+52. Q2: a group tag on every `affectsReturns` key; admission keys are group P; a group S raise is applied only if the gate re-run and the size table at the new size still pass (section 3; AC-36, AC-41, AC-42).
+53. Q3: the code-deploy rule (section 3, "Code deploys"; AC-43 to AC-45).
+54. Q4: owner strategies stay private, with public hash commitments; the location and fetch path are the owner's choice, pending (section 1; AC-46; open point 7).
+55. q1: the A3 enable is bound to `id@version` and cancelled on a mismatch; `version` in VM-03 (section 6; AC-47; Z-STRAT-UI contract gap).
+56. q2: a group S A1 lowering re-freezes in the same `apply_config` (section 3; AC-32).
+57. q3: the three sandbox notes (card PLUGIN-SANDBOX).
+58. q4: no second `preRegister` until the export entry is on main (section 2; AC-48).
+59. q5: the alert repeats daily after 24 h; a DECISIONS ruling within 2 days (section 3; AC-37).
+60. Reviewer n1: the "Live only after the gates" paragraph is split from the sandbox and upgrade paragraphs (section 6).
+
 ## Open points
 
 1. **Owner's evidence and the windows.** Gate B uses only days recorded after the PREREG (C-26). The owner's research data may serve a CS-1 kill-only screen, never a pass. This is a confirmed reading; no change is proposed.
@@ -455,7 +505,7 @@ Reviewer at `d5a43d18` (FAIL on 1 MAJOR and 3 MINOR) and red team round 3 at `d5
 4. **Registered-set read on A-M13-02** (PROPOSED name `preRegistered`, with the `configKey`s, `origin` and source hash). It needs adding to that ticket when it is carded.
 5. **Paper shadow under live-small (PROPOSED, ruling 12 of round 2).** SPEC stands: a paper-only strategy pauses while the system is live-small (A-M09-01 step 5). A paper shadow with no real orders, so its `W_P` continues, is to be decided when a second strategy reaches paper; no amendment now.
 6. **SPEC amendments these rulings imply.** Each needs its ticket text updated when it is carded:
-   - A-M13-02: `featuresImplHash()` in `configKey` (step 2); the registered-set read; `preRegister` storing the source hash and the DECISIONS reference, and refusing new `agent` registrations after the stop.
+   - A-M13-02: `runtimeDepsHash()` in `configKey` (step 2); the registered-set read; `preRegister` storing the source hash and the DECISIONS reference, and refusing new `agent` registrations after the stop.
    - A-M13-05 and ARCH 15: stage records keyed by `(id, version)`, holding the selected `configKey` and source hash; `stage`, `onModeCommand`, `onDemotion`, `archive`, `cooldownUntil` and `minDwellUntil` take `(id, version)`; the re-freeze rules of groups P and S.
    - A-M13-06: `evaluateGates` takes `(id, version)`; the group S gate re-run after a model deploy.
    - A-M11-01: the runner's pin check; the B-9 decision started on a mismatch; the registry export.
@@ -467,3 +517,7 @@ Reviewer at `d5a43d18` (FAIL on 1 MAJOR and 3 MINOR) and red team round 3 at `d5
    - B-M26-04: the audited A1 removal at `failed`, at the agent stop and on a strategy-scoped start violation; step 8 keyed by `(id, version)`; every live stage drop as a demotion; readiness checks for the PLUGIN-SANDBOX attestation.
    - B-M26-02: readiness of the A3 enable (the attestation and the stage of the named version).
    - ARCH 15 `strategy` table: the `origin` column.
+   - B-M25-01: the group tag on every `affectsReturns` key.
+   - B-M26-03: the A3 enable bound to `id@version` and re-validated at `effective_at`.
+   - VM-03 (UI.md): `version` in `strategies[]`.
+7. **Where owner strategies live (owner, pending; round 5 ruling 54).** A private repository (the existing private `zeroed-data` or a new private strategies repository) with a server fetch path, or this whole repository becoming private. Until the owner answers, no owner strategy is merged anywhere public.
