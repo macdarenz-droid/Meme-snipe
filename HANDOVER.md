@@ -48,6 +48,11 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 5:52 PM **Red team C round 3** (claude/redteam-c 5853efd).
+  - **Re-verification:** 18 of 19 verifiable findings are CLOSED on the fix heads, with no regressions (21 leak + 2 exit-crash probes pass everywhere). OPEN: M1 (a scan is granted when its count save fails) on #271/#274. PR B is not pushed, so C1/H1/R2-1/2/4 still fail. The NAV peak (SOL-BOOKS) still fails.
+  - **Resume path:** HIGH R3-6 (the switch alert is once per key, so a second failed deploy rolls back silently to the stand-in, which raises no alert); HIGH R3-1 (rollback onto the stand-in with a settled open paper position); MEDIUM R3-2 (hold/start-failure rollback has no intent check) and R3-5 (the stand-in overwrites open_intents with 0); LOW R3-3, R3-4.
+  - **Condition:** Deploy 1 must be confirmed deployed (zeroed-update 'deployed e4a8c056…') before #268 is tagged.
+  - **All of it goes to RC-FIXES-2b** (015cNHfA, started now as a 4th builder, because it is on the resume critical path; the owner's loop says 'at least 3').
 - 5:38 PM **#271 RC-FIXES-2 merged** as e4a8c056 (head 5d5aefa2; ops review PASS on that head; check, historical-data and e2e green; merge tree = tested head tree; only #271 closed). Not deployed. #152 updated again onto e4a8c056 (CI re-runs). DEPLOY 1 must include #271 BEFORE #268 (see the 5:01 PM note).
 - 5:38 PM **OWNER: 'Continue atleast 3 workers, 2 researcher, 1 red team. Then do that in a loop every task. When all done start the paused task. prioritise work that u think highly important'.** Recorded in CLAUDE.md (Worker loop).
   - **Running now:**
