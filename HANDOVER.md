@@ -48,6 +48,27 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 9:18 PM **Red team A round 4, PARALYSIS HUNT** (claude/redteam-a @ 37637052, REPORT "Round 4"; 17 probes fail on cd4d7a64). 12 global blockers, ranked by trades lost:
+  - (1) No batch ever lands fresh: readBatch waits on Promise.all, so the slot-lag ≤2 bank ages by the slowest cross-check or sim. Every mode, S0 included. S1 checked the code at cd4d7a64:readers.ts:550–640.
+  - (2) Exec-health keeps the regime off in judged runs (zero attempts = red; a 10 s publish judged against a 2 s age).
+  - (3) A slow scan burns the 100/day scan cap.
+  - (4) One late-landing buy halts entries for good (closed positions counted).
+  - (5) The sell-only halt outlives its position.
+  - (6) A failed fetch-caps save spends the day's cap.
+  - (7) The SOL/USD bar goes stale at the top of every hour, with no retry.
+  - (8) An unreadable credits.json halts for the month (SyntaxError on 4 heads).
+  - (9) BEHIND hysteresis is asymmetric.
+  - (10) Survival is about 14 days off after an outage of 24 h or more.
+  - (11) Under S0, an old graduates fact turns the regime off (blocks the resume's S0 run).
+  - (12) R10 on SOL/USD (closed by #197).
+  - Also a fail-open: cross-check and sim answers are stamped with the close time.
+  - **Routed:**
+    - **NEW builder FRESH-BATCH session_014FESiv4kiYSpt7d8xCfBgv** (Opus) for (1)+(3)+the fail-open. Rulings: bank read last; per-part stamps and limits; cross-check time budgets; scan spent only when usable.
+    - A2-GATE 01PSe97Q next: **REGIME-PARALYSIS** (11 and 7 first for the resume, then 2 and 10; outage backfill from the archive with a credit check).
+    - EXIT-FILL 01NQr4cD next: **HALTS** (DUST-WRITEOFF + 4 + 5).
+    - rc-fixes-2c 015cNHfA next: **PERSIST-PARALYSIS** (6, 8, 9).
+    - REPLAY-1000 asked to measure (1) part latencies, (9) the stall pattern and (7) stale minutes from recordings.
+    - Red team slot → **red team C round 5** (01MtW136): every restart-only halt, whether it alerts, how it clears, and whether it stops exits.
 - 9:13 PM **#276 facts/gates review PASS** on a54cd590 (01BWjnpv; full suite 6,883/6,883; 7/7 mutants killed; F1/F2/F3 closed; NT-1 acceptable). Then PASS on 58eb1422 itself too (merge = union of imports; RC-FIXES-2b gaps + R2-1 checked, no fail-open; 802/802 targeted). Two LOWs, not blocking:
   - (a) old state files carry no stretches, so the first restart after deploy forgets older holes. Moot: the downtime itself is a stretch over 2 h, so survival reads unknown across it.
   - (b) nothing caps NT-1's missing share (28 days scattered over a year). Follow-up card **NT-1b** after the resume; the critical alert covers it meanwhile.
