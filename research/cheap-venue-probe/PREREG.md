@@ -53,3 +53,8 @@ A configuration is **promising** only if, at $200 on the registered execution li
 4. validation stress mean > 0.
 
 Otherwise **not supported**. Five configurations are tested; the 99% bound is the multiple-testing guard. Even "promising" is only a reason to register a proper test on a never-run window with dead coins included, never a reason to trade.
+
+## Amendments before the first run (2026-10-07; candles downloading, no return computed)
+From the fresh-context code review:
+- **Raydium CPMM creator fee.** CPMM pool configs carry a creator fee (`config.creatorFeeRate` = 500 millionths, 0.05%) that the API's `feeRate` leaves out, and whether it is switched on for a given pool was not verified. It is charged on every CPMM pool as if switched on (upper bound): 0.25% + 0.05% = 0.30%. Under the ≤ 0.30% rule this drops KITTY (0.30% + 0.05% = 0.35%); the universe is 46 pools. Raydium AMM v4 and CLMM configs carry no creator fee.
+- **Download completeness.** The manifest records, per pool, the number of bars and the first and last bar time, so a short history reads as missing data, not as a young pool.
