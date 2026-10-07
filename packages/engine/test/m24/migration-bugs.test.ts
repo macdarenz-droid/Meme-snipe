@@ -211,3 +211,12 @@ describe('one writer (B-M24-01 logic 3, ARCH 4.5; LEDGER-1 writer lock): a secon
     openDb({ path, clock: fakeClock() }).close();
   });
 });
+
+describe('C5 (red team C), the part in B-M27-01: a lamport value sent as a string is refused, never read as no value', () => {
+  it('a gauge set with a decimal-string lamport amount throws (the alert rule itself is B-M27-02)', () => {
+    const reg = new MetricsRegistry({ clock: fakeClock(T0), seriesCap: 100, ringBudgetBytes: 1024 * 1024, sink: { append() {} } });
+    const g = reg.gauge('hot_balance_lamports', {});
+    assert.throws(() => g.set('0' as unknown as number), /must be finite/);
+    assert.throws(() => g.set(0n as unknown as number), /must be finite/);
+  });
+});
