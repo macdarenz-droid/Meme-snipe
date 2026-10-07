@@ -75,3 +75,52 @@ Reviewer, about 9:33 AM. Rulings 1–22 are applied as written, and nothing weak
 - m5: AC-28 should read "the PREREG sizing result, capped by M21".
 - m6: operator demotion is not automatic.
 Held until red team round 2 reports, so both go in one push.
+
+## Round 2 red team (head `e69fc5c6`): 0 BLOCKER, 6 MAJOR, 5 MINOR
+
+Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining:
+- N1: stages are stored per id, so X@2's `research` record replaces X@1's `live_small` record.
+- N2: two registered configurations per version clash with "params belong to the version".
+- N2b: `origin` can be flipped through config, which defeats the 31 Dec stop.
+- N3: making configKey equality a trading condition turns any affectsReturns or host change into a permanent stop.
+- N4: the globals lint is a deny-list with a one-line bypass (the constructor chain), and names are missing.
+- N5: a version can be reused if it never reached main.
+- N6: a strategy-scoped violation at start stops the whole engine, with an outage scheduled for 1 Jan 2027.
+- n1–n5: the live switch shows "on" before set_mode; the meaning of "live" for MAXSTRAT; "calls" cannot be computed; the order of the Rulings list; AC-28 sizing.
+
+### Supervisor rulings for round 3 (8 Oct 2026, about 9:52 AM)
+
+23. **N1.** Stage records are keyed by (id, version). Registering X@2 never changes X@1's stage. Add a step to AC-17 that checks X@1's stage is unchanged. Add A-M13-05 and ARCH 15 to the open point 6 amendments.
+24. **N2.** paramsHash and the staging check are per configKey within the version's registered set. Each configuration's params are fixed in the PREREG. Config may only pick one of the registered configurations, never set free params. At `research`, the L89 check accepts any configKey in the registered set; from `backtest_passed` on, only the selected one (AC-24). Add an AC: configuration 2 is selected, then paper-traded.
+25. **N2b.** `origin` comes only from the immutable PREREG or the append-only registry row, never from config. The validator refuses any key that sets it. `owner` needs a supervisor-recorded DECISIONS line that names id@version and cites the owner's message. Origin is fixed for the life of the version. For agent strategies, the stop uses wall-clock time, covers backtest and replay too, and runs the audited A1 removal of every mode at that moment. Open positions keep their exits. Add ACs.
+26. **N3.**
+    - (a) The code hash is the build-computed import closure of the plugin plus the features package. A host change outside that closure does not change configKey.
+    - (b) When a change alters configKey for a strategy in paper or live, a B-9 replay on its W_B data decides.
+    - (c) If the proposals are byte-identical and the change only lowers risk (class A1), configKey is re-frozen by an audited A1 action and the stage stands.
+    - (d) If the proposals differ, or the change is A2 or A3, the strategy drops to the stage before its open window, and that window restarts. Any change other than a risk-lowering one sends it back to `research`.
+    - Add an AC: "A1 limit lowered while live".
+27. **N4.**
+    - A real allow-list of global identifiers.
+    - Ban member access to `.constructor` and `__proto__`, computed member access with non-literal keys on non-local objects, `import.meta`, `with` and `Intl`.
+    - Add a failing fixture for each bypass the red team listed, the constructor chain included.
+    - State that lint is not a boundary.
+    - Add a named follow-up card, PLUGIN-SANDBOX: plugins run in a process with no provider secrets and no network. It is a precondition of live: the A3 enable refuses live for a plugin that does not run that way.
+28. **N5.** CI refuses an id@version that appears with another hash in `research/<id>/PREREG.md` or in the trial registry export. The runner, the research host included, refuses to register an id@version whose source hash is not in main's pin file. The pinned source hash goes into the stage record, so the staging check binds the code.
+29. **N6.**
+    - A strategy-scoped violation (a staging mismatch, failed or archived, the origin stop, a missing PREREG) disables only that strategy at start, with a critical alert and the audited A1 removal. Its open positions keep their exits.
+    - Only a global violation (schema, ceilings, live modes in the bootstrap config) gives `start_refused` or `exits_only`.
+    - Add an AC: an upgrade restart leaves the other strategies running.
+30. **n1.** The control shows "on, waiting for live mode" with its reason until set_mode. Checklist item 11 says two A3 steps are needed.
+31. **n2.** "Live" for MAXSTRAT means stage live_small or live while the system mode is live, not a stale entry in enabled_modes.
+32. **n3.** Covered by 26(a).
+33. **n4 and the reviewer's m4.** Put the Rulings list in order.
+34. **n5 and the reviewer's m5.** AC-28 reads "never above the size the PREREG's sizing rule gives at edge 0, capped by M21".
+35. **Reviewer M1.**
+    - Z-STRAT ships `featuresImplHash()` with a stability and change test.
+    - The configKey, mismatch and window-reset criteria go to A-M13-02 and A-M13-05/06 under Dependencies.
+    - For AC-19, Z-STRAT tests the host and validator and its handling of a removal event from a fake M26. The audited A1 removal goes to B-M26-04 under Dependencies.
+    - The same split applies to rulings 25, 26 and 29: Z-STRAT tests its own side against fakes, and the rest is listed as dependencies.
+36. **Reviewer m1.** The 5-min step-up is in SPEC-B B-M26-02 step 2. Cite it and drop PROPOSED.
+37. **Reviewer m2.** The A3 phrase is the supervisor's addition. Mark it so, and add B-M26-02 step 2 (requiredPhrase) to the amendments.
+38. **Reviewer m3.** Add the reviewer's refusal of a negative-evidence PREREG to §2, and say why the checklist puts it at step 3.
+39. **Reviewer m6.** "L-1, L-2 and L-4 demote it automatically; the operator can demote it (A1)."
