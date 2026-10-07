@@ -245,7 +245,6 @@ const negativeRun = (flow: readonly FlowMinute[], n: number, fromMs: number, now
 
 const maxOf = (a: bigint | null, b: bigint): bigint => (a !== null && a > b ? a : b);
 
-/** One update of one position. Pure: the same inputs always give the same step. */
 /**
  * RB-5: the slow retries after the bounded ones. Doublings of `blockedRetryMs` before the first slow retry (64 ×, an
  * hour at the trial's one minute: the fast retries already failed for minutes, so a pool that refused ten attempts is
@@ -260,6 +259,7 @@ export const SLOW_RETRY_MAX_DOUBLINGS = 10;
 export const slowRetryWaitMs = (blockedRetryMs: number, done: number): number =>
   blockedRetryMs * 2 ** Math.min(SLOW_RETRY_FIRST_DOUBLINGS + Math.max(0, done), SLOW_RETRY_MAX_DOUBLINGS);
 
+/** One update of one position. Pure: the same inputs always give the same step. */
 export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: ExitTracker, obs: ExitObservation): ExitStep => {
   const g = s.exits;
   // Never a default: a universe without its own block throws.

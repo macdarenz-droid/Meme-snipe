@@ -850,7 +850,7 @@ export class Worker {
       seed, scenario: d.scenario, network: d.network,
       ladderFees: d.session.policy.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint),
       exitRung: (i) => this.#strategy.signedRung(i.intent.positionId, this.#engine.book),
-      market: (mint, purpose) => this.#paperMarket(mint, purpose),
+      market: (mint) => this.#paperMarket(mint),
       maxQuoteAgeMs: d.session.policy.gates.maxQuoteAgeMs,
       maxSolOut: (i) => {
         const n = d.network;
@@ -1512,8 +1512,8 @@ export class Worker {
   }
 
   /** The mint's newest whole market by the strategy's own rule (`chooseMarket`). */
-  #choice(mint: string, carry = true): MarketChoice {
-    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, carry ? this.#carries.get(mint)?.carry ?? null : null);
+  #choice(mint: string): MarketChoice {
+    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, this.#carries.get(mint)?.carry ?? null);
   }
 
   /**
@@ -1543,8 +1543,8 @@ export class Worker {
     return { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
   }
 
-  poolOf(mint: string, carry = true): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
-    const c = this.#choice(mint, carry);
+  poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
+    const c = this.#choice(mint);
     if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
     if (c.kind !== 'pool') return null;
     const p = c.pool;
@@ -1985,9 +1985,13 @@ export class Worker {
   /** Signatures of cut creates logs already being fetched or fetched (a truncated log names its signature on each event). */
   readonly #cutCreateSeen = new Set<string>();
 
-  /** N1: the read a paper attempt lands on, dated as the strategy dates it (an entry's never by a carry, as #sendEntry). */
-  #paperMarket(mint: string, purpose: 'entry' | 'exit'): PaperMarket | null {
-    const m = this.poolOf(mint, purpose === 'exit');
+  /**
+   * N1: the read a paper attempt lands on and its date. A carry dates it for entries too (BT-parity F2): it proves the
+   * reserves unchanged through its slot, which is all a landing needs. An entry's decision still never prices from a
+   * carry (#sendEntry, WATCH-1c risk review): that is about judging a candidate without a verify read.
+   */
+  #paperMarket(mint: string): PaperMarket | null {
+    const m = this.poolOf(mint);
     return m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs };
   }
 

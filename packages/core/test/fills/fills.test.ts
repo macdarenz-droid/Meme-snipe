@@ -296,6 +296,16 @@ describe('stress in the fill model (BT-1c item 4)', () => {
     expect(outs[2]!.after).toEqual(outs[0]!.after);
   });
 
+  test('the network state starts at the base chance by default (the backtest), at a given one when asked (live paper, BT-parity F1)', () => {
+    const n = c.congestion.network;
+    const leave = 1_000_000n - n.stayPpm;
+    const share = (enter: bigint) => Number(enter) / Number(enter + leave);
+    const first = (make: (seed: string) => NetworkState) => Array.from({ length: 2_000 }, (_, k) => make(`first-${k}`).congested(7n)).filter(Boolean).length / 2_000;
+    // 2,000 draws: a standard error of about 1.1%, so 4% tells the two shares (about 19% and 62%) apart.
+    expect(Math.abs(first((seed) => new NetworkState(seed, c)) - share(n.enterPpm))).toBeLessThan(0.04);
+    expect(Math.abs(first((seed) => new NetworkState(seed, c, () => 0n, n.maxEnterPpm)) - share(n.maxEnterPpm))).toBeLessThan(0.04);
+  });
+
   test('the haircut counts only the exit sends inside its window (fills-4): one episode compounds, a later one starts from none', () => {
     const W = c.exitRetryHaircutWindowMs;
     expect(W).toBe(10 * 60_000);

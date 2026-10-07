@@ -3,10 +3,10 @@
 // on the feed's clock at the landing slot; an older read fails the attempt (fee paid), never fills at the old price.
 // N2: live paper draws and executes as the backtest's world does: the shared network state (congestion), send-path
 // outages, and the repeated-exit haircut. Same tape, same fills.
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { afterAll, describe, expect, test } from 'vitest';
 import type { PoolState } from '../../core/src/amm/index.ts';
 import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import type { AttemptId, IntentId, Signature } from '../../core/src/domain/index.ts';
@@ -39,11 +39,19 @@ const LANDS: FillScenario = {
 
 interface Leg { readonly id: string; readonly purpose: 'entry' | 'exit'; readonly inAmount: bigint; readonly quotedOut: bigint; readonly minOut: bigint; readonly position?: string }
 
-/** The paper world's wall clock (sends are timed by it); tests that move it set it back. */
+/** The feed time of each send (the broadcast effect's moment); tests that move it set it back. */
 let WALL = 0;
 
 /** A paper world over a hand-made book: one position, its intents, one signed attempt each. */
-const world = (scenario: FillScenario, legs: readonly Leg[], market: () => PaperMarket | null, seed = 'paper-fill', dir = mkdtempSync(join(tmpdir(), 'paper-fill-'))) => {
+const dirs: string[] = [];
+afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+const tempDir = (): string => {
+  const d = mkdtempSync(join(tmpdir(), 'paper-fill-'));
+  dirs.push(d);
+  return d;
+};
+
+const world = (scenario: FillScenario, legs: readonly Leg[], market: () => PaperMarket | null, seed = 'paper-fill', dir = tempDir()) => {
   const intents: Record<string, IntentState> = {};
   for (const l of legs) {
     intents[l.id] = {
@@ -57,11 +65,13 @@ const world = (scenario: FillScenario, legs: readonly Leg[], market: () => Paper
   const w = new PaperWorld({
     report: (e) => reports.push(e), book: () => book, seed, scenario, network: NET,
     ladderFees: TRIAL_POLICY.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint), exitRung: () => 0,
-    market: () => market(), maxQuoteAgeMs: MAX_AGE, maxSolOut: () => 0n, simulate: null, journal: () => undefined, now: () => WALL,
+    market: () => market(), maxQuoteAgeMs: MAX_AGE, maxSolOut: () => 0n, simulate: null, journal: () => undefined,
+    // The wall clock stands still: sends must be timed on the feed's clock (the effect's moment, WALL), never by it.
+    now: () => 0,
     file: new StateFile<PaperState>(dir, 'paper.json', (v) => v as PaperState), changed: () => undefined,
     landedFailed: (a) => failed.push(a),
   });
-  return { w, failed, reports, send: (id: string) => w.run({ type: 'broadcast', intentId: id as IntentId, attemptId: `a:${id}` as AttemptId, signedBytesRef: '', signature: `sig:${id}` as Signature }, null as never) };
+  return { w, failed, reports, send: (id: string) => w.run({ type: 'broadcast', intentId: id as IntentId, attemptId: `a:${id}` as AttemptId, signedBytesRef: '', signature: `sig:${id}` as Signature }, { slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: WALL }) };
 };
 
 const SLOT_MS = 400;
@@ -162,7 +172,7 @@ describe('N2 live paper fills as the backtest fills (conservative scenario)', ()
 
   test('N2a the haircut counts earlier exit sends on the same position only, a send lost in a restart included', () => {
     const other: Leg = { ...SELL, id: 'ox1', position: 'pos:2' };
-    const dir = mkdtempSync(join(tmpdir(), 'paper-fill-'));
+    const dir = tempDir();
     const legs: Leg[] = [other, { ...SELL, id: 'ex1' }, { ...SELL, id: 'ex2' }];
     const first = world(LANDS, legs, () => null, 'paper-fill', dir);
     first.w.onSlot(H0, at(H0));
@@ -207,6 +217,28 @@ describe('N2 live paper fills as the backtest fills (conservative scenario)', ()
     }
   });
 
+  test('F1 a restart starts at the cap\'s stationary congestion, not the base one: the first window of fresh worlds is congested at max / (max + leave)', () => {
+    const n = CONSERVATIVE.congestion.network;
+    const leave = 1_000_000n - n.stayPpm;
+    const atCap = Number(n.maxEnterPpm) / Number(n.maxEnterPpm + leave);
+    const atBase = Number(n.enterPpm) / Number(n.enterPpm + leave);
+    expect(atCap - atBase).toBeGreaterThan(0.3);
+    const worlds = 2_000;
+    let congested = 0;
+    for (let k = 0; k < worlds; k++) {
+      const seed = `f1-${k}`;
+      const { w, send } = world(CONSERVATIVE, [SELL], () => null, seed);
+      w.onSlot(H0, at(H0));
+      send('ex1');
+      const a = w.attempts.get('sig:ex1')!;
+      // Exactly the reference chain started at the cap's chance.
+      expect(a.congested).toBe(new NetworkState(`${seed}:net`, CONSERVATIVE, () => capVolume(CONSERVATIVE), n.maxEnterPpm).congested(windowOf(H0, CONSERVATIVE)));
+      if (a.congested === true) congested++;
+    }
+    // 2,000 draws: the standard error is about 1.1%, so 4% separates the two shares (about 62% and 19%) with room.
+    expect(Math.abs(congested / worlds - atCap)).toBeLessThan(0.04);
+  });
+
   test('N2b congestion: the attempt draws as the backtest\'s does in a congested window (fewer land, later)', () => {
     const always: FillScenario = { ...CONSERVATIVE, congestion: { ...CONSERVATIVE.congestion, network: { enterPpm: 1_000_000n, activityEnterPpmPerSol: 0n, maxEnterPpm: 1_000_000n, stayPpm: 1_000_000n }, providerFailPpm: 0n } };
     const seed = 'n2b';
@@ -240,7 +272,7 @@ describe('N2 live paper fills as the backtest fills (conservative scenario)', ()
     const n = 300;
     const legs: Leg[] = Array.from({ length: n }, (_, i) => ({ ...SELL, id: `ex${i}` }));
     const { w, send } = world(CONSERVATIVE, legs, () => null, seed);
-    const ref = new NetworkState(`${seed}:net`, CONSERVATIVE, () => cap);
+    const ref = new NetworkState(`${seed}:net`, CONSERVATIVE, () => cap, CONSERVATIVE.congestion.network.maxEnterPpm);
     const slots = BigInt(CONSERVATIVE.congestion.windowSlots);
     let congested = 0;
     for (let i = 0; i < n; i++) {
@@ -268,7 +300,7 @@ describe('RB-8 a restart proves its own never-landed attempts dead before any sl
   const ask = (w: PaperWorld) => w.run({ type: 'check_status', intentId: 'ex1' as IntentId, signatures: ['sig:ex1' as Signature], searchHistory: true }, null as never);
 
   test('RB-8a a dropped attempt: past its last valid height at the start reconcile; the live height once slots arrive', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'paper-fill-'));
+    const dir = tempDir();
     const first = world(down, [SELL], () => null, 'paper-fill', dir);
     first.w.onSlot(H0, at(H0));
     first.send('ex1');
@@ -287,7 +319,7 @@ describe('RB-8 a restart proves its own never-landed attempts dead before any sl
   });
 
   test('RB-8a fail-closed: an attempt that landed (filled or failed) is never reported dead from the restart rule', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'paper-fill-'));
+    const dir = tempDir();
     let read: PaperMarket = { pool: pool(VAULT), ctx: CTX, atMs: at(ELAND) };
     const first = world(LANDS, [BUY, SELL], () => read, 'paper-fill', dir);
     funded(first.w, first.send);
@@ -302,7 +334,7 @@ describe('RB-8 a restart proves its own never-landed attempts dead before any sl
     expect(r).toMatchObject({ type: 'intent', event: { type: 'status', result: 'succeeded', blockHeight: LAND } });
     // A landed failure is dated by its landing, not proven dead past its blockhash.
     const fails: FillScenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
-    const dir2 = mkdtempSync(join(tmpdir(), 'paper-fill-'));
+    const dir2 = tempDir();
     const third = world(fails, [SELL], () => null, 'paper-fill', dir2);
     third.w.onSlot(H0, at(H0));
     third.send('ex1');

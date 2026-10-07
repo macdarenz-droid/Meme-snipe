@@ -10,7 +10,7 @@ import type { PoolFeeContext, PoolState } from '../../../core/src/amm/index.ts';
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { createRng, type EffectRunner, type Moment } from '../../../core/src/engine/index.ts';
 import {
-  type AccountLeg, attemptFee, drawAttempt, executeBuyIn, executeSellIn, exitRetryCount, type FillNetwork, type FillScenario, NetworkState, providerDown, TokenAccounts, windowOf,
+  type AccountLeg, attemptFee, drawAttempt, executeBuyIn, executeSellIn, exitRetryCount, type FillNetwork, type FillScenario, NetworkState, networkEnterPpm, providerDown, TokenAccounts, windowOf,
 } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import { type Lamports, LAMPORTS_PER_SOL, type RawAmount, mulDiv } from '../../../core/src/units/index.ts';
@@ -48,7 +48,7 @@ export interface PaperAttempt {
   providerDown?: boolean;
   /** N2: earlier exit sends on its position inside the haircut window: the haircut's multiple (the backtest's `exitRetry`). */
   exitRetry?: number;
-  /** When this signature was sent (ms, wall clock): more than once when it was lost in a restart and re-made (EXIT-KEEP B3). */
+  /** When this signature was sent (ms, feed clock): more than once when it was lost in a restart and re-made (EXIT-KEEP B3). */
   sendsAtMs?: number[];
 }
 
@@ -94,7 +94,7 @@ export interface PaperWorldDeps {
   readonly ladderFees: readonly bigint[];
   /** The rung #sendExit recorded for this signed attempt, across partial owners and blocked retries. */
   readonly exitRung: (i: IntentState) => number;
-  readonly market: (mint: string, purpose: 'entry' | 'exit') => PaperMarket | null;
+  readonly market: (mint: string) => PaperMarket | null;
   /** The policy's quote age (gates.maxQuoteAgeMs): the freshness rule the attempt's own quote met. */
   readonly maxQuoteAgeMs: number;
   readonly maxSolOut: (i: IntentState) => bigint;
@@ -185,7 +185,8 @@ export class PaperWorld implements EffectRunner {
   constructor(d: PaperWorldDeps) {
     this.#d = d;
     const cap = capVolume(d.scenario);
-    this.#network = new NetworkState(`${d.seed}:net`, d.scenario, () => cap);
+    // F1: the first window too starts at the cap's stationary share, as the chain then steps.
+    this.#network = new NetworkState(`${d.seed}:net`, d.scenario, () => cap, networkEnterPpm(d.scenario, cap));
     this.#attempts = new Map(Object.entries(d.file.read({ attempts: {} }).attempts).map(([k, v]) => [k, { ...v }]));
     // Paper attempts die with the process that made them: one still in flight at a restart never lands.
     let lost = 0;
@@ -272,10 +273,10 @@ export class PaperWorld implements EffectRunner {
     return this.#d.book().intents[id];
   }
 
-  run(effect: Effect, _now: Moment): void {
+  run(effect: Effect, now: Moment): void {
     switch (effect.type) {
       case 'broadcast':
-        return this.#broadcast(effect.intentId, effect.signature);
+        return this.#broadcast(effect.intentId, effect.signature, now);
       case 'check_status':
         for (const s of effect.signatures) this.#status(effect.intentId, s, effect.searchHistory);
         return;
@@ -292,7 +293,7 @@ export class PaperWorld implements EffectRunner {
     }
   }
 
-  #broadcast(intentId: IntentId, sig: Signature): void {
+  #broadcast(intentId: IntentId, sig: Signature, now: Moment): void {
     // Rebroadcasts send the same bytes: the same signature lands at most once, so its fate was drawn already. One lost
     // in a restart is the exception (EXIT-KEEP B3): a kill after this world saved the attempt but before the ledger
     // booked it leaves the book without the intent, so the re-made intent gets the same id and the same paper
@@ -315,20 +316,21 @@ export class PaperWorld implements EffectRunner {
     const exit = i.intent.purpose === 'exit';
     const rung = exit ? this.#d.exitRung(i) : 0;
     // Every earlier exit send on the position inside the haircut window counts, as the backtest counts its broadcasts:
-    // one lost in a restart and re-made under the same signature (EXIT-KEEP B3) counts each of its sends. A send saved
-    // with no time (an older paper.json) counts as recent.
-    const sentAt = this.#d.now();
+    // one lost in a restart and re-made under the same signature (EXIT-KEEP B3) counts each of its sends. Sends are timed
+    // on the feed's clock (the effect's moment), as the backtest's are, so a replay counts the same window (BT-parity F3).
+    // A send saved with no time (an older paper.json) counts as recent.
+    const sentAt = now.receivedAt;
     const exitRetry = exit
       ? exitRetryCount([...this.#attempts.values()].filter((x) => x.purpose === 'exit' && x.trade === i.intent.positionId)
-        .flatMap((x) => x.sendsAtMs ?? [x.sentAtMs ?? sentAt]), sentAt, this.#d.scenario)
+        .flatMap((x) => x.sendsAtMs ?? [sentAt]), sentAt, this.#d.scenario)
       : 0;
     const a: PaperAttempt = {
       intentId, signature: sig, purpose: i.intent.purpose, trade: i.intent.positionId, mint: i.intent.mint,
       inAmount: attempt.quote.inAmount, quotedOut: attempt.quote.quotedOut, minOut: attempt.quote.minOut,
       priorityFee: exit ? (this.#d.ladderFees[rung] ?? 0n) : this.#d.network.entryPriorityFee,
       lastValidBlockHeight: attempt.lastValidBlockHeight, fate: draw.fate, landSlot: height + BigInt(Math.max(1, draw.landingSlots)),
-      outcome: 'in_flight', reason: down ? 'provider' : draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: sentAt,
-      congested, providerDown: down, exitRetry, sendsAtMs: [...(known?.sendsAtMs ?? (known?.sentAtMs !== undefined ? [known.sentAtMs] : [])), sentAt],
+      outcome: 'in_flight', reason: down ? 'provider' : draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: this.#d.now(),
+      congested, providerDown: down, exitRetry, sendsAtMs: [...(known?.sendsAtMs ?? (known === undefined ? [] : [sentAt])), sentAt],
     };
     this.#attempts.set(sig, a);
     this.#sentHeight.set(sig, height);
@@ -380,7 +382,7 @@ export class PaperWorld implements EffectRunner {
       this.#d.report({ type: 'intent', intentId: a.intentId as IntentId, event: { type: 'status', signature: a.signature as Signature, result: 'failed', commitment: 'finalized', blockHeight: slot, searchedHistory: false } });
     };
     if (a.fate === 'fails') return failed('landed failed (drawn)');
-    const m = this.#d.market(a.mint, a.purpose);
+    const m = this.#d.market(a.mint);
     if (m === null) return failed('pool state unknown');
     // N1: the price at landing is known only from a read as fresh as the attempt's own quote had to be. An older one
     // (a feed gap) is no price: the attempt fails and pays its fee, as a real one can, and never fills at the old read.

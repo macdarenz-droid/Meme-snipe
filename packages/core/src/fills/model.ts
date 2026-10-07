@@ -172,19 +172,27 @@ export class NetworkState {
   readonly #seed: string;
   readonly #s: FillScenario;
   readonly #volumeBefore: (win: bigint) => bigint;
+  readonly #firstEnterPpm: bigint;
   #first: bigint | null = null;
   readonly #states: boolean[] = [];
 
-  constructor(seed: string, s: FillScenario, volumeBefore: (win: bigint) => bigint = () => 0n) {
+  /**
+   * `firstEnterPpm` is the entry chance the first window's stationary share is taken at: by default the base `enterPpm`
+   * (no activity, the backtest's start). Live paper, which steps at the activity cap, starts there too (BT-parity F1), so
+   * a restart never begins less congested than the chain settles to.
+   */
+  constructor(seed: string, s: FillScenario, volumeBefore: (win: bigint) => bigint = () => 0n, firstEnterPpm: bigint = s.congestion.network.enterPpm) {
     this.#seed = seed;
     this.#s = s;
     this.#volumeBefore = volumeBefore;
+    this.#firstEnterPpm = firstEnterPpm;
   }
 
   congested(win: bigint): boolean {
-    const { enterPpm, stayPpm } = this.#s.congestion.network;
+    const { stayPpm } = this.#s.congestion.network;
     if (this.#first === null) {
       const leave = PPM - stayPpm;
+      const enterPpm = this.#firstEnterPpm;
       const stationary = enterPpm + leave === 0n ? 0n : mulDiv(enterPpm, PPM, enterPpm + leave, 'floor');
       this.#first = win;
       this.#states.push(draw(`${this.#seed}:network:${win}`) < stationary);
