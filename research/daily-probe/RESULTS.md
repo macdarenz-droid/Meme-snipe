@@ -23,3 +23,8 @@ All five rules: **not supported**.
 
 ## Limits
 Survivor-only coin list (coins worth about $81k or more on 2026-10-06); daily OHLCV from a public aggregator; 2026-06-01 is data-limited; discovery and validation overlap by up to 6 days for H = 3 and 7. A survivorship-free list of 85,111 graduates (created 2026-06-01 to 09-21, with canonical pools) was built from pump.fun's API during the run but has no market-cap fields, so prices for the coins that grew large would need about 85,000 free price calls or the paid history month.
+
+## Survivorship check (2026-10-07)
+- **The survivor list was badly biased.** In the 900-coin random sample, 33 of 588 normal canonical graduates closed at least one day at ≥ 9,820 SOL market cap; only 1 of those 33 is in the 481-coin list. Most coins that reach that size later die, so the first run mostly saw winners.
+- **Random-sample re-run** (registered; daily bars built from hourly): only 3 sampled coins were ever eligible (alive at group C size with 8 real daily bars). Every trade lost: D-REV3 one trade −72%, TREND four trades (mean −64%), buy-everything −26% at 1 day and −52% at 7 days. Too small to prove anything alone, but the direction matches the bias.
+- **Full re-test running.** 16,367 coins (all graduates since March whose pump.fun all-time high passes the filter, traded 9+ days, not dust on chain) are being downloaded in random order (about 32 hours at the free limit); the rules will be re-run on whatever has arrived, which is a random subsample at every point.

@@ -265,3 +265,28 @@ Slot time is hard-coded as 400 ms (`packages/worker/src/engine/strategy.ts` line
 
 ### 8.5 Where this leaves the search
 Every horizon tested so far loses after costs in SOL: minutes (the bounce is smaller than the fee), days and weeks (memes drift down against SOL). The open threads are D-REV3 on a survivorship-free coin list (needs the dead coins' prices: the paid history month, or about 85,000 free calls), and the registered attempt 1.
+
+## 9. "Not perfect, but profitable at the end of the month" (RES-9, 2026-10-07)
+
+Owner, 7 Oct: profitable over a month or over 100 trades, either with a win rate above 50% or with a low win rate and big winners.
+
+### 9.1 What "profitable over 100 trades" needs
+Every test above already scored the average net profit per trade after costs; none demanded perfection. A rule fails when its average is negative. The shape of the exits sets the win rate, not the profit: on a price with no drift, a +1/−3 bracket wins about 59% of the time on the 41 deep pools and still loses about 1.2% a trade (RES-9 evidence pass, pre-wall data). The break-even win rate is p* = (L + c + q(1 − L))/(W + L) with q the share of total losses: a +2/−6 bracket at $200 in a deep pool needs 86% wins, 98% if 1% of trades go to zero. A big-winner shape at a 5% win rate needs an average winner of about +1,770%.
+
+### 9.2 Scorecard of every rule tested, in those terms ($200, after costs; `research/scorecard.json`)
+
+| Rule | Win rate | Avg win | Avg loss | Per trade | Months in profit | P(100 trades end positive) |
+|---|---|---|---|---|---|---|
+| 5-minute dip-buys (all versions) | 30–37% | +2.2 to +2.8% | −2.2 to −3.3% | −0.7 to −1.2% | 0 of 3 | 0–2% |
+| 5-minute breakout | 24–28% | +5.0% | −3.9% | −1.4% | 0 of 3 | 0% |
+| Daily: buy after a 22%+ fall, hold 3 days (survivor list) | 44% | +45.6% | −26.0% | +5.7% | 2 of 4 | 68% |
+| Daily: buy weekly top gainers, hold 7 days (survivor list) | 32% | +64.7% | −29.5% | +0.7% | 2 of 4 | 44% |
+| Daily: buy everything (survivor list) | 29% | +13.1% | −8.7% | −2.3% | 0 of 4 | 9% |
+| Lottery basket of fresh graduates, hold 7–30 days ($20, random sample) | 2–4% | +15 to +119% | −25 to −41% | −24 to −40% | — | 0% |
+| Weekly trend on 19 large memes (in SOL) | 35–48% of weeks | | | −0.2 to −1.9% a week | | |
+
+### 9.3 The one apparent winner was survivor bias
+The daily dip rule's +5.7% came from a list that holds only coins still alive on 2026-10-06. A random sample showed that list contains 1 of 33 coins that ever reached the size the rule trades; the other 32 later died. On the random sample the few eligible trades all lost. A full re-test on 16,367 coins (dead ones included) is downloading in random order (`research/daily-probe/RESULTS.md`).
+
+### 9.4 Settings that would block these shapes anyway (owner rules, for the record)
+The trial policy allows 1 open position and 3 entries a day and caps the stop at 20%; R8 pauses after 5 losses in any 20 trades (58% of 20-trade windows at a 75% win rate, 99% at 50%); the proof gates cap the share of trades losing 50% or more and the share of profit from the top 1% of trades, which a no-stop big-winner basket fails by design. Only the owner can change these.
