@@ -43,21 +43,6 @@
    "created": "2024-11-19T13:55:26Z",
    "vol24_usd": 47211.9991399736,
    "venue": "Raydium CPMM",
-   "fee": 0.0025
-  },
-  {
-   "mint": "4N4DnNo3qpPks9aQCkcWkzoir8tnvT6diS4TnnZibonk",
-   "symbol": "KITTY",
-   "seed": false,
-   "pool": "7dNW2mhCtqoZcDuyRbj5LMoeFsS9TpaCdSkk4qMstGPm",
-   "dex": "raydium",
-   "name": "KITTY / SOL",
-   "base": "4N4DnNo3qpPks9aQCkcWkzoir8tnvT6diS4TnnZibonk",
-   "quote": "So11111111111111111111111111111111111111112",
-   "reserve_usd": 377752.3701,
-   "created": "2025-10-02T18:34:11Z",
-   "vol24_usd": 65842.3831613218,
-   "venue": "Raydium CPMM",
    "fee": 0.003
   },
   {
@@ -223,7 +208,7 @@
    "created": "2025-06-25T14:57:18Z",
    "vol24_usd": 39578.9547483047,
    "venue": "Raydium CPMM",
-   "fee": 0.0025
+   "fee": 0.003
   },
   {
    "mint": "8x5VqbHA8D7NkD52uNuS5nnt3PwA8pLD34ymskeSo2Wn",
@@ -313,7 +298,7 @@
    "created": "2026-08-15T21:07:26Z",
    "vol24_usd": 108573.038300034,
    "venue": "Raydium CPMM",
-   "fee": 0.0025
+   "fee": 0.003
   },
   {
    "mint": "BeGY8KqKxboEwRbJd1q9H2K829jS4Rc5dEyNMYXCbV5p",
@@ -328,7 +313,7 @@
    "created": "2024-08-10T15:53:59Z",
    "vol24_usd": 119328.971685243,
    "venue": "Raydium CPMM",
-   "fee": 0.0025
+   "fee": 0.003
   },
   {
    "mint": "CJMihkPYswa3k6az9SUbepjKnkJQ6KWpGG5p9qW9n7NV",
@@ -493,7 +478,7 @@
    "created": "2025-05-10T14:23:18Z",
    "vol24_usd": 1110278.36510434,
    "venue": "Raydium CPMM",
-   "fee": 0.0025
+   "fee": 0.003
   },
   {
    "mint": "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY",
@@ -628,7 +613,7 @@
    "created": "2025-05-13T13:15:25Z",
    "vol24_usd": 49533.0302859975,
    "venue": "Raydium CPMM",
-   "fee": 0.0025
+   "fee": 0.003
   },
   {
    "mint": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
@@ -1125,6 +1110,18 @@
    "seed": true,
    "why": [
     "no SOL pool with reserve >= $250k"
+   ]
+  },
+  {
+   "mint": "4N4DnNo3qpPks9aQCkcWkzoir8tnvT6diS4TnnZibonk",
+   "symbol": "KITTY",
+   "name": "Hello Kitty",
+   "categories": [
+    "Meme"
+   ],
+   "seed": false,
+   "why": [
+    "7dNW2mhCtqoZcDuyRbj5LMoeFsS9TpaCdSkk4qMstGPm Raydium CPMM: fee 0.3500% (with creator fee) > 0.30%"
    ]
   },
   {

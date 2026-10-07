@@ -121,13 +121,16 @@ def fees(outdir):
         for r in json.load(open(os.path.join(tdir, f)))['pools']:
             if r['dex'] in VENUES and r['reserve_usd'] >= MIN_RESERVE and WSOL in (r['base'], r['quote']):
                 pools[r['pool']] = r
-    ray = [a for a, r in pools.items() if r['dex'].startswith('raydium') and a not in out]
+    # Raydium entries without 'creator_fee' are (re)fetched: CPMM pools carry a creator fee in their config
+    # (config.creatorFeeRate, millionths) that feeRate leaves out.
+    ray = [a for a, r in pools.items() if r['dex'].startswith('raydium') and 'creator_fee' not in out.get(a, {})]
     for i in range(0, len(ray), 20):
         d = get('https://api-v3.raydium.io/pools/info/ids?ids=' + ','.join(ray[i:i + 20]), pace=1) or {}
         for x in d.get('data') or []:
             if x:
                 out[x['id']] = {'src': 'raydium-api', 'type': x.get('type'), 'program': x.get('programId'),
                                 'fee': float(x['feeRate']), 'tvl_usd': x.get('tvl'),
+                                'creator_fee': float((x.get('config') or {}).get('creatorFeeRate') or 0) / 1e6,
                                 'mintA': x['mintA']['address'], 'mintB': x['mintB']['address'],
                                 'amountA': x.get('mintAmountA'), 'amountB': x.get('mintAmountB')}
     for a, r in pools.items():
