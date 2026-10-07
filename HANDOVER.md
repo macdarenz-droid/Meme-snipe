@@ -32,6 +32,16 @@
   - The coverage gate after 14 Oct.
   - The 1.0.0 tag.
 - **8 Oct about 12:50 AM, owner chose "B" for the past-data test:** a capped Helius history download of 30 days, with the credit estimate shown to the owner before any credit is spent (CLAUDE.md "History for the past-data test"). Next: a Z-H estimate researcher measures the cost using held data and free providers only, no Helius credits. The Z0D round 3 builder records B-10 = (b) in the docs.
+- **8 Oct about 1:25 AM, state:**
+  - #284 merged at `d901c5c1`.
+  - #283: base merged in (`17b49d8e`); merges when CI is green (review and red team PASS).
+  - #285 Z00: round 2 review PASS. Its red team found 3 MINOR, fixed in `b77a6f72`. Base merged in (`0bc36cf2`); merges when `check` and `e2e` are green.
+  - #286 Z0D: round 4 review PASS, red team 5 MAJOR. Round 5 at `74553104`, with round 6 (Helius allocations) in progress.
+  - #287 Z01: red team found 2 MAJOR (Zeroed-path scope hides new Blueprint code; audit.ts can block deploys); its reviewer is still running.
+  - Z-H estimate: review and red team found 4 BLOCKER (slot-time under-estimate, cap not enforced, no storage, misleading summary). Round 2 is in progress, rulings in `docs/reviews/ZH.md`. Nothing goes to the owner until it passes.
+  - Follow-ups:
+    - re-merge the 10 newer commits of the research branch `ccr-7fae2302-drz4co` (609cffc0) later;
+    - #283 minors: `__pycache__` committed; `collect.py` stays runnable with an env flag; no Retry-After in old fetchers.
 - **History for owner item 2 (B-10, card Z-H):** zeroed-data holds only the old server's recordings for 4, 5 and 6 Oct (releases `rec-2026-10-04/05/06`, about 0.4 MB, 3 MB and 4.6 GB) and the summaries; this repo has no `data-day-*` release. Far below 30 clean days, so the owner is told before M2 starts.
 - **Owner, 7 Oct about 9:30 PM:** "When ur done archive all workers": after the map is done, every worker session is archived.
 
