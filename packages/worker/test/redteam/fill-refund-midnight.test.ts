@@ -1,4 +1,4 @@
-// RED TEAM A, probe RT-A4 (budget leak across midnight UTC, the fills' daily budget `DailyBudget`, persist/state.ts).
+// RED TEAM A, probe RT-A9 (budget leak across midnight UTC, the fills' daily budget `DailyBudget`, persist/state.ts).
 //
 // FACTS-REREAD's second review fixed "a refund goes back to its own day" for the re-read budget only (`rereadRefund`,
 // `reserveBudget`). The fills' budget (FILL_CREDITS_PER_DAY = 20,000 Helius credits a UTC day) has the same
@@ -23,9 +23,9 @@ import { DOWNTIME_CREDIT_CAP } from '../../src/run/worker.ts';
 
 const DAY_MS = 86_400_000;
 
-describe('RT-A4: the fills\' budget refunds a pre-midnight reserve to the new day', () => {
+describe('RT-A9: the fills\' budget refunds a pre-midnight reserve to the new day', () => {
   it('a downtime read reserved at 23:59:50 UTC and refunded at 00:00:30 does not let the new day spend past its cap', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'rt-a4-')), 'fill-budget.json');
+    const path = join(mkdtempSync(join(tmpdir(), 'rt-a9-')), 'fill-budget.json');
     const midnight = 20_000 * DAY_MS;
     const b = DailyBudget.load(path, FILL_CREDITS_PER_DAY, midnight - 10_000);
     // #downtimeMigrations: the cap is booked before the backfill reads.

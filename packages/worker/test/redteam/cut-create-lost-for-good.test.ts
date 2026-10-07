@@ -1,4 +1,4 @@
-// RED TEAM A, probe RT-A3 (H16-WHY C, worker.ts #cutCreateLog / #cutCreateTry / #readLostCreates).
+// RED TEAM A, probe RT-A8 (H16-WHY C, worker.ts #cutCreateLog / #cutCreateTry / #readLostCreates).
 //
 // H14 refuses EVERY coin (H16 not-covered, input coverage) while ANY creates-watch log inside its 14-day look-back was
 // cut and its transaction never released (hard.ts: `deployers.lostCreate(need, now)` is not per deployer). A cut
@@ -34,7 +34,7 @@ const settle = async (h: ReturnType<typeof makeWorker>, turns = 60) => {
   }
 };
 
-describe('RT-A3: a cut creates log refused by the day\'s cap is never asked for again in the process', () => {
+describe('RT-A8: a cut creates log refused by the day\'s cap is never asked for again in the process', () => {
   it('the cap is spent when the log arrives; on the next UTC day (cap back) its transaction is fetched', async () => {
     const fetchedWhy: [string, string][] = [];
     const h = makeWorker({ found: true, fetchedWhy });
