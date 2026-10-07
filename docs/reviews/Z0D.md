@@ -373,3 +373,178 @@ Supervisor → Z0D builder. One addition to the fix list. Nothing in the list ch
 2. **D08 note (new clarification C-75).** The 1-minute screen exists. It was pre-registered at 5ebb439 (9:46 PM, 7 Oct), before the owner's A18 ruling at 10:58 PM. Whether it counts as MR-01's stop is OWNER PENDING. Until the owner rules, D08 stays as written. Do not change any other MR-01 text for this.
 
 The builder's fix round is `d5393ad0` (PR #286).
+
+## Round 2 (head `d5393ad0`, 8 Oct 2026)
+
+### Fresh review (FAIL)
+
+Z0D round 2 fresh review, PR #286. Head d5393ad07a3b9f7de6e44d3191ea478db17ce1ce (confirmed by ls-remote, unmoved; base 94d55a84 is in its history). Nothing edited, committed or pushed.
+
+RESULT: FAIL. Your RS-40/C-75 addition did not land, and the ID C-75 is now used for something else. Three more problems block a pass: the Blueprint and research/phase0/PREREG.md disagree on which cost row decides the kill check; A-M14-01 and two ARCH tables still give Chainstack 25 req/s with an 80% rate rule; and U-A04 still says "clamp", with B-M20-04 not updated. All the gate work (A-M13-04/05/06, ExternalGateInputs and the failing acceptance cases) is DONE.
+
+NEW FINDINGS
+
+F1 BLOCKER: RS-40 and your C-75 are missing; C-75 now means something else.
+- Evidence: FACTS.json has 291 facts and no RS-40. No document cites research/mr01-screen.
+- C-75 is the D30 "owner pending" note (VERIFY flag 1) at SPEC-A:2530. It is cited at ARCH:1876, ARCH:3100, SPEC-A:771, SPEC-A:775 and SPEC-A:1171.
+- The head commit (13:32 UTC) has no trace of the addition, so it probably arrived after the builder's round.
+- Fix: renumber the D30 note to C-76 at every site above. Add C-75 as the D08 note (screen pre-registered at 5ebb439 before A18; OWNER PENDING; D08 unchanged). Add RS-40 with its sources @ c67f37f9 and cite it in the prose.
+
+F2 MAJOR: the kill check's deciding row conflicts with the PREREG.
+- ARCH:393, SPEC-A:1994 and C-48 (SPEC-A:2503) decide tests (a) and (b) on the LEAN row, with the strict row shown only.
+- research/phase0/PREREG.md §5.5 (lines 323, 340-341) on origin/claude/research-phase0-prereg @ df7d75da decides both tests on the STRICT row (ruling OPEN-9) and only reports the lean row.
+- A-M13-01 reads every rule from the PREREG, so the spec's acceptance cases and the frozen file would give different verdicts.
+- Fix: you rule lean or strict, then align ARCH 3.3, A-M13-01 step 9 and C-48 with the PREREG, or amend the PREREG before R0.
+
+F3 MAJOR: stale Chainstack limits.
+- SPEC-A:2310 (A-M14-01, an M0 ticket) defaults Chainstack to "25 req/s [LD-32]" with "Configured rates are 80% of documented limits". ARCH:1234 and ARCH:2343 still say 25 req/s.
+- LD-32 and VF-10 now say 5 RPS. A builder following A-M14-01 would set Chainstack at 20 req/s, four times the documented limit, breaking the owner's ≤ 50% rule.
+- Fix: 5 RPS on Solana mainnet in all three places, and ≤ 50% instead of 80% in A-M14-01.
+
+F4 MAJOR: VERIFY flag 3 is only partly done.
+- SPEC-A:2541 (U-A04) still says "Clamp to the real vault". ARCH:2184 still calls sell behaviour past the real vault UNVERIFIED.
+- B-M20-04 (SPEC-B:1439-1450) has no step and no acceptance case for E_EXCEEDS_REAL_VAULT or maxSellableBase. The sizing rule exists only in SPEC-A and in the cross-group columns of C-13 and C-60.
+- Fix: update U-A04 and the ARCH 8.4 row. In B-M20-04, add sizing to maxSellableBase, a rule that E_EXCEEDS_REAL_VAULT is not a cannot-sell failure, and a drained-pool acceptance case.
+
+F5 MINOR: ARCH:943 (M03) still names a dataSize filter. Change it to the discriminator memcmp at 0 and wSOL at 75.
+
+F6 MINOR: SPEC-A:2210 uses n_R without defining it; define n_R = max(300, n_80). At SPEC-A:2209, ownerRuling 'c_dropped' still needs ≥ 30 days, so option (c) can never pass. That fails closed, but it cannot be built as written; say what B-10 does under (c).
+
+F7 MINOR: the B-M26-04 adapter (SPEC-B:2198) names only P-5 and P-10. C-49 (SPEC-A:2504) says it also supplies replayDeterminism, historyReplay and shadowCoverage. Name the producer of each field.
+
+F8 MINOR (your file): MIGRATION:811, card Z-H, still says the owner is told "before M2 starts"; the count is now in M0 per INTEGRATION's M0 row.
+
+F9 MINOR: VF-02/06/07/08/12/13/15 are cited nowhere. C-59, C-61-C-64, C-66, C-70 and C-71 appear only in their own definition rows (same at ed46b898).
+
+CHECKLIST
+- A F1: DONE. SPEC-A:2196-2211.
+  - Failing acceptance cases at SPEC-A:2223-2226: R-1 at 299 trades, or 300 when n_80 = 412; B-9 null, 9 replays or a differing hash; B-10 null or pending; P-10 null; okShare 9,499.
+  - A-M13-05 SPEC-A:2162; PerfStats SPEC-A:2121; MA-2 SPEC-A:46; ARCH 18 at ARCH:2897; SPEC-B:27; revision log ARCH:3089.
+- A F2-F8: DONE.
+  - F2: ARCH:1678, C-54, C-58. F3: SPEC-A:44. F4: SPEC-B:1022, CL-14. F5: INTEGRATION:13. F6: C-46.
+  - F7: cite lines checked at 72f1793f; RS-29 cites edge.md:162, which states it.
+  - F8: MIGRATION:808, 832.
+- B F2: DONE. ARCH:456; SPEC-A:2209; INTEGRATION M0 row. It cites edge.md:165, the correct line (your note said 172). The MIGRATION leftover is F8.
+- B F3: DONE. ARCH:469; A-M12-02; MIGRATION:696.
+- B F4: PARTIAL (F2).
+- B F5-F12: DONE. F11 is in ARCH:457 and SPEC-A:2210 (F6 is minor). F12: all 39 RS facts are pending_review.
+- B F13: PARTIAL (F3).
+- C1 fee maths: DONE; it matches RESULTS row 8.
+- C2: PARTIAL (F4).
+- C3: PARTIAL (F3).
+- C4: DONE in A-M03-03 and D30; ARCH:943 is stale (F5).
+- C5: DONE. VF-01..VF-16 claims are byte-identical to the RESULTS JSON. LD-32, LD-33, DA-11 and UI-F32 are corrected.
+- C6: DONE, but under the wrong ID (F1).
+- C7: DONE.
+- D: DONE. DECISIONS:115-117.
+- E: DONE. MIGRATION:771.
+- RS-40: MISSING.
+- C-75 (1-minute screen note): MISSING, and the ID is reused.
+
+OTHER CHECKS
+- FACTS.json: parses; 291 facts, no duplicate IDs. Every cited fact ID is defined. C-01..C-75 are each defined once, and every cited C ID exists.
+- Ticket dependency script:
+  - 63 A, 81 B and 32 UI tickets: 176 in all.
+  - No undefined dependencies and no cycles.
+  - Later-milestone dependencies: only UI-T14 → B-M17-08 and B-M29-04, the known live-acceptance-only cases.
+  - Listed and table counts per milestone match: M0 24/24, M1 25/25, M2 46/46, M3 49/49, M4 27/27, Deferred 2/2. M4b shows 5 listed and 3 in the table, as before.
+- Nothing loosened apart from F3. B-10, D30 (option (b) runs, holder checks fail closed), the 31 Dec end state and Helius as a fixed cost all fail closed or take the stricter reading.
+- Scope: the diff touches only docs/blueprint/**, three DECISIONS rows and the allowed MIGRATION edits. No code changed.
+
+FAIL · d5393ad07a3b9f7de6e44d3191ea478db17ce1ce
+
+### Red team (1 BLOCKER, 8 MAJOR, 4 MINOR)
+
+# Red team, round 2: card Z0D at `d5393ad0` — FAIL (1 BLOCKER, 8 MAJOR, 4 MINOR)
+
+Head confirmed with ls-remote: d5393ad07a3b9f7de6e44d3191ea478db17ce1ce. Numbers that match their sources: fee maths (each part rounded up separately, q′−1, effective-reserve market cap, inclusive threshold; RESULTS row 8); mayhem supply 10^15 (row 8); sell above the real vault refused, not clamped (row 9); Chainstack per-second bucket 2.5 req/s (row 21); n_80 constants 1.960 and 0.842.
+
+## BLOCKER
+RT-01. The kill check decides on a different cost row than its PREREG.
+- SPEC-A :1994, ARCH :393 and C-48: tests (a) and (b) use the LEAN row; the strict row "decides nothing".
+- PREREG (origin/claude/research-phase0-prereg @ df7d75da): "Strict row (A07): decides A05" (§4 line 192); §5.4/§5.5 compute net(x) and the excess under STRICT. Its pass also needs n_a ≥ 30 AND n_b ≥ 30 per cell (:345); SPEC-A counts signals per size only.
+- SPEC-A says the check reads every rule from the PREREG, so the code breaks either the frozen PREREG or the spec; verdicts can differ.
+- Fix: pick one row before R0; align SPEC-A step 9, ARCH 3.3, C-48 and the PREREG, including the per-cell n_a/n_b rule.
+
+## MAJOR
+RT-02. Kill-check depth cap looser than ARCH. SPEC-A :1993 uses 0.5% of EFFECTIVE depth; ARCH DEPTHPCT (:2115) and PREREG §4 (:229) use min(real, effective). Fix: use min(real, effective).
+
+RT-03. A-24b move rule still at one size, with three different monthly costs. SPEC-A steps 4–5 (:1984-1985) judge at a $10 trade and $12 a month (breaks "Size is not the trial"). PREREG §3 judges per size with $10 a month deciding. D04 (ARCH :1678) counts Helius $49 as a §1.4 fixed cost (stricter), i.e. about $59. The kill-check fields show $10 and $59 lines. Fix: per-size steps 4–5 with the PREREG verdict rules; one deciding monthly cost, reconciled with D04.
+
+RT-04. Chainstack bucket ignores the monthly limit (≤ 50% rule, possible spend). Bucket ≤ 2.5 req/s (SPEC-A :2339, ARCH D04) is about 6.5M requests in 30 days, against 3M RU documented (1.5M at 50%; ARCH D04 itself derives 0.58 reads a second). getSignaturesForAddress costs 2 RU (row 21), so the owner's 0.5 req/s of those calls is about 2.6M RU a month. VF-10 lists Developer overage at $20 per 1M RU. Fix: bucket = lower of 2.5 req/s and the owner's 0.5 req/s; an RU-weighted monthly counter with a hard stop at 1.5M; a test counting gSFA as 2 RU.
+
+RT-05. Three gate inputs have no producing ticket, and the B-gate inputs arrive a milestone too late. C-49 says B-M26-04 supplies replayDeterminism, historyReplay and shadowCoverage, but SPEC-B :2198 names only P-5 and P-10. B-M26-04 is M3; B-9 and B-10 decide backtest_passed at the M2 exit, so those inputs are always null and M2 never exits (fails closed, but forever). Fix: producers named (A-M11-01's 10-replay run record for B-9, card Z-H for B-10, A-M12-02 p6Stats as the single P-6 source), injected in M2, with acceptance cases in B-M26-04.
+
+RT-06. Gate inputs not tied to build, configuration or window. historyReplay() takes no arguments (SPEC-A :2197): a stale report from another config or build could pass B-10. dryRun (:2199) has no build sha and its 48 h can be any slice. P-6 paperLegs has no named source; if counted from the shadow table, a leg with no shadow row is missed and okShare is inflated. Fix: buildSha and configKey on historyReplay and dryRun, failing on mismatch; the 48 h as one pre-declared block or the whole W_P; paperLegs from A-M12-01's paper intents.
+
+RT-07. B-M20-04 (SPEC-B :1439) does not size exit sells to the real vault and has no drained-pool fixture; only C-13/C-60 say it does. A builder following SPEC-B sends sells that are refused, and exits get stuck. Fix: a step and an acceptance case (E_EXCEEDS_REAL_VAULT → sell maxSellableBase; 17.58 SOL virtual / 0.27 SOL real fixture).
+
+RT-08. Two B-10 owner options cannot work as written (ARCH :456). (a) "forward transaction-level M07 recording": M07 records 1 Hz account snapshots (ARCH :974, :1092, D03 (a)), not transactions, so it needs a D03 switch that may cost credits; forward days would also overlap W_B and the untouched W_R holdout. (c) "drop the history part" can never pass: SPEC-A's evaluator still requires ≥ 30 clean days whatever the ruling. Fix: option (a) says a trade-event source is needed and only days outside W_R are used; the evaluator branches on ownerRuling; the owner is told these limits before choosing.
+
+RT-09. RS-40 and the D08 1-minute-screen note are missing (screen KILLED, −0.77% at $200), and C-75 was already used for D30 (SPEC-A :2530), so the planned C-75 clashes. This evidence matters for "No knowingly losing trades". (The addition may have arrived after this push.) Fix: add RS-40 and the D08 note as C-76.
+
+## MINOR
+RT-10. A-M01-03's boundary test (:305) cannot run as written: a sell just above the boundary needs a payer holding that many tokens, and the sim payer holds none (as P-6 says). Fix: name a method (replay a recorded failed sell, or simulate as an existing holder with sigVerify false; I am not certain the second works on every provider, worth verifying in the RPC docs), else mark the on-chain result "not verified".
+
+RT-11. R-1: SPEC-A :2210 uses "n_R", never defined; the 90-day test uses n_80, not max(300, n_80); no acceptance cases for S_low ≤ 0 or more than 90 days.
+
+RT-12. Stale or incomplete text: ARCH revision log :3066 still says "one primary cell" (the rule is now 25 cells); SPEC-A U-A04 :2541 still says "Clamp to the real vault"; A-M13-01 step 1 (:1981) says "first 7 complete days" (PREREG: D1 ≥ R0 + 30 h, extendable to D14); A-M01-02 omits "below the first threshold the first tier applies" and the exotic → flat-fees fallback while exotic fees are zero.
+
+RT-13. Owner-pending items (B-10, D30/C-75, the holder-index provider, the 31 Dec rule) are not in MIGRATION's owner waits. MIGRATION Z-H (:811) still counts clean days "before M2", not in M0. A-M06-03 failing closed blocks every backtest entry, and INTEGRATION's M2 exit does not name it as an owner wait.
+
+## Totals
+BLOCKER 1 (RT-01); MAJOR 8 (RT-02 to RT-09); MINOR 4 (RT-10 to RT-13). Head attacked: d5393ad07a3b9f7de6e44d3191ea478db17ce1ce. Nothing edited or pushed; nothing sent to the owner.
+
+### Supervisor rulings for round 3 (8 Oct 2026 about 1:00 AM)
+
+Principle (new C-77): a stop-only check (the A-24b move rule and the A05 kill check) decides on the lean cost row and the real monthly cost ($10, the 2 GB host). The strict row, the $12 line and the $59 line are shown beside it. Gates that pass a strategy (B-2, R-2, P-9) decide on the conservative row and take the stricter fixed cost while the Helius question is open (D04). A check that can only stop must not stop on costs we do not pay. A gate that passes must not pass on costs we might pay.
+
+1. **RT-01 / F2, kill check row.** The lean row decides tests (a) and (b). Adopt the PREREG's per-cell rule: n_a ≥ 30 AND n_b ≥ 30. Align ARCH 3.3, A-M13-01 step 9 and C-48. The PREREG (on hold) still says strict decides A05. It must be amended before R0 if MR-01 testing goes on. Record this in SPEC-A as a precondition of R0.
+2. **RT-02.** The kill-check depth cap is 0.5% of min(real, effective) (ARCH DEPTHPCT).
+3. **RT-03.** Rewrite A-M13-01 steps 4–5 per size ($5, $20, $100, $1,000, $10,000), using the PREREG verdict rules. Kill only when no size passes and at least one size fails; a size without enough trades is "insufficient". The monthly cost follows C-77.
+4. **RT-04, Chainstack.** Two limits apply:
+   - Rate: the lower of 2.5 req/s and the owner's 0.5 req/s.
+   - Volume: an RU-weighted monthly counter with a hard stop at 1.5M RU (50% of 3M). getSignaturesForAddress counts as 2 RU.
+
+   Add a test that counts gSFA as 2 RU and stops at the cap. There is no overage spend, ever.
+5. **F3, all providers.** Chainstack is 5 RPS on Solana mainnet in A-M14-01 (SPEC-A:2310), ARCH:1234 and ARCH:2343. Configured rates are ≤ 50% of documented limits for every provider (owner rule), not 80%.
+6. **RT-05 / F7, producers and timing.** Name the producer of every `ExternalGateInputs` field:
+   - B-9 ← A-M11-01's 10-replay run record;
+   - B-10 ← card Z-H's report;
+   - P-6 ← A-M12-02 p6Stats, the single source;
+   - P-5 and P-10 ← B-M26-04.
+
+   B-gate inputs are injected in M2, not M3. Add acceptance cases where the inputs are produced.
+7. **RT-06.**
+   - `historyReplay` and `dryRun` carry `buildSha` and `configKey`; a mismatch fails.
+   - The 48 h dry run is one contiguous block, declared before it starts, inside W_P.
+   - `paperLegs` comes from A-M12-01's paper intents (every leg), never from the shadow table.
+8. **RT-07 / F4, exits against the real vault.**
+   - B-M20-04 gets a step: sell size ≤ maxSellableBase.
+   - E_EXCEEDS_REAL_VAULT is not a cannot-sell failure.
+   - Add an acceptance case on a drained-pool fixture (17.58 SOL virtual / 0.27 SOL real).
+   - Update U-A04 ("refused, not clamped"; VERIFY row 9) and the ARCH 8.4 row (ARCH:2184): the SDK refuses; the on-chain result is inferred.
+9. **RT-08, B-10 options.**
+   - (a) M07 records 1 Hz account snapshots, not transactions. Option (a) therefore needs a trade-event source, and its cost must be estimated before the owner chooses. It uses only days outside W_R.
+   - (b) Rewrite as: a capped history download using credits the owner already pays for (Helius Developer), shown to the owner as a credit estimate before any spend.
+   - (c) The evaluator branches on `ownerRuling`. Under (c), B-10 is recorded as waived by the owner, with the ruling's date and quote.
+   - Until the owner rules, B-10 fails closed.
+10. **RT-09 / F1, IDs.** Keep the D30 note as C-75; do not renumber. Add the 1-minute screen note to D08 as **C-76**: pre-registered at 5ebb439 before A18; OWNER PENDING whether it stops MR-01; D08 unchanged until then. Add **RS-40** to FACTS.json and cite it in D08 and §3.2 (sources research/mr01-screen/RESULTS.md and PREREG.md @ c67f37f9, PR #283).
+11. **RT-10.** A-M01-03's boundary test uses an SDK-math fixture; the on-chain result is "not verified" until a recorded failed sell is replayed. Do not claim that simulating as a holder works.
+12. **RT-11 / F6.**
+    - Define n_R = max(300, n_80); the 90-day test uses n_R.
+    - S_low ≤ 0 means power cannot be computed: the gate fails and the case goes to the owner.
+    - More than 90 days goes to the owner.
+    - Add acceptance cases for both.
+13. **RT-12, stale text.**
+    - The ARCH revision log: "25 cells", not "one primary cell".
+    - A-M13-01 step 1 follows the PREREG (D1 ≥ R0 + 30 h, extendable to D14).
+    - A-M01-02 adds "below the first threshold the first tier applies" and the exotic → flat-fees fallback.
+14. **RT-13 / F8, owner waits.**
+    - MIGRATION's owner waits list B-10, D30 (C-75), the holder-index provider (A-M06-03), the 31 Dec rule and the C-76 MR-01 screen.
+    - Card Z-H's day count is in M0.
+    - INTEGRATION's M2 exit names the A-M06-03 holder-check owner wait.
+15. **F5.** ARCH:943 (M03): replace `dataSize` with the discriminator memcmp at 0 and wSOL at 75.
+16. **F9.** Cite each VF entry at the ticket it affects (per its RESULTS row). For a C-xx with no ticket impact, mark it "register only" in its row.
+
+The builder may edit docs/blueprint/** and the listed MIGRATION and DECISIONS lines only. Merge origin/ccr-14987baf-i6lrsl first if it has moved.

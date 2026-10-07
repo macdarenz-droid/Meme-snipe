@@ -195,3 +195,6 @@ The plan does not touch pump.fun hosts, keeps profit in lamports, stays within t
 
 ### Outcome
 The fix round was pushed at `ad0511b2`, with the C-65 cite at `df7d75da`, on `claude/research-phase0-prereg`. The supervisor accepted the researcher's seven readings. The work is on hold: the owner decides whether the MR-01 1-minute screen (`research/mr01-screen` @ `c67f37f9`) stops MR-01.
+
+### Note from Z0D round 2 (8 Oct)
+If MR-01 testing goes on, amend before R0. The PREREG decides A05 on the strict row, while the Blueprint now decides every stop-only check on the lean row (C-77, `docs/reviews/Z0D.md` round 2 ruling 1). The per-cell rule n_a ≥ 30 AND n_b ≥ 30 is adopted into SPEC-A.
