@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:38 PM **#274 RC-FIXES PR A delta review PASS on 99309169** (01NYN8xm; 6,820 tests; 9/9 new mutants; reconnect worst gap 80 s, was 1,949 s; core and backtest unchanged). The head is now 3810ca3f = a clean automatic merge of 9f7cf812 + 99309169 (merge-tree equals its tree; S1 verified), so the review holds. M1 is not #274's code (pre-959d8017 readers), so it stays with RC-FIXES-2b. Marked ready, CI running; it merges on green.
 - 6:31 PM **Red team A round 3** (claude/redteam-a 1244422; heads tested #269 e225f11, #272 c752a6d, #273 b5875f9, #276 5540c2c).
   - **Closed:** RT-A1/A3 (#272), RT-A7/A9 (#273), R2-1..R2-7 (#276 5540c2c), RT-A4/A5 (#269). RT-A6 is still open (LOW, unreachable on mainnet).
   - **NEW:**
