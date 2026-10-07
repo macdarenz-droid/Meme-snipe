@@ -79,7 +79,7 @@ def wallet_funder(w, sig, t):
     f, how = _fund_cache[w]
     if f is None:
         return None, how
-    hk = (f, int(t // 86400))
+    hk = (f, sig)                          # hub status anchored at this wallet's own buy (no later data)
     if hk not in _hub_cache:
         _hub_cache[hk] = funding.is_hub(f, sig, t)
     return (None, 'hub-funded') if _hub_cache[hk] else (f, how)

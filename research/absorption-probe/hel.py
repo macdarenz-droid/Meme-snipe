@@ -105,6 +105,16 @@ def rpc(method, params, cache=True):
         return res
     raise RuntimeError('rpc retries exhausted for ' + method)
 
+def rpc_v(opt, addr):
+    """getTransactionsForAddress, retried with maxSupportedTransactionVersion 1 when a page holds a version-1
+    transaction (the retry is a separate, counted call)."""
+    try:
+        return rpc('getTransactionsForAddress', [addr, opt])
+    except RuntimeError as e:
+        if '-32015' not in str(e):
+            raise
+        return rpc('getTransactionsForAddress', [addr, dict(opt, maxSupportedTransactionVersion=1)])
+
 def txs_for_address(addr, t0, t1, limit=100, order='asc', max_pages=10_000, details='full'):
     """Successful transactions touching `addr` with block time in [t0, t1), in the given order (asc =
     oldest first). Each page is one getTransactionsForAddress call (100 credits)."""
@@ -115,7 +125,7 @@ def txs_for_address(addr, t0, t1, limit=100, order='asc', max_pages=10_000, deta
                'filters': {'blockTime': {'gte': int(t0), 'lt': int(t1)}, 'status': 'succeeded'}}
         if token:
             opt['paginationToken'] = token
-        res = rpc('getTransactionsForAddress', [addr, opt])
+        res = rpc_v(opt, addr)
         out += res.get('data') or []
         token = res.get('paginationToken')
         if not token or not res.get('n_raw', len(res.get('data') or [])):

@@ -47,7 +47,12 @@ def _transfers_in(t, wallet):
     return [x for x in out if x[1] > 0 and x[0] != wallet]
 
 def _tx(sig):
-    return hel.rpc('getTransaction', [sig, {'encoding': 'json', 'maxSupportedTransactionVersion': 0, 'commitment': 'finalized'}])
+    try:
+        return hel.rpc('getTransaction', [sig, {'encoding': 'json', 'maxSupportedTransactionVersion': 0, 'commitment': 'finalized'}])
+    except RuntimeError as e:
+        if '-32015' not in str(e):
+            raise
+        return hel.rpc('getTransaction', [sig, {'encoding': 'json', 'maxSupportedTransactionVersion': 1, 'commitment': 'finalized'}])
 
 def funder(wallet, before_sig, before_t):
     raw = hel.rpc('getSignaturesForAddress', [wallet, {'before': before_sig, 'limit': SCAN, 'commitment': 'finalized'}]) or []

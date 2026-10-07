@@ -1,7 +1,7 @@
 """PumpSwap swap stream of one pool from getTransactionsForAddress pages, ordered by
 (slot, transactionIndex, inner-instruction order). Event layout and reserve rules as in
 ../execution-audit (pre-swap reserves logged in each event; effective quote = real + virtual)."""
-import struct
+import struct, sys
 import hel
 from hel import heli
 
@@ -66,7 +66,10 @@ def window(pool, t0, t1):
     txs = hel.txs_for_address(pool, t0, t1, max_pages=MAX_PAGES)
     sw = []
     for t in txs:
-        sw += swaps_of_tx(t, pool)
+        try:
+            sw += swaps_of_tx(t, pool)
+        except (KeyError, IndexError, TypeError) as e:     # unknown layout: counted through reserve mismatches
+            print('undecodable tx', t.get('version'), type(e).__name__, file=sys.stderr)
     sw.sort(key=Swap.key)
     mism = sum(1 for a, b in zip(sw, sw[1:]) if a.B1 != b.B0 or abs(a.Q1 - b.Q0) > 2)
     return sw, mism, len(txs)
@@ -99,7 +102,7 @@ def last_before(pool, t, back=7 * 86400):
                'filters': {'blockTime': {'gte': lo, 'lt': t1}, 'status': 'succeeded'}}
         if token:
             opt['paginationToken'] = token
-        res = hel.rpc('getTransactionsForAddress', [pool, opt])
+        res = hel.rpc_v(opt, pool)
         sw = []
         for tx in res.get('data') or []:
             sw += swaps_of_tx(tx, pool)

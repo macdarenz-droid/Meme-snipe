@@ -1,0 +1,125 @@
+{
+ "universe": {
+  "pools_prescreened": 63,
+  "pool_days_prescreened": 1636
+ },
+ "bar_candidates": {
+  "large_drop_total": 951,
+  "tier1_ge15pct": 199,
+  "tier2_10to15pct": 752,
+  "tier1_processed": 167,
+  "tier2_processed_random_sample": 40,
+  "ordinary_recovery_total": 442,
+  "ordinary_recovery_no_drop_prior_2h": 89
+ },
+ "rejected_tier1": {
+  "pool younger than 24 h at any possible decision": 20,
+  "no wallet extracted >= 10%": 64,
+  "too active (>= 1000 tx in 10 min before)": 42
+ },
+ "rejected_tier2": {
+  "pool younger than 24 h at any possible decision": 7,
+  "too active (>= 1000 tx in 10 min before)": 24,
+  "no wallet extracted >= 10%": 9
+ },
+ "events": {
+  "A|period A|traded=False": 3,
+  "A|period A|traded=True": 5,
+  "C|period A|traded=False": 5,
+  "C|period A|traded=True": 19,
+  "C|period B|traded=False": 3,
+  "C|period B|traded=True": 8,
+  "dropped|period B|traded=False": 1
+ },
+ "events_total": 44,
+ "A_traded": 5,
+ "C_traded": 27,
+ "pools_with_sales": 18,
+ "pools_with_sales_not_dropped": 17,
+ "bar_check": {
+  "A": [
+   1.0129,
+   1.3106
+  ],
+  "C": [
+   0.773,
+   0.9976
+  ]
+ },
+ "C_price_and_reserve_ever_ok": 0,
+ "A_pools": {
+  "6unnG2hL": 2,
+  "4bJpmAxv": 1,
+  "2eX48Wro": 1,
+  "8N544CG9": 1
+ },
+ "credits": {
+  "ledger_final": {
+   "calls": 11880,
+   "credits": 994140,
+   "by_method": {
+    "getTransactionsForAddress": 9726,
+    "getSignaturesForAddress": 1310,
+    "getTransaction": 844
+   },
+   "note": "includes 1 format-check call made before this ledger existed"
+  },
+  "on_events": 526680,
+  "on_rejected": 201300,
+  "per_event_mean": 11970.0,
+  "per_event_median": 4240.0,
+  "per_event_max": 74400,
+  "per_A": [
+   2080,
+   27030,
+   25680,
+   36940,
+   400,
+   6170,
+   13230,
+   7750
+  ],
+  "b_confirm_test": [
+   {
+    "ok": false,
+    "credits": 100,
+    "why": "too active (>= 1000 tx in 10 min before)"
+   },
+   {
+    "ok": false,
+    "credits": 100,
+    "why": "too active (>= 1000 tx in 10 min before)"
+   },
+   {
+    "ok": false,
+    "credits": 100,
+    "why": "too active (>= 1000 tx in 10 min before)"
+   },
+   {
+    "ok": false,
+    "credits": 19100,
+    "why": "no swap met the rule in the bar window"
+   },
+   {
+    "ok": false,
+    "credits": 100,
+    "why": "too active (>= 1000 tx in 10 min before)"
+   },
+   {
+    "ok": false,
+    "credits": 100,
+    "why": "too active (>= 1000 tx in 10 min before)"
+   },
+   {
+    "ok": false,
+    "credits": 100,
+    "why": "too active (>= 1000 tx in 10 min before)"
+   },
+   {
+    "ok": true,
+    "credits": 5100,
+    "why": null
+   }
+  ]
+ }
+}

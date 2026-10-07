@@ -1,0 +1,83 @@
+{
+ "cap_reached": null,
+ "arms": {
+  "primary": {
+   "label": "primary",
+   "events_exec": 0,
+   "coins": 0,
+   "days": 0,
+   "lift_events": 0,
+   "lift_days": 0,
+   "dropped": {
+    "pool type dropped by data check 3": 238
+   },
+   "too_few_controls": 0,
+   "entry_state_older_than_1h": 0,
+   "events_with_fewer_than_5_c2": 0
+  },
+  "D": {
+   "label": "D spot-signal coins",
+   "events_exec": 0,
+   "coins": 0,
+   "days": 0,
+   "lift_events": 0,
+   "lift_days": 0
+  },
+  "E": {
+   "label": "E one trade a day",
+   "events_exec": 0,
+   "coins": 0,
+   "days": 0,
+   "lift_events": 0,
+   "lift_days": 0
+  },
+  "armA": {
+   "label": "armA",
+   "events_exec": 0,
+   "coins": 0,
+   "days": 0,
+   "lift_events": 0,
+   "lift_days": 0,
+   "dropped": {
+    "pool type dropped by data check 3": 676
+   },
+   "complete": true
+  },
+  "armB": {
+   "label": "armB",
+   "events_exec": 0,
+   "coins": 0,
+   "days": 0,
+   "lift_events": 0,
+   "lift_days": 0,
+   "dropped": {
+    "pool type dropped by data check 3": 119
+   },
+   "complete": true
+  },
+  "armC": {
+   "label": "armC",
+   "events_exec": 0,
+   "coins": 0,
+   "days": 0,
+   "lift_events": 0,
+   "lift_days": 0,
+   "dropped": {
+    "pool type dropped by data check 3": 170
+   },
+   "complete": true
+  }
+ },
+ "verdict": {
+  "verdict": "UNRESOLVED",
+  "why": "0 executable events with a C1 set on 0 days (need 150 and 100)"
+ },
+ "credits": {
+  "calls": 17802,
+  "credits": 178020,
+  "by_method": {
+   "getTransactionsForAddress": 17786,
+   "getAccountInfo": 16
+  }
+ }
+}
