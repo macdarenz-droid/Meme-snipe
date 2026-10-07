@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CREATE_LATE_MS, LOG_CREATE_PREFIX, createKey } from '../../core/src/gates/index.ts';
-import { CREATE_KEEP_MS } from '../src/engine/strategy.ts';
+import { CREATES_MAX, CREATE_KEEP_MS } from '../src/engine/strategy.ts';
 import { blockNetwork } from './helpers.ts';
 import { DEV, MIGRATED_AT, MINT, Market, T, type Harness, makeWorker, passingMarket } from './worker-harness.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
@@ -208,4 +208,80 @@ describe('review B1: live and the backtest judge a coin alike on both sides of t
       expect(expiredIn(bt.decisions)).toEqual(judgedIn(bt.decisions));
     }
   }, 120_000);
+});
+
+describe('MEM-FIXES: creates over the cap (CREATES_MAX)', () => {
+  const OTHER2 = 'Zzzz111111111111111111111111111111111111111';
+  /** MINT's create released first, then two younger ones, with `createsMax` creates kept. */
+  const run = async (createsMax: number) => {
+    const h = makeWorker({ strategy: { createsMax } });
+    const got = watch(h);
+    await h.worker.reconcile();
+    const young = T - 21 * 60_000 - 60_000;
+    const m = await passingMarket(h, { heldPoolFacts: true, omit: [createKey(MINT)], before: { atMs: T - 21 * 60_000, run: () => {
+      logCreate(h, young);
+      logCreate(h, young, OTHER);
+      logCreate(h, young, OTHER2);
+    } } });
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    await h.worker.stop();
+    return { lines: decisions(h), got, h, notes: h.logs.filter((l) => l.startsWith('Creates over the cap')) };
+  };
+
+  it('is 64,000, above 13 hours of creates at 75 a minute', () => {
+    expect(CREATES_MAX).toBe(64_000);
+    expect(CREATES_MAX).toBeGreaterThan(75 * 60 * (CREATE_KEEP_MS + CREATE_LATE_MS) / 3_600_000);
+  });
+
+  it('the oldest create is let go at once and marked expired, the log notes it once, and its coin that migrates is refused create-expired, never judged', async () => {
+    const r = await run(2);
+    expect(r.h.worker.strategy.createExpired(MINT)).toBe(true);
+    expect(r.got).toContain(MINT);
+    for (const k of [OTHER, OTHER2]) {
+      expect(r.got).not.toContain(k);
+      expect(r.h.worker.strategy.createExpired(k)).toBe(false);
+    }
+    expect(r.notes).toEqual(['Creates over the cap of 2: 1 oldest let go since the last note; a coin of theirs that migrates is refused create-expired.']);
+    const rejects = r.lines.filter((l) => l.action === 'reject');
+    expect(rejects.length).toBeGreaterThan(0);
+    for (const l of rejects) expect(l.gate_reasons).toEqual([{ gate: 'worker', code: 'create-expired', detail: 'its create was let go at the cap of 2 creates kept, before its coin migrated' }]);
+    expect(r.lines.filter((l) => l.action === 'enter')).toEqual([]);
+  });
+
+  it('a candidate\'s create is never let go at the cap: the next oldest goes, the candidate is judged, and H14 still counts the one let go', async () => {
+    const h = makeWorker({ strategy: { createsMax: 2 } });
+    const got = watch(h);
+    await h.worker.reconcile();
+    const m = await passingMarket(h, { heldPoolFacts: true, before: { atMs: T - 21 * 60_000, run: () => logCreate(h, T - 22 * 60_000) } });
+    // MINT is a candidate now; two younger creates push the kept creates past the cap.
+    logCreate(h, T - 60_000, OTHER);
+    logCreate(h, T - 60_000, OTHER2);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    await h.worker.stop();
+    expect(h.worker.strategy.createExpired(MINT)).toBe(false);
+    expect(got).not.toContain(MINT);
+    expect(h.worker.strategy.createExpired(OTHER)).toBe(true);
+    expect(h.worker.strategy.createExpired(OTHER2)).toBe(false);
+    // Judged by the gates, never refused create-expired; and H14 still counts OTHER (let go from the store, kept by the
+    // deployer index): the three creates share MINT's deployer.
+    const lines = decisions(h);
+    expect(expiredLines(lines)).toEqual([]);
+    expect(lines.some((l) => (l.gate_reasons ?? []).some((g) => g.gate === 'H14' && (g.detail ?? '').includes('created 3 mints')))).toBe(true);
+  });
+
+  it('at the cap nothing is let go early', async () => {
+    const r = await run(3);
+    expect(r.h.worker.strategy.createExpired(MINT)).toBe(false);
+    expect(r.got).not.toContain(MINT);
+    expect(r.notes).toEqual([]);
+    expect(expiredLines(r.lines)).toEqual([]);
+  });
 });

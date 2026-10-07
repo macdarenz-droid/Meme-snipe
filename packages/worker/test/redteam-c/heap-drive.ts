@@ -5,6 +5,7 @@
 // collection counts as one JSON line. Run by heap-*.test.ts in a child: node --expose-gc --max-old-space-size=560.
 //   argv: hours creates_per_min migrations_per_min [step_ms]
 import { readdirSync } from 'node:fs';
+import { writeHeapSnapshot } from 'node:v8';
 import { CreateEventLayout, TradeEventLayout, PUMP_PROGRAM, encodeBase58, toBase64 } from '../../../core/src/chain/index.ts';
 import { encode } from '../../../core/test/chain/encode.ts';
 import { FEE_CONTEXT, passingFacts } from '../../../core/test/gates/world.ts';
@@ -82,7 +83,8 @@ const accountsT = [POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenA
 const holdersT = () => Array.from({ length: 20 }, (_, i) => ({ address: `${'H'.repeat(40)}${String(i).padStart(4, '0')}`, owner: `${'O'.repeat(40)}${String(i).padStart(4, '0')}`, ownerProgram: null, amount: BigInt(1_000_000 + i), delegate: null, delegatedAmount: 0n }));
 const timers = dueTimers(T - 16 * 86_400_000);
 const WINDOW_MIN = process.env['WINDOW_MIN'];
-const h = makeWorker({ timers, seedWaitMs: 0, config: { ZEROED_RECORDER: process.env['REC'] ?? 'on' }, ...(WINDOW_MIN === undefined ? {} : { strategy: { windowFromMs: 0, windowToMs: Number(WINDOW_MIN) * 60_000 } }) });
+const CREATES_MAX = process.env['CREATES_MAX'];
+const h = makeWorker({ timers, seedWaitMs: 0, config: { ZEROED_RECORDER: process.env['REC'] ?? 'on' }, strategy: { ...(WINDOW_MIN === undefined ? {} : { windowFromMs: 0, windowToMs: Number(WINDOW_MIN) * 60_000 }), ...(CREATES_MAX === undefined ? {} : { createsMax: Number(CREATES_MAX) }) } });
 const feed = h.worker.feed;
 const started = h.worker.start();
 while (!h.order.includes('start helius-ws')) {
@@ -117,13 +119,17 @@ let migDone = 0;
 let cuts = 0;
 const start = now();
 const t0 = Date.now();
+const SNAP = process.env['SNAP_DIR'];
+const SNAP_HOURS = new Set((process.env['SNAP_HOURS'] ?? '').split(',').filter(Boolean).map(Number));
 const report = (hour: number) => {
   gc();
   gc();
+  if (SNAP !== undefined && SNAP_HOURS.has(hour)) writeHeapSnapshot(`${SNAP}/h${hour}.heapsnapshot`);
   const mu = process.memoryUsage();
   const p = readProbe(h.stateDir).at(-1);
   const counts = Object.fromEntries((p?.counts ?? []).map((c) => [c.code, c.count]));
-  console.log(JSON.stringify({ hour, wall_s: Math.round((Date.now() - t0) / 1000), heap_mb: +(mu.heapUsed / 1_048_576).toFixed(1), rss_mb: +(mu.rss / 1_048_576).toFixed(1), creates: createsDone, migrations: migDone, cuts, counts }));
+  // MEM-FIXES: the harness keeps every worker log line (a live worker writes them out): counted, so they are not taken for the worker's own memory.
+  console.log(JSON.stringify({ hour, wall_s: Math.round((Date.now() - t0) / 1000), heap_mb: +(mu.heapUsed / 1_048_576).toFixed(1), rss_mb: +(mu.rss / 1_048_576).toFixed(1), creates: createsDone, migrations: migDone, cuts, harness_logs: h.logs.length, harness_log_mb: +(h.logs.reduce((t, l) => t + l.length, 0) * 2 / 1_048_576).toFixed(1), counts }));
 };
 report(0);
 const total = hours * 3_600_000;

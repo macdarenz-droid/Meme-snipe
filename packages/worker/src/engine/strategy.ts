@@ -340,6 +340,8 @@ export interface StrategyConfig {
   readonly maxTails: number;
   /** OOM-MINT: how long a create's facts are kept while its coin has not migrated (`CREATE_KEEP_MS`). */
   readonly createKeepMs: number;
+  /** MEM-FIXES: the most creates kept at once (default `CREATES_MAX`; tests set a smaller one). */
+  readonly createsMax?: number;
 }
 
 /**
@@ -363,6 +365,17 @@ export const EXPIRED_CREATE_KEEP_MS = 7 * 24 * 3_600_000;
  */
 export const LATE_LET_GO_MS = 3_600_000;
 
+/**
+ * MEM-FIXES (supervisor ruling on the 200 creates a minute crash): the most creates kept at once. A create costs about
+ * 2.8 KB in the store while it is kept, so CREATE_KEEP_MS + CREATE_LATE_MS of creates grew with the create rate: at 200
+ * a minute (156,000 creates) the worker ran out of its 560 MB heap. 64,000 is above 13 hours at 75 a minute (58,500), so
+ * the live rate never reaches it, and it holds the window to about 180 MB at any rate. Past it the oldest creates not
+ * held or tailed are let go at once and marked expired: a coin of theirs that migrates is refused `create-expired`
+ * (fail closed), and the worker's log notes it once a minute. The deployer index keeps its own copy of every create, so
+ * H14 still sees them.
+ */
+export const CREATES_MAX = 64_000;
+
 /** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
 export interface SavedStateRef {
   readonly file: string;
@@ -382,6 +395,8 @@ export interface StrategyDeps {
   readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
+  /** MEM-FIXES: where the strategy notes what it let go for memory (the worker's log); a note never changes a decision. */
+  readonly note?: (line: string) => void;
   /** Test seam: replaces the size `#riskSize` settled on (tests force the probe and risk to disagree); production never sets it. */
   readonly sizeProbe?: (sized: { readonly spend: Lamports; readonly notional: MicroUsd }) => { readonly spend: Lamports; readonly notional: MicroUsd };
 }
@@ -1562,6 +1577,31 @@ export class LiveStrategy implements Strategy {
     // when it was released.
     const created = createOf(e.value)?.createdAtMs ?? e.moment.receivedAt;
     this.#creates.set(flatCopy(mint), created);
+    if (this.#creates.size > (this.#d.config.createsMax ?? CREATES_MAX)) this.#capCreates(e.moment.receivedAt);
+  }
+
+  /** MEM-FIXES: let-go creates (`CREATES_MAX`), kept as long as the expired marks, for the refusal's detail. */
+  readonly #capped = new HourTags(EXPIRED_CREATE_KEEP_MS);
+  #cappedSince = 0;
+  #cappedNotedAt = Number.NEGATIVE_INFINITY;
+
+  /** MEM-FIXES: past `CREATES_MAX` creates, the oldest released not held or tailed are let go and marked expired. */
+  #capCreates(now: number): void {
+    const max = this.#d.config.createsMax ?? CREATES_MAX;
+    for (const mint of this.#creates.keys()) {
+      if (this.#creates.size <= max) break;
+      if (this.#held(mint) || this.#tail.has(mint)) continue;
+      this.#creates.delete(mint);
+      this.#expired.add(mint, now);
+      this.#capped.add(mint, now);
+      this.#letGo.push(mint);
+      this.#cappedSince += 1;
+    }
+    if (this.#cappedSince > 0 && now - this.#cappedNotedAt >= 60_000) {
+      this.#d.note?.(`Creates over the cap of ${max}: ${this.#cappedSince} oldest let go since the last note; a coin of theirs that migrates is refused create-expired.`);
+      this.#cappedNotedAt = now;
+      this.#cappedSince = 0;
+    }
   }
 
   /**
@@ -1583,6 +1623,7 @@ export class LiveStrategy implements Strategy {
       this.#letGo.push(mint);
     }
     this.#expired.prune(now);
+    this.#capped.prune(now);
   }
 
   #createsCheckedAt = Number.NEGATIVE_INFINITY;
@@ -2425,7 +2466,12 @@ export class LiveStrategy implements Strategy {
     // from the facts as the backtest does; when its create's facts were let go, from the expired mark.
     const kept = createKeepVerdict(gctx, cand.mint, c.createKeepMs);
     if (kept?.expired === true) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: kept.detail }]);
-    if (kept === null && this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` }]);
+    if (kept === null && this.createExpired(cand.mint)) {
+      const detail = this.#capped.has(cand.mint)
+        ? `its create was let go at the cap of ${c.createsMax ?? CREATES_MAX} creates kept, before its coin migrated`
+        : `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen`;
+      return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail }]);
+    }
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
     // Served: while the set is on, every part it configures, whatever this candidate reached (API-1 N1'), so the card

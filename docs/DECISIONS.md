@@ -3518,4 +3518,19 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Reads ahead of their release slot.** A read (accounts, holders, holders-all, sim) answered for a slot after the slot it is released at makes no fact. It is noted once a minute of event time.
   - The gates already refused such facts as `future`. But an exit's market and a paper fill read the pool fact without that check, so they could price from chain state after the decision's moment.
   - Test data with reads dated hours after their release was corrected to the release slot. The assertions were not changed.
-- **Evidence.** In `worker/test/redteam-c/heap-growth.test.ts` (the red team's probe, run in the `heavy` project), `store-rules.test.ts`, `core/test/engine.test.ts`, `trade-heal.test.ts` and `producer.test.ts`. The numbers and mutants are in the PR.
+- **The create window is bounded by count** (`engine/strategy.ts` `CREATES_MAX`, `#capCreates`; supervisor ruling on the 200 creates a minute crash).
+  - Before, a create was kept CREATE_KEEP_MS + CREATE_LATE_MS (13 h) whatever the rate. In the store it costs about 2.5 KB while kept. At 200 a minute (156,000 creates) the worker ran out of its 560 MB heap at about h17.
+  - Now at most 64,000 creates are kept: above 13 h at 75 a minute (58,500), so 25 and 75 a minute never reach it, and their runs are unchanged. At any rate the window stays at about 160 MB.
+  - Past the cap, the oldest released creates not held or tailed are let go at once and marked expired. A coin of theirs that migrates is refused `create-expired`, with the detail "let go at the cap" (fail closed, no trade). The worker's log notes the drops once a minute.
+  - **No creates coverage gap is opened.** The deployer index keeps its own copy of every create for H14's look-back, so H14's evidence is complete. A gap would be false, and it would block every candidate for up to 16 days after one burst. The coins whose create was let go are refused one by one instead.
+  - **Measured (real worker, heap after GC, 240 candidates read every minute):**
+    - 200 a minute: 24 h complete; h24 heap 436.9 MB, RSS 656.9 MB.
+    - 75 a minute: h16 223.4 MB.
+    - 25 a minute: h24 119.7 MB.
+    - The 75 and 25 a minute figures equal the runs before the cap.
+  - **Still growing with the rate:**
+    - the rug labeller, which keeps a launch for 2 × its 1-day window (about 530 B a launch), so it levels off at 48 h;
+    - the deployer index, about 100 B a create over its 17-day window.
+    - At 200 a minute the labeller alone would pass the heap at about h36.
+  - **The highest sustained rate that keeps 17 days under 80% of the heap (448 MB), with heal tapes full: about 45 creates a minute.** This is an estimate (about ±25%), from 99 MB fixed + 62 MB heal tapes + about 6.1 MB per create a minute: 2.45 MB index, 1.95 MB create window, 1.5 MB labeller, 0.16 MB expired marks. At the 560 MB limit itself it is about 65 a minute.
+- **Evidence.** In `worker/test/redteam-c/heap-growth.test.ts` (the red team's probe, run in the `heavy` project), `store-rules.test.ts`, `core/test/engine.test.ts`, `trade-heal.test.ts`, `producer.test.ts` and `create-keep.test.ts` (the cap). The numbers and mutants are in the PR.
