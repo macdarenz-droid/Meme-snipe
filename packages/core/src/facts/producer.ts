@@ -768,7 +768,7 @@ export class FactProducer {
       const h = this.#heals.get(d.pool);
       if (h !== undefined && h.holes.has(seen.signature)) {
         h.fetched.push({ ev, seen });
-        this.#capHeals(d.pool);
+        this.#capHeals();
       }
       return;
     }
@@ -832,17 +832,28 @@ export class FactProducer {
     if (h === undefined) return;
     h.tape.push({ ev, seen });
     if (this.#expired(h, seen.receivedAt)) this.#heals.delete(book.pool);
-    else this.#capHeals(book.pool);
+    else this.#capHeals();
   }
 
-  /** MEM-FIXES: past HEAL_TAPES_TOTAL swaps across every heal, the heal of `pool` (the one that just grew) is let go: its holes stay. */
-  #capHeals(pool: string): void {
+  /**
+   * MEM-FIXES: past HEAL_TAPES_TOTAL swaps across every heal, the largest heals are let go (their holes stay) until the
+   * rest fit: not the one that just grew, so a small heal (a held pool's) is never dropped while large ones hold the budget.
+   */
+  #capHeals(): void {
+    const max = this.#o.healTapesTotal ?? HEAL_TAPES_TOTAL;
     let n = 0;
     for (const h of this.#heals.values()) n += h.tape.length + h.fetched.length;
-    const max = this.#o.healTapesTotal ?? HEAL_TAPES_TOTAL;
-    if (n <= max) return;
-    this.#heals.delete(pool);
-    this.#note(`Trade heal of pool ${pool} let go: the heals held ${n} swaps, over the total cap of ${max}; its holes stay.`);
+    while (n > max) {
+      let big: string | null = null;
+      let size = -1;
+      for (const [pool, h] of this.#heals) {
+        const k = h.tape.length + h.fetched.length;
+        if (k > size) [big, size] = [pool, k];
+      }
+      this.#heals.delete(big!);
+      this.#note(`Trade heal of pool ${big} let go: the heals held ${n} swaps, over the total cap of ${max}; its holes stay.`);
+      n -= size;
+    }
   }
 
   /** The book (and its pool's chain) before the first swap of `slot`: a heal of a hole at that slot or later starts here. */

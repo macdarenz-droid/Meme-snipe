@@ -36,6 +36,14 @@ export interface Ingest {
   ingest(source: Source, body: FrameBody, o: IngestOptions): unknown;
 }
 
+/** MEM-FIXES: the chain slot a raw chain read was answered at (accounts, holders, holders-all, simulation), else undefined. */
+const CHAIN_READS = [RAW.accounts(''), RAW.holders(''), RAW.holdersAll(''), RAW.sim('')];
+export const chainReadSlot = (key: string, value: unknown): bigint | undefined => {
+  if (!CHAIN_READS.some((p) => key.startsWith(p)) || typeof value !== 'object' || value === null) return undefined;
+  const slot = (value as { slot?: unknown }).slot;
+  return typeof slot === 'bigint' ? slot : undefined;
+};
+
 /** Puts one raw answer (`offchain` frame) somewhere: the feed, or a batch's list. */
 type Put = (source: Source, key: string, value: unknown) => void;
 
@@ -373,8 +381,9 @@ export class FactReaders {
     }
   }
 
-  #ingest(source: Source, key: string, value: unknown): void {
-    this.#o.feed.ingest(source, { type: 'offchain', key, value }, { receivedAt: this.#o.timers.now() });
+  /** MEM-FIXES: a chain read waits for the tip to pass the slot it was answered at (`notBefore`; a batch passes its newest). */
+  #ingest(source: Source, key: string, value: unknown, notBefore: bigint | undefined = chainReadSlot(key, value)): void {
+    this.#o.feed.ingest(source, { type: 'offchain', key, value }, { receivedAt: this.#o.timers.now(), ...(notBefore === undefined ? {} : { notBefore }) });
   }
 
   /** Where a read puts its answer: the feed now, or a batch's list until the whole batch has landed (`readBatch`). */
@@ -658,12 +667,15 @@ export class FactReaders {
       const slots = frames.filter((f) => LAG_BOUND.has(f.key.slice(0, f.key.lastIndexOf(':') + 1))).map((f) => (isObj(f.value) && typeof f.value['slot'] === 'bigint' ? f.value['slot'] : null)).filter((x): x is bigint => x !== null);
       const oldest = slots.length === 0 ? null : slots.reduce((a, b) => (b < a ? b : a));
       const keys = frames.map((f) => f.key).sort();
+      // MEM-FIXES: the whole batch waits for the tip to pass its newest chain read (`notBefore`), open, members and
+      // close together, so no member is ahead of the moment it is judged at and none leaves its batch.
+      const newest = frames.map((f) => chainReadSlot(f.key, f.value)).reduce<bigint | undefined>((a, b) => (b !== undefined && (a === undefined || b > a) ? b : a), undefined);
       // One synchronous block: the members never reach the feed without their close.
-      this.#ingest('worker', RAW.batchOpen(mint), { mint, members: keys });
+      this.#ingest('worker', RAW.batchOpen(mint), { mint, members: keys }, newest);
       try {
-        for (const f of frames) this.#ingest(f.source, f.key, f.value);
+        for (const f of frames) this.#ingest(f.source, f.key, f.value, newest);
       } finally {
-        this.#ingest('worker', RAW.batchClose(mint), { mint, slot: oldest, members: keys });
+        this.#ingest('worker', RAW.batchClose(mint), { mint, slot: oldest, members: keys }, newest);
       }
     }
     // Every part asked for is counted: one that never ran (no prep, no bank, no scan) failed.

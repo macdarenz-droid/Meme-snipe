@@ -8,6 +8,8 @@ import { isTerminal } from '../../core/src/lifecycle/index.ts';
 import type { Fill } from '../../core/src/domain/index.ts';
 import { seedsFile } from '../src/run/state.ts';
 import { Market } from './worker-harness.ts';
+import { passingFacts } from '../../core/test/gates/world.ts';
+import { migrationKey } from '../../core/src/gates/index.ts';
 
 blockNetwork();
 
@@ -216,5 +218,43 @@ describe('a mint and its pool are let go only when nothing watches them', () => 
       expect(got).toEqual(expect.arrayContaining([MINT, POOL_ADDRESS]));
       await h.worker.stop();
     }, 120_000);
+  });
+});
+
+describe('MEM-FIXES: a fact released for a let-go mint (#letGoLate)', () => {
+  it('a let-go mint brought back as a candidate by a late migration is not let go again: its next pool fact stays and poolOf survives', async () => {
+    let after: { got: string[]; watched: boolean; pool: unknown; seen: string[] } | null = null;
+    await run(60_000, async (h, m, got) => {
+      expect(got).toContain(MINT);
+      // A late migration fact for the same mint, fresh: it is a candidate again.
+      const v = passingFacts().get(migrationKey(MINT))!.value as { obs: Record<string, unknown> } & Record<string, unknown>;
+      m.fact(migrationKey(MINT), { ...v, obs: { ...v.obs, slot: h.worker.feed.openSlot - 1n, receivedAt: m.now - 50 }, graduatedAtMs: m.now - 2_000, migratedAtMs: m.now - 1_000 });
+      await m.run(2_000, 100, () => m.slot());
+      const watched = h.worker.strategy.watched().has(MINT);
+      // From here (a candidate again), its next pool facts (within LATE_LET_GO_MS of the let-go) are kept.
+      const from = got.length;
+      await m.run(3_000, 100, () => {
+        m.slot();
+        m.pool();
+      });
+      after = { got: got.slice(from), watched, pool: h.worker.poolOf(MINT), seen: [...got] };
+    });
+    expect(after!.watched).toBe(true);
+    expect(after!.got).not.toContain(MINT);
+    expect(after!.pool).not.toBeNull();
+  });
+
+  it('without a candidate, the pool fact released after the let-go is let go again (control)', async () => {
+    let after: { got: string[]; pool: unknown } | null = null;
+    await run(60_000, async (h, m, got) => {
+      const from = got.length;
+      await m.run(3_000, 100, () => {
+        m.slot();
+        m.pool();
+      });
+      after = { got: got.slice(from), pool: h.worker.poolOf(MINT) };
+    });
+    expect(after!.got).toContain(MINT);
+    expect(after!.pool).toBeNull();
   });
 });

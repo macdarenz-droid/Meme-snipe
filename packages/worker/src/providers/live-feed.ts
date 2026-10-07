@@ -65,7 +65,17 @@ export interface IngestOptions {
    * range's coverage gap, so it is released before any event of the range, in live and in the recording's replay alike.
    */
   readonly firstIn?: bigint;
+  /**
+   * MEM-FIXES: an off-chain answer to our own chain read, answered at this slot (a simulation at processed with its
+   * context slot at the head can be past the tip). Placed no earlier than it, so it is released only once the tip has
+   * passed it and its facts are never ahead of their moment; nothing is dropped. Only within AHEAD_HOLD_SLOTS of the
+   * open slot: further ahead it is placed as before, and the facts producer refuses it (`#ahead`, fail closed).
+   */
+  readonly notBefore?: bigint;
 }
+
+/** MEM-FIXES: how far ahead of the open slot a read's own slot may hold it (`notBefore`): 32 slots, about 13 s. */
+export const AHEAD_HOLD_SLOTS = 32n;
 
 export interface LiveFeedStatus {
   readonly tip: bigint | null;
@@ -147,6 +157,8 @@ export class LiveFeed implements Feed {
   #firstHeldAt: number | null = null;
   #released: bigint;
   readonly #held = new Map<bigint, Frame[]>();
+  /** MEM-FIXES: held slots whose frames are all reads waiting for the tip (`notBefore`). */
+  readonly #aheadOnly = new Set<bigint>();
   readonly #ranks = new Map<bigint, SigRanks>();
   /** FEED-KEYS: the dedupe keys as 96-bit tags (`TagSet`), and each placement slot's tags as pairs, for the prune. */
   readonly #keys = new TagSet();
@@ -207,12 +219,17 @@ export class LiveFeed implements Feed {
     const cs = chainSlot(body);
     const cutoff = this.#released - BigInt(this.#opts.keepSlots);
     let place: Frame['place'];
+    let aheadHold = false;
     // FILL-ORDER: every off-chain frame in arrival order (canonical.ts `arrival`).
     if (cs === null && o.firstIn !== undefined) {
       if (o.firstIn <= this.#released) throw new RangeError(`slot ${o.firstIn} is already released`);
       place = { at: 'chain', slot: o.firstIn, first: true };
-    } else if (cs === null || cs <= cutoff || o.after === true || (o.lookup === true && cs <= this.#released)) place = { at: 'offchain', slot: this.openSlot, arrival: true };
-    else place = { at: 'chain', slot: cs };
+    } else if (cs === null || cs <= cutoff || o.after === true || (o.lookup === true && cs <= this.#released)) {
+      const open = this.openSlot;
+      const ahead = cs === null && o.notBefore !== undefined && o.notBefore > open && o.notBefore <= open + AHEAD_HOLD_SLOTS;
+      place = { at: 'offchain', slot: ahead ? o.notBefore! : open, arrival: true };
+      aheadHold = ahead;
+    } else place = { at: 'chain', slot: cs };
     const text = dedupKey(body);
     const key = text === null ? null : keyTag(text);
     let duplicate = key !== null && this.#keys.has(key);
@@ -261,6 +278,9 @@ export class LiveFeed implements Feed {
     const held = this.#held.get(place.slot);
     if (held === undefined) this.#held.set(place.slot, [frame]);
     else held.push(frame);
+    // MEM-FIXES: a slot that holds only reads waiting for the tip (`notBefore`) is never released by the stale rule.
+    if (aheadHold && held === undefined) this.#aheadOnly.add(place.slot);
+    else if (!aheadHold) this.#aheadOnly.delete(place.slot);
     this.#firstHeldAt ??= receivedAt;
     return frame;
   }
@@ -301,7 +321,10 @@ export class LiveFeed implements Feed {
         }
         return false;
       });
-      if (kept.length === 0) this.#held.delete(slot);
+      if (kept.length === 0) {
+        this.#held.delete(slot);
+        this.#aheadOnly.delete(slot);
+      }
       else if (kept.length < frames.length) this.#held.set(slot, kept);
     }
     if (firsts.size > 0) this.#standIn(firsts);
@@ -358,7 +381,9 @@ export class LiveFeed implements Feed {
     const stale = this.#tip === null ? this.#firstHeldAt !== null && nowMs - this.#firstHeldAt >= this.#opts.staleReleaseMs : nowMs - this.#tipAt >= this.#opts.staleReleaseMs;
     if (stale) {
       // Nothing new from the chain: release what we hold, up to the newest slot any fact sits in.
-      for (const s of this.#held.keys()) if (s > target) target = s;
+      // A slot holding only reads that wait for the tip is not: released past the tip, it would make every chain event
+      // still to come below it late (MEM-FIXES).
+      for (const s of this.#held.keys()) if (s > target && !this.#aheadOnly.has(s)) target = s;
       if (this.#tip !== null && this.#tip > target) target = this.#tip;
     }
     this.#stale = stale;
@@ -372,6 +397,7 @@ export class LiveFeed implements Feed {
     for (const s of slots) {
       out.push(...this.#eventsOf(this.#held.get(s)!, s));
       this.#held.delete(s);
+      this.#aheadOnly.delete(s);
     }
     out.sort((a, b) => compareEvents(a.event, b.event));
     for (const r of out) this.#ready.push({ ...r, late: false });

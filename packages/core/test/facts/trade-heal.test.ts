@@ -444,6 +444,41 @@ describe('a hole in a pool\'s trade stream, healed by its fetched transaction (T
     expect(HEAL_TAPES_TOTAL).toBe(HEAL_TAPE_MAX);
   });
 
+  it('MEM-FIXES: over the total cap the LARGEST heal is let go, not the one that just grew (a small heal is kept)', () => {
+    // A second pool of the same mint, with its own book and trade stream.
+    const POOL2 = 'Poo12222222222222222222222222222222222222222';
+    const VIA2 = `logs:${POOL2}`;
+    const log2 = (x: Swap): MarketEvent => ({
+      kind: 'market', id: `log:${x.sig}:confirmed:00000`, moment: { slot: x.slot, txIndex: 2 ** 32, ixIndex: 2 ** 36, receivedAt: at(x.slot) },
+      key: `logs:pump_amm:${x.name}:${POOL2}`,
+      value: { event: { program: 'pump_amm', name: x.name, data: { ...x.data, pool: POOL2 }, logIndex: 0 }, signature: x.sig, txSlot: x.slot, truncated: false, via: VIA2, commitment: 'confirmed', source: 'helius', backfilled: false, seq: n++ },
+    });
+    const hole2 = (sig: string, slot: bigint): MarketEvent => ({ ...hole(sig, slot), key: `logs:truncated:${VIA2}` });
+    const run = (total: number) => {
+      const notes: string[] = [];
+      const { world, state } = opened(new FactWorld({ ...OPTIONS, healTapesTotal: total }, (l) => notes.push(l)));
+      // Pool 1: a hole at swap 3, then three swaps taken behind it (its heal holds 3).
+      const s = tape(state);
+      const s5 = swap('buy', s[4]!.after, 1_000_000n, R + 6n);
+      world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!), logOf(s5));
+      world.push(
+        coverage(STREAMS.trades(POOL2), 'start', { fromSlot: R + 6n, via: VIA2 }, R + 6n, at(R + 6n) + 1),
+        lifecycleEv('CreatePoolEvent', { timestamp: stamp(R + 7n), baseMint: MINT, pool: POOL2, poolQuoteAmount: state.quoteVault, poolBaseAmount: state.baseReserve }, R + 7n, 10),
+      );
+      // Pool 2: a swap, a hole, then two swaps (its heal holds 2; the second takes the heals past 4).
+      const x0 = swap('buy', state, 1_000_000n, R + 8n);
+      const x1 = swap('buy', x0.after, 1_000_000n, R + 10n);
+      const x2 = swap('buy', x1.after, 1_000_000n, R + 11n);
+      world.push(log2(x0), hole2('poolTwoHole', R + 9n), log2(x1), log2(x2));
+      return { notes, held: world.producer.sizes().healSwaps };
+    };
+    const r = run(4);
+    expect(r.notes).toEqual([`Trade heal of pool ${POOL} let go: the heals held 5 swaps, over the total cap of 4; its holes stay.`]);
+    expect(r.held).toBe(2);
+    // Under the cap, both heals wait.
+    expect(run(5)).toEqual({ notes: [], held: 5 });
+  });
+
   it('review N4: a hole released behind the book\'s newest trade slot (before its mark) is never healed, even by a transaction with no swap on the pool', () => {
     const { world, state } = opened();
     const s = tape(state);

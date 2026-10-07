@@ -294,9 +294,9 @@ const FEE_ACCOUNTS = (() => {
   return new Map(f.accounts.slice(4).map((a) => [a.address, { owner: a.owner, data: [a.dataBase64, 'base64'], lamports: 1, executable: false }]));
 })();
 
-const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; readonly extraPda?: boolean; readonly hold?: boolean; readonly scansPerDay?: number; readonly movedOwner?: boolean; readonly feeAccounts?: 'real' | 'foreign'; readonly manyPda?: number; readonly changePda?: boolean } = {}) => {
+const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; readonly extraPda?: boolean; readonly hold?: boolean; readonly scansPerDay?: number; readonly movedOwner?: boolean; readonly feeAccounts?: 'real' | 'foreign'; readonly manyPda?: number; readonly changePda?: boolean; readonly simSlot?: bigint } = {}) => {
   const timers = new ManualTimers(T);
-  const frames: { key: string; value: unknown; receivedAt: number }[] = [];
+  const frames: { key: string; value: unknown; receivedAt: number; notBefore?: bigint }[] = [];
   const seen: { method: string; params: unknown[] }[] = [];
   const bankSlot = o.bankSlot ?? 1_000n;
   const PDA = (() => {
@@ -364,7 +364,7 @@ const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; r
   };
   const sched = (spec: typeof HELIUS_FREE) => new Scheduler(spec, { timers, creditsUsed: 0 });
   const readers = new FactReaders({
-    feed: { ingest: (_s, b, io) => void (b.type === 'offchain' && frames.push({ key: b.key, value: b.value, receivedAt: io.receivedAt })) },
+    feed: { ingest: (_s, b, io) => void (b.type === 'offchain' && frames.push({ key: b.key, value: b.value, receivedAt: io.receivedAt, ...(io.notBefore === undefined ? {} : { notBefore: io.notBefore }) })) },
     rpc: new FactRpc({ url: () => 'https://helius.test/?api-key=k', http, scheduler: sched(HELIUS_FREE), timeoutMs: 1000 }),
     http, timers, timeoutMs: 1000, rugcheck: { scheduler: sched(RUGCHECK_FREE) }, goplus: { scheduler: sched(GOPLUS_FREE) },
     ...(o.scansPerDay === undefined ? {} : { holderScansPerDay: o.scansPerDay }),
@@ -372,7 +372,7 @@ const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; r
   readers.simulate = async (mint, spend, ingest) => {
     const q = simulated(spend);
     if (q === null) return false;
-    ingest({ mint, slot: bankSlot, spend, ok: true, ...q, error: null });
+    ingest({ mint, slot: o.simSlot ?? bankSlot, spend, ok: true, ...q, error: null });
     return true;
   };
   const run = async (req: BatchRequest): Promise<BatchResult> => {
@@ -392,6 +392,18 @@ const allOk = (r: BatchResult): boolean => Object.keys(r).length > 0 && Object.v
 const keysOf = (frames: readonly { key: string }[]) => frames.map((f) => f.key);
 
 describe('FactReaders.readBatch', () => {
+  it('MEM-FIXES: the whole batch, open, members and close, waits for the tip to pass its newest chain read (notBefore)', async () => {
+    // The simulation answered five slots after the bank (processed, its context at the head): every frame waits for it.
+    const ahead = batchRig({ simSlot: 1_005n });
+    expect(allOk(await ahead.run({ holders: 'largest', spend: SPEND, xcheck: true }))).toBe(true);
+    expect(ahead.frames.length).toBeGreaterThan(3);
+    expect(ahead.frames.map((f) => [f.key, f.notBefore])).toEqual(ahead.frames.map((f) => [f.key, 1_005n]));
+    // At the bank's slot, the bank's slot.
+    const level = batchRig();
+    expect(allOk(await level.run({ holders: 'largest', spend: SPEND, xcheck: true }))).toBe(true);
+    expect(new Set(level.frames.map((f) => f.notBefore))).toEqual(new Set([1_000n]));
+  });
+
   it('a bounded batch: accounts, holders, simulation and cross-checks between its open and close, lag-bound inputs from one bank', async () => {
     const r = batchRig();
     expect(allOk(await r.run({ holders: 'largest', spend: SPEND, xcheck: true }))).toBe(true);

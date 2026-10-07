@@ -19,9 +19,16 @@ const gc = runInNewContext('gc') as () => void;
 
 const SLOT = 452_941_200n;
 const at = (ms: number): Moment => ({ slot: SLOT + 1n, txIndex: 0, ixIndex: 0, receivedAt: ms });
-/** The market events of a fetched transaction, decoded afresh each call as the live feed decodes each frame. */
+/**
+ * The market events of a fetched transaction, decoded afresh each call as the live feed decodes each frame. MEM-FIXES:
+ * the RPC answer is parsed into its record once per fixture (the fixture's own parsing, not the feed's), so the
+ * measurement's cost is the decode and the store, and the test no longer outlasts its time limit on a slow machine.
+ */
+const records = new Map<string, ReturnType<typeof recordOf>>();
 const events = (label: string, seq: number) => {
-  const f: Frame = { seq, receivedAt: 1_000, source: 'helius', backfilled: false, place: { at: 'offchain', slot: SLOT }, duplicate: false, body: { type: 'tx', record: recordOf(tx(label)) } };
+  let record = records.get(label);
+  if (record === undefined) records.set(label, (record = recordOf(tx(label))));
+  const f: Frame = { seq, receivedAt: 1_000, source: 'helius', backfilled: false, place: { at: 'offchain', slot: SLOT }, duplicate: false, body: { type: 'tx', record } };
   return eventsOfFrame(f, new Map()).filter((e) => e.kind === 'market');
 };
 const createOfTx = (seq: number) => events('pump CreateEvent', seq).find((e) => e.kind === 'market' && e.key.startsWith('pump:CreateEvent:'))!;

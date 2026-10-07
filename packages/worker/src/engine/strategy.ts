@@ -986,7 +986,6 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
-    this.#letGoLate(e);
     this.#gapBarsMerge(e.moment);
     this.#gapBarsClose(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
@@ -1001,6 +1000,8 @@ export class LiveStrategy implements Strategy {
       if (isObj(s) && typeof s['slot'] === 'bigint' && (this.#height === null || s['slot'] > this.#height)) this.#height = s['slot'];
     }
     this.#discover(e, ctx, out);
+    // MEM-FIXES: after discovery, so a late migration that makes a let-go mint a candidate again is not let go with it.
+    this.#letGoLate(e);
     this.#readLanded(e);
     // READ-COHERENT: a batch's close is judged at once, on its own event, when every member's facts are out.
     const closed = this.#batchLanded(e);

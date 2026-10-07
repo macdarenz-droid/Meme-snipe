@@ -3547,19 +3547,28 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - The store now finds a per-subject coverage key by its subject (`retireTail`), so `retire` takes it too. Before, it was found by `start`, `gap` or `resume` and never retired.
   - Creates and rugs coverage is untouched.
 - **Late facts.** A fact released for a mint or pool up to an hour after it was let go (`LATE_LET_GO_MS`) is let go again, unless its coin is live again.
+  - The check runs after discovery. A late migration that makes a let-go mint a candidate again keeps its facts. The guard's test found this: run before discovery, the check let the migration itself go.
   - Example: a batch read still in flight at the window's end.
   - Before, such a fact made the store keys, the producer chain and the worker's copies again, and nothing let them go. The probe's late-read case showed 719 against 120 live.
-- **Heal tapes.** All heals together keep at most `HEAL_TAPES_TOTAL` swaps: 20,000, one pool's own cap. Past it, the heal that grew is let go: its holes stay (fail closed), and the worker's log notes it.
+- **Heal tapes.** All heals together keep at most `HEAL_TAPES_TOTAL` swaps: 20,000, one pool's own cap. Past it, the largest heals are let go until the rest fit: their holes stay (fail closed), and the worker's log notes each one.
+  - Not the heal that just grew (S1 ruling on the review): a small heal, such as a held pool's, is never dropped while large ones hold the budget.
   - A held swap measured about 3.1 KB, so all heals together cost at most about 62 MB.
   - Before, each pool had its own cap, so 240 pools could hold 4.8 million swaps between them.
 - **Reads ahead of their release slot.** A read (accounts, holders, holders-all, sim) answered for a slot after the slot it is released at makes no fact. It is noted once a minute of event time.
+  - **Such reads now wait for the tip** (S1 ruling on the review, option b). A simulation runs at processed with its context at the head, so its slot can be past the tip; dropping it cost H15 passes.
+  - The live feed places a chain read no earlier than its own slot (`IngestOptions.notBefore`), within `AHEAD_HOLD_SLOTS` (32) of the open slot. It is released once the tip has passed that slot, at that slot: nothing is dropped and nothing is ahead of its moment.
+  - A coherent batch waits as one, open, members and close at its newest read's slot, so no member leaves its batch.
+  - The stale rule never releases a slot holding only waiting reads: released past the tip, it would make every chain event below it late.
+  - Further ahead than 32 slots, the read is placed as before, and the producer's refusal stays as the backstop.
+  - The recording keeps each frame's placement, so the replay releases the same events.
   - The gates already refused such facts as `future`. But an exit's market and a paper fill read the pool fact without that check, so they could price from chain state after the decision's moment.
   - Test data with reads dated hours after their release was corrected to the release slot. The assertions were not changed.
 - **The create window is bounded by count** (`engine/strategy.ts` `CREATES_MAX`, `#capCreates`; supervisor ruling on the 200 creates a minute crash).
   - Before, a create was kept CREATE_KEEP_MS + CREATE_LATE_MS (13 h) whatever the rate. In the store it costs about 2.5 KB while kept. At 200 a minute (156,000 creates) the worker ran out of its 560 MB heap at about h17.
   - Now at most 64,000 creates are kept: above 13 h at 75 a minute (58,500), so 25 and 75 a minute never reach it, and their runs are unchanged. At any rate the window stays at about 160 MB.
   - Past the cap, the oldest released creates not held or tailed are let go at once and marked expired. A coin of theirs that migrates is refused `create-expired`, with the detail "let go at the cap" (fail closed, no trade). The worker's log notes the drops once a minute.
-  - **No creates coverage gap is opened.** The deployer index keeps its own copy of every create for H14's look-back, so H14's evidence is complete. A gap would be false, and it would block every candidate for up to 16 days after one burst. The coins whose create was let go are refused one by one instead.
+  - **No creates coverage gap is opened** (S1 ruling, 7 Oct: agreed). The deployer index keeps its own copy of every create for H14's look-back, so H14's evidence is complete. A gap would be false, and it would block every candidate for up to 16 days after one burst. The coins whose create was let go are refused one by one instead.
+  - A test pins it: past the cap, H14 still counts the let-go create, no coverage frame is written, and H14's creates coverage reads as before.
   - **Measured (real worker, heap after GC, 240 candidates read every minute):**
     - 200 a minute: 24 h complete; h24 heap 436.9 MB, RSS 656.9 MB.
     - 75 a minute: h16 223.4 MB.
@@ -3570,4 +3579,5 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - the deployer index, about 100 B a create over its 17-day window.
     - At 200 a minute the labeller alone would pass the heap at about h36.
   - **The highest sustained rate that keeps 17 days under 80% of the heap (448 MB), with heal tapes full: about 45 creates a minute.** This is an estimate (about ±25%), from 99 MB fixed + 62 MB heal tapes + about 6.1 MB per create a minute: 2.45 MB index, 1.95 MB create window, 1.5 MB labeller, 0.16 MB expired marks. At the 560 MB limit itself it is about 65 a minute.
-- **Evidence.** In `worker/test/redteam-c/heap-growth.test.ts` (the red team's probe, run in the `heavy` project), `store-rules.test.ts`, `core/test/engine.test.ts`, `trade-heal.test.ts`, `producer.test.ts` and `create-keep.test.ts` (the cap). The numbers and mutants are in the PR.
+- **CREATE-COMPACT's measurement test** (`create-compact.test.ts`) parses each fixture transaction's RPC answer into its record once, and still decodes every frame afresh as the feed does. It ran about 14 s, past the 30 s limit on slower machines. Now about 3 s, with the same figures (about 5.2 KB as released, about 1.6 KB compact).
+- **Evidence.** In `worker/test/redteam-c/heap-growth.test.ts` (the red team's probe, run in the `heavy` project), `store-rules.test.ts`, `core/test/engine.test.ts`, `trade-heal.test.ts`, `producer.test.ts`, `create-keep.test.ts` (the cap), `ahead-reads.test.ts` and `read-coherent.test.ts` (reads waiting for the tip), and `retire.test.ts` (the late let-go guard). The numbers and mutants are in the PR.

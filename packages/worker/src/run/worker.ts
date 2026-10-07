@@ -1506,10 +1506,6 @@ export class Worker {
   }
 
   /**
-   * The mint's newest whole market (merge rule M, as the strategy's #market): WATCH-1's snapshot when it is newer than
-   * the pool fact; else the pool fact, unless POS-1 flagged it (a stale swap stream), which is no market at all.
-   */
-  /**
    * MEM-FIXES (red team C R2-H3): a mint the strategy let go (never one held or tailed, `LiveStrategy.#retire`) leaves
    * the worker's per-mint copies too: its pool fact and release time, carry, fee terms and snapshot. Kept, every
    * migrated mint ever seen stayed for the process (240 more an hour at 4 migrations a minute). A later fact for it
@@ -1519,6 +1515,10 @@ export class Worker {
     for (const id of ids) for (const m of [this.#pools, this.#poolReleasedAt, this.#carries, this.#fees, this.#snapshots]) m.delete(id);
   }
 
+  /**
+   * The mint's newest whole market (merge rule M, as the strategy's #market): WATCH-1's snapshot when it is newer than
+   * the pool fact; else the pool fact, unless POS-1 flagged it (a stale swap stream), which is no market at all.
+   */
   #setPool(mint: string, value: unknown): void {
     this.#pools.set(mint, value);
     this.#poolReleasedAt.set(mint, this.#d.timers.now());

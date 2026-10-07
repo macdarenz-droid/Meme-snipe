@@ -257,6 +257,14 @@ describe('MEM-FIXES: creates over the cap (CREATES_MAX)', () => {
     const got = watch(h);
     await h.worker.reconcile();
     const m = await passingMarket(h, { heldPoolFacts: true, before: { atMs: T - 21 * 60_000, run: () => logCreate(h, T - 22 * 60_000) } });
+    // Every coverage frame put on the feed from here (S1 ruling: the cap writes no creates coverage gap).
+    const coverage: string[] = [];
+    const ingest = h.worker.feed.ingest.bind(h.worker.feed);
+    h.worker.feed.ingest = (src, body, o) => {
+      if ((body.type === 'offchain' || body.type === 'fact') && body.key.startsWith('coverage:')) coverage.push(body.key);
+      return ingest(src, body, o);
+    };
+    const coveredBefore = h.worker.strategy.coverage;
     // MINT is a candidate now; two younger creates push the kept creates past the cap.
     logCreate(h, T - 60_000, OTHER);
     logCreate(h, T - 60_000, OTHER2);
@@ -275,6 +283,10 @@ describe('MEM-FIXES: creates over the cap (CREATES_MAX)', () => {
     const lines = decisions(h);
     expect(expiredLines(lines)).toEqual([]);
     expect(lines.some((l) => (l.gate_reasons ?? []).some((g) => g.gate === 'H14' && (g.detail ?? '').includes('created 3 mints')))).toBe(true);
+    // No coverage gap is written for the let-go create, and H14's creates coverage reads as it did before the cap.
+    expect(coverage).toEqual([]);
+    expect(h.worker.strategy.coverage?.covered).toBe(coveredBefore?.covered);
+    expect(h.worker.strategy.coverage?.covered).toBe(true);
   });
 
   it('at the cap nothing is let go early', async () => {
