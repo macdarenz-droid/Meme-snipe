@@ -287,7 +287,7 @@ def tq(p, df):
     return float(np.interp(p, cdf, xs))
 
 
-def clustered(vals, days):
+def clustered(vals, days, lvl=0.95):
     v = np.asarray(vals, float); n = len(v)
     if n < 2:
         return None
@@ -299,11 +299,11 @@ def clustered(vals, days):
     if G < 2:
         return None
     se = math.sqrt(sum(s * s for s in g.values())) / n * math.sqrt(G / (G - 1))
-    t = tq(0.975, G - 1)
+    t = tq(1 - (1 - lvl) / 2, G - 1)
     return [m - t * se, m + t * se]
 
 
-def boot(vals, days, B=10000, seed=7):
+def boot(vals, days, B=10000, seed=7, lvl=0.95):
     v = np.asarray(vals, float)
     ud = sorted(set(days))
     if len(ud) < 2:
@@ -315,7 +315,8 @@ def boot(vals, days, B=10000, seed=7):
     rng = np.random.default_rng(seed)
     draws = rng.integers(0, len(ud), size=(B, len(ud)))
     means = sums[draws].sum(1) / cnts[draws].sum(1)
-    return [float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))]
+    a = (1 - lvl) / 2 * 100
+    return [float(np.percentile(means, a)), float(np.percentile(means, 100 - a))]
 
 
 def summarize(rows, label):
@@ -338,7 +339,9 @@ def summarize(rows, label):
                    mean_gross=float(np.mean([r['gross'] for r in lift])),
                    median_gross=float(np.median([r['gross'] for r in lift])),
                    ci_n_boot=boot(n, dy), ci_d_boot=boot(d, dy),
-                   ci_n_t=clustered(n, dy), ci_d_t=clustered(d, dy))
+                   ci_n_t=clustered(n, dy), ci_d_t=clustered(d, dy),
+                   ci_n_boot_fam=boot(n, dy, lvl=1 - 0.05 / 12), ci_d_boot_fam=boot(d, dy, lvl=1 - 0.05 / 12),
+                   ci_n_t_fam=clustered(n, dy, 1 - 0.05 / 12), ci_d_t_fam=clustered(d, dy, 1 - 0.05 / 12))
         n60 = [r['n60'] for r in lift if r['n60'] is not None]
         out['mean_n60'] = float(np.mean(n60)) if n60 else None
         out['n60_count'] = len(n60)
@@ -424,6 +427,9 @@ def stats(st, out):
         s['complete'] = bool(R.get(f'{arm}:c1', {}).get('done'))
         res['arms'][arm] = s
     res['verdict'] = verdict(P)
+    if 'ci_n_boot_fam' in P:
+        F = dict(P, ci_n_boot=P['ci_n_boot_fam'], ci_d_boot=P['ci_d_boot_fam'], ci_n_t=P['ci_n_t_fam'], ci_d_t=P['ci_d_t_fam'])
+        res['verdict_family_99.58'] = verdict(F)
     import hel
     res['credits'] = hel.ledger()
     json.dump(res, open(os.path.join(out, 'results.json'), 'w'), indent=1, default=float)
