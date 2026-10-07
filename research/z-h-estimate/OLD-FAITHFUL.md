@@ -26,7 +26,7 @@ requests to public documentation pages (§1). Labels as in `RESULTS.md`: **MEASU
   with setup and QA; one batch per about 6 h if every check runs, so **about 8 days for the 31, about 12 to 16 if
   GitHub drops scheduled checks**; about 15 to 30 days for all 61.
 - **Storage:** about 6.4 to 8.5 GB a day with today's retention, so **about 0.20 to 0.26 TB for 31 days**, plus the
-  strategy-scoped raw records B-10 needs (MR: 0.2 to 8 GB a day; PM: VERIFY). This replaces the 0.5 to 1.4 TB of
+  strategy-scoped raw records B-10 needs (PM-01's universe, since MR-01 is parked (C-76); size VERIFY). This replaces the 0.5 to 1.4 TB of
   RESULTS §6, which kept raw records of every canonical-pool transaction (§3).
 - **Held** until #214, the batch scheduler and the private store have merged, the scanner revision is frozen and the
   Triton terms check is recorded (§5). **#214 must not merge before the scheduler**: alone, its first served check
@@ -63,12 +63,12 @@ says: **`ARCHIVE_MAX_RPS=10`** and **`ARCHIVE_MAX_MBPS=40`** (`ci/archive-limits
 **Terms: storing archive-derived data privately.**
 - No Triton clause on storing, redistributing or deriving works from archive data was found (table above). Whether a
   private store needs Triton's permission is **unclear**: it cannot be settled from published text.
-- `docs/DECISIONS.md:414` says "Triton's terms bar getting around a block … and bar a blocked user from seeking other
+- `docs/DECISIONS.md:415` says "Triton's terms bar getting around a block … and bar a blocked user from seeking other
   Triton access without Triton's OK". No source for that text is recorded in this repo, and I could not find the Terms of
   Use page: **VERIFY**. The rule binds us anyway (owner, `CLAUDE.md` "never get around a block"; DECISIONS "No
-  disguise", `:453`).
-- `docs/DECISIONS.md:446`: "Publishing files derived from the archive waits on Triton." The owner emailed Triton on
-  4 Oct (`:423`); no reply is recorded in this repo.
+  disguise", `:454`).
+- `docs/DECISIONS.md:447`: "Publishing files derived from the archive waits on Triton." The owner emailed Triton on
+  4 Oct (`:424`); no reply is recorded in this repo.
 - **Today's pipeline publishes to this public repository**: `publish-day.sh:87` creates release `data-day-DAY` with
   `--repo "$GITHUB_REPOSITORY"`. That would publish archive-derived files, so it must be redirected to the private
   store before the first batch (§5, OF-4).
@@ -107,7 +107,7 @@ served check comes about 2 to 2.6 h after it ends (DERIVED).
 - A day that needs a second resumable job (exit 75, budget spent) is resumed once; a second exit 75 on the same day
   counts as a failure (new, OF-2; today `MAX_CHAIN` is 12, `data-scan.yml:504`).
 - Never get around a block: no other agent, host, address, proxy, client or Triton service (`archive-check.sh:19-22`,
-  DECISIONS `:426`, "No disguise" `:453`).
+  DECISIONS `:427`, "No disguise" `:454`).
 - No identity change: the User-Agent stays `zeroed-historical-scanner/2 (research backtest; +https://github.com/macdarenz-droid/Meme-snipe)`
   (`scanner/archive.go:84`), and `archive-check` refuses to run if it is not found (`archive-check.sh:46-50`).
 
@@ -117,6 +117,10 @@ served check comes about 2 to 2.6 h after it ends (DERIVED).
   finished units.
 - After 3 failures: only by a reviewed change from the supervisor that re-arms the chain (it records the reason and
   the owner's message in HANDOVER), and never before the last back-off has ended. Nothing re-arms it automatically.
+
+**Which strategy is replayed.** MR-01 is parked (C-76, owner 2026-10-08); B-10 replays the stage's strategy (PM-01
+today, or a future strategy through the M09 slot). If none has reached gate B, the pull may still run, and its days wait
+in the private store; B-10 stays pending until then.
 
 **Day order** (clean span 2026-07-22 to 09-21, RESULTS §2 lines 87-89; window RESULTS §1 lines 53-55):
 1. **B-10 window, oldest first:** 2026-07-22 (lead-in, post-BOOST: B2 is 07-21 14:23Z) then 07-23 to 08-21. 31 days.
@@ -161,12 +165,16 @@ raw record. Today's retention already keeps every curve and canonical-pool trade
 |---|---|---|---|
 | K1 today's units (rows + 5% sampled raw + creates and migrations) | 6.4 to 8.5 GB (`historical-data.md:230`, ±50%) | **0.20 to 0.26 TB** | The engine's decoder sees raw records only for sampled mints |
 | K2 RESULTS P11: raw for **every** canonical-pool transaction | about 17 to 45 GB (RESULTS:348) | 0.5 to 1.4 TB | RESULTS §6 |
-| **K3 (recommended): K1 + raw records for the selected strategy's universe only** | MR: K1 + 0.2 to 8 GB (RESULTS:347) = about 6.6 to 16.5 GB | MR: about 0.20 to 0.51 TB | PM: the raw-record size for young graduates' pools is not estimated (**VERIFY**); K2 is its upper bound |
+| **K3 (recommended): K1 + raw records for the replayed strategy's universe only** | PM-01: raw records for the canonical pools of mints that migrate inside the lead-in or window, from migration to the end of PM-01's holding horizon; not estimated (**VERIFY**), K2 is its upper bound | PM-01: between K1 and K2 | MR-01 is parked (C-76, owner 2026-10-08), so its universe (RESULTS:347: 0.2 to 8 GB a day) is not kept |
 
 - K3 keeps what the B-10 replay needs: the engine's own decoder reads every swap of the strategy's universe, and the
-  rest stays rows. It needs the strategy chosen (Phase 0) or the union of the MR and PM universes, and it must be in the
-  frozen scanner revision before batch 1: changing retention later means reading the same days again, which the
-  owner's "never download a day twice" forbids (`archive-limits.conf:11-12`).
+  rest stays rows. With MR-01 parked (C-76), the replayed strategy today is PM-01. K3 must be in the frozen scanner
+  revision before batch 1: changing retention later means reading the same days again, which the owner's "never
+  download a day twice" forbids (`archive-limits.conf:11-12`).
+- **Risk:** a future strategy entering through the M09 slot whose universe lies outside PM-01's (for example a revised
+  MR version on old deep pools) would find only rows and sampled raw records for these days. Its B-10 replay would then
+  need either K2 now (0.5 to 1.4 TB) or a second read of the same days, which needs the owner. The supervisor decides
+  K3 or K2 before OF-3 freezes the revision.
 - Sizes come from October activity (±2×, RESULTS line 341); July is VERIFY on batch 1.
 
 **Where it is kept.** Day releases in the **private** data repository `macdarenz-droid/zeroed-data` (DATA-STORE #150),
