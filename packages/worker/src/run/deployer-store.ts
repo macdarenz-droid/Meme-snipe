@@ -2,7 +2,7 @@
 // (creates, rug labels, unjudged mints) and every creates and rugs coverage fact, appended as it is released, so a
 // restart re-seeds the index and puts the coverage history back into the engine instead of blanking H14 for a whole
 // look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start.
-import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync, statSync, truncateSync } from 'node:fs';
 import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
 import type { MarketEvent } from '../../../core/src/engine/index.ts';
@@ -37,21 +37,74 @@ export interface SavedDeployers {
   readonly refused?: string;
 }
 
+/** The `via` of the coverage gaps a failed append leaves (RC-FIXES-2b). */
+export const STORE_GAP_VIA = 'worker:deployer-store';
+
+export interface DeployerStoreOptions {
+  /** For tests (a short write); the default checks every write's count. */
+  readonly write?: WriteFn;
+  /** A failed append is logged at most once a minute (RC-FIXES-2b). */
+  readonly log?: (line: string) => void;
+  readonly now?: () => number;
+}
+
 export class DeployerStore {
   readonly #path: string;
 
   readonly #write: WriteFn | undefined;
+  readonly #log: ((line: string) => void) | undefined;
+  readonly #now: () => number;
+  /** The file's size after the last whole append (null: not known yet, read from the file on the next append). */
+  #size: number | null = null;
+  /** The slots of the events a failed append lost, not yet covered by a gap in the file. */
+  #lost: { from: bigint; to: bigint } | null = null;
+  #lastLog = Number.NEGATIVE_INFINITY;
 
-  /** `write` is for tests (a short write); the default checks every write's count. */
-  constructor(stateDir: string, write?: WriteFn) {
+  constructor(stateDir: string, o: WriteFn | DeployerStoreOptions = {}) {
     this.#path = join(stateDir, 'deployers.jsonl');
-    this.#write = write;
+    const opts: DeployerStoreOptions = typeof o === 'function' ? { write: o } : o;
+    this.#write = opts.write;
+    this.#log = opts.log;
+    this.#now = opts.now ?? Date.now;
   }
 
-  /** Keeps a released event when the index or H14's coverage reads it. */
+  /**
+   * Keeps a released event when the index or H14's coverage reads it. Never throws (RC-FIXES-2b, DISK-GUARD): an append
+   * that fails (a full disk) is cut back to the last whole line, logged at most once a minute, and its event's slot is
+   * remembered. The next append that works first writes a closed creates gap and a closed rugs gap over every lost
+   * slot, so a restart that reads this file never takes the lost span as covered (H14 reads not covered, fail closed);
+   * the running process is unaffected (its index has the events).
+   */
   keep(e: MarketEvent): void {
     if (!isCreate(e.key) && !isRugFact(e.key) && !isCoverage(e.key)) return;
-    appendFileSync(this.#path, `${typedText(isCreate(e.key) ? compactCreate(e) : e)}\n`);
+    const lines: string[] = [];
+    if (this.#lost !== null) {
+      for (const stream of ['creates', 'rugs']) {
+        lines.push(typedText({
+          kind: 'market', id: `${STORE_GAP_VIA}:${stream}:${this.#lost.from}-${this.#lost.to}`, moment: e.moment, key: `coverage:${stream}:gap`,
+          value: { value: { fromSlot: this.#lost.from, toSlot: this.#lost.to, reason: 'deployer store append failed', via: STORE_GAP_VIA }, source: 'worker', backfilled: false, seq: 0 },
+        }));
+      }
+    }
+    lines.push(typedText(isCreate(e.key) ? compactCreate(e) : e));
+    const text = `${lines.join('\n')}\n`;
+    try {
+      this.#size ??= existsSync(this.#path) ? statSync(this.#path).size : 0;
+      appendFileSync(this.#path, text);
+      this.#size += Buffer.byteLength(text);
+      this.#lost = null;
+    } catch (err) {
+      try {
+        if (this.#size !== null && existsSync(this.#path)) truncateSync(this.#path, this.#size);
+      } catch {}
+      const slot = e.moment.slot;
+      this.#lost = this.#lost === null ? { from: slot, to: slot } : { from: slot < this.#lost.from ? slot : this.#lost.from, to: slot > this.#lost.to ? slot : this.#lost.to };
+      const now = this.#now();
+      if (now - this.#lastLog >= 60_000) {
+        this.#lastLog = now;
+        this.#log?.(`Deployer store: an append failed (${err instanceof Error ? (err as NodeJS.ErrnoException).code ?? err.name : 'error'}); slots ${this.#lost.from}..${this.#lost.to} will be saved as a coverage gap once a write works again.`);
+      }
+    }
   }
 
   /**
@@ -131,6 +184,7 @@ export class DeployerStore {
     }
     closeSync(fd);
     renameSync(tmp, this.#path);
+    this.#size = null;
     if (keepCreates && creates > maxCreates) return { creates: [], rugs: [], coverage: [], last: null, refused: `${creates} saved creates, over the seed cap of ${maxCreates}` };
     return { creates: kept.filter((e) => isCreate(e.key)), rugs: kept.filter((e) => isRugFact(e.key)), coverage: kept.filter((e) => isCoverage(e.key)), last };
   }

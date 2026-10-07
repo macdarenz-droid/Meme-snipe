@@ -895,7 +895,7 @@ export class Worker {
       }
       this.#world.run(effect, moment);
     } }, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
-    this.#deployerStore = new DeployerStore(c.stateDir);
+    this.#deployerStore = new DeployerStore(c.stateDir, { log: d.log, now: () => d.timers.now() });
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
