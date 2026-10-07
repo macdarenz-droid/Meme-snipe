@@ -253,8 +253,9 @@ describe('fact readers', () => {
     writeFileSync(scansFile, JSON.stringify({ day: today, scans: -5 }));
     expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(false);
     expect(gpaCalls).toBe(3);
-    // Saved under a later day (the clock stepped back since): spent until that day has passed, not a fresh budget.
-    writeFileSync(scansFile, JSON.stringify({ day: today + 1, scans: 0 }));
+    // Saved under tomorrow (the clock stepped back since): its spend counts until that day has passed, never a fresh
+    // budget, and an unspent count is not locked to the end of tomorrow (S1 ruling on #271, RC-FIXES-2).
+    writeFileSync(scansFile, JSON.stringify({ day: today + 1, scans: 1 }));
     expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(false);
     timers.advance(86_400_000);
     expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(false);
