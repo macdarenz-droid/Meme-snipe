@@ -209,3 +209,60 @@ All lines below are in `ops/host/files/...` at e4a8c05.
   - Watchdog/uploader skew is low risk: `reports.sh` deploys the watchdog from the tag before the switch; if it fails, the failed-runs alert fires after 3 runs.
   - Disk retention is unchanged.
 - **Not run:** `ops/test/e2e.sh` (no Docker daemon). Whether a manual `systemctl restart` resets NRestarts on real systemd is unverified.
+
+# Round 4: PR B #280 (claude/rc-state 10347648)
+
+**Verdict: all 5 PR B findings CLOSED, no regressions. The new design adds 1 HIGH that blocks the resume (the first start latches the kill switch), 1 HIGH that weakens parity, and 1 MEDIUM.**
+
+## Re-verification
+My original probes were run on the head. PR B's copies of my probe files keep every assertion; only messages and paths differ.
+
+| Finding | Result |
+|---|---|
+| C1 backup only sqlite | **closed** (backup-coverage, state-backup-restore pass) |
+| H1 entry before recorder flush | **closed** (entry-evidence passes) |
+| R2-1 0-byte or missing ledger | **closed** |
+| R2-2 missing control, account or paper | **closed** |
+| R2-4 account.json field checks | **closed**: r2-corrupt-state passes 85 of 85 (18 failed at base) |
+| Exit crash (40 crash points × 2) and the 21 leak probes | still pass (no regression) |
+
+Note on H1: it is closed by `Recorder.durable()` before `journalBeforeDispatch`. checkBoot's new cut, below, also forgives the test's case. I did not separate the two causes with a probe.
+
+## HIGH
+- **R4-1: the first start of PR B's code on any existing host latches the kill switch and pauses entries.**
+  - **Cause:**
+    - `checkState` reports `controlLost` when the ledger existed and `control.json` is missing (state-check.ts, `controlLost: ledger.existed && !existsSync(control.json)`).
+    - Every release before PR B wrote `control.json` only on a latch trip or an owner pause (959d801 worker.ts:2187, :2901).
+    - The stand-in never writes it.
+  - **Effect:**
+    - Deploy 2 (RESUME-WORKER) will most likely start with `paused: true` and `killTrippedAtMs` set, unless the host ever tripped or paused. I cannot check the host's state dir.
+    - The S0 run then makes no entries until the owner re-arms and resumes, and its only signal is a `state_lost` critical alert that is wrong: nothing was lost.
+  - **Probe:**
+    - The 959d801 half (a scratch probe, not committed) shows `ledger.sqlite` exists and `control.json` does not after a normal run.
+    - `r4-upgrade-latch.test.ts` on 10347648 then gets `paused: true, killTrippedAtMs: 1789657204100`.
+  - **Fix:** a one-time migration, for example a `state-version` marker written by the first PR B start. Until the marker exists, a missing `control.json` means "never written" (write the defaults); after it, it means "lost".
+- **R4-2: cutAtKill forgives any replay lines of the journal's last event on a killed boot, not only the cut-off `submit` it documents.**
+  - **Cause:** parity.ts `cutAtKill`: `extra.every((l) => eventOf(l) === last)`.
+  - **Effect:** a replay that enters (prepare, sign, submit) where live rejected, at the last event, passes TEST-1. So does a replay with more lines than a kill after the send can cut. Restart drills kill on purpose, so every drilled boot's last event is unchecked.
+  - **Probe:** `r4-cut-at-kill.test.ts` (2 tests, both `expected null not to be null`).
+  - **Fix:** forgive exactly one trailing line: a `submit` whose intent's `sign` is the journal's last line. Better, have the worker journal a `dispatching <intent>` line, fsynced before the send, and forgive only the `submit` that follows it.
+
+## MEDIUM
+- **R4-3: a refused start is invisible and loops.**
+  - **Cause:** `StateRefused` is thrown before the journal's start line. main.ts sends it to `fatal`, which exits with EXIT.crash.
+  - **Effect:**
+    - `Restart=always` with no `RestartPreventExitStatus` retries every 5 s until StartLimitBurst; the watchdog shows only "No heartbeat".
+    - Under #271's probation, the first restart rolls the host back to the previous release. During the resume, that is the stand-in, which starts happily on the same state and writes `open_intents` 0 (R3-5).
+    - No journal, heartbeat or Telegram text names the refusal or says "restore from backup".
+  - **Probe:** `r4-refusal-visible.test.ts` (`refusal "StateRefused: ledger.sqlite is empty …" left no journal alert`).
+  - **Fix:**
+    - Journal an alert, or write a `refused.json` the heartbeat reports, before throwing.
+    - Exit with a distinct code listed in `RestartPreventExitStatus`.
+    - zeroed-update's rollback never targets the stand-in on that code, and alerts with the reason.
+
+## Notes
+- **The deployer index is left out of the backup.**
+  - The backup comment says "until then H14 is not covered, fail closed". That holds outside S0.
+  - In S0 diagnostic mode (the resume run), H14 judges over the unbroken creates coverage the host has (hard.ts:496-505 at 10347648). After a restore without `deployers.jsonl`, deployer history from before the restore is silently ignored, and serial-deployer counts restart from zero for 24 h. That is the same as a cold first boot and is by S0's design, but the "fail closed" claim is wrong for S0. Not probed.
+- **The backup's consistency check is sound for the worker's write order.** `paper.json` is written before the ledger fill, and the r2-exit-crash crash images, taken after every durable write, all restart.
+- **Markers in the backup:** it includes the `clean_stop`, `planned_restart`, `cold_start` and drill-token markers. A restore can carry a stale `planned_restart`, which labels the restored boot's last exit as planned (restart counts only). LOW, not probed.
