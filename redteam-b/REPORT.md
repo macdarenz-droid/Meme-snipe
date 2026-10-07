@@ -60,3 +60,49 @@ Run: `npx vitest run packages/core/test/redteam-b packages/worker/test/redteam-b
 ## Not covered in this pass
 - Double fills or double exits across a restart, and the ladder replace path, beyond reading the code; it has extensive existing tests (EXIT-KEEP, restart-keep).
 - Fully reconciling the ledger against the wallet across late settlements; PAPER-2 tests exist.
+
+# Round 2 (same commit 959d801)
+
+**Verdict: 1 new CRITICAL (RB-8). Items 2, 3 and 5 show no defect; item 4 shows no new defect.**
+
+Run: `npx vitest run packages/worker/test/redteam-b-crash.test.ts packages/core/test/redteam-b/melbourne-dst.test.ts packages/core/test/redteam-b/ladder-scale.test.ts`. The RB-8 variant fails by design; everything else passes.
+
+## How the crash fuzz works (items 1–3)
+`packages/worker/test/redteam-b-crash.test.ts` runs a whole paper trade: entry, an optional partial take-profit, then the stop exit. It snapshots the state folder after every durable state-file write (`StateFile.write`: ledger-adjacent files, exits.json, paper.json, account.json and so on). A snapshot taken there is exactly what a SIGKILL between two writes leaves on disk.
+
+Each snapshot is restarted (`start()`, the host's reconcile and start) and driven to the end. Then four things are checked:
+1. **No position is lost or left without an exit:** every position is closed and no intent is still live.
+2. **No fill is double-booked:** each landed paper attempt (paper.json, the simulated chain) is exactly one book fill, and the other way round.
+3. **The wallet reconciles with the chain to the lamport.** The expected balance is W0 + exit SOL − entry SOL − every landed attempt's fee (base + priority + tip on a fill) − entry rent + rent back on the closing sell. The scenario has no dust and closes always succeed, so rent is deterministic.
+4. **Trade records are consistent:** one trade record per entered position, and all of them closed.
+
+## CRITICAL
+
+### RB-8: a restart while an exit has a dropped or expired paper attempt never reconciles, so the worker exits with code 3 on every start and the position gets no exits
+- **Where:**
+  - `packages/worker/src/run/paper-world.ts:190-194` (`#heightFor`), `:391` (`#reconcile` returns early) and `#status` (reports nothing). For an attempt whose paper outcome is `dropped` or `expired` (not lost in a restart), these use `this.#height`, which stays null until the feeds start.
+  - `worker.ts:2315` runs `reconcile()` before the sources start (`:2324`, `:2339`), so no height ever arrives during the start reconcile.
+  - The start loop also never asks again for a status or balance read. A `reconcile_balances` answer refused because it raced the status (it arrives "from unknown") is not retried until feed ticks, which only start after the reconcile.
+- **Scenario:**
+  - An exit has an earlier attempt that the paper world drew as never landing (`dropped`, about 8.8% of attempts in the conservative scenario), or one that expired. The worker is killed before the exit intent resolves.
+  - On every start, the reconcile can't prove that attempt dead. The intent stays `unknown`, `failed`, `expired_unfilled` or `confirmed_fill`. After 60 s the start returns `EXIT.reconcileFailed`.
+  - The host unit runs the same reconcile in `ExecStartPre=... --reconcile`, with `Restart=always`, `StartLimitBurst=10` and `StartLimitIntervalSec=600`. So after 10 tries the unit stays failed, with the position in `exit_pending`: no stops, no exits, no account marks.
+- **Evidence:**
+  - The test variant "RB-8 30% land, up then stop (ladder pressure)": 239 of 364 crash images refuse to start, every one with "Reconcile failed: intents left unresolved".
+  - The variants at 100%, 70% and 50% landing (180 images) all restart, close, and reconcile to the lamport.
+  - A local check that was not committed: making `#heightFor` treat `dropped` and `expired` as dead (`lastValid + 1`) cut the failures from 239 to 47. The remaining 47 are the second cause above: one `reconcile_balances` answer refused "from unknown" and never asked again. Product code was restored afterwards (`git diff` is clean).
+- **Smallest fix (two parts):**
+  - (a) In `#heightFor`, the paper world's own terminal fates prove the attempt dead: `dropped` or `expired` → `lastValid + 1`, as `lostInRestart` already does.
+  - (b) During the start reconcile, ask again for status and balances of intents that are still open on each loop. One way is to emit an intent `tick` at the paper height. Another is to persist the paper world's last height in paper.json and run `onSlot`/`tick` from it at start.
+- **Regression test:** the RB-8 variant must pass.
+
+## No defect found
+- **Item 1 (restart mid-entry or mid-exit, partial fills, pending intents):** 180 crash images across 3 variants (all land / half land with failed attempts, replacements and rungs / 70% land with a partial take-profit) all restart to closed positions. No position was lost, double-counted or left without an exit.
+- **Item 2 (double fills and double exits):** across every image, book fills equal paper landings one for one. Duplicate and late reconciles at restart are refused by the lifecycle ("reconcile follows a confirmed, failed or expired outcome") and change nothing. Core's own `lifecycle.random.test.ts` already models fork noise, hidden landings and orphans, so I did not duplicate it.
+- **Item 3 (ledger reconciliation and rounding):** the wallet equals the chain-derived balance to the lamport on every image. Rounding as written in the code:
+  - AMM fees use ceil (`feeOf`), outputs use floor, and exact-out quotes use ceil, matching the programs (the golden tests);
+  - `tradeUsd` uses up for amounts paid and down for amounts received;
+  - paper slippage uses `withSlippage` with the shortfall rounded up against us.
+  - Two LOW notes: `paper-world.ts:347` reports a buy's slippage cost rounded down, and `account.ts` `soldBasis` can overstate a partial's gain by at most 1 lamport (the whole trade sums exactly at close). Neither affects the wallet.
+- **Item 4 (ladder at $1k and $10k):** `planAttempt` min-out is a ratio of the full-size trigger value. Rung choice is identical at $5, $1k and $10k, fees stay capped lamports, and the liquidation value is quoted at the real size, below spot × quantity. Test: `ladder-scale.test.ts`. The size-related exit risk at scale is RB-5 (a stuck blocked exit), not the ladder.
+- **Item 5 (Melbourne day and week across DST):** `melbourneTime` matches the tz database (Intl `Australia/Melbourne`) every 15 minutes within ±48 h of every change from 2008 to 2040. Day starts are local midnight, change days last 23 h and 25 h, and weeks start Monday 00:00 local. On 4 Oct 2026, a $1.60 loss at 23:59 Sunday (AEST start) counts toward Sunday's R7, and the day resets at Monday 00:00 AEDT (Sun 13:00Z). R9 and R11 use the same functions. Test: `melbourne-dst.test.ts`.
