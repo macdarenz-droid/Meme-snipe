@@ -129,6 +129,17 @@
   - Owner's console (`zeroed-setup` end screen): Keys stored (4), Telegram paired, Key check passed, Worker and Signer active, Release `171a61ceb06f`, no dry run, live view off, "Setup finished. The server is running." `171a61ce` was the deploy tag at install time. `zeroed-update` should switch the server to `94d55a84` within 5 min; the owner was asked for a `zeroed-status` photo to confirm.
   - Vultr: the 10-02 server (`zeroed`, 1 GB) is Stopped, not deleted. The 10-06 server (2 GB) is Running. The old server's ledger, saved state and journal still need copying off before the owner deletes it ("Disk cycle": never deleted). Vultr is believed to bill stopped instances too; the owner was told to check this.
   - `DEPLOY_CODE`: the code's 6 words were shown in chat screenshots. The server's copy is used up, but while the secret exists, every Deploy publishes the keys encrypted to those words for up to 15 min. The owner was asked to delete the secret. Without it, Deploy updates code only (`publish.sh`: "No DEPLOY_CODE secret"). A key rotation makes a new code with `zeroed-new-deploy-code`.
+- **8 Oct about 8:55 AM, why the server is still on `171a61ce` (owner's `journalctl -u zeroed-update` photo):**
+  - 21:37:44Z: the host files of `94d55a84` were applied, and the worker restarted.
+  - 21:38:51Z: "did not stay up after the switch (its health route did not answer as 94d55a84b6ef within 60 s)". Rolled back to `171a61ce`, and `94d55a84` was recorded in `failed_release` ("not tried again: a newer deploy is"). The Telegram alert could not be sent (not paired yet). Later runs exit early.
+  - Root cause (host bug, pre-existing): `zeroed-update` starts the worker when `helius_api_key` exists (line 300), but `zeroed-worker.service` also has `ConditionPathExists=…/telegram_chat_id`. Keys arrived about 21:37Z, and the `/pair` came after the switch. So systemd skipped the start (a failed condition, `restart` returns 0), `is-active` stayed false, and the hold failed.
+  - This happens only in the window between the keys and `/pair` on a new server; the 1 GB server was paired long ago. With no keys at all, the "not started (no keys yet)" path would have deployed.
+  - Effect: none on behaviour (both releases run the stand-in). The server takes the next deploy tag on its own once a newer green commit is tagged (after Z01 and the ops card below); it is paired now, so the restart will work.
+  - Card **HOST-FIRST-SETUP** (one ops card, after Z01 merges, since both touch `install.sh`):
+    1. In `zeroed-update`, start the worker only when `keys_stored && paired`; otherwise "not started (not paired yet)". Add a test that fails on the old code (keys present, no `telegram_chat_id`, the switch must not roll back).
+    2. README-LOGIN: `linuxuser`, then `sudo -i`, and `zeroed-status` for the deploy code.
+    3. Follow-up 2: the `install.sh:53` comment.
+    4. Its merge commit touches `E2E_PATHS`, so a green run of it makes the base deployable again.
 - **8 Oct about 8:43 AM, #287 Z01:** head `334569cd` (base `65c2733f` merged; that delta is exactly #292's 9 files). Merge procedure step 1, run by the supervisor on merge commit `9a7f15c9`:
   - `pnpm install --frozen-lockfile`, `installed.ts`, `drift.ts` (label `deps-reviewed:a1fbbd89833bdd60c8cf9301057a8317`, and it passes with that label), `pnpm lint` ("policy: all checks passed") and `pnpm typecheck` all pass.
   - The base has no `tools/policy`, so the PR's own copy was run.
