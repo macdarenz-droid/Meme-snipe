@@ -20,6 +20,17 @@
   - PRs opened: #283 (the owner's research branch, merged into `claude/research-merge`, docs only), #284 (VERIFY results, docs only). VERIFY session archived.
   - Owner asked: D30 enumeration (a capped Helius job recommended), B-10 history (forward transaction-level recording recommended, after a free-limit check), and the MR-01 stop. Told: exits are simulated as round trips; for 31 Dec, a running strategy continues only within current spend.
 - **8 Oct about 12:45 AM (owner: every worker in Auto):** CLAUDE.md "Workers run in Auto". Default-mode sessions archived after their work was pushed: PREREG (`df7d75da`), Z00 builder (`a39f68fa`), Z0D builder (`d5393ad0`), and the four round-1 reviewers and red teams (their reports are in `docs/reviews/`). Z01 was asked to push its WIP; an Auto Z01 continues from it. PRs: #285 Z00 (Auto reviewer `session_01H1QKaJJCKwYY3GufwxGoAs`, red team `session_014UYUbRktE5Hr61u2vR165b`), #286 Z0D (round 2 review next).
+- **8 Oct about 12:52 AM:** Z01's work is pushed at `50009fe1`; the Default-mode builder is archived. Open PRs:
+  - #283: the owner's research, docs only.
+  - #284: VERIFY results, docs only.
+  - #285: Z00. Reviewer `session_01H1QKaJJCKwYY3GufwxGoAs`, red team `session_014UYUbRktE5Hr61u2vR165b`.
+  - #286: Z0D round 2. Reviewer `session_01RLFgJs87rkpcceBY427Jww`, red team `session_01GzL4X56SjPHbqJQL4npV8m`.
+  - #287: Z01. Reviewer `session_011tRoogkXXgSyzqnTrkqfMt`, red team `session_01AUcUzLjbLgv1qVogiQBkKb`.
+
+  All six review sessions run in Auto and send their reports by send_message. Safety-net check-in `trig_01LjJwJNAtCb3AvZm8aybDjX` fires at 1:33 AM. Z01 open items:
+  - The supervisor adds the `deps-reviewed:<hash>` label after the review.
+  - The coverage gate after 14 Oct.
+  - The 1.0.0 tag.
 - **History for owner item 2 (B-10, card Z-H):** zeroed-data holds only the old server's recordings for 4, 5 and 6 Oct (releases `rec-2026-10-04/05/06`, about 0.4 MB, 3 MB and 4.6 GB) and the summaries; this repo has no `data-day-*` release. Far below 30 clean days, so the owner is told before M2 starts.
 - **Owner, 7 Oct about 9:30 PM:** "When ur done archive all workers": after the map is done, every worker session is archived.
 
