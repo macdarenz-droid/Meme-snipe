@@ -133,3 +133,19 @@ I accept every finding. Together with the rulings above (C-56, K3, D30, owner an
     - The retention for batches 2 onward is then chosen and recorded before batch 2, as an OF-3 step with the numbers: K3 if the 31-day PM-01 projection fits under 0.5 TB, otherwise stop and ask the owner.
     - Batch 1's extra raw is trimmed to the chosen retention.
     - The docs say plainly, and so will the supervisor to the owner, that the days may wait unused until a strategy reaches gate B, and under A17 may never be used.
+
+### Delta review on `ccd0d9c9` (before the addendum commit `49529d6d`)
+
+Reviewer: FAIL. Rulings 1–13 and open points 1–4 are applied, and every number was recomputed and is correct. HIGH-1..4 are rulings 14–17, which `49529d6d` addresses. New:
+- HIGH-5: parked A-M03-03 (D30) is still a dependency of A-M05-01 (SPEC-A:76, :945), A-M06-04 (:82) and A-M03-04 (:72, :809), and is listed in MA-0b (:43) and in INTEGRATION M1's ticket list. Core tickets would wait on a ticket that will never exist.
+- MEDIUM-1: INTEGRATION M1's exit (:22) and ARCH Phase 0 (:2912) still list A-24 and A-24b and "Stop MR-01 if …". Resting MA-0c on A-48 alone is sound.
+- LOW-1: the provenance should cite ZHOF @ `c2f8f899`.
+
+### Supervisor rulings for round 3 (8 Oct 2026, about 8:10 AM)
+
+18. **HIGH-5: no dependency on a parked ticket.**
+    - Remove A-M03-03 from the dependency lists of A-M05-01, A-M06-04 and A-M03-04, and from MA-0b and INTEGRATION M1. A-M05-01 takes migrations from A-M03-02 only.
+    - Park A-M03-04's enumeration cross-check part, or point it at migrations.
+    - Recount M1 (24 tickets) and re-run the ticket graph.
+19. **MEDIUM-1:** align INTEGRATION M1's exit and ARCH Phase 0 (:2912) with MA-0c: the 48 h recording at ≥ 95% plus the A-48 report. The Stop-MR-01 conditions apply only to a revised MR version.
+20. **LOW-1:** cite ZHOF @ `c2f8f899` in DECISIONS:125 and OLD-FAITHFUL.md :4.
