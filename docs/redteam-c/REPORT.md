@@ -131,3 +131,31 @@ Run them with `npx vitest run packages/worker/test/redteam-c packages/ops/test/r
 
 ## Branch note
 `pnpm typecheck` fails in packages/ops on this branch only, because of the probe files under `packages/ops/test/redteam-c` (rootDir). At 959d801 alone, ops typechecks clean.
+
+# Round 3: re-verification on the fix heads
+
+**Method.** Every round 1–2 probe runs on each head in its own worktree, with this branch's redteam-c tests copied in. The baseline is 959d801: 90 tests pass and 42 fail, every failure a reported finding.
+
+The first pass ran the three heads in parallel. There, r2-exit-crash failed on #274 and #277 and the corruption counts varied. Run alone, r2-exit-crash passes on both heads and the corruption counts are 18 failing on every head. The parallel failures came from worker harnesses sharing ports, not from the heads.
+
+| Finding | Owner head | Result |
+|---|---|---|
+| C5 reserve floor | #271 5d5aefa | **closed** (watchdog-gates: 0.01 SOL and 0 lamports pass) |
+| H3 recorder gaps | #271 | **closed** (mem-recorder-gaps passes) |
+| H4 stuck-intent alert | #271 | **closed** |
+| M1 scan cap re-granted when its count is not saved (readers `#takeScan`/`#saveScans`) | #271 (S1's list) | **OPEN** on #271 and #274. providers.test.ts › a scan whose count was not written … fails with `expected 2 to be 1`. #271 changed only the future-dated case (`farAhead`); a failed save still grants the scan. |
+| M3 future-dated budget files | #271 | **closed** (state-budget-future passes) |
+| M4 worker_entry stub fallback | #271 | **closed** (host-gates, 2 tests) |
+| M5 uploader never wrote a status | #271 | **closed** |
+| R2-3 crash at minute 10 stays deployed | #271 | **closed** (r2-late-crash passes) |
+| RC-1 reconnect storm | #274 9930916 | **closed** (2 tests) |
+| RC-2 re-read charged 1, spends up to 4 | #274 | **closed by a different fix.** The worker now charges the fetcher's real spend, capped at FETCH_TX_CREDITS (worker.ts reread paths, `spent` callback), so the budget is never under-charged. My probe asserted the other fix (one call), so it still fails by design and is superseded. The head's own facts-reread "budget edge" tests pass (22/22). |
+| RC-3 credits.json save crash | #274 | **closed** |
+| Owners bank (C6) | #274 | **closed** (mem-owners passes) |
+| H2 credit month wipe | #274 | **closed** (state-credits, 2 tests) |
+| R2-C1 re-read series heap | #277 b550541 | **closed** (heap-growth CRITICAL passes) |
+| R2-H3 per-mint pool maps | #277 | **closed** |
+| R2-H4 coverage facts and keys | #277 | **closed** |
+| C1, H1, R2-1, R2-2, R2-4 | PR B claude/rc-state | **not verifiable**: the branch is not pushed. state-backup-restore, entry-evidence and r2-corrupt-state (18/85) still fail on every head, as expected. |
+| M2 NAV peak (SOL-BOOKS) | — | still fails on every head (not in these batches) |
+| Regressions | all | **none**. All 21 leak probes and both exit-crash probes pass on every head. |
