@@ -38,6 +38,7 @@ import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
 import { bondingCurveAddress, transactionEvents, type Address } from '../../../core/src/chain/index.ts';
 import { P2, P3 } from '../scheduler/scheduler.ts';
 import { callCost } from '../providers/solana-http.ts';
+import { FETCH_TX_RETRIES } from '../providers/tx-fetcher.ts';
 import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
@@ -107,6 +108,12 @@ const TRADE_VIAS_KEPT = 10_000;
  * 6,000 leaves room for retries. Past it the refusal stands (fail closed).
  */
 export const REREAD_CREDITS_PER_DAY = 6_000;
+/**
+ * RC-FIXES: the most Helius credits one `fetchTx` may spend: the shared fetcher's first call and its quick retries. A
+ * budgeted fetch books this before it asks and gives back what `spent` says was not used; a fetch that never says is
+ * charged all of it.
+ */
+export const FETCH_TX_CREDITS = (FETCH_TX_RETRIES + 1) * callCost('helius', 'getTransaction');
 /**
  * FACTS-REREAD: the newest transactions of a graduated coin's bonding curve read for its migration and completing buy.
  * After the migration nothing trades on the curve, so both are among its newest signatures (COMPLETION-READ reads the
@@ -273,7 +280,7 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'cut-trade' | 'restore' | 'reread') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'cut-trade' | 'restore' | 'reread', spent?: (credits: number) => void) => Promise<boolean>;
   /**
    * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime,
    * and (COMPLETION-READ) each fetched migration's curve completion. Without it they are not read: coins that migrated
@@ -1830,13 +1837,13 @@ export class Worker {
 
   /** The credits the chain read reserves: the migration by its signature (when known and not yet read) and the curve. */
   #rereadChainCost(mint: string, st: RereadState): number {
-    const ask = !st.read.has('tx:migration') && this.#migrationSig.has(mint) ? 1 : 0;
+    const ask = !st.read.has('tx:migration') && this.#migrationSig.has(mint) ? FETCH_TX_CREDITS : 0;
     return ask + callCost('helius', 'getSignaturesForAddress') + REREAD_CURVE_READS * callCost('helius', 'getTransaction');
   }
 
   /** The least a create read spends: its saved signature, else the lookup's floor (a page and the transaction). */
   #rereadCreateCost(mint: string): number {
-    return this.#createSig.has(mint) ? 1 : callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction');
+    return this.#createSig.has(mint) ? FETCH_TX_CREDITS : callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction');
   }
 
   /**
@@ -1859,8 +1866,10 @@ export class Worker {
     let used = 0;
     try {
       if (sig !== undefined) {
-        used += 1;
-        if (await this.#d.fetchTx(sig, 'reread').catch(() => false)) st.read.add('tx:migration');
+        let spent: number | null = null;
+        const found = await this.#d.fetchTx(sig, 'reread', (c) => (spent = c)).catch(() => false);
+        used += Math.min(FETCH_TX_CREDITS, spent ?? FETCH_TX_CREDITS);
+        if (found) st.read.add('tx:migration');
       }
       if (st.read.has('tx:migration') && st.read.has('tx:complete')) return 'tried';
       used += callCost('helius', 'getSignaturesForAddress');
@@ -1892,7 +1901,20 @@ export class Worker {
   /** The create: by its saved signature, else looked up from the mint's oldest signature under the re-read budget. */
   async #rereadCreate(mint: string): Promise<boolean> {
     const sig = this.#createSig.get(mint);
-    if (sig !== undefined) return this.#takeFetch('reread', REREAD_CREDITS_PER_DAY) && (await this.#d.fetchTx(sig, 'reread').catch(() => false));
+    if (sig !== undefined) {
+      const budget = this.#rereadBudgetFor();
+      try {
+        budget.spend(FETCH_TX_CREDITS);
+      } catch {
+        return false;
+      }
+      let spent: number | null = null;
+      try {
+        return await this.#d.fetchTx(sig, 'reread', (c) => (spent = c)).catch(() => false);
+      } finally {
+        budget.refund(FETCH_TX_CREDITS - Math.min(FETCH_TX_CREDITS, spent ?? FETCH_TX_CREDITS));
+      }
+    }
     const find = this.#d.findCreate;
     // Nothing is asked without the budget for a page and the transaction (the lookup's own floor).
     if (find === undefined || this.#rereadRemaining() < callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction')) return false;

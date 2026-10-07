@@ -2,6 +2,11 @@
 // treated as stale and reopened. `banMs` covers providers that ban a client for reconnecting too often
 // (PumpPortal: one connection, bans expire after an hour): after `banAfterFailures` opens in a row that fail
 // before they open, the next try waits `banMs`.
+// RC-FIXES: the backoff resets only once a connection proves healthy (a message `healthyMs` or more after it opened), so
+// a server that accepts and then closes at once (policy, credits, too many connections) keeps backing off instead of
+// being reopened every `initialMs`. Connection attempts are also kept under a ceiling per rolling hour
+// (`maxConnectsPerHour`) by pacing them once a quarter of it is used; the down reason names the ceiling (the feed stays
+// down, so a critical feed halts entries through the worker's existing feed path).
 import type { Timers, TimerHandle } from '../scheduler/timers.ts';
 import type { SocketFactory, SocketLike } from './http.ts';
 
@@ -11,7 +16,15 @@ export interface SocketOptions {
   readonly idleMs: number;
   readonly banAfterFailures?: number;
   readonly banMs?: number;
+  /** How long a connection must stay up (and then deliver a message) before the backoff resets. Default `idleMs`. */
+  readonly healthyMs?: number;
+  /** The most connection attempts in any rolling hour. Default `DEFAULT_CONNECTS_PER_HOUR`. */
+  readonly maxConnectsPerHour?: number;
 }
+
+/** RC-FIXES: connection attempts allowed per rolling hour unless a socket sets its own ceiling. */
+export const DEFAULT_CONNECTS_PER_HOUR = 60;
+const HOUR_MS = 3_600_000;
 
 export type SocketState = 'stopped' | 'connecting' | 'open' | 'waiting';
 
@@ -36,6 +49,11 @@ export class ReconnectingSocket {
   #delay: number;
   #failures = 0;
   #opens = 0;
+  #openedAt = 0;
+  #healthy = false;
+  /** Times of the connection attempts in the last hour, oldest first. */
+  readonly #attempts: number[] = [];
+  #ceilingHits = 0;
 
   /** `url` is called on every connect, so a key is read from `Secrets` only when needed and never kept here. */
   constructor(name: string, url: () => string, factory: SocketFactory, timers: Timers, opts: SocketOptions, events: SocketEvents) {
@@ -55,6 +73,11 @@ export class ReconnectingSocket {
   /** Connections opened so far (for the one-connection proof and the connection credit). */
   get opens(): number {
     return this.#opens;
+  }
+
+  /** Times a retry was pushed back by the hourly connection ceiling. */
+  get ceilingHits(): number {
+    return this.#ceilingHits;
   }
 
   start(): void {
@@ -96,6 +119,7 @@ export class ReconnectingSocket {
   #connect(): void {
     this.#clear();
     this.#state = 'connecting';
+    this.#attempts.push(this.#timers.now());
     let s: SocketLike;
     try {
       s = this.#factory(this.#url());
@@ -112,13 +136,18 @@ export class ReconnectingSocket {
       opened = true;
       this.#state = 'open';
       this.#failures = 0;
-      this.#delay = this.#opts.initialMs;
+      this.#openedAt = this.#timers.now();
+      this.#healthy = false;
       this.#armIdle();
       this.#events.onOpen();
     };
     s.onmessage = (ev) => {
       if (this.#socket !== s) return;
       this.#armIdle();
+      if (!this.#healthy && this.#timers.now() - this.#openedAt >= (this.#opts.healthyMs ?? this.#opts.idleMs)) {
+        this.#healthy = true;
+        this.#delay = this.#opts.initialMs;
+      }
       const d = ev.data;
       this.#events.onMessage(typeof d === 'string' ? d : d instanceof ArrayBuffer ? new TextDecoder().decode(d) : String(d));
     };
@@ -157,8 +186,6 @@ export class ReconnectingSocket {
     if (this.#state === 'stopped') return;
     this.#state = 'waiting';
     if (!wasOpen) this.#failures++;
-    this.#events.onDown(reason, wasOpen);
-    if (this.#state !== 'waiting') return; // the owner stopped us
     let wait = this.#delay;
     this.#delay = Math.min(this.#opts.maxMs, this.#delay * 2);
     const banAfter = this.#opts.banAfterFailures;
@@ -166,6 +193,29 @@ export class ReconnectingSocket {
       wait = this.#opts.banMs;
       this.#failures = 0;
     }
+    const now = this.#timers.now();
+    while (this.#attempts.length > 0 && this.#attempts[0]! <= now - HOUR_MS) this.#attempts.shift();
+    const ceiling = this.#opts.maxConnectsPerHour ?? DEFAULT_CONNECTS_PER_HOUR;
+    // Paced, never parked: once the last hour holds a quarter of the ceiling, tries are spaced 4/3 × HOUR/ceiling apart
+    // (80 s at 60/h). The burst before that (at most a quarter) plus a paced hour (three quarters) stays under the
+    // ceiling, so a recovered feed is retried within one pace instead of waiting up to an hour for the oldest try.
+    const pace = Math.ceil((HOUR_MS * 4) / (3 * ceiling));
+    if (this.#attempts.length >= ceiling / 4 && pace > wait) {
+      wait = pace;
+      this.#ceilingHits++;
+      reason = `${reason}; reconnects paced under the ${ceiling}/h ceiling, next try in ${Math.ceil(pace / 1000)} s`;
+    }
+    // The hard bound, kept as a guarantee: under the pace it is never reached.
+    if (this.#attempts.length >= ceiling) {
+      const free = this.#attempts[this.#attempts.length - ceiling]! + HOUR_MS - now;
+      if (free > wait) {
+        wait = free;
+        this.#ceilingHits++;
+        reason = `${reason}; reconnect ceiling ${ceiling}/h reached, next try in ${Math.ceil(free / 1000)} s`;
+      }
+    }
+    this.#events.onDown(reason, wasOpen);
+    if (this.#state !== 'waiting') return; // the owner stopped us
     this.#retry = this.#timers.setTimeout(() => {
       this.#retry = null;
       this.#connect();
