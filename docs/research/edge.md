@@ -323,7 +323,7 @@ The money in this market goes to three seats:
 3. **Selection skill that beats the crowd:** the one seat not closed by structure. It is also the one input this research has never measured: the owner's own judgement (4 years of meme trading). The outside reviewer named it too (reviewer point 11).
 
 ### 10.3 The one untested input: the owner's picks (proposal, needs the owner)
-- **Forward test.** The owner logs each coin he would buy (mint, time) before its outcome is known. The timestamp is written by a system, not typed in.
+- **Forward test.** The owner logs each coin they would buy (mint, time) before its outcome is known. The timestamp is written by a system, not typed in.
 - **Fixed execution.** The bot applies fixed paper execution: entry at the first swap after the log time, then hourly R1 exits (executable per the audit), costs in SOL.
 - **Control.** Each pick is matched with 10 random coins of the same age at the same moment.
 - **Judgement.** Picks minus random, net of costs, with day-clustered intervals; one primary test, fixed before the first pick.
