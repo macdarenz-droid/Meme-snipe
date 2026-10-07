@@ -338,3 +338,13 @@ The money in this market goes to three seats:
 - hype Test 1 as a reject rule (running);
 - the survivorship-free D-REV3 re-test (downloading, about 30 h).
 The literature and the results above give each low odds of a tradable edge.
+
+### 10.5 The manual trader's cost stack (owner's experience, 2026-10-08)
+Owner: a forex trader who tried memes; "fees hurt even I won a lot ... result still a loss". Example round trip for a $100 trade on a fresh graduate, as arithmetic on cited parts (not a measurement):
+- **Trading terminal:** about 1% a side, so about 2% round trip. Review sites, not verified on each app: Axiom 1% gross, Photon 1%, GMGN 1%, Trojan 0.9%.
+- **PumpSwap fee:** 1.25% a side below 420 SOL market cap, so 2.5% (`research/edge/snapshot/fee-configs.json`).
+- **Price impact:** 0.84 SOL into about 85 SOL of quote moves the price about 2%, so about 1% a side, roughly 2% round trip (constant product).
+- **Priority fees and tips:** about 0.001 SOL a transaction, about 0.25% at $100 and about 2.4% at $10.
+- **Total:** about 6–7% per round trip at $100, and more at $10.
+
+So a trader who wins 60% of trades at +20% / −15% makes +6% a trade before costs, and about −1% after. For comparison, Hyperliquid perps cost 0.045% taker / 0.015% maker a side (fee docs, read 2026-10-08), and meme round trips there were about 12–35 bps in `research/short-probe`. That is about 20–50 times cheaper, but on older, listed memes only, with leverage and funding, and with Australian legality not confirmed (§7).
