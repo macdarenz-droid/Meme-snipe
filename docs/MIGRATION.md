@@ -45,7 +45,28 @@ Owner, 2026-10-07: "no bugs migrate". These bind every migration ticket.
 
 ## Summary
 
-_Filled by the supervisor._
+- **Nothing in Zeroed passes a Blueprint ticket as it stands**, so no module is **keep**. Group A: 63 tickets, 33 adapt, 7 replace, 23 missing. Group B: every module is adapt, replace or missing. Two parts are kept as they are because the Blueprint has nothing as strong: the update gate, and the owner's no-AI-wording guard.
+- **Worth carrying (adapt):**
+  - quote maths with mainnet golden vectors;
+  - the chain decoders;
+  - the SQLite ledger;
+  - the transaction builders and their default-deny policy;
+  - exits with restart re-arm;
+  - the engine's blind-replay and leak proofs;
+  - the statistics library;
+  - the installer, the update gate and the watchdog.
+  Each one enters only under "Rules": the Blueprint acceptance tests pass, every bug that touches it has a fail-before test, and a fresh reviewer passes it.
+- **Replaced:**
+  - the market-data transport: a log stream per pool on metered Helius gives way to 1 Hz polling on free quota (D03, M04, M05);
+  - the recorder queue, the bars, the paper port, and the micro-USD performance and gate code (M07, M08, M12, M13);
+  - the app and its themes (M28, owner decision);
+  - SOL/USD inside the limits (D20);
+  - the strategy family (D08);
+  - the 1 GB host (D07).
+- **Bugs:** all nine in "Bugs left behind" stay with the old code or arrive with a test that fails on it. The 250 ms slot claim is confirmed (LD-08), and the fix measures the slot time rather than hard-coding a new number.
+- **Research:** the closest versions of MR-01 lost money, and PM-01's neighbours lost 10.6% and 22.4%. Nothing passes any gate. The Blueprint's own Phase 0 count (M1) is the next honest check, and its likely result is "stop MR-01".
+- **Toolchain:** keep pnpm and Vitest, because the deploy gate and the 1,321 focused tests run on them. Add the Blueprint's dependency policy on top. Snipe-solana's cards are ported with their tests rewritten in Vitest, keeping every assertion.
+- **Old Zeroed code stays in place.** It is not deleted, not run on the server, and not fixed further. Its open fix PRs are parked, because under "no bugs migrate" their findings become tests on the new modules.
 
 ## Group A modules
 
@@ -442,7 +463,7 @@ Owner, 2026-10-07 about 9:35 PM (`CLAUDE.md` "Host", "No bugs migrate"; "Rules" 
 | Installer | Checks OS and arch only (`ops/host/install-main.sh:43-46`) | Add the D07 preflight (≥ 1.9 GiB reported RAM, ≥ 50 GB free disk) before the move, as an ops PR that runs the ops e2e |
 | What runs | `ops/host-config.json:5` `"worker": "stub"` | Keep `"stub"`. The stand-in holds no key and trades nothing (`ops/host/files/opt/zeroed/stub/worker.mjs`; red team C M4 closed the silent stub fallback in #271). Red team C R3-5: the stand-in's reconcile wrote `open_intents` 0; fixed in the base (`stub/worker.mjs`, comment "R3-5") |
 | State | `/var/lib/zeroed` on the 1 GB host: ledger, `account.json`, `control.json`, `journal.jsonl`, recordings | Nothing copied. The 1 GB host is stopped, not deleted, until its ledger, state and journal are kept elsewhere (`CLAUDE.md` "Host"); deleting it is the owner's step |
-| Recorder and uploads | `record_upload` on (`ops/host-config.json:3-4`) | The stand-in records nothing. The Blueprint's M1 recorder on this host is an open owner question ("Clashes for the owner", Process) |
+| Recorder and uploads | `record_upload` on (`ops/host-config.json:3-4`) | The stand-in records nothing. The Blueprint's keyless M1 recorder runs on this host once M1 is reviewed (owner agreed, "Clashes for the owner", Process) |
 | Memory limits sized for 1 GB | `MemoryMax=800M` (`ops/host/files/etc/systemd/system/zeroed-worker.service:35`); `--max-old-space-size=560`, sized under 800M with a comment about the 1 GB host (`ops/host/files/usr/local/lib/zeroed/worker-start:20-24,36`); `SMOKE_MEMORY_MAX=280M` "the host has 1 GB" (`ops/host/files/usr/local/lib/zeroed/logic.sh:12`) | No change needed while only the stand-in runs. They bind tests: `packages/ops/test/host-logic.test.ts:218` (`MemoryMax=800M`), `:365` (`280M`), `ops/test/e2e.sh:234,716` (the exact `--max-old-space-size=560` command line). The Blueprint engine's unit gets its own limits from measurement (B-M30-02 step 2, memory alert at 75% of RAM), not copied from these |
 | Docs that say 1 GB | `ops/README.md:5` (server 1 vCPU / 1 GB), `ops/README.md:73` and `docs/DECISIONS.md:602` (trial cap "the host has 1 GB"), `docs/ARCHITECTURE.md:337` (host row), `PROJECT_STATE.md:255` | Update in the host-move PR; the e2e itself runs in a container and does not depend on host RAM (`.github/workflows/ops-e2e.yml`) |
 | Server alerts | Telegram host alerts via `common.sh` (`ops/host/files/usr/local/lib/zeroed/common.sh:39-66`) | Reused with the paired bot after the key handoff; red team C R3-6 (a second failed deploy silent on the stand-in) is fixed in the base, not deployed |
@@ -613,4 +634,62 @@ Each row is a place where the Blueprint differs from an owner rule in `CLAUDE.md
 
 ## Ticket order
 
-_Filled by the supervisor._
+Milestones follow `docs/blueprint/INTEGRATION.md`: a milestone starts only when the previous one's exit condition is met, and M4 stays blocked by the gates and by the owner. Cards run in batches of at most three, in separate packages. Each card goes through a builder, a fresh reviewer and a red team, and passes the Rules above. "Source" says where the code comes from: **port** (Snipe-solana, already reviewed and red-teamed there; tests re-run here), **adapt** (Zeroed, with the bug tests), or **new**.
+
+### M0 Foundations
+
+| Card | Tickets | Source | Needs |
+|---|---|---|---|
+| Z00 Host move | B-M30-02 part: D07 preflight (≥ 1.9 GiB RAM, ≥ 50 GB disk) in `ops/host/install-main.sh`; 1 GB wording in `ops/README.md`, `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `PROJECT_STATE.md` | adapt (installer) + port (C12 preflight) | the owner's install on the 2 GB host |
+| Z01 Foundation | B-M30-01 (dependency policy on pnpm: `DEPENDENCIES.md` allowlist, age rule, audit, SBOM, lint; the `check` job keeps its name), B-M19-01 (`@bot/types` 1.0.0) | port (C01), tests in Vitest | — |
+| Z02 Persistence and contract | B-M24-01, B-M24-02, B-M25-01, B-M27-01, B-M28-01 | port (C02, #5); LEDGER-1 parts only where C02 lacks them | Z01 |
+| Z03 Read path and decoders | A-M14-01, A-M14-02 (≤ 50% of limits, `Retry-After`, stop after 3 failures), A-M02-01..03, A-M01-01 | port (C03, #6, with its SPEC-A rulings, and C11 fixtures); DEC-1's mainnet goldens added as tests | Z01 |
+| Z04 Maths | A-M10-01, A-M13-03, A-M07-01 | adapt (`core/src/stats`, RNG; B1 test for the latency model), new (A-M07-01 queue) | Z01 |
+| Z05 UI system | UI-T01..UI-T06 | port (C05, #7); the no-AI-wording guard moved onto it | Z01 |
+| Z06 Tail | B-M15-01 (slot clock, measured slot time: B1), UI-T07 | new; B1 fail-before tests from "Known bugs" | Z02, Z03, Z05 |
+
+Batches: Z00 and Z01 first; then Z02, Z03, Z05; then Z04, Z06. M0 exit as in INTEGRATION.
+
+### M1 Recording and the Phase 0 decision
+
+| Card | Tickets | Source | Needs |
+|---|---|---|---|
+| Z07 Venue and pool | A-M01-02..05, A-M02-04, A-M02-05, A-M04-01..03 | adapt (quote maths and goldens, orientation, snapshot decode; B2 tests); new (1 Hz poller, ring buffer, transport seam) | Z03, Z06 |
+| Z08 Capture | A-M14-03, A-M14-05 (burn-rate projection: B4), A-M03-01, A-M03-03, A-M03-04, A-M07-02, A-M07-03 | adapt (PumpPortal client; recorder seal and sha256); new | Z02, Z03, Z04 |
+| Z09 Universe and study | A-M03-02, A-M05-01..03, A-M08-01..03, A-M10-03, A-M13-01 | new; A-M10-03 adapts Zeroed's lamport cost maths | Z07, Z08 |
+| Z10 Recorder on the server | the keyless recorder process and its unit on the 2 GB host, replacing the stand-in through the deploy gate (owner agreed) | new; Zeroed's update gate, units and upload cycle reused | Z09, Z00 |
+
+M1 exit: 48 h unattended recording with at least 95% coverage, then the A-24 / A-24b / A-48 report. **Stop MR-01** on the INTEGRATION condition. The recorder runs only on free, unmetered quota with a hard cap (no Helius headroom, owner rule), and every new provider waits for the owner.
+
+### M2 Research and engine core in simulation
+
+Starts only after the M1 exit, and only for a strategy Phase 0 did not stop.
+- **Screening:** A-M06-*, adapting GATE-1 with the B2 and B3 tests.
+- **Simulation:** A-M10-02/04/05, adapting BT-1 with the B1 tests and a sandwich model.
+- **Backtest and replay:** A-M11-*, adapting ENG-1's leak, shift and 10-replay proofs, which the owner rules require.
+- **Statistics and stages:** A-M13-*, adapting the stats; the gates are replaced; the B3 and B5 tests apply.
+- **Engine core:**
+  - B-M19 and B-M20 adapt Zeroed's lifecycle and EXIT-1;
+  - B-M21, B-M22 and B-M23 are built in lamports from their tickets; #197 is not ported;
+  - B-M16-01/02/03/05 adapt TX-1;
+  - B-M15-03 and the A-M09 runtime.
+
+Exit: `replay_passed`, or the strategy is `failed` and work stops (D08).
+
+### M3 Paper
+
+- the paper port A-M12, a replacement;
+- the control plane B-M26;
+- the dashboard B-M28 with UI-T08..T31, replacing `apps/web`. The funding screens and the copy guard are carried (clash O3);
+- books and storage.
+
+The paper engine goes to the server through the deploy gate (owner agreed). Exit: P-1..P-6 and P-9, plus the owner's pre-funding additions where the clash table adopts them.
+
+### M4 Live
+
+Blocked. It needs the paper gates, the go-live checklist and the owner. The signer (`packages/signer/**`) is built only here, with the owner's approval.
+
+### Outside the milestones
+
+- **Research:** merge `ccr-7fae2302-drz4co` (owner allowed) as a docs-only PR. Adopt `research/BLUEPRINT_ADDENDUM.md` item by item when it lands (Rules 4).
+- **Zeroed's open PRs** (55, `HANDOVER.md` §3): parked, none merged. Their findings are covered by the bug tests above.
