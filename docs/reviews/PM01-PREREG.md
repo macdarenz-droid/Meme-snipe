@@ -50,3 +50,56 @@ Red team `session_016GhUshWTj7tPMTadZoSCnF`, about 9:36 AM. The full report is i
 Held for the reviewer's report, so both go in one push.
 
 **Time correction (9:39 AM).** The ruling times were first written as estimates (9:30, 9:42 and 9:46), and some were later than the real time. They are now the commit times of this file (9:26, 9:30 and 9:32, Melbourne). The owner's "Ok" to the screen was at 9:28 AM (checked with `date`).
+
+## Round 3 reviewer (head `c7a5007d`): FAIL on 1 BLOCKER, 6 MAJOR, 6 MINOR
+
+Reviewer `session_013E5iKPuZrpnyNX74jpF6ui`, about 9:38 AM. The citations and arithmetic check out, and the rounds 1–3 rulings are applied.
+- B1: dropping a config breaks B-3, B-4 and B-5 (B-4 passes on its own in M13; the dropped config has no W_B trial for the DSR).
+- M1: the W_B end rule is circular.
+- M2: "optimistic" is not proven for assumed-pass holder checks.
+- M3: the screen's bars are undefined.
+- M4: the screen's bootstrap block length.
+- M5: the monthly cost conversion rate is free.
+- M6: kill rule 1 kills on engineering failures (B-9, B-10).
+- m1–m6: the embargo reason; W_R's start; lamport and SOL columns per size, with sandwich and stuck terms as their own lines; fee_config_known until P12; pulling or measuring is not looking; the citation branch.
+
+### Supervisor rulings for round 4 (8 Oct 2026, 9:41 AM)
+
+These answer the red team (R) and the reviewer (V) together.
+1. **One-config W_B (V-B1, R-M3).**
+   - The dropped config keeps running in W_B as a count-only gate trial. It is registered for B-3 and B-5 with its real Sharpe, never selectable and never traded, so the DSR uses N = 2.
+   - B-4 with one candidate is recorded as `B-4_single_candidate` and replaced by a stricter check fixed now: the surviving config's mean (conservative row) is above 0 in each half of W_B, by whole UTC days. It is never vacuous.
+   - M13 must not call rankStability with fewer than 2 configs. Add this as an acceptance case for A-M13-06.
+2. **W_B end (V-M1, R-M1).** W_B ends at the first UTC midnight with ≥ 30 counted days and ≥ 300 closed trades for every config in it (the count-only one included), after purge and embargo. `low_coverage` days do not count toward the 30. The selection runs once, after W_B ends, on floor(0.8 × days). B-4's halves are the halves of the whole W_B by whole UTC days.
+3. **W_R and W_P peeking and restarts (R-M2).** Accepted, (a) to (e):
+   - (a) No return is computed in W_R or W_P until the window ends, and each is evaluated once.
+   - (b) A boundary comes only from L-4's automatic flag, logged before any return of that window is computed.
+   - (c) A voided W_R keeps its pre-boundary segment as a kill-only check.
+   - (d) At most one restart; a second goes to the owner.
+   - (e) Each voided W_R is counted in the report and in the B-3 registry.
+4. **The screen's direction (R-M4, V-M2).** Drop the "optimistic" sentence and state both directions. A config is killed only when the upper bound is below 0 on all trades AND on the trades whose exit was not cannot-sell, liquidity-collapse or no_data. Report the share of assumed-pass entries, and holder concentration where the archive can compute it.
+5. **Bars (R-M5, V-M3).** Use 1 Hz as-of states (the last state with block time ≤ each second) and compute high and close from those samples only, as M07 does. observedAtMs comes from block time. A bar is missing only where archive units or blocks are missing, never because no trade happened.
+6. **Block length for the kill (V-M4).** For each interval type, take the b/2, b or 2b run with the highest upper bound, then the higher of the two intervals' upper bounds.
+7. **First-run values (R-M6).** The screen refuses to start until every §12 "First run" row is fixed, amended in and merged, and the merged sha is read back. The run checks the hash of the frozen parameter set.
+8. **B-6 (R-M7).** B-6 uses the t from the calendar-day cluster standard error. Report both t values.
+9. **Effective size (R-M8).** B-1 and R-1 also need ≥ 20 distinct UTC days with ≥ 1 trade, and no single day holding more than 10% of the window's trades; otherwise the window keeps running. Report n/DEFF.
+10. **Random benchmark (R-M9).** Accepted, (a) to (c): "window" means the gate window; the excess is reported for random entries before and after the signal, and the gate uses the lower of the two lower bounds; if n_b < 0.8 n, the excess test fails closed.
+11. **Boundary list (R-M10).** Name the watched programs and config accounts: the pump bonding curve and its global config, the pump AMM and its global and fee configs, and the fee program. Any change to migration or graduation parameters is economic.
+12. **Monthly cost (V-M5, R-M11).** Converted at the window's recorded SOL/USD per day (M23), as SPEC-A A-M13-04 step 7 says. $150 is for the §5.4 illustration only.
+13. **Kill rule 1 (V-M6).** It covers B-2, B-3, B-5, B-6, B-7, B-8, the B-4 substitute and the excess test. B-9 and B-10 failures block the stage until a fix and a re-run, and never kill.
+14. **R-m1.** State that B-7 and R-5 at % of E are inert at E_bt 20 SOL, and add a binding bar: max drawdown ≤ 20 × the $5 notional.
+15. **R-m2.** W_P uses E_bt = 20 SOL of paper equity.
+16. **R-m3.** The coverage list comes from an independent chain read of the migration program's signatures (within the rate limits). Report skipped days with their migration counts.
+17. **R-m4, m5, m6, m7.** As the red team wrote:
+    - a trade belongs to its decision day, and each pool is counted once; add `inner_ix_index`; the universe sha256 goes in the B10-PULL row before the screen;
+    - fixed draw order and one stream per purpose;
+    - the screen runs exactly once and is never rerun or extended;
+    - report with `recovered` included; the B-8 week starts Mon 00:00Z, with the partial-week rule stated; the denominator is stated.
+18. **R-m8 and V-m6.** Cite the owner's message (8 Oct 2026, 9:28 AM, "Ok") and the DECISIONS row, not CLAUDE.md on another branch. Report the dump_flag fire rate under P1.
+19. **V-m1 to m5.** As the reviewer wrote:
+    - the embargo reason;
+    - W_R starts at the midnight W_B ends;
+    - lamport and SOL columns per size, marked DERIVED, with sandwich and stuck terms as their own lines;
+    - fee_config_known and venue_enabled stay fail-closed until P12, so the screen is pending_data until then and a key-on run is only logged;
+    - pulling and measuring the days is not looking at them, and no PM-01 signal or return is computed before the merge sha is recorded.
+20. **Times.** Cite the ruling times as corrected above (9:26, 9:30, 9:32 and 9:41 AM), or the section of this file.
