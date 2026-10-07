@@ -586,6 +586,9 @@ describe('candles after a late migration (POOL-FIRST-READ part 3)', () => {
     const past = swap('buy', s[0]!.after, 1_000n, P - 2n + H + 1n);
     world.push(logOf(past));
     expect(world.producer.sizes().preReads).toBe(0);
+    // A hole past the horizon (kept for a book, RT-A5) is not kept either.
+    world.push(hole('pastHole', P - 2n + H + 2n));
+    expect(world.producer.sizes().preReads).toBe(0);
     head2(world.push(...migration(state, P + H + 5n)), P + H + 6n);
     expect(candles(world).obs.quality).toContain('partial');
   });

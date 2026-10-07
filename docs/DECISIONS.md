@@ -3386,13 +3386,13 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
       - P5: past the horizon `preReads` falls to 0, and a migration after it opens the book partial.
       - Crowding: 64 read pools with no book (re-keyed copies of the fixture's real pool and vaults), past their horizon, each trade once. A waiting pool's late book equals the run without them.
       - Both fail on the code before.
-      - Mutants, 5 of 5 killed: no horizon; no lost mark; kept book events not cleared; entry not deleted; horizon a minute short.
+      - Mutants, 6 of 6 killed: no horizon; no lost mark; kept book events not cleared; entry not deleted; horizon a minute short; horizon applied to swaps only (a hole past it is not kept either).
   - **The two no-change events are matched by size too (part 2 hardening).**
     - DEC-1 now gives these two discriminators, on the PumpSwap program only, their event size (bytes, discriminator included). `isNoChangePoolEvent` requires the measured size: 80 for CloseUserVolumeAccumulatorEvent, 96 for ExtendAccountEvent. Every mainnet occurrence in research/pool-noop-events had exactly that size: 508 and 78 log lines.
     - A program upgrade that changes either layout changes its size, so the event is a change again (fail closed). The same applies to an event with no size, such as a DEDUP echo.
     - No other unnamed event changes shape.
     - Tests: the same discriminator at ±8 bytes, at the other event's size, or with no size is stale. A DEDUP echo of a 104-byte ExtendAccount is stale. DEC-1 gives the size for these two only, and not for the pump program.
-    - Mutants, 3 of 3 killed: size unchecked; size not given; size given for the pump program too.
+    - Mutants, 4 of 4 killed: size unchecked; size not given; size given for the pump program too; any program at the right size.
   - **RT-A4 (red team A, critical): a heal cleared the late book's partial flag.**
     - `#bookTake` set `partial` only after its swap loop, so the marks taken inside it held `partial: false`, and `#heal` restores `partial` from its mark.
     - The trigger: a late migration with more than 64 kept swaps (the oldest dropped), plus a late cut log at the last kept swap's slot. The heal gave candles with no partial flag and two swaps missing, and H11 passed.

@@ -30,6 +30,8 @@ describe('PumpSwap no-change events', () => {
     expect(isNoChangePoolEvent({ program: 'pump_amm', name: 'other', discriminator: '6161d7905d92167c', size: 96 })).toBe(true);
     expect(isNoChangePoolEvent({ program: 'pump_amm', name: 'other', discriminator: '929fbdac925838f4' })).toBe(false);
     expect(isNoChangePoolEvent({ program: 'pump_amm', name: 'other', discriminator: '929fbdac925838f4', size: 96 })).toBe(false);
+    // The pump (curve) program, even at the right size: not proven.
+    expect(isNoChangePoolEvent({ program: 'pump', name: 'other', discriminator: '929fbdac925838f4', size: 80 })).toBe(false);
     // The pump (curve) program, a named event, another discriminator, or none: not proven.
     expect(isNoChangePoolEvent({ program: 'pump', name: 'other', discriminator: '929fbdac925838f4' })).toBe(false);
     expect(isNoChangePoolEvent({ program: 'pump_amm', name: 'BuyEvent', discriminator: '929fbdac925838f4' })).toBe(false);
