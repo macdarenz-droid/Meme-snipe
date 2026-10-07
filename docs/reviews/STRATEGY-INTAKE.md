@@ -197,3 +197,31 @@ Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining
 58. **q4.** The runner refuses a second preRegister, or a registration, of the same id@version until its export entry is on main.
 59. **q5.** After the 24 h alert, the alert repeats daily, and the supervisor records a decision in DECISIONS within 2 days.
 60. **Reviewer n1.** Split the paragraph.
+
+## Round 5 (head `79aba2c1`): reviewer PASS (2 optional MINOR); red team 0 BLOCKER, 4 MAJOR, 3 MINOR
+
+- Reviewer n1 and n2: PREREG paths and the pin check for owner strategies (wording).
+- Red team:
+  - R1: any push, review note or DECISIONS quote publishes an owner strategy.
+  - R2: an A1 size lowering can make a strategy lose to fixed costs.
+  - R3: code-deploy re-runs reuse seen windows, the holdout included, and P cannot be re-run on recorded data.
+  - R4: admission keys in group P send owner raises back to `research`, and B-9 cannot see admission changes.
+  - m1–m3: "not more favourable" is undefined; the private pin CI; the B re-run failure target.
+
+### Supervisor rulings for round 6 (8 Oct 2026, 9:49 AM)
+
+61. **R1.** Owner-strategy work (building, review and red team) happens only in the private location, and nothing about it is pushed to any branch of this repo. The public repo, PR text, review logs and DECISIONS refer to an owner strategy only by an opaque id (`o-<n>`) and hashes. The DECISIONS citation points to where the owner's message is and does not quote it. Until the owner chooses the location, no owner-strategy work starts at all.
+62. **R2.** An A1 change always applies. The same apply checks the size table at the new size. If the CI lower bound is ≤ 0 there, the strategy stays enabled, but entries are blocked with reason `size_not_profitable` until the size is raised back or the gate passes. Exits are kept, and a critical alert goes out. Add an AC with a fixed-cost fixture.
+63. **R3.**
+    - Every code-deploy re-run is a registered trial (A-M13-02 `registerTrial`, kind `gate`), counted in the DSR and B-5. Re-runs on W_B and W_R are allowed only within the trial budget. When the budget is used up, the strategy needs a fresh forward window.
+    - For P and LS: if the differing proposals change any trade in W_P, P is not re-run. The strategy drops to `replay_passed` through B-M26-04 and starts a fresh W_P, with no cooldown, since this is not a demotion for cause.
+    - Add ACs: a re-run is registered as a trial; a differing deploy that touches W_P trades starts a fresh W_P.
+64. **R4.** Admission keys are compared on trades: the recorded proposals are replayed through M21 with the old and the new setting.
+    - A1: identical trades → re-freeze. Otherwise the passed gates' statistics are re-run on the new trade set, registered as trials under ruling 63, and the strategy keeps its stage or is demoted one.
+    - An A3 raise follows the group S rule: it is applied only if the gate re-run and the size table pass, with the CI lower bound above 0, and is refused otherwise. The stage stands.
+    - `research` remains only for plugin, universe and configuration changes.
+    - Add an AC: an A3 MAXOPEN raise that passes keeps the stage, and one that fails is refused.
+65. **m1.** "Not more favourable" means that on the window's trades, every modelled cost is ≥ and every modelled fill is ≤ the old model's, per trade.
+66. **m2 and reviewer n2.** The private location runs the same pin CI. Public CI compares only the commitment hash with the pin entry (AC-46).
+67. **m3.** Add a test row for gate B failing on a re-run. A failure with sufficient data is `failed` (A-M13-05 step 3); with insufficient data, the strategy goes to `research`.
+68. **Reviewer n1.** In §2 "Document" and "Order", say that the in-repo path is for agent-origin strategies only; owner-origin ones use the private location, with only the commitment here.
