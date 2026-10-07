@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 8:57 PM **OWNER WAIT: type "Go. Follow S1's messages." in 4 builder sessions** (A-FACTS 011dr7vM, SOL-BOOKS 016adoqh, MEM-FIXES 01EtGSEd, LATE-LOG 01Gv9TEz). A-FACTS replied NEED OWNER; SOL-BOOKS and MEM-FIXES still hold after S1's fact message. Push sent with the steps in chat. Until then, the running builders are A2-GATE, EXIT-FILL, RC-STATE and rc-fixes-2c (4 ≥ 3).
 - 8:56 PM **Red team B integration verdict** (claude/redteam-b 30aae66, REPORT "Round 4"; local merge of the old fix heads on base 9f7cf812; 47/7,146 tests fail, all attributed; ledger exact to the lamport; edge 0 refused by risk). Routed:
   - CRITICAL RB-17 → SOL-BOOKS + RC-STATE (as above).
   - HIGH RB-15 (= C's r4-upgrade-latch: no control.json read as lost controls on the first start after #268) → RC-STATE. Ruling: lost only when the ledger records a start of a release that writes it.
