@@ -336,15 +336,16 @@ The money in this market goes to three seats:
 ### 10.4 Still open (updated 2026-10-08)
 - **Launch-delay probe: done, not supported.** Buying on the bonding curve 0.7 s to about 3 min after creation lost in all 40 entry/exit pairs. The validation primary was −7.1% (CI −8.7 to −5.8), and the fastest entries were the worst (`research/launch-probe/RESULTS.md`).
 - **Regime (hot-market) timing: no usable signal.** Hot stretches lost less (−17% vs −27% capped) but still lost. The hottest tenth lost 21% (`research/regime-probe/RESULTS.md`).
-- **New:** the absorption entry, which buys only after new demand beats a large seller. It is a three-group, transaction-level test (`research/absorption-probe/HYPOTHESIS.md`).
+- **Absorption entry: unresolved, too rare.** Only 5 tradable absorptions were found in the eligible pool-days, against about 30 needed. It needs forward recording (`research/absorption-probe/RESULTS.md`).
+- **Squeeze (crowded perp shorts plus a spot breakout): killed.** The registered primary is unresolved because an AMM v4 data check failed on dust swaps. The new trial H1-T2 lost 0.71% a trade after costs over 238 events. Its lift over ordinary breakouts (+0.32 points) was not significant (`research/squeeze-probe/RESULTS.md`).
+- **Paid attention at entry (hype Test 1): kill (a).** On 1,603 fresh coins, paid coins lost 27.1% a trade and unpaid coins 22.3%. The gap is not significant, and paid coins sat inside the random-group band. The plain R1 basket lost 24.1% a trade (`research/hype/test1/RESULTS.md`).
 - **Helius credits (owner, 2026-10-08):** "I dont mind u using credits on helius. That was intended for this project. So use wisely."
   - Spent so far: execution audit about 0.63M, launch probe about 1.41M.
   - The absorption probe is capped at 4M and spends in phases.
   - About 3M of the 10M cycle (6 Oct to 6 Nov) stays in reserve for the recorder and the bot.
-- **Previously listed:**
-- the launch-delay probe (running);
-- hype Test 1 as a reject rule (running);
-- the survivorship-free D-REV3 re-test (downloading, about 30 h).
+- **Still running:**
+  - the liquidation fire-sale probe (H3);
+  - the survivorship-free D-REV3 re-test and D-SPLIT (downloading; about 1,650 of 16,367 coins on 2026-10-08).
 The literature and the results above give each low odds of a tradable edge.
 
 ### 10.5 The manual trader's cost stack (owner's experience, 2026-10-08)
