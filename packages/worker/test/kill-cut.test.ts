@@ -65,13 +65,13 @@ describe('RC-FIXES: Recorder.durable', () => {
     rec.delay({ n: 1 }, Date.UTC(2026, 9, 7));
     const synced: number[] = [];
     rec.durable((fd) => void synced.push(fd));
-    // The open file, its new day folder and the days folder that gained it.
-    expect(synced).toHaveLength(3);
-    // No new file since: the open file alone.
+    // The open file, the boot's folder, its new day folder and the days folder that gained it.
+    expect(synced).toHaveLength(4);
+    // No new file since: the open file and the boot's folder.
     rec.delay({ n: 2 }, Date.UTC(2026, 9, 7));
     synced.length = 0;
     rec.durable((fd) => void synced.push(fd));
-    expect(synced).toHaveLength(1);
+    expect(synced).toHaveLength(2);
     const day = readdirSync(join(root, 'b1', 'days'))[0]!;
     const file = readdirSync(join(root, 'b1', 'days', day))[0]!;
     expect(readFileSync(join(root, 'b1', 'days', day, file), 'utf8')).toContain('"n":1');

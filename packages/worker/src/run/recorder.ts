@@ -298,7 +298,8 @@ export class Recorder {
    */
   durable(sync: (fd: number) => void = fsyncSync): void {
     this.flush();
-    const paths = [...[...this.#open.values()].map((o) => o.path), join(this.#dir, GAPS_FILE), ...this.#newDirs];
+    // The open gaps chunk, and the boot's folder (where a new gaps chunk or a sealed one appears).
+    const paths = [...[...this.#open.values()].map((o) => o.path), join(this.#dir, gapsChunk(this.#gapsChunk)), this.#dir, ...this.#newDirs];
     for (const p of paths) {
       if (!existsSync(p)) continue;
       const fd = openSync(p, 'r');
