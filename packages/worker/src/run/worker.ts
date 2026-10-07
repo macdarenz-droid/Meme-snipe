@@ -30,7 +30,7 @@ import { DEFAULT_LIVE_FEED, type Frame, HELIUS_EXHAUSTED, type HttpClient, LiveF
 import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
-import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
+import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents, openPositions } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
@@ -38,6 +38,7 @@ import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
 import { bondingCurveAddress, transactionEvents, type Address } from '../../../core/src/chain/index.ts';
 import { P2, P3 } from '../scheduler/scheduler.ts';
 import { callCost } from '../providers/solana-http.ts';
+import { FETCH_TX_RETRIES } from '../providers/tx-fetcher.ts';
 import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
@@ -107,6 +108,12 @@ const TRADE_VIAS_KEPT = 10_000;
  * 6,000 leaves room for retries. Past it the refusal stands (fail closed).
  */
 export const REREAD_CREDITS_PER_DAY = 6_000;
+/**
+ * RC-FIXES: the most Helius credits one `fetchTx` may spend: the shared fetcher's first call and its quick retries. A
+ * budgeted fetch books this before it asks and gives back what `spent` says was not used; a fetch that never says is
+ * charged all of it.
+ */
+export const FETCH_TX_CREDITS = (FETCH_TX_RETRIES + 1) * callCost('helius', 'getTransaction');
 /**
  * FACTS-REREAD: the newest transactions of a graduated coin's bonding curve read for its migration and completing buy.
  * After the migration nothing trades on the curve, so both are among its newest signatures (COMPLETION-READ reads the
@@ -193,11 +200,25 @@ import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../c
 import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
 import { BEHIND, BehindGuard, SHED_HELD_FRAMES } from './behind.ts';
 import { tradesStream } from './pool-watch.ts';
+import { farAhead } from './budget-day.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
 export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
+
+type DayCaps = { day: number; cutCreate: number; cutTrade: number; reread: number };
+
+/**
+ * The daily cut-log fetch and re-read counts on `day` (a UTC day number), or null when unchanged. A new UTC day starts
+ * every count at zero; the day only moves forward, except (RC-M3, budget-day.ts) from a day more than one day ahead of
+ * the clock, which a wrong clock wrote: then today counts as spent, never every day until that date.
+ */
+export const rolledFetchCaps = (caps: DayCaps, day: number): DayCaps | null => {
+  if (day > caps.day) return { day, cutCreate: 0, cutTrade: 0, reread: 0 };
+  if (farAhead(caps.day, day)) return { day, cutCreate: CUT_CREATE_FETCHES_PER_DAY, cutTrade: CUT_TRADE_FETCHES_PER_DAY, reread: REREAD_CREDITS_PER_DAY };
+  return null;
+};
 /** The window the paper execution statistics cover (WORKER-1e). */
 export const EXEC_STATS_WINDOW_MS = 86_400_000;
 
@@ -259,7 +280,7 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'cut-trade' | 'restore' | 'reread') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'cut-trade' | 'restore' | 'reread', spent?: (credits: number) => void) => Promise<boolean>;
   /**
    * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime,
    * and (COMPLETION-READ) each fetched migration's curve completion. Without it they are not read: coins that migrated
@@ -782,6 +803,10 @@ export class Worker {
     this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, note: (line) => d.log(line), savedState: (ref) => this.savedStateFor(ref), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
+    // RC-H4: a restored intent that is not final keeps its age across the restart: its first ledger row's time, so a stuck
+    // entry or exit still reaches the watchdog's intent alert.
+    const live = new Set(Object.values(stored.book.intents).filter((i) => !isTerminal(i)).map((i) => i.intent.id as string));
+    if (live.size > 0) for (const e of this.#ledger.intentEvents()) if (live.has(e.intentId) && !this.#intentAt.has(e.intentId)) this.#intentAt.set(e.intentId, Number(e.ts));
     // RUN-1c: trades open or in flight when the previous process stopped writing, kept until a full start journals them.
     const killed = [...new Set([
       ...Object.values(stored.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id as string),
@@ -877,7 +902,7 @@ export class Worker {
       }
       this.#world.run(effect, moment);
     } }, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
-    this.#deployerStore = new DeployerStore(c.stateDir);
+    this.#deployerStore = new DeployerStore(c.stateDir, { log: d.log, now: () => d.timers.now() });
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
@@ -1626,8 +1651,16 @@ export class Worker {
 
   /** A new UTC day starts every count at zero; the day only moves forward. */
   #rollFetchCaps(): void {
-    const day = Math.floor(this.#d.timers.now() / 86_400_000);
-    if (day > this.#fetchCaps.day) this.#fetchCaps = { day, cutCreate: 0, cutTrade: 0, reread: 0 };
+    const next = rolledFetchCaps(this.#fetchCaps, Math.floor(this.#d.timers.now() / 86_400_000));
+    if (next === null) return;
+    const ahead = next.day < this.#fetchCaps.day;
+    this.#fetchCaps = next;
+    // RC-M3: written back, so a restart reads today spent, never the far date. A write that fails keeps today spent here.
+    if (ahead) {
+      try {
+        this.#fetchCapsFile?.write({ ...this.#fetchCaps });
+      } catch {}
+    }
   }
 
   /**
@@ -1804,13 +1837,13 @@ export class Worker {
 
   /** The credits the chain read reserves: the migration by its signature (when known and not yet read) and the curve. */
   #rereadChainCost(mint: string, st: RereadState): number {
-    const ask = !st.read.has('tx:migration') && this.#migrationSig.has(mint) ? 1 : 0;
+    const ask = !st.read.has('tx:migration') && this.#migrationSig.has(mint) ? FETCH_TX_CREDITS : 0;
     return ask + callCost('helius', 'getSignaturesForAddress') + REREAD_CURVE_READS * callCost('helius', 'getTransaction');
   }
 
   /** The least a create read spends: its saved signature, else the lookup's floor (a page and the transaction). */
   #rereadCreateCost(mint: string): number {
-    return this.#createSig.has(mint) ? 1 : callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction');
+    return this.#createSig.has(mint) ? FETCH_TX_CREDITS : callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction');
   }
 
   /**
@@ -1833,8 +1866,10 @@ export class Worker {
     let used = 0;
     try {
       if (sig !== undefined) {
-        used += 1;
-        if (await this.#d.fetchTx(sig, 'reread').catch(() => false)) st.read.add('tx:migration');
+        let spent: number | null = null;
+        const found = await this.#d.fetchTx(sig, 'reread', (c) => (spent = c)).catch(() => false);
+        used += Math.min(FETCH_TX_CREDITS, spent ?? FETCH_TX_CREDITS);
+        if (found) st.read.add('tx:migration');
       }
       if (st.read.has('tx:migration') && st.read.has('tx:complete')) return 'tried';
       used += callCost('helius', 'getSignaturesForAddress');
@@ -1866,7 +1901,20 @@ export class Worker {
   /** The create: by its saved signature, else looked up from the mint's oldest signature under the re-read budget. */
   async #rereadCreate(mint: string): Promise<boolean> {
     const sig = this.#createSig.get(mint);
-    if (sig !== undefined) return this.#takeFetch('reread', REREAD_CREDITS_PER_DAY) && (await this.#d.fetchTx(sig, 'reread').catch(() => false));
+    if (sig !== undefined) {
+      const budget = this.#rereadBudgetFor();
+      try {
+        budget.spend(FETCH_TX_CREDITS);
+      } catch {
+        return false;
+      }
+      let spent: number | null = null;
+      try {
+        return await this.#d.fetchTx(sig, 'reread', (c) => (spent = c)).catch(() => false);
+      } finally {
+        budget.refund(FETCH_TX_CREDITS - Math.min(FETCH_TX_CREDITS, spent ?? FETCH_TX_CREDITS));
+      }
+    }
     const find = this.#d.findCreate;
     // Nothing is asked without the budget for a page and the transaction (the lookup's own floor).
     if (find === undefined || this.#rereadRemaining() < callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction')) return false;
@@ -1985,6 +2033,10 @@ export class Worker {
   }
 
   #writeOpenIntents(): void {
+    // Positions first: the host reads both before it rolls a release back, and a position is never reported closed
+    // while its exit intent still reads open (RC-FIXES-2b).
+    const p = Math.max(openPositions(this.#desk.book), this.#reconciled ? 0 : openPositions(this.#engine.book));
+    writeFileSync(join(this.#d.config.stateDir, STATE_FILES.openPositions), `${p}\n`);
     const n = Math.max(openIntents(this.#desk.book), this.#reconciled ? 0 : openIntents(this.#engine.book));
     writeFileSync(join(this.#d.config.stateDir, STATE_FILES.openIntents), `${n}\n`);
   }
@@ -2213,6 +2265,8 @@ export class Worker {
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
+    // RC-H4: exits are timed too (the stuck-intent alert and the heartbeat's last exit attempt).
+    if (r.action?.type === 'trigger_exit' && r.result === 'applied' && !this.#intentAt.has(r.action.intentId)) this.#intentAt.set(r.action.intentId, r.at.receivedAt);
   }
 
   /** What the app's read API shows, as of now. */
