@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:01 PM Red team B round 3 interim: CRITICAL RB-11 on #275 cb1fb7a = the unbounded exit haircut (paper exits never fill after ~6 sends; 224/364 crash images end exit_blocked). This is the same issue as S1's 10-min window ruling; EXIT-FILL is next in the builder queue. HIGH RB-10 on #197: on migration the old dollar day/week marks are converted at the opening price, so phantom gaps give a false daily_loss or an R9 latch. Ruling sent to the SOL-BOOKS builder: drop dayMark/weekMark on migration like navPeak. RB-8 is closed on cb1fb7a.
 - 5:52 PM **Red team C round 3** (claude/redteam-c 5853efd).
   - **Re-verification:** 18 of 19 verifiable findings are CLOSED on the fix heads, with no regressions (21 leak + 2 exit-crash probes pass everywhere). OPEN: M1 (a scan is granted when its count save fails) on #271/#274. PR B is not pushed, so C1/H1/R2-1/2/4 still fail. The NAV peak (SOL-BOOKS) still fails.
   - **Resume path:** HIGH R3-6 (the switch alert is once per key, so a second failed deploy rolls back silently to the stand-in, which raises no alert); HIGH R3-1 (rollback onto the stand-in with a settled open paper position); MEDIUM R3-2 (hold/start-failure rollback has no intent check) and R3-5 (the stand-in overwrites open_intents with 0); LOW R3-3, R3-4.
