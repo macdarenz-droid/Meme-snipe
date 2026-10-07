@@ -48,6 +48,17 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:10 PM **Red team B round 3 final** (claude/redteam-b 2c0b86d).
+  - New CRITICAL RB-11 (#275's haircut, the same as the window ruling) and HIGH RB-10 (#197 migration day/week marks; ruled 'drop').
+  - Closed on the fix heads: RB-1/1b/1m/2a-c, M2, RB-5 rules, N1, N2, and RB-8 start (0/364 fail to start).
+  - With no edge nothing moves money over 26 h, a midnight and ±40% SOL/USD. With an edge (test only) the ledger is exact to the lamport at $5, $100 and $10k, and P&L is in SOL.
+- 6:10 PM **RC-FIXES PR B ready:** draft PR #280 (claude/rc-state 10347648; 6,913 tests; 20/20 mutants; C1, H1, R2-1/2/4; one scoped parity relaxation, cutAtKill in checkBoot). **PR A #274** review fixes are at 99309169 (10/10 mutants; full suite re-running).
+- 6:10 PM **Loop moves:**
+  - EXIT-FILL 01NQr4cD resumed (RB-11 CRITICAL: the haircut window), with its reviewers 01192sk8 and 01PmJncT finishing on cb1fb7a.
+  - #274 delta to 01NYN8xm (plus the M1 ownership question).
+  - #280 to the ops reviewer 01QkAcbw (ops + persist + the parity item).
+  - Red team C: verify #280 and attack its design.
+  - Builders now: SOL-BOOKS, MEM-FIXES, RC-FIXES-2b, EXIT-FILL (RC-FIXES waits for reviews).
 - 6:09 PM **#152 DATA-KEEP merged** as 9f7cf812 (head 98db546c; data PASS on 610e99d0; own delta identical after two base merges (5 files, line-by-line); check + historical-data green; merge tree = tested head tree; no closing keywords). The Fri deadline is met. Dispatched data-keep once on ccr-14987baf-i6lrsl (9f7cf812) to prove a restore refreshes last_accessed; check its result. Before any Deploy, check that the tip has no pending or failed runs (data-keep included). Next scheduled run: 10 Oct 04:23Z.
 - 6:01 PM Red team B round 3 interim: CRITICAL RB-11 on #275 cb1fb7a = the unbounded exit haircut (paper exits never fill after ~6 sends; 224/364 crash images end exit_blocked). This is the same issue as S1's 10-min window ruling; EXIT-FILL is next in the builder queue. HIGH RB-10 on #197: on migration the old dollar day/week marks are converted at the opening price, so phantom gaps give a false daily_loss or an R9 latch. Ruling sent to the SOL-BOOKS builder: drop dayMark/weekMark on migration like navPeak. RB-8 is closed on cb1fb7a.
 - 5:52 PM **Red team C round 3** (claude/redteam-c 5853efd).
