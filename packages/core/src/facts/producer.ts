@@ -12,6 +12,7 @@
 // `complete: false` fact the gates reject). Nothing here ever fills a gap with a value that passes.
 import { DAY_MS, HOUR_MS, MINUTE_MS, SECOND_MS } from '../config/time.ts';
 import type { Policy } from '../config/policy.ts';
+import { RESEARCH_CONFIG } from '../config/research.ts';
 import {
   type Address, type PumpEventData, PUMP_AMM_PROGRAM, decodeMint, decodePool, decodeTokenAccount, fromBase64, isNoChangePoolEvent,
 } from '../chain/index.ts';
@@ -142,6 +143,14 @@ export const HOLE_SIGS_KEEP = RETIRED_KEEP / 5;
 export const PRE_READ_POOLS = 64;
 /** POOL-FIRST-READ: a pool's newest events kept until its first read; one let go past the read's slot leaves the chain stale. */
 export const PRE_READ_KEEP = 64;
+/**
+ * POOL-FIRST-READ (review of #266, P5): how long after a pool's watch started its swaps are kept for a candle book that
+ * has not opened (a late migration). A migration can land late through FACTS-REREAD until about the end of the U2
+ * window (240 min after migration) plus its retries (2 + 4 + 8 + 16 min); a worker test pins it to those. Past it, the
+ * pool's swaps are no longer kept for its book (it is marked lost: a later book opens partial), so pools with no book
+ * coming never hold places the waiting ones need.
+ */
+export const PRE_BOOK_KEEP_MS = RESEARCH_CONFIG.s0.u2WindowToMs + 30 * MINUTE_MS;
 
 /**
  * G4a (supervisor ruling): how long a wallet's funder read (`read:funder:<wallet>`, its first SOL funding: fixed once it
@@ -301,6 +310,8 @@ interface StreamState {
   /** Open gaps by their start (`toSlot` not known yet); a null start is unknown, so it covers everything. */
   readonly open: Map<string, bigint | null>;
   readonly vias: Set<string>;
+  /** Receipt time of the stream's first start (POOL-FIRST-READ: `PRE_BOOK_KEEP_MS` counts from it). */
+  readonly startedAt: number;
   /**
    * POOL-FIRST-READ (trade streams): the pool's kept events were let go whole before its first read (`chain`) or its
    * candle book (`book`). Kept with the stream, never in a capped set, so the mark cannot fall out (review of #266).
@@ -1169,7 +1180,7 @@ export class FactProducer {
     if (c.part === 'start') {
       if (typeof from !== 'bigint') return;
       if (s === undefined) {
-        s = { fromSlot: from, gaps: [], open: new Map(), vias: new Set() };
+        s = { fromSlot: from, gaps: [], open: new Map(), vias: new Set(), startedAt: e.moment.receivedAt };
         this.#streams.set(c.stream, s);
       } else if (s.open.size > 0) {
         // A new start after an open-ended gap (unwatched, halted, refused): covered again only from here.
@@ -1462,7 +1473,23 @@ export class FactProducer {
    */
   #preRead(pool: string, x: PreReadEvent, chain: boolean, book: boolean): void {
     const keep = this.#o.preReadKeep ?? PRE_READ_KEEP;
-    if (keep === 0 || (!chain && !book) || !this.#streams.has(STREAMS.trades(pool))) return;
+    const s = this.#streams.get(STREAMS.trades(pool));
+    if (keep === 0 || s === undefined) return;
+    // Review of #266 (P5): past the time a late migration can land, swaps are no longer kept for the book. What was kept
+    // for it goes, and the book is marked lost (a migration that still lands opens it partial).
+    if (book && x.kind === 'swap' && x.t.seen.receivedAt - s.startedAt > PRE_BOOK_KEEP_MS) {
+      book = false;
+      s.lost ??= { chain: false, book: false };
+      s.lost.book = true;
+      const q = this.#preReads.get(pool);
+      if (q !== undefined) {
+        for (const k of q.events) k.book = false;
+        q.events = q.events.filter((k) => k.chain);
+        q.droppedBook = null;
+        if (q.events.length === 0 && q.droppedChain === null) this.#preReads.delete(pool);
+      }
+    }
+    if (!chain && !book) return;
     let p = this.#preReads.get(pool);
     if (p === undefined) {
       p = { events: [], droppedChain: null, droppedBook: null };

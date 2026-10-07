@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { recordFromRpc, transactionEvents, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
-import { STREAMS } from '../../core/src/facts/index.ts';
+import { PRE_BOOK_KEEP_MS, STREAMS } from '../../core/src/facts/index.ts';
 import { swapEventState, type SwapEvent } from '../../core/src/fills/index.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
 import type { MarketEvent, StrategyContext } from '../../core/src/engine/index.ts';
@@ -518,4 +518,10 @@ describe('candles after a migration re-read late, through the worker (POOL-FIRST
     expect(p.boots[0]!.decisions).toBeGreaterThan(1);
     expect(p.ok).toBe(true);
   }, 120_000);
+});
+
+describe('PRE_BOOK_KEEP_MS covers every late migration the re-read can land (review of #266, P5)', () => {
+  it('is at least the U2 window end plus the re-read\'s retry waits', () => {
+    expect(PRE_BOOK_KEEP_MS).toBeGreaterThanOrEqual(RESEARCH_CONFIG.s0.u2WindowToMs + CUT_CREATE_RETRY_MS.reduce((a, b) => a + b, 0));
+  });
 });

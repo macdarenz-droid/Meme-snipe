@@ -3375,6 +3375,26 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
       - `preReadKeep` ignored.
     - The survivor is the equivalent unfiltered take (above).
 
+- **Follow-up after #266's reviews (2026-10-07, S1; `claude/pool-first-read-2`; each test-first).**
+  - **Keeping for a book ends when no late migration can land (facts review finding 1, probe P5).**
+    - Before: a pool with a chain but no candle book kept its swaps for the book for as long as it had none. After a read and 100 swaps with no migration, `preReads` stayed at 1. With more than `PRE_READ_POOLS` such pools, a pool still waiting for its late migration was pushed out, and its book opened partial.
+    - Now swaps are kept for a book only within `PRE_BOOK_KEEP_MS` of the pool's watch start: 270 min, the U2 window's end (240 min) plus FACTS-REREAD's retry waits (2 + 4 + 8 + 16 min). A worker test pins it to those values.
+    - Past it, what was kept for the book goes and the book is marked lost: a migration that still lands opens it partial (fail closed). A pool's slot is freed once nothing is kept for its chain either.
+    - A re-read parked on a spent budget that resumes the next UTC day lands past the horizon. That book is partial, never complete with trades missing.
+    - Bound: more than 64 pools all inside their horizon and all lacking a read or a book can still crowd one out. That book is then partial, not wrong.
+    - Tests:
+      - P5: past the horizon `preReads` falls to 0, and a migration after it opens the book partial.
+      - Crowding: 64 read pools with no book (re-keyed copies of the fixture's real pool and vaults), past their horizon, each trade once. A waiting pool's late book equals the run without them.
+      - Both fail on the code before.
+      - Mutants, 5 of 5 killed: no horizon; no lost mark; kept book events not cleared; entry not deleted; horizon a minute short.
+  - **The two no-change events are matched by size too (part 2 hardening).**
+    - DEC-1 now gives these two discriminators, on the PumpSwap program only, their event size (bytes, discriminator included). `isNoChangePoolEvent` requires the measured size: 80 for CloseUserVolumeAccumulatorEvent, 96 for ExtendAccountEvent. Every mainnet occurrence in research/pool-noop-events had exactly that size: 508 and 78 log lines.
+    - A program upgrade that changes either layout changes its size, so the event is a change again (fail closed). The same applies to an event with no size, such as a DEDUP echo.
+    - No other unnamed event changes shape.
+    - Tests: the same discriminator at ±8 bytes, at the other event's size, or with no size is stale. A DEDUP echo of a 104-byte ExtendAccount is stale. DEC-1 gives the size for these two only, and not for the pump program.
+    - Mutants, 3 of 3 killed: size unchecked; size not given; size given for the pump program too.
+  - **Not fixed: P6 (facts review).** After a pool leaves the watch list (`not watched`) without being retired, its trade stream stays. A swap of it seen later (from a fetched transaction) is kept again for its chain, and for its book within the horizon. This holds memory only, bounded by the caps, and changes no fact: the pool has no chain, and nothing reads it once unwatched.
+
 ## A candidate's missing stage-1 facts are read again under their own budget (FACTS-REREAD, `run/worker.ts` `#rereadFacts`, `REREAD_CREDITS_PER_DAY`)
 
 - **2026-10-07 · Why (S1 card FACTS-REREAD, from the H16-WHY diagnosis).**

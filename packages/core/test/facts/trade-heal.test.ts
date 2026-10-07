@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { type PoolState, poolBuyExactBase, poolSell } from '../../src/amm/index.ts';
 import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { OFF_CHAIN, type MarketEvent, type Moment } from '../../src/engine/index.ts';
-import { HEAL_TAPE_MAX, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
+import { HEAL_TAPE_MAX, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, PRE_BOOK_KEEP_MS, PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
+import { decodeBase58, encodeBase58, fromBase64, toBase64 } from '../../src/chain/index.ts';
 import { observedFeeContext } from '../../src/fills/index.ts';
 import { Evidence, candlesKey, parseCandles, parsePool, poolKey, streamKey } from '../../src/gates/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -453,7 +454,8 @@ describe('a hole whose transaction holds a no-change PumpSwap event (POOL-FIRST-
     const arrives = R + 6n;
     const evs = fetched(s[2]!.sig, s[2]!.slot, arrives, [{ name: s[2]!.name, data: s[2]!.data }, { name: 'other' }]);
     const o = evs[1]!.value as { event: Record<string, unknown> };
-    const tx = [evs[0]!, { ...evs[1]!, value: { ...o, event: { ...o.event, discriminator: d } } }];
+    const size = d === '929fbdac925838f4' ? 80 : d === '6161d7905d92167c' ? 96 : undefined;
+    const tx = [evs[0]!, { ...evs[1]!, value: { ...o, event: { ...o.event, discriminator: d, ...(size === undefined ? {} : { size }) } } }];
     world.push(...tx, outcome(s[2]!.sig, true, arrives));
     return head(world);
   };
@@ -481,6 +483,30 @@ describe('candles after a late migration (POOL-FIRST-READ part 3)', () => {
     lateLife('CompletePumpAmmMigrationEvent', { mint: MINT, pool: POOL, timestamp: stamp(P) }, P, arrives, 2),
   ];
   const readEv = (): MarketEvent => offchain(RAW.accounts(MINT), { ...FIX.accountsRead, slot: R }, R, at(R), 'helius');
+  /** A valid address, distinct per `n`. */
+  const addr = (n: number): string => encodeBase58(Uint8Array.from({ length: 32 }, (_, i) => (i === 0 ? n : 100 + i)));
+  /** The fixture's read under pool address `p`: the same pool account, its vaults owned by `p` (a chain for `p`). */
+  const readAs = (p: string) => {
+    const pool = FIX.accountsRead.accounts.find((x) => x.address === POOL)!;
+    const owner = decodeBase58(p);
+    return {
+      ...FIX.accountsRead, slot: R,
+      accounts: FIX.accountsRead.accounts.map((x) => {
+        if (x === pool) return { ...x, address: p };
+        const b = fromBase64(x.data ?? '');
+        if (x.owner === pool.owner || b.length < 64 || !b.subarray(32, 64).every((v, i) => v === decodeBase58(POOL)[i])) return x;
+        const c = Uint8Array.from(b);
+        c.set(owner, 32);
+        return { ...x, data: toBase64(c) };
+      }),
+    };
+  };
+  /** A log line of swap `e`, on pool `p`'s watch and naming `p`. */
+  const onPool = (p: string, e: MarketEvent): MarketEvent => {
+    const v = e.value as { event: { data: Record<string, unknown> }; via: string };
+    return { ...e, key: e.key.replace(POOL, p), value: { ...v, event: { ...v.event, data: { ...v.event.data, pool: p } }, via: `logs:${p}` } };
+  };
+  const head2 = (w: FactWorld, slot: bigint): FactWorld => w.push(slotNotice(slot, at(slot) + 50));
   /** The stream started and the pool read, the swaps' log lines, then the migration's transaction (late). */
   const late = (swaps: (state: PoolState) => Swap[], arrives = R + 6n) => {
     const { state } = opened();
@@ -545,6 +571,47 @@ describe('candles after a late migration (POOL-FIRST-READ part 3)', () => {
     }, R + 6n);
     expect(candles(a.world).obs.quality).toContain('partial');
     expect(verdicts(a.world).candles).not.toBe('ok');
+  });
+
+  // Review of #266, P5: a pool with a chain but no book kept its swaps for the book for as long as it had none, so more
+  // than PRE_READ_POOLS such pools pushed out a pool still waiting for a late migration. Events are kept for a book only
+  // while a late migration can still land (PRE_BOOK_KEEP_MS from the pool's watch start).
+  const H = BigInt(Math.ceil(PRE_BOOK_KEEP_MS / 400)); // at() steps 400 ms a slot
+
+  it('P5: a read pool with no migration stops keeping swaps for the book past PRE_BOOK_KEEP_MS; a migration after that opens it partial', () => {
+    const { state } = opened();
+    const s = tape(state);
+    const world = new FactWorld().push(coverage(STREAM, 'start', { fromSlot: P - 1n, via: VIA }, P - 2n, at(P - 2n)), readEv(), logOf(s[0]!));
+    expect(world.producer.sizes().preReads).toBe(1);
+    const past = swap('buy', s[0]!.after, 1_000n, P - 2n + H + 1n);
+    world.push(logOf(past));
+    expect(world.producer.sizes().preReads).toBe(0);
+    head2(world.push(...migration(state, P + H + 5n)), P + H + 6n);
+    expect(candles(world).obs.quality).toContain('partial');
+  });
+
+  it('64 read pools with no book, past their horizon, no longer push out a pool waiting for its late migration', () => {
+    const { state } = opened();
+    const W = P - 2n + H + 10n; // the waiting pool's watch starts here, long after the others'
+    const s = tape(state).map((x) => ({ ...x, slot: x.slot - R + W + 2n }));
+    // The waiting pool's swaps, re-slotted after its watch start (logOf takes slot and timestamp from the swap).
+    const waiting = (w: FactWorld): FactWorld => w.push(
+      coverage(STREAM, 'start', { fromSlot: W, via: VIA }, W, at(W)),
+      ...s.map((x) => logOf({ ...x, data: { ...x.data, timestamp: stamp(x.slot) } })),
+    );
+    const control = head2(waiting(new FactWorld().push(readEv())).push(...migration(state, W + 20n)), W + 21n);
+    const others = Array.from({ length: PRE_READ_POOLS }, (_, i) => addr(i + 1));
+    const crowded = new FactWorld().push(
+      ...others.map((p) => coverage(STREAMS.trades(p), 'start', { fromSlot: P - 1n, via: `logs:${p}` }, P - 2n, at(P - 2n))),
+      readEv(), ...others.map((p, i) => offchain(RAW.accounts(MINT), readAs(p), R, at(R) + 1 + i, 'helius')),
+    );
+    waiting(crowded);
+    // Each other pool trades once now, past its own horizon.
+    others.forEach((p, i) => crowded.push(onPool(p, logOf(swap('buy', state, 1_000n, W + 8n), i + 1))));
+    head2(crowded.push(...migration(state, W + 20n)), W + 21n);
+    expect(candles(control).obs.quality).toEqual([]);
+    expect(candles(control).candles.length).toBeGreaterThan(0);
+    expect(noReceipt(candles(crowded))).toEqual(noReceipt(candles(control)));
   });
 
   it('a pool whose kept swaps were let go whole (past the pool cap) opens its book partial', () => {
