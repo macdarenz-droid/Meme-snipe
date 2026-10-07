@@ -3509,6 +3509,12 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Helius cost. A spends one `getTransaction` per late swap on a candidate pool (`#cutPoolLog`), under its per-pool and per-day caps. If late is common, past the caps the holes stay, and candidates are refused for good. This design fetches nothing.
   - Latency. A late frame waits for the next release of the open slot (about `horizonSlots` more slots). B would add the confirmation lag to every event, entries and exits included.
   - Parity. The recording replays exactly (`replayRecorded`; a re-sort of the frames gives the same log, since the placement is in the frame). Live ends with the backtest's candles, or with `partial` (stricter).
+- **Measured (LATE-LOG builder, 2026-10-07).** Counted from the release records of the five full boots in `zeroed-data` release `rec-2026-10-06`: muwfo5e2, muwm3v3q, muwp643h, muwrcayd and muwxcwu3, 59 files. Each file was downloaded, read and deleted; nothing was added to the repo.
+  - Late releases: 3,381 of 23,775,762 (0.0142%).
+  - Confirmed log events: 769 of 4,853,826 late (0.0158%). Only the pool watches subscribe at `confirmed` (`pool-watch.ts`), so this is the pool-watch rate. The via itself was not read from the frames.
+  - Per boot, confirmed logs late: 0.0131%, 0.0051%, 0%, 0.0008% and 0.0321%. The rest were `seen` (2,584), `slot` (22) and other (6).
+  - Red team A measured 0.24% to 0.68% on public mainnet RPC, with a lag of up to 6 slots. Helius, as recorded, is about 15 to 40 times lower.
+  - So the "usually after the horizon" note in `parsed-streams.ts` does not hold for the pool watches. At this rate, late swaps are rare, and failing closed on them costs little.
 - **Not fixed here: the window before a late frame arrives.** Between a slot's release and its late confirmed log, the trade stream counts that slot as covered. The candles, and WATCH-1c's carry, read as current without the swap. A decision in that window still sees incomplete data. That is B's part: the horizon must cover the confirmed delivery lag. Its size cannot be set until the late rate is measured, and the repo holds no live recording (none of `recorder/*/days/*/frames-*`). Frames now carry `late: true` (and `LiveFeed.status().late` counts them; not on `/health`), so one boot's recording gives the rate. That number decides `horizonSlots`, or a release point held to confirmed slots.
 - **Recordings.** A late frame carries `late: true` and an off-chain place. `Release.late` is false for every new release. Recordings made before LATE-LOG still hold releases with `late: true`, and replay as they did, refusals included.
 - **Evidence.**
@@ -3520,4 +3526,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `worker/test/feed.test.ts`. One new test failed before and passes after: under 12 seeded delivery delays (0 to 3 s, horizons 0 to 2), the engine refuses nothing, no release is late, and the recording replays exactly.
   - Three older tests pinned the old release-late-and-refuse rule. They now assert the new one: zero faults, `late` on the frame, the off-chain place.
   - `dedup-per-watch.test.ts`: a late echo is now counted late.
+  - `worker/test/redteam/late-create-log.test.ts` is red team A's RT-A3 probe, from `claude/redteam-a` 1b5fb0f. Before the fix, a late creates log was refused, so the deployer index lost the mint with no hole, and H14 counted the creator as covered. Two tests failed on 959d801 and pass after:
+    - A late creates log ends with the on-time run's index (both mints), no hole, coverage, and zero faults.
+    - A late cut creates log keeps its hole, as on time.
   - Mutants (8, all killed): late frame not re-placed; not counted; no `late` on the frame; producer rule removed; `<` widened to `<=` (two swaps of one slot); `newestSlot` never set; not flagged `partial`; applied anyway after flagging.
