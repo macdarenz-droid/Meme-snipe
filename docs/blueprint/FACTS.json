@@ -5099,7 +5099,7 @@
   {
    "id": "RS-40",
    "topic": "MR-01 1-minute kill-only screen",
-   "claim": "A kill-only screen of MR-01's two configurations on GeckoTerminal 1-minute candles of 25 survivor-only canonical PumpSwap pools in the 0.30% tier, pre-registered at 5ebb439 before any return was computed, returned KILLED: at $200 a trade in validation (2026-08-21 to the 2026-09-21T14:00Z wall), mean net was -0.77% (95% day-bootstrap CI -0.79% to -0.74%) for MR-01-5 on 7,368 trades and -0.76% (-0.79% to -0.72%) for MR-01-15 on 5,377 trades; mean gross was +0.04% to +0.06% against a round-trip cost of about 0.88%; matched random entries lost -0.83% to -0.84%.",
+   "claim": "A kill-only screen of MR-01's two configurations on GeckoTerminal 1-minute candles of a candidate set of 25 survivor-only canonical PumpSwap pools in the 0.30% tier (trades came from 13 pools in discovery and 15 in validation), pre-registered at 5ebb439 before any return was computed, returned KILLED at $200, the registered size: in validation (2026-08-21 to the 2026-09-21T14:00Z wall), mean net was -0.77% (95% day-bootstrap CI -0.79% to -0.74%) for MR-01-5 on 7,368 trades and -0.76% (-0.79% to -0.72%) for MR-01-15 on 5,377 trades; mean gross was +0.04% to +0.06% against a round-trip cost of about 0.88%; matched random entries lost -0.83% to -0.84%. At $1,000 (an 'Other lines' row, not the registered verdict) mean net was -1.49% for both configurations.",
    "sources": [
     "research/mr01-screen/RESULTS.md @ c67f37f9 (branch ccr-7fae2302-drz4co, PR #283)",
     "research/mr01-screen/PREREG.md @ c67f37f9 (first pushed at 5ebb439)"
@@ -5111,7 +5111,7 @@
    "verification": "pending_review",
    "note": "Coarse screen on vendor OHLCV with no reserves: it can stop work, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Survivor-only coin list, which favours dip-buying. 1-minute candles, not the spec's 15 s snapshots; filters that need reserves or chain state were not applied. Checked against the cited files by the Z0D builder on 2026-10-08. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [
-    "research/mr01-screen/RESULTS.md:3-17 @ c67f37f9",
+    "research/mr01-screen/RESULTS.md:3-17, 22-26, 51-53 @ c67f37f9",
     "research/mr01-screen/PREREG.md:1-3 @ c67f37f9"
    ]
   },
