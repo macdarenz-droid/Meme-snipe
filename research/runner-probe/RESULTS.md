@@ -58,6 +58,6 @@ Every rule loses at $3, $10 and $50 on both lines.
 
 ## What it means
 - The rare giant winner that carried the exploration result did not appear among 442 fresh trades. The best was 11× proceeds.
-- That is not proof that giants never come back: with one in 492 before, finding none in 442 has roughly a 16–40% chance. But the rule needs about one +110× winner per 450 trades merely to break even. Nothing in this sample supports that rate.
+- That is not proof that giants never come back: if the true rate were one in 492, finding none in 442 would happen about 41% of the time. But the rule needs about one +110× winner per 450 trades merely to break even. Nothing in this sample supports that rate.
 - The tail is not recurring at a usable rate, and the result is negative even on the optimistic execution line. By the outside reviewer's decision table, this strategy is **shelved**.
 - The exploration jackpot is being replayed at transaction level (`../execution-audit/`). First result: a real-time trail would have sold that coin at about 27× (one swap crashed it from about 100× to 27×). The hourly-close rule sold at about 132× because it never saw that intra-hour crash. The exploration's "about 330× real-time" figure was therefore an artefact of hourly bars.
