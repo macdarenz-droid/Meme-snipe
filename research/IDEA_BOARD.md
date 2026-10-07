@@ -7,14 +7,14 @@ Updated 2026-10-08 07:40 AEDT. "Chance" is my judgement of the chance that the i
 | # | Idea (source) | Why it might work | Chance | Status / next step |
 |---|---|---|---|---|
 | 1 | **Absorption entry:** buy only after new, independent buyers absorb a large seller (advisor) | Uses information no price test used: who sold, who replaced them. Slow enough for our latency | low (about 10%) | **UNRESOLVED (too rare):** 44 confirmed large sales, 8 absorptions, 5 tradable in 55% of eligible pool-days; no returns computed (`research/absorption-probe/RESULTS.md`). Needs forward recording |
-| 2 | **Audience gains:** a meme's usual buyers just made money elsewhere (advisor; Sun 2023) | Behavioural evidence that gains spill into lottery-like buying; it reads the buyers, not the chart | low (about 5–10%) | Scouted; blocked on the shared tape (owner decisions); about 15–17M credits at 10 per call, not recommended |
+| 2 | **Audience gains:** a meme's usual buyers just made money elsewhere (advisor; Sun 2023) | Behavioural evidence that gains spill into lottery-like buying; it reads the buyers, not the chart | low (about 5–10%) | Scouted; shared tape approved 2026-10-08; build and Phase 0 started; about 15–17M credits at 10 per call, not recommended |
 | 3 | **First spot listing** on a new retail venue (advisor) | A real new buyer base | very low to low | Deferred: too few events (`listing-probe/PREREG_DRAFT.md`) |
-| 4 | **Community crossing:** new buyers from previously separate wallet communities (advisor) | Spreading demand differs from one circle recycling | very low to low | Scouted; blocked on the shared tape (owner decisions) |
+| 4 | **Community crossing:** new buyers from previously separate wallet communities (advisor) | Spreading demand differs from one circle recycling | very low to low | Scouted; shared tape approved 2026-10-08; build and Phase 0 started |
 | 5 | **Multi-token liquidation:** buy the drop when a wallet empties several unrelated coins (advisor; Coval & Stafford) | Forced, non-informative selling recovers in equities | very low to low | Stage 1 done (163 eligible pools); downloading 5-minute bars |
 | 6 | **Revenue-funded buybacks** (advisor) | Measurable real demand | very low (few Solana memes qualify) | Scouted; PREREG draft ready; deferred until GeckoTerminal load eases |
 | 7 | **Holding-incentive expiry short** (advisor; Liebi) | Demand ends at a known time | very low (rare, often priced before) | Dropped: too few events |
-| 8 | **Failed transactions** as hidden demand (advisor) | Data our candles never had | very low | Scouted; blocked on the shared tape (owner decisions) |
-| 9 | **SOLMEMES text features** replication (advisor) | A published positive result exists | very low (6-day out-of-time window; metadata alone was not profitable) | Scouted; blocked on the shared tape (owner decisions) |
+| 8 | **Failed transactions** as hidden demand (advisor) | Data our candles never had | very low | Scouted; shared tape approved 2026-10-08; build and Phase 0 started |
+| 9 | **SOLMEMES text features** replication (advisor) | A published positive result exists | very low (6-day out-of-time window; metadata alone was not profitable) | Scouted; shared tape approved 2026-10-08; build and Phase 0 started |
 | 10 | **Theme leader** when a theme goes viral (advisor; Li et al.) | Attention can flow to the known coin, not clones | very low; forward-only | Design a forward collector |
 | 11 | **Owner's own picks** (advisor) | Human selection was never measured | n/a | Owner declined (rarely trades memes) |
 
@@ -54,7 +54,7 @@ Every confirmatory primary from the outside reviewer's ideas, and the connect-th
 | Squeeze traded on the perp (H1-PERP, P1) | EXPLORATORY (squeeze PREREG item 23): it arrived after H1-T2 read pool prices, so only forward data can confirm it; not computed |
 | Liquidation fire-sale (H3) | stage 1 done (163 eligible pools); 5-minute bars downloading |
 | D-SPLIT: liquidated, not dying (P2) | frozen in `daily-probe/PREREG.md`; waits for the survivorship-free download |
-| Failed transactions; community crossing; SOLMEMES; audience gains | blocked on the shared tape (owner decisions) |
+| Failed transactions; community crossing; SOLMEMES; audience gains | shared tape approved 2026-10-08; build and Phase 0 started |
 | Buybacks | ready; deferred for GeckoTerminal load |
 | Listing (H4) | deferred: too few events |
 | Theme leader (H2) | forward-only |
