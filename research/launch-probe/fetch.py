@@ -47,15 +47,15 @@ def draw(window, n, seed):
     the instant). Fixed-length windows give every launch the same inclusion probability."""
     t0, t1 = WINDOWS[window]
     rng = random.Random(seed)
-    out = []
-    for _ in range(n):
-        T = rng.randrange(t0 + 60, t1)
+    Ts = [rng.randrange(t0 + 60, t1) for _ in range(n)]
+    def one(T):
         a, slot, bt = heli.anchor_sig(T)
         page = heli.rpc('getSignaturesForAddress', [MINT_AUTH, {'before': a, 'limit': 200, 'commitment': 'finalized'}])
         got = [x for x in page if x['err'] is None and x.get('blockTime') is not None and bt - DRAW_W <= x['blockTime'] < bt]
         if page and page[-1].get('blockTime', 0) >= bt - DRAW_W:
             raise RuntimeError('draw window larger than one page')
-        out.append({'T': T, 'anchor_slot': slot, 'bt': bt, 'sigs': [x['signature'] for x in got]})
+        return {'T': T, 'anchor_slot': slot, 'bt': bt, 'sigs': [x['signature'] for x in got]}
+    out = list(POOL.map(one, Ts))
     return out
 
 def launch(sig):
