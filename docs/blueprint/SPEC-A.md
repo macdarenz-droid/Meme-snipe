@@ -186,7 +186,7 @@ export function deriveAndCheckAll(): Result<true, { code: 'E_CONSTANT_MISMATCH';
 - **Tests:** unit (all derivations; bumps); negative test with one seed byte changed; integration: canonical vs non-canonical pool fixtures. Fixtures: `fx/pumpswap/pool_canonical_9jkXWMyt.json`, `fx/pumpswap/pool_noncanonical.json` (getAccountInfo base64 at confirmed).
 - **Observability:** log event `M01.constants_checked` (ok/mismatch, name). No metrics.
 - **Security notes:** an attacker-controlled address in this file would redirect swaps; changes require code review, and the signer (M17) keeps its own allowlist, so this file is not the only line of defence.
-- **Facts used:** EX-01, EX-03, EX-08, EX-19, EX-21, EX-23, DA-12, DA-17, DA-V01, LD-03, LD-V05, LD-36.
+- **Facts used:** EX-01, EX-03, EX-08, EX-19, EX-21, EX-23, DA-12, DA-17, DA-V01, LD-03, LD-V05, LD-36, VF-01.
 - **Definition of done:** constants merged with fact comments; derivation tests green; lint rule active in CI; `pumpPoolAuthorityPda` seeds either verified (with the source commit recorded in the file header) or the function still throws and the gap is listed in "Unverified items".
 
 #### A-M01-02 — Venue config cache and fee-schedule selection
@@ -220,7 +220,7 @@ interface VenueConfigCache {                                           // NEW
   2. If `configHash` differs from the stored entry: increment `version`, set `changedAtMs = now`, persist the new decoded config, publish `venue.fee_schedule_changed` (A-M01-05 handles consequences).
   3. `feeFor(p)`:
      - `pump_curve`: the curve FeeConfig has one tier for all market caps (0 / 95 / 30 bps on 2026-10-06 [EX-05]); return it with `feeOnBuy = 'added_on_top'` (fee added on top of the SOL amount on buys, taken from proceeds on sells [EX-05]). The buyback share is carved out of the protocol fee, not added [EX-06]; it does not change `totalBps`.
-     - `pumpswap`, `isCanonical === true`: tiered by market cap [EX-07]. Market cap (lamports) = `floor(effectiveQuote × supply / baseReserve)` with `effectiveQuote` = vault + `virtual_quote_reserves` and `supply` = the mint supply, or a fixed 1,000,000,000,000,000 base units when `Pool.is_mayhem_mode` is set [VF-04] (settled 2026-10-07; the earlier "lower of vault-only and effective" rule of C-10 is withdrawn, because a quote on the vault alone fails A08's fixture). A tier applies when market cap ≥ its threshold (inclusive) [VF-04]. Creator fee: 0 when `Pool.coin_creator` is the default key; when `GlobalConfig.creator_fee_configurable` is true and `Pool.creator_fee_bps > 0`, the per-pool `creator_fee_bps` replaces the schedule's creator rate (lp and protocol rates unchanged) [VF-04]. Quote mints other than the SOL-like ones and USDC use `exotic_flat_fees` (and are rejected by orientation anyway). Each fee component (lp, protocol, creator) is rounded up (`ceil`) separately [VF-04]. The ≤ 30 bps per-side filter (ARCH 8.4) reads this per-pool total, creator fee included (A08).
+     - `pumpswap`, `isCanonical === true`: tiered by market cap [EX-07]. Market cap (lamports) = `floor(effectiveQuote × supply / baseReserve)` with `effectiveQuote` = vault + `virtual_quote_reserves` and `supply` = the mint supply, or a fixed 1,000,000,000,000,000 base units when `Pool.is_mayhem_mode` is set [VF-04] (settled 2026-10-07; the earlier "lower of vault-only and effective" rule of C-10 is withdrawn, because a quote on the vault alone fails A08's fixture). A tier applies when market cap ≥ its threshold (inclusive); below the first threshold the first tier applies [VF-04]. Creator fee: 0 when `Pool.coin_creator` is the default key; when `GlobalConfig.creator_fee_configurable` is true and `Pool.creator_fee_bps > 0`, the per-pool `creator_fee_bps` replaces the schedule's creator rate (lp and protocol rates unchanged) [VF-04]. Quote mints other than the SOL-like ones and USDC use `exotic_flat_fees`, or `flat_fees` while every `exotic_flat_fees` rate is zero [VF-04] (and are rejected by orientation anyway). Each fee component (lp, protocol, creator) is rounded up (`ceil`) separately [VF-04]. The ≤ 30 bps per-side filter (ARCH 8.4) reads this per-pool total, creator fee included (A08).
      - `pumpswap`, `isCanonical === false`: `flat_fees` (25 / 5 / 0 bps on 2026-10-06 [EX-08]).
      - `pumpswap`, `isCanonical === null` (seeds unverified, A-M01-01): `E_FEE_UNKNOWN`.
      - Raydium venues: `E_FEE_UNKNOWN` until the Raydium venue spec (A-M01-06) is accepted.
@@ -245,14 +245,15 @@ interface VenueConfigCache {                                           // NEW
   6. The admin changes tiers (`upsert_fee_tiers`, `update_fee_config` [EX-12, TH-19]) → handled by step 2 and A-M01-05.
 - **Acceptance criteria:**
   - Given the recorded PumpSwap FeeConfig fixture of 2026-10-06, when decoded, then 25 tiers are present, the first is 2/93/30 below 420 SOL and the last is 20/5/5 at ≥ 98,240 SOL [EX-07], and `flat_fees` = 25/5/0 [EX-08].
-  - Given a canonical pool whose lower-of-two market cap is 419.999 SOL and whose higher is 420.001 SOL, when `feeFor` runs, then it returns 2/93/30 (the more expensive tier).
+  - Given a canonical pool whose pre-trade market cap is 419.999 SOL and whose post-trade market cap is 420.001 SOL (step 5), then the trade is charged 2/93/30 (the more expensive tier).
+  - Given a canonical pool whose market cap is below the first tier's threshold, then the first tier applies; given a canonical pool with an exotic quote mint and `exotic_flat_fees` all zero, then `flat_fees` apply; with a non-zero `exotic_flat_fees`, those apply [VF-04].
   - Given a pool exactly at a threshold, then the result is the more expensive of the two adjacent tiers.
   - Given the curve FeeConfig fixture, then `feeFor` returns 0/95/30, `feeOnBuy = 'added_on_top'`.
   - Given no successful refresh for 601 s, then `feeFor` returns `E_CONFIG_STALE`.
-- **Tests:** unit for every tier threshold ±1 lamport of market cap (both sides of 420, 1,470, 2,460, 3,440, 4,420, 9,820, 14,740 ... 98,240 SOL [EX-07]); property test: for canonical pools `feeFor(...).totalBps` is non-increasing in market cap (ARCH 16.2); integration with fixtures `fx/pumpfees/fee_config_pumpswap_2026-10-06.json`, `fx/pumpfees/fee_config_curve_2026-10-06.json`, `fx/pumpswap/global_config_2026-10-06.json`, `fx/pump/global_2026-10-06.json`; failure injection: RPC timeouts for 11 minutes → `E_CONFIG_STALE`.
+- **Tests:** unit for every tier threshold ±1 lamport of market cap (both sides of 420, 1,470, 2,460, 3,440, 4,420, 9,820, 14,740 ... 98,240 SOL [EX-07]); property test: for canonical pools `feeFor(...).totalBps` is non-increasing in market cap (ARCH 16.2); integration with fixtures `fx/pumpfees/fee_config_pumpswap_2026-10-06.json`, `fx/pumpfees/fee_config_curve_2026-10-06.json`, `fx/pumpswap/global_config_2026-10-06.json`, `fx/pump/global_2026-10-06.json`; failure injection: RPC timeouts for 11 minutes → `E_CONFIG_STALE`. Clarification C-59 (A08): the creator fee is read per pool from chain at decision time; the CORE-2 goldens are imported (card Z07).
 - **Observability:** metrics `venue_config_age_ms` (venue), `venue_config_version` (venue); log events `M01.fee_config_refreshed`, `M01.fee_config_changed` (old/new hash, version), `M01.fee_config_decode_failed`.
 - **Security notes:** fee configs are attacker-irrelevant but admin-controlled [EX-12]; the model never trusts a cached value older than 10 minutes for entries. Raw account data is validated for owner and length before decoding.
-- **Facts used:** EX-01, EX-05, EX-06, EX-07, EX-08, EX-09, EX-10, EX-12, TH-19.
+- **Facts used:** EX-01, EX-05, EX-06, EX-07, EX-08, EX-09, EX-10, EX-12, TH-19, VF-04.
 - **Definition of done:** cache, refresh timer and `feeFor` merged; tier tests and the property test green; the two VERIFY items (market-cap input, `feeOnBuy` for PumpSwap) resolved with the doc section and commit cited in code comments, or left conservative as above and listed as unverified.
 
 #### A-M01-03 — Constant-product quote math and `minOut`
@@ -302,7 +303,7 @@ interface VenueModel {
   2. `x_net` rounds to 0 after fees (dust) → `E_ZERO_INPUT`.
   3. `tokens_out = 0` → quote returned with `amountOut = 0`; callers must treat as unusable (M21 rejects).
   4. Negative virtual reserves with non-negative sum (allowed since 30 September [EX-09, DA-14]) → normal quote.
-  5. Effective quote larger than the real vault (virtual positive, ≈ 17.58 SOL at migration [EX-V01]): the quote is computed on effective reserves as the program prices; a sell whose output exceeds what the real vault can pay is **refused** by the program, not clamped: the official SDK throws when `real_quote_vault < gross_out − lp_fee` [VF-05] (settled 2026-10-07; C-13 as amended). `quoteExactIn` for such a sell returns `E_EXCEEDS_REAL_VAULT` together with `maxSellableBase`, the largest input that can land; the exit ladder (B-M20-04) sizes every sell to the real vault so it can land. M06's `real_vs_effective_quote` check rejects such pools for entries anyway. The builder's test simulates one sell just above and one just below the boundary (read-only `simulateTransaction`, within the ≤ 50% rule) to confirm the on-chain result, because the program source is not public.
+  5. Effective quote larger than the real vault (virtual positive, ≈ 17.58 SOL at migration [EX-V01]): the quote is computed on effective reserves as the program prices; a sell whose output exceeds what the real vault can pay is **refused** by the program, not clamped: the official SDK throws when `real_quote_vault < gross_out − lp_fee` [VF-05] (settled 2026-10-07; C-13 as amended). `quoteExactIn` for such a sell returns `E_EXCEEDS_REAL_VAULT` together with `maxSellableBase`, the largest input that can land; the exit ladder (B-M20-04) sizes every sell to the real vault so it can land. M06's `real_vs_effective_quote` check rejects such pools for entries anyway. The boundary test runs on an SDK-math fixture (the official SDK's refusal rule [VF-05] reproduced on the drained-pool state); the on-chain result is **not verified** until a recorded failed sell is replayed, because the program source is not public and the simulation payer holds no position tokens. No test may rely on simulating a sell as a holder.
 - **Acceptance criteria:**
   - Given the pump Global constants (virtual token 1,073,000,000,000,000; virtual SOL 30,000,000,000; real token 793,100,000,000,000; supply 1,000,000,000,000,000 [EX-02]), when a buy sequence sells all real tokens, then the curve completes with about 85.005 SOL real (DERIVED [EX-03]) within 1 lamport per step of an independent rational computation.
   - Given ≥ 20 recorded PumpSwap pool states with a recorded swap in the next slot, when `quoteExactIn` is computed for that swap's input on the pre-trade state, then `amountOut` matches the swap's decoded event output within 1 bp (ARCH M01; requires the VERIFY items resolved).
@@ -310,10 +311,10 @@ interface VenueModel {
   - Given a pool with `quoteReserveVirtual` negative and a non-negative sum, then the quote succeeds; with a negative sum it throws `E_NEGATIVE_EFFECTIVE`.
   - Given the drained-pool state (17.58 SOL virtual, 0.27 SOL real [RS-17]) and a sell whose gross output less the LP fee exceeds the real vault, then `quoteExactIn` returns `E_EXCEEDS_REAL_VAULT` with `maxSellableBase`, and a sell of `maxSellableBase` quotes normally (C-13 as amended, [VF-05]).
   - Given a mayhem pool, then the tier uses a supply of 10^15; given `creator_fee_configurable` with `creator_fee_bps` = 50, then the creator rate is 50 bps; given `coin_creator` = the default key, then the creator fee is 0 [VF-04].
-- **Tests:** unit vectors (ARCH 16.1); property-based (ARCH 16.2): `k` after a swap excluding fee extraction ≥ `k` before; buy then sell of the received tokens with no other flow returns ≤ input; output monotonic in input; `minOut ≤ amountOut`; integration: `fx/pumpswap/swaps_20_pool_states.json` (pool state at slot S−1 plus the BuyEvent/SellEvent at slot S [EX-37]), `fx/pump/trade_events_curve.json`; golden comparison with `@pump-fun/pump-swap-sdk` quote functions in tests only.
+- **Tests:** unit vectors (ARCH 16.1); property-based (ARCH 16.2): `k` after a swap excluding fee extraction ≥ `k` before; buy then sell of the received tokens with no other flow returns ≤ input; output monotonic in input; `minOut ≤ amountOut`; integration: `fx/pumpswap/swaps_20_pool_states.json` (pool state at slot S−1 plus the BuyEvent/SellEvent at slot S [EX-37]), `fx/pump/trade_events_curve.json`; golden comparison with `@pump-fun/pump-swap-sdk` quote functions in tests only. Clarification C-59 (A08): quotes use the per-pool creator fee; reserve timing (PumpSwap events pre-swap, pump `TradeEvent` post-trade) is tested on the CORE-2 goldens.
 - **Observability:** metric `quote_compute_us` (histogram, venue); log event `M01.sell_exceeds_real_vault` (pool, slot, `maxSellableBase`).
 - **Security notes:** quote math is the basis of every on-chain bound (`minOut`); a rounding error in our favour would weaken the slippage protection, so every rounding is in the direction that makes our bound stricter. No floating point anywhere in this ticket.
-- **Facts used:** EX-02, EX-03, EX-04, EX-05, EX-07, EX-09, EX-10, EX-37, EX-V01, DA-12, DA-14.
+- **Facts used:** EX-02, EX-03, EX-04, EX-05, EX-07, EX-09, EX-10, EX-37, EX-V01, DA-12, DA-14, VF-04, VF-05.
 - **Definition of done:** functions merged with 100% branch coverage; property tests green with ≥ 10,000 cases each; the 1 bp golden test green on recorded PumpSwap swaps (or, until the PumpSwap fee placement is verified, the venue is marked `unquotable` for live use and the gap is listed).
 
 #### A-M01-04 — Pool orientation normalisation and spot-vs-swap check
@@ -358,7 +359,7 @@ interface OrientationGuard {                                                    
 - **Tests:** unit (all branches); integration fixtures `fx/pumpswap/pool_and_vaults_canonical.json`, `fx/pumpswap/usdc_pool.json` (if one is found on chain; otherwise a synthetic account built from the IDL), `fx/pumpswap/recent_swaps_with_preceding_snapshot.json`; failure injection: inverted reserves → quarantine within one check interval.
 - **Observability:** metrics `orientation_checks_total` (status), `pools_quarantined_total` (reason); log events `M01.orientation_fail` (pool, observedBps, slot), `M01.pool_quarantined`.
 - **Security notes:** a wrong orientation would invert every bound and price; quarantine is fail-closed for entries and moves positions to exit.
-- **Facts used:** EX-09, EX-10, EX-37, DA-08, DA-13, LD-05.
+- **Facts used:** EX-09, EX-10, EX-37, DA-08, DA-13, LD-05, VF-06.
 - **Definition of done:** normalisation used by M03 and M04 paths; orientation guard running on watched pools; tests green; the event reserve-field VERIFY resolved or the modelled-price fallback documented as the active method.
 
 #### A-M01-05 — Venue status: fee-schedule changes, unquotable venues, realised-fee mismatches
@@ -469,7 +470,7 @@ class Reader { constructor(b: Uint8Array); u8(): number; u16(): number; u32(): n
 - **Tests:** unit (base58 round-trip property test over random 32-byte arrays; Reader bounds); integration with the vendored IDLs; failure injection: tampered file.
 - **Observability:** log events `M02.idl_verified` (program, commit, sha256), `M02.idl_hash_mismatch` (critical).
 - **Security notes:** the IDLs define what the signer considers decodable; tampering is detected by hash. Base58 decoding of untrusted strings is bounds-checked.
-- **Facts used:** EX-01, EX-11, EX-12, DA-11, DA-16.
+- **Facts used:** EX-01, EX-11, EX-12, DA-11, DA-16, VF-02.
 - **Definition of done:** package builds with zero dependencies; startup check wired into a test harness that simulates the M26 refusal path.
 
 #### A-M02-02 — Account decoders
@@ -518,7 +519,7 @@ type DecodeFlags = { layoutExtended: boolean; shortLegacy: boolean };   // retur
 - **Tests:** unit per variant; property test: decoding never throws on random bytes (returns `unknown`); integration fixtures `fx/pumpswap/pool_canonical_9jkXWMyt.json`, `fx/pumpswap/pool_canonical_CHtrRatG.json`, `fx/pump/bonding_curve_short_legacy.json`, `fx/pump/bonding_curve_current.json`, `fx/token2022/pump_mint_fresh.json`, `fx/spl/token_account_frozen.json`.
 - **Observability:** metric `decode_accounts_total` (kind, result); log `M02.layout_extended` (program, discriminator, length).
 - **Security notes:** all reads are bounds-checked; no `eval`/dynamic code from IDL contents; account owner is always checked before dispatch so a forged account under another program cannot be decoded as a pool.
-- **Facts used:** EX-07, EX-08, EX-09, DA-13, DA-14, DA-15, DA-V01, TH-01, TH-03, TH-18, TH-V01, LD-14, LD-V03.
+- **Facts used:** EX-07, EX-08, EX-09, DA-13, DA-14, DA-15, DA-V01, TH-01, TH-03, TH-18, TH-V01, LD-14, LD-V03, VF-03, VF-07.
 - **Definition of done:** all variants decode their fixtures; fuzz test green; VERIFY items for SPL layouts resolved with the source commit cited.
 
 #### A-M02-03 — Transaction reader and self-CPI event decoder (v0 and v1)
@@ -559,7 +560,7 @@ interface Decoders { decodeTransactionEvents(tx: RawTransaction): DecodedEvent[]
 - **Tests:** integration fixtures `fx/pump/trade_events_curve.json`, `fx/pump/trade_mayhem_zero_fee.json`, `fx/pump/complete_and_migration_same_slot.json`, `fx/pump/migration_lagged_10_slots.json`, `fx/pump/create_buy_complete_single_tx.json`, `fx/pumpswap/buy_sell_events_tier_420.json`, `fx/pumpswap/init_boost_event.json`, `fx/tx/v1_transaction.json`; property test: never throws on random inner-instruction data.
 - **Observability:** metrics `decode_events_total` (kind), `decode_gap_total` (reason: `no_inner`, `truncated`, `unknown_disc`); log `M02.unknown_event` (program, discriminator, signature; once per discriminator per hour).
 - **Security notes:** events are trusted only from successful transactions and only from self-CPI of the program, so a third program cannot inject fake fills into our ledger.
-- **Facts used:** EX-03, EX-04, EX-05, EX-37, EX-V01, EX-V04, EX-V06, DA-11, DA-13, DA-16, LD-04, LD-05.
+- **Facts used:** EX-03, EX-04, EX-05, EX-37, EX-V01, EX-V04, EX-V06, DA-11, DA-13, DA-16, LD-04, LD-05, VF-06.
 - **Definition of done:** decoder merged; all fixtures green; consumers' contract tests (M18/M23 test doubles) use these fixtures.
 
 #### A-M02-04 — Guarded `Program data:` log fallback
@@ -796,7 +797,7 @@ interface EnumeratedPool { poolId: Pubkey; baseMint: Pubkey; isCanonical: boolea
 - **Tests:** integration fixtures `fx/pumpswap/gpa_sample_pools.json` (a few hundred real pool accounts), `fx/pumpswap/vaults_batch.json`; failure injection: gPA unsupported on all providers; response size over cap.
 - **Observability:** metrics `enumeration_pools_total{canonical}`, `enumeration_candidates_total`, `enumeration_duration_ms`, `rpc_credits_used{provider}` (via M14); log `M03.enumeration_done` (count, coverage, asOfSlot), `M03.enumeration_fallback`.
 - **Security notes:** account data is validated by owner and decoded length before use.
-- **Facts used:** EX-04, EX-07, EX-08, EX-12, DA-06, DA-09, DA-21, LD-28, ST-26.
+- **Facts used:** EX-04, EX-07, EX-08, EX-12, DA-06, DA-09, DA-21, LD-28, ST-26, VF-01, VF-03, VF-11.
 - **Definition of done:** first daily enumeration recorded in Phase 0 with its coverage value in the universe manifest; VERIFY items A-42 resolved (offsets and provider support) or fallback documented as active.
 
 #### A-M03-04 — DexScreener coverage cross-check
@@ -813,7 +814,7 @@ interface EnumeratedPool { poolId: Pubkey; baseMint: Pubkey; isCanonical: boolea
 - **Tests:** fixture `fx/dexscreener/tokens_v1_sample.json` (captured after VERIFY).
 - **Observability:** `dexscreener_calls_total{status}`; log `M03.coverage_cross_check`.
 - **Security notes:** vendor data is untrusted and stored privately only (A-32: terms for storing data are an open question; never redistributed).
-- **Facts used:** DA-26, ST-25.
+- **Facts used:** DA-26, ST-25, VF-15.
 - **Definition of done:** daily cross-check in the manifest; VERIFY for chain id and fields resolved.
 
 ### M04 Pool state tracker
@@ -877,7 +878,7 @@ The candidate interval and the watchlist cap are linked: M05 derives `max_watche
 - **Tests:** unit (batch packing, monotonic rule); integration with a mock RPC replaying `fx/pumpswap/gma_cycle_sequence.json` (30 pools, 120 cycles, including an out-of-order response); failure injection: provider timeout, all-down, account closed.
 - **Observability:** metrics `observation_lag_slots{pool,provider}`, `pool_snapshot_age_ms{pool}`, `poll_batch_latency_ms{provider}`, `poll_skipped_total{class}`, `partial_read_total`, `snapshot_out_of_order_total`; log `M04.pool_closed`.
 - **Security notes:** values come from untrusted RPC responses; a lagging or malicious provider is limited by the monotonic and lag rules, and decisions use `confirmed` data only (D14).
-- **Facts used:** EX-07, EX-09, EX-V01, LD-08, LD-09, TH-47.
+- **Facts used:** EX-07, EX-09, EX-V01, LD-08, LD-09, TH-47, VF-11.
 - **Definition of done:** poller in the Phase 0 recorder; 48 h soak test with coverage ≥ 95%; metrics in VM-13 via M28.
 
 #### A-M04-02 — `freshRead`, observation lag and staleness
@@ -930,7 +931,7 @@ interface PoolTracker {
 - **Tests:** unit with fake sources.
 - **Observability:** `pool_source_kind` gauge.
 - **Security notes:** none.
-- **Facts used:** LD-V01.
+- **Facts used:** LD-V01, VF-12.
 - **Definition of done:** seam merged; poll path unchanged; stub refuses to start by default.
 
 ### M05 Universe and watchlist manager
@@ -1203,7 +1204,7 @@ interface TokenMetadataCache { get(mint: Pubkey): TokenMetadata | null; refresh(
 - **Tests:** unit per check; fixtures `fx/pumpswap/lp_mint_burned.json`, `fx/pumpswap/lp_largest_accounts.json`; property: `fee_ceiling` passes iff `totalBps ≤ ceiling`.
 - **Observability:** `screen_verdict_total{check_id}`; log `M06.lp_changed`.
 - **Security notes:** creator-held LP is a known rug path [TH-18]; the check fails closed whenever the denominator or holder set is uncertain.
-- **Facts used:** EX-08, EX-09, EX-12, EX-V01, TH-17, TH-18, TH-19, TH-20, TH-30, ST-10, ST-V08.
+- **Facts used:** EX-08, EX-09, EX-12, EX-V01, TH-17, TH-18, TH-19, TH-20, TH-30, ST-10, ST-V08, VF-05.
 - **Definition of done:** checks merged; denominator VERIFY resolved or the conservative rule documented as active.
 
 #### A-M06-05 — Honeypot round-trip simulation with the simulation payer (D31)
@@ -1313,7 +1314,7 @@ interface SegmentManifest { path: string; stream: string; firstSlot: Slot | null
 - **Tests:** integration on a temp directory; failure injection: kill during write, disk-full simulation (small tmpfs), fsync error injection.
 - **Observability:** metrics `recorder_segment_bytes{stream}`, `recorder_rotate_ms`; log `M07.segment_rotated` (stream, records, sha256), `M07.crash_recovered`.
 - **Security notes:** segment files readable by the `bot` user and the operator's pull account only; no secrets inside.
-- **Facts used:** none (internal).
+- **Facts used:** VF-08 (zstd availability on Node 24; the gzip fallback stays).
 - **Definition of done:** 48 h soak in Phase 0 with zero manifest mismatches; codec VERIFY recorded in `DEPENDENCIES.md`.
 
 #### A-M07-03 — Coverage reports, disk management and verified-pull deletion
@@ -1581,7 +1582,7 @@ interface LatencyModel { sampleMs(rng: Rng, multiplier: number): number }
   - Given seed 1, then the first 1,000 RNG outputs equal the golden list.
   - Given 100,000 latency samples from the prior with seed 7, then the sample median is within 2% of 1,500 ms and the 95th percentile within 3% of 5,000 ms.
   - Given two parameter files differing in one value, then their `fillModelVersion`s differ.
-- **Tests:** unit; statistical test with fixed seeds; schema validation of parameter files.
+- **Tests:** unit; statistical test with fixed seeds; schema validation of parameter files. Clarification C-61 (A10): the latency model uses B-M15-01's single slot-to-time function, with per-day block-time anchors in history.
 - **Observability:** log `M10.param_set_loaded` (name, versions).
 - **Security notes:** none.
 - **Facts used:** none in the register (all values are ARCH ASSUMPTIONs A-03/A-04 and POLICY).
@@ -1665,7 +1666,7 @@ interface CostBreakdown {                                                       
 - **Tests:** unit; golden table test; property: cost non-decreasing in `cuPrice` and tip; monotonic in notional beyond the fixed-cost region.
 - **Observability:** VM-07 `expected_cost_bps` is this value (via M21/M28); metric `cost_model_bps` (histogram).
 - **Security notes:** none.
-- **Facts used:** LD-01, LD-02, LD-17, LD-22, LD-23, LD-24, LD-31, EX-07.
+- **Facts used:** LD-01, LD-02, LD-17, LD-22, LD-23, LD-24, LD-31, EX-07, VF-04.
 - **Definition of done:** merged with the golden tests; used by A-M13-01, A-M06-05, M21, M23.
 
 #### A-M10-04 — Gap-through-stop distribution, `no_data` close rule and simulated attempt timing
@@ -1717,7 +1718,7 @@ interface SimCore {
 - **Config:** `sim.calibration.min_samples` (count, 100, ≥ 100).
 - **Edge cases and failure handling:** fewer than the minimum samples → field unchanged with reason; `null` sandwich checks excluded and counted.
 - **Acceptance criteria:** Given 100 checks with 3 sandwiched, then `pSw` equals the Wilson 95% upper bound of 3/100 (hand-computed in the test); given a proposal lowering `pSw`, then `riskDirection = 'increases_risk'`.
-- **Tests:** unit; reproducibility (same input → same file hash).
+- **Tests:** unit; reproducibility (same input → same file hash). Clarification C-66 (A15): the research swap replayer validates the fill and stop-gap models; bulk use waits for the owner's credit approval.
 - **Observability:** log `M10.param_set_proposed` (name, riskDirection).
 - **Security notes:** parameter files are code-reviewed artefacts; the engine loads only files listed in config.
 - **Facts used:** ST-22, ST-V06, LD-15.
@@ -1754,12 +1755,14 @@ interface RecordedDataSource {                                                  
   4. Run registry (local SQLite on the research machine): `run_id`, mode, dataset manifest hashes, trial key, git commit, seed, status, progress (ARCH M11). `run_id` is a ULID generated from the sim-independent wall clock of the research machine (identity only, never used in computation).
   5. Coverage: if gaps exceed 5% of the window (from the days' `CoverageReport`s), the run is marked `low_coverage` and is excluded from gate evaluation (ARCH M11); it can still complete for diagnostics.
   6. `speedX: 'max'` runs as fast as possible; numeric values throttle for live-like debugging only (results are identical).
+  7. **B-9 producer (supervisor ruling, Z0D round 3).** `research replay-check <runId>` replays the evaluated run 10 times (same `RunSpec`, seed and build) and writes one 10-replay run record `{ runId, buildSha, configKey, replays, decisionLogSha256[10], identical }` to the run registry; A-M11-05 carries it in the run bundle, and A-M13-06 reads it as `replayDeterminism` in M2. It is the only source of B-9.
 - **Shared resources and concurrency:** the research machine's local files; one run per process (parallel runs use separate processes with separate RNG seeds).
 - **Config (research CLI):** `research.data_dir`, `research.registry_path`, `research.max_parallel_runs` (1-8).
 - **Edge cases and failure handling:** 1. A day in the window without a universe manifest → that day contributes no entries (no universe) and the run is `low_coverage`. 2. Codec unsupported (zstd absent on the research machine) → `E_CODEC`, run fails with a clear message.
 - **Acceptance criteria:**
   - Given the same `RunSpec` and seed twice, then byte-identical journals and run reports (ARCH 16.4); given the same run 10 times, then 10 identical decision logs (owner item 1, gate B-9, C-49).
   - Given one tampered segment, then the run fails before starting with `E_MANIFEST`.
+  - Given `replay-check` on a run, then the 10-replay run record holds 10 hashes, the run's `buildSha` and `configKey`, and `identical = true`; given a module that reads wall time, then the hashes differ and `identical = false`.
   - Leak test (owner, "Backtests are blind and reproduce live"; C-49): given a recorded dataset with a future-only marker planted after a chosen simulated time, when any module (strategy, risk, screener, features, simulation) reads it before that time, then the run fails and names the module; a run that never reads it early passes. The test fails on a deliberately leaking module.
 - **Tests:** integration on a recorded test day `fx/md/test_day/` (all streams, manifests, coverage, universe manifest).
 - **Observability:** run report (JSON) with counts, coverage, warnings; CLI logs to stderr; no metrics service.
@@ -1846,7 +1849,7 @@ interface BacktestResult { runId: Id; trades: TradeRecord[]; returnsPerDay: Arra
 - **Config:** `research.coarse.max_calls_per_month` (2,000, ≤ 2,000); `research.coarse.vendor` (`coingecko` | `birdeye`).
 - **Edge cases and failure handling:** missing intervals → bars marked incomplete (no entries); 429 → back off per M14; a pool with no vendor data → excluded and counted.
 - **Acceptance criteria:** Given a vendor dataset, then the bundle's `run.mode = 'coarse_screen'`, and M13 refuses to use it for any gate other than CS-1.
-- **Tests:** loader on captured responses `fx/coingecko/ohlcv_minute_sample.json` (after VERIFY); CS-1 evaluation on a synthetic losing strategy.
+- **Tests:** loader on captured responses `fx/coingecko/ohlcv_minute_sample.json` (after VERIFY); CS-1 evaluation on a synthetic losing strategy. Clarification C-64 (A13): a realistic line beside the optimistic one; optimistic pass with realistic kill is labelled `fragile`.
 - **Observability:** run report with call counts against the monthly budget.
 - **Security notes:** the Demo key is a secret in the research machine's secret store; only pool addresses are sent.
 - **Facts used:** DA-22, DA-25, DA-27, DA-28, DA-V07.
@@ -1903,6 +1906,8 @@ interface ExecutionPort {
 }
 interface PaperExecutionPort extends ExecutionPort {}                                    // M12-owned implementation
 // Also publishes topic 'fill.events' { attemptId, poolId, events: [], atMs } for each simulated fill (paper has no decoded events), so A-M01-05 sees the same topic in every mode.
+// P-6 leg count (supervisor ruling, Z0D round 3): the only source of P-6's paperLegs.
+interface PaperLegCounter { paperLegs(fromMs: UnixMs, toMs: UnixMs): { entryLegs: number; exitLegs: number; attemptIds: Id[] } }   // NEW
 ```
 
 - **Logic:**
@@ -1919,6 +1924,7 @@ interface PaperExecutionPort extends ExecutionPort {}                           
   - Given a paper buy whose bracketing snapshots are 1 s and 2 s after the fill time, then the fill uses the worse of the two.
   - Given all providers down at resolution time, then the attempt is `expired` and no fill is recorded.
   - Given an exit with sampled latency above 8 slots, then M19 receives `onNotLanded` and builds a superseding attempt.
+  - Given 10 paper attempts in a window (6 entry legs, 4 exit legs, including an `expired` one), then `paperLegs` returns 6 and 4 with all 10 attempt ids, whether or not A-M12-02 wrote a shadow row for them.
 - **Tests:** integration with M04 recorded history and M19/M22 test doubles; replay-vs-paper equivalence (A-M11-03).
 - **Observability:** metrics `paper_attempts_total{status}`, `paper_fill_latency_ms`; VM-13 `tx.*` paper values are labelled `simulated`.
 - **Security notes:** paper mode loads no key (ARCH 12.2); this adapter cannot send anything.
@@ -1936,11 +1942,11 @@ interface PaperExecutionPort extends ExecutionPort {}                           
   2. For every paper **exit leg** (each sell attempt; no sampling): simulate the combined buy-then-sell round trip of the same size (`shape: 'buy_then_sell'`) — the payer holds none of the paper tokens, so a standalone sell cannot be simulated (ARCH M12); `simulatedOut` = lamports returned (as A-M06-05).
   3. `modelOut` = M01 `quoteExactIn` (same direction and amount) on the M04 snapshot whose `providerSlot` is closest at or before the simulation's context slot (same-state comparison isolates model error from latency); `errorBps = 10,000 × |simulatedOut − modelOut| / modelOut`.
   4. Never sign or send (ARCH M12). Payer underfunded → `payer_underfunded`, shadow off, P-6 shows `pending-data` with the reason.
-  5. P-6 (owner item 4; ARCH 3.4, C-49): ≥ 50 buys and ≥ 50 round trips with median absolute error ≤ 30 bps and p90 ≤ 100 bps; **and** `okShareBps` ≥ 9,500 over at least 50 paper legs, where `okWithinBound` counts shadows with status `ok` and |`errorBps`| ≤ 100, and `paperLegs` counts **every** paper entry and exit leg in the window. A leg with no shadow (skipped, dropped by the hourly cap, `payer_underfunded`, `sim_error`) counts as a failure. `p6Stats` provides the numbers.
+  5. P-6 (owner item 4; ARCH 3.4, C-49): ≥ 50 buys and ≥ 50 round trips with median absolute error ≤ 30 bps and p90 ≤ 100 bps; **and** `okShareBps` ≥ 9,500 over at least 50 paper legs, where `okWithinBound` counts shadows with status `ok` and |`errorBps`| ≤ 100, and `paperLegs` counts **every** paper entry and exit leg in the window, read from A-M12-01's `paperLegs` (its paper attempts), never from the shadow table. A leg with no shadow (skipped, dropped by the hourly cap, `payer_underfunded`, `sim_error`) counts as a failure. `p6Stats` provides the numbers.
 - **Shared resources and concurrency:** simulations at P3 on the unmetered provider, at most 1 in flight for shadows (they are not latency-sensitive).
 - **Config:** `paper.shadow.enabled` (true); `paper.shadow.max_per_hour` (60, 1-600).
 - **Edge cases and failure handling:** simulation error → `sim_error` (counted, excluded from the error statistics, reported separately, and counted as a failed leg in `okShareBps`); a leg the hourly cap drops → recorded as `skipped` and counted as failed, so the cap can only make P-6 harder.
-- **Acceptance criteria:** Given 50 recorded paper buys with their snapshots and simulation responses, then `p6Stats` reproduces hand-computed median and p90 errors; given 100 paper legs of which 94 have `ok` shadows within 100 bps, 3 are `sim_error`, 2 were dropped by the cap and 1 is `ok` at 140 bps, then `okShareBps` = 9,400 and P-6 fails; given 49 legs all `ok`, then P-6 is `pending_data`.
+- **Acceptance criteria:** Given 50 recorded paper buys with their snapshots and simulation responses, then `p6Stats` reproduces hand-computed median and p90 errors; given 100 paper legs of which 94 have `ok` shadows within 100 bps, 3 are `sim_error`, 2 were dropped by the cap and 1 is `ok` at 140 bps, then `okShareBps` = 9,400 and P-6 fails; given 49 legs all `ok`, then P-6 is `pending_data`; given 100 paper attempts in A-M12-01 of which 8 have no shadow row at all, then `paperLegs` = 100 and those 8 count as failed.
 - **Tests:** unit for error statistics; integration on mainnet state, read-only and unsigned (fixtures `fx/sim/shadow_buy.json`, `fx/sim/shadow_roundtrip.json`).
 - **Observability:** metrics `shadow_sims_total{kind,status}`, `shadow_error_bps` (histogram).
 - **Security notes:** as A-M06-05: unsigned, payer key offline.
@@ -1960,9 +1966,13 @@ interface PaperExecutionPort extends ExecutionPort {}                           
 interface Phase0Report {
   a24: Array<{ dayUtc: string; eligibleUpperBound: number; canonicalityUnknown: number; maxSimultaneous: number; coverage: 'full' | 'migrations_since_start' | 'none'; lowCoverage: boolean }>;
   a24Decision: { daysWithAtLeast10: number; totalDays: number; meetsUniverseRule: boolean };
-  a24b: Array<{ horizonMin: 5 | 15 | 30 | 60; pooledAbsLogMoveBps: { median: number; p75: number; p90: number }; poolsContributing: number; windows: number }>;
-  hurdle: { notionalLamports: Lamports; gStarBpsMedianPool: number; fixedTermBps: Record<'1' | '2' | '5' | '10' | '20', number>; fixedMonthlyUsd: number; solUsd: number };
-  a24bDecision: { horizonsAboveHurdle: number[]; meetsMoveRule: boolean };
+  a24b: Array<{ sizeLamports: Lamports | null;                  // null = every eligible pool; else the step 4 pool set at that size
+    horizonMin: 5 | 15 | 30 | 60; pooledAbsLogMoveBps: { median: number; p75: number; p90: number }; poolsContributing: number; windows: number }>;
+  hurdle: { solUsd: number; bySize: Array<{ sizeLamports: Lamports; poolsInSet: number;   // C-77: lean row and $10 decide
+    gStarBpsMedianPoolLean: number; gStarBpsMedianPoolStrict: number;
+    fixedTermBps: Record<'usd10' | 'usd12' | 'usd59', Record<'1' | '2' | '5' | '10' | '20', number>> }> };
+  a24bDecision: { bySize: Array<{ sizeLamports: Lamports; status: 'pass' | 'fail' | 'insufficient' | 'excluded'; horizonsAboveHurdle: number[] }>;
+    verdict: 'proceed' | 'stop' | 'insufficient' };
   a48: Array<{ stream: string; bytesPerDayCompressed: number; codec: 'zstd' | 'gzip'; ratio: number | null }>;
   diskProjection30dBytes: number; caveats: string[];
   killCheck: {                                                    // C-48 (owner, 2026-10-07): kill-only, never passes
@@ -1971,6 +1981,7 @@ interface Phase0Report {
     bySize: Array<{ sizeLamports: Lamports; status: 'pass' | 'fail' | 'insufficient' | 'excluded_k';
       signals: number; excludedDepth: number;
       cells: Array<{ path: 'exit_path' | 5 | 15 | 30 | 60; delayBars: 0 | 1 | 2;
+        nA: number; nB: number; verdict: 'pass' | 'fail' | 'insufficient';   // n_a, n_b ≥ 30 each to pass or fail
         meanNetLeanLamports: SignedLamports; meanNetStrictLamports: SignedLamports; meanExcessLeanLamports: SignedLamports;
         ci95NetLean: [SignedLamports, SignedLamports]; ci95ExcessLean: [SignedLamports, SignedLamports];
         fixedMonthlyTermBps: { usd10: number; usd59: number }; decides: boolean }> }>;
@@ -1978,11 +1989,11 @@ interface Phase0Report {
 ```
 
 - **Logic:**
-  1. Window: the first 7 complete recorded days (ARCH 3.2 "first week of M07 data"). Days with `lowCoverage` are listed and excluded from the decision but shown.
+  1. Window (as `research/phase0/PREREG.md` §1 defines it): D1 is the first full UTC day that starts at or after R0 + 30 h (6 h of feature warm-up plus 24 h of pool age, C-15); the window is D1 to D7. If D1-D7 hold fewer than 7 good days, the window grows one whole day at a time until it holds 7, up to D14; past D14 the report is `insufficient_days`. Days with `lowCoverage` are listed and excluded from the decision but shown.
   2. A-24 (universe): per day, the manifest's `a24.eligibleCount` (an upper bound in Phase 0, because screening is not built yet: `phase0_unscreened`), canonicality-unknown pools listed separately, enumeration coverage. Universe rule (ARCH 18): **stop MR-01** if fewer than 10 eligible pools on more than half of the days, unless Phase 3b (Raydium) is justified by the D01 trigger.
   3. A-24b (moves): from complete 15 s bars of eligible pools, non-overlapping windows at horizons 5, 15, 30 and 60 minutes; absolute log moves in bps, pooled median/p75/p90 and per-pool medians. **Unconditional only**: no signal, entry rule or strategy return is computed for A-24b (computing conditional returns here would spend the data on parameter selection) (clarification C-26). The one exception is the kill-only check in step 9, which C-48 adds and which selects nothing.
-  4. Hurdle (DERIVED with A-M10-03): `g*` at $10 notional (66,666,667 lamports at the `P_SOL` parameter or the recorded SOL/USD) with lean landing on each eligible pool's median-depth state; the report shows the median pool's `g*` plus the fixed-cost term for 1, 2, 5, 10 and 20 trades per day (ARCH 2.4 conclusion 9: at $12 per month and $10 notional, 400/200/80/40/20 bps).
-  5. Move rule (POLICY, decided by the product owner): proceed only if, for at least one horizon in 5-60 minutes, the pooled **median** absolute move exceeds `g*` (median pool) + the fixed-cost term at 10 trades per day. The report states the rule and the numbers; it does not decide automatically.
+  4. Hurdle per size (DERIVED with A-M10-03; C-77): at each size of step 9 ($5, $20, $100, $1,000 and $10,000, lamports at `P_SOL` $150), `g*(x)` on the **lean** row, on each pool's median-depth state (its snapshot whose min(real, effective) quote is the median over its eligible snapshots on the good days; lower middle for an even count). At size `x` only pools whose median-depth state passes the depth cap (0.5% of min(real, effective) quote, ARCH `DEPTHPCT`) are in the pool set; the median pool is the one whose `g*(x)` is the median (lower middle), and the step 3 moves at size `x` come from the same pool set. The fixed monthly term `ceil(M × 10,000 / (30 × tradesPerDay × x))` bps is shown at 1, 2, 5, 10 and 20 trades a day for `M` = $10 (the real monthly cost, the 2 GB host; it decides), $12 (ARCH 2.4) and $59 (Helius Developer counted, D04); the strict row is shown beside the lean row. Neither the strict row nor the $12 or $59 line decides (C-77).
+  5. Move rule per size (POLICY; the owner signs the verdict off, MA-0c): a size **passes** if, for at least one horizon in 5-60 minutes, the pooled **median** absolute move exceeds `g*(x)` (median pool, lean row) + the $10 fixed term at 10 trades a day; it **fails** if it has at least 30 windows at some horizon and passes at none; it is **insufficient** if it has fewer than 30 windows at every horizon; it is **excluded** if the size is too small by `k` or no pool passes the depth cap. The move rule says **stop** only when no size passes and at least one size fails; `proceed` when a size passes; otherwise `insufficient`. A size whose result rests on fewer than 10 distinct pools is labelled "(subset)" (PREREG §3). The report states the rule and the numbers; it does not decide automatically.
   6. A-48: compressed bytes per day per stream and the observed compression ratio (raw estimated from decoded size), and a 30-day disk projection against the 50 GB minimum (ARCH M07, A-27).
   7. Caveats section lists: pre-screening upper bound; enumeration coverage; that A-24b says nothing about whether drops revert (insider dumps often do not [ST-04]); that the only sub-hour evidence for MR is a negative proxy on 5-minute vendor bars and MR-01's 15 s signal is untested (ARCH 3.2, C-46); and that one week gives few signals, so the kill check's intervals are wide.
   8. The study week's data is **excluded** from `W_B` (C-26): `W_B` begins after MR-01's configurations are pre-registered (A-M13-02).
@@ -1990,20 +2001,27 @@ interface Phase0Report {
      - **Anti-peek.** Every rule below is in `research/phase0/PREREG.md`, which names the primary configuration. The PREREG is frozen at R0 (the recorder's first snapshot): its commit sha is read with `git ls-remote` and stored in the R0 manifest before the first Phase 0 segment is pulled. The check compares that stored sha with M07's pull log (A-M07-03) and refuses to run if the sha was not stored before the first pull. Author dates are never used.
      - **Filters.** Signals pass the entry-time filters that exist in Phase 0, as the PREREG lists them (universe prefilter, real/effective ≥ 0.5, depth fall ≤ 10% over `L`, fee-config change, `REGIME`, the repeat block). Filters that do not exist yet (M06 authority, holder and honeypot-simulation checks; M21 limits) are listed in `filtersMissing` and as caveats.
      - **What is measured.** At the primary configuration and a delay of 1 bar (15 s): the configuration's own exit path (target, stop `a`, time stop `T`) and fixed horizons 5, 15, 30 and 60 min. Delays 0 and 2 and the other configuration are reported only.
-     - **Sizes.** $5, $20, $100, $1,000 and $10,000 (lamports at `P_SOL` $150, ARCH 1.5). Impact on min(real, effective) quote depth. A size whose fixed cost exceeds `k` = 1% of the stake is `excluded_k` (ARCH 2.3). A signal whose size is above 0.5% of its pool's effective depth at entry is excluded at entry for that size.
-     - **Tests, per size and cell.** (a) mean net per trade > 0 on the **lean** cost row (the hurdle of step 4, at each size); (b) mean excess over matched random entries > 0, with the same per-size costs. The strict (conservative) row and the $10 and $59 fixed-monthly lines are shown beside them and decide nothing. $10 is not a deciding size.
+     - **Sizes.** $5, $20, $100, $1,000 and $10,000 (lamports at `P_SOL` $150, ARCH 1.5). Impact on min(real, effective) quote depth. A size whose fixed cost exceeds `k` = 1% of the stake is `excluded_k` (ARCH 2.3). A signal whose size is above 0.5% of its pool's min(real, effective) quote depth at entry (ARCH 8.1 `DEPTHPCT`) is excluded at entry for that size.
+     - **Tests, per cell** (path × size, 25 cells at delay 1). (a) mean net per trade > 0 on the **lean** cost row (the per-trade costs of step 4, at each size), with `n_a` = signals left after the depth cap; (b) mean excess over matched random entries > 0, with the same per-size costs, with `n_b` = signals in (a) that have at least one matched random entry. The strict (conservative) row, the $12 line and the $10 and $59 fixed-monthly lines are shown beside them and decide nothing: the tests are per trade and carry no monthly term (C-77). $10 is not a deciding size.
+     - **Cell verdict** (PREREG §5.5). `pass` if both tests hold with `n_a` ≥ 30 **and** `n_b` ≥ 30; `fail` if either test fails with both counts ≥ 30; `insufficient` if either count is below 30, never a kill.
      - **Matching (C-65).** 10 random entries per signal in the same pool, the same UTC hour and the same 6 h MAD decile (A-M10-01 RNG, seed fixed in the PREREG). Candidates pass the same entry-time filters as the signals, the depth cap at the size included. A candidate whose holding window overlaps [signal − `L`, signal] is dropped.
-     - **Verdict per size.** `pass` if tests (a) and (b) both hold on the exit path or at any one horizon; `fail` only if delay 1 fails on the exit path **and** at every horizon from 5 to 60 min; `insufficient` if fewer than 30 signals remain (C-34), which is never a kill; `excluded_k` as above.
+     - **Verdict per size.** `pass` if any of its cells passes (the exit path or any one horizon); `fail` only if delay 1 fails, as a cell verdict, on the exit path **and** at every horizon from 5 to 60 min; otherwise `insufficient` (C-34), which is never a kill; `excluded_k` as above.
      - **MR-01 verdict.** `killed` only when no size passes and at least one size fails; `survives` when a size passes; otherwise `insufficient` (the A-24 and A-24b rules still apply in full). A kill is recorded in `docs/DECISIONS.md` with the PREREG's sha.
+     - **Precondition of R0 (C-77; supervisor ruling, Z0D round 3).** `research/phase0/PREREG.md` @ `df7d75da` (on hold) still says the strict row decides A05 (§4 "Strict row (A07): decides A05", §5.3-§5.5). If MR-01 testing goes on, the PREREG is amended before R0 to the lean row and to this step's cell, size and verdict rules. The check reads the PREREG's deciding row and refuses to run (`prereg_mismatch`) if it is not the lean row.
 - **Shared resources and concurrency:** reads pulled segments on the research machine only.
 - **Config:** CLI flags `--days`, `--notional-lamports`, `--fixed-monthly-usd`, `--sol-usd`; the kill check reads every rule from the PREREG, never from flags.
-- **Edge cases and failure handling:** fewer than 7 complete days → report produced with `insufficient_days` and no decision; enumeration fell back to migrations → caveat and the universe count is labelled lower-coverage.
+- **Edge cases and failure handling:** fewer than 7 good days by D14 → report produced with `insufficient_days` and no decision; enumeration fell back to migrations → caveat and the universe count is labelled lower-coverage.
 - **Acceptance criteria:**
   - Given the recorded week, then the report is reproducible byte-for-byte from the same inputs and contains both decision fields and the kill check.
   - Given synthetic data with 5 eligible pools per day, then `meetsUniverseRule = false`.
   - Given synthetic bars where, at every size with ≥ 30 signals, delay 1 fails on the exit path and at every horizon, then `killMr01 = true`.
   - Given synthetic bars where the exit path fails but the 15-min horizon passes both tests at $100, then the size passes and MR-01 survives.
   - Given fewer than 30 signals at every size, then the verdict is `insufficient` and `killMr01 = false`.
+  - Given a cell where test (a) fails with `n_a` = 40 but only 25 signals have a matched random entry (`n_b` = 25), then that cell is `insufficient`, not `fail`.
+  - Given a signal whose size is 0.4% of effective quote depth but 0.6% of the real quote, then it is excluded at that size.
+  - Given a PREREG whose deciding row for A05 is the strict row, then the kill check refuses to run with `prereg_mismatch`.
+  - Given moves that beat the hurdle at $100 but fail at $5 and $10,000 (each with ≥ 30 windows), then the move rule is `proceed`; given every judged size failing, it is `stop`; given a strict-row hurdle above the move but a lean-row hurdle below it, then the size passes.
+  - Given good days D1-D5 and low-coverage days D6-D7 and D8-D9 good, then the window is D1-D9; given fewer than 7 good days by D14, then `insufficient_days`.
   - Given a PREREG sha that the R0 manifest does not hold, or that was stored after the first pull in M07's pull log, then the kill check refuses to run.
   - Given a random candidate whose holding window overlaps [signal − `L`, signal], then it is dropped.
 - **Tests:** unit for horizon windowing and quantiles; golden report on a synthetic dataset.
@@ -2042,7 +2060,7 @@ interface TrialIdentity {                                                       
 - **Config:** none.
 - **Edge cases and failure handling:** M25 schema missing `affectsReturns` on a key → treated as `true` (conservative: more changes count as new trials); NaN/Infinity in params → `E_SCHEMA`.
 - **Acceptance criteria:** Given two configs differing only in a key with `affectsReturns = false`, then equal `configKey`s; differing in an `affectsReturns = true` key or the fill-model version, then different keys; given three configurations for a 30-day `W_B`, then `preRegister` → `E_BUDGET`.
-- **Tests:** unit; property: key stability under key-order permutation of input objects.
+- **Tests:** unit; property: key stability under key-order permutation of input objects. Clarification C-63 (A12): exclusions at entry time only, no field observed after the decision; regime boundaries B2-B4 as breaks; viewed-window ledger.
 - **Observability:** log `M13.trial_registered`, `M13.preregistered`.
 - **Security notes:** registry rows are immutable (M24 triggers reject UPDATE/DELETE).
 - **Facts used:** ST-29, ST-31, ST-34.
@@ -2094,7 +2112,7 @@ interface Stats {                                                               
 - **Tests:** unit with hand-computed values (ARCH 16.4); property tests (CI contains the mean of a large-n normal sample at the nominal rate within ±1 point over 1,000 seeded repetitions).
 - **Observability:** none (library).
 - **Security notes:** none.
-- **Facts used:** ST-29, ST-30, ST-31, ST-32, ST-33, ST-34, ST-35, ST-36.
+- **Facts used:** ST-29, ST-30, ST-31, ST-32, ST-33, ST-34, ST-35, ST-36, VF-13.
 - **Definition of done:** library merged with the reproduction tests; the two VERIFY items (DSR formula, MinBTL expression) resolved with the paper page cited in code comments.
 
 #### A-M13-04 — Performance statistics, `equity_point` and flow-adjusted drawdown
@@ -2130,7 +2148,7 @@ interface EquitySeries {                                                        
   - Given random interleavings of trades, sweeps, refills and external transfers, then drawdown and daily loss equal those of the trades alone (ARCH 16.2).
   - Given 29 trades, then moments, MinTRL and the expectancy CI are null and `edgeStatus = 'unproven'`.
   - Given a CI lower bound of +1 lamport, then `positive`.
-- **Tests:** property test for flow invariance; unit for each field; VM-09/VM-10 contract fixtures with M28's schema (test double).
+- **Tests:** property test for flow invariance; unit for each field; VM-09/VM-10 contract fixtures with M28's schema (test double). Clarification C-70 (A22): a mean capped at +19, outcome bins, the loss bill, week-clustered intervals, and the top 1% of trades supplying at most 50% of P&L.
 - **Observability:** metrics `equity_lamports`, `drawdown_bps` (current), `perf_compute_ms`.
 - **Security notes:** none.
 - **Facts used:** ST-26, ST-32, ST-33, ST-35, ST-39.
@@ -2168,7 +2186,7 @@ interface StageMachine {                                                        
 - **Config:** `stages.cooldown_ms` (604,800,000; ≥ that value, lowering is forbidden); minimum window lengths as POLICY constants (raising allowed by config, lowering forbidden).
 - **Edge cases and failure handling:** restart → stages loaded from the table; clock skew → windows use the sim or wall clock of the data, never "now" for past data.
 - **Acceptance criteria:** Given an evaluation whose window overlaps `W_B`, then `E_WINDOW_OVERLAP`; given an auto-demotion, then the stage is `replay_passed`, `cooldown_until` = now + 7 days, and a later P evaluation using pre-demotion paper trades is rejected.
-- **Tests:** property-based state-machine test (terminal `failed`/`archived` absorbing; windows never overlap); unit for dwell and cooldown.
+- **Tests:** property-based state-machine test (terminal `failed`/`archived` absorbing; windows never overlap); unit for dwell and cooldown. Clarification C-63 (A12): windows record the viewed-window ledger; dust and start-missing counts carry a −100% line.
 - **Observability:** metric `strategy_stage{strategy}` (enum gauge); log `M13.stage_changed` (from, to, reason).
 - **Security notes:** stage records are immutable history; a stage can only be raised by evidence or by an A3 command.
 - **Facts used:** ST-24, ST-37.
@@ -2178,7 +2196,7 @@ interface StageMachine {                                                        
 
 - **Module:** M13 · **Phase:** 1 (CS, B, R), 2 (P), 3 (LS) · **Size:** M (≈ 2 engineer-days)
 - **Goal:** Evaluate every promotion gate of ARCH 3.4 exactly, returning the `GateEvaluation` that VM-18 shows and M26 enforces; insufficient data is `pending-data`, never `pass`.
-- **Depends on:** A-M13-03, A-M13-04, A-M13-05, A-M13-08. B: none at build time (the `ExternalGateInputs` implementation is B-M26-04's adapter, injected at engine start; until it exists every external input is unavailable and its gate fails `input_unavailable`). Runtime sources behind the adapter: M26 (drill records for P-7, checklist and phrase for P-8, cooldown); M22 (paper-ledger differences for P-5, reconciliation for LS-5, `E` for P-9); M23 (fixed-cost items, realised vs modelled costs for LS-2); M18 (landing statistics for LS-4); M17 via M26 (signer lock-mode capability for LS-7); M07 coverage; M28 (VM-18 schema).
+- **Depends on:** A-M13-03, A-M13-04, A-M13-05, A-M13-08. B: none at build time (the `ExternalGateInputs` implementation is B-M26-04's adapter, injected at engine start; until it exists every external input is unavailable and its gate fails `input_unavailable`). **B-gate inputs come in M2, not M3** (supervisor ruling, Z0D round 3): this ticket ships an M2 implementation of `replayDeterminism` and `historyReplay` that reads only bundles imported by A-M13-08 (A-M11-01's 10-replay run record in the A-M11-05 bundle; card Z-H's report), so B-9 and B-10 can be decided at the M2 exit; B-M26-04's M3 adapter wraps the same implementation for those two fields and adds `dryRun` and `faultInjection`. Runtime sources behind the adapter: M26 (drill records for P-7, checklist and phrase for P-8, cooldown); M22 (paper-ledger differences for P-5, reconciliation for LS-5, `E` for P-9); M23 (fixed-cost items, realised vs modelled costs for LS-2); M18 (landing statistics for LS-4); M17 via M26 (signer lock-mode capability for LS-7); M07 coverage; M28 (VM-18 schema).
 - **Interfaces (ARCH 5.0a `GateResult`, `GateEvaluation`; ARCH M13 `evaluateGates`):**
 
 ```ts
@@ -2193,22 +2211,27 @@ interface ExternalGateInputs {                                                  
   reconciliation(fromMs: UnixMs, toMs: UnixMs): { maxDailyDiffLamports: SignedLamports; unexplainedOursBalances: number }; // LS-5
   signerUnlockOption(): 'manual' | 'host_bound_exits_only' | 'kms';                                                         // LS-7
   // Owner pre-funding items (2026-10-07, C-49). Each returns null when unavailable; null fails its gate with input_unavailable.
-  replayDeterminism(runId: Id): { replays: number; decisionLogSha256: string[]; identical: boolean } | null;              // B-9 (item 1)
-  historyReplay(): { ownerRuling: 'pending' | 'a_forward_recording' | 'b_download_approved' | 'c_dropped'; cleanDaysHeld: number;
-    daysUsed: string[]; crashes: number; illegalStates: number; unreconciledIntents: number } | null;                   // B-10 (item 2)
-  dryRun(fromMs: UnixMs, toMs: UnixMs): { fullWorkerHours: number; uptimeBps: number; restartDrills: number;
-    disconnectDrills: number; decisionsWithoutReasons: number } | null;                                                   // P-5 (item 3)
-  shadowCoverage(fromMs: UnixMs, toMs: UnixMs): { paperLegs: number; okWithinBound: number; okShareBps: number } | null;  // P-6 (item 4; A-M12-02)
-  faultInjection(buildSha: string): { buildSha: string; cases: Array<{ caseId: 'timeout' | 'stale_feed' | 'rate_limit' | 'restart_mid_trade'; pass: boolean }> } | null;   // P-10 (item 5)
+  // Producers (supervisor ruling, Z0D round 3): one producer per field, never a second source.
+  replayDeterminism(runId: Id): { runId: Id; buildSha: string; configKey: string; replays: number;
+    decisionLogSha256: string[]; identical: boolean } | null;                       // B-9 (item 1) ← A-M11-01's 10-replay run record, via the A-M11-05 bundle (M2)
+  historyReplay(buildSha: string, configKey: string): { buildSha: string; configKey: string;
+    ownerRuling: 'pending' | 'a_forward_recording' | 'b_download_approved' | 'c_waived_by_owner';
+    ownerRulingDate: string | null; ownerRulingQuote: string | null; cleanDaysHeld: number; daysUsed: string[];
+    daysInsideWR: number; crashes: number; illegalStates: number; unreconciledIntents: number } | null;   // B-10 (item 2) ← card Z-H's report, via A-M13-08 import (M2)
+  dryRun(buildSha: string, configKey: string): { buildSha: string; configKey: string; blockDeclaredAtMs: UnixMs;
+    blockFromMs: UnixMs; blockToMs: UnixMs; fullWorkerHours: number; uptimeBps: number; restartDrills: number;
+    disconnectDrills: number; decisionsWithoutReasons: number } | null;            // P-5 (item 3) ← B-M26-04 (M3)
+  shadowCoverage(fromMs: UnixMs, toMs: UnixMs): { paperLegs: number; okWithinBound: number; okShareBps: number } | null;  // P-6 (item 4) ← A-M12-02 p6Stats only (paperLegs from A-M12-01's paper attempts)
+  faultInjection(buildSha: string): { buildSha: string; cases: Array<{ caseId: 'timeout' | 'stale_feed' | 'rate_limit' | 'restart_mid_trade'; pass: boolean }> } | null;   // P-10 (item 5) ← B-M26-04 (M3)
 }
 ```
 
 - **Logic (one `GateResult` per gate; units per UC-09; dimensionless values use unit `ratio` with a `DecimalStr`):**
   1. Common: data window per A-M13-05; trades exclude `shadow` and `recovered`; `configKey` must equal the stage's frozen key (`E_TRIAL_MISMATCH` → all gates fail with that blocking reason); B and R only from imported bundles (A-M13-08), never from runs on the host; `coarse_screen` runs only for CS-1.
   2. CS-1 (kill-only): if, for every pre-registered configuration, the bootstrap 95% CI upper bound of after-cost mean per trade is < 0 → strategy `failed`; otherwise nothing changes (passing proves nothing).
-  3. B-1 ≥ 300 closed trades in `W_B` for the selected configuration; B-2 net mean CI lower bound > 0; B-3 DSR ≥ 0.95 given all `gate` trials on data overlapping `W_B` (across all strategies, conservative; clarification C-40); B-4 PBO ≤ 0.05 via CSCV (16 partitions, daily matrices) when trials ≥ 4, else rank stability; B-5 trials ≤ `maxTrialsForWindow(W_B length, observed best in-sample annualised Sharpe)`; B-6 t ≥ 3.0 [ST-34]; B-7 max drawdown at intended live sizing ≤ 20% of `E`; B-8 positive mean in the final untouched 20% of `W_B` and in each calendar week of `W_B`; B-9 (owner item 1) `replayDeterminism` shows 10 replays with identical decision-log hashes (fewer than 10, any mismatch or null → fail); B-10 (owner item 2, **OWNER DECISION PENDING**, ARCH 3.4) `historyReplay` with `ownerRuling ≠ 'pending'`, at least 30 clean days and zero crashes, illegal states and unreconciled intents; while `ownerRuling = 'pending'` B-10 fails closed with reason `owner_pending:B-10`, so `backtest_passed` cannot be reached.
-  4. R-1 ≥ 14 days post-BOOST snapshot data after `W_B` and ≥ max(300, `n_80`) trades [ST-06] (owner item 6, C-49): `n_80 = ⌈DEFF × ((1.960 + 0.842) / S_low)²⌉`, where `S_low` is the **lower** bound of the 95% interval (A-M13-03) of the selected configuration's per-trade net Sharpe on `W_B`, and DEFF is the same-day design effect; if `S_low ≤ 0`, or if `n_R / (W_B trades per day)` exceeds 90 days of `W_R`, R-1 fails with `owner_review:R-1` and nothing passes automatically; R-2 CI lower bound > 0; R-3 replay mean ≥ 50% of the `W_B` point estimate; R-4 point estimate > 0 under 2× latency and 2× `p_sw`; R-5 max drawdown ≤ 15% of `E`; R-6 crash-day report: correlated loss on each listed day ≤ `MAXRISK_PF` (pending-data if SOL/USD history is unavailable for SOL-triggered days).
-  5. P-1 ≥ 21 days and ≥ max(MinTRL from observed paper skew/kurtosis, 100) trades, all after `stage_entered_at`, ≥ 30 observations before moments; P-2 net mean CI lower bound > 0; P-2b monthly net after fixed cost: point > 0 and CI lower bound > 0 (A-M13-04); P-3 paper mean not below the replay 95% CI lower bound; P-4 max drawdown ≤ 10% of `E`; P-5 market-data availability ≥ 99% of minutes (M07 coverage) and zero unexplained paper-ledger differences, and owner item 3 from `dryRun`: ≥ 48 full-worker hours inside `W_P`, `uptimeBps` ≥ 9,900, ≥ 1 restart drill and ≥ 1 disconnect drill, `decisionsWithoutReasons` = 0; P-6 from A-M12-02 (≥ 50 buys and ≥ 50 round trips; median ≤ 30 bps; p90 ≤ 100 bps) and owner item 4 from `shadowCoverage`: `okShareBps` ≥ 9,500 over ≥ 50 paper legs, every leg without a shadow counted as failed; P-7 drills within 7 days (HALT acknowledged within 2 s; CLI kill with the engine stopped blocks signing); P-8 checklist ticked (phrase, step-up and 60 s delay are enforced by M26 at submission); P-9 fixed monthly ≤ 3% of `E`; P-10 (owner item 5) `faultInjection(buildSha)` for the exact build being promoted, all four cases passing. `paper_passed` requires P-1..P-6, P-9 and P-10 (ARCH 3.4).
+  3. B-1 ≥ 300 closed trades in `W_B` for the selected configuration; B-2 net mean CI lower bound > 0; B-3 DSR ≥ 0.95 given all `gate` trials on data overlapping `W_B` (across all strategies, conservative; clarification C-40); B-4 PBO ≤ 0.05 via CSCV (16 partitions, daily matrices) when trials ≥ 4, else rank stability; B-5 trials ≤ `maxTrialsForWindow(W_B length, observed best in-sample annualised Sharpe)`; B-6 t ≥ 3.0 [ST-34]; B-7 max drawdown at intended live sizing ≤ 20% of `E`; B-8 positive mean in the final untouched 20% of `W_B` and in each calendar week of `W_B`; B-9 (owner item 1) `replayDeterminism` shows 10 replays with identical decision-log hashes (fewer than 10, any mismatch or null → fail); B-10 (owner item 2, **OWNER DECISION PENDING**, ARCH 3.4) `historyReplay(buildSha, configKey)` of the evaluated build and the stage's frozen `configKey` (a different `buildSha` or `configKey` in the report → fail `E_TRIAL_MISMATCH`), branching on `ownerRuling`: `pending` → fail closed with `owner_pending:B-10`, so `backtest_passed` cannot be reached; `a_forward_recording` or `b_download_approved` → at least 30 clean days, `daysInsideWR` = 0 under (a), and zero crashes, illegal states and unreconciled intents; `c_waived_by_owner` → B-10 is recorded as **waived by the owner** (not passed), with `ownerRulingDate` and `ownerRulingQuote` in the `GateResult`, and both must be non-empty or B-10 fails.
+  4. R-1 ≥ 14 days post-BOOST snapshot data after `W_B` and ≥ `n_R` trades [ST-06] (owner item 6, C-49), where `n_R = max(300, n_80)` and `n_80 = ⌈DEFF × ((1.960 + 0.842) / S_low)²⌉`, `S_low` is the **lower** bound of the 95% interval (A-M13-03) of the selected configuration's per-trade net Sharpe on `W_B`, and DEFF is the same-day design effect; if `S_low ≤ 0`, power cannot be computed: R-1 fails with `owner_review:R-1_power` and the case goes to the owner; if `n_R / (W_B trades per day)` exceeds 90 days of `W_R`, R-1 fails with `owner_review:R-1_length`, the case goes to the owner and nothing passes automatically; R-2 CI lower bound > 0; R-3 replay mean ≥ 50% of the `W_B` point estimate; R-4 point estimate > 0 under 2× latency and 2× `p_sw`; R-5 max drawdown ≤ 15% of `E`; R-6 crash-day report: correlated loss on each listed day ≤ `MAXRISK_PF` (pending-data if SOL/USD history is unavailable for SOL-triggered days).
+  5. P-1 ≥ 21 days and ≥ max(MinTRL from observed paper skew/kurtosis, 100) trades, all after `stage_entered_at`, ≥ 30 observations before moments; P-2 net mean CI lower bound > 0; P-2b monthly net after fixed cost: point > 0 and CI lower bound > 0 (A-M13-04); P-3 paper mean not below the replay 95% CI lower bound; P-4 max drawdown ≤ 10% of `E`; P-5 market-data availability ≥ 99% of minutes (M07 coverage) and zero unexplained paper-ledger differences, and owner item 3 from `dryRun(buildSha, configKey)` of the build and `configKey` being promoted (a mismatch fails): one contiguous block of ≥ 48 full-worker hours, declared before it starts (`blockDeclaredAtMs` ≤ `blockFromMs`) and lying wholly inside `W_P`, `uptimeBps` ≥ 9,900 over that block, ≥ 1 restart drill and ≥ 1 disconnect drill inside it, `decisionsWithoutReasons` = 0; P-6 from A-M12-02 (≥ 50 buys and ≥ 50 round trips; median ≤ 30 bps; p90 ≤ 100 bps) and owner item 4 from `shadowCoverage` (A-M12-02 `p6Stats`, the single P-6 source): `okShareBps` ≥ 9,500 over ≥ 50 paper legs, `paperLegs` counted from A-M12-01's paper attempts (every leg), never from the shadow table, and every leg without a shadow counted as failed; P-7 drills within 7 days (HALT acknowledged within 2 s; CLI kill with the engine stopped blocks signing); P-8 checklist ticked (phrase, step-up and 60 s delay are enforced by M26 at submission); P-9 fixed monthly ≤ 3% of `E`; P-10 (owner item 5) `faultInjection(buildSha)` for the exact build being promoted, all four cases passing. `paper_passed` requires P-1..P-6, P-9 and P-10 (ARCH 3.4).
   6. LS-1 ≥ max(MinTRL from live moments, 100) live round trips and ≥ 14 days; LS-2 realised explicit cost per trade ≤ 1.25 × modelled; LS-3 live CI lower bound > 0 **and** non-inferiority rejects "live ≤ paper − δ" at 5% (δ = 50% of paper mean); LS-3b as P-2b on live data; LS-4 landing (confirmed within 20 slots of first send) ≥ 85%; LS-5 every daily reconciliation within 10,000 lamports and no unexplained `ours` balances; LS-6 live-small max drawdown ≤ 6% of `E` (flow-adjusted); LS-7 signer option (ii) or (iii), or `MAXEXP` in live capped at the live-small value (ARCH D26).
   7. Pending-data: any gate whose minimum sample or duration is unmet → `pass = false`, `actualValue` as far as known, blocking reason `pending_data:<gateId>`; never `pass` (ARCH M13 failure modes).
   8. `GateEvaluation` persisted (`gate_evaluation`, append-only) with windows; `evidenceRoute` = an in-app route (for example `/performance?strategy_id=mr01&mode=paper&from=…&to=…`).
@@ -2220,7 +2243,12 @@ interface ExternalGateInputs {                                                  
   - Given a coarse-screen bundle, then it can affect only CS-1.
   - Given 99 paper trades with an excellent CI, then P-1 is `pending_data` and `allPass = false`.
   - Given synthetic inputs exactly at each threshold, then each gate's comparator (`gte`/`gt`/`lte`/`lt`) behaves as specified in ARCH 3.4.
-  - Given R-1 inputs with 299 trades, or with 300 trades when `n_80` = 412, then R-1 fails.
+  - Given R-1 inputs with 299 trades, or with 300 trades when `n_80` = 412 (`n_R` = 412), then R-1 fails.
+  - Given `S_low` = 0 or below, then R-1 fails with `owner_review:R-1_power`; given `n_R` that needs 91 days of `W_R` at the `W_B` trade rate, then R-1 fails with `owner_review:R-1_length`; neither ever passes.
+  - Given `historyReplay` with `ownerRuling = 'c_waived_by_owner'`, a date and a quote, then B-10's `GateResult` reads waived by the owner with that date and quote; with an empty quote, B-10 fails. Given `ownerRuling = 'a_forward_recording'` with 30 clean days of which one lies in `W_R`, then B-10 fails.
+  - Given `historyReplay` or `dryRun` whose `buildSha` or `configKey` differs from the evaluated one, then B-10 or P-5 fails with `E_TRIAL_MISMATCH`.
+  - Given a dry run of 48 h made of two 24 h blocks, or one 48 h block declared after it started, or one that starts before `W_P`, then P-5 fails.
+  - Given the M2 build with no B-M26-04 adapter, then `replayDeterminism` and `historyReplay` are still read from imported bundles and B-9 and B-10 are evaluated (not `input_unavailable`).
   - Given `replayDeterminism` null, 9 replays or one differing hash, then B-9 fails; given `historyReplay` null or `ownerRuling = 'pending'`, then B-10 fails and `backtest_passed` is not reached.
   - Given `faultInjection` null, a different `buildSha` or one failing case, then P-10 fails and `paper_passed` is not reached.
   - Given `okShareBps` = 9,499 over 200 legs, then P-6 fails; given `dryRun` with 47 hours or `uptimeBps` = 9,899, then P-5 fails.
@@ -2307,7 +2335,7 @@ interface ProviderConfig {                                                      
   5. Error mapping: HTTP 429 → `E_RATE_LIMITED` with `retryAfterMs` from `Retry-After` (honoured [LD-26]); other HTTP status → `E_HTTP`; JSON-RPC error object → `E_RPC` (code kept, message scrubbed); timeout → `E_TIMEOUT`.
   6. `contextSlot` = `result.context.slot` when present; publish `rpc.context_slot` so M15's `highestSeenSlot()` sees every provider's slot (ARCH M15).
 - **Shared resources and concurrency:** M14 owns provider health and buckets (ARCH 7.2); this ticket adds only the stateless client. Request IDs are for metrics only.
-- **Config:** `rpc.providers` (list of `ProviderConfig`); `rpc.max_response_bytes` (bytes, 52,428,800); defaults per ARCH 11.1: Shyft Free (unmetered primary, 10 req/s [LD-33]), Chainstack Developer (3M requests/month, 25 req/s [LD-32]), Helius Free (1M credits/month, 10 req/s, `sendTransaction` 1/s, method costs: standard 1, `getProgramAccounts` 10, `getPriorityFeeEstimate` 1 [LD-27, LD-28]). Configured rates are 80% of documented limits (POLICY, as for send buckets).
+- **Config:** `rpc.providers` (list of `ProviderConfig`); `rpc.max_response_bytes` (bytes, 52,428,800); defaults per ARCH 11.1: Shyft Free (unmetered primary, 10 RPC req/s, 0 index req/s, 1 `sendTransaction`/s [VF-09]), Chainstack Developer (5 RPS on Solana mainnet, 3M request units a month, archive-scope calls such as `getSignaturesForAddress` 2 RU [VF-10]; LD-32's 25 req/s is the global plan figure), Helius Free (1M credits/month, 10 req/s, `sendTransaction` 1/s, method costs: standard 1, `getProgramAccounts` 10, `getPriorityFeeEstimate` 1 [LD-27, LD-28]). Configured rates are **≤ 50% of documented limits for every provider** (owner rule; it replaces the earlier 80%): Shyft standard ≤ 5 req/s and no index bucket; Chainstack the lower of 2.5 req/s and the owner's one read every 2 s (0.5 req/s), with its monthly RU hard stop (A-M14-05); Helius ≤ 5 req/s and `sendTransaction` ≤ 0.5/s. Validation refuses a configured rate above 50% of the documented one.
 - **Edge cases and failure handling:** 1. Secret missing → provider disabled, alert; fewer than two read providers remaining → engine refuses live modes. 2. Response not JSON → `E_HTTP`. 3. Response larger than the cap → aborted, `E_HTTP` with reason `too_large`.
 - **Acceptance criteria:**
   - Given a provider URL starting with `http://`, then config validation fails (`E_CONFIG`).
@@ -2317,7 +2345,7 @@ interface ProviderConfig {                                                      
 - **Tests:** unit with a mock HTTP server; secrets-scan test on captured logs; config validation tests.
 - **Observability:** metrics `rpc_requests_total{provider,method,status}`, `rpc_latency_ms{provider,method}`; log `M14.provider_disabled`.
 - **Security notes:** the only module allowed to open RPC connections; keys never leave memory; no third-party HTTP client (Node `fetch`).
-- **Facts used:** LD-05, LD-09, LD-26, LD-27, LD-28, LD-32, LD-33, LD-V06, DA-06, DA-09, EX-V04, TH-47.
+- **Facts used:** LD-05, LD-09, LD-26, LD-27, LD-28, LD-32, LD-33, LD-V06, DA-06, DA-09, EX-V04, TH-47, VF-09, VF-10.
 - **Definition of done:** client merged; all Phase 0 reads go through it; secrets scan clean.
 
 #### A-M14-02 — Read rate limiting, priorities, pinning and failover
@@ -2327,7 +2355,7 @@ interface ProviderConfig {                                                      
 - **Depends on:** A-M14-01. B: none (all B modules are callers).
 - **Interfaces:** `RpcGateway.call` (A-M14-01), plus `RpcGateway.mode(): 'normal' | 'degraded_reads'` (A-M14-05).
 - **Logic:**
-  1. Token bucket per `(provider, method class)`, classes `standard`, `heavy` (`getProgramAccounts`, `getBlock`), `send` (`sendTransaction`), `fee` (`getPriorityFeeEstimate`); capacity = configured rps (80% of documented), burst 1 s.
+  1. Token bucket per `(provider, method class)`, classes `standard`, `heavy` (`getProgramAccounts`, `getBlock`), `send` (`sendTransaction`), `fee` (`getPriorityFeeEstimate`); capacity = configured rps (≤ 50% of documented, owner rule), burst 1 s.
   2. Priorities (ARCH M14): P0 send/confirm/exit reads; P1 entry reads (and position-pool polling, C-07); P2 candidate pool polling; P3 screening; P4 discovery, vendor and dashboard extras. 20% of each bucket is reserved for P0; P0 may use the whole bucket, others only 80%. Waiting requests are served highest priority first, FIFO within a class; a request that cannot get a token before its `timeoutMs` returns `E_RATE_LIMITED`.
   3. Pinning: P2, P3 and P4 go only to the unmetered primary; P0 and P1 go to the primary first, then fail over in `failoverOrder` (ARCH M14 rules).
   4. Failover for reads: on `E_RATE_LIMITED`, `E_TIMEOUT`, HTTP 5xx or network errors, retry on the next eligible provider while time remains. No failover when `o.provider` is set (M18's expiry proof must use one provider, ARCH M18) or when `role = 'send'` (M18 decides paths).
@@ -2336,17 +2364,18 @@ interface ProviderConfig {                                                      
   7. In `degraded_reads`, P2-P4 requests fail immediately with `E_RATE_LIMITED` (`message: 'degraded'`); P0/P1 may fail over to metered providers (ARCH 11.2).
   8. All eligible providers failing → `E_ALL_PROVIDERS_DOWN` (ARCH M14 failure mode).
 - **Shared resources and concurrency:** M14 exclusively owns the buckets (ARCH 7.2); FIFO per priority class; all on the event loop.
-- **Config:** per-provider `limits` (A-M14-01), each at ≤ 50% of the documented limit (owner rule, stricter than the 80% in step 1, which it replaces). Documented limits read 2026-10-07 (`research/verify-m0-m1/RESULTS.md` rows 20 and 21 @ 01438a5e): Shyft Free 10 RPC req/s, 0 index req/s, 1 sendTransaction/s [VF-09] → standard bucket ≤ 5 req/s, no index bucket; Chainstack Developer 5 RPS on Solana mainnet and 3M request units a month [VF-10] → bucket ≤ 2.5 req/s, and the owner's backup rate of one read every 2 s; `rpc.p0_reserve_bps` (2,000, 1,000-5,000); `rpc.default_timeout_ms` per priority (P0 2,000; P1 3,000; P2 5,000; P3 10,000; P4 30,000).
+- **Config:** per-provider `limits` (A-M14-01), each at ≤ 50% of the documented limit (owner rule). Documented limits read 2026-10-07 (`research/verify-m0-m1/RESULTS.md` rows 20 and 21 @ 01438a5e): Shyft Free 10 RPC req/s, 0 index req/s, 1 sendTransaction/s [VF-09] → standard bucket ≤ 5 req/s, no index bucket; Chainstack Developer 5 RPS on Solana mainnet and 3M request units a month [VF-10] → bucket = the lower of 2.5 req/s and the owner's backup rate of one read every 2 s (0.5 req/s), plus the RU-weighted monthly hard stop of A-M14-05; `rpc.p0_reserve_bps` (2,000, 1,000-5,000); `rpc.default_timeout_ms` per priority (P0 2,000; P1 3,000; P2 5,000; P3 10,000; P4 30,000).
 - **Edge cases and failure handling:** a provider returning success with a slot far behind → accepted here (M04/M15 apply slot-lag rules); a burst from enumeration → queued at P4 without starving P0.
 - **Acceptance criteria:**
   - Given saturated P2 traffic, then a P0 call is served within one token interval.
   - Given the primary returning 429 for 5 s, then P1 calls succeed on the secondary and P2 calls wait or time out on the primary only.
   - Given `o.provider = 'chainstack'`, then no other provider is used even if it fails.
   - Property: over any 1 s window, requests sent to a provider never exceed its configured rate plus burst.
+  - Given a Chainstack config of 2.5 req/s, then the bucket runs at 0.5 req/s (the lower of the two limits); given any provider configured above 50% of its documented limit, then validation refuses the config.
 - **Tests:** unit with a fake clock; property test for rate compliance; failure injection: primary 429 storm, all-down.
 - **Observability:** metrics `rpc_queue_depth{provider,priority}`, `rpc_wait_ms{priority}`, `rpc_failover_total{from,to}`, `rpc_429_total{provider}`.
 - **Security notes:** none beyond A-M14-01.
-- **Facts used:** LD-26, LD-27, LD-32, LD-33.
+- **Facts used:** LD-26, LD-27, LD-32, LD-33, VF-09, VF-10.
 - **Definition of done:** Phase 0 recorder runs 48 h with zero provider 429 storms beyond brief bursts; metrics in VM-13.
 
 #### A-M14-03 — Service HTTP clients and the Jupiter exit budget
@@ -2367,7 +2396,7 @@ interface RpcGateway {
 
 - **Logic:**
   1. Base URLs per service from config (HTTPS only). Keys from the secret store, added as headers by M14 only: Jupiter `x-api-key` (keyless allowed at 0.5 req/s [EX-29, DA-29]); CoinGecko Demo `x-cg-demo-api-key` [DA-27]; Birdeye `X-API-KEY` [TH-26] (only if D17 (e) is taken); RugCheck public GETs need no key [TH-21]; DexScreener none [DA-26]; Jito none [LD-18]; Helius Sender takes its key as the `api-key` URL query parameter [VF-14] (settled 2026-10-07). Callers never pass secret headers (`HttpReq.headers` must not contain known secret names; validation). **Any URL that is logged, put in an error message or exported has every key-bearing query parameter (`api-key` and any configured secret name) replaced with `[redacted]`** first; a test logs a keyed Sender URL and finds no key in any log line.
-  2. Limits (80% of documented, POLICY): Jupiter one shared bucket for Swap, Price and Tokens, 60 s sliding window per organisation: free key 1 req/s → 48 per 60 s; keyless 0.5 req/s → 24 per 60 s [EX-29, DA-30]; `/swap/v2/execute` has its own bucket (20 keyless, 50 free) [EX-29]; honour `x-ratelimit-remaining`, `x-ratelimit-current`, `x-ratelimit-reset` when present (only on 200 and 429 responses [DA-30]). DexScreener 300/min for pairs/tokens/search and 60/min for profiles and similar [DA-26] → 240 and 48. RugCheck: header limit 15 with an undocumented window [TH-21] → treated as 15/min, configured 12/min. CoinGecko Demo 100/min [DA-27] → 80/min, plus a monthly cap of 2,000 calls (ARCH M14). Birdeye per plan [DA-22] (off by default).
+  2. Limits (≤ 50% of documented, owner rule; it replaces the earlier POLICY 80%): Jupiter one shared bucket for Swap, Price and Tokens, 60 s sliding window per organisation: free key 1 req/s → 30 per 60 s; keyless 0.5 req/s → 15 per 60 s [EX-29, DA-30]; `/swap/v2/execute` has its own bucket (20 keyless, 50 free documented → 10 / 25) [EX-29]; honour `x-ratelimit-remaining`, `x-ratelimit-current`, `x-ratelimit-reset` when present (only on 200 and 429 responses [DA-30]). DexScreener 300/min for pairs/tokens/search and 60/min for profiles and similar [DA-26, VF-15] → 150 and 30. RugCheck: header limit 15 with an undocumented window [TH-21] → treated as 15/min, configured 7/min. CoinGecko Demo 100/min [DA-27] → 50/min, plus a monthly cap of 2,000 calls (ARCH M14). Birdeye per plan [DA-22] (off by default).
   3. `helius_sender` and `jito` requests require `sendGrantId` from `acquireSend` (A-M14-04); they bypass the read buckets so a send is never counted twice.
   4. Jupiter exit budget (CA-10): while any exit work is open (`beginExitWork` without `endExitWork`, with a 120 s safety expiry per key), Price V3 and Tokens calls are refused immediately (`E_RATE_LIMITED`, message `exit_reserved`); callers use cached values. A Jupiter 429 on an exit request returns `E_RATE_LIMITED` immediately without waiting, so M20 uses the direct adapter (ARCH M14, D09).
   5. Response size cap 5 MB; JSON parsing errors → `E_HTTP`.
@@ -2377,11 +2406,11 @@ interface RpcGateway {
 - **Acceptance criteria:**
   - Given an exit marked in flight, then a Price V3 call returns `exit_reserved` immediately.
   - Given a Jupiter 429 on an exit request, then the call returns within 5 ms with `E_RATE_LIMITED`.
-  - Given 61 CoinGecko calls in a minute with a limit of 80/min, then none is refused; with the monthly cap reached, all are refused.
+  - Given 51 CoinGecko calls in a minute with a limit of 50/min, then the 51st waits for the window; with the monthly cap reached, all are refused.
 - **Tests:** unit with fake clock and mock servers; header-injection test (secrets never in logs).
 - **Observability:** metrics `http_requests_total{service,status}`, `jupiter_exit_reserved_total`, `service_budget_remaining{service}`.
 - **Security notes:** every response is untrusted JSON; callers validate schemas; only public identifiers (mints, pools) are ever sent; URLs are redacted before logging (step 1).
-- **Facts used:** EX-29, DA-22, DA-26, DA-27, DA-29, DA-30, TH-21, TH-26, LD-18.
+- **Facts used:** EX-29, DA-22, DA-26, DA-27, DA-29, DA-30, TH-21, TH-26, LD-18, VF-14, VF-15.
 - **Definition of done:** all service calls in group A use these clients; VERIFY A-40 resolved before Phase 3.
 
 #### A-M14-04 — Send token buckets (`acquireSend`)
@@ -2400,19 +2429,19 @@ interface RpcGateway {
 ```
 
 - **Logic:**
-  1. Buckets (POLICY 80% of documented): keyed Sender on the HTTPS global endpoint 40 req/s (50 req/s per key per region documented [LD-22]; whether the global endpoint's limit is counted per region is VERIFY A-40, so the bucket assumes the stricter single-region reading); keyless Sender 0.8 req/s per region (1 req/s per egress IP per region, rejected 429s count [LD-V06]); Jito 0.8 req/s per region (1 req/s per IP per region [LD-18]); Helius `sendTransaction` 0.8 req/s (1/s on Free [LD-27]); `jupiter_execute` (rung-4 landing through Jupiter `/execute`, B-M18-05; integration, CL-04) at 80% of the documented `/execute` limit (20 keyless, 50 free key [EX-29] → 16 / 40), never rebroadcast; **VERIFY** whether that limit is per second or per 60 s window against Jupiter's rate-limit page before setting the bucket (A-M14-03 states the Jupiter windows as 60 s; B-M18-05 states requests per second). Region for the global Sender endpoint and for Jupiter is the literal `global`.
+  1. Buckets (≤ 50% of documented, owner rule; it replaces the earlier POLICY 80%): keyed Sender on the HTTPS global endpoint 25 req/s (50 req/s per key per region documented [LD-22, VF-14]; whether the global endpoint's limit is counted per region is VERIFY A-40, so the bucket assumes the stricter single-region reading); keyless Sender 0.5 req/s per region (1 req/s per egress IP per region, rejected 429s count [LD-V06]); Jito 0.5 req/s per region (1 req/s per IP per region [LD-18]); Helius `sendTransaction` 0.5 req/s (1/s on Free [LD-27]); `jupiter_execute` (rung-4 landing through Jupiter `/execute`, B-M18-05; integration, CL-04) at 50% of the documented `/execute` limit (20 keyless, 50 free key [EX-29] → 10 / 25), never rebroadcast; **VERIFY** whether that limit is per second or per 60 s window against Jupiter's rate-limit page before setting the bucket (A-M14-03 states the Jupiter windows as 60 s; B-M18-05 states requests per second). Region for the global Sender endpoint and for Jupiter is the literal `global`.
   2. Grant order: exit first sends > exit rebroadcasts > entry first sends > entry rebroadcasts > janitor and sweep (ARCH M14, M18). Non-blocking: a call is granted if a token is available **and** no higher-order class has registered demand in the last 100 ms; otherwise `granted = false` with `retryAtMs` = the next time a token frees up for this class (demand is registered by the denied call).
   3. 429 from a send path (seen by `http()`/`call()`) empties that bucket until `Retry-After` (or 1 s), doubling on repeats up to 30 s; the path is never removed from an attempt (M18 rule).
   4. `grantId` is single-use and must accompany the send request (A-M14-03 step 3).
   5. Send URLs that carry a key (keyed Sender's `api-key` query parameter [VF-14]) are redacted before any log, error or metric label (A-M14-03 step 1).
 - **Shared resources and concurrency:** M14 owns send buckets (ARCH 7.2); M18's scheduler is the only consumer.
-- **Config:** `send.buckets` (list of `{ path, region, rps }`, each ≤ 80% of its documented limit; validation refuses higher values).
+- **Config:** `send.buckets` (list of `{ path, region, rps }`, each ≤ 50% of its documented limit; validation refuses higher values).
 - **Edge cases and failure handling:** keyed Sender disabled (no key) → keyless bucket used and an alert raised, because a flatten of 3 positions would exceed it (ARCH D02).
 - **Acceptance criteria:** Given 3 exits and 1 entry in flight at 200 ms slots, then no bucket's rate is exceeded, no path is dropped on 429, and every exit first send is granted before the entry's (ARCH 16.5).
 - **Tests:** simulation with a fake clock; property: grants never exceed the configured rate.
 - **Observability:** metrics `send_bucket_wait_ms{path}`, `send_429_total{path}`, `send_grants_total{path,side,kind}`.
 - **Security notes:** none.
-- **Facts used:** LD-18, LD-22, LD-27, LD-V06.
+- **Facts used:** LD-18, LD-22, LD-27, LD-V06, VF-14.
 - **Definition of done:** M18's capacity test passes against these buckets.
 
 #### A-M14-05 — Health, credit accounting, burn-rate projection and degraded mode
@@ -2433,18 +2462,19 @@ interface RpcGateway {
 
 - **Logic:**
   1. Health per provider over rolling windows: latency p50/p95/p99 (60 s), `errorRateBps` (5 min), `requestsPerMin`, `slot` (highest context slot from this provider), `slotLag = highestSeenSlot − slot`, `lastOkAtMs`; status `down` if no success for 10 s while requests were attempted or 5 consecutive failures; `degraded` if error rate > 200 bps, slot lag > 10 [ARCH 8.5], or a 429 in the last 60 s; else `ok`.
-  2. Usage counters per metered provider and month: credits by method cost (Helius: standard 1, `getProgramAccounts` 10, priority-fee estimate 1, `sendTransaction` 1 [LD-28]) or request counts (Chainstack). Persisted every 5 minutes (table need logged in C-14) so restarts do not reset them. The billing month boundary is assumed to be the UTC calendar month (UNVERIFIED per provider; the projection is conservative because counters never reset early).
+  2. Usage counters per metered provider and month: credits by method cost (Helius: standard 1, `getProgramAccounts` 10, priority-fee estimate 1, `sendTransaction` 1 [LD-28]) or request units (Chainstack: 1 RU a call, 2 RU for archive-scope calls, `getSignaturesForAddress` always 2 [VF-10]). **Chainstack hard stop (supervisor ruling, Z0D round 3):** the RU-weighted counter stops every Chainstack request at 1.5M RU in a month (50% of the documented 3M); the gateway then treats Chainstack as unavailable until the next UTC month and alerts. No overage is ever spent; the hard stop is checked before each request is sent, not after. Persisted every 5 minutes (table need logged in C-14) so restarts do not reset them. The billing month boundary is assumed to be the UTC calendar month (UNVERIFIED per provider; the projection is conservative because counters never reset early).
   3. Projection: `projected = used + rate_last_24h × hours_left_in_month`; alert warning when `projected ≥ 80%` of the allowance (ARCH 13.4 "Provider burn rate"); from then on P1-P4 traffic leaves that provider (A-M14-02 step 6).
   4. Degraded mode: if the unmetered primary has had no successful response for 60 s while requests were attempted, or answered only with 429s for 60 s → `degraded_reads` (publish `rpc.mode`, alert warning); return to `normal` after 60 s of continuous success. While degraded, M05 shrinks the watchlist to positions, P2-P4 stop, entries are blocked by M21 (ARCH 11.2).
   5. `E_ALL_PROVIDERS_DOWN` for 10 s → overall health `down`, alert critical (ARCH 13.4).
 - **Shared resources and concurrency:** owned by M14; counters written by the gateway only.
-- **Config:** `rpc.health.down_after_ms` (10,000), `rpc.degraded.enter_after_ms` (60,000), `rpc.degraded.exit_after_ms` (60,000), `rpc.burn.alert_bps` (8,000, 5,000-9,500).
+- **Config:** `rpc.health.down_after_ms` (10,000), `rpc.degraded.enter_after_ms` (60,000), `rpc.degraded.exit_after_ms` (60,000), `rpc.burn.alert_bps` (8,000, 5,000-9,500); `rpc.chainstack.monthly_ru_hard_stop` (1,500,000; validation refuses values above 50% of the documented allowance).
 - **Edge cases and failure handling:** clock jump at month end → counters keyed by UTC month string; a provider without metering → `monthlyAllowance` null in VM-13.
 - **Acceptance criteria:** Given the primary down for 61 s, then `mode() = 'degraded_reads'`, and, in the degraded-load model of ARCH 11.2 (≈ 1.2 req/s), the metered providers' projections stay under 80% for a 1 h outage (ARCH 16.5 "Shyft down for 1 h").
+  - Given 749,999 `getSignaturesForAddress` calls and 1 `getMultipleAccounts` call to Chainstack in a month, then the counter reads 1,499,999 RU; the next `getSignaturesForAddress` (2 RU) is refused before it is sent and no request reaches Chainstack for the rest of that UTC month; given a restart after the stop, the persisted counter keeps the stop.
 - **Tests:** unit with fake clock; failure injection: primary outage 1 h; projection arithmetic.
 - **Observability:** metrics `rpc_projected_month_end_bps{provider}`, `rpc_credits_used{provider}`, `provider_slot_lag{provider}`, `rpc_mode`; VM-13 `rpc[]` fields.
 - **Security notes:** none.
-- **Facts used:** LD-27, LD-28, LD-32, LD-33.
+- **Facts used:** LD-27, LD-28, LD-32, LD-33, VF-10.
 - **Definition of done:** VM-13 `rpc[]` and the degraded-mode drill pass in Phase 0.
 
 ## Architecture clarifications
@@ -2465,7 +2495,7 @@ Each item is an ambiguity in `ARCH.md` (or a gap between modules) and the readin
 | C-10 | M01 | The fee program's market-cap input (vault only or effective reserves) and tier-boundary inclusivity are not in the register. | Use the lower of the two market caps and, at an exact threshold, the more expensive adjacent tier; also the more expensive of pre- and post-trade tiers. The realised-fee mismatch check compares against every tier considered, so conservatism does not trigger false mismatches. **Settled 2026-10-07 [VF-04]:** the program uses the effective quote reserve (mayhem pools a fixed 10^15 supply) and an inclusive threshold, so the lower-of-two rule is withdrawn (A-M01-02 step 3); the pre/post-trade rule stays. | None. |
 | C-11 | M01 | Whether PumpSwap takes its fee from the quote input or adds it on top, and the rounding directions, are not in the register. | VERIFY against `PUMP_SWAP_README.md` with the official SDK as a test oracle; until the 1 bp golden test passes, PumpSwap is not quotable for live use. All rounding is in the direction that tightens our bounds. **Settled 2026-10-07 [VF-04]:** fees are added on top for buys and taken from output for sells; each component is `ceil`ed separately; buy-exact-quote-in uses `q′ − 1` (A-M01-02 step 4). The golden test still gates live use. | None. |
 | C-12 | M04 | M04's interface comment says `pool.snapshot` "≤ 1 Hz per pool", while ARCH 8.6 evaluates exits on every snapshot at 2 Hz. | Every snapshot of a position pool is published (2 Hz); candidates ≤ 1 Hz. | M20 handles 2 Hz. |
-| C-13 | M01 | Behaviour when a sell's computed output exceeds the real quote vault is UNVERIFIED [EX-V01]. | ~~Sell quotes are clamped to the real vault balance.~~ **Settled 2026-10-07 [VF-05]:** such a sell is refused, not clamped. The quoter returns `E_EXCEEDS_REAL_VAULT` with the largest sellable size, and exits size sells to the real vault so they can land (A-M01-03 edge case 5); `real_vs_effective_quote` rejects such pools for entries. A boundary simulation in the builder's test confirms the on-chain result. | B-M20-04 sizes exit sells to the real vault. |
+| C-13 | M01 | Behaviour when a sell's computed output exceeds the real quote vault is UNVERIFIED [EX-V01]. | ~~Sell quotes are clamped to the real vault balance.~~ **Settled 2026-10-07 [VF-05]:** such a sell is refused, not clamped. The quoter returns `E_EXCEEDS_REAL_VAULT` with the largest sellable size, and exits size sells to the real vault so they can land (A-M01-03 edge case 5); `real_vs_effective_quote` rejects such pools for entries. A-M01-03's boundary test uses an SDK-math fixture; the on-chain result is not verified until a recorded failed sell is replayed. | B-M20-04 sizes exit sells to the real vault. |
 | C-14 | M24 schema | Group A needs persistence not listed in ARCH 15. | New tables or columns needed: `enumerated_pool` (pool_id, base_mint, is_canonical, first_enumerated_at, last refresh fields), `discovery_cursor` (backfill cursor), `coverage_report` (day, json, low_coverage, manifest sha256), `rpc_usage` (provider, month, units used), `pool.quarantined_at/reason`, `universe_manifest` (day, sha256, path). | M24 adds them to the schema and migrations. **Integration:** adopted in B-M24-02. |
 | C-15 | M05/M06 | ARCH requires pool age ≥ 24 h for MR but does not say how age is known for pools found by enumeration. | Age is proven only by a verified migration event time or by the pool's first enumeration time; unknown age fails. Enumerated pools qualify 24 h after first being seen. | None. |
 | C-16 | M06 | `mayhem_or_special` must exclude mayhem, holder-rewards and cashback coins, but where those flags live for established pools is unverified (A-12). | Sources: recorded `CreateEvent` flags [DA-12] or an account-level field in the pinned IDL (VERIFY); if undeterminable → `error` → reject. This may shrink the MR universe; A-M13-01 reports how many pools it excludes. | Product owner reviews the impact after Phase 0. |
@@ -2500,8 +2530,8 @@ Each item is an ambiguity in `ARCH.md` (or a gap between modules) and the readin
 | C-45 | M01 | PDA derivation needs an on-curve check that Node built-ins do not obviously provide. | M01 (engine and sentinel only, not the signer) may use `@solana/kit`'s PDA helper (VERIFY the function in kit 8.x). | M29 confirms the sentinel's dependency set includes kit (ARCH 12.3 already allows it). **Integration:** accepted; VERIFY item stays open (A-M01-01). |
 | C-46 | M09/M13, ARCH 3.2, 3.3, A-23, D08 | Addendum A04 (adopted). ARCH said no evidence covered sub-hour horizons; the repo's research now holds a negative sub-hour proxy [RS-01..RS-05]. | ARCH 3.2, 3.3 and A-23 say "negative sub-hour proxy evidence; MR-01's 15 s signal untested". The proxy is not CS-1 (D08): it neither stops MR-01 nor uses up CS-1. No low-volume configuration is pre-registered (6-7 trades a period [RS-04]). MR-01 stays first; M09 waits only for the Phase 0 report: A-24, A-24b and the kill-only check (C-48, A-M13-01 step 9), any of which can stop MR-01. | None. |
 | C-47 | M08/M09, beside C-22 | Addendum A04 (adopted). Whether a drop made by one large sale reverts differently from a broad drop is unknown (`docs/research/edge.md:172` @ 72f1793f). | Open point. Measuring it needs trade-level data (D03). Until then no feature, filter or configuration selects on it. | None. |
-| C-48 | M13/M09, amends C-26 | Addendum A05 (owner, 2026-10-07: "Do all whats recommended"); supervisor rulings of 2026-10-07 on the map's red-team findings (sizes, filters, matching, anti-peek). C-26 allowed only unconditional moves in the Phase 0 week. | A-M13-01 step 9, rules frozen in `research/phase0/PREREG.md` at R0 (its sha stored in the R0 manifest before the first pull; checked against M07's pull log, never author dates). At the primary configuration the PREREG names and a 1-bar delay: the configuration's own exit path and horizons 5-60 min, at $5, $20, $100, $1,000 and $10,000 (impact on min(real, effective) depth; `k` = 1% cap; 0.5% depth cap). Tests: lean-row net > 0 and excess over matched random entries (C-65) > 0; the strict row and the $10/$59 lines are shown only. A size fails only if the exit path and every horizon fail; fewer than 30 signals is `insufficient`, never a kill. MR-01 is killed only when no size passes and one or more fail. Missing Phase 0 filters are caveats. Kill-only; the week stays outside `W_B`. Evidence: the excess alone flatters [RS-02]; the bounce is in the first 5 minutes [RS-03]. | None. |
-| C-49 | M11/M12/M13, ARCH 3.4, 16.4 | Addendum A06 (owner items; item 2 owner's choice "both", 2026-10-07); supervisor and red-team rulings of 2026-10-07. The Blueprint's gates did not carry the owner's pre-funding items 1-6, the planted-marker leak test or exact parity. | ARCH 3.4 maps each item to a gate: B-9 (10 identical replays); B-10 (transaction-level replay of ≥ 30 clean history days; **OWNER DECISION PENDING**: no clean day is confirmed held, so B-10 fails closed until the owner picks option (a), (b) or (c)); R-1 (≥ max(300, `n_80`) trades in the `W_R` holdout, `n_80` from the lower bound of `S_B`'s 95% interval, to the owner above 90 days); P-5 (48 h dry run, ≥ 99% uptime, drills); P-6 (`okShare` ≥ 9,500 bps over every paper leg, a leg without a shadow counted as failed); P-10 (fault injection on the promoted build); plus 16.4 exact parity and the leak test. A-M13-06 evaluates all of them, with `ExternalGateInputs` fields for each. P-1 is not raised (reason in Meme-snipe `docs/DECISIONS.md`). Every change only tightens. | B-M26-04's adapter supplies `dryRun`, `faultInjection`, `replayDeterminism`, `historyReplay` and `shadowCoverage`; a null input fails its gate. |
+| C-48 | M13/M09, amends C-26 | Addendum A05 (owner, 2026-10-07: "Do all whats recommended"); supervisor rulings of 2026-10-07 on the map's red-team findings (sizes, filters, matching, anti-peek). C-26 allowed only unconditional moves in the Phase 0 week. | A-M13-01 step 9, rules frozen in `research/phase0/PREREG.md` at R0 (its sha stored in the R0 manifest before the first pull; checked against M07's pull log, never author dates). At the primary configuration the PREREG names and a 1-bar delay: the configuration's own exit path and horizons 5-60 min, at $5, $20, $100, $1,000 and $10,000 (impact on min(real, effective) depth; `k` = 1% cap; depth cap 0.5% of min(real, effective) quote, ARCH `DEPTHPCT`). Tests per cell (25 cells): lean-row net > 0 and excess over matched random entries (C-65) > 0, the lean row deciding (C-77); the strict row and the $10/$12/$59 lines are shown only. A cell passes or fails only with `n_a` ≥ 30 **and** `n_b` ≥ 30 (PREREG §5.5), else `insufficient`, never a kill. A size fails only if the exit path and every horizon fail. MR-01 is killed only when no size passes and one or more fail. Precondition of R0: the PREREG @ `df7d75da` (strict row decides) is amended to the lean row and these rules before R0, or the check refuses to run. Missing Phase 0 filters are caveats. Kill-only; the week stays outside `W_B`. Evidence: the excess alone flatters [RS-02]; the bounce is in the first 5 minutes [RS-03]. | None. |
+| C-49 | M11/M12/M13, ARCH 3.4, 16.4 | Addendum A06 (owner items; item 2 owner's choice "both", 2026-10-07); supervisor and red-team rulings of 2026-10-07. The Blueprint's gates did not carry the owner's pre-funding items 1-6, the planted-marker leak test or exact parity. | ARCH 3.4 maps each item to a gate: B-9 (10 identical replays); B-10 (transaction-level replay of ≥ 30 clean history days; **OWNER DECISION PENDING**: no clean day is confirmed held, so B-10 fails closed until the owner picks option (a), (b) or (c)); R-1 (≥ `n_R` = max(300, `n_80`) trades in the `W_R` holdout, `n_80` from the lower bound of `S_B`'s 95% interval, to the owner above 90 days); P-5 (48 h dry run, ≥ 99% uptime, drills); P-6 (`okShare` ≥ 9,500 bps over every paper leg, a leg without a shadow counted as failed); P-10 (fault injection on the promoted build); plus 16.4 exact parity and the leak test. A-M13-06 evaluates all of them, with `ExternalGateInputs` fields for each. P-1 is not raised (reason in Meme-snipe `docs/DECISIONS.md`). Every change only tightens. | Producers (supervisor ruling, Z0D round 3): B-9 `replayDeterminism` ← A-M11-01's 10-replay run record; B-10 `historyReplay` ← card Z-H's report; P-6 `shadowCoverage` ← A-M12-02 `p6Stats` only; P-5 `dryRun` and P-10 `faultInjection` ← B-M26-04. B-gate inputs are injected in M2 by A-M13-06's bundle-backed implementation (A-M13-08); B-M26-04's M3 adapter wraps it. `historyReplay` and `dryRun` carry `buildSha` and `configKey`; a mismatch fails. A null input fails its gate. |
 | C-50 | M10, ARCH 2.3 | Addendum A07 (adopted). The break-even formula ignored trades that go to zero, and only one cost row existed. | ARCH 2.3: `p* = (L + c + q(1 − L))/(W + L)` [RS-07]; a binding conservative cost row from pessimistic Blueprint parameters until each is measured; Zeroed's 414,009 lamports [RS-06] only as a sensitivity line; no entry when the fixed cost exceeds `k`% of the stake, `k` fixed in the PREREG. Ticket work: A-M10-03 (card Z09). | None. |
 | C-51 | M13, ARCH 3.2 | Addendum A20 (adopted). Families already tested were not documented. | ARCH 3.2 lists each family with its universe, window and result [RS-24, RS-29..RS-39]; none can pass a gate. | None. |
 | C-52 | M03, D12, B-M30-01 | Addendum A02 (adopted, widened); owner, 2026-10-07: PumpPortal not used for now. | D12: chain backfill (A-M03-02) on by default; no request to any pump.fun-operated host (CI check in B-M30-01); A-M03-01 built but not run against PumpPortal; pump.fun data collected before 2026-10-07 serves research only [RS-21]. Terms register: Meme-snipe `docs/DECISIONS.md`. U-A11 stays open on message shapes and the ban signal. | B-M30-01 carries the CI check. |
@@ -2512,7 +2542,7 @@ Each item is an ambiguity in `ARCH.md` (or a gap between modules) and the readin
 | C-57 | M11, D08, D17 | Addendum A18 (owner, 2026-10-07: not now). | No early CS-1 on CoinGecko minute bars for now; A-M11-04 stays optional and unrun. | None. |
 | C-58 | M03/M14, D30, D04 | Addendum A03 (adopted). | D30's budget comes from the first enumeration count, not A-43's 50,000; vaults read daily on an unmetered provider and every 6 h only near a tier threshold; a burn-rate test fails on the zero-trade pattern [RS-19]. Whether Helius Developer ($49 a month) is the bot's fixed cost is an **open owner question** (Meme-snipe `docs/DECISIONS.md` 2026-10-07; `docs/MIGRATION.md` A03 and O7); until the owner rules it counts for P-9. Ticket work: A-M03-03, A-M14-05 (card Z08). | None. |
 | C-59 | M01 | Addendum A08 (adopted). | The creator fee is read per pool from chain at decision time (quote and ≤ 30 bps filter); the CORE-2 goldens are imported under Meme-snipe's migration Rules; reserve timing: PumpSwap events are pre-swap, pump `TradeEvent` post-trade [RS-16]. Ticket work: A-M01-02/03 (card Z07). | None. |
-| C-60 | M01/M06, ARCH 8.4 | Addendum A09 (adopted); VERIFY flag 3 (2026-10-07). | ARCH 8.4's guards stay (real/effective ratio ≥ 0.5 MR / 0.6 PM, `DEPTHPCT`, collapse below 0.4). A sell above the real vault is refused on chain, not clamped [VF-05] (C-13 as amended). A drained-pool fixture (17.58 SOL virtual, 0.27 SOL real [RS-17]): entry rejected, collapse exit fires, sell size limited so it can land. Ticket work: A-M01-03 (card Z07), A-M06-04, B-M20 (M2). | B-M20 runs the same fixture and sizes exit sells to the real vault. |
+| C-60 | M01/M06, ARCH 8.4 | Addendum A09 (adopted); VERIFY flag 3 (2026-10-07). | ARCH 8.4's guards stay (real/effective ratio ≥ 0.5 MR / 0.6 PM, `DEPTHPCT`, collapse below 0.4). A sell above the real vault is refused by the official SDK, not clamped [VF-05]; the on-chain result is inferred, not verified (C-13 as amended). A drained-pool fixture (17.58 SOL virtual, 0.27 SOL real [RS-17]): entry rejected, collapse exit fires, sell size limited so it can land. Ticket work: A-M01-03 (card Z07), A-M06-04, B-M20-04 step 5 (M2). | B-M20 runs the same fixture and sizes exit sells to the real vault. |
 | C-61 | M10/M15 | Addendum A10 (adopted). Slot length is not constant [RS-10]. | One slot-to-time function: live sampling (`slot_ms_initial` stays), per-day block-time anchors in history; the 12-, 20- and 8-slot thresholds are rechecked at 400, 267 and 200 ms. Ticket work: B-M15-01 and A-M10-01 (card Z06). | B-M15-01 owns the function. |
 | C-62 | M21 | Addendum A11 (adopted). | Property test: doubling or halving SOL/USD leaves every limit and the SOL P&L unchanged [RS-18]. Live entries and stake are the owner's. | B-M21 (M2). |
 | C-63 | M13 | Addendum A12 (adopted). | Exclusions at entry time only; no field observed after the decision (for example `ath_market_cap` [RS-12]); dust and start-missing counts with a −100% line [RS-11]; regime boundaries B2-B4 as breaks [RS-14]; a viewed-window ledger [RS-13]. Ticket work: A-M13-02, A-M13-05 (M2). | None. |
@@ -2528,6 +2558,8 @@ Each item is an ambiguity in `ARCH.md` (or a gap between modules) and the readin
 | C-73 | M03, D12 | Map round 3 red team R3-10 (2026-10-07). PumpPortal is not used (owner, 2026-10-07), so A-M03-01 sends no notices and A-M03-02's PumpPortal trigger and `gapBps` comparison have no live input. | A-M03-02's `coverage()`/`gapBps` path and its reconnect trigger are tested on recorded fixtures only. The 60 s `getSignaturesForAddress` timer (`discovery.backfill.interval_ms`) is the only live trigger until the owner rules on PumpPortal. The 7-day `gapBps` is reported as not applicable, never as 0, and D12's switch trigger is not evaluated. | None. |
 | C-74 | UI-T07, B-M28-01 | Map round 3 red team R3-11 (2026-10-07). UI-T07 (M0) needs VM-03, which B-M28-01 serves. | UI-T07 builds against a VM-03 fixture under INTEGRATION's fixture-first rule (critical-path note after the milestone table; "Remaining issues", dashboard row); its contract test waits for B-M28-01 and must pass against it before UI-T07 counts as done. | B-M28-01 publishes the VM-03 fixture with `@bot/contract`. |
 | C-75 | M03/M06/M14, D30 | VERIFY flag 1 (2026-10-07). Neither approved Phase 0 provider can run `getProgramAccounts`: Shyft Free allows 0 index requests a second; Chainstack Developer serves it on paid plans only [VF-09, VF-10]. The same limit hits the holder index calls of A-M06-03 (M2). | D30 is **OWNER PENDING**, options: (a) a capped Helius job (recommended: about 150-300 credits a month at A-43's assumed 50,000 pools [VF-11], a fix with its own small cap); (b) track only migrations seen since recording began (reduced coverage, in every manifest); (c) a paid plan (new spend). Until the owner rules, A-M03-03 runs (b) and A-M06-03's checks fail closed. | None. |
+| C-76 | M09/M13, D08, ARCH 3.2 | Research after A18 (RS-40). A kill-only screen of MR-01's two configurations on 1-minute vendor candles, pre-registered at `5ebb439` (before the owner's A18 ruling of 2026-10-07) and run on 2026-10-08, returned KILLED: −0.77% and −0.76% a trade at $200 in validation, 95% CIs below zero; −1.49% at $1,000 (`research/mr01-screen/RESULTS.md` @ `c67f37f9`, PR #283). | **OWNER PENDING** whether it stops MR-01. D08 is unchanged until then; ARCH 3.2 and D08 cite it [RS-40]. It is a coarse screen on data without reserves, so it can only stop, never pass (ARCH 3.4); no MR-01 trade can happen before the Phase 0 check and gates B, R and P anyway. Listed in Meme-snipe `docs/MIGRATION.md` owner waits. | None. |
+| C-77 | M13, ARCH 3.3, 3.4 | Supervisor ruling, Z0D round 3 (2026-10-08). Stop-only checks and passing gates used different cost rows and monthly costs ($10, $12, $59), and the PREREG disagreed with SPEC-A on the deciding row. | A stop-only check (the A-24b move rule, A-M13-01 step 5, and the A05 kill check, step 9) decides on the **lean** cost row and the real monthly cost ($10, the 2 GB host); the strict row, the $12 line and the $59 line are shown beside it. The A05 tests are per trade, so no monthly term enters them. A gate that passes a strategy decides on the conservative row (B-2, R-2) and takes the stricter fixed cost while the Helius question is open (D04): P-9, and P-2b and LS-3b. A check that can only stop must not stop on costs we do not pay; a gate that passes must not pass on costs we might pay. | None. |
 
 ## Unverified items affecting this group
 
@@ -2538,7 +2570,7 @@ None of these may be filled from memory. Each blocks or constrains the named tic
 | U-A01 | Seeds of the pump pool-authority PDA used for the canonical-pool rule [EX-08] | A-M01-01, A-M03-03, A-M06-04 | `isCanonical = null` → pools rejected (C-04) | Pinned `pump.json`/`pump_amm.json` PDA seeds; `PUMP_SWAP_README.md` |
 | U-A02 | `@solana/kit` 8.x program-derived-address helper (name, signature) | A-M01-01 | No PDA derivation; CI test fails | `@solana/kit` docs for the pinned version [LD-36] |
 | U-A03 | PumpSwap fee placement (input vs on top), rounding, fee-program market-cap input (vault vs effective), threshold inclusivity | A-M01-02, A-M01-03, A-M10-03 | Conservative tier and rounding rules; PumpSwap not quotable for live until the 1 bp golden test passes (C-10, C-11) | `FEE_PROGRAM_README.md`, `PUMP_SWAP_README.md`; SDK as test oracle |
-| U-A04 | PumpSwap sells whose computed output exceeds the real quote vault (A-09, [EX-V01]) | A-M01-03, A-M06-04 | Clamp to the real vault; `real_vs_effective_quote` gate (C-13) | Simulation near the boundary; pump docs |
+| U-A04 | PumpSwap sells whose computed output exceeds the real quote vault (A-09, [EX-V01]) | A-M01-03, A-M06-04, B-M20-04 | **Settled in the SDK, 2026-10-07 [VF-05]: refused, not clamped** (VERIFY row 9). `quoteExactIn` returns `E_EXCEEDS_REAL_VAULT` with `maxSellableBase`; exits size every sell to it (B-M20-04); `real_vs_effective_quote` gate (C-13). The on-chain result is inferred from the SDK, not verified | Replay of a recorded failed sell; pump docs |
 | U-A05 | Whether PumpSwap `BuyEvent`/`SellEvent` carry post-trade pool reserves, and exact field names beyond those in [EX-37] | A-M01-04, A-M02-03 | Orientation check uses the slot-matched modelled-price fallback | Pinned `pump_amm.json` |
 | U-A06 | PumpSwap `GlobalConfig.disable_flags` bit layout; README says the field is unused while documenting `disable()` [TH-19, TH-V04] | A-M01-05, A-M06-04 | Only `disable_flags == 0` counts as enabled; anything else → `error` | Pinned IDL and README |
 | U-A07 | Pump events emitted by self-CPI (an inference [DA-16]) and/or as `Program data:` logs (excluded claim) | A-M02-03, A-M02-04 | Self-CPI primary; guarded log fallback; truncated logs give no event | Recorded transactions; pump docs |

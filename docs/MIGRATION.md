@@ -742,6 +742,18 @@ Each row is a place where the Blueprint differs from an owner rule in `CLAUDE.md
 | Worker loop | At most three cards per batch. | At least 3 builders, 2 researchers and 1 red team at a time (owner, 2026-10-07 5:40 PM, "Worker loop"). | Both hold: a batch of three build cards is the 3 builders; 2 research lanes run beside it (Phase 0 preparation, addendum items, the research probes); 1 red team attacks each finished card. |
 | Logo | The Blueprint dashboard's look replaces the app and its themes. | Name Zeroed and the "Slot" mark (owner, 2026-10-03; `docs/BRAND.md`); the owner kept the name on 7 Oct and said nothing about the logo. | The Slot mark stays on the new dashboard; only the owner can change it. |
 
+### Owner waits
+
+Each item fails closed until the owner rules (supervisor ruling, Z0D round 3, 8 Oct 2026). None of them can let a trade or a gate pass on its own.
+
+| Wait | What fails closed meanwhile | Where |
+|---|---|---|
+| B-10 history replay: option (a) forward recording with a trade-event source (cost estimated first; days outside `W_R` only), (b) a capped history download on Helius Developer credits the owner already pays, shown as a credit estimate before any spend, or (c) waive B-10's history part | B-10 fails, so `backtest_passed` cannot be reached | ARCH 3.4 B-10; SPEC-A A-M13-06, C-49; card Z-H (day count in M0) |
+| D30 enumeration provider (C-75): (a) a capped Helius job, (b) migrations since recording began, (c) a paid plan | A-M03-03 runs (b), with reduced coverage in every manifest | ARCH D30; SPEC-A A-M03-03, C-75 |
+| Holder-index provider for A-M06-03 (same limit as D30: no approved Phase 0 provider serves the index calls) | A-M06-03's holder checks fail closed, which blocks every backtest entry; named in INTEGRATION's M2 exit | SPEC-A A-M06-03, C-75; INTEGRATION M2 |
+| 31 Dec 2026 rule for a strategy whose gates are still running on that date | It continues only while it costs nothing new; no new strategy work starts after 31 Dec | ARCH D08; SPEC-A C-56 |
+| Whether the MR-01 1-minute screen (KILLED, RS-40) stops MR-01 | D08 is unchanged; no MR-01 trade can happen before the Phase 0 check and gates B, R and P | ARCH 3.2, D08; SPEC-A C-76 |
+
 ## Ticket order
 
 Milestones follow `docs/blueprint/INTEGRATION.md`: a milestone starts only when the previous one's exit condition is met, and M4 stays blocked by the gates and by the owner. Cards run in batches of at most three, in separate packages. Each card goes through a builder, a fresh reviewer and a red team, and passes the Rules above. "Source" says where the code comes from: **port** (Snipe-solana, already reviewed and red-teamed there; tests re-run here), **adapt** (Zeroed, with the bug tests), or **new**.
@@ -808,7 +820,7 @@ Starts only after the M1 exit, and only for a strategy Phase 0 did not stop. The
 - **Botctl:** B-M29-05 (`botctl import-run`, split from B-M29-04).
 - **Reports:** every gate report shows the size sweep.
 
-Card Z-H History replay (owner item 2, required, not optional): a transaction-level history feed into the same engine code as A-M11-01. Acceptance is the owner's rule as written: at least 30 days (target 60) of survivorship-free on-chain history, the same engine code the live bot runs, and zero crashes, illegal states or unreconciled intents. It uses only days held outside the B3 contamination windows, with no new download and no new credits. Its first step counts the clean days held. Not verified today: this repo has no `data-day-*` release (only `preview`, checked 7 Oct), and the private data repo was not read. If fewer than 30 clean days are held, the owner is told before M2 starts, rather than a shorter check being run.
+Card Z-H History replay (owner item 2, required, not optional): a transaction-level history feed into the same engine code as A-M11-01. Acceptance is the owner's rule as written: at least 30 days (target 60) of survivorship-free on-chain history, the same engine code the live bot runs, and zero crashes, illegal states or unreconciled intents. It uses only days held outside the B3 contamination windows, with no new download and no new credits. Its first step counts the clean days held. Not verified today: this repo has no `data-day-*` release (only `preview`, checked 7 Oct), and the private data repo was not read. The day count runs in M0 (`docs/blueprint/INTEGRATION.md` M0 exit); if fewer than 30 clean days are held, the owner is told then, rather than a shorter check being run.
 
 Exit: `replay_passed` plus owner items 1 (10 identical replays), 2 (forward M07 data, plus Z-H's transaction-level history replay, both required), 5 (fault injection on the promoted build) and 6 whole (rules fixed in advance, walk-forward, an untouched holdout with ≥ 300 out-of-sample trades, a 95% CI above zero, 80% power). Otherwise the strategy is `failed`, and work stops (D08, A17).
 

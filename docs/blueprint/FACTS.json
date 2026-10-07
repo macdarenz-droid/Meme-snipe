@@ -5097,6 +5097,25 @@
    ]
   },
   {
+   "id": "RS-40",
+   "topic": "MR-01 1-minute kill-only screen",
+   "claim": "A kill-only screen of MR-01's two configurations on GeckoTerminal 1-minute candles of 25 survivor-only canonical PumpSwap pools in the 0.30% tier, pre-registered at 5ebb439 before any return was computed, returned KILLED: at $200 a trade in validation (2026-08-21 to the 2026-09-21T14:00Z wall), mean net was -0.77% (95% day-bootstrap CI -0.79% to -0.74%) for MR-01-5 on 7,368 trades and -0.76% (-0.79% to -0.72%) for MR-01-15 on 5,377 trades; mean gross was +0.04% to +0.06% against a round-trip cost of about 0.88%; matched random entries lost -0.83% to -0.84%.",
+   "sources": [
+    "research/mr01-screen/RESULTS.md @ c67f37f9 (branch ccr-7fae2302-drz4co, PR #283)",
+    "research/mr01-screen/PREREG.md @ c67f37f9 (first pushed at 5ebb439)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-08",
+   "confidence": "medium",
+   "design_relevance": "D08 and ARCH 3.2: evidence against MR-01 at 1-minute resolution (C-76). Whether it stops MR-01 is OWNER PENDING; D08 is unchanged until the owner rules.",
+   "verification": "pending_review",
+   "note": "Coarse screen on vendor OHLCV with no reserves: it can stop work, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Survivor-only coin list, which favours dip-buying. 1-minute candles, not the spec's 15 s snapshots; filters that need reserves or chain state were not applied. Checked against the cited files by the Z0D builder on 2026-10-08. Pending review: a fresh reviewer re-checks it before it counts as verified.",
+   "verifier_evidence": [
+    "research/mr01-screen/RESULTS.md:3-17 @ c67f37f9",
+    "research/mr01-screen/PREREG.md:1-3 @ c67f37f9"
+   ]
+  },
+  {
    "id": "VF-01",
    "topic": "PumpSwap canonical pool: pool-authority PDA seeds",
    "claim": "The pump pool-authority PDA is derived with seeds [\"pool-authority\", base_mint] under the pump program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P. A PumpSwap pool is canonical when Pool.creator (not Pool.coin_creator) equals this PDA. The pump IDL's migrate instruction derives pool_authority from the const bytes of \"pool-authority\" and the mint account.",
@@ -5278,7 +5297,7 @@
    "source_type": "official_docs",
    "as_of": "2026-10-07",
    "confidence": "high",
-   "design_relevance": "Backup reader bucket <= 2.5 req/s. One read every 2 s uses about 1.3M RU per 30 days.",
+   "design_relevance": "Backup reader: bucket at the lower of 2.5 req/s (50% of 5 RPS) and the owner's one read every 2 s, plus an RU-weighted monthly hard stop at 1.5M RU with getSignaturesForAddress counted as 2 RU (supervisor ruling, Z0D round 3; A-M14-02, A-M14-05). One read every 2 s uses about 1.3M RU per 30 days.",
    "verification": "corrected",
    "note": "Corrects LD-32 (25 req/s is not the Solana mainnet figure on Developer). Folded in 2026-10-07 from research/verify-m0-m1/RESULTS.md @ 01438a5e (branch claude/research-verify-m0-m1).",
    "verifier_evidence": [
