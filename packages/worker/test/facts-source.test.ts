@@ -425,9 +425,11 @@ describe('the worker reads through core\'s FactFeed (FACTS-1b)', () => {
     const c = ctx as unknown as FactContext;
     expect(typeof c.priorMints).toBe('function');
     expect(c.priorMints!('NoSuchCreator', c.sink.now())).toEqual([]);
-    h.worker.step();
+    // SOL-BOOKS: marks are taken once the first SOL price has opened the books.
+    const m = new Market(h);
+    await m.run(2_000, 400, () => { m.slot(); m.solPrice(); h.worker.step(); });
     await h.worker.stop();
-    // The account fact recorded after the first step carries this day's and week's marks.
+    // The account fact recorded after the opening price carries this day's and week's marks.
     const dir = join(h.stateDir, 'recorder', h.worker.boot);
     const frames = rows(dir, /^frames-/, (l) => parseTyped(l) as Frame);
     const accounts = frames.filter((f) => f.body.type === 'fact' && f.body.key === ACCOUNT_KEY).map((f) => (f.body as { value: { history: { markedAtDayStart: unknown; markedAtWeekStart: unknown } } }).value.history);

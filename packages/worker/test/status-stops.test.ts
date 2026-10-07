@@ -141,7 +141,8 @@ describe('what the app reads: no stop and a current regime only when both are tr
     expect(halts(served({ stops: null }))).toEqual(['risk-unknown']);
   });
   it('the probe: daily loss used 2.00 of 1.00 on the meter serves daily-loss even before core risk reads it', () => {
-    expect(halts(served({ trades: [{ closedAtMs: NOW - MINUTE, netPnl: -2_000_000n, netLamports: null }] }))).toEqual(['daily-loss']);
+    // SOL-BOOKS: lamports against R7's lamport line: 0.02 SOL lost of a 0.01 SOL limit.
+    expect(halts(served({ trades: [{ closedAtMs: NOW - MINUTE, netPnl: -2_000_000n, netLamports: -20_000_000n }], stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n, dailyLimit: 10_000_000n } }))).toEqual(['daily-loss']);
   });
   it('the regime parts the S0 diagnostic set waived are served with the regime', () => {
     expect(served({ regime: { atMs: NOW - 1_000, on: true, reasons: [], waived: ['regime-volume'] } }).regime).toMatchObject({ state: 'on', current: true, waived: ['regime-volume'] });

@@ -27,7 +27,9 @@ const REASONS: readonly (readonly [string, string, string | null, number])[] = [
   // Refused before any installed hard check runs: no invented H code or passed stage.
   ['#evaluate expired create (facts or let-go mark)', 'create expired', null, 0],
   ['#evaluate regime', 'regime off: no graduates as of slot 1', 'regime', 0],
-  ['#evaluate SOL price', 'live SOL price unknown', 'H16', 0],
+  // SOL-BOOKS: no live SOL price is read; the account and its opening price come before sizing.
+  ['#evaluate account', 'account snapshot unknown', 'H16', 0],
+  ['#evaluate opening price', 'opening SOL price unknown', 'H16', 0],
   ['#market no pool', 'pool state unknown', 'H16', 0],
   ['#market malformed', 'pool state malformed', 'H16', 0],
   ['#market flagged', 'pool state flagged partial (swap gap)', 'H16', 0],
@@ -38,7 +40,7 @@ const REASONS: readonly (readonly [string, string, string | null, number])[] = [
   ['#evaluate hard reject, missing input', 'hard reject H7,H9,H10: H16 missing no curve as of slot 1', 'H16', 0],
   ['#evaluate hard reject, unusable input', 'hard reject H11: H16 stale curve as of slot 1; H11 x', 'H16', 0],
   ['#evaluate hard reject, a failed step first', 'hard reject H7,H9: H7 stuck-curve x; H16 missing y', 'H7', 0],
-  ['#evaluate account', 'account snapshot unknown', 'H16', 1],
+  ['#evaluate unbooked fee', 'account unvalued: 1 fee(s) not yet booked; waiting for a snapshot with them in', 'H16', 1],
   ['#stopAt no round trip', 'no round trip: no-liquidity', 'size', 1],
   ['#stopAt no ATR', 'stop: not enough price bars for the ATR', 'size', 1],
   ['#stopAt stop distance', 'stop: too-wide 2400', 'size', 1],
@@ -149,7 +151,7 @@ describe('FUNNEL-TRUTH: each refusal at the check and stage it truly reached', (
   it('the list above is every reject site in strategy.ts: a new one fails here until it is classified', () => {
     const src = readFileSync(join(import.meta.dirname, '../src/engine/strategy.ts'), 'utf8');
     // #evaluate's `#fail` calls (the market miss, the stop text and the regime pass their own text through).
-    expect(src.match(/return this\.#fail\(/g)).toHaveLength(13);
+    expect(src.match(/return this\.#fail\(/g)).toHaveLength(14);
     // #236 added both paths to the same pre-gate refusal, covered above by reason and exact worker code.
     expect(src.match(/return this\.#fail\('create expired', \[\{ gate: 'worker', code: 'create-expired',/g)).toHaveLength(2);
     // #market's misses and #stopAt's texts.
@@ -174,7 +176,11 @@ describe('FUNNEL-TRUTH: each refusal at the check and stage it truly reached', (
     expect(d.length).toBeGreaterThanOrEqual(2);
     // The boot's first evaluations may meet the regime's inputs still arriving; every other refusal is missing data.
     for (const row of d) expect(['regime', 'H16']).toContain(row.checks[0]!.check);
-    expect(d.filter((row) => row.checks[0]!.check === 'H16').length).toBeGreaterThanOrEqual(2);
+    // SOL-BOOKS: no live SOL price is read before the pool, so both stretches meet the same missing input (the fee
+    // terms): one H16 row (before, the missing SOL price was a second, distinct one). A missing opening price is H16
+    // too (REASONS above).
+    expect(d.filter((row) => row.checks[0]!.check === 'H16').length).toBeGreaterThanOrEqual(1);
+    expect(d.filter((row) => row.checks[0]!.check === 'H16').every((row) => (row as unknown as { reasons: string[] }).reasons[0] === 'fee context unknown')).toBe(true);
     await h.worker.stop();
   });
 });
