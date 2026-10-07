@@ -1,7 +1,7 @@
 // OPS-1e: the host's decision helpers (ops/host/files/usr/local/lib/zeroed/logic.sh) run in bash here, and
 // the scripts that use them are checked for the wiring the e2e (ops/test/e2e.sh) then drives on a real host.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -261,31 +261,47 @@ describe('worker start and API address', () => {
     expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'report.2026.04.json', 'report.2026.05.json', 'report.2026.06.json', 'report.2026.07.json', 'report.2026.08.json']);
   });
 
-  it("runs the release's worker only when the release's host-config says so; the stand-in otherwise", () => {
+  it("runs the release's worker only when the release's host-config says so; the stand-in only when it says \"stub\" (RC-M4: anything else is refused)", () => {
     const rel = join(tmp, 'release');
     const cfg = (o: unknown) => {
       mkdirSync(join(rel, 'ops'), { recursive: true });
       writeFileSync(join(rel, 'ops/host-config.json'), JSON.stringify(o));
     };
     const entry = () => sh(`worker_entry "${rel}"`).out;
+    const refused = (why: RegExp) => {
+      const r = sh(`worker_entry "${rel}"`);
+      expect(r.status).toBe(1);
+      expect(r.out).toBe('');
+      expect(r.err).toMatch(why);
+    };
     const STUB = '/opt/zeroed/stub/worker.mjs';
     const MAIN = join(rel, 'packages/worker/src/main.ts');
-    expect(entry()).toBe(STUB); // no release files at all
+    expect(entry()).toBe(STUB); // no release deployed yet (a first install)
     mkdirSync(join(rel, 'packages/worker/src'), { recursive: true });
     writeFileSync(MAIN, '');
-    expect(entry()).toBe(STUB); // main.ts but no host-config
+    refused(/host-config\.json is missing or cannot be read/); // main.ts but no host-config
     cfg({ offsite_backup: false });
-    expect(entry()).toBe(STUB);
+    refused(/"worker" is \(missing\), not "release" or "stub"/);
     cfg({ worker: 'stub' });
     expect(entry()).toBe(STUB);
     cfg({ worker: 'Release' });
-    expect(entry()).toBe(STUB);
+    refused(/"worker" is Release, not "release" or "stub"/);
+    cfg({ worker: 7 });
+    refused(/"worker" is \(not a string\)/);
+    cfg(['release']);
+    refused(/cannot be read/);
     cfg({ worker: 'release' });
     expect(entry()).toBe(MAIN);
     rmSync(MAIN);
-    expect(entry()).toBe(STUB); // asked for, but the release has no worker
+    refused(/main\.ts is missing/); // asked for, but the release has no worker
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
-    expect(entry()).toBe(STUB);
+    refused(/cannot be read/);
+    // worker-start and worker-smoke take it under `set -e`: a refusal stops them, never runs anything.
+    expect(sh(`e="$(worker_entry "${rel}")"; echo "ran $e"`)).toMatchObject({ status: 1, out: '' });
+    // A dangling link (a current whose release folder went) is refused, never the stand-in.
+    const dangling = join(tmp, 'dangling-current');
+    symlinkSync(join(tmp, 'no-such-release'), dangling);
+    expect(sh(`worker_entry "${dangling}"`)).toMatchObject({ status: 1, out: '' });
     // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
     // PAUSE (owner, 2026-10-07): the host runs the stand-in until every blocker is fixed; back to 'release' then.
     expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');
@@ -724,7 +740,10 @@ describe('install.sh --update', () => {
   });
 
   it('zeroed-update applies the new release\'s host files before it switches or restarts anything; a failure keeps the old release', () => {
-    const s = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const file = read('ops/host/files/usr/local/sbin/zeroed-update');
+    // The run's own steps, after the function definitions (rollback, which the probation also uses, moves current too).
+    const s = file.slice(file.indexOf('\nprobation_check\n'));
+    expect(file.indexOf('\nprobation_check\n')).toBeGreaterThan(file.indexOf('\nrollback() {'));
     const apply = s.indexOf('apply_host "$commit" "$dest" || exit 1');
     expect(apply).toBeGreaterThan(s.indexOf('mv "$dest.new" "$dest"'));
     for (const later of ['ln -sfn "$dest" /opt/zeroed/current.new', 'mv -Tf /opt/zeroed/current.new /opt/zeroed/current', `printf '%s\\n' "$commit" > "$STATE_DIR/deployed"`, 'systemctl restart zeroed-worker.service', 'zeroed-backup-offsite.timer']) {
@@ -732,9 +751,9 @@ describe('install.sh --update', () => {
     }
     // After every gate: a retry next run goes through the same gates (deployed is not moved on failure).
     for (const gate of ['run="$(active_run)"', 'open="$(cat /var/lib/zeroed/open_intents', 'if [ "$verdict" != green ]']) expect(s.indexOf(gate), gate).toBeLessThan(apply);
-    expect(s.match(/apply_host "\$commit"/g)).toHaveLength(1);
-    expect(s).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
-    expect(s).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
+    expect(file.match(/apply_host "\$commit"/g)).toHaveLength(1);
+    expect(file).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
+    expect(file).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
     // The new release's RUN-1 units, not the running one's.
     expect(main).toContain('RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"');
   });
@@ -899,9 +918,11 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     expect(alerts({ ...ok, at: (now - 10_801) * 1000 })).toEqual(on(['stale']));
   });
 
-  it('says nothing before the first run or with the switch off, and keeps every line to one line without the separator', () => {
-    expect(alerts({})).toEqual(on([]));
+  it('with the switch on, a missing status raises the no-report alert and clears nothing (RC-M5); the switch off clears all; every line stays one line', () => {
+    expect(alerts({})).toEqual(['on record-upload-stale']);
+    expect(alerts({ failed_runs: 9, at: null })).toEqual(['on record-upload-stale']);
     expect(alerts({ enabled: false, failed_runs: 9, at: 0 })).toEqual(on([]));
+    expect(alerts({ enabled: false })).toEqual(on([]));
     expect(sh(`record_alerts ${now}`, 'not json').out).toBe('');
     const r = sh(`record_alerts ${now}`, JSON.stringify({ ...ok, failed_runs: 4, last_error: 'a|b\nc' })).out.split('\n');
     expect(r).toHaveLength(4);
