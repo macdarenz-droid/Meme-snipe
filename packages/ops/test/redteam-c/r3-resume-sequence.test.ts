@@ -302,6 +302,29 @@ describe('RC-FIXES-2b: the gates around the stand-in', () => {
     expect(read('notify')).toMatch(/CLEARED Zeroed host: a release worker runs again\./);
   });
 
+  it('a switch that holds ends the episode at once: a later planned switch onto the stand-in raises no rollback alert', () => {
+    deploy2();
+    at(600);
+    set('sd/nrestarts', 1);
+    expect(update().status).toBe(1);
+    // D3 holds (no zeroed-check runs in between), then D4, a release that runs the stand-in on purpose, is deployed.
+    set('sd/tag', D3);
+    set('sd/health', JSON.stringify({ mode: 'paper', git_sha: D3 }));
+    set('sd/nrestarts', 0);
+    at(4_000);
+    expect(update().status).toBe(0);
+    const D4 = 'e'.repeat(40);
+    mkdirSync(join(rel(D4), 'ops'), { recursive: true });
+    writeFileSync(join(rel(D4), 'ops/host-config.json'), '{"worker":"stub"}');
+    set('sd/tag', D4);
+    set('sd/health', JSON.stringify({ mode: 'paper', git_sha: D4 }));
+    at(12_000);
+    expect(update().status).toBe(0);
+    expect(current()).toBe(rel(D4));
+    check();
+    expect(read('notify')).not.toMatch(/on the stand-in worker after a rollback/);
+  });
+
   it("the stand-in's reconcile: counts kept; missing ones are 0 on a host that never had a ledger, else unknown", () => {
     const run = (prep: (state: string) => void) => {
       const dir = mkdtempSync(join(tmpdir(), 'r3-stub-'));
