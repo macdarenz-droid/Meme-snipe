@@ -1303,3 +1303,11 @@ I accept every finding: the reviewer's R7-1 and R7-2, and the red team's R7-01..
 10. **R7-08, no partial runs.** The job does not start unless U is at least the estimate plus 10%. Otherwise it reports to the owner and waits.
 
 Before pushing, run the self-check again ("how could this spend more than the owner acknowledged, or more than the plan, or loosen a gate?"), and list what you fix.
+
+## Round 8 and round 9 (heads `640f6fbf` and `e28dfab4`, 8 Oct 2026)
+
+- **Round 8 review:** PASS at `640f6fbf`, with three MINOR findings (R8-1 lineage wording, R8-2 cost kinds, R8-3 where the reservation record lives).
+- **Round 8 red team:** MINOR only (M8-1 the producer of `engineHelius`, M8-2 lease TTL, M8-3 fix records linked to CI runs, M8-4 S with drift). No BLOCKER or MAJOR.
+- **Round 9:** all seven fixed: `a324b55b` and `e28dfab4`. The lease TTL is 15 min (POLICY, supervisor accepted).
+- **Final check:** PASS at `e28dfab4ae659d30db65f42d55086ad103126d8b`. All seven are DONE and nothing else changed. FACTS.json and the ticket-graph scripts are clean.
+- **Merge condition:** `check` and `historical-data` green on `e28dfab4`, which contains base `c045c18a`.
