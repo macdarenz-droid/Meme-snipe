@@ -30,13 +30,14 @@ card must carry; nothing here is built.
   each batch waits one extra 3-hour check, about 15.5 if it waits two.** A block like 4 Oct's (more than 6 h) stops the
   chain after about 6 to 9 h, until it is re-armed (§2).
 - **Storage (owner: "Store them"):** private `zeroed-data` only, never this repository or anywhere public; publishing
-  stays off because Triton has not replied. Retention K3 (PM-01's universe). Full range **about 0.1 to 1.4 TB** for 31
-  days; the owner approved about 0.2 to 0.5 TB, so **batch 1 measures PM-01's raw size and the chain stops after batch
-  1 if the 31-day projection is above 0.5 TB** (§3).
+  stays off because Triton has not replied. Full range **about 0.1 to 1.4 TB** for 31 days. **Batch 1 keeps raw records
+  for every canonical pool (K2) for that one day**, so both sizes are measured; before batch 2 the retention is chosen
+  and recorded with the numbers (an OF-3 step): K3 (PM-01's universe) if its 31-day projection is under the owner's
+  0.5 TB, otherwise stop and ask the owner; batch 1's extra raw is then trimmed (§3). The days may wait unused in the store until a strategy reaches gate B, and under A17 (C-56) they may never be used.
 - **Held** by a fail-closed arm value in `archive-limits.conf`, set only by the last reviewed change after OF-3 to OF-7.
   **#214 merges with or after OF-2**, with its test-ci updated in that change (§4).
 - **#214 vs the 09-21 Helius cache: option (a)** (§4).
-- **No Phase 0 precondition for the download** (0 credits). B-10 itself runs only once a strategy reaches gate B.
+- **No Phase 0 precondition for the download** (0 credits). B-10 itself runs only once a strategy reaches gate B. The days may wait unused in the store until a strategy reaches gate B, and under A17 (C-56) they may never be used.
 
 ## 1. The archive's documented limits and terms
 
@@ -192,15 +193,21 @@ migration raw record. Today's retention already keeps every curve and canonical-
 | Option | Per day | 31 days | Note |
 |---|---|---|---|
 | K1 today's units (rows + 5% sampled raw + creates and migrations) | 6.4 to 8.5 GB (`historical-data.md:230`) | 0.20 to 0.26 TB | The engine's decoder sees raw records only for sampled mints |
-| **K3 (ruled): K1 + raw records for PM-01's universe** | K1 + PM-01 raw (not estimated: **VERIFY**, measured on batch 1) | between K1 and K2 | Raw records for the canonical pools of mints that migrate inside the lead-in or window, from migration to the end of PM-01's holding horizon |
-| K2 RESULTS P11: raw for **every** canonical-pool transaction | about 17 to 45 GB (RESULTS:348) | 0.53 to 1.40 TB | Not chosen: above the owner's approved size |
+| **K3: K1 + raw records for PM-01's universe** (chosen for batches 2 onward if it fits, below) | K1 + PM-01 raw (not estimated: **VERIFY**, measured on batch 1) | between K1 and K2 | Raw records for the canonical pools of mints that migrate inside the lead-in or window, from migration to the end of PM-01's holding horizon |
+| K2 RESULTS P11: raw for **every** canonical-pool transaction | about 17 to 45 GB (RESULTS:348) | 0.53 to 1.40 TB | **Batch 1 only**, to measure both sizes; not kept for 31 days (above the owner's approved size) |
 
 - **Full range for 31 days: about 0.1 to 1.4 TB.** Low end: K1's 0.20 TB with July activity at half of October's
   (the sizes come from October activity, ±2×, RESULTS line 341, so July is **VERIFY**). High end: K2's 1.40 TB, the
   upper bound for K3. MR-01 is parked (C-76), so MR's universe (RESULTS:347) is not kept.
-- **Owner's approved size: about 0.2 to 0.5 TB** ("Store them"). Batch 1 measures PM-01's raw size; **if batch 1's
-  projection for 31 days is above 0.5 TB, the chain stops after batch 1 and the owner is asked** (OF-4).
-- K3 is in the frozen scanner revision before batch 1 (OF-3). A future slot strategy that needs raw records for other
+- **Owner's approved size: about 0.2 to 0.5 TB** ("Store them").
+- **Retention decided from measurement (addendum item 17).** Batch 1 (07-22) keeps K2 raw for that one day, tagged so
+  both PM-01's subset and the full set are measured from the same day. Before batch 2, as an OF-3 step, the supervisor
+  records in DECISIONS the measured sizes, the two 31-day projections and the choice: **K3 if PM-01's 31-day projection
+  is under 0.5 TB, otherwise the chain stops and the owner is asked.** Batch 1's extra raw is then trimmed to the chosen
+  retention, so the stored day matches the other 30.
+- The chosen retention is in the frozen scanner revision from batch 2 on (OF-3).
+- The days may wait unused in the store until a strategy reaches gate B, and under A17 (C-56) they may never be used.
+- A future slot strategy that needs raw records for other
   pools reads those days again from the archive: 0 credits, only time, under the same batch rules, and only with the
   owner's OK as a new download.
 
@@ -269,8 +276,8 @@ unset; only the last reviewed change, after OF-1 to OF-7 have merged, sets it.**
 |---|---|---|---|
 | OF-1 | **#214 merged with or after OF-2**: base merge onto the integration head, fresh data review, CI green on the exact head; its test-ci updated in the same change (no dispatch of 2026-09-20; the first dispatch is 07-22, and only when armed) | `scanner/archive.go`, `polite.go`, `main.go`, `polite_test.go`, `ci/test-ci.sh` | #214's Go tests; test-ci: armed and served → `days=2026-07-22`; unarmed → no request |
 | OF-2 | **Allow-list, holds and failure count.** `archive-limits.conf` holds `ARCHIVE_DAYS` (07-22..08-21), `ARCHIVE_ARM` and `ARCHIVE_REARM_AT`. The plan job, `scan-day.sh`, `check-day.sh` and `archive-check.sh` refuse any day outside `ARCHIVE_DAYS` or in `HELIUS_DAYS`. archive-check applies holds 1–7 of §2 before any request; writes a dispatch marker (or polls until the new run is listed); ends a non-served check with a distinct, countable conclusion or title; counts failures from `ARCHIVE_REARM_AT`; allows at most one resumable restart per day | `ci/archive-limits.conf`, `ci/archive-check.sh`, `ci/scan-day.sh`, `ci/check-day.sh`, `data-scan.yml` (plan job, `continue`) | test-ci: a holdout day (09-25), a day before 07-22 (07-21) and 09-21 refused by each of the four entry points, including a manual dispatch; a block 61 min ago → no request; a non-206 check 2 h ago → no request; unarmed → no request; armed with a different id → no request; two checks back to back → one dispatch; 3 failures after `ARCHIVE_REARM_AT` → no request; the same 3 failures before a later `ARCHIVE_REARM_AT` → a request; a second exit 75 on a day → counted |
-| OF-3 | **Scanner revision frozen** for every batch (P2 for the archive path), with K3 (P11 for PM-01's universe) and P12 (fee-config history) inside it; a cached unit of another revision is refused, not re-read | `ci/scan-day.sh`, `scanner/` | test-ci: a unit of another revision → exit 2, no archive request |
-| OF-4 | **Nothing public; size check.** `publish-day.sh` and `publish-volume.sh` write to `zeroed-data` (private), never to `GITHUB_REPOSITORY`; the `day-DAY` artifact is dropped or kept in the Actions cache only; the day release carries the per-unit log; the progress-cache entry is deleted only after every sha256 is read back; after batch 1 the 31-day storage projection is computed from batch 1's measured sizes, and above 0.5 TB the chain stops and the owner is asked | `ci/publish-day.sh`, `ci/publish-volume.sh`, `data-scan.yml`, DATA-STORE scripts | test-ci: no archive-path step writes a release or an artifact to `GITHUB_REPOSITORY`; a read-back mismatch keeps the cache entry and fails the batch; a batch-1 projection of 0.51 TB → no further dispatch |
+| OF-3 | **Scanner revision frozen** for every batch from batch 1 (P2 for the archive path), with P11 (raw-record retention K2 and K3 as a per-unit recorded `retention` value, as today's retention tag, `historical-data.md:94`) and P12 (fee-config history) inside it; a cached unit of another revision is refused, not re-read. **Retention step before batch 2 (addendum item 17):** batch 1 runs with K2; the supervisor records batch 1's measured K2 and PM-01 sizes, both 31-day projections and the choice (K3 if PM-01's projection is under 0.5 TB, otherwise stop and ask the owner) in DECISIONS; the dispatch of batch 2 refuses until that record exists; a reviewed trim tool then cuts batch 1's raw records to the chosen retention, rewrites its retention tag and per-unit log, and re-stores the day | `ci/scan-day.sh`, `scanner/`, a trim tool | test-ci: a unit of another revision → exit 2, no archive request; batch 2 with no retention record → no request; batch 1 trimmed to K3 equals a fresh K3 scan of the same unit byte for byte; finalize refuses a day mixing retention values |
+| OF-4 | **Nothing public; size check.** `publish-day.sh` and `publish-volume.sh` write to `zeroed-data` (private), never to `GITHUB_REPOSITORY`; the `day-DAY` artifact is dropped or kept in the Actions cache only; the day release carries the per-unit log; the progress-cache entry is deleted only after every sha256 is read back; after batch 1 both 31-day storage projections (K2 and PM-01's K3) are computed from batch 1's measured sizes, and if PM-01's is above 0.5 TB the chain stops and the owner is asked | `ci/publish-day.sh`, `ci/publish-volume.sh`, `data-scan.yml`, DATA-STORE scripts | test-ci: no archive-path step writes a release or an artifact to `GITHUB_REPOSITORY`; a read-back mismatch keeps the cache entry and fails the batch; a batch-1 PM-01 projection of 0.51 TB → no further dispatch |
 | OF-5 | **Completion from the private store.** "Is this day done?" (archive-check's queue and data-scan's skip step, today `archive-check.sh:121` and `data-scan.yml:191-204`, both reading this repository) reads `zeroed-data`, and fails closed if it cannot be read | `ci/archive-check.sh`, `ci/publish-day.sh --check`, `data-scan.yml` | test-ci: a day stored in `zeroed-data` is skipped; `zeroed-data` unreadable → no request and no dispatch; a day released only in this repository is not counted as done |
 | OF-6 | **No second read of a margin unit.** A unit already stored for the adjacent day is taken from the store, not read from the archive; the determinism rescan unit is the only allowed second read | `ci/scan-day.sh`, `scanner/` (unit plan) | test-ci: day D+1 after day D reads none of D's forward-margin units from the archive; the rescan reads exactly one unit |
 | OF-7 | **Records before batch 1:** the Triton answer ("No reply") and the owner's "Store them" in DECISIONS (done in this PR); the `B10-PULL` row pinned by the supervisor (`B10-PULL id=… source=old-faithful scannerRev=<OF-3 revision> days=2026-07-22..2026-08-21 pinnedAt=…`) | `docs/DECISIONS.md` | the evaluator and the research CLI refuse a run without the row (SPEC-A A-M11-01 step 8) |
