@@ -110,6 +110,7 @@
   - Recommendation on 09-21: (a), drop the Helius cache when #214 merges. 09-21 stays in HELIUS_DAYS, and the DATA-KEEP refresh of it stops.
   - Owner asked (7:40 AM): Triton's reply to the 4 Oct email; OK for 0.2–0.5 TB in zeroed-data.
   - Z01 round 6 (`b42c08f4`): red team round 5 found 1 MAJOR (RT5-01: a binary extension skips any content). Reviewer report pending. Round 7 to rule. RT5-04 (Android release wait vs check queue) becomes moot with APK-REMOVE.
+- **8 Oct about 7:42 AM, owner:** Triton "No reply"; storage "Store them". The archive-derived day files go in the private zeroed-data repo only, and publishing stays off until Triton answers (CLAUDE.md, under "History for the past-data test"). Sent to the Z-H-OF builder for #292.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);

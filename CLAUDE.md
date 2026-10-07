@@ -95,5 +95,6 @@ Copied from `macdarenz-droid/M-arc` CLAUDE.md (which imports AGENTS.md). Every a
   - any 429 or 503 stops the chain for at least 3 hours; the chain stops after 3 failures and is reported;
   - never get around a block, and never change the scanner's identity;
   - only days outside the holdout-contaminated windows and outside `W_R` are used; nothing is read from pump.fun-operated hosts.
+  - Storage (owner, 2026-10-08 about 7:42 AM, asked whether Triton answered the 4 Oct email and whether about 0.2–0.5 TB of archive-derived day files may go in the private zeroed-data repo: "No reply / Store them"). Triton has not replied. The archive-derived day files are stored only in the private zeroed-data repository, never in this repository or any public place. Publishing them stays off until Triton answers.
 - One supervisor. The Blueprint supervisor is this repo's only supervisor (task board, merge queue, `HANDOVER.md`); the Zeroed supervisor hands over and stands down.
 - Carried from the Blueprint build (owner, 2026-10-06): every finished task is attacked by a red team before the supervisor approves it. Every external read goes through a rate limiter at no more than 50% of the provider's documented limit; on a 429 or 403 it honours Retry-After, backs off and stops after 3 failures; no bulk historical downloads; fetch only the minimum sample a test needs.
