@@ -21,7 +21,9 @@ const main = async () => {
   const rpc = new PublicRpc();
   const index = loadIndex();
   const chain = new ChainView(rpc, index);
-  const lists = [`coins-${day}.json`, ...(existsSync(join(DATA_DIR, `coins-${prevDay(day!)}-from-18.json`)) ? [`coins-${prevDay(day!)}-from-18.json`] : [])];
+  // The previous day's evening tail and the next day's early coins are others (the regime's graduates series is fed by
+  // every coin live, and a run reaches past midnight while the day's last windows run out).
+  const lists = [`coins-${day}.json`, ...[`coins-${prevDay(day!)}-from-18.json`, `coins-${nextDay(day!)}.json`].filter((f) => existsSync(join(DATA_DIR, f)))];
   const all = [...new Map(lists.flatMap((f) => (JSON.parse(readFileSync(join(DATA_DIR, f), 'utf8')) as { coins: Coin[] }).coins).map((c) => [c.mint, c] as const)).values()];
   const tapes = JSON.parse(readFileSync(join(DATA_DIR, `tapes-${day}.json`), 'utf8')) as Record<string, CoinTapes>;
   const inRun = all.filter((c) => c.migrationTime >= start && c.migrationTime < end);
@@ -61,5 +63,6 @@ const main = async () => {
 };
 
 const prevDay = (day: string): string => new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+const nextDay = (day: string): string => new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 
 if (process.argv[1] === new URL(import.meta.url).pathname) await main();
