@@ -2,7 +2,7 @@
 
   python3 -I stage2.py check <stage1.json> <expected_sha256> <out_dir>   # data checks 2-3 (no outcome read)
   python3 -I stage2.py price <stage1.json> <expected_sha256> <out_dir>   # price primary, then arms (credit cap)
-  python3 -I stage2.py stats <stage1.json> <out_dir>                      # tables, intervals, verdict
+  python3 -I stage2.py stats <stage1.json> <expected_sha256> <out_dir>                     # tables, intervals, verdict
 
 Reads only the frozen stage-1 table (its SHA-256 must match the committed value), pool_map.json and pool
 transactions from Helius (hel.py; cap 400,000 credits; never a block time after the wall).
@@ -124,7 +124,9 @@ def check(st, out):
         for k in range(200):
             c = pools[rng.randrange(len(pools))]
             a = max(lo, first[c] or lo)
-            t = a + rng.randrange(max(1, hi - a))
+            if a >= hi:
+                rows.append(None); continue                           # pool younger than the range: skipped
+            t = a + rng.randrange(hi - a)
             rows.append(swap_check(c, t))
         ok = [r for r in rows if r and r.get('ok') is not None]
         fail = [r for r in ok if not r['ok']]
@@ -158,6 +160,10 @@ def swap_check(c, t):
                 'p_eff': p_eff, 'p_pre': p0, 'p_post': p1, 'dev': dev, 'ok': dev <= 0.001,
                 'size_share': abs(dx) / a[0]}
     return None
+
+
+def dump_atomic(obj, path):
+    json.dump(obj, open(path + '.tmp', 'w')); os.replace(path + '.tmp', path)
 
 
 # ------------------------------------------------------------------ pricing
@@ -252,15 +258,15 @@ def price(st, out):
                         row['controls'], row['tried'] = run_controls(P, e, ranked, nwant, ex)
                 R[key]['events'][e['id']] = row
                 if j % 10 == 0:
-                    P.save(); json.dump(R, open(resp, 'w'))
+                    P.save(); dump_atomic(R, resp)
                     print(key, j, 'credits', hel.ledger()['credits'], flush=True)
             R[key]['done'] = True
-            P.save(); json.dump(R, open(resp, 'w'))
+            P.save(); dump_atomic(R, resp)
             print('phase done', key, 'credits', hel.ledger()['credits'], flush=True)
     except hel.CapReached as err:
         print('CAP REACHED:', err)
         R['_cap_reached'] = str(err)
-    P.save(); json.dump(R, open(resp, 'w'))
+    P.save(); dump_atomic(R, resp)
 
 
 # ------------------------------------------------------------------ statistics
@@ -365,6 +371,9 @@ def stats(st, out):
                 if rr and rr.get('controls'):
                     v = [x['net'] for x in rr['controls'] if x.get('exec')]
                     r[kind] = float(np.mean(v)) if v else None
+            r['entry_age'] = e['T'] + 7 - ev['entry_bt']
+            r['n_c2'] = len([x for x in (R.get(f'{arm}:c2', {}).get('events', {}).get(eid) or {}).get('controls', [])
+                             if x.get('exec')])
             rows.append(r)
         return rows, drop
 
@@ -373,6 +382,8 @@ def stats(st, out):
     P = summarize(prim, 'primary')
     P['dropped'] = drop
     P['too_few_controls'] = sum(1 for r in prim if r['c'] is None)
+    P['entry_state_older_than_1h'] = sum(1 for r in prim if r['entry_age'] > 3600)
+    P['events_with_fewer_than_5_c2'] = sum(1 for r in prim if r['n_c2'] < 5)
     # halves split at the median entry date of the lift set
     if lift:
         mid = float(np.median([r['T'] for r in lift]))
@@ -427,8 +438,16 @@ def balance(st, R, lift):
     out = {}
     for j, name in enumerate(['r24', 'm24', 'vol6', 'hour']):
         a, b = ev[:, j], ctl[:, j]
-        out[name] = float((a.mean() - b.mean()) / math.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2))
+        if name == 'hour':                                           # circular: compare on the unit circle
+            out['hour_sin'] = smd(np.sin(a * np.pi / 12), np.sin(b * np.pi / 12))
+            out['hour_cos'] = smd(np.cos(a * np.pi / 12), np.cos(b * np.pi / 12))
+        else:
+            out[name] = smd(a, b)
     return out
+
+
+def smd(a, b):
+    return float((a.mean() - b.mean()) / math.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2))
 
 
 def near_cut(st, prim):
@@ -441,24 +460,23 @@ def verdict(P):
     ev, days = P.get('lift_events', 0), P.get('lift_days', 0)
     if ev < 150 or days < 100:
         return {'verdict': 'UNRESOLVED', 'why': f'{ev} executable events with a C1 set on {days} days (need 150 and 100)'}
-    if P['mean_n'] <= 0 or P['mean_d'] <= 0:
-        return {'verdict': 'KILLED', 'why': f"mean n {P['mean_n']:.4f}, mean d {P['mean_d']:.4f}"}
+    if P['mean_n'] <= 0 or P['mean_d'] <= 0 or P['mean_n_all'] <= 0:
+        return {'verdict': 'KILLED', 'why': f"mean n {P['mean_n']:.4f} (all executable {P['mean_n_all']:.4f}), "
+                                           f"mean d {P['mean_d']:.4f}"}
     h = P['halves']
     conds = {
-        'ci_n_lower>0 (bootstrap)': P['ci_n_boot'][0] > 0,
-        'ci_d_lower>0 (bootstrap)': P['ci_d_boot'][0] > 0,
+        'ci_n_lower>0 (bootstrap and t)': P['ci_n_boot'][0] > 0 and P['ci_n_t'][0] > 0,
+        'ci_d_lower>0 (bootstrap and t)': P['ci_d_boot'][0] > 0 and P['ci_d_t'][0] > 0,
         'halves n,d > 0': all(x.get('mean_n', -1) > 0 and x.get('mean_d', -1) > 0 for x in h),
         'line60 mean n > 0': (P['mean_n60'] or -1) > 0,
         'stress mean > 0': P['mean_stress'] > 0}
-    tline = {'ci_n_t_lower>0': P['ci_n_t'][0] > 0, 'ci_d_t_lower>0': P['ci_d_t'][0] > 0}
-    return {'verdict': 'PROMISING' if all(conds.values()) else 'INCONCLUSIVE', 'conditions': conds,
-            't_interval_check (reported beside)': tline}
+    return {'verdict': 'PROMISING' if all(conds.values()) else 'INCONCLUSIVE', 'conditions': conds}
 
 
 if __name__ == '__main__':
     cmd = sys.argv[1]
     if cmd == 'stats':
-        stats(load(sys.argv[2]), sys.argv[3])
+        stats(load(sys.argv[2], sys.argv[3]), sys.argv[4])
     else:
         st = load(sys.argv[2], sys.argv[3])
         os.makedirs(sys.argv[4], exist_ok=True)

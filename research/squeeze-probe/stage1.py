@@ -195,10 +195,9 @@ def main(d, out):
         if c not in O:
             why.append('no Binance OI metrics')
         elif c in FR:
-            fh = np.where(~np.isnan(FR[c]))[0]
-            lo, hi = H0 + fh.min() * 3600, H0 + fh.max() * 3600
-            if OIR[c][1] < lo or OIR[c][0] > hi:
-                why.append('Binance OI rows do not overlap Hyperliquid funding')
+            both = int((FE[c] & OE[c]).sum())                          # hours where F and O are both evaluable
+            if both < 600:
+                why.append(f'Binance OI and Hyperliquid funding overlap in only {both} evaluable hours (< 600)')
         if c not in SIG:
             why.append('no Binance signal series')
         pm = pmap.get(c, {})

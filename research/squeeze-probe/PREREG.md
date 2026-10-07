@@ -245,6 +245,12 @@ Committed before any Binance kline, any Binance OI value or any pool price at an
 15. **Arms D and E** are read from the primary's priced events (subsets), so they cost no extra credits.
 16. **Credit order.** Primary (events, C1, C2, then C1b), then arm A, B, C before D_split, while the booked total stays under 400,000. An arm that would cross the cap is reported as not run.
 17. **Credit confirmation.** The supervisor's task message (2026-10-07) sets the 400,000 hard cap for this probe; that is taken as the account-wide confirmation the executor notes ask for.
+18. **Review fixes (fresh-context reviewer, 2026-10-07, before any price).** No blocking issue; look-ahead, event rules, matching, costs and statistics were checked and 9 events recomputed independently. Readings fixed from its findings, all in the stricter direction:
+    - **Verdict intervals.** "Both intervals must pass" is read strictly: PROMISING needs the lower bounds of mean n and of mean d above 0 under **both** the day-block bootstrap and the day-clustered t-interval.
+    - **Kill.** KILLED also when the mean n over **all** executable events is ≤ 0, not only over the lift set.
+    - **Keep rule.** "Binance OI rows overlapping Hyperliquid funding" means at least 600 hours where F and O are both evaluable. This moves JELLY (one-hour overlap) and USELESS (its funding history is about 14 days) to the excluded list; neither had any event or control, so no count changes.
+    - **Descriptive additions:** balance of hour as sin/cos; the count of trades whose entry state is more than 1 h old; the count of events with fewer than 5 C2 controls.
+19. **Stage-1 table frozen.** SHA-256 of `stage1.json`: `7d1a0abdcca80c0273ff6dee63b6ad286e3c1a9fadca0be1c2b64b309a3a01ad`. Primary 238 events on 195 UTC days over 13 coins (before execution filters). Arm A holdout: D_split = 2025-09-19; 749 sealed events, SHA-256 `6ee6e2974b19e658eb57d0db53122a102ff54690c6206eda306acd5533f5aa9c` (canonical JSON of sorted [coin, T] pairs). The table stays outside the repo and is rebuilt byte-for-byte by `stage1.py` from the downloaded data (file hashes in the data manifest).
 
 ## Executor notes
 
