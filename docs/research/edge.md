@@ -290,3 +290,61 @@ The daily dip rule's +5.7% came from a list that holds only coins still alive on
 
 ### 9.4 Settings that would block these shapes anyway (owner rules, for the record)
 The trial policy allows 1 open position and 3 entries a day and caps the stop at 20%; R8 pauses after 5 losses in any 20 trades (58% of 20-trade windows at a 75% win rate, 99% at 50%); the proof gates cap the share of trades losing 50% or more and the share of profit from the top 1% of trades, which a no-stop big-winner basket fails by design. Only the owner can change these.
+
+## 10. Where the evidence converges (RES-10, 2026-10-08)
+
+Owner, 7 Oct: "We're just missing one clue how to grasp the whole situation." New results since §9, each pre-registered with its own RESULTS.md:
+- runner validation, R1 primary: −22.4% a trade (`research/runner-probe/`);
+- short side: no edge beyond the market's drift (`research/short-probe/`);
+- sizing: protects capital, creates no edge (`research/sizing/`);
+- hype as a buy signal: evidence against (`research/hype/`);
+- Blueprint MR-01 at 1-minute resolution: **KILLED**, −0.77% a trade, CI −0.79 to −0.74 (`research/mr01-screen/`);
+- cheapest venues (Raydium/Orca, 0.05–0.30%): all five rules not supported, −0.55% to −0.59% (`research/cheap-venue-probe/`);
+- execution audit: the hourly model is executable; real-time stops lose less (0.59× vs 0.45×), but real-time trails sell spikes early (the jackpot at about 27×) (`research/execution-audit/`).
+
+### 10.1 The common cause
+After any signal we can see, the average move is close to zero, while every trade pays a fixed toll. The matched-random comparisons measure what a signal adds:
+
+| Horizon and venue | What the signal adds over a random entry (gross) | Round-trip cost |
+|---|---|---|
+| 1-minute dips, PumpSwap 0.30% tier | +0.05 to +0.09 pts | about 0.88% |
+| 5-minute dips, Raydium/Orca 0.05–0.30% | +0.05 to +0.09 pts | about 0.6% |
+| 5-minute dips, PumpSwap deep pools | +0.2 to +0.5 pts | 0.85–1.0% |
+| Hour 1 after graduation, runner exits | none | 1–2.5% |
+
+- The signal is worth roughly a tenth of the cost. No filter tested selects a subset that closes that gap (MR-01 diagnostics: even dips of 8% or more stay below cost).
+- On top of that, the drift is negative: buying every graduate, or every meme, loses before any rule, at days and weeks too (§8.1).
+- So the losses are not bad luck or a missing parameter. They have one structural cause: **public information is already in the price by the time we act, and the toll is certain.**
+
+### 10.2 Who does make money here
+The money in this market goes to three seats:
+1. **Earlier information:** creators, bundled insiders, paid callers, first-block snipers. Closed to us: ethics (owner's kept limits), speed, and cost (§8.2).
+2. **Collecting the toll:** the venue, LPs, creator fees. LP and carry were tested and failed; launching coins is excluded.
+3. **Selection skill that beats the crowd:** the one seat not closed by structure. It is also the one input this research has never measured: the owner's own judgement (4 years of meme trading). The outside reviewer named it too (reviewer point 11).
+
+### 10.3 The one untested input: the owner's picks (proposal, needs the owner)
+- **Forward test.** The owner logs each coin they would buy (mint, time) before its outcome is known. The timestamp is written by a system, not typed in.
+- **Fixed execution.** The bot applies fixed paper execution: entry at the first swap after the log time, then hourly R1 exits (executable per the audit), costs in SOL.
+- **Control.** Each pick is matched with 10 random coins of the same age at the same moment.
+- **Judgement.** Picks minus random, net of costs, with day-clustered intervals; one primary test, fixed before the first pick.
+- **Power and timing.**
+  - About 100 picks give only a rough answer: they could detect a lift of about 15–20 points, not 5.
+  - Experienced traders often overrate their own hit rate, so the prior is low.
+  - It costs nothing but the owner's time. If it passes, the bot's role becomes executing and protecting the owner's picks: cut-loss, a sizing floor, rug rejects.
+  - If it fails, the evidence says this bot design has no reachable edge (§6.1). It should stay recording and paper trading, with no deposit.
+
+### 10.4 Still open
+- the launch-delay probe (running);
+- hype Test 1 as a reject rule (running);
+- the survivorship-free D-REV3 re-test (downloading, about 30 h).
+The literature and the results above give each low odds of a tradable edge.
+
+### 10.5 The manual trader's cost stack (owner's experience, 2026-10-08)
+Owner: a forex trader who tried memes; "fees hurt even I won a lot ... result still a loss". Example round trip for a $100 trade on a fresh graduate, as arithmetic on cited parts (not a measurement):
+- **Trading terminal:** about 1% a side, so about 2% round trip. Review sites, not verified on each app: Axiom 1% gross, Photon 1%, GMGN 1%, Trojan 0.9%.
+- **PumpSwap fee:** 1.25% a side below 420 SOL market cap, so 2.5% (`research/edge/snapshot/fee-configs.json`).
+- **Price impact:** 0.84 SOL into about 85 SOL of quote moves the price about 2%, so about 1% a side, roughly 2% round trip (constant product).
+- **Priority fees and tips:** about 0.001 SOL a transaction, about 0.25% at $100 and about 2.4% at $10.
+- **Total:** about 6–7% per round trip at $100, and more at $10.
+
+So a trader who wins 60% of trades at +20% / −15% makes +6% a trade before costs, and about −1% after. For comparison, Hyperliquid perps cost 0.045% taker / 0.015% maker a side (fee docs, read 2026-10-08), and meme round trips there were about 12–35 bps in `research/short-probe`. That is about 20–50 times cheaper, but on older, listed memes only, with leverage and funding, and with Australian legality not confirmed (§7).

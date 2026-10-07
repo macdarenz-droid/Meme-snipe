@@ -1,0 +1,71 @@
+{
+ "counts": {
+  "exploration": {
+   "ok": 492,
+   "dust": 267,
+   "start-missing": 127,
+   "no-data": 0,
+   "no-entry": 14
+  },
+  "validation": {
+   "ok": 443,
+   "dust": 287,
+   "start-missing": 159,
+   "no-data": 1,
+   "no-entry": 10
+  }
+ },
+ "entries": 934,
+ "excluded_no_signal": 24,
+ "signalled": 910,
+ "median_hot": 0.05263157894736842,
+ "primary": {
+  "hot_mean_cap": -0.17073039394246647,
+  "cold_mean_cap": -0.27286284798132987,
+  "diff": 0.1021324540388634,
+  "ci95": [
+   0.012543434144070553,
+   0.21448086116604093
+  ],
+  "n_hot": 453,
+  "n_cold": 457,
+  "hot_mean_net": 0.03589901334812452,
+  "cold_mean_net": -0.27286284798132987
+ },
+ "spearman": {
+  "rho": 0.06290443135820319,
+  "ci95": [
+   -0.014263827654216108,
+   0.1331507596483879
+  ]
+ },
+ "top_decile": {
+  "threshold": 0.1111111111111111,
+  "n": 91,
+  "trades_per_week_in_sample": 14.194986072423399,
+  "mean_net": -0.2141690705490509,
+  "mean_cap": -0.2141690705490509,
+  "ge2x": 3,
+  "ge5x": 0,
+  "ci95_cap": [
+   -0.29353021723083195,
+   -0.12197781902604227
+  ],
+  "days": 11
+ },
+ "exploration": {
+  "n": 468,
+  "diff": 0.1808600174697963,
+  "hot_mean_cap": -0.10680028447839374,
+  "cold_mean_cap": -0.28766030194819003
+ },
+ "validation": {
+  "n": 442,
+  "diff": 0.025319352663927014,
+  "hot_mean_cap": -0.22951358781409267,
+  "cold_mean_cap": -0.2548329404780197
+ },
+ "all_mean_net": -0.11916051481403005,
+ "all_mean_cap": -0.22202108789385172,
+ "reading": "no usable timing signal in this data"
+}
