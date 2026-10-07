@@ -1,39 +1,56 @@
-"""Step 7: trade simulation of the signals on 1-minute bars with the bot's U1 exits and the real costs at $2.
+"""Step 7 (EDGE-HUNT-U1-B): trade simulation of the B signals on 1-minute bars with the bot's U1 exits and the bot's own
+PumpSwap quote code (costs.py, parity-tested against packages/core/src/amm/pump-swap.ts), at every pre-registered size.
 
-  python3 07_sim.py need  --period screen        -> data/need.json (candidate entries whose 1-min bars step 6 fetches)
-  python3 07_sim.py run   --period screen [--rules H1,H2] [--universe A|B] [--tag name]
+  python3 07_sim.py need                       -> data/need.json (entries whose 1-minute bars step 6 fetches)
+  python3 07_sim.py run --periods train,wf     -> data/trades/<period>_<rule>_<size>.json
+  python3 07_sim.py run --periods holdout --rules <candidate>   (only after 08_report.py named the candidate)
 
-Period 'screen' = entries in [ENTRY_FROM, HOLDOUT_FROM); 'holdout' = [HOLDOUT_FROM, WALL - 125 min). The holdout is
-only run after the screen has named at most one candidate (README).
-
-Entry: the signal at bar end T fills at the close of the 1-min bar [T, T+60) (the next bar), else at the last price.
-Size $2 at the hour's SOL/USD; all money is counted in SOL. Venue fee by market-cap tier both legs, constant-product
-price impact at the real size, fixed network/rent costs from edge.md (414,009 lamports per position, +149,784 per extra
-exit tx). Exits (policy U1 block, packages/core/src/exits/rules.ts decideExit), evaluated at each 1-min bar end:
-  price_stop  bar low <= stop          -> fill min(stop, next bar open)
-  negative_flow 5 contiguous minutes each closing below the previous close (net SOL out of a constant-product pool)
-  time_flat   by 30 min P&L never reached 0.5 R (judged on closes) -> next open
-  time_max    120 min -> next open
-  take_profit (close only, conservative scenario) P&L >= 2 R or >= 10% of cost basis -> sell half at next open (one
-              partial at $2: maxExitTxAtMinNotional 2); then break_even (P&L <= 0) and trail peak - 3 x ATR(14, 5 min)
-Not modelled: deployer_sell, quote failures, no-route (no data). Per mint: one entry a UTC day, none while open, none for
-24 h after a stop-out (policy positions). maxOpen/maxEntriesPerDay are portfolio limits, applied only in the
-'portfolio' report of a surviving candidate.
+Exits and fills are U1's 07_sim.py unchanged (preregistration.json 'fills'). Changes from U1: every graduation, the B
+universe only, the bot's integer quote code on effective reserves (BOOST virtual quote included), sizes $2-$10k, a
+per-trade cost breakdown (gross, fees, impact, fixed) and the bot-allowed flag (R12 floor and the 1% round-trip impact
+cap, as risk/evaluate.ts feasibleSize).
 """
-import argparse, bisect, glob, json, math, os, random, sys
+import argparse, bisect, hashlib, json, os, random, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import *
+import costs
 import importlib.util
 _s = importlib.util.spec_from_file_location('sig', os.path.join(HERE, '05_signals.py')); sig = importlib.util.module_from_spec(_s); _s.loader.exec_module(sig)
 
-def period_ok(T, period):
-    return (ENTRY_FROM <= T < HOLDOUT_FROM) if period == 'screen' else (HOLDOUT_FROM <= T <= WALL - TMAX - 300)
+SIZES = [2, 5, 20, 100, 1000, 10000]
+FOLDS = {'WF1': (1786888800, 1787666400), 'WF2': (1787666400, 1788444000), 'WF3': (1788444000, HOLDOUT_FROM)}
+HOLD_TO = WALL - TMAX - 300
 
-def load_signals(period, rules, universe):
+def frac(s): return int(hashlib.sha256(s.encode()).hexdigest()[:8], 16) / 2 ** 32
+
+_mig = None
+def mig_sig(pool):
+    global _mig
+    if _mig is None:
+        _mig = {}
+        for l in open(os.path.join(DATA, 'migrations.jsonl')):
+            r = json.loads(l)
+            if r.get('pool') and (r['pool'] not in _mig or r['t'] < _mig[r['pool']]['t']): _mig[r['pool']] = r
+    return _mig[pool]['sig']
+
+def period_of(s):
+    T = s['T']; u1 = frac(mig_sig(s['pool'])) < 0.08
+    if ENTRY_FROM <= T < HOLDOUT_FROM:
+        if u1: return 'train'
+        for f, (a, b) in FOLDS.items():
+            if a <= T < b: return f
+    if HOLDOUT_FROM <= T <= HOLD_TO: return 'holdout'
+    return None
+
+def load_signals(periods, rules):
     out = []
     for l in open(os.path.join(DATA, 'signals.jsonl')):
         s = json.loads(l)
-        if s['rule'] in rules and period_ok(s['T'], period) and (universe == 'A' or s['B']): out.append(s)
+        if s['rule'] not in rules or not s['B']: continue
+        p = period_of(s)
+        if p is None: continue
+        if p.startswith('WF'): s['fold'] = p; p = 'wf'
+        if p in periods: s['period'] = p; out.append(s)
     out.sort(key=lambda s: (s['rule'], s['pool'], s['T']))
     return out
 
@@ -47,43 +64,57 @@ def m1(pool):
     if not os.path.exists(f): return None, []
     return json.load(open(f)), json.load(open(os.path.join(DATA, 'm1', pool + '.spans.json')))
 
-class Pool:
-    def __init__(self, k): self.k = k
-    def sell(self, p, Q, f):   # SOL out for Q tokens at spot p
-        q = math.sqrt(self.k * p); b = q / p
-        return q * Q / (b + Q) * (1 - f)
-    def buy(self, p, S, f):    # tokens for S SOL at spot p
-        q = math.sqrt(self.k * p); b = q / p; x = S * (1 - f)
-        return b * x / (q + x)
-
+_atr = {}
 def atr_at(pool, t):
-    m5 = pool_bars(pool)['m5']; ends = [b[0] + 300 for b in m5]
-    i = bisect.bisect_right(ends, t) - 1
+    m5 = pool_bars(pool)['m5']
+    if pool not in _atr: _atr[pool] = [b[0] + 300 for b in m5]
+    i = bisect.bisect_right(_atr[pool], t) - 1
     return sig.atr14(m5, i) if i >= 0 else None
 
-def simulate(s, bars1, spans):
+def allowed(P, p, S_l, usd, size):
+    """Bot's own refusals at this size: R12/H8 floor on the effective quote, and the 1% round-trip impact cap."""
+    floor = max(15000, 1000 * size, 50000)
+    if P.eff_quote_sol(p) * usd < floor: return False
+    v, vi, b = P.state(p); r = costs.buy(v, vi, b, S_l)
+    if r is None: return False
+    base, fee, imp = r
+    # pool after the buy (LP fee stays in the vault; v1), then sell the same base back
+    quote_in = S_l - fee; lp = costs.fees_for(v + vi, b)[0]
+    s = costs.sell(v + quote_in + costs.ceil_bps(quote_in, lp), vi, b - base, base)
+    if s is None: return False
+    return (imp + s[2]) * 10_000 <= 100 * S_l          # maxImpactBps 100 (ppm of paid, round trip)
+
+def simulate(s, bars1, spans, size):
     T, pool = s['T'], s['pool']
     if not any(a <= T and min(T + 7800, WALL) <= z for a, z in spans): return None
-    d = pool_bars(pool); P = Pool(d['tok'] * d['sol'])
-    starts = [b[0] for b in bars1]
+    d = pool_bars(pool); P = costs.Pool(d['tok'], d['sol'])
     by = {b[0]: b for b in bars1}
-    usd = s['usd']; S = NOTIONAL_USD / usd
+    usd = s['usd']; S_l = int(size / usd * 1e9); S = S_l / 1e9
     first = by.get(T)
     pe = first[4] if first else s['p']
     opened = T + 60
-    fee = lambda p: fee_bps(p * 1e9) / 1e4
-    Q = P.buy(pe, S, fee(pe)); Q0 = Q
+    r = P.buy(pe, S_l)
+    if r is None: return None
+    Q, fee_in, imp_in = r; Q0 = Q
+    fees, impact = fee_in / 1e9, imp_in / 1e9
     stop = s['stop']
     C = S + TX / 1e9
     exit_cost = TX / 1e9
-    R = S - P.sell(stop, Q, fee(stop))
+    def proceeds(p, q):
+        x = P.sell(p, q)
+        return (0.0, 0, 0) if x is None else (x[0] / 1e9, x[1], x[2])
+    R = S - proceeds(stop, Q)[0]
     if R <= 0: R = 1e-12
     realized, partials, flat_met = 0.0, 0, False
     peak, trail, prev_close, neg_run = pe, None, pe, 0
-    def pnl(p): return realized + P.sell(p, Q, fee(p)) - exit_cost - C
+    legs = []   # (tokens, price) of each exit leg, for the gross return
+    def pnl(p): return realized + proceeds(p, Q)[0] - exit_cost - C
     def next_open(t_end, fallback):
         b = by.get(t_end)
         return b[1] if b else fallback
+    def sell_leg(px_, q):
+        nonlocal realized, fees, impact
+        u, f, i = proceeds(px_, q); realized += u; fees += f / 1e9; impact += i / 1e9; legs.append((q, px_))
     last = pe; reason = None; exit_px = None; t_exit = None
     for m in range(opened, opened + TMAX + 60, 60):
         b = by.get(m)
@@ -93,7 +124,6 @@ def simulate(s, bars1, spans):
         full = None
         if l <= stop: full = ('stop', min(stop, next_open(end, c)))
         if partials >= 1:
-            # the trail level comes from bars before this one (a bar's high may come after its low)
             if full is None and trail is not None and l <= trail: full = ('trail', min(trail, next_open(end, c)))
             if full is None and pnl(c) <= 0: full = ('break_even', next_open(end, c))
             peak = max(peak, h)
@@ -111,22 +141,23 @@ def simulate(s, bars1, spans):
         last = c
         if full:
             reason, exit_px = full; t_exit = end
-            realized += P.sell(exit_px, Q, fee(exit_px)); Q = 0
+            sell_leg(exit_px, Q); Q = 0
             break
         if partials < 1 and (pnl(c) >= 2 * R or pnl(c) >= 0.10 * C):
-            px_ = next_open(end, c); q_s = Q * 0.5
-            realized += P.sell(px_, q_s, fee(px_)); Q -= q_s; partials += 1; peak = max(peak, h)
-    if Q > 0:  # safety: should not happen (time_max fires)
-        realized += P.sell(last, Q, fee(last)); reason = reason or 'end'; t_exit = t_exit or opened + TMAX
+            px_ = next_open(end, c); q_s = Q // 2
+            sell_leg(px_, q_s); Q -= q_s; partials += 1; peak = max(peak, h)
+    if Q > 0:
+        sell_leg(last, Q); reason = reason or 'end'; t_exit = t_exit or opened + TMAX
     fixed = (FIXED_ONE_EXIT + EXTRA_EXIT * partials) / 1e9
     net = realized - S - fixed
-    gross = Q0 * 0  # placeholder
-    return {'rule': s['rule'], 'pool': pool, 'mint': s['mint'], 'T': T, 'net_sol': net, 'ret': net / S,
-            'gross_move': (exit_px or last) / pe - 1, 'reason': reason, 'hold_min': (t_exit - opened) / 60,
-            'partials': partials, 'S': S, 'B': s['B'], 'stop_pct': 1 - stop / s['p']}
+    gross = sum(q * px_ for q, px_ in legs) / Q0 / pe - 1          # same exits, spot prices, no fee/impact/fixed
+    return {'rule': s['rule'], 'pool': pool, 'mint': s['mint'], 'T': T, 'period': s['period'], 'fold': s.get('fold'),
+            'size': size, 'S': S, 'net_sol': net, 'ret': net / S, 'gross': gross, 'fees': fees / S, 'impact': impact / S,
+            'fixed': fixed / S, 'reason': reason, 'hold_min': (t_exit - opened) / 60, 'partials': partials,
+            'allowed': allowed(P, pe, S_l, usd, size)}
 
 MISSING = []
-def run(signals, need_only=False):
+def run(signals, size, need_only=False):
     trades, need, missing = [], [], 0
     cur = None
     for s in signals:
@@ -137,55 +168,34 @@ def run(signals, need_only=False):
         if need_only:
             need.append({'pool': s['pool'], 'T': T}); last_day = day; continue
         bars1, spans = m1(s['pool'])
-        r = None if bars1 is None else simulate(s, bars1, spans)
+        r = None if bars1 is None else simulate(s, bars1, spans, size)
         if r is None: missing += 1; MISSING.append({'pool': s['pool'], 'T': T}); continue
         trades.append(r); last_day = day; last_exit = T + 60 + r['hold_min'] * 60
         if r['reason'] == 'stop': block_until = last_exit + 86400
     return (need if need_only else trades), missing
 
-def boot_ci(trades, B=4000, seed=7):
-    by = {}
-    for t in trades: by.setdefault(t['mint'], []).append(t['ret'])
-    ks = list(by); rng = random.Random(seed); means = []
-    for _ in range(B):
-        xs = []
-        for _ in ks: xs += by[rng.choice(ks)]
-        means.append(sum(xs) / len(xs))
-    means.sort()
-    return means[int(0.025 * B)], means[int(0.975 * B) - 1]
-
-def summary(trades):
-    if not trades: return {'n': 0}
-    rs = sorted(t['ret'] for t in trades); n = len(rs)
-    mean = sum(rs) / n; sd = (sum((x - mean) ** 2 for x in rs) / (n - 1)) ** 0.5 if n > 1 else 0
-    lo, hi = boot_ci(trades) if n > 1 else (None, None)
-    reasons = {}
-    for t in trades: reasons[t['reason']] = reasons.get(t['reason'], 0) + 1
-    return {'n': n, 'coins': len({t['mint'] for t in trades}), 'win': sum(1 for x in rs if x > 0) / n, 'mean': mean,
-            'median': rs[n // 2] if n % 2 else (rs[n // 2 - 1] + rs[n // 2]) / 2, 'sd': sd, 'ci95': [lo, hi],
-            'sharpe_per_trade': mean / sd if sd else None, 'net_sol_total': sum(t['net_sol'] for t in trades),
-            'mean_gross_move': sum(t['gross_move'] for t in trades) / n, 'reasons': reasons,
-            'days': len({t['T'] // 86400 for t in trades})}
-
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('mode'); ap.add_argument('--period', default='screen'); ap.add_argument('--rules', default='H1,H2,H3,H6')
-    ap.add_argument('--universe', default='A'); ap.add_argument('--tag', default='')
+    ap.add_argument('mode'); ap.add_argument('--periods', default='train,wf'); ap.add_argument('--rules', default='H1,H6,S0,H2,H3')
     a = ap.parse_args()
-    rules = a.rules.split(',')
+    rules = a.rules.split(','); periods = a.periods.split(',')
+    if 'holdout' in periods and a.mode == 'run':
+        sel = json.load(open(os.path.join(HERE, 'results', 'selection.json')))
+        assert sel['candidate'] and rules == [sel['candidate'].split('-')[0]], 'holdout is read only by the selected candidate'
     if a.mode == 'need':
         allneed = []
-        for u in ('A',):
-            nd, _ = run(load_signals(a.period, rules, u), need_only=True); allneed += nd
+        for r in rules:
+            nd, _ = run(load_signals(periods, [r]), 20, need_only=True); allneed += nd
         uniq = {(x['pool'], x['T']): x for x in allneed}
-        json.dump(list(uniq.values()), open(os.path.join(DATA, 'need.json'), 'w'))
+        json.dump(sorted(uniq.values(), key=lambda x: (x['pool'], x['T'])), open(os.path.join(DATA, 'need.json'), 'w'))
         print('need', len(uniq), 'pools', len({x['pool'] for x in uniq.values()}))
     else:
-        res = {}
+        os.makedirs(os.path.join(DATA, 'trades'), exist_ok=True)
         for r in rules:
-            for u in (['A', 'B'] if a.universe == 'AB' else [a.universe]):
-                tr, miss = run(load_signals(a.period, [r], u))
-                res[f'{r}-{u}'] = dict(summary(tr), missing_m1=miss)
-                json.dump(tr, open(os.path.join(DATA, f'trades_{a.period}_{r}_{u}{a.tag}.json'), 'w'))
+            sigs = load_signals(periods, [r])
+            for size in SIZES:
+                tr, miss = run(sigs, size)
+                for p in periods:
+                    json.dump([t for t in tr if t['period'] == p], open(os.path.join(DATA, 'trades', f'{p}_{r}_{size}.json'), 'w'), sort_keys=True)
+                if size == 20: print(r, 'trades', len(tr), 'missing m1', miss)
         json.dump(MISSING, open(os.path.join(DATA, 'need_missing.json'), 'w'))
-        print(json.dumps(res, indent=1))

@@ -8,6 +8,7 @@ import { rpc, sleep, DATA } from './lib.mjs';
 const WSOL = 'So11111111111111111111111111111111111111112';
 const P = Number(process.argv[2] || 0.05);
 const sigs = fs.readFileSync(DATA + 'migration_sigs.jsonl', 'utf8').trim().split('\n').map(JSON.parse).filter(s => s.ok);
+const uniq = [...new Map(sigs.map(s => [s.sig, s])).values()]; sigs.length = 0; sigs.push(...uniq); // a resumed step 1 can repeat a page
 const key = (s) => crypto.createHash('sha256').update(s.sig).digest('hex');
 sigs.sort((a, b) => (key(a) < key(b) ? -1 : 1));
 const outF = DATA + 'migrations.jsonl';
