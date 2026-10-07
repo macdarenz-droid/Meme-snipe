@@ -1,11 +1,14 @@
 // RC-FIXES: the start's state check (state-check.ts) and the whole account.json check (account.ts `checkAccount`).
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkState, ledgerLost, ledgerPresent } from '../src/run/state-check.ts';
 import { checkAccount } from '../src/run/account.ts';
 import { typedText } from '../src/run/json.ts';
+import { NO_CONTROL, controlFile } from '../src/run/state.ts';
+import { StateRefused } from '../src/run/worker.ts';
+import { makeWorker } from './worker-harness.ts';
 
 const dir = (files: Record<string, string> = {}): string => {
   const d = mkdtempSync(join(tmpdir(), 'state-check-'));
@@ -92,5 +95,36 @@ describe('RC-FIXES: account.json is checked whole', () => {
     const v: Record<string, unknown> = { ...ok, ...change };
     for (const k of Object.keys(change)) if ((change as Record<string, unknown>)[k] === undefined) delete v[k];
     expect(checkAccount(v)).toBeNull();
+  });
+});
+
+describe('RC-FIXES: the worker at start', () => {
+  it('every start writes control.json; a later start without it latches the kill switch, pauses and alerts', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    await h.worker.stop();
+    expect(existsSync(join(h.stateDir, 'control.json'))).toBe(true);
+    expect(controlFile(h.stateDir).read(NO_CONTROL).latches.killTrippedAtMs).toBeNull();
+    rmSync(join(h.stateDir, 'control.json'));
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    await h2.worker.stop();
+    const c = controlFile(h.stateDir).read(NO_CONTROL);
+    expect(c.paused).toBe(true);
+    expect(c.latches.killTrippedAtMs).not.toBeNull();
+    expect(readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8')).toContain('"code":"state_lost"');
+  });
+
+  it('a lost ledger with trade evidence refuses the start before anything is written', () => {
+    const h = makeWorker();
+    const dir = h.stateDir;
+    writeFileSync(join(dir, 'account.json'), TRADED_ACCOUNT);
+    rmSync(join(dir, 'ledger.sqlite'), { force: true });
+    writeFileSync(join(dir, 'ledger.sqlite'), '');
+    rmSync(join(dir, 'cold_start'), { force: true });
+    expect(() => makeWorker({ stateDir: dir, timers: h.timers })).toThrow(StateRefused);
+    // Still empty: SQLite did not open it as a new ledger, so the next start refuses again.
+    expect(readFileSync(join(dir, 'ledger.sqlite'), 'utf8')).toBe('');
+    expect(existsSync(join(dir, 'cold_start'))).toBe(false);
   });
 });

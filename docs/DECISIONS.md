@@ -3497,3 +3497,34 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Review B1: shedding pool A's whole copy still gives held pool B its swap, whether B's copy came before or after the shed (both fail before the fix), and the replay equals live.
   - Ten runs give the same frames, releases, events and facts, and each replays to them. A recording with echoes is refused under the pre-echo rules and by `frameEvents`.
   - Parity: live (cut log on both watches, fetched, healed) ends with the same candles and coverage as the backtest of the full transaction on both pools. The recording, round-tripped through its JSON, replays to the same events and facts; a recording made before echoes replays as it did.
+
+## The saved state is checked whole at start, backed up whole, and an entry's recording is on disk before its send (RC-STATE, `run/state-check.ts`, `run/account.ts` `checkAccount`, `zeroed-backup`, `run/recorder.ts` `durable`, `run/parity.ts` `cutAtKill`)
+
+- **2026-10-07 · Why.** Red team C (items 5 and 7, round 2 R2-1, R2-2 and R2-4; probes on `claude/redteam-c`, brought in as `worker/test/redteam-c/` and `ops/test/redteam-c/`) found these on 959d8017:
+  - **Backup.** The hourly backup packed only SQLite files. A host-loss restore brought back the ledger alone. control.json (the R10 kill latch, the R9 weekly latch, the owner's pause), account.json and the other state files then read as their defaults, so the kill switch came back unlatched.
+  - **Lost ledger.** A missing or 0-byte ledger was taken as a cold start. SQLite opens an empty file as a new ledger, so an open position was dropped with no stop, while account.json still held it.
+  - **Missing files read as defaults.** A missing account.json reset the NAV peak, the day and week marks and the entry count, paid the setup rent again and rebuilt the wallet. A missing or emptied paper.json refunded fees already paid.
+  - **Weak account check.** The account.json check covered 4 fields. An emptied trades list booked the entry a second time.
+  - **Parity after a kill.** An entry was sent after the journal's fsync but before the recorder's buffered lines were written. A kill there left a recording that replayed short of the journaled entry (TEST-1).
+- **Choices.**
+  - **One start-time check (`state-check.ts`), before anything writes a default.**
+    - The ledger is lost when it is missing or empty while account.json, paper.json or exits.json say the bot traded. An unreadable file counts as saying so. The start is refused (`StateRefused`) before the ledger is opened, so an empty file stays empty and every later start refuses again. Otherwise it is a cold start, as before.
+    - A ledger that holds trades needs account.json, and paper.json must hold every attempt the ledger holds; otherwise the start is refused. A ledger with no trades refuses files that say the bot traded (an older ledger restored with newer files).
+    - control.json is written at every start. A start after an earlier one (the ledger was there) that finds it missing latches the kill switch, pauses entries and journals a critical `state_lost` alert. It does not wait for trades, since R10 can trip on a price move alone. A state dir from before this change that never wrote control.json gets that latch once; the owner re-arms and resumes.
+    - Refusing to start is the safe side for the files that hold money: the paper wallet and the paper attempts. Under `Restart=always` the unit retries every 5 s and refuses each time, with the reason in the log, until the files are restored. No position is watched meanwhile, but none is booked wrong.
+  - **account.json checked whole (`checkAccount`).**
+    - Every figure is checked for its type and range: the wallet from 0 up to SOL's supply, the opening equity and NAV peak above 0, and times as whole non-negative numbers.
+    - A file with a trade must hold the wallet, the setup, the NAV peak and the day and week marks.
+    - Each write records how many trades and entries the file holds. Neither list ever shrinks, so lists shorter than their counts are refused. Files from before have no counts and skip that check.
+  - **Backup (`zeroed-backup`).**
+    - Everything in the state dir is packed, except:
+      - the journal and the recording;
+      - the deployer index (`deployers.jsonl`, `deployer-state.json`): hundreds of MB at 15 days, × 72 hourly copies. Without it a restore starts the index from the live feed, and H14 stays not covered until the look-back passes (fail closed, as with no backup today);
+      - WAL, lock and temp files.
+    - The ledger and the files that must agree with it (account, paper, exits, control, entry seeds, exposure) are one cut. They are copied again, up to 5 times, until none of them changed while the ledger was copied.
+    - The restore drill (checks added only) also parses every JSON file and still needs at least one database. The e2e drill checks the backup holds every JSON state file and never the journal or the recording.
+  - **Entry evidence.**
+    - Before an entry's buy is sent, `Recorder.durable()` writes every buffered line and fsyncs each open file. A failure sets the recorder fault, and the entry is refused (fail closed). The cost is a flush and a few fsyncs per entry send, on the entry path only (a few a day), not per step.
+    - The engine sends the buy while it applies `submit`, before that decision is logged. So a kill right after the send leaves a journal without `submit` while the recording replays it.
+    - `checkBoot` forgives only that, and only for a boot whose journal has no stop line: the replay may run past the journal's end with lines of the journal's last event alone. A clean boot, and any line that differs before the end, are still compared strictly.
+- **Evidence.** The probes fail on 959d8017 and pass here: r2-corrupt-state's 87 damage cases (20 failed before), state-backup-restore, entry-evidence and backup-coverage. New tests: `state-check.test.ts` (26), `kill-cut.test.ts` (3) and `ops/test/backup-state.test.ts` (3).
