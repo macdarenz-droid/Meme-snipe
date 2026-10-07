@@ -10,15 +10,42 @@
 - Two themes only: Paper (light) and Silent Black (dark); first open follows the device, then the owner's choice is remembered.
 - UI words read as written by a person: no AI wording anywhere (see `AGENTS.md`).
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
+- **Main project from 7 Oct 2026 (owner decision):** the Solana Meme Bot Blueprint (claude.ai/artifact/SWxLJXAncuoyZvq2vXcbMK). Its supervisor (session "SHITCOIN V2") runs this repo, the server and the merge queue. The app keeps the name Zeroed. Over time the Blueprint design replaces the rest, including the app and its two themes (a Blueprint dashboard replaces them).
 
 ## Phase
-Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Claude account (owner, about 7:15 PM). Every first-account session pushed its work and wrote its notes to `docs/handover/sessions/`, then paused. Start from `HANDOVER.md` §0. 76 PRs merged since midnight on 4 Oct.
-- **Server:** code-only Deploy run 37189025276 moved the deploy tag to 7d5e203 (SWITCH-1, WORKER-1e, the e2e fix) at about 7:28 PM. The push e2e on that commit is green. The server switches to the real paper worker within about 5 min. Online is still to be confirmed by the owner (app or Telegram /status).
-- **Practice trades:** WORKER-1e #117 is merged, so the S0 shakedown with the labelled diagnostic set starts once the real worker runs. Practice P&L stays rough until PAPER-1 (audit M4, M5, M8) merges.
-- **External audit (Report 1):** real defects were found in paper accounting, latches, stale snapshots, recovery, research and statistics. Every finding is a card (HANDOVER §4; DECISIONS "External audit 1"). The verdict stands: paper and research mode only.
-- **History:** Helius free only (about 2–3 practice days a month alongside the live worker). 09-21 is downloading (run 37185822426, about 14 h). The proof needs about 50 practice days plus 28 holdout days, which is impossible on free alone; the paid month (about US$94) waits for the owner's decision after seeing a finished product.
-- **Research:** RES-4 (cost math; break-even 4.4–5.0% at $2 and 2.2–3.1% at $20 per trade, as scored) is in review. RES-5's selection failed calibration and is being fixed. An early look on free days reports descriptive numbers only (SPA needs at least 10 days).
-- **Owner's estimate:** under about 2% chance of proof today (judgement). No deposit before all six pre-funding items pass.
+**Handover and freeze, Wed 7 Oct 2026 about 9:30 PM Melbourne.** The owner made the Blueprint the main project. Supervisor S1 handed over to the Blueprint supervisor ("SHITCOIN V2") and stood down. The full state is in `HANDOVER.md`, "HANDOVER TO THE BLUEPRINT SUPERVISOR".
+
+**Freeze (owner):**
+- No merges or deploys, except a fix for a safety or security problem.
+- The server stays on the stand-in.
+- The worker is not resumed, and #268 is not merged.
+- No new cards or sessions.
+
+**Server:**
+- Paused on the host stand-in since 7 Oct about 7 AM (deploy tag `171a61ce`, #265; `"worker": "stub"`).
+- The bot has never entered a trade. No money has moved; paper only.
+- The last real worker (3ee09a5a) ran with 0 unplanned restarts for about 18 h before the pause, and used about 87k Helius credits an hour.
+
+**Code:**
+- The integration branch `ccr-14987baf-i6lrsl` is at `cd4d7a64`. These are merged there but not deployed: #264, #263, #266, #270, #271, #152, #274, #279.
+- Ten fix PRs from the three red teams are open (A data and facts, B money and risk, C resilience): #276, #280, #277, #281, #275, #273, #272, #197, #269, plus #268 RESUME-WORKER, which is frozen.
+- Red team A's 12 "never trades" findings (round 4) are drafted as cards, not built. The biggest: a candidate's read batch waits for the slowest outside check, so it never lands fresh and no entry happens in any mode.
+
+**Edge:**
+- Every rule tested so far loses after costs (EDGE-HUNT U1 and U2), and U1-B was stopped mid-decode.
+- No rule passes pre-funding item 6, so the app stays in paper and asks for no deposit.
+
+**Accounts:**
+- Helius Developer plan (10M credits a month, cycle 6 Oct–6 Nov 2026, autoscaling off; about 126k used on 7 Oct).
+- GitHub Pro.
+- Vultr `zeroed` (1 GB).
+- Cloudflare Workers Free.
+- Telegram @Zeroed_alerts_bot.
+
+**Owner decisions on 7 Oct:**
+- Pump.fun data already collected is kept, with no new pump.fun requests.
+- The Helius §3.2(xi) question is open.
+- The research branch `ccr-7fae2302-drz4co` may be merged; it is not merged yet.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -27,8 +54,10 @@ Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Clau
 - Merged: WEB-1 (PR #1), CORE-2 (PR #2), CORE-1 (PR #3), APP-1 (PR #5), DOCS-1 (PR #6: architecture, RESEARCH.md, DECISIONS.md, build plan), CORE-1b (PR #7), APP-1b (PR #12: pinned actions, no backup, safe APK swap, verified on the live release), CFG-1 (PR #13: versioned policy, session lock, tighten-only, baselines), DOCS-1b (PR #15), DEC-1 (PR #11: chain decoders with mainnet golden vectors), CORE-2b (PR #14: typed no-quote reasons, coin guard, v2 vault accounting, Global as a checked input), ENG-1 (PR #10: engine core, blind-to-future proofs, purity guard and runtime trap), LEDGER-1 (PR #9: append-only SQLite ledger, atomic reservations, separate scoring store), STATS-1 (PR #8: labels, day-block bootstrap, e-process, sealed holdout, Holm), UI-2 (PR #17: dashboard data screens, strict report schema), FEED-1 (PR #21: live feed, provider adapters, quota scheduler, recorded release order for parity, coverage gap facts), LEDGER-REPLAY (PR #23: `pnpm ledger:replay` checks a ledger against the reducer; versioned strict book detail; orphan rows refused), TX-1 (PR #20: unsigned builders, signer policy, landing client with node-skew guard), FUND-1 (PR #25: Deposit and Withdraw screens; QR via qrcode-generator), LEDGER-1b (PR #27: several positions per entry intent, so a late BUY landing is stored), GATE-1 (PR #22: hard rejects H1–H16, regime gate, lockers count as holders), BT-1 (PR #24: transaction-level backtester, paper fill model, `Ledger.recordBookEvent`), OPS-1a (PR #19: one-line installer, 6-word key handoff, update gate deploys only signed all-green commits), CI-1 (PR #31: heavy test suites isolated, timeouts sized from measurement), OPS-1b (PR #26: Cloudflare watchdog on workers.dev, route-bound HMAC heartbeat, off-site backup off), DATA-1 (PR #16: historical dataset schema 2, one-lane scan workflow, strict QA, DEC-1 parity), RUN-1 (PR #32: dry-run runner for the VPS and an Actions rehearsal, worker process contract), OPS-1c (PR #36: the server sets the Telegram webhook after pairing), GATE-1b (PR #29), TEST-2 (PR #28: dry-run simulation; Helius smoke run recorded in PR #38), BT-1b (PR #30), EXIT-1 (PR #33: exit engine; attempt budget from the book), RES-2 (PR #4: copy-trading not usable), RUG-1 (PR #34: as-of rug labeller; H14 fails safe), DATA-1 per-day publish (PR #35), RUN-1b (PR #37: item-4 block), RISK-1 (PR #18: risk policy R1–R16; exit retry cost counted), LEDGER-1c (PR #40: account version, one-transaction snapshot, fails closed), UPG-1 (PR #39) and UPG-1b (PR #44: regime boundaries B2–B5), GATE-1c (PR #42: event-tail gate).
 - Android preview APK at a fixed link: https://github.com/macdarenz-droid/Meme-snipe/releases/download/preview/zeroed-preview.apk (sample data only). Real backtest results will show in its Backtest view once BT-1 publishes its first report (UI-2 loads it from the `backtest` release).
 - All four API keys checked from CI: they work.
+- Merged 6–7 Oct and not yet deployed: #264 DEDUP-PER-WATCH, #263 FACTS-REREAD, #266 POOL-FIRST-READ part 1, #270 CLAUDE.md sync, #271 RC-FIXES-2, #152 DATA-KEEP, #274 RC-FIXES PR A, #279 RC-FIXES-2b (integration `cd4d7a64`).
+- Three red teams ran on 7 Oct; their reports are on `claude/redteam-a`, `claude/redteam-b` and `claude/redteam-c`.
 
-## Board
+## Board (history, 5 Oct; superseded by the 7 Oct handover in HANDOVER.md)
 Core plan re-checked by the new supervisor, Mon 5 Oct about 8:53 AM, against `docs/ARCHITECTURE.md` (read in full), the code and the live summaries. Builders run as separate sessions, a fresh reviewer checks each PR, and the supervisor merges one at a time into `ccr-14987baf-i6lrsl` (CI about 24 min per merge, the bottleneck). Details and session ids: `HANDOVER.md`.
 
 **Where the bot really is (verified).** The whole engine exists and runs on the server in paper (S0 shakedown, release e32cd0d). It restarts often (42 boots between midnight and 8:44 AM; each boot writes two `start` lines because the `--reconcile` pre-step builds a Worker too) and has judged no coin today (508 seen, 0 refused, 0 entered). Until Deploy #4 (7:59 AM) candidates lived only in memory, so a restart dropped them before their 60-minute U2 window opened; since #170 (RESTART-KEEP, in e32cd0d) they are saved every 5 minutes and restored, so the first judgements can show from about 9:00 AM. Not verified: the exit cause of the restarts (no host access; #148 fixes the crash paths found in code; #209 records the cause).
@@ -46,7 +75,7 @@ Core plan re-checked by the new supervisor, Mon 5 Oct about 8:53 AM, against `do
 
 Waiting (outside the core): Telegram alerts and controls (#161, #178, #190, #199), app changes (#167, #181, #182), summaries and observability (#174, #194, #200, #175, #211, #210), drills (#193, needed later for the qualifying run), CI-SHARD (#206, blocked by the safety check), docs and supply chain (#143, #146, #135, #136), paid history storage (#150, owner decision).
 
-## Priority hierarchy (verified 6 Oct 9:50 PM; owner picks the next task, one at a time)
+## Priority hierarchy (history, verified 6 Oct 9:50 PM; superseded by the 7 Oct handover in HANDOVER.md)
 
 This replaces the Board order for new work (CLAUDE.md "One task at a time"). It comes from the owner's Fable review (7e5aa96), re-checked against base 0f32a79a by workflow wf_281f6178-a9d: 6 adversarial verifiers, a completeness critic and a ranking. Full verdicts with file:line are in HANDOVER, 9:58 PM.
 
@@ -227,6 +256,11 @@ Owner, Mon 5 Oct about 5:07 AM (three marked screenshots): "These are future upd
 - Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
 - Domain: none, and none will be bought (owner rule in CLAUDE.md). Watchdog on the free `workers.dev` address; live dashboard access later through Tailscale's free personal plan.
 - Telegram bot display name: change with /setname in BotFather (optional).
+- Helius: Developer plan bought by the owner on 7 Oct about 6:16 AM. It has 10M credits a month, cycle 6 Oct → 6 Nov 2026, autoscaling off, and the same key as before. The code still budgets the free 1M a month (owner: no extra spend until the bot can trade).
+- Daily summary: the owner set the `DATA_STORE_TOKEN` secret (a 90-day token, so it expires about 3 Jan 2027) and the `DATA_REPO` variable on 5 Oct, with the private repo `macdarenz-droid/zeroed-data`. Renew the token before it expires.
+- GitHub Pro (owner, 4 Oct). `DEPLOY_CODE` is deliberately absent, so deploys are code-only.
 
 ## Open questions
+- Helius terms §3.2(xi): open (owner, 7 Oct). Raw Helius files stay out of public releases until it is answered.
+- Holdout contamination (`docs/research/edge.md` §6.5.1 on `ccr-7fae2302-drz4co`): disclose it, or exclude entries from 1 Oct 23:00Z to 3 Oct 23:59Z from G2 scoring. It must be ruled before any look.
 - Owner: check "Zeroed" on IP Australia before public launch; check the chosen exchange on AUSTRAC's register.

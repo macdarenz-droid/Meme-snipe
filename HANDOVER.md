@@ -38,31 +38,375 @@ After a compaction you are effectively a new supervisor. Do these before acting:
 6. **Never:** commit secrets or account details (no Helius account figures, the server IP or the tailnet name); enable live trading or raise a limit; push to main; rewrite others' branches; skip or loosen a test; work around a denial; put a model id in a repo file.
 <!-- AFTER-COMPACT END -->
 
-## STOPPED FOR MIGRATION (owner, Wed 7 Oct 9:19 PM: "Stop all work. Im migrating this project.")
+## HANDOVER TO THE BLUEPRINT SUPERVISOR (owner decision, Wed 7 Oct 2026)
 
-All S1 work is stopped. Each S1 session was interrupted, then told to stop its background jobs, push any uncommitted work to a `-wip` branch (never to its PR branch), and wait for a person. Nothing was merged or deployed after the stop.
+**Decision (owner, 7 Oct; S1 received it about 9:25 PM Melbourne).**
+- The Solana Meme Bot Blueprint (claude.ai/artifact/SWxLJXAncuoyZvq2vXcbMK) is now the main project.
+- Its supervisor, the session "SHITCOIN V2" (`session_01UQmXJHSgmb2Tj7PK7VDKRz`), takes over this repo, the server and the merge queue.
+- The app keeps the name Zeroed. Over time the Blueprint design replaces the rest, including the app and its two themes, which a Blueprint dashboard will replace.
+- S1 (`session_014vg21innqredKbReHHbTU8`) hands over and stands down.
 
-- **Bot:** paused on the host stand-in. Deploy tag `171a61ce`; integration HEAD `ccr-14987baf-i6lrsl` = `cd4d7a64`. No money moved; paper only.
-- **Stopped:** S1's ScheduleWakeup loop; the hourly Routine `trig_01WoSui8581C7mb9J1F1KEtq` is **disabled** (not deleted); U1-B's fallback Routine is gone.
-- **Not touched (the owner's own):** session RESEARCH 01E7rtEh with its 4 child tests (cheap-venue dip, launch-delay, hype test 1, execution audit), SHITCOIN V2 01UQmXJH, and their Routine `trig_012XYt6hBHZzCnSzaN9xNzNz` (one-shot, 8 Oct 17:21Z = Fri 9 Oct 4:21 AM Melbourne).
-- **Open fix PRs at the stop** (heads checked with ls-remote at 9:21 PM):
+**Freeze (owner), until the new supervisor lifts it:**
+- No new merges or deploys, except a fix for a safety or security problem, reported here.
+- The server stays on the stand-in (`"worker": "stub"`).
+- The worker is not resumed, and #268 (which turns it back on) is not merged.
+- No new cards or sessions.
 
-| PR | Branch @ head | Review state | Next |
+S1 has made no merge or deploy since the owner's 9:19 PM stop. None was needed for safety: the server runs the stand-in and has never held a position.
+
+S1's docs live on branch `claude/intelligent-knuth-8utazv`: this file, `PROJECT_STATE.md` and `CLAUDE.md`. That `CLAUDE.md` carries rules of 7 Oct ("Discipline, not paralysis", "Worker loop") that are not yet on the integration branch.
+
+### 1. Server and deploy
+
+**Host:**
+- Vultr `zeroed`: Frankfurt, Ubuntu 24.04, 1 GB RAM, about US$6 a month.
+- Worker unit: `MemoryMax=800M`, Node `--max-old-space-size=560` (`ops/host/files/usr/local/lib/zeroed/worker-start`).
+- The worker API binds to 127.0.0.1:8788 and is published on the tailnet only (`tailscale serve`, never Funnel). Health is on :8787.
+- No inbound ports are opened beyond what the installed firewall keeps.
+
+**Deploy tag:**
+- `refs/tags/deploy` = `171a61ceb06faf52783acac5723aa233d92348d9` (the merge of #265 PAUSE, 7 Oct 7:07 AM).
+- It runs the host stand-in (`ops/host-config.json` `"worker": "stub"`): no provider calls and no entries.
+- The summaries show 0 entries ever, so there are no open positions.
+
+**Integration branch** `ccr-14987baf-i6lrsl` (the default; there is no `main`):
+- Head `cd4d7a644d98640e4d5b4524363c3f6e3d7cff93`. `host-config.json` there still says `"stub"`.
+- Merged since the deploy tag and **not deployed** (checked with `git log --first-parent 171a61ce..cd4d7a64`):
+  - #264 DEDUP-PER-WATCH;
+  - #263 FACTS-REREAD;
+  - #266 POOL-FIRST-READ part 1;
+  - #270 CLAUDE.md sync;
+  - #271 RC-FIXES-2;
+  - #152 DATA-KEEP;
+  - #274 RC-FIXES PR A;
+  - #279 RC-FIXES-2b.
+- **Order for the next deploys** (from the #271 review):
+  1. Deploy this batch WITHOUT #268 first.
+  2. Confirm that zeroed-update logged "deployed cd4d7a64…".
+  3. Only then merge and deploy #268.
+  - Why: `install.sh --update` renames files in place, so the old zeroed-update runs the switch. Shipping #268 together with #271 would skip probation.
+  - #268 also conflicts with #271 at `host-logic.test.ts` (keep #271's lines with `.toBe('release')`).
+
+**A safe deploy** (`ops/README.md` "Code updates", `.github/workflows/deploy.yml`, `ops/deploy/tag.sh`):
+1. **Merge.** Merge only a PR whose reviews passed on its exact head, with CI `check` green on a head that contains the latest base. Use `merge_pull_request` with method "merge" and `expectedHeadSha`. A PR merge is signed by GitHub's web-flow key; direct pushes are not signed and are never deployed.
+2. **Check the tip.** Before Deploy, make sure no GitHub Actions run on the branch tip is pending or failed (the scheduled data-keep runs attach to the tip). Otherwise `tag.sh` skips to an older commit.
+3. **Run Deploy** (manual, no inputs). `tag.sh` moves `deploy` to the newest integration commit that:
+   - is signed by GitHub;
+   - has `check` green and no failed run;
+   - has `e2e` green on the newest commit that touched the ops paths.
+   It logs every commit it skips and why.
+4. **The server switches.** Every 5 minutes `zeroed-update` switches only when all of these hold:
+   - the commit carries GitHub's merge signature (fingerprint 968479A1AFF927E37D1A566BB5690EEEBB952194, pinned at install);
+   - the commit is on the branch;
+   - the same check gate passes;
+   - no qualifying dry run is active;
+   - there is no open intent (`/var/lib/zeroed/open_intents`).
+
+   It works in this order:
+   - It trial-runs the new worker beside the old one: reconcile must exit 0, health must answer in 90 s, and the worker must still be up 30 s later.
+   - It switches, then watches 60 s + 30 s.
+   - On failure it rolls back with one Telegram alert. The host update is all or nothing.
+5. **Verify.** `git ls-remote origin refs/tags/deploy` shows the new commit. Once a real worker runs, the next summary in zeroed-data shows the new `git_sha`. The watchdog deploys from the same tagged commit in the same run (the summary step); if that step did not run, run Deploy again.
+
+**Deploy notes:**
+- `DEPLOY_CODE` is deliberately absent, so deploys are code-only (it was deleted 6 Oct 9:05 PM). When it is present, Deploy also hands new keys to the server and redeploys the watchdog; a stale one breaks the heartbeat key.
+- With #271/#279 (merged, not deployed):
+  - a refused start writes `<stateDir>/refused.json` and exits 78; it is held and alerted, never rolled back;
+  - the 2-hour probation rollback holds while intents or positions are open.
+- Known gap (#280 review): systemd's `RestartPreventExitStatus` does not cover an `ExecStartPre` exit. The reconcile pre-step must exit 0 and let the main process exit 78. This is fixed only on `claude/rc-state-wip`.
+
+**Tailscale:** Tailscale Personal (free). The owner disabled key expiry on 4 Oct. `zeroed-tailscale` checks HTTPS and MagicDNS and accepts only the exact serve config. The tailnet name stays out of the repo.
+
+**Cloudflare watchdog** (`packages/ops`): a Worker on the free `workers.dev` address (no domain, nothing paid).
+- A cron runs every minute. One Durable Object holds the heartbeat, the alerts, the pause flag and the lease.
+- The server posts an HMAC-signed heartbeat every 20 s.
+- Checks:
+  - heartbeat older than 90 s;
+  - slot lag against a second RPC;
+  - on-chain position against reported;
+  - a stop breached with no exit in 60 s;
+  - unresolved intents past expiry;
+  - the SOL reserve floor;
+  - signer unreachable;
+  - daily summary missing.
+- Telegram gets alerts, and only `/pause` and `/status` work, from the paired chat only.
+- It **cannot sell** (§5).
+
+**Data repo** `macdarenz-droid/zeroed-data` (private):
+- Summaries: `reports/latest.json` and `reports/<day>.json`, posted at :01 and :31 Melbourne while a real worker runs. The stand-in posts none.
+- Recordings: uploaded as `rec-<UTC day>` prereleases, then deleted locally after a verified upload.
+- `DATA_STORE_TOKEN`: a 90-day token with Contents read/write, set by the owner 5 Oct about 5:37 AM, so it expires about 3 Jan 2027. It is used with the `DATA_REPO` variable.
+- **Status: working.** The last summary was generated 6 Oct 20:31Z (7 Oct 7:31 AM Melbourne), from 3ee09a5a, just before the pause.
+
+**CI:** GitHub-hosted runners (public repo; the owner has had GitHub Pro since 4 Oct). `check` takes about 25–30 min; `e2e` runs on ops-path changes.
+
+### 2. Secrets and accounts (names only)
+
+- **GitHub secrets** (names as the workflows use them):
+  - `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`;
+  - `TELEGRAM_BOT_TOKEN`;
+  - `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`;
+  - `DATA_STORE_TOKEN`;
+  - `DEPLOY_CODE` is absent on purpose.
+
+  Variable: `DATA_REPO`. Only the owner sets or rotates them; never in the repo, chat or logs.
+- **Helius:**
+  - Developer plan, bought by the owner 7 Oct about 6:16 AM.
+  - 10M credits a month, cycle 6 Oct → 6 Nov 2026, autoscaling off.
+  - Owner's dashboard 7 Oct: about 126k of 10M used. Same key as before.
+  - The code still budgets the free plan: the summary shows `monthly: 1000000`, and the FACTS-REREAD builder kept `HELIUS_FREE`. Owner rule: no extra Helius spend (no higher lookup rates or budgets) until the bot can buy coins with no blocker.
+- **Telegram:** the bot @Zeroed_alerts_bot, paired to the owner's chat.
+- **Vultr:** server `zeroed` (plan vhp-1c-1gb, Frankfurt, created 3 Oct, no Vultr backups).
+- **Cloudflare:** Workers Free, `workers.dev` only. The API token has a 1-year expiry: renew it before 3 Oct 2027.
+- **Alchemy and Jupiter:** free keys (secrets above).
+- **GitHub:** Pro (owner, 4 Oct).
+
+### 3. Open PRs (55; heads checked 7 Oct 9:2x PM)
+
+**Fix queue** (red teams A/B/C; these matter only if the Zeroed worker runs again). Merge order if continued: #276, #280, #277, #281, #275, #273, #272, #197 (after #280 because of RB-17), then the deploy without #268, then #268.
+
+| PR | Branch @ head | Status | Recommendation |
 |---|---|---|---|
-| #276 A2-GATE-FIXES | a2-gate-fixes @ 58eb1422 | facts/gates PASS on 58eb1422; BT parity PASS on a54cd590 (3 LOWs: R2-2 time basis, backtest cases for USDC/missing day, no marker leak test); no parity run on 58eb1422 | CI check, then merge |
-| #275 EXIT-FILL-FIXES | exit-fill-fixes @ a626e3e4 | delta reviews on 2720ee8 cancelled; a626e3e unverified (suite stopped) | full suite, then delta reviews 01192sk8 + 01PmJncT; RB-16 = option B |
-| #281 RC-FIXES-2c | rc-fixes-2c @ ce258dd6 | CHANGES NEEDED on 1af9484; ce258dd is the fix round, unverified | full suite, then delta review 01QkAcbw |
-| #280 RC-STATE | rc-state @ 5bfc993d; WIP rc-state-wip @ 2315cbf9 | delta FAIL (ExecStartPre 78) | finish the round from the WIP (RB-15, RB-14, round-trip test, C probes) |
-| #277 MEM-FIXES | mem-fixes @ 2f7409b1; WIP mem-fixes-wip @ 78577d32 | PASS on b550541 + round 3 in the WIP | full suite + mutants on the WIP, push, delta 01NykdK5 |
-| #273 A-FACTS-FIXES | a-facts-fixes @ c41046c2 | round 2 pushed, unverified | full suite + mutants, deltas 0127TNr4/01QZc9Ug; then H14-HOLES |
-| #272 LATE-LOG | late-log @ eff442af | round pushed, unverified | full suite, delta 01EgsQ3Z |
-| #197 SOL-BOOKS | sol-books @ fcb6fc7a; WIP sol-books-wip @ 2f9ad229 | round in progress (+RB-17, RB-10, fixtures) | finish from the WIP |
-| #269 POOL-FIRST-READ-2 | pool-first-read-2 @ e225f112 | paused | report |
-| #268 RESUME-WORKER | resume-worker @ 25c4d9bf | last; host-logic.test.ts conflict | after Deploy 1 |
+| #276 A2-GATE-FIXES | `claude/a2-gate-fixes` @ 58eb1422 | Facts/gates PASS on 58eb1422. BT parity PASS on a54cd590 (58eb1422 differs only by the import union). CI `check` started 09:48Z. 3 LOW notes: the R2-2 time basis, backtest cases for USDC and a missing day, no marker leak test. | **Merge** when `check` is green |
+| #280 RC-STATE | `claude/rc-state` @ 5bfc993d; WIP `claude/rc-state-wip` @ 2315cbf9 | Delta FAIL (the ExecStartPre exit 78). The round is in the WIP: refusal fix, RB-15, RB-14, a write→check round-trip, C probes. Untested. | **Finish** from the WIP, review, merge before any resume |
+| #277 MEM-FIXES | `claude/mem-fixes` @ 2f7409b1; WIP `claude/mem-fixes-wip` @ 78577d32 | PASS on b550541. Round 3 in the WIP is untested: CREATES_MAX 64,000 with no global creates gap, ahead reads held for the tip, largest heal dropped, create-compact no longer timing-bound. | **Finish**, delta review, merge before resume |
+| #281 RC-FIXES-2c | `claude/rc-fixes-2c` @ ce258dd6 | CHANGES NEEDED on 1af9484. ce258dd is the fix round (rugs downtime gap, seed fill test, late-create case); its suite was stopped. | **Finish**, re-review (ops), merge |
+| #275 EXIT-FILL-FIXES | `claude/exit-fill-fixes` @ a626e3e4 | The round is pushed; the suite was stopped, so it is unverified. RB-16 ruled option B (C stays 5+5, fees counted when paid, exits never stop). | **Finish**, delta reviews (risk/exits + BT), merge |
+| #273 A-FACTS-FIXES | `claude/a-facts-fixes` @ c41046c2 | Round 2 pushed, unverified. | **Finish**, merge; then H14-HOLES |
+| #272 LATE-LOG | `claude/late-log` @ eff442af | Round pushed, unverified (c752a6d was red alone). | **Finish**, merge |
+| #197 SOL-BOOKS | `claude/sol-books` @ fcb6fc7a; WIP `claude/sol-books-wip` @ 2f9ad229 | Round in progress. Open: RB-17 (cost:null vs RC-STATE's checker means the worker can't start), RB-10, and fixtures without a ledger. Needed for the owner's SOL-profit rule. | **Finish** after #280, merge |
+| #269 POOL-FIRST-READ-2 | `claude/pool-first-read-2` @ e225f112 | Paused; its report is pending. | Finish or park |
+| #268 RESUME-WORKER | `claude/resume-worker` @ 25c4d9bf | Frozen by the owner. | **Do not merge** (freeze); it goes last after Deploy 1 |
 
-- **Cards not started or barely started:** FRESH-BATCH (WIP fresh-batch-wip @ 54953095: the probes only), REGIME-PARALYSIS, HALTS (DUST-WRITEOFF + R4 items 4/5), PERSIST-PARALYSIS, H14-HOLES, CURVE-TAIL-PROOF, NT-1b. Sources: red team A round 4 (redteam-a @ 37637052), red team B round 4 (redteam-b @ 30aae66b), red team C (redteam-c @ 5fb491f0).
-- **Research:** U1-B stopped at 11,138/74,703 decoded, WIP edge-hunt-u1b-wip @ 1a8e9e9. REPLAY-1000 (replay-1000 @ eac1353f) was still saving to replay-1000-wip at 9:22 PM. A2-GATE left only copied probe files uncommitted on claude/regime-paralysis (no loss: they are on redteam-a).
-- **S1 slip:** at 9:19 PM S1 made one no-op Workflow call by mistake (0 agents, 0 tokens). No other agent was started after the stop.
+**Before any first paper entry** (parked-PR audit, 7 Oct 5:13 PM):
+
+| PR | Status | Recommendation |
+|---|---|---|
+| #224 EXIT-KEEP downtime | Not reviewed; base conflicts | Merge before the first entry |
+| #130 EXIT-ROUTE | EXIT PASS on 992da7ce; DECISIONS-only conflict | Merge before the first entry |
+| #203 R8-WHOLE | Risk PASS on 477dd0b2; its base `claude/paper-1` is stale | Rebuild on #197 in lamports, then merge |
+| #177 REGIME-MIN | Persist delta pending | Re-review on top of #276, merge before the first entry |
+
+**Park** (no merge needed for the bot to run):
+
+| PR | Recommendation |
+|---|---|
+| #221, #207, #193, #192, #196, #186, #172, #146, #154, #122, #160, #178 | Park (audit class C) |
+| #161 KEY-ROTATE-SAFE | Park; needs the owner's OK to store hashes of retired keys in the watchdog |
+| #206 CI-SHARD | Park (ops FAIL) |
+| #250 Helius socket bytes / stop proved expiry watches | Park, but it is the open usage cut (see the credit burn in §5); re-review first |
+| #149 OPS-1j + BACKUP-STATE + DISK-GUARD | Park. It overlaps #280's whole-state backup, and its full-disk crash path went into #279. Sending `disk` in the heartbeat needs the owner's OK. |
+| #98 TEST-3 G3, #127 DATA-4, #138 DATA-5, #150 DATA-STORE | Park (proof and data stage) |
+| #115 RES-4, #191 RES-5c | Park (research; fold into the Blueprint research) |
+| #135 PNPM-CLAIMS, #143 DOCS-ALIGN | Park; #143 is likely stale (close candidate) |
+| #136 SEC-1 (APK signing, WIP) | Park (the app is to be replaced) |
+| #168 ACCOUNT-RATE | Park; check against #197 (likely superseded) |
+| #174 OPS-SUMMARY v2, #194 SUMMARY-FUNNEL, #211 SUMMARY-CLOCK | Park (summaries, outside the core) |
+| #175, #200 STRATEGY-HEALTH-OBS | Park |
+| #185 RISK-LATCH-2 | Park. F2 must precede #190; F4 is covered by RC-FIXES PR B. |
+| #190, #199 OWNER-REVIEW (Telegram; #199 is based on #190) | Park (outside the core) |
+| #214 ARCHIVE-SAFE (B) | Park (do not merge before the 09-21 chain ends) |
+| #225 MEDIAN-TARGET | Park (the owner parked features) |
+| #247 RISK-DIAL design | Park (S2's design) |
+| #259 REPLAY-1000 | Park. WIP `claude/replay-1000-wip` @ d7783929, also `claude/replay-1000-whatif` @ 49f5b091; findings are in the Log. |
+| #261 EDGE-HUNT-U1, #267 EDGE-HUNT-U2 | Both "no edge after costs". Keep as a record: merge as research docs or close (new supervisor). |
+| #278 EDGE-HUNT-U1-B | Park. Decoding stopped at 11,138/74,703; WIP `claude/edge-hunt-u1b-wip` @ 1a8e9e9a |
+
+### 4. Sessions
+
+| Who | Session | State |
+|---|---|---|
+| S1 (supervisor) | `session_014vg21innqredKbReHHbTU8` | Standing down after this handover |
+| New supervisor "SHITCOIN V2" (owner's) | `session_01UQmXJHSgmb2Tj7PK7VDKRz` | Takes over |
+| Owner's RESEARCH | `session_01E7rtEhgN2fF94brNDtps3Z` | Owner's; not S1's |
+| RESEARCH's children: cheap-venue dip, launch-delay, hype test 1, execution audit | `session_01TYj3rkCEeH9iKoHWBrEsgF`, `session_01RqodKpooGK5pMfAZW7CDC1`, `session_013H3pAJT1dVqGu3TJWb9pgU`, `session_0188CrmjrRVgYPVgABAT5AJR` | Owner's. Its Routine `trig_012XYt6hBHZzCnSzaN9xNzNz` fires once on 8 Oct 17:21Z (Fri 9 Oct 4:21 AM Melbourne) |
+| REPLAY-1000 (S1, parked) | `session_013usK4AZU5ZYkrwByaZkwou` | Stopped at virtual 6 Oct 12:59Z. WIP `claude/replay-1000-wip` @ d7783929. Its inputs sit in its own scratchpad and git-ignored data, not pushed. |
+| EDGE-HUNT-U1-B (S1, parked) | `session_017PmchcqWASLkp1x1j26wFb` | Stopped at 11,138/74,703 decoded. WIP `claude/edge-hunt-u1b-wip` @ 1a8e9e9a. Its fallback Routine is gone. |
+| Supervisor 2 (app queue) | docs on `claude/s2-docs` @ 2ebd46e6 (`HANDOVER-APP.md`) | S1 has no live view of S2's sessions |
+
+**Archived by S1 at about 9:27 PM** under the archive rule (task ended by the freeze). The work is on the branches named in §3; `unarchive_session` brings any of them back.
+- **Builders:**
+  - MEM-FIXES `session_01EtGSEdwnsinqSNsNU3bMWU`
+  - A2-GATE `session_01PSe97QW6AswCK33de4wBvz`
+  - A-FACTS `session_011dr7vMxTok2f89PyPzTKrT`
+  - LATE-LOG `session_01Gv9TEzwWMgBk3cbj3MA1SL`
+  - RC-FIXES-2/2c `session_015cNHfAEhT8dYnXn1Q9phsP`
+  - EXIT-FILL `session_01NQr4cDTkAzM8Hzx9Bmo1aM`
+  - RC-FIXES/RC-STATE `session_01WA1qeGiTpi2zBfDMvfvNY3`
+  - SOL-BOOKS `session_016adoqhmUJnno9cohwinhyq`
+  - POOL-FIRST-READ `session_01JdQvXH88b1TzpN6BpBxAXC`
+  - RESUME-WORKER `session_01A9hvnHUpoaJW8ktAL7fhga`
+  - CURVE-TAIL-PROOF `session_016uuBF8L4bhBHzmAjkkTgyz`: its local work (commit 5bfe7ac, never pushed) was lost when its container reset while paused. `claude/curve-tail-proof-wip` points at cd4d7a64 and holds no work; it is kept, because the owner said delete no branches. Re-opened at 9:26 PM only to try that push, then archived again.
+  - FRESH-BATCH `session_014FESiv4kiYSpt7d8xCfBgv` (WIP `claude/fresh-batch-wip` @ 54953095: the probes only)
+- **Reviewers:**
+  - `session_01VRuv5FYgV14rqbTAzLfGLH`, `session_01HLYjQyFCXF2qzEFT2nEjUV` (#266)
+  - `session_01QkAcbwhHvFr8AkQB3EYxyn` (ops: #268/#279/#280/#281)
+  - `session_01EgsQ3ZFuAWppjAewKJ35Qs` (#272)
+  - `session_0127TNr4kacbeV5g5FcXZ97m`, `session_01QZc9UgthktnDgG2H9Ebggx` (#273)
+  - `session_01Gb2gBUE1Kw4v9qVm6qEqvc`, `session_01EmP8awex4Gsy1AfgAbiKzT`, `session_019e71fzUumZQXAPBWhc2AU7` (#197)
+  - `session_01BWjnpvCmNAKnH9Z11wA3rB`, `session_012MXi9d5JFaApvaKJHKs6aG` (#276)
+  - `session_01NykdK59y8fMfXGkpyHvkgj` (#277)
+  - `session_01192sk8LiTRn2HCt86fZEhG`, `session_01PmJncTTycZqBDRcNV5q3fA` (#275)
+- **Red teams** (reports on their branches):
+  - A `session_012Ke512GRCsQatw6v3KHFTR` (`claude/redteam-a` @ 37637052)
+  - B `session_01PoeCfu5DmkbULkDx3fTCRz` (`claude/redteam-b` @ 30aae66b)
+  - C `session_01MtW136WvLRnPkRjZSSb5rx` (`claude/redteam-c` @ 5fb491f0)
+
+**Stopped:**
+- S1's wake-up loop.
+- The hourly Routine `trig_01WoSui8581C7mb9J1F1KEtq`, **disabled** (not deleted).
+
+### 5. Known problems
+
+1. **Restart loop and V8 out-of-memory on 1 GB.**
+   - The worker has an 800 MB unit cap and 560 MB of old space. The host also runs the uploader (96 MB cap), the signer (200 MB cap) and the OS, all in 1 GB.
+   - On 6 Oct there were 34 unplanned restarts by 11:23 PM, nearly all HeapOutOfMemory from old-space growth (store entries 80k → 105k in minutes).
+   - The fixes deployed through 3ee09a5a (#236 and the compaction and bounding fixes after it) ended the loop: 0 unplanned restarts from 6 Oct 1:06 PM to the pause on 7 Oct about 7 AM (about 18 h).
+   - Still open:
+     - MEM-FIXES #277: at 200 creates a minute the worker ran out of its heap at about h17. The create window is capped in the WIP. The estimate is at most about 45 creates a minute sustained over 17 days under 80% of the heap (±25%).
+     - Red team C's crash-loop items: fixed in #271/#274/#279 (merged, not deployed) and #280 (open).
+   - A 2 GB host would remove most of the pressure (spending: owner).
+2. **Credit burn about 80k an hour.**
+   - The last live boot (3ee09a5a, 7 Oct 4:00–7:31 AM) used 305,033 Helius credits in 3 h 31 min, about 87k an hour (earlier boots: 49–62k an hour).
+   - At that rate the 10M plan lasts about 5 days. The code's own monthly budget (still the free 1M) would run out in about half a day, and then entries stop (fail closed).
+   - The usage cut is open: #250, plus cut A (stop watching pools whose reject cannot change; ruled 6 Oct). The owner's rule: no extra spend until the bot can trade.
+3. **Red team C fixes merged but not deployed:**
+   - #271 RC-FIXES-2: watchdog floor, recorder gaps, stuck-intent alert;
+   - #274 RC-FIXES PR A: crash loop, reconnect burn, budget count, owners bank;
+   - #279 RC-FIXES-2b: rollback holds on positions and refusals, crash-safe gaps.
+
+   All are in cd4d7a64, with #264, #263, #266 and #152; the deploy tag is still 171a61ce. Still open: #280, #281, #277. Report: `claude/redteam-c` @ 5fb491f0 `docs/redteam-c/REPORT.md`.
+4. **`SLOT_MS = 400` in four places:**
+   - `packages/backtest/src/sim/world.ts:61`
+   - `packages/worker/src/engine/strategy.ts:1749` (static)
+   - `packages/worker/src/run/config.ts:84` (exported)
+   - `packages/worker/src/run/coverage-journal.ts:5`
+
+   They should share one constant. Mainnet slot time varies, so every slot↔time conversion is an estimate. Any change must keep backtest/live parity (BT-3 hashes).
+5. **H8 virtual-quote depth.**
+   - H8 compares the effective quote reserve (vault + signed `virtual_quote_reserves`; DECISIONS 2026-10-03) with the dollar floor. The virtual part is not liquidity anyone can sell into, so H8 can overstate real depth. A fresh pool is about 67.4 real + 17.6 virtual SOL (`docs/research/edge.md` §6.5.2 on the research branch).
+   - The study behind H11 priced migration from the real vault only, so "above the migration price at +5 min" may mean about 26% lower in the code than in the study. UNVERIFIED: it needs a mainnet fixture.
+6. **SOL-BOOKS #197 is not merged.** The owner's rule (profit and every limit in SOL) is not on the server.
+   - Until it lands, R10 can latch on a SOL/USD move alone (red team A R4 item 12).
+   - Open: RB-17 CRITICAL (with #280 merged, an unpriced stray fee makes `account.json` refused, so the worker can't start), RB-10 (a false daily_loss or R9 latch at migration), and fixtures that need a ledger.
+7. **Holdout contamination** (`docs/research/edge.md` §6.5.1 on `ccr-7fae2302-drz4co`, VERIFIED by date).
+   - empirical.md's backfill window (1 Oct 23:00Z – 2 Oct 11:00Z) and its 3 Oct live sample lie inside the sealed holdout [22 Sep, 20 Oct).
+   - The H8, H9 and H11 thresholds come from that study, and H9 applies to every universe.
+   - Not yet ruled. The options: disclose it, or exclude entries from 1 Oct 23:00Z to 3 Oct 23:59Z from G2 scoring (that only tightens). It must be ruled before any look.
+8. **The watchdog cannot sell.** It has no signer and no key. `/pause` stops new entries only, never exits.
+   - If the worker is down with an open position, the watchdog alerts (stop breached, position mismatch) but cannot close it. Only the worker sells.
+   - Before live, exits need a path that works while the worker is down (an owner/architecture decision).
+9. **Why the bot never traded** (7 Oct, verified in code or replay):
+   - H9 instant-graduation refuses most coins (correct by chain).
+   - NT-2: every creates-watch reconnect leaves holes that block H14 for 14 days. H14-HOLES was to start with a fetch backfill: REPLAY-1000 found all 4,571 holes heal on fetch.
+   - The 3,000 a day cut-create cap is below about 4,571 holes in about 28 h.
+   - Deployer-check staleness counts queue time.
+   - NT-1 (fixed in #276).
+   - RT-A1b: a late swap leaves candles partial (#272).
+   - H5 curve tails would refuse most of the rest (CURVE-TAIL-PROOF, unfinished).
+10. **Red team A round 4, the paralysis hunt** (`claude/redteam-a` @ 37637052, `packages/worker/test/redteam/REPORT.md` "Round 4"; 17 probes fail on cd4d7a64). 12 global blockers:
+    - (1) **No batch ever lands fresh.** `readBatch` waits for the slow cross-checks and sim before the slot-lag-2 bank is judged, so there is no entry in any mode, S0 included (S1 checked `readers.ts:550–640`).
+    - (2) Exec-health keeps the regime off in judged runs.
+    - (3) Scan-cap burn.
+    - (4) One late-landing buy halts entries for good.
+    - (5) The sell-only halt outlives its position.
+    - (6) A failed fetch-caps save spends the day's cap.
+    - (7) The SOL/USD bar goes stale at every top of the hour.
+    - (8) An unreadable `credits.json` halts entries for the month.
+    - (9) BEHIND hysteresis.
+    - (10) Survival is about 14 days off after an outage.
+    - (11) Under S0, an old graduates fact turns the regime off.
+    - (12) R10 on SOL/USD.
+    - Also a fail-open: answers are stamped with the batch close time.
+    - Cards drafted, nothing built: FRESH-BATCH (1, 3, the stamp), REGIME-PARALYSIS (11, 7, 2, 10), HALTS (DUST-WRITEOFF + 4, 5), PERSIST-PARALYSIS (6, 8, 9). Rulings are in the 9:18 PM Log line.
+11. **Red team B integration** (`claude/redteam-b` @ 30aae66b, `redteam-b/REPORT.md` "Round 4"):
+    - RB-17 CRITICAL;
+    - RB-15 HIGH: no control.json latches the kill switch on the first start after #268; fixed in `claude/rc-state-wip`, untested;
+    - RB-10 HIGH;
+    - RB-14 and RB-16 MEDIUM.
+12. **No edge found.** U1 and U2 show no edge after costs, and U1-B is unfinished. RES-6's judgement: probably no edge for a long-only taker. No rule passes pre-funding item 6, so no deposit.
+
+### 6. Owner waits and owner decisions
+
+**Decisions** (newest first; full text in `CLAUDE.md`):
+- **7 Oct about 9:25 PM:**
+  - the Blueprint is the main project and "SHITCOIN V2" supervises;
+  - freeze (above);
+  - pump.fun data already collected is kept, with **no new pump.fun requests**;
+  - the research branch `ccr-7fae2302-drz4co` may be merged (allowed; not merged by S1 because of the freeze).
+- **7 Oct:**
+  - 9:19 PM: stop all work (migration).
+  - 5:40 PM: worker loop.
+  - 5:15 PM: discipline, not paralysis.
+  - 6:25 AM: pause, fix, red-team, then resume.
+  - 6:21 AM: server paused.
+  - 6:20 AM: no extra data spend before the bot can trade.
+  - 6:16 AM: Helius Developer plan.
+  - About 6 AM: size is not the trial (report $5 to $10,000).
+- **6 Oct:**
+  - 10:39 PM: no knowingly losing trades.
+  - 8:55 PM: one task at a time, the owner picks.
+  - 8:10 PM: trading first.
+  - 4:55 PM: disk cycle.
+  - 12:20 AM: trade more, from evidence.
+  - 12:30 AM: recordings upload approved; delete after a verified upload.
+- **5 Oct:**
+  - profit counted in SOL;
+  - paper is real money;
+  - paper and backtest removal only when the app is ready;
+  - bot first.
+- **4 Oct:**
+  - GitHub Pro;
+  - code-only Deploy;
+  - `DEPLOY_CODE` deleted;
+  - Tailscale key expiry disabled;
+  - SPA for G1.
+- **3 Oct:**
+  - no deposit before the six pre-funding proofs;
+  - backtests blind and reproducing live;
+  - two themes, the name and the logo;
+  - funding through Independent Reserve or Kraken;
+  - free tiers only for hosting extras.
+
+**Open owner waits and questions:**
+- **The Helius §3.2(xi) question: open** (7 Oct). Meanwhile raw Helius files stay out of public releases.
+- **Before live** (owner only):
+  - the live risk limits;
+  - R8 "5 losses in 20";
+  - the day/week loss boundary;
+  - the RISK-1 findings (C ≈ $0.79 a trade; R10 after about a $3.55 loss);
+  - late-landing recovery for real transactions;
+  - the DUST-WRITEOFF rule (as ruled by S1: a 100% write-off);
+  - RB-16 option B;
+  - whether the server may upload evidence to GitHub (OPS-1d);
+  - an exit path while the worker is down (§5.8).
+- #149: `disk` in the heartbeat sent to Cloudflare (data to a third party).
+- #161: the watchdog storing SHA-256 hashes of retired keys.
+- Host size: 1 GB against memory (spending).
+- Holdout contamination: a ruling before any look (§5.7).
+- Renew `DATA_STORE_TOKEN` before about 3 Jan 2027.
+
+### 7. Research
+
+- **Branch `ccr-7fae2302-drz4co`** @ 9471d5bb: not merged; 74 commits not in cd4d7a64. It holds:
+  - `docs/RESEARCH.md`;
+  - `docs/research/edge.md` (§6.5: holdout contamination, the migration-price reference, why 300 trades can't be reached at 3 entries a day);
+  - `research/daily-probe/RESULTS.md`;
+  - the owner-decision commit f2e75c7a ("Blueprint leads inside the Meme-snipe repo (name stays Zeroed)").
+
+  The owner has allowed merging it; S1 did not merge it (freeze), so the new supervisor decides.
+- **Elsewhere:**
+  - drafts #261 (U1, no edge), #267 (U2, no edge), #278 (U1-B, stopped), #259 (REPLAY-1000), #115 (RES-4), #191 (RES-5c);
+  - red team reports on `claude/redteam-a`, `claude/redteam-b` and `claude/redteam-c`.
+
+### First steps for the new supervisor
+
+1. Read `CLAUDE.md` and `AGENTS.md` on this branch, this section, then `PROJECT_STATE.md`.
+2. Keep the freeze until you lift it. The server is safe on the stand-in.
+3. Decide the fix queue in §3. If the Zeroed worker will run again, follow the merge and deploy order there; otherwise park it.
+4. Before any resume, settle the credit budget (§5.2), the batch freshness (§5.10 item 1) and RB-17.
+5. Renew `DATA_STORE_TOKEN` before about 3 Jan 2027.
+
 
 ## S1 on the new account (from Tue 6 Oct 4:48 PM)
 
@@ -74,6 +418,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 9:31 PM **Handover to the Blueprint supervisor written** (owner decision, about 9:25 PM). The new section is at the top of this file; PROJECT_STATE.md was updated too. Freeze kept: no merge or deploy since 9:19 PM. Archived 29 S1 sessions (12 builders, 14 reviewers, 3 red teams); REPLAY-1000 and U1-B are parked with WIP branches. CURVE-TAIL-PROOF's unpushed work was lost to a container reset. The hourly Routine is disabled. S1 stands down after sending this commit's sha to "SHITCOIN V2".
 - 9:18 PM **Red team A round 4, PARALYSIS HUNT** (claude/redteam-a @ 37637052, REPORT "Round 4"; 17 probes fail on cd4d7a64). 12 global blockers, ranked by trades lost:
   - (1) No batch ever lands fresh: readBatch waits on Promise.all, so the slot-lag ≤2 bank ages by the slowest cross-check or sim. Every mode, S0 included. S1 checked the code at cd4d7a64:readers.ts:550–640.
   - (2) Exec-health keeps the regime off in judged runs (zero attempts = red; a 10 s publish judged against a 2 s age).
