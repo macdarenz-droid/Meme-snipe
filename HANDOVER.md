@@ -79,6 +79,10 @@
   - Follow-up, ops card (from the #291 red team, L2 and L3, low):
     - A replaced pending Android release run shows as cancelled, and `commit_verdict` reads cancelled as red, so that one commit is skipped (the newest still deploys).
     - The newest-commit test in the release job runs before the wait. Repeat it just before publish.
+- **8 Oct about 7:25 AM, owner: "Old faithful but by batch to avoid blockage"** (B-10 route; replaces the 12:50 AM "B").
+  - CLAUDE.md is updated (`ee65f311`). No Helius credit goes to B-10. The "no bulk historical downloads" exception now covers only these Old Faithful days, read in small batches.
+  - Card **Z-H-OF** (docs and batch plan) went to builder `session_01QxNHHJxUan1nnCAi2E5QEP` (branch `claude/zh-old-faithful`). Covered: the archive's documented limits (VERIFY), the batch plan, storage per batch, the #214 vs 09-21 Helius cache options, and switching the Blueprint docs off the Helius B-10 machinery (P21 stays).
+  - Then a fresh review and red team. Code cards follow (#214 revival, the batch scheduler). No download before those are reviewed and merged.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
