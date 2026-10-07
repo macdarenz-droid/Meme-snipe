@@ -208,3 +208,45 @@ Reviewer: FAIL. Rulings 1–13 and open points 1–4 are applied, and every numb
     - Batch 1 (07-22) and batch 2 (07-23) both keep K2 and are both measured. The retention choice is recorded before batch 3.
     - The record names the first-day bias: no positions carried over from earlier migrations.
     - Add "(re-keyed, row 125)" to DECISIONS:110.
+
+### Reviewer and red team on `20bd63d7`
+
+- Reviewer: PASS, with 4 LOW findings.
+  - LOW-1: the storage check is undefined after batches 1 and 2.
+  - LOW-2: the C-56 wording reads stricter than intended.
+  - LOW-3: ARCH M03 (:943-947) and :3117 still describe D30 as live.
+  - LOW-4: the MA-0b exit text still says "enumeration result".
+- Red team round 5: 1 MAJOR, 4 MEDIUM, 2 MINOR. Closed: B, D, E, F, G, H, I, O, and M (in part).
+  - P MAJOR: the `-k3` "done" rule makes the queue read 07-22 a second time.
+  - Q: C-56 contradicts its OWNER PENDING clause about PM-01.
+  - R: check-day's rescan does not get the retention, and check-day is not an entry point that refuses.
+  - S: the trim has no stored rescan unit to compare against.
+  - T: the 0.5 TB stop is enforced only by archive-check.
+  - U (minor): a forged cache marker can stall the chain.
+  - V (minor): a unit re-read after K3 is set would write K3 into a K2 day.
+
+### Supervisor rulings for round 4 (8 Oct 2026, about 8:25 AM)
+
+33. **P: two "done" predicates.**
+    - "Read done" means a `data-day-D` or `data-day-D-k3` release exists in zeroed-data. It drives the queue, the skip step and D+1 ordering.
+    - "B-10 done" means the `-k3` release exists for 07-22 and 07-23, and a plain release for every other day. It drives only B10-PULL and the evaluator.
+    - Add test-ci: after batch 1's K2 release, the next served check dispatches 07-23, not 07-22; after both K2 releases with no retention record, it dispatches nothing.
+34. **Q and LOW-2: C-56 in one consistent form.**
+    - "If PM-01 fails and no owner-brought slot strategy is in its gates, the stop applies on 31 Dec 2026."
+    - "Strategies the agents start through the M09 slot stop by 31 Dec either way."
+    - "PM-01, if still in its gates on 31 Dec, follows the OWNER PENDING clause."
+    - Same wording in all six places. Add an acceptance case: PM-01 still in its gates on 31 Dec follows OWNER PENDING.
+35. **R: check-day is an entry point too.**
+    - `check-day.sh` refuses an unarmed run, an active stop and a missing retention.
+    - It passes the day's recorded retention to the rescan.
+    - Add a test: a K2 day's rescan uses K2.
+36. **S: rescan evidence by proof plus hashes.**
+    - Keep the rescan unit's hashes in the K2 measurement release.
+    - Replace "trim the stored rescan unit" with a proof: the K2 bytes are equal, and the trim is deterministic (trimming twice gives the same bytes, tested), so the K3 bytes are equal.
+37. **T: the storage stop everywhere.** The plan job, `scan-day.sh` and `check-day.sh` also refuse when stored total + remaining days × the largest day > 0.5 TB, or read a storage-stop flag in `archive-limits.conf` that OF-4 writes. Add a test: a manual dispatch with the projection at 0.51 TB is refused.
+38. **U: count only real markers.** Count only markers on the default-branch ref (`--ref refs/heads/<default>`) whose run id is an archive-check run on that branch.
+39. **V: a re-read keeps the day's retention.** A unit re-read uses the day's recorded retention.
+40. **LOW-1, LOW-3, LOW-4.**
+    - For batches 1 and 2, the storage check uses the measured PM-01 subset of the K2 days as the per-day figure. Add a test.
+    - Mark ARCH M03 :943-947 and :3117 "(parked, D30; C-75 withdrawn)"; the holder-index part stays pending.
+    - The MA-0b exit reads "the first migrations-only coverage result is recorded (D30 parked)".
