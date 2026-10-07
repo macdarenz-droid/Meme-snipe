@@ -4,7 +4,7 @@ How a strategy from the owner's own research becomes a strategy the bot can swit
 
 Sources, read at `ccr-14987baf-i6lrsl` @ `106d14ec`: `docs/blueprint/SPEC-A.md` A-M09-01 (runtime host), A-M13-02 (pre-registration), A-M13-05 (stages), A-M13-06 (gates), A-M08-02 (features); `docs/blueprint/ARCH.md` 3.4 (gates and windows), 5.0a (`StrategyContext`, `Mode`), M09, 15 (`strategy` table), 16.4 (known-answer tests); `docs/blueprint/SPEC-B.md` B-M21-02, B-M24-02, B-M25-01, B-M25-02, B-M26-02, B-M26-04; `docs/blueprint/UI.md` action classes, S-10, S-13, VM-03 `strategies[]`; `docs/blueprint/INTEGRATION.md`. Owner rules: `CLAUDE.md` "Strategy slots", "MR-01 parked", "No knowingly losing trades", "Discipline, not paralysis", "Size is not the trial", "Profit is counted in SOL", and "No deposit before proof" item 6.
 
-Where the SPEC is silent or unclear, the point is marked **SPEC SILENT** with the safest reading proposed; the list is in "Open points". Nothing here adds a number the sources do not hold.
+Where the SPEC is silent or unclear, the point is marked **SPEC SILENT** with the safest reading; the supervisor's rulings on those points are in "Rulings", and the points still open are in "Open points". Nothing here adds a number the sources do not hold.
 
 ## 1. Handover
 
@@ -22,7 +22,7 @@ What the owner gives the supervisor when a piece of research looks usable. Plain
 - What results were seen: number of trades, average result per trade after costs, in SOL if possible.
 - What was tried and dropped while finding it (every version tested counts; see section 2).
 
-**What the bot can see.** A strategy sees only what the bot records: 15-second price bars per pool (open, high, low, close in SOL, pool depth, depth change, net buy or sell flow; ARCH M08 `Bar`) and the feature list in A-M08-02 (robust z-score, rolling median, MAD scale, dump flag, basket return), plus its own open position. A rule that needs something else (holder counts, wallets, social data, another venue) needs a new features ticket first. That is a new task, so it goes to the owner for approval (`CLAUDE.md` "Focused queue") before the strategy can be built.
+**What the bot can see.** A strategy sees only what the bot records: 15-second price bars per pool (open, high, low, close in SOL, pool depth, depth change, net buy or sell flow; ARCH M08 `Bar`) and the feature list in A-M08-02 (robust z-score, rolling median, MAD scale, dump flag, basket return), plus its own open position. A rule that needs something else (holder counts, wallets, social data, another venue) needs a new features ticket first. That is a new task: the supervisor puts a features card to the owner for approval (`CLAUDE.md` "Focused queue"; ruling 7) before the strategy can be built.
 
 **The data the idea came from cannot prove it.** A strategy is tested on data it was not tuned on (`CLAUDE.md` "MR-01 parked"; ARCH D08: no further search on the same data). The owner's own data shapes the rules; the gates run on days recorded after the rules are fixed (section 5).
 
@@ -89,7 +89,7 @@ A known-answer example that every new strategy is copied from, and that the test
 
 A small hand-computed fixture pins the exact answer: for a fixed seed and a short bar series, the test lists the bars where `random-buy` proposes and the full `SignalProposal` of each (PROPOSED: a fixture of 20 bars in the test file, hand-checked; the SPEC fixes no size).
 
-**The template is a losing strategy by design.** Under "No knowingly losing trades" it may run in `backtest` and `replay` only. Config validation refuses `paper`, `live_small` and `live` in its `enabled_modes`, the same way A-M09-03 forbids live modes for PM-01 (**SPEC SILENT** on the template's modes; this is the safest reading).
+**The template is a losing strategy by design.** Under "No knowingly losing trades" it may run in `backtest` and `replay` only. Config validation refuses `paper`, `live_small` and `live` in its `enabled_modes`, the same way A-M09-03 forbids live modes for PM-01 (**SPEC SILENT** on the template's modes; ruling 4).
 
 ## 5. Gates
 
@@ -103,14 +103,14 @@ The earliest live-small date is at least about 65 days after recording starts (A
 
 ## 6. Switch
 
-**Paper first.** A strategy can be switched on in paper once its PREREG is registered (`CLAUDE.md` "Strategy slots"). Paper trades before `replay_passed` are labelled `shadow` and count for no gate (ARCH 3.4). The switch is a config change of `strategy.<id>.enabled_modes` on S-10, applied through M25 and M26.
+**Paper first.** A strategy can be switched on in paper once its PREREG is registered (`CLAUDE.md` "Strategy slots"); without one, validation refuses `paper` (ruling 1). Paper trades before `replay_passed` are labelled `shadow` and count for no gate (ARCH 3.4). The switch is a config change of `strategy.<id>.enabled_modes`, applied through M25 and M26 (the S-10 path). The owner gets a switch per strategy and per mode on a strategies screen (card Z-STRAT-UI below; ruling 8).
 
 **Action class of the switch** (UI action classes; B-M25-02 step 2; B-M26-02 step 1):
 
 | Change | Class | Friction |
 |---|---|---|
 | Switch off in any mode | A1 ("disable a strategy") | One confirmation, immediate |
-| Switch on in paper | A2 (**SPEC SILENT**; proposed as a neutral change) | Confirmation, reason ≥ 10 characters, step-up within 5 min |
+| Switch on in paper | A2 (**SPEC SILENT**; ruling 2) | Confirmation, reason ≥ 10 characters, step-up within 5 min |
 | Switch on in `live_small` or `live` | A3 ("enable a strategy in a live mode") | Server readiness gates, typed phrase, fresh step-up ≤ 60 s, reason, **60-second cancellable delay**, audit |
 
 **Live only after the gates.** Live needs all of: the strategy's stage `paper_passed` or later (B-M21-02 step 1; B-M26-04 step 2), the system promoted to live-small by the A3 `set_mode` flow with P-1..P-9 passing and no cooldown, the signer's own `max_mode` raised on the host, and at most 1 strategy live at once (ARCH 8.1 "Strategies live at once", short code `MAXSTRAT`, CL-64; B-M26-04 step 2). A3 actions are not offered on the phone view and the server refuses them from mobile sessions (UI D-UI-11). Raising money from paper to live stays the owner's alone (AGENTS.md "Only the owner").
@@ -129,38 +129,40 @@ The earliest live-small date is at least about 65 days after recording starts (A
 ## 8. Owner checklist
 
 1. Write your rules in plain words: which coins, when to buy, when to sell, how much.
-2. Say which data you used and what results you saw.
-3. List every version you tried, kept or dropped.
-4. Send it to the supervisor. Agents write the PREREG; you read it and say yes.
-5. The PREREG is pushed before any test day is recorded. Nothing in it changes after that.
-6. Agents build the plugin from the template. A reviewer checks it matches your rules.
-7. Switch it on in paper (S-10). Those trades are practice only and prove nothing yet.
-8. Wait for gate B (at least 30 days), then R (at least 14 days), then P (at least 21 days).
-9. If any gate fails, the strategy stops. Bring a new version, not a tweak of this one.
-10. If all pass, live is your choice, on the desktop dashboard: type the phrase, sign in fresh, wait 60 seconds. You can cancel in that minute.
+2. If your rule needs data the bot does not record yet (holders, wallets, social), say so. The supervisor asks you to approve a card that adds it first.
+3. Say which data you used and what results you saw.
+4. List every version you tried, kept or dropped.
+5. Send it to the supervisor. Agents write the PREREG; you read it and say yes.
+6. The PREREG is pushed before any test day is recorded. Nothing in it changes after that.
+7. Agents build the plugin from the template. A reviewer checks it matches your rules.
+8. Switch it on in paper on the strategies screen. Those trades are practice only and prove nothing yet.
+9. Wait for gate B (at least 30 days), then R (at least 14 days), then P (at least 21 days).
+10. If any gate fails, the strategy stops. Bring a new version, not a tweak of this one.
+11. If all pass, live is your choice, on the desktop dashboard: type the phrase, sign in fresh, wait 60 seconds. You can cancel in that minute.
 
 ## Card Z-STRAT
 
 ### Scope
 
-A-M09-01 runtime host; the two template plugins of section 4; this document. Not in scope: A-M13-02, A-M13-05, A-M13-06 (built in M2 per INTEGRATION); the S-10 and S-13 screens (UI tickets); any real strategy.
+A-M09-01 runtime host; the two template plugins of section 4; the pure `enabled_modes` validator (rulings 1, 2, 4, 5); the source-pin CI check (ruling 3); this document. Not in scope: A-M13-02, A-M13-05, A-M13-06 (built in M2 per INTEGRATION); the strategies screen (card Z-STRAT-UI below); any real strategy.
 
 ### Dependencies
 
 | Need | From | Until it exists |
 |---|---|---|
 | `Config`, `ConfigFieldSchema` with `affectsReturns`, the frozen config snapshot; schema entries for `strategy.<id>.enabled_modes`, `strategy.<id>.params.*`, `strategy.runtime.onbar_warn_ms` | Z02, B-M25-01 | Blocking. The host reads config only through the B-M25-01 `Config` type |
-| Validation of `enabled_modes` (template live/paper refusal; action class of list changes) | Z02 or M3, B-M25-02 (Phase 2 in SPEC-B) | Z-STRAT ships the rule as a pure validator with tests; wiring into B-M25-02 waits for that ticket (**SPEC SILENT** on which ticket owns it; proposed: B-M25-02 cross-key rules) |
+| Wiring of the `enabled_modes` validator into M25 validation | B-M25-02 cross-key rules (ruling 5; Phase 2 in SPEC-B) | Z-STRAT ships the validator as a pure function with tests; B-M25-02 calls it |
+| PREREG lookup for the validator: `preRegistered(strategyId, strategyVersion, paramsHash): boolean` | A-M13-02 (M2) | **NEW, PROPOSED name** (ruling 1; A-M13-02 has `preRegister` but no read). B-M25-02 is pure, so M25 passes the validator a read-only snapshot of the registered `(strategyId, strategyVersion, paramsHash)` set taken at validation time, never a live database call. Until A-M13-02 exists, tests use a fake set behind the same type |
 | `strategy` table (`strategy_id` + `version`, `params_hash`, `enabled_modes`) | Z02, B-M24-02 | Blocking for persistence; the registry can be tested in memory first |
 | `Features` (A-M08-02) | Z09 | A fake that implements the A-M08-02 `Features` type exactly (all six methods, including `dumpFlagState`), so swapping in the real one is type-checked |
 | `Bar`, `isComplete` (A-M08-01) | Z09 | Fixture bars of the ARCH 5.0a `Bar` type |
 | `position(poolId)` (M20), `candidate(poolId)` (M05), stage (A-M13-05), edge estimate (A-M13-04), `signal` stream (M07), critical alert | M2 tickets | Fakes behind their published types |
 | `canonicalJson()` | Z01, B-M19-01 (`@bot/types` `canon.ts`, merged #287) | Available |
-| Lint and dependency policy | Z01, B-M30-01 | Available; add the plugin import rule |
+| Lint and dependency policy | Z01, B-M30-01 | Available; add the plugin import rule and the source-pin check |
 
 ### Acceptance criteria
 
-| # | Criterion | SPEC ticket |
+| # | Criterion | Source |
 |---|---|---|
 | AC-1 | A plugin that throws on its 3rd bar is disabled, a critical alert is raised, and no proposal from it appears afterwards; its open positions keep their exit plans | A-M09-01 AC 1, step 7 |
 | AC-2 | An incomplete bar gives no proposal | A-M09-01 AC 2, step 3 |
@@ -174,9 +176,10 @@ A-M09-01 runtime host; the two template plugins of section 4; this document. Not
 | AC-10 | `status()` gives VM-03 `strategies[]` fields (`strategyId`, `version`, `paramsHash`, `enabled`, `disabledReason`, `modes`) through M28's projection test double | A-M09-01 DoD; UI VM-03 |
 | AC-11 | `random-buy` passes the hand-computed fixture and shows a negative after-cost mean per trade on a fixture day; `lookahead-cheat` is caught by the no-lookahead test | A-M09-01 tests; ARCH 16.4 |
 | AC-12 | A plugin importing anything but `@bot/types` and the features API, or using `Date` or `Math.random`, fails lint | A-M09-01 security notes; B-M30-01 |
-| AC-13 | The template's `enabled_modes` containing `paper`, `live_small` or `live` fails validation | PROPOSED (section 4; mirrors A-M09-03) |
-| AC-14 | `enabled_modes` containing `paper` for an `(id, version, paramsHash)` with no PREREG registration fails validation | PROPOSED (open point 1) |
-| AC-15 | Adding `live_small` or `live` to `enabled_modes` derives A3; removing any mode derives A1; adding `paper` derives A2 | UI action classes; PROPOSED for paper and for list semantics (open point 2) |
+| AC-13 | The template's `enabled_modes` containing `paper`, `live_small` or `live` fails validation | Ruling 4; mirrors A-M09-03 |
+| AC-14 | `enabled_modes` containing `paper` for an `(id, version, paramsHash)` not in the registered set fails validation, with a reason naming the missing PREREG; the same `paper` passes once the set holds it | Ruling 1 |
+| AC-15 | Adding `live_small` or `live` derives A3; adding `paper` derives A2; removing any mode derives A1; a diff with several changes takes the highest class | Ruling 2; B-M25-02 step 2 ("highest wins") |
+| AC-16 | Changing a plugin's source without changing its version fails CI; a new version with a new pin passes | Ruling 3 |
 
 ### Tests
 
@@ -194,18 +197,58 @@ A-M09-01 runtime host; the two template plugins of section 4; this document. Not
 | Contract: `status()` against the M28 projection double | AC-10 |
 | Known-answer: `random-buy` fixture and fixture day; `lookahead-cheat` | AC-11 |
 | Lint fixture: a bad plugin file must fail the lint run | AC-12 |
-| Validator unit: template modes; PREREG presence; action class per list change | AC-13 to AC-15 |
+| Validator unit table: template modes; registered set present or absent; class per added or removed mode; mixed diff | AC-13 to AC-15 |
+| CI fixture: an edited plugin under an unchanged pin fails the check; a bumped version with a new pin passes | AC-16 |
 | Metrics: `signals_total{strategy}`, `proposal_dropped_total{reason}`, `strategy_onbar_ms{strategy}`; log `M09.strategy_disabled` | A-M09-01 observability |
 
 Every bug-fix test must fail before and pass after (AGENTS.md "Builders"). MIGRATION row A-M09-01 marks `core/src/engine/engine.ts:17-40` and `core/test/purity.test.ts` as adapt; under "No bugs migrate" the B1 and B5 probes named there must be tests in Z-STRAT.
 
+## Card Z-STRAT-UI
+
+The owner's switch button (owner, 2026-10-08: "Like a switch button where this logic turns on strat 1 Then strat 2 turns on"; ruling 8). A follow-up UI card after Z05, not part of Z-STRAT. The card name, the screen number and the route are PROPOSED; UI.md has no strategies screen today.
+
+**Goal.** A strategies screen (PROPOSED S-16, route `/strategies`) that lists every strategy from VM-03 `strategies[]`, with one switch per mode (`paper`, `live_small`, `live`; backtest and replay are research-host modes and get no switch, UC-12).
+
+**Behaviour.**
+- A switch is the C10 Switch. UI.md C10 says money-affecting toggles open a dialog, so flipping a switch never applies directly: it opens the UI-T13 command flow and writes `strategy.<id>.enabled_modes` through the S-10 config path (`config/validate`, then `apply_config`, B-M25-02 and B-M26-02). The class is the server's `derived_action_class` under ruling 2: off A1, paper on A2, live on A3 (typed phrase, fresh step-up, reason, 60-second cancellable delay).
+- A strategy with no PREREG shows its paper switch disabled, with the reason as text next to it. The server's validation refusal stays authoritative.
+- The template plugin shows its paper and live switches disabled, with its reason (ruling 4).
+- Live switches are disabled, with the reasons, while the strategy's stage is below `paper_passed` or another strategy is live (`MAXSTRAT`).
+- No optimistic UI: a switch shows `pending` until VM-03 reports the new `modes` (UI command lifecycle step 4).
+- The phone view shows the list read-only. A2 and A3 are not rendered on mobile (D-UI-11).
+- Labels are short and plain ("Paper", "Live-small", "Live", "No PREREG"), and pass the no-AI-wording guard.
+
+**Depends on.** Z05 (UI-T04 primitives, UI-T07 dialogs); UI-T09 (step-up); UI-T13 (command framework); UI-T26 (S-10 config path); backend B-M25-02, B-M26-02, and A-M09-01 `status()` through M28.
+
+**Contract gap (PROPOSED).** VM-03 `strategies[]` holds only `strategy_id`, `name`, `enabled` and `modes`. To show the disabled switch and its reason before a click, the screen needs per strategy: whether a PREREG is registered, the stage, and per-mode blocking reasons. Proposed: add `prereg_registered: boolean`, `stage: StrategyStage` and `mode_blocking_reasons: { mode, code, message }[]` to `strategies[]`, projected by M28 (B-M28-03). This changes a contract, so a reviewer of `@bot/contract` must pass it.
+
+**Acceptance criteria.**
+1. Given two strategies with PREREGs, when the operator switches strategy 1 on in paper, then the A2 dialog opens; after confirmation exactly one `apply_config` is sent with `enabled_modes` containing `paper`, and the switch shows `on` only after VM-03 reports it.
+2. Given a strategy with no PREREG, then its paper switch is disabled and shows the reason; and if a crafted request is sent anyway, the server's refusal is shown verbatim.
+3. Given a strategy at stage `paper_passed`, when the operator switches it on in `live_small`, then the A3 dialog asks for the typed phrase, a fresh step-up and a reason, and the switch shows the 60-second countdown with Cancel (A1).
+4. Given a strategy that is on in paper, when the operator switches it off, then the A1 confirmation applies it at once.
+5. Given another strategy already live, then every other strategy's live switches are disabled with the `MAXSTRAT` reason.
+6. Given the template plugin, then its paper and live switches are disabled and cannot be turned on.
+7. Given a mobile session, then no switch can be operated.
+
+**Tests.** Unit (switch state from VM-03 fields; mapping each disabled reason to text); component (C10 states `on`, `off`, `pending`, `failed`); e2e with the M28 double (criteria 1 to 7, including the server-refusal path); contract test for the new `strategies[]` fields; accessibility (each switch labelled by strategy and mode, its reason linked by `aria-describedby`); the no-AI-wording guard.
+
+## Rulings
+
+Supervisor rulings on the eight questions of the first draft (session `session_01UQmXJHSgmb2Tj7PK7VDKRz`, 2026-10-08 about 9:21 AM Melbourne time; recorded in `docs/reviews/STRATEGY-INTAKE.md` on `claude/supervisor-docs`):
+
+1. Paper is refused unless a PREREG exists for `(id, version, paramsHash)`; the lookup is named under "Dependencies" (AC-14).
+2. Adding `live_small` or `live` is A3, adding `paper` is A2, removing any mode is A1 (AC-15).
+3. A CI check pins `id@version` to a hash of the plugin source (AC-16).
+4. The template runs in backtest and replay only (AC-13).
+5. The validator is wired in B-M25-02's cross-key rules; Z-STRAT ships it as a pure validator.
+6. When two strategies propose the same pool, M21's per-token rule rejects the second; Z-STRAT adds nothing.
+7. New inputs are not added now. When the owner brings a strategy that needs them, the supervisor puts a features card to the owner (section 1; checklist item 2).
+8. The owner's switch button is required: card Z-STRAT-UI.
+
 ## Open points
 
-1. **Paper switch before PREREG (SPEC SILENT).** A-M09-01 step 5 lets paper run any enabled strategy; the owner's rule needs the rules written down first. Proposed: validation refuses `paper` unless a PREREG registration exists for that `(id, version, paramsHash)` (AC-14). Needs a lookup into A-M13-02 from M25 validation.
-2. **Action class of a list key (SPEC SILENT).** B-M25-02 derives direction from `riskDirectionOnIncrease`, which fits numbers, not a list of modes. Proposed: adding `live_small` or `live` → A3 (UI lists "enable a strategy in a live mode" as A3); removing → A1 (UI "disable a strategy"); adding `paper` → A2 (not listed in UI; neutral is the safer reading than A1).
-3. **Code change without a version change (SPEC SILENT).** `E_PARAMS_CHANGED` catches new params under the same version, not new code. Proposed: a CI check that pins each `id@version` to a hash of its plugin source, so a logic change without a new version fails CI.
-4. **Template modes (SPEC SILENT).** Proposed: `backtest` and `replay` only (AC-13).
-5. **Owner's evidence and the windows.** Gate B uses only days recorded after the PREREG (C-26). The owner's research data may serve a CS-1 kill-only screen, never a pass. Confirmed reading, no change proposed.
-6. **Inputs beyond bars and A-M08-02 features.** Any such input is a new features ticket and a new task under "Focused queue". Not part of Z-STRAT.
-7. **Two strategies on one coin in paper.** The open-buy index allows one open buy per mint (SPEC-B B-M24-02 PERTOKEN). SPEC does not say which strategy wins when both propose the same pool in the same bar. Proposed: the risk engine (M21) rejects the second with its normal per-token reason; Z-STRAT adds nothing.
-8. **Owner-strategy end date.** Rests on a supervisor ruling (card Z-H-OF item 14) listed for the owner to overrule.
+1. **Owner's evidence and the windows.** Gate B uses only days recorded after the PREREG (C-26). The owner's research data may serve a CS-1 kill-only screen, never a pass. This is a confirmed reading; no change is proposed.
+2. **Owner-strategy end date.** It rests on a supervisor ruling (card Z-H-OF item 14) that is listed for the owner to overrule.
+3. **VM-03 contract change** for Z-STRAT-UI (above). It needs a contract reviewer.
+4. **`preRegistered` read on A-M13-02** (PROPOSED name). It needs adding to that ticket when it is carded.
