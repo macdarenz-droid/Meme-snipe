@@ -31,3 +31,6 @@ A rule is **profitable** only if in validation (USD, base costs): the mean > 0 w
 
 ## Primary rule, declared before any result (2026-10-07, outside review)
 The primary short specification is **S2 (short downtrends)**, judged against **S0 (short everything)** at the same exposure: a pass also needs the S2 − S0 weekly difference on the actual-funding line to be positive in validation; otherwise S2 is reported as a broad market short, not a signal. S1 and S3 are secondary and reported without rescue sweeps of listing delays, stops or funding filters.
+
+## Amendment after the second outside review, before any return (2026-10-07)
+- **Liquidation level is a stress assumption, not venue mechanics.** The 1.714× level (2 / (1 + 1/(2 × max leverage)) for 3x-max perps) is a stated stress assumption for a fully collateralised 1× short. Hyperliquid's real liquidation price depends on the maintenance-margin tier in force at the time, the collateral allocated, fees and funding. Results are labelled "liquidation at 1.714× (assumed)". No claim of exact venue mechanics is made.
