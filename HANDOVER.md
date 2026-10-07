@@ -48,6 +48,10 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 9:13 PM **#276 facts/gates review PASS** on a54cd590 (01BWjnpv; full suite 6,883/6,883; 7/7 mutants killed; F1/F2/F3 closed; NT-1 acceptable). S1 accepts it for 58eb1422 (import-union merge, checked). Two LOWs, not blocking:
+  - (a) old state files carry no stretches, so the first restart after deploy forgets older holes. Moot: the downtime itself is a stretch over 2 h, so survival reads unknown across it.
+  - (b) nothing caps NT-1's missing share (28 days scattered over a year). Follow-up card **NT-1b** after the resume; the critical alert covers it meanwhile.
+  - Waiting for the BT parity review (012MXi9d) and CI check on 58eb1422.
 - 9:08 PM **Owner wait closed:** the owner messaged the 4 held builders. All 4 are now working: A-FACTS (re-read tests), SOL-BOOKS (backtest typecheck), LATE-LOG (mutants N9/N16/N17), MEM-FIXES (all 5 items + the no-gap ruling done locally, full suite running in the background). 8 builders are active.
 - 9:06 PM **#275 EXIT-FILL round** at 2720ee8 (merges cd4d7a64; 6,929 tests pass alone; the congestion test passes).
   - What's in it: the haircut window fills-4, in both models on the feed clock (window 1e15 = byte-identical to base on 24 replays; 10 min: 10/24 differ, all with fewer sends); F1 live starts at the cap; F2 carry at landing only; F3 R4 reserve + day-1 slow retries (a tightening); housekeeping; nit; mutants killed. BT-1d's test now counts exits booked blocked; the BT reviewer must confirm.
