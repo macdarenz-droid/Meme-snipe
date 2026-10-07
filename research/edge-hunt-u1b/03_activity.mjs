@@ -10,7 +10,7 @@ const done = new Set(fs.existsSync(outF) ? fs.readFileSync(outF, 'utf8').trim().
 const out = fs.createWriteStream(outF, { flags: 'a' });
 while (true) {
   const ms = earliest(fs.readFileSync(DATA + 'migrations.jsonl', 'utf8').trim().split('\n').map(JSON.parse))
-    .filter(x => x.pool && x.t + 86400 < WALL_S - 3 * 3600 && !done.has(x.pool));
+    .filter(x => x.pool && x.sol > 1 && x.t + 86400 < WALL_S - 3 * 3600 && !done.has(x.pool)); // under 1 SOL: outside U1, never priced
   for (const m of ms) {
     done.add(m.pool);
     const r = await rpc('getSignaturesForAddress', [m.pool, { limit: 1000 }]);
