@@ -23,9 +23,9 @@ import { feesKey } from '../src/engine/strategy.ts';
 import { FEE_CONTEXT, passingFacts } from '../../core/test/gates/world.ts';
 import { chainTx } from '../../core/test/facts/helpers.ts';
 import { transactionEvents } from '../../core/src/chain/index.ts';
-import { loadState, saveState, type SavedCandidateState } from '../src/persist/index.ts';
+import { type BudgetDay, loadState, saveState, type SavedCandidateState } from '../src/persist/index.ts';
 import { runSeed } from '../src/run/seed-start.ts';
-import { PERSIST_FILE, type SeedRequest } from '../src/run/worker.ts';
+import { DOWNTIME_CREDIT_CAP, PERSIST_FILE, type SeedRequest } from '../src/run/worker.ts';
 import { PUMP_MIGRATION_AUTHORITY } from '../src/run/sources.ts';
 import { DEV, MIGRATED_AT, MINT, Market, SUPPLY, dueTimers, passingMarket, POOL_ADDRESS, SLOT, T, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
@@ -660,7 +660,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       getTransaction: async () => null,
     };
     let left = 5_000;
-    const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
+    const budget = { remaining: () => left, spend: (c: number) => { left -= c; return '' as BudgetDay; }, refund: (c: number) => { left += c; } };
     const { h2 } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
     // The downtime read is the one call on the migration authority (FACTS-REREAD may also read a restored candidate's
@@ -668,6 +668,30 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     expect(asked.filter((a) => a.address === PUMP_MIGRATION_AUTHORITY)).toEqual([expect.objectContaining({ address: PUMP_MIGRATION_AUTHORITY })]);
     expect(h2.logs.find((l) => l.startsWith('Downtime migrations'))).toMatch(new RegExp(`^Downtime migrations: 0 from slot ${from + 1n} to \\d+, 1 credits, done\\.$`));
     expect(left).toBe(4_999);
+    await h2.worker.stop();
+  }, 60_000);
+
+  it('RT-A9: the downtime read refunds its unused reserve to the moment it was booked at, even when the read crosses a UTC midnight', async () => {
+    const { h, timers, seed } = await shortlistedAndStopped();
+    const saved = loadState(join(h.stateDir, PERSIST_FILE), RUG_CONFIG);
+    const from = saved.ok ? saved.asOf.slot : -1n;
+    timers.set(timers.now() + 10 * 60_000);
+    const rpc = {
+      getSignaturesForAddress: async (address: string) => {
+        // The read takes a while: the clock moves on (past a midnight, for all the budget can tell).
+        if (address === PUMP_MIGRATION_AUTHORITY) timers.set(timers.now() + 86_400_000);
+        return [{ signature: 'before-the-range', slot: from, err: null, blockTime: 0 }];
+      },
+      getTransaction: async () => null,
+    };
+    const calls: [string, number, number][] = [];
+    const budget = { remaining: () => 5_000, spend: (c: number, ms: number) => { calls.push(['spend', c, ms]); return String(ms) as BudgetDay; }, refund: (c: number, day: BudgetDay) => { calls.push(['refund', c, Number(day)]); } };
+    const { h2 } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
+    for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
+    for (let k = 0; k < 20; k++) await new Promise<void>((r) => setImmediate(r));
+    const spend = calls.find((c) => c[0] === 'spend' && c[1] === DOWNTIME_CREDIT_CAP);
+    expect(spend).toBeDefined();
+    expect(calls.find((c) => c[0] === 'refund' && c[1] === DOWNTIME_CREDIT_CAP - 1)).toEqual(['refund', DOWNTIME_CREDIT_CAP - 1, spend![2]]);
     await h2.worker.stop();
   }, 60_000);
 
@@ -698,7 +722,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       getTransaction: async (sig: string) => (sig === migrate.signature ? migrate : sig === complete.signature ? complete : null),
     };
     let left = 5_000;
-    const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
+    const budget = { remaining: () => left, spend: (c: number) => { left -= c; return '' as BudgetDay; }, refund: (c: number) => { left += c; } };
     const { h2, m2 } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
     await m2.run(2_000, 400, () => m2.slot());
@@ -783,5 +807,34 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     const r = loadState(path, RUG_CONFIG);
     expect(r.ok && r.candidates).toEqual([]);
     expect(T).toBeGreaterThan(MIGRATED_AT);
+  }, 60_000);
+});
+
+describe('A-FACTS-FIXES: a restart does not silence the refusal that asks for a stage-1 re-read', () => {
+  it('a candidate refused before the restart is refused on the record again after it, so its missing facts are asked for', async () => {
+    const { h, timers, seed } = await shortlistedAndStopped();
+    // A first process in the window: refused (its facts are not all there), and saved with that last reason.
+    const h1 = await restart(h, timers, seed);
+    timers.set(WINDOW_FROM + 1_000);
+    h1.m2.offchain('feed:status:helius', { state: 'up' });
+    await h1.m2.run(4_000, 400, () => h1.m2.slot());
+    const first = decisions(h1.h2).filter((r) => r[0] === 'reject' && r[2] === MINT);
+    expect(first).toHaveLength(1);
+    await h1.h2.worker.stop();
+    timers.set(timers.now() + 60_000);
+    const h2 = await restart(h1.h2, timers, seed);
+    h2.m2.offchain('feed:status:helius', { state: 'up' });
+    await h2.m2.run(4_000, 400, () => h2.m2.slot());
+    const second = decisions(h2.h2).filter((r) => r[0] === 'reject' && r[2] === MINT);
+    // The same reason as before the restart, written again once (with its typed reasons, the re-read trigger's input).
+    const shape = (x: string | undefined) => x?.replace(/\d+/g, '#');
+    expect(second.map((r) => shape(r[3]))).toEqual([shape(first[0]![3])]);
+    // The journal keeps the typed reasons (the re-read trigger's input, `stage1Missing`) beside the line.
+    const typed = journal(h2.h2.stateDir).filter((l) => l['boot'] === h2.h2.worker.boot && l['kind'] === 'decision' && (l['reasons'] as string[])[0] === 'reject');
+    expect(typed.map((l) => Array.isArray(l['gate_reasons']))).toEqual([true]);
+    // Later evaluations of the same reason in this process are not written again.
+    await h2.m2.run(60_000, 400, () => h2.m2.slot());
+    expect(decisions(h2.h2).filter((r) => r[0] === 'reject' && r[2] === MINT)).toHaveLength(1);
+    await h2.h2.worker.stop();
   }, 60_000);
 });

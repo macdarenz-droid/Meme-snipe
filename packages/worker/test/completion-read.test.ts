@@ -3,6 +3,7 @@
 // curve's signatures before it once (P2, fill budget) and puts the completion on the feed at confirmed, so the
 // migration fact forms and H7 passes. No budget or a failed read leaves the fact missing (H16), never invented.
 // Real public mainnet transactions (test/fixtures/completion-read.json).
+import type { BudgetDay } from '../src/persist/index.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -45,7 +46,7 @@ let h7Session: Parameters<typeof evaluateHardRejects>[1]['session'] | null = nul
 /** A worker on the live path: the migration transaction arrives as the migration watch's fetch puts it on the feed. */
 const run = async (rpc: Rpc, left0: number, o: { readonly reads?: boolean; readonly window?: boolean } = {}) => {
   let left = left0;
-  const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
+  const budget = { remaining: () => left, spend: (c: number) => { left -= c; return '' as BudgetDay; }, refund: (c: number) => { left += c; } };
   const timers = virtualTimers(AT - 30_000);
   // COMPLETION-READ alone: FACTS-REREAD's own budget is spent for the day, so no re-read adds to these reads (its tests
   // are in facts-reread.test.ts).
