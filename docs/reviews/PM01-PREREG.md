@@ -115,3 +115,12 @@ Rulings 1–20 were applied. The researcher's gap choices were accepted (8 Oct 2
 - (g) the drawdown bar is 666,666,660 lamports, beside the % of E limits.
 - (f) Principle: a failed engineering, determinism or data-integrity check never kills, and blocks until fixed and re-run; a failed evidence check (returns, risk, statistics) can kill. R-6 (correlated crash-day loss ≤ MAXRISK_PF) is an evidence check, so it stays in kill rule 2.
 Delta review: `session_013E5iKPuZrpnyNX74jpF6ui`. Red team round 2: `session_016GhUshWTj7tPMTadZoSCnF`.
+
+## Round 4 delta review (head `79f8c6a5`): FAIL on 0 BLOCKER, 3 MAJOR, 3 MINOR
+
+Reviewer, about 9:46 AM. Rulings 1–20 are applied, and the lamport table and citations hold.
+- M1: the kill-only check on a voided W_R uses the conservative row; C-77 says a stop-only check uses the lean row.
+- M2: the excess test can kill PM-01 for lack of before-signal data. There is no per-side floor.
+- M3: "runs once" plus pending_data until P12 can throw the screen away.
+- m1: `d` as calendar or counted days. m2: which §12 rows the start condition requires. m3: drop the CLAUDE.md citation.
+Held for red team round 2, so both go in one push.
