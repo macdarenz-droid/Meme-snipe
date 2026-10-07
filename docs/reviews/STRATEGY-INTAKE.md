@@ -126,3 +126,36 @@ Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining
 39. **Reviewer m6.** "L-1, L-2 and L-4 demote it automatically; the operator can demote it (A1)."
 
 **Time correction (9:39 AM).** The ruling times above were first written as estimates (9:23, 9:35, 9:38 and 9:52), and some were later than the real time. They are now the commit times of this file, from `git log` in Melbourne time.
+
+## Round 3 (head `d5a43d18`): reviewer FAIL on 1 MAJOR and 3 MINOR; red team 0 BLOCKER, 4 MAJOR, 5 MINOR
+
+- Reviewer M1: AC-22 and AC-33 test B-M25-03's start outcome, which is out of scope. m1: :47 still hashes host helpers. m2: the claim that M14 runs in the plugin process is an inference. m3: two amendments are missing (A-M11-01; B-M26-02 and B-M26-04 readiness).
+- Red team:
+  - P1: the pin hash includes the features package, so any features fix breaks every pin.
+  - P2: owner limit raises and cost or fill model changes send a strategy back to `research`, and a live drop skips the demotion path.
+  - P3: the stage-machine interfaces are still keyed by id only.
+  - P4: a live-only sandbox breaks parity with backtest.
+  - p1–p5: lint gaps (literal and destructured `constructor`, locale built-ins); where the `owner` check runs; the PREREG-file pin check is vacuous; piled-up changes; an upgrade of a live strategy.
+
+### Supervisor rulings for round 4 (8 Oct 2026, 9:40 AM)
+
+40. **Reviewer M1.** Z-STRAT tests only its own side: the validator classifies each violation as global or strategy-scoped, and the host disables only the scoped strategy, against a fake B-M25-03 that records the start outcome. Add the Dependencies row "Global start outcome (`start_refused` / `exits_only`) | B-M25-03 | fake start coordinator".
+41. **Reviewer m1–m3.** As written: align :47 with :77; write "may run in the same process" unless the ARCH process model says it does; add A-M11-01 and B-M26-02/B-M26-04 readiness to open point 6.
+42. **P1.** Two separate hashes. The pin hash covers only the plugin's own import closure, without the features package, and stays immutable per version. `featuresImplHash()` enters configKey separately and is what "Changes after freezing" can re-freeze. Add an AC: a features change under existing pins passes CI and puts each strategy into mismatch, then into the B-9 decision.
+43. **P2.** configKey has two groups.
+    - Group P changes proposals: features implementation, universe, and the registered configuration. Ruling 26 applies:
+      - B-9 byte-identical and A1: re-freeze, and the stage stands;
+      - proposals differ and A1: drop one stage and restart that window;
+      - A2 or A3: back to `research`.
+    - Group S scales or costs proposals: sizing, caps, and the cost and fill model.
+      - A config change in group S is re-frozen by an audited action of its own class. An owner A3 raise also re-runs the current gate's stress and size table ($5 to $10,000, with price impact). The stage stands ("Capital and trade size scale").
+      - A cost- or fill-model code deploy re-runs the current gate's statistics on the window's data with the new model. If the gate still passes, it is re-frozen by an audited A2 action. If not, the strategy is demoted one stage.
+    - Every stage drop of a live strategy goes through B-M26-04 as a demotion: signer setMode lowered first, cancelAllPendingA3, and the cooldown.
+    - On a mismatch, the host disables the strategy and raises a critical alert, and the research runner starts the B-9 decision on its own. With no decision within 24 h, a second critical alert goes to the owner.
+44. **P3.** Every stage-machine interface is keyed by (id, version) or the stage record id: A-M13-05's `stage`, `onModeCommand`, `onDemotion`, `archive`, `cooldownUntil` and `minDwellUntil`; A-M13-06's `evaluateGates`; B-M26-04 step 8; and VM-18 (add `strategy_version`). Add them to open point 6. Add an AC: a demotion while X@2 exists changes only X@1.
+45. **P4.** PLUGIN-SANDBOX applies in every mode, the research host included, so the gates run the same path that trades. Its card carries a parity AC: the same bars and seed in-process and sandboxed give byte-identical proposals and featuresHash, in CI. The A3 refusal checks a runtime attestation in the host's `status()` (empty env, network denied), not a config flag.
+46. **p1.** Ban `constructor` and `__proto__` in every property position (member, literal computed, destructuring, `in`), and the locale built-ins (`toLocaleString`, `localeCompare`, `toLocaleUpperCase`, `toLocaleLowerCase`), with one fixture each.
+47. **p2.** A CI check binds a PREREG's `origin: owner` to a supervisor DECISIONS line on main. preRegister copies that reference into the append-only registry row the validator reads. After the agent stop, preRegister refuses new `agent` registrations.
+48. **p3.** State the order: PREREG pushed → plugin built and pinned on main → preRegister records the source hash → W_B. The CI check uses the registry export, and the doc says where CI gets a fresh export.
+49. **p4.** The class of piled-up changes is the server-derived maximum over every change since the frozen configKey, recorded in the re-freeze audit.
+50. **p5.** One line: with X@1 live, upgrading means demoting to paper first and running X@2's full gates, so live trading pauses.
