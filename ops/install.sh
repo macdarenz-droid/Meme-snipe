@@ -1519,7 +1519,7 @@ install_file /usr/local/lib/zeroed/record-upload.mjs 0644 <<'__ZEROED_FILE__'
 // overflow rec-YYYY-MM-DD.N past 900 assets), and deletes a local frames or releases file only after its uploaded copy
 // is read back with the same sha256 and size and the day's signed index lists it.
 //   What goes: per boot, frames-NNN and releases-NNN (.jsonl.zst, listed with sha256 in the boot's manifest),
-//   and once the boot has ended its manifest.json and its saved-state attachment; per ended UTC day, that day's
+//   and once the boot has ended its manifest.json, its saved-state attachment and its packed gaps; per ended UTC day, that day's
 //   journal lines (journal-YYYY-MM-DD.jsonl.zst) and index-N.json. Never raw, delays or plain .jsonl files.
 //   What is deleted (only with "record_upload_delete_local": true): frames and releases files of ended boots, each
 //   checked again just before (see deleteFile). Never a manifest, a saved state, the journal, raw or delays files.
@@ -1565,7 +1565,8 @@ const TAKEN = 'a different file has this name in the data repository';
 const BOOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATA_RE = /^days\/(\d{4}-\d{2}-\d{2})\/((?:frames|releases)-\d{3}\.jsonl\.zst)$/;
-const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst']);
+// RC-H3: the recorder's packed stream gaps (gaps.jsonl.zst) go up with the manifest, like the saved state.
+const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst', 'gaps.jsonl.zst']);
 const isSha = (s) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 const isBytes = (n) => Number.isSafeInteger(n) && n > 0;
 /** True for "no such file": RECORD-BUDGET deletes recordings on its own schedule, so any file may vanish mid-run. */
@@ -1790,7 +1791,7 @@ const firstDay = (b) => {
   return days[0] ?? (t === null ? null : dayOf(t));
 };
 
-/** What one boot contributes: its listed frames and releases files; once ended, its manifest and saved-state attachment. */
+/** What one boot contributes: its listed frames and releases files; once ended, its manifest, saved-state attachment and packed gaps. */
 export const itemsOf = (b) => {
   const items = [];
   for (const d of b.manifest.days) {
