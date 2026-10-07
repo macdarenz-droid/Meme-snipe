@@ -337,6 +337,12 @@ describe('candles after a late migration, live and replayed (POOL-FIRST-READ par
     const migrate = chainTx('migration CreatePoolEvent');
     const complete = chainTx('pump CompleteEvent (curve filled)');
     const isMigration = (a: Arrival) => a.body.type === 'tx' && [migrate.signature, complete.signature].includes((a.body as { record: TransactionRecord }).record.signature);
+    // The pool's watch starts once the pool exists (at its migration, as PoolWatch does), not at the coin's creation:
+    // keeping for a late book is bounded from the watch start (PRE_BOOK_KEEP_MS).
+    const mig = out.find((a) => a.body.type === 'tx' && (a.body as { record: TransactionRecord }).record.signature === migrate.signature)!;
+    const watch = out.findIndex((a) => a.body.type === 'offchain' && a.body.key === `coverage:${STREAMS.trades(POOL)}:start`);
+    out.splice(watch, 1);
+    out.splice(out.indexOf(mig), 0, { at: mig.at - 1, source: 'worker', body: { type: 'offchain', key: `coverage:${STREAMS.trades(POOL)}:start`, value: { fromSlot: migrate.slot, via: `logs:${POOL}` } } });
     const moved = late ? out.filter(isMigration) : [];
     const kept = late ? out.filter((a) => !isMigration(a)) : out;
     const read = kept.find((a) => a.body.type === 'offchain' && a.body.key === RAW.accounts(MINT))!;

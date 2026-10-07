@@ -179,7 +179,8 @@ describe('DEDUP-PER-WATCH: a PumpSwap event other than a swap stales the pool it
 
   /** POOL-FIRST-READ part 2: the two PumpSwap events proven on mainnet to leave the reserves unchanged, as logged. */
   const hex = (h: string): number[] => h.match(/../g)!.map((x) => parseInt(x, 16));
-  const noChange = (d: string): string[] => invoke([...hex(d), 1, 2, 3, 4]);
+  /** As logged on mainnet: the discriminator and a body to the event's size (80 and 96 bytes); `size` to change it. */
+  const noChange = (d: string, size = d === '929fbdac925838f4' ? 80 : 96): string[] => invoke([...hex(d), ...Array.from({ length: size - 8 }, (_, i) => i % 251)]);
 
   for (const d of ['929fbdac925838f4', '6161d7905d92167c']) {
     it(`a no-change event (${d}) seen first on another watch leaves this pool clean (no unnamed echo)`, () => {
@@ -188,6 +189,12 @@ describe('DEDUP-PER-WATCH: a PumpSwap event other than a swap stales the pool it
       expect(staleOf(w)).toBeUndefined();
     });
   }
+
+  it('a same-discriminator event of another size (a changed layout) is echoed as unnamed again: stale', () => {
+    const w = opened();
+    through(w, noChange('6161d7905d92167c', 104), S, [VIA(A), VIA(PB)], atR(S));
+    expect(staleOf(w)).toMatch(/other than a swap/);
+  });
 
   it('a log holding a no-change event and an unnamed one still echoes the unnamed one: stale', () => {
     const w = opened();

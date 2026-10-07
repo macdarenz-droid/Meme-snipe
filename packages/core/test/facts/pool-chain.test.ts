@@ -555,10 +555,12 @@ describe('a pool\'s lost mark never falls out (review of #266, item 2)', () => {
 describe('PumpSwap events proven to leave the reserves unchanged (POOL-FIRST-READ part 2)', () => {
   // research/pool-noop-events: CloseUserVolumeAccumulatorEvent (929fbdac925838f4) and ExtendAccountEvent
   // (6161d7905d92167c), each with the pool's swap before and after chaining exactly across it on mainnet.
-  const ev = (slot: bigint, discriminator: string): MarketEvent => ({
+  /** Mainnet sizes of the two events (discriminator included); DEC-1 gives the size of these two only. */
+  const SIZE = { '929fbdac925838f4': 80, '6161d7905d92167c': 96 } as Record<string, number>;
+  const ev = (slot: bigint, discriminator: string, size: number | null = SIZE[discriminator] ?? null): MarketEvent => ({
     kind: 'market', id: `log:noop${slot}${discriminator}:confirmed:00000`, moment: { slot, txIndex: 2 ** 32 + 999, ixIndex: 2 ** 36, receivedAt: at(slot) },
     key: `logs:pump_amm:other:pump_amm`,
-    value: { event: { program: 'pump_amm', name: 'other', discriminator, logIndex: 0 }, signature: `noop${slot}${discriminator}`, txSlot: slot, truncated: false, via: `logs:${POOL}`, commitment: 'confirmed', source: 'helius', backfilled: false, seq: 0 },
+    value: { event: { program: 'pump_amm', name: 'other', discriminator, ...(size === null ? {} : { size }), logIndex: 0 }, signature: `noop${slot}${discriminator}`, txSlot: slot, truncated: false, via: `logs:${POOL}`, commitment: 'confirmed', source: 'helius', backfilled: false, seq: 0 },
   });
   const carries = (w: FactWorld) => w.facts(carryKey(MINT)).map((e) => e.value as { slot: bigint });
   const stale = (w: FactWorld): string | undefined => (w.last(poolKey(MINT)) as { stale?: string }).stale;
@@ -580,6 +582,14 @@ describe('PumpSwap events proven to leave the reserves unchanged (POOL-FIRST-REA
       const { world } = base();
       world.push(ev(READ_SLOT + 1n, d));
       expect(stale(world), d).toBe('a pool transaction other than a swap (other)');
+    }
+  });
+
+  it('the same discriminator at another size (a changed layout), or with no size, is a change again', () => {
+    for (const [d, size] of [['929fbdac925838f4', 88], ['929fbdac925838f4', 72], ['6161d7905d92167c', 80], ['6161d7905d92167c', 104], ['929fbdac925838f4', null]] as const) {
+      const { world } = base();
+      world.push(ev(READ_SLOT + 1n, d, size));
+      expect(stale(world), `${d} ${size}`).toBe('a pool transaction other than a swap (other)');
     }
   });
 

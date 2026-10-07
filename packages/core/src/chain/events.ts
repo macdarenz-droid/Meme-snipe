@@ -314,6 +314,8 @@ export interface OtherEvent {
   readonly program: EventProgram;
   readonly name: 'other';
   readonly discriminator: string;
+  /** The event's bytes, discriminator included: given only for `PUMP_AMM_NO_CHANGE_EVENTS`, whose size is checked. */
+  readonly size?: number;
 }
 
 /**
@@ -331,16 +333,20 @@ export type ProgramEvent = (PumpEventData & { readonly trailing: number; readonl
  * one after chain exactly across each, on contiguous tapes). Anchor event discriminators, sha256("event:<Name>")[0..8].
  * Only these exact discriminators; any other unnamed PumpSwap event may move the reserves.
  */
-export const PUMP_AMM_NO_CHANGE_EVENTS: ReadonlyMap<string, string> = new Map([
-  ['929fbdac925838f4', 'CloseUserVolumeAccumulatorEvent'],
-  ['6161d7905d92167c', 'ExtendAccountEvent'],
+export const PUMP_AMM_NO_CHANGE_EVENTS: ReadonlyMap<string, { readonly name: string; readonly size: number }> = new Map([
+  // `size`: the event's bytes, discriminator included, as every mainnet occurrence measured (research/pool-noop-events:
+  // 508 and 78 log lines, one size each). A program upgrade that changes the layout changes the size: a change again.
+  ['929fbdac925838f4', { name: 'CloseUserVolumeAccumulatorEvent', size: 80 }],
+  ['6161d7905d92167c', { name: 'ExtendAccountEvent', size: 96 }],
 ]);
 
-/** True for a PumpSwap event in `PUMP_AMM_NO_CHANGE_EVENTS` (an unnamed one carrying its discriminator). */
+/** True for a PumpSwap event in `PUMP_AMM_NO_CHANGE_EVENTS`: an unnamed one with its discriminator and exact size. */
 export const isNoChangePoolEvent = (e: unknown): boolean => {
   if (typeof e !== 'object' || e === null) return false;
-  const x = e as { program?: unknown; name?: unknown; discriminator?: unknown };
-  return x.program === 'pump_amm' && x.name === 'other' && typeof x.discriminator === 'string' && PUMP_AMM_NO_CHANGE_EVENTS.has(x.discriminator);
+  const x = e as { program?: unknown; name?: unknown; discriminator?: unknown; size?: unknown };
+  if (x.program !== 'pump_amm' || x.name !== 'other' || typeof x.discriminator !== 'string') return false;
+  const known = PUMP_AMM_NO_CHANGE_EVENTS.get(x.discriminator);
+  return known !== undefined && x.size === known.size;
 };
 
 type AnyLayout = { name: string; discriminator: Uint8Array; base: readonly unknown[]; added: readonly unknown[] };
@@ -364,7 +370,10 @@ export const decodeEventBytes = (program: EventProgram, bytes: Uint8Array): Prog
     const extra = toHex(bytes.subarray(bytes.length - decoded.trailing));
     return { program, name: l.name, data: decoded.value, trailing: decoded.trailing, extra } as ProgramEvent;
   }
-  return { program, name: 'other', discriminator: toHex(bytes.subarray(0, 8)) };
+  const discriminator = toHex(bytes.subarray(0, 8));
+  // POOL-FIRST-READ part 2: the no-change events carry their size, which `isNoChangePoolEvent` checks; no other does.
+  if (program === 'pump_amm' && PUMP_AMM_NO_CHANGE_EVENTS.has(discriminator)) return { program, name: 'other', discriminator, size: bytes.length };
+  return { program, name: 'other', discriminator };
 };
 
 /** Decodes a self-CPI event instruction's data, or returns null when the data is not an event (no tag). */
