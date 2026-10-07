@@ -14,3 +14,12 @@ Prediction stated by the researcher: a loss (neighbouring tests −10.6% and −
 6. **Kill-only screen on the B-10 days:** not added. It is a new task, so it is put to the owner. Until the owner answers, the PREREG mentions it only as an option.
 
 Next: the researcher applies 1–5, marks P1–P5 as ruled in DECISIONS (not proposals), and reports the new head. Then a fresh reviewer and a red team.
+
+## Round 2 (head `19c0a712`, researcher `session_015oSGiMB1sKnM13Di7CE8np`)
+
+P1–P5 were applied. The researcher's points and the supervisor rulings (8 Oct 2026, about 9:42 AM):
+1. **"With and without" is always empty**, since every PM-01 entry is in a pool younger than 120 min. Replaced with a split at the baseline: at least 60 min (entry at migration + 90 min or later) against under 60 min. Both lines are reported, and the gates use all entries.
+2. **The 50% coverage rule is kept over the new span:** accepted, as the stricter choice.
+3. **B1 counts as economic:** accepted.
+4. **An economic boundary inside W_R or W_P** ends that window and voids W_B's selection. A new W_B selection runs on data after the boundary and counts as a new trial.
+5. **Kill-only screen** (owner, about 9:28 AM, "Ok"): a fixed section, written before any B-10 day is looked at. It states the kill rule on 07-22..08-21, the minimum trade count, the cost model and the size ($5), and that the screen can never pass PM-01.
