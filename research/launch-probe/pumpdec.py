@@ -31,11 +31,11 @@ def decode_trade(b):
     ev['fee_bps'], ev['fee'] = struct.unpack_from('<QQ', b, p); p += 16
     ev['creator'], p = _pk(b, p)
     ev['creator_fee_bps'], ev['creator_fee'] = struct.unpack_from('<QQ', b, p); p += 16
-    ev['cashback_bps'] = ev['cashback'] = ev['buyback_bps'] = ev['buyback_fee'] = None
+    ev['cashback_bps'] = ev['cashback'] = ev['buyback_bps'] = ev['buyback_fee'] = ev['mayhem'] = None
     try:
         p += 1 + 8 + 8 + 8 + 8                                   # track_volume .. last_update_timestamp
         ev['ix_name'], p = _str(b, p)
-        p += 1                                                   # mayhem_mode
+        ev['mayhem'] = bool(b[p]); p += 1
         ev['cashback_bps'], ev['cashback'] = struct.unpack_from('<QQ', b, p); p += 16
         ev['buyback_bps'], ev['buyback_fee'] = struct.unpack_from('<QQ', b, p); p += 16
     except (struct.error, UnicodeDecodeError):
@@ -52,7 +52,11 @@ def decode_create(b):
     ev['bonding_curve'], p = _pk(b, p)
     ev['user'], p = _pk(b, p)
     ev['creator'], p = _pk(b, p)
-    ev['timestamp'], ev['vtok'], ev['vsol'], ev['rtok'], ev['supply'] = struct.unpack_from('<q4Q', b, p)
+    ev['timestamp'], ev['vtok'], ev['vsol'], ev['rtok'], ev['supply'] = struct.unpack_from('<q4Q', b, p); p += 40
+    ev['quote_mint'] = None
+    if len(b) >= p + 32 + 2 + 32:
+        p += 32 + 1 + 1                                          # token_program, is_mayhem_mode, is_cashback_enabled
+        ev['quote_mint'], p = _pk(b, p)
     return ev
 
 def decode_complete(b):
