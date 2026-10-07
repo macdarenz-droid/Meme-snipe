@@ -115,6 +115,14 @@
   - Rulings on the builder's open points are in `docs/reviews/ZHOF.md` (`35880d11`): C-56 with MR-01 parked; retention K3; D30 parked, so the owner's D30 question is withdrawn; A-24b parked.
   - Owner waits now: none open on strategy or data. The host move is the owner's to do.
 - **8 Oct about 8:36 AM, host move:** Vultr's Ubuntu 24.04 image on the 2 GB server logs in as `linuxuser` (with sudo), not `root`. The owner got in as `linuxuser`. `ops/README.md` step 1 says "type root"; it needs fixing (card **README-LOGIN**: say `linuxuser`, then `sudo -i` before the install line, and how to read the deploy code with `zeroed-status` after SSH closes). The owner was told to run `sudo -i` first, then the install line, preferably over SSH from a computer, where paste works.
+- **8 Oct about 8:37 AM:** **#292 Z-H-OF merged at `65c2733f`** (the new base). Review PASS and red team 0 MAJOR (`docs/reviews/ZHOF.md`). check and historical-data are green on `a0e3e1ac`, which contains `c6c8496f`. Its builder, reviewer and red team are archived.
+  - #287 Z01 round 7 at `d6e8c8e8`: reviewer PASS; red team 0 BLOCKER, 0 MAJOR, 3 MINOR. The round 8 rulings in `docs/reviews/Z01.md` call for no code change. The builder is merging `65c2733f`. Then the HANDOVER merge procedure (label last).
+- **8 Oct about 8:35 AM, Deploy run 43 (owner pressed it after the install):** the tag step kept `deploy` at `94d55a84`, not `c6c8496f`.
+  - Why: `e2e_commit` of `c6c8496f` is `90ec75ce`, and the Android `release` failed on `90ec75ce` (the 20-min wait that #291 fixed). `commit_verdict` counts any failed run on that commit, so `c6c8496f`, `90ec75ce` and `85a61e60` are red. `94d55a84` is green, and so is its e2e commit `cd4d7a64` (all recomputed locally with the base's `logic.sh`).
+  - Correction: the 7:35 AM entry's "the base `c6c8496f` is deployable" was wrong. I checked the e2e job on `90ec75ce`, not the whole verdict on it.
+  - Effect: none on behaviour. From `94d55a84` to `c6c8496f` the only change to a file the server runs is a comment in `logic.sh`; the installer files (`install.sh`, `install-main.sh`) match pin `07c7d076`. The stand-in runs either way.
+  - Every base commit stays undeployable until a merge touches `E2E_PATHS` (`ops`, `packages/ops`, `deploy.yml`, `ops-e2e.yml`) with all its runs green. Z01 does not touch them (checked). README-LOGIN (it edits `ops/README.md`) does, so it fixes this. Nothing needs a deploy before then, because the stand-in is what runs.
+  - Re-running `90ec75ce`'s failed `release` was not done. It would also overwrite the public preview APK with an older build.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
