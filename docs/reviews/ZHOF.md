@@ -173,3 +173,38 @@ Reviewer: FAIL. Rulings 1–13 and open points 1–4 are applied, and every numb
 25. **H: the marker.** Name where the dispatch marker lives (an Actions cache key or an artifact in the private store) and its TTL (at least 10 min).
 26. **I:** A-M13-01 "Parked parts" says plainly that PM-01 has no Phase 0 check; its first evidence is gate B.
 27. **C:** confirm in OLD-FAITHFUL.md §3 and OF-3 that one scanner revision covers both retention values, recorded per unit, and that finalize refuses a day that mixes them. If `49529d6d` already says this, cite the line.
+
+### Reviewer and red team on `49529d6d`
+
+- Reviewer: FAIL, on items 18–19 only. Items 14–17 are all applied, and the checks are clean.
+- Red team round 4: 1 MAJOR, 7 MEDIUM, 3 MINOR.
+  - Closed: rulings 14–17, and C (one revision, with a per-unit retention tag).
+  - Still open (already ruled as 21–26): B, D, E, F, G, H, I.
+  - New:
+    - B widened: the retention value needs one source of truth, enforced at every entry point.
+    - K: the trim conflicts with immutable day releases.
+    - L: the trimmed day's evidence is stale.
+    - M: an agent-started strategy can block C-56's trigger.
+    - O: day 1 under-measures PM-01's size; DECISIONS:110 needs a pointer to the re-keyed row.
+
+### Supervisor rulings, round 3 continued (8 Oct 2026, about 8:20 AM)
+
+28. **B, widened: one source of truth.**
+    - `archive-limits.conf` holds `ARCHIVE_ARM`, `ARCHIVE_REARM_AT` and `ARCHIVE_RETENTION`, set in the same reviewed change as the DECISIONS record.
+    - The data-scan plan job, `scan-day.sh` and archive-check all refuse before any request when the chain is unarmed, when the stop is active, or when retention is unset for any day other than 07-22.
+    - `scan-day.sh` passes `ARCHIVE_RETENTION` to the scanner explicitly.
+    - Add test-ci cases: an unarmed manual dispatch is refused; a dispatch after 3 failures is refused; 07-23 with no retention value is refused. This replaces item 21's wording.
+29. **K: the trim and immutable releases.**
+    - The trimmed day goes out as a new release tag (`data-day-2026-07-22-k3`), and OF-5 and B10-PULL point to it. The K2 release stays, private, as the measurement record.
+    - Add a test: the K2 release is never counted as done for B-10.
+30. **L: fresh evidence after the trim.**
+    - The trim tool re-runs finalize, strict QA and parity on the trimmed units.
+    - It applies the same trim to the stored determinism-rescan unit and compares bytes, with no new archive read.
+    - It rewrites SHA256SUMS-DAY and the per-unit log.
+31. **M: C-56's trigger.**
+    - The trigger becomes: "PM-01 fails and no owner-brought slot strategy is in its gates". Strategy work the agents start stops by 31 Dec either way.
+    - Add an acceptance case: PM-01 failed and an agent-started revised MR is in its gates, so the stop applies.
+32. **O: measure on two days.**
+    - Batch 1 (07-22) and batch 2 (07-23) both keep K2 and are both measured. The retention choice is recorded before batch 3.
+    - The record names the first-day bias: no positions carried over from earlier migrations.
+    - Add "(re-keyed, row 125)" to DECISIONS:110.
