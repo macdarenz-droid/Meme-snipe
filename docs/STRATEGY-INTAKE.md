@@ -83,7 +83,7 @@ interface Strategy { id: string; version: string; params: Readonly<Record<string
 
 The runner, on the research host too, refuses to register an `id@version` whose source hash is not in main's pin file. The pinned hash goes into the stage record, so the staging check below also binds the code.
 
-**Registry export** (round 4 ruling 48; PROPOSED, SPEC is silent). CI needs a fresh export of the trial registry, which lives on the research host (A-M11-01 run registry; A-M13-02 `trial_registry`). Proposed: after every `preRegister`, the runner commits an export file (PROPOSED path `research/registry/EXPORT.ndjson`) through a reviewed PR to main, holding only `id`, `version`, source hash, `origin` and the DECISIONS reference. It holds no returns, prices or trades, since this repository is public. CI reads it from main.
+**Registry export** (round 4 ruling 48; ruled by the supervisor, round 4, 9:40 AM; SPEC is silent). CI needs a fresh export of the trial registry, which lives on the research host (A-M11-01 run registry; A-M13-02 `trial_registry`). After every `preRegister`, the runner commits an export file (`research/registry/EXPORT.ndjson`) through a reviewed PR to main, holding only `id`, `version`, source hash, `origin` and the DECISIONS reference. It holds no returns, prices or trades, since this repository is public. CI reads it from main.
 
 **Fresh instance.** The host builds a fresh plugin instance for every run, so no plugin state carries from one run to the next (round 2 ruling 13).
 
@@ -368,7 +368,7 @@ All rulings are the supervisor's (session `session_01UQmXJHSgmb2Tj7PK7VDKRz`), r
 
 ### Round 1
 
-The researcher's eight questions on the first draft, about 9:23 AM.
+The researcher's eight questions on the first draft, about 9:21 AM.
 
 1. Paper is refused unless a PREREG exists for `(id, version, paramsHash)`; the lookup is named under "Dependencies" (AC-14).
 2. Adding `live_small` or `live` is A3, adding `paper` is A2, removing any mode is A1 (AC-15).
@@ -381,7 +381,7 @@ The researcher's eight questions on the first draft, about 9:23 AM.
 
 ### Round 2
 
-Red team round 1 at `a889f73b` (`session_01HECcHHGsHibzJQLqXnMmYz`), rulings about 9:35 AM, numbered 1–13 in the review file:
+Red team round 1 at `a889f73b` (`session_01HECcHHGsHibzJQLqXnMmYz`), rulings about 9:27 AM, numbered 1–13 in the review file:
 
 1. B1: a version runs in paper or live only when it matches its stage record (`E_VERSION_NOT_STAGED`); a new version starts its own stage at `research`, SPEC's pre-registration stage (section 3, "Staging rules"; AC-17, AC-18).
 2. B2: nothing is emitted and every mode is refused at `failed` or `archived`; the move to `failed` removes every mode as an audited A1 action (AC-19).
@@ -397,13 +397,13 @@ Red team round 1 at `a889f73b` (`session_01HECcHHGsHibzJQLqXnMmYz`), rulings abo
 12. m3: SPEC stands; a paper-only strategy pauses while the system is live-small. The paper shadow stays PROPOSED in "Open points", to be decided when a second strategy reaches paper.
 13. m4: the evidence must show a positive after-cost result; a fresh plugin instance per run (section 2; AC-25).
 
-Reviewer round 1 at `a889f73b` (`session_011iA9FMWTMikWUyoerDHrq2`, FAIL on 4 MAJOR and 11 MINOR), rulings about 9:38 AM:
+Reviewer round 1 at `a889f73b` (`session_011iA9FMWTMikWUyoerDHrq2`, FAIL on 4 MAJOR and 11 MINOR), rulings about 9:27 AM:
 
 14. M1: covered by ruling 2 of round 2; the disabled reason is on Z-STRAT-UI (its criterion 9).
 15. M2: AC-11 is the hand-computed fixture only; the after-cost and look-ahead checks are A-M11-02's (SPEC-A:1829-1830), listed under "Dependencies".
 16. M3: B1 and B5 are AC-27 and AC-28, each with a fail-before test. The ruling numbered them AC-17 and AC-18 against `a889f73b`; those numbers were already taken by ruling 1 of round 2, so they follow the existing list.
 17. M4: no C10; the control shows on or off and opens the UI-T13 dialog.
-18. m1: the L-3 wording (section 7). m2: the `edgeEstimate` object (section 3). m3 and m4: PROPOSED marks (the step-up window is settled by ruling 36). m5: VM-03 `name` in the contract gap (AC-10). m8: `varianceBps2` ≤ 0 → 0 (AC-9). m11: the ruling time is about 9:23 AM.
+18. m1: the L-3 wording (section 7). m2: the `edgeEstimate` object (section 3). m3 and m4: PROPOSED marks (the step-up window is settled by ruling 36). m5: VM-03 `name` in the contract gap (AC-10). m8: `varianceBps2` ≤ 0 → 0 (AC-9). m11: ruling times follow the review file's commit times (round 1 9:21 AM, round 2 9:27 AM, round 3 9:34 AM, round 4 9:40 AM).
 19. m6: `backtest` and `replay` refused on the live host (AC-29).
 20. m7: live modes refused below `paper_passed` (AC-30; Z-STRAT-UI criterion 10).
 21. m9: "They are marked shadow and do not count for any gate yet." (checklist item 8).
@@ -411,7 +411,7 @@ Reviewer round 1 at `a889f73b` (`session_011iA9FMWTMikWUyoerDHrq2`, FAIL on 4 MA
 
 ### Round 3
 
-Delta review at `e69fc5c6` (FAIL on 1 MAJOR and 6 MINOR) and red team round 2 at `e69fc5c6` (0 BLOCKER, 6 MAJOR, 5 MINOR), rulings about 9:52 AM:
+Delta review at `e69fc5c6` (FAIL on 1 MAJOR and 6 MINOR) and red team round 2 at `e69fc5c6` (0 BLOCKER, 6 MAJOR, 5 MINOR), rulings about 9:34 AM:
 
 23. N1: stage records are keyed by `(id, version)`; X@2 never changes X@1's stage (section 3; AC-17; open point 6).
 24. N2: `paramsHash` and the staging check are per `configKey` within the registered set; config only picks a registered configuration (section 3; AC-20, AC-24, AC-31).
@@ -433,7 +433,7 @@ Delta review at `e69fc5c6` (FAIL on 1 MAJOR and 6 MINOR) and red team round 2 at
 
 ### Round 4
 
-Reviewer at `d5a43d18` (FAIL on 1 MAJOR and 3 MINOR) and red team round 3 at `d5a43d18` (0 BLOCKER, 4 MAJOR, 5 MINOR), rulings about 9:40 AM as recorded in the review file:
+Reviewer at `d5a43d18` (FAIL on 1 MAJOR and 3 MINOR) and red team round 3 at `d5a43d18` (0 BLOCKER, 4 MAJOR, 5 MINOR), rulings about 9:40 AM:
 
 40. Reviewer M1: Z-STRAT tests the global or strategy-scoped classification and the host's disabling against a fake B-M25-03 start coordinator; the outcome is B-M25-03's ("Dependencies"; AC-22, AC-33).
 41. Reviewer m1–m3: section 2's row now names only the features package; the process claim cites ARCH 4.3 (D25), which puts M09 and M14 in one engine process (card PLUGIN-SANDBOX); A-M11-01 and the B-M26-02/B-M26-04 readiness amendments are in open point 6.
@@ -443,7 +443,7 @@ Reviewer at `d5a43d18` (FAIL on 1 MAJOR and 3 MINOR) and red team round 3 at `d5
 45. P4: PLUGIN-SANDBOX in every mode, with a parity criterion and a runtime attestation in `status()` (section 6; card PLUGIN-SANDBOX; Z-STRAT-UI criterion 12).
 46. p1: `constructor` and `__proto__` banned in every property position, plus the locale built-ins (section 3; AC-12).
 47. p2: CI binds `origin: owner` to a DECISIONS line on main; the registry row carries the reference; new `agent` registrations refused after the stop (section 1; AC-40).
-48. p3: the order PREREG → pin → `preRegister` → `W_B`; CI reads the registry export, whose source is PROPOSED in section 3 (section 2, "Order"; AC-16).
+48. p3: the order PREREG → pin → `preRegister` → `W_B`; CI reads the registry export, whose source is ruled in section 3 (section 2, "Order"; AC-16).
 49. p4: the class of piled-up changes is the maximum since the frozen `configKey` (section 3; AC-39).
 50. p5: upgrading a live strategy pauses live trading (section 6).
 
