@@ -10,7 +10,7 @@ import type { PoolFeeContext, PoolState } from '../../../core/src/amm/index.ts';
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { createRng, type EffectRunner, type Moment } from '../../../core/src/engine/index.ts';
 import {
-  type AccountLeg, attemptFee, drawAttempt, executeBuyIn, executeSellIn, type FillNetwork, type FillScenario, NetworkState, providerDown, TokenAccounts, windowOf,
+  type AccountLeg, attemptFee, drawAttempt, executeBuyIn, executeSellIn, exitRetryCount, type FillNetwork, type FillScenario, NetworkState, providerDown, TokenAccounts, windowOf,
 } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import { type Lamports, LAMPORTS_PER_SOL, type RawAmount, mulDiv } from '../../../core/src/units/index.ts';
@@ -46,10 +46,10 @@ export interface PaperAttempt {
   congested?: boolean;
   /** N2: the send path was down in its window, so it never reached a block whatever its draw. */
   providerDown?: boolean;
-  /** N2: earlier exit attempts on its position: the liquidity haircut's multiple (the backtest's `exitRetry`). */
+  /** N2: earlier exit sends on its position inside the haircut window: the haircut's multiple (the backtest's `exitRetry`). */
   exitRetry?: number;
-  /** Times this signature was sent: more than one when it was lost in a restart and re-made (EXIT-KEEP B3). */
-  sends?: number;
+  /** When this signature was sent (ms, wall clock): more than once when it was lost in a restart and re-made (EXIT-KEEP B3). */
+  sendsAtMs?: number[];
 }
 
 export interface PaperState {
@@ -314,16 +314,21 @@ export class PaperWorld implements EffectRunner {
     const draw = down ? { ...drawn, fate: 'dropped' as const } : drawn;
     const exit = i.intent.purpose === 'exit';
     const rung = exit ? this.#d.exitRung(i) : 0;
-    // Every earlier exit send on the position counts, as the backtest counts every broadcast: one lost in a restart and
-    // re-made under the same signature (EXIT-KEEP B3) counts each of its sends.
-    const exitRetry = exit ? [...this.#attempts.values()].filter((x) => x.purpose === 'exit' && x.trade === i.intent.positionId).reduce((n, x) => n + (x.sends ?? 1), 0) : 0;
+    // Every earlier exit send on the position inside the haircut window counts, as the backtest counts its broadcasts:
+    // one lost in a restart and re-made under the same signature (EXIT-KEEP B3) counts each of its sends. A send saved
+    // with no time (an older paper.json) counts as recent.
+    const sentAt = this.#d.now();
+    const exitRetry = exit
+      ? exitRetryCount([...this.#attempts.values()].filter((x) => x.purpose === 'exit' && x.trade === i.intent.positionId)
+        .flatMap((x) => x.sendsAtMs ?? [x.sentAtMs ?? sentAt]), sentAt, this.#d.scenario)
+      : 0;
     const a: PaperAttempt = {
       intentId, signature: sig, purpose: i.intent.purpose, trade: i.intent.positionId, mint: i.intent.mint,
       inAmount: attempt.quote.inAmount, quotedOut: attempt.quote.quotedOut, minOut: attempt.quote.minOut,
       priorityFee: exit ? (this.#d.ladderFees[rung] ?? 0n) : this.#d.network.entryPriorityFee,
       lastValidBlockHeight: attempt.lastValidBlockHeight, fate: draw.fate, landSlot: height + BigInt(Math.max(1, draw.landingSlots)),
-      outcome: 'in_flight', reason: down ? 'provider' : draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: this.#d.now(),
-      congested, providerDown: down, exitRetry, sends: (known?.sends ?? 0) + 1,
+      outcome: 'in_flight', reason: down ? 'provider' : draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: sentAt,
+      congested, providerDown: down, exitRetry, sendsAtMs: [...(known?.sendsAtMs ?? (known?.sentAtMs !== undefined ? [known.sentAtMs] : [])), sentAt],
     };
     this.#attempts.set(sig, a);
     this.#sentHeight.set(sig, height);

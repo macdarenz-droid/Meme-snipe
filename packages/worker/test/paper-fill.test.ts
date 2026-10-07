@@ -39,6 +39,9 @@ const LANDS: FillScenario = {
 
 interface Leg { readonly id: string; readonly purpose: 'entry' | 'exit'; readonly inAmount: bigint; readonly quotedOut: bigint; readonly minOut: bigint; readonly position?: string }
 
+/** The paper world's wall clock (sends are timed by it); tests that move it set it back. */
+let WALL = 0;
+
 /** A paper world over a hand-made book: one position, its intents, one signed attempt each. */
 const world = (scenario: FillScenario, legs: readonly Leg[], market: () => PaperMarket | null, seed = 'paper-fill', dir = mkdtempSync(join(tmpdir(), 'paper-fill-'))) => {
   const intents: Record<string, IntentState> = {};
@@ -54,7 +57,7 @@ const world = (scenario: FillScenario, legs: readonly Leg[], market: () => Paper
   const w = new PaperWorld({
     report: (e) => reports.push(e), book: () => book, seed, scenario, network: NET,
     ladderFees: TRIAL_POLICY.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint), exitRung: () => 0,
-    market: () => market(), maxQuoteAgeMs: MAX_AGE, maxSolOut: () => 0n, simulate: null, journal: () => undefined, now: () => 0,
+    market: () => market(), maxQuoteAgeMs: MAX_AGE, maxSolOut: () => 0n, simulate: null, journal: () => undefined, now: () => WALL,
     file: new StateFile<PaperState>(dir, 'paper.json', (v) => v as PaperState), changed: () => undefined,
     landedFailed: (a) => failed.push(a),
   });
@@ -175,6 +178,33 @@ describe('N2 live paper fills as the backtest fills (conservative scenario)', ()
     expect(second.w.attempts.get('sig:ex1')).toMatchObject({ outcome: 'in_flight', exitRetry: 1 });
     second.send('ex2');
     expect(second.w.attempts.get('sig:ex2')!.exitRetry).toBe(2);
+  });
+
+  test('N2a the haircut window (fills-4): a slow retry an hour after a failed ladder starts from none; inside the window it compounds', () => {
+    const W = CONSERVATIVE.exitRetryHaircutWindowMs;
+    const legs: Leg[] = ['ex1', 'ex2', 'ex3', 'ex4', 'ex5'].map((id) => ({ ...SELL, id }));
+    const { w, send } = world(LANDS, legs, () => null);
+    try {
+      w.onSlot(H0, at(H0));
+      WALL = 0;
+      send('ex1');
+      WALL = 1_000;
+      send('ex2');
+      expect(w.attempts.get('sig:ex2')!.exitRetry).toBe(1);
+      // A slow retry 64 minutes later: the earlier episode's sends are outside the window.
+      WALL = 64 * 60_000;
+      send('ex3');
+      expect(w.attempts.get('sig:ex3')!.exitRetry).toBe(0);
+      // The boundary: ex3 exactly one window back counts; one millisecond more does not.
+      WALL = 64 * 60_000 + W;
+      send('ex4');
+      expect(w.attempts.get('sig:ex4')!.exitRetry).toBe(1);
+      WALL = 64 * 60_000 + W + 1;
+      send('ex5');
+      expect(w.attempts.get('sig:ex5')!.exitRetry).toBe(1);
+    } finally {
+      WALL = 0;
+    }
   });
 
   test('N2b congestion: the attempt draws as the backtest\'s does in a congested window (fewer land, later)', () => {

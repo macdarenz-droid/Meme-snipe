@@ -3,7 +3,7 @@ import type { PoolState } from '../../src/amm/index.ts';
 import { FILL_CONFIG } from '../../src/config/index.ts';
 import { createRng } from '../../src/engine/index.ts';
 import {
-  type FillScenario, type ObservedFees, type RealSwap, NetworkState, ShiftedPool, attemptFee, blockedExitValue, drawAttempt, networkEnterPpm, providerDown, executeBuy, executeSell,
+  type FillScenario, type ObservedFees, type RealSwap, NetworkState, ShiftedPool, attemptFee, blockedExitValue, drawAttempt, networkEnterPpm, providerDown, executeBuy, executeSell, exitRetryCount,
   replaySwap, withSlippage,
 } from '../../src/fills/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -295,6 +295,22 @@ describe('stress in the fill model (BT-1c item 4)', () => {
     expect(outs[2]!.costs.extraSlippage - outs[0]!.costs.extraSlippage).toBe(outs[0]!.out - outs[2]!.out);
     expect(outs[2]!.after).toEqual(outs[0]!.after);
   });
+
+  test('the haircut counts only the exit sends inside its window (fills-4): one episode compounds, a later one starts from none', () => {
+    const W = c.exitRetryHaircutWindowMs;
+    expect(W).toBe(10 * 60_000);
+    const now = 100 * 60_000;
+    // Inside the window: every earlier send counts, as before.
+    expect(exitRetryCount([now - 3_000, now - 2_000, now - 1_000], now, c)).toBe(3);
+    // The boundary: exactly the window counts, one millisecond more does not.
+    expect(exitRetryCount([now - W], now, c)).toBe(1);
+    expect(exitRetryCount([now - W - 1], now, c)).toBe(0);
+    // A slow blocked-exit retry 64 minutes after a whole failed ladder: no haircut.
+    expect(exitRetryCount([0, 400, 800, 1_200, 1_600, 2_000], 64 * 60_000, c)).toBe(0);
+    // A send stamped after now is not an earlier send.
+    expect(exitRetryCount([now + 1], now, c)).toBe(0);
+    expect(() => exitRetryCount([], now, { ...c, exitRetryHaircutWindowMs: -1 })).toThrow(RangeError);
+  });
 });
 
 describe('scenario ordering', () => {
@@ -336,6 +352,7 @@ describe('scenario ordering', () => {
   better('long-tail share', c.landingTail.ppm, b.landingTail.ppm, o.landingTail.ppm, (x, y) => x >= y);
   better('long-tail latency (mean and worst)', c.landingTail.slots, b.landingTail.slots, o.landingTail.slots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
   better('exit retry haircut', c.exitRetryHaircutPpm, b.exitRetryHaircutPpm, o.exitRetryHaircutPpm, (x, y) => x >= y);
+  better('exit retry haircut window', c.exitRetryHaircutWindowMs, b.exitRetryHaircutWindowMs, o.exitRetryHaircutWindowMs, (x, y) => x >= y);
   better('discovery lag (mean and worst)', c.discoverySlots, b.discoverySlots, o.discoverySlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
   better('landing latency (mean and worst)', c.landingSlots, b.landingSlots, o.landingSlots, (x, y) => lower(mean(x), mean(y)) && lower(Math.max(...x), Math.max(...y)));
   better('confirmation lag', c.confirmSlots, b.confirmSlots, o.confirmSlots, lower);
@@ -345,6 +362,6 @@ describe('scenario ordering', () => {
   better('account close success', c.closeSuccessPpm, b.closeSuccessPpm, o.closeSuccessPpm, (x, y) => x <= y);
   better('dust left in the account', c.dustPpm, b.dustPpm, o.dustPpm, (x, y) => x >= y);
   test('the test covers every scenario field', () => {
-    expect(Object.keys(b).sort()).toEqual(['closeSuccessPpm', 'confirmSlots', 'congestion', 'delay', 'discoverySlots', 'dropPpm', 'dustPpm', 'exitRetryHaircutPpm', 'finalizeSlots', 'landPpm', 'landingSlots', 'landingTail', 'name', 'slippagePpm', 'takeProfit']);
+    expect(Object.keys(b).sort()).toEqual(['closeSuccessPpm', 'confirmSlots', 'congestion', 'delay', 'discoverySlots', 'dropPpm', 'dustPpm', 'exitRetryHaircutPpm', 'exitRetryHaircutWindowMs', 'finalizeSlots', 'landPpm', 'landingSlots', 'landingTail', 'name', 'slippagePpm', 'takeProfit']);
   });
 });

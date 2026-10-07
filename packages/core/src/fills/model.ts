@@ -88,6 +88,12 @@ export interface FillScenario {
    * off what the next one receives, as other sellers reach the pool first.
    */
   readonly exitRetryHaircutPpm: bigint;
+  /**
+   * The haircut counts only this position's exit sends in this window before the current send (ms, inclusive). Sellers
+   * who got ahead of an earlier, failed episode say nothing about a market met much later from a fresh quote: the fast
+   * ladder keeps its full haircut, and a slow blocked-exit retry (an hour or more later) starts from none.
+   */
+  readonly exitRetryHaircutWindowMs: number;
   /** Slots from landing until the status reads `confirmed`. */
   readonly confirmSlots: number;
   /** Slots from landing until the status reads `finalized` (a failure is terminal only then). */
@@ -223,6 +229,16 @@ export const closeSucceeds = (seed: string, s: FillScenario): boolean => ppmDraw
 
 /** Whether a new token account ends up with dust or an unsolicited token, from a seed per account. */
 export const accountGetsDust = (seed: string, s: FillScenario): boolean => ppmDraw(createRng(`${seed}:dust`)) < s.dustPpm;
+
+/**
+ * The repeated-exit haircut's multiple for a send at `nowMs`: the position's earlier exit sends at most
+ * `exitRetryHaircutWindowMs` before it (one model for the backtest and live paper).
+ */
+export const exitRetryCount = (earlierSendsMs: readonly number[], nowMs: number, s: FillScenario): number => {
+  const w = s.exitRetryHaircutWindowMs;
+  if (!Number.isSafeInteger(w) || w < 0) throw new RangeError('exitRetryHaircutWindowMs must be an integer >= 0');
+  return earlierSendsMs.filter((t) => t <= nowMs && nowMs - t <= w).length;
+};
 
 /** Lamports an attempt costs: a landed success pays base, priority and tip; a landed failure base and priority; a dropped one nothing. */
 export const attemptFee = (net: FillNetwork, priorityFee: bigint, fate: 'filled' | 'failed' | 'dropped'): bigint => {
