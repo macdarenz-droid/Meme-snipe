@@ -533,12 +533,33 @@ export class FactReaders {
   }
 
   /**
-   * RC-FIXES: the off-curve owners of each mint's last complete scan, so the next bank classifies them; `null` when they
-   * were more than one bank holds (that scan then fails closed and the next batch scans afresh). Only the last scan's
+   * RC-FIXES: the off-curve owners of each mint's last complete scan, so the next bank classifies them. Only the last scan's
    * owners are kept: before, every owner ever seen stayed, and a coin whose top holders churned passed 100 addresses
    * and had every later bank refused for the life of the process.
    */
-  readonly #scanOwners = new Map<string, readonly string[] | null>();
+  readonly #scanOwners = new Map<string, readonly string[]>();
+  /**
+   * RC-FIXES review: mints whose off-curve owners do not fit one bank, refused for the rest of the UTC day: no more of
+   * the shared daily scans go to a coin that cannot pass. Both maps start again at each UTC day, so they hold at most a
+   * day's scanned mints.
+   */
+  readonly #scanRefused = new Set<string>();
+  #ownersDay = -1;
+
+  #rollOwners(): void {
+    const day = Math.floor(this.#o.timers.now() / 86_400_000);
+    if (day === this.#ownersDay) return;
+    this.#ownersDay = day;
+    this.#scanOwners.clear();
+    this.#scanRefused.clear();
+  }
+
+  #refuseScan(mint: string, owners: number | null): void {
+    if (this.#scanRefused.has(mint)) return;
+    this.#scanRefused.add(mint);
+    this.#scanOwners.delete(mint);
+    this.#o.log?.(`Holder scan of ${mint} refused for the rest of the UTC day: ${owners === null ? 'its' : owners} off-curve owners do not fit one bank with its accounts; H12/H13 stay not covered.`);
+  }
 
   /**
    * READ-COHERENT: a candidate's stage-2 and stage-3 read inputs as one coherent batch, so every fact the decision
@@ -596,13 +617,14 @@ export class FactReaders {
       const mintOwner = this.#mintProgram.get(mint);
       // RC-FIXES: the last scan's off-curve owners ride in the bank only when this batch scans, and only when they fit;
       // if they do not, no scan is taken (fail closed: H12/H13 are never judged on owners the bank did not classify) and
-      // they are forgotten, so the next batch scans afresh.
+      // the coin is refused for the rest of the UTC day (review: never alternate spending the shared daily scans).
+      this.#rollOwners();
       const remembered = req.holders === 'all' ? this.#scanOwners.get(mint) : undefined;
       const extra = (remembered ?? []).filter((o) => !base.includes(o)).sort();
-      const fits = remembered !== null && base.length + extra.length <= BANK_MAX;
-      if (!fits) this.#scanOwners.delete(mint);
+      const fits = req.holders !== 'all' || (!this.#scanRefused.has(mint) && base.length + extra.length <= BANK_MAX);
+      if (!fits) this.#refuseScan(mint, remembered === undefined ? null : extra.length);
       const scanned = req.holders === 'all' && mintOwner !== undefined && fits && this.#takeScan();
-      if (req.holders === 'all' && !scanned) this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : !fits ? 'off-curve owners do not fit one bank' : 'daily scan cap reached' });
+      if (req.holders === 'all' && !scanned) this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : !fits ? 'off-curve owners do not fit one bank: refused for the rest of the UTC day' : 'daily scan cap reached' });
       const addresses = scanned ? [...base, ...extra] : base;
       // The final round: every call at once.
       const bank = addresses.length <= BANK_MAX ? this.#o.rpc.getMultipleAccounts(addresses, priority) : Promise.reject(new Error(`${addresses.length} accounts do not fit one bank`));
@@ -705,8 +727,9 @@ export class FactReaders {
     if (m === null) throw new Error('mint account missing');
     if (s.gpa.slot < slot) throw new Error(`scan at slot ${s.gpa.slot} is older than the supply read at ${slot}`);
     const offCurve = offCurveOwners(s.gpa.accounts);
-    // The next scan's bank carries this scan's off-curve owners (only these; null when more than a bank holds).
-    this.#scanOwners.set(mint, offCurve.length <= BANK_MAX ? offCurve : null);
+    // The next scan's bank carries this scan's off-curve owners (only these); more than a bank holds: refused for the day.
+    if (offCurve.length <= BANK_MAX) this.#scanOwners.set(mint, offCurve);
+    else this.#refuseScan(mint, offCurve.length);
     const missing = offCurve.filter((o) => !inBank.has(o));
     if (missing.length > 0) throw new Error(`off-curve owners ${missing.join(', ')} were not in the bank`);
     put('helius', RAW.holdersAll(mint), {

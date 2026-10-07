@@ -47,7 +47,8 @@ export const CREDIT_MONTHS_KEPT = 3;
  * monthly budget) is held as halted for every class but P0 (exits) until a save lands. Counts only ever go up.
  * RC-FIXES: other months' counts are kept too (`CREDIT_MONTHS_KEPT`), so a boot whose clock reads another month never
  * wipes one. A clock behind the latest saved month fails closed: the book keeps counting under that later month, from
- * the larger of its count and the clock month's, until the clock catches up.
+ * the sum of its count and the clock month's (folded in once), until the clock catches up. An unreadable file never
+ * throws: the month counts as spent for every budgeted provider (halted to P0).
  */
 export class CreditBook {
   readonly #file: ReturnType<typeof creditsFile>;
@@ -65,6 +66,8 @@ export class CreditBook {
   #fault: string | null = null;
   /** The error kind of the last save while it failed; null once a save lands. */
   #failing: string | null = null;
+  /** credits.json could not be read at start (why): the month counts as spent for every budgeted provider. */
+  #unreadable: string | null = null;
   #timer: ReturnType<Timers['setTimeout']> | null = null;
 
   constructor(stateDir: string, timers: Timers, log: (line: string) => void = (line) => console.error(line)) {
@@ -72,15 +75,25 @@ export class CreditBook {
     this.#timers = timers;
     this.#log = log;
     const clock = creditMonth(timers.now());
-    const saved = this.#file.read({ month: clock, used: {} });
+    let saved: Credits = { month: clock, used: {} };
+    try {
+      saved = this.#file.read(saved);
+    } catch (e) {
+      // RC-FIXES review: no throw (a boot that throws here crash-loops). The month counts as spent: every budgeted
+      // provider starts at its whole monthly budget, so it is halted to P0. A save that lands writes a good file.
+      this.#unreadable = e instanceof Error ? ((e as NodeJS.ErrnoException).code ?? 'not a valid state file') : 'error';
+      this.#log(`credits.json cannot be read (${this.#unreadable}): this month counts as spent, budgeted providers halted to exits`);
+    }
     const all: Record<string, Record<string, number>> = { ...(saved.months ?? {}) };
     all[saved.month] = { ...saved.used };
     const latest = Object.keys(all).sort().at(-1)!;
     if (latest > clock) {
-      // The clock is behind a month already counted: never start that month again, never count less.
+      // The clock is behind a month already counted: always a clock error. Never start that month again, never count
+      // less: the clock month's count is added to it (fail closed) and folded in, so a later boot never adds it twice.
       this.#month = latest;
       const used: Record<string, number> = { ...all[latest] };
-      for (const [k, v] of Object.entries(all[clock] ?? {})) used[k] = Math.max(v, used[k] ?? 0);
+      for (const [k, v] of Object.entries(all[clock] ?? {})) used[k] = v + (used[k] ?? 0);
+      delete all[clock];
       this.#used = used;
       this.#log(`credits.json: the clock reads ${clock}, behind the saved ${latest}; counting under ${latest} until the clock catches up`);
     } else {
@@ -90,7 +103,12 @@ export class CreditBook {
     this.#saved = { ...(all[this.#month] ?? {}) };
     delete all[this.#month];
     this.#months = Object.fromEntries(Object.entries(all).sort(([a], [b]) => (a < b ? -1 : 1)).slice(-CREDIT_MONTHS_KEPT));
-    this.#save(false);
+    if (this.#unreadable === null) this.#save(false);
+    else {
+      // Not over the bad file with nothing in it: the first save carries the spent counts the schedulers start from.
+      this.#dirty = true;
+      this.#arm();
+    }
   }
 
   get used(): Readonly<Record<string, number>> {
@@ -103,6 +121,7 @@ export class CreditBook {
   }
 
   scheduler(spec: SchedulerSpec): Scheduler {
+    if (this.#unreadable !== null && spec.budget !== undefined) this.#used[spec.provider] = Math.max(this.#used[spec.provider] ?? 0, spec.budget.monthlyCredits);
     const s = new Scheduler(spec, {
       timers: this.#timers,
       creditsUsed: this.#used[spec.provider] ?? 0,

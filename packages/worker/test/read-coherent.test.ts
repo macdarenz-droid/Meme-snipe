@@ -482,25 +482,29 @@ describe('FactReaders.readBatch', () => {
     expect(keysOf(r.frames)).toContain(RAW.holdersAll(MINT));
   });
 
-  it.each([90, 120])('RC-FIXES: %i off-curve holders never stop the coin\'s bank, and its scan fails closed without spending the cap twice in a row', async (n) => {
-    const r = batchRig({ manyPda: n });
+  it.each([90, 120])('RC-FIXES: %i off-curve holders never stop the coin\'s bank; its scan fails closed and takes at most one of the day\'s scans', async (n) => {
+    const r = batchRig({ manyPda: n, scansPerDay: 3 });
     const scans = () => r.seen.filter((c) => c.method === 'getProgramAccounts').length;
     const scanDetail = () => r.readers.outcomes.filter((x) => x.read === `holders-all:${MINT}`).at(-1)!.detail;
+    const all = () => r.run({ holders: 'all', spend: null, xcheck: false });
     // 1: the scan finds owners the bank did not classify: refused, remembered.
-    expect(await r.run({ holders: 'all', spend: null, xcheck: false })).toEqual({ accounts: true, 'holders-all': false });
+    expect(await all()).toEqual({ accounts: true, 'holders-all': false });
     expect(scans()).toBe(1);
     expect(scanDetail()).toContain('were not in the bank');
-    // 2: they do not fit one bank with the rest: no scan is taken (no cap spent) and the bank still lands.
-    expect(await r.run({ holders: 'all', spend: null, xcheck: false })).toEqual({ accounts: true, 'holders-all': false });
+    // 2 to 5: they do not fit one bank with the rest: refused for the rest of the UTC day, no scan taken, the bank lands.
+    for (let k = 0; k < 4; k++) {
+      expect(await all()).toEqual({ accounts: true, 'holders-all': false });
+      expect(scanDetail()).toBe('off-curve owners do not fit one bank: refused for the rest of the UTC day');
+    }
     expect(scans()).toBe(1);
-    expect(scanDetail()).toBe('off-curve owners do not fit one bank');
-    // 3: forgotten, so the coin is scanned afresh (never stuck); still refused: no holder set judged without its owners.
-    expect(await r.run({ holders: 'all', spend: null, xcheck: false })).toEqual({ accounts: true, 'holders-all': false });
-    expect(scans()).toBe(2);
     expect(keysOf(r.frames)).not.toContain(RAW.holdersAll(MINT));
-    // The bounded view is unaffected: it banks and lands every time.
+    // The day's other scans are left for other coins (2 of 3 here), and the bounded view banks and lands every time.
     for (let k = 0; k < 3; k++) expect(allOk(await r.run({ holders: 'largest', spend: null, xcheck: false }))).toBe(true);
     expect(r.readers.outcomes.some((x) => x.detail.includes('do not fit one bank') && x.read.startsWith('accounts'))).toBe(false);
+    // The next UTC day: memory starts again, so the coin gets one scan again, and is refused again.
+    r.timers.advance(86_400_000);
+    for (let k = 0; k < 3; k++) expect(await all()).toEqual({ accounts: true, 'holders-all': false });
+    expect(scans()).toBe(2);
   });
 
   it('RC-FIXES: only the last scan\'s off-curve owners ride in the bank: holders that changed do not pile up', async () => {

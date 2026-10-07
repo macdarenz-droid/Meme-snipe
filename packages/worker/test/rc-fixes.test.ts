@@ -1,5 +1,5 @@
 // RC-FIXES: the socket's backoff and hourly ceiling, and the credit book's fail-closed saves (red team C, 959d8017).
-import { mkdirSync, mkdtempSync, rmdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -85,8 +85,30 @@ describe('RC-FIXES: the socket backs off until a connection proves healthy, and 
     for (const at of opensAt) expect(opensAt.filter((x) => x > at - 3_600_000 && x <= at).length).toBeLessThanOrEqual(10);
     expect(opensAt.length).toBeGreaterThanOrEqual(20);
     expect(sock.ceilingHits).toBeGreaterThan(0);
-    expect(downs.some((d) => d.includes('reconnect ceiling 10/h reached'))).toBe(true);
+    expect(downs.some((d) => d.includes('under the 10/h ceiling'))).toBe(true);
     expect(DEFAULT_CONNECTS_PER_HOUR).toBe(60);
+  });
+
+  it.each(['refused before open', 'accepted then closed'] as const)('a 6 h outage (%s): at most 60 tries in any hour, and never more than 90 s between tries', (mode) => {
+    const { timers, hub, sock } = rig();
+    sock.start();
+    let handled = 0;
+    const at: number[] = [];
+    for (let t = 0; t < 6 * 3_600_000; t += 500) {
+      while (handled < hub.sockets.length) {
+        const s = hub.sockets[handled++]!;
+        at.push(timers.now());
+        if (mode === 'accepted then closed') s.open();
+        s.drop(1008, 'policy');
+      }
+      timers.advance(500);
+    }
+    sock.stop();
+    for (const a of at) expect(at.filter((x) => x > a - 3_600_000 && x <= a).length).toBeLessThanOrEqual(60);
+    const gaps = at.slice(1).map((x, i) => x - at[i]!);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(90_000);
+    // The feed comes back: the next try is never more than one pace away, and it stays up.
+    expect(at.length).toBeGreaterThan(6 * 40);
   });
 });
 
@@ -192,7 +214,7 @@ describe('RC-FIXES: credits.json across clock steps between months', () => {
     expect(creditsFile(dir).read({ month: '', used: {} })).toEqual({ month: '2026-11', used: { alchemy: 7 }, months: { '2026-10': { alchemy: 5_000 } } });
   });
 
-  it('a clock behind the saved month counts under the saved month from the larger count, and logs it', () => {
+  it('a clock behind the saved month counts under the saved month from the sum of both counts (folded in once), and logs it', () => {
     const dir = tempDir();
     const logs: string[] = [];
     const nov = new CreditBook(dir, at(Date.UTC(2026, 10, 2)), () => {});
@@ -201,13 +223,13 @@ describe('RC-FIXES: credits.json across clock steps between months', () => {
     // October's count was larger (kept from before the step), and the clock now reads October.
     creditsFile(dir).write({ month: '2026-11', used: { alchemy: 9 }, months: { '2026-10': { alchemy: 5_000 } } });
     const back = new CreditBook(dir, at(OCT), (l) => void logs.push(l));
-    expect(back.used['alchemy']).toBe(5_000);
+    expect(back.used['alchemy']).toBe(5_009);
     expect(logs.some((l) => l.includes('behind the saved 2026-11'))).toBe(true);
     back.flush();
     const f = creditsFile(dir).read({ month: '', used: {} });
     expect(f.month).toBe('2026-11');
-    expect(f.used['alchemy']).toBe(5_000);
-    expect(f.months?.['2026-10']?.['alchemy']).toBe(5_000);
+    expect(f.used['alchemy']).toBe(5_009);
+    expect(f.months?.['2026-10']).toBeUndefined();
   });
 
   it('only the last CREDIT_MONTHS_KEPT other months are kept', () => {
@@ -219,5 +241,53 @@ describe('RC-FIXES: credits.json across clock steps between months', () => {
     }
     expect(Object.keys(creditsFile(dir).read({ month: '', used: {} }).months ?? {})).toEqual(['2026-03', '2026-04', '2026-05']);
     expect(CREDIT_MONTHS_KEPT).toBe(3);
+  });
+});
+
+describe('RC-FIXES review: clock steps add up, and an unreadable credits.json never throws', () => {
+  const OCT = Date.UTC(2026, 9, 7, 3);
+  const NOV = Date.UTC(2026, 10, 2);
+  it('Oct 15M, a Nov boot spends 10M, back on Oct: at least 25M, and a second Oct boot does not add Oct again', () => {
+    const dir = tempDir();
+    creditsFile(dir).write({ month: '2026-10', used: { alchemy: 15_000_000 } });
+    const nov = new CreditBook(dir, new ManualTimers(NOV), () => {});
+    nov.scheduler(ALCHEMY_FREE).meter(10_000_000);
+    nov.flush();
+    const back = new CreditBook(dir, new ManualTimers(OCT), () => {});
+    expect(back.used['alchemy']).toBeGreaterThanOrEqual(25_000_000);
+    back.flush();
+    expect(new CreditBook(dir, new ManualTimers(OCT), () => {}).used['alchemy']).toBe(25_000_000);
+  });
+
+  it.each([
+    ['a directory (EISDIR)', (dir: string) => mkdirSync(join(dir, 'credits.json'))],
+    ['garbage', (dir: string) => writeFileSync(join(dir, 'credits.json'), 'not json\n')],
+  ])('credits.json is %s: the boot does not throw, budgeted providers are halted to P0, Helius is not, logged once', (_, damage) => {
+    const dir = tempDir();
+    damage(dir);
+    const logs: string[] = [];
+    const timers = new ManualTimers(OCT);
+    let book: CreditBook | null = null;
+    expect(() => (book = new CreditBook(dir, timers, (l) => void logs.push(l)))).not.toThrow();
+    const alchemy = book!.scheduler(ALCHEMY_FREE);
+    const helius = book!.scheduler(HELIUS_WORKER);
+    expect(alchemy.halted).toBe(true);
+    expect(alchemy.check(P0).ok).toBe(true);
+    expect(alchemy.check(P2).ok).toBe(false);
+    expect(helius.halted).toBe(false);
+    expect(logs.filter((l) => l.includes('cannot be read'))).toHaveLength(1);
+    expect(() => timers.advance(2_000)).not.toThrow();
+    expect(() => book!.flush()).not.toThrow();
+  });
+
+  it('a garbage credits.json is replaced by one holding the spent month, never by an empty one', () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'credits.json'), 'not json\n');
+    const timers = new ManualTimers(OCT);
+    const book = new CreditBook(dir, timers, () => {});
+    book.scheduler(ALCHEMY_FREE);
+    timers.advance(1_000);
+    expect(creditsFile(dir).read({ month: '', used: {} }).used['alchemy']).toBeGreaterThanOrEqual(ALCHEMY_FREE.budget!.monthlyCredits);
+    expect(new CreditBook(dir, timers, () => {}).scheduler(ALCHEMY_FREE).halted).toBe(true);
   });
 });
