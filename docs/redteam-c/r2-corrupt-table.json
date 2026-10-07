@@ -1,0 +1,427 @@
+[
+ {
+  "damage": "baseline (no damage)",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "control.json truncated",
+  "outcome": "refused (throws): Unterminated string in JSON at position 102 (line 1 column 103)",
+  "ok": true
+ },
+ {
+  "damage": "control.json zero length",
+  "outcome": "refused (throws): Unexpected end of JSON input",
+  "ok": true
+ },
+ {
+  "damage": "control.json wrong shape (array)",
+  "outcome": "refused (throws): <dir>/control.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "control.json wrong shape (object)",
+  "outcome": "refused (throws): <dir>/control.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "control.json missing",
+  "outcome": "STARTED: kill latch lost (risk stops: daily_loss,mark_unknown,max_open_positions,sol_price_stale)",
+  "ok": false
+ },
+ {
+  "damage": "account.json truncated",
+  "outcome": "refused (throws): Expected double-quoted property name in JSON at position 416 (line 1 column 417)",
+  "ok": true
+ },
+ {
+  "damage": "account.json zero length",
+  "outcome": "refused (throws): Unexpected end of JSON input",
+  "ok": true
+ },
+ {
+  "damage": "account.json wrong shape (array)",
+  "outcome": "refused (throws): <dir>/account.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "account.json wrong shape (object)",
+  "outcome": "refused (throws): <dir>/account.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "account.json missing",
+  "outcome": "STARTED: account navPeak {\"atMs\":1791039600600,\"nav\":{\"$n\":\"17548069\"}} -> absent; account dayMark {\"startMs\":1791036000000,\"atMs\":1791038400000,\"equity\":{\"$n\" -> absent; account weekMark {\"startMs\":1790517600000,\"atMs\":1791038400000,\"equity\":{\"$n\" -> absent; account setup {\"atMs\":1791038400000,\"lamports\":{\"$n\":\"1346200\"},\"cost\":{\"$ -> {\"atMs\":1791039718400,\"lamports\":{\"$n\":\"1346200\"},\"cost\":{\"$; account entries today 1 -> 0",
+  "ok": false
+ },
+ {
+  "damage": "exits.json truncated",
+  "outcome": "refused (throws): Unterminated string in JSON at position 1397 (line 1 column 1398)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json zero length",
+  "outcome": "refused (throws): Unexpected end of JSON input",
+  "ok": true
+ },
+ {
+  "damage": "exits.json wrong shape (array)",
+  "outcome": "refused (throws): <dir>/exits.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "exits.json wrong shape (object)",
+  "outcome": "refused (throws): <dir>/exits.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "exits.json missing",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "paper.json truncated",
+  "outcome": "refused (throws): Expected ':' after property name in JSON at position 588 (line 1 column 589)",
+  "ok": true
+ },
+ {
+  "damage": "paper.json zero length",
+  "outcome": "refused (throws): Unexpected end of JSON input",
+  "ok": true
+ },
+ {
+  "damage": "paper.json wrong shape (array)",
+  "outcome": "refused (throws): <dir>/paper.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "paper.json wrong shape (object)",
+  "outcome": "refused (throws): <dir>/paper.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "paper.json missing",
+  "outcome": "STARTED: account walletLamports {\"$n\":\"117109959\"} -> {\"$n\":\"117139959\"}",
+  "ok": false
+ },
+ {
+  "damage": "entry-seeds.json truncated",
+  "outcome": "refused (throws): Expected property name or '}' in JSON at position 1 (line 1 column 2)",
+  "ok": true
+ },
+ {
+  "damage": "entry-seeds.json zero length",
+  "outcome": "refused (throws): Unexpected end of JSON input",
+  "ok": true
+ },
+ {
+  "damage": "entry-seeds.json wrong shape (array)",
+  "outcome": "refused (throws): <dir>/entry-seeds.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "entry-seeds.json wrong shape (object)",
+  "outcome": "refused (throws): <dir>/entry-seeds.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "entry-seeds.json missing",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "restarts.json truncated",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "restarts.json zero length",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "restarts.json wrong shape (array)",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "restarts.json wrong shape (object)",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "restarts.json missing",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "mem-recent.json truncated",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "mem-recent.json zero length",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "mem-recent.json wrong shape (array)",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "mem-recent.json wrong shape (object)",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "mem-recent.json missing",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "control.json killTrippedAtMs negative",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "control.json killTrippedAtMs huge",
+  "outcome": "started fail-closed (risk bankroll_invalid,daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "control.json killTrippedAtMs NaN (as string)",
+  "outcome": "started fail-closed (risk bankroll_invalid,daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "control.json killTrippedAtMs field missing",
+  "outcome": "started fail-closed (risk bankroll_invalid,daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "control.json latches empty object",
+  "outcome": "started fail-closed (risk unknown; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "control.json paused missing",
+  "outcome": "refused (throws): <dir>/control.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "account.json walletLamports negative",
+  "outcome": "STARTED: account walletLamports {\"$n\":\"117109959\"} -> {\"$n\":\"-1\"}",
+  "ok": false
+ },
+ {
+  "damage": "account.json walletLamports huge",
+  "outcome": "STARTED: account walletLamports {\"$n\":\"117109959\"} -> {\"$n\":\"1000000000000000000000000000000\"}",
+  "ok": false
+ },
+ {
+  "damage": "account.json walletLamports as number NaN-like",
+  "outcome": "STARTED: account walletLamports {\"$n\":\"117109959\"} -> \"NaN\"",
+  "ok": false
+ },
+ {
+  "damage": "account.json navPeak missing",
+  "outcome": "STARTED: account navPeak {\"atMs\":1791039600600,\"nav\":{\"$n\":\"17548069\"}} -> absent",
+  "ok": false
+ },
+ {
+  "damage": "account.json navPeak.nav negative",
+  "outcome": "STARTED: account navPeak {\"atMs\":1791039600600,\"nav\":{\"$n\":\"17548069\"}} -> {\"atMs\":1791039600600,\"nav\":{\"$n\":\"-5\"}}",
+  "ok": false
+ },
+ {
+  "damage": "account.json navPeak.nav as string",
+  "outcome": "STARTED: account navPeak {\"atMs\":1791039600600,\"nav\":{\"$n\":\"17548069\"}} -> {\"atMs\":1791039600600,\"nav\":\"x\"}",
+  "ok": false
+ },
+ {
+  "damage": "account.json dayMark missing",
+  "outcome": "STARTED: account dayMark {\"startMs\":1791036000000,\"atMs\":1791038400000,\"equity\":{\"$n\" -> absent",
+  "ok": false
+ },
+ {
+  "damage": "account.json weekMark missing",
+  "outcome": "STARTED: account weekMark {\"startMs\":1790517600000,\"atMs\":1791038400000,\"equity\":{\"$n\" -> absent",
+  "ok": false
+ },
+ {
+  "damage": "account.json entries emptied",
+  "outcome": "STARTED: account entries today 1 -> 0",
+  "ok": false
+ },
+ {
+  "damage": "account.json entries missing",
+  "outcome": "refused (throws): <dir>/account.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "account.json openedAtMs negative",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "account.json openingEquity negative",
+  "outcome": "STARTED: account openingEquity {\"$n\":\"20000000\"} -> {\"$n\":\"-20000000\"}",
+  "ok": false
+ },
+ {
+  "damage": "account.json setup missing (one-time rent re-paid?)",
+  "outcome": "STARTED: account walletLamports {\"$n\":\"117109959\"} -> {\"$n\":\"115763759\"}; account setup {\"atMs\":1791038400000,\"lamports\":{\"$n\":\"1346200\"},\"cost\":{\"$ -> {\"atMs\":1791041244800,\"lamports\":{\"$n\":\"1346200\"},\"cost\":{\"$",
+  "ok": false
+ },
+ {
+  "damage": "account.json trade booked as string",
+  "outcome": "refused (throws): Cannot mix BigInt and other types, use explicit conversions",
+  "ok": true
+ },
+ {
+  "damage": "account.json trades emptied",
+  "outcome": "STARTED: account walletLamports {\"$n\":\"117109959\"} -> {\"$n\":\"102232785\"}",
+  "ok": false
+ },
+ {
+  "damage": "exits.json stopPrice negative",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json stopPrice zero",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json stopPrice huge",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json stopPrice as number",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json stopPrice missing",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json tracker.peak huge",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json tracker.blockedRetries negative",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json plan.openedAtMs huge (future)",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position open)",
+  "ok": true
+ },
+ {
+  "damage": "exits.json entry removed",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "paper.json attempts emptied",
+  "outcome": "STARTED: account walletLamports {\"$n\":\"117109959\"} -> {\"$n\":\"117139959\"}",
+  "ok": false
+ },
+ {
+  "damage": "paper.json attempt inAmount negative",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "paper.json attempt fate missing",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "restarts.json at huge",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "exposure.json wrong shape",
+  "outcome": "refused (throws): <dir>/exposure.json is not a valid state file",
+  "ok": true
+ },
+ {
+  "damage": "exposure.json fromMs negative",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "fetch-caps.json counts negative",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "credits.json used negative",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "journal.jsonl truncated mid-line",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "journal.jsonl zero length",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "journal.jsonl garbage",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "journal.jsonl missing",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "ledger.sqlite truncated",
+  "outcome": "refused (throws): database disk image is malformed",
+  "ok": true
+ },
+ {
+  "damage": "ledger.sqlite zero length",
+  "outcome": "STARTED: position lost",
+  "ok": false
+ },
+ {
+  "damage": "ledger.sqlite garbage",
+  "outcome": "refused (throws): file is not a database",
+  "ok": true
+ },
+ {
+  "damage": "ledger.sqlite missing",
+  "outcome": "STARTED: position lost",
+  "ok": false
+ },
+ {
+  "damage": "deployers.jsonl truncated",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "deployers.jsonl garbage",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ },
+ {
+  "damage": "open_intents garbage",
+  "outcome": "started fail-closed (risk daily_loss,kill_switch,mark_unknown,max_open_positions,sol_price_stale; position exit_pending)",
+  "ok": true
+ }
+]
