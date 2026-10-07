@@ -6,11 +6,13 @@ Line numbers below ("L") are lines of `docs/MIGRATION.md` at `72c1bc17`.
 
 ## Summary
 
-| Severity | Count |
-|---|---|
-| BLOCKER | 2 |
-| MAJOR | 13 |
-| MINOR | 16 |
+| Severity | Round 1 (`72c1bc17`) | Round 2 (`cb2a1458`) | Open now |
+|---|---|---|---|
+| BLOCKER | 2 | 0 | 2 |
+| MAJOR | 13 | 5 | 17 (M02 closed at `cb2a1458`) |
+| MINOR | 16 | 8 | 24 |
+
+Round 2 is at the end of this file. It covers the "Research addendum" section, the ticket-order changes and the new DECISIONS rows, all at `cb2a1458`. `cb2a1458` changes only the addendum line, the new section, the M0 and M1 cards, DECISIONS and HANDOVER, so every round 1 finding except M02 still stands.
 
 The two blockers:
 - the bug table leaves out open red team A and B bugs, including fail-open bugs in modules the map marks **adapt**;
@@ -169,3 +171,76 @@ Detail for M08:
   - the "about 45 creates a minute" estimate.
 - **pump.fun.** Whether pump.fun Terms §21(h) reaches PumpPortal or on-chain trading. The Terms are not in the repo.
 - **The 521-test and 82-test runs.** These group B runs were not re-run.
+
+# Round 2: research addendum, ticket order, DECISIONS (`cb2a1458`)
+
+Asked by the supervisor on 2026-10-07.
+
+What was read:
+- `docs/MIGRATION.md` and `docs/DECISIONS.md` at `cb2a1458`;
+- `research/BLUEPRINT_ADDENDUM.md` at `72f1793f`. It is unchanged at the branch tip `84f572ad`: `git diff 72f1793f 84f572ad` on the file is empty.
+
+Line numbers ("L") in this round are lines of `docs/MIGRATION.md` at `cb2a1458`.
+
+## Rulings checked against the addendum
+
+Each of the 24 rulings was compared with its addendum item.
+
+Faithful, with nothing found:
+- A04, A07, A08 (text), A11, A12, A13, A14, A16, A19, A20, A22, A23, A24;
+- A05 and A18 (both sent to the owner, with recommendations);
+- A09 (H8 marked replace);
+- A21 (MR keeps the 2,000 bps prior).
+
+Changed, correctly:
+- **A17.** Dropping "paper-trades" after both strategies fail only tightens. It follows "No knowingly losing trades … not even as practice", and it is recorded in `docs/DECISIONS.md` and in HANDOVER.
+
+Resolved, correctly:
+- **A01.** The owner chose the 2 GB host.
+
+Findings:
+- A03 settles an owner question (R2-01).
+- A06 is called adopted but is not carried into any card or gate (R2-02).
+- A02 and the terms register narrow the pump.fun rule and settle the PumpPortal question (R2-04, R2-05).
+- Smaller points are in the MINOR table.
+
+## Findings (round 2)
+
+### MAJOR
+
+| ID | Section, line | What is wrong | Evidence | Fix |
+|---|---|---|---|---|
+| R2-01 | Research addendum A03 (L410) | The ruling calls Helius Developer a D29 research cost "while the bot stays on D04's free tiers", and says this "settles O7's Helius point". The two problems are in the bullets after this table. | `HANDOVER.md:166-168` ("Same key as before"; the code still budgets the free plan); MIGRATION O7 (L655 "Owner decides …"); ARCH 1.4; `CLAUDE.md` "Blueprint" (owner rule stands until the owner decides); `AGENTS.md` "Never … loosen a … guard" | Put A03's last sentence to the owner as part of O7. Until the owner rules, count the $49 in the bot's fixed cost for P-9, which is the stricter reading. Record the open question in DECISIONS. |
+| R2-02 | A06 (L413); clash table "Pre-funding gate" (unchanged at `cb2a1458`) | A06 says items 1, 4 and 6 and blindness "All tighten, so they are adopted", but no card or gate carries them. The gaps are in the bullets after this table. | Addendum A06; `CLAUDE.md` "No deposit before proof"; `git diff 72c1bc17 cb2a1458` (clash table untouched) | Write the adopted items into the clash table as decisions, and into the M2, M3 and M4 exits and the tickets (A-M11, A-M12-02, A-M13-06). Add items 3 and 5. Keep item 6 whole. This closes round 1 M09 at the same time. |
+| R2-03 | Ticket order: Z04 now "Needs Z01, Z06"; batches "then Z06, then Z04" | Z06 needs Z02, Z03 and **Z05**, the UI system port, because Z06 bundles UI-T07 with B-M15-01. The recorder queue (A-M07-01) and the statistics (A-M13-03) in Z04 now wait for the UI port. So does all of M1 capture, since Z08 needs Z04. This contradicts A01's own ruling: "Gate windows count from the first recorded day, so the recorder path … goes first". Only A-M10-01 needs A10's slot-to-time function. A-M07-01 and A-M13-03 have no dependencies beyond B-M19-01 and B-M30-01. | `SPEC-A.md:83,92,106` (A-M07-01, A-M10-01, A-M13-03: no A dependencies); `UI.md:1939` (UI-T07 needs UI-T04 and UI-T05 only); MIGRATION A01 (L408) | Split Z06 into B-M15-01 plus the A10 function (needs Z02, Z03), and UI-T07, which joins Z05. Gate only A-M10-01 on the slot-to-time function. Leave A-M07-01 and A-M13-03 needing only Z01. |
+| R2-04 | A02 (L409); terms register row "pump.fun Terms §21(h)"; Z01 CI check | The owner's rule is "no **new pump.fun requests**". The register narrows it to "no pump.fun **frontend** request", and the CI check bans only "pump.fun frontend hosts". Read literally, that lets the bot or research call any other pump.fun-run host, such as an API or data host. The rule the owner set is broader. | `HANDOVER.md` §6 ("no new pump.fun requests"); `research/SUPERVISOR_MESSAGES.md:82` (`72f1793f`); `research/hype/RESEARCH.md:143` (`72f1793f`) | Word the rule and the CI check as "no request to any pump.fun-operated host". Keep the exceptions as they are: pinned IDLs on GitHub and SDK test oracles from npm are not pump.fun hosts. |
+| R2-05 | Terms register row "PumpPortal": status "Used with the chain backfill on (D12)" | The round 1 map sent "PumpPortal and on-chain trading under §21(h)" to the owner (L640 at `cb2a1458`: "Put PumpPortal … to the owner"). The research branch records one pending owner decision that covers pump.fun §21(h) (`research/hype/RESEARCH.md:147`). The register now marks PumpPortal "Used", which settles that question without the owner. | MIGRATION L640; `research/hype/RESEARCH.md:145-147` (`72f1793f`) | Status: "Open with the owner (§21(h) reach); A-M03-01 is built but not run against PumpPortal until the owner rules", or cite the owner's ruling if one exists. |
+
+Detail for R2-01:
+- **The bot is not on a free tier.** It has no separate free Helius account. The only Helius key is the owner's Developer-plan key, so a bot that uses Helius at all (D04 uses Helius for `getPriorityFeeEstimate` and Sender, and D30 uses it for `getProgramAccounts`) runs on the paid plan.
+- **It settles an owner question.** O7 left "whether Helius Developer counts as the bot's fixed cost" to the owner. Calling it research cost lowers the P-9 minimum live bankroll from about $1,967 to about $334. That loosens a gate on a point the owner has not decided, and DECISIONS does not record it as a decision.
+
+Detail for R2-02:
+- **No carrier.** The carrier named is the clash table, which `cb2a1458` did not change. It still says "Recommendation", and its item 6 text differs from A06: "≥ 300 holdout trades with CI lower bound > 0 … on top of B-1..B-8", against A06's "raise R-1 and P-1 to 300". No card or gate (A-M11, A-M12-02, A-M13-06) carries any of it, and the acceptance check is only "the clash table lists them".
+- **Owner items left out.** Items 3 (48 h, ≥ 99% uptime, drills) and 5 (fault injection as a gate) are not in A06 at all.
+- **Item 6 cut down.** A06 keeps only "300 trades at 80% power". The owner's item 6 also asks for rules fixed in advance, walk-forward testing, an untouched holdout and a 95% CI above zero.
+
+### MINOR
+
+| ID | Section, line | What is wrong | Evidence | Fix |
+|---|---|---|---|---|
+| R2-06 | A02; terms register "pump.fun" row, "Rule in force (owner)" | The limit "data collected before 2026-10-07 serves research only, never a Blueprint universe or gate" is credited to the owner. The owner said "Yes keep what we collected as is … stays in use as it is". The limit is the addendum's tightening. It also differs from the older clash row, "Use no hype Test 1 result in a gate **until the owner rules**". | `research/hype/RESEARCH.md:145` (`72f1793f`); MIGRATION L640 | Label it a supervisor tightening, and make the two rows say the same. |
+| R2-07 | Terms register "DexScreener" row | The HTTP 403 is cited to `research/hype/RESEARCH.md:45`. That line says "Commercial use allowed … 2026-10-07". The 403 is at `docs/research/historical-data.md:36`. | Both files at `72f1793f` | Cite both lines. |
+| R2-08 | A15 acceptance | "A golden replay reproduces `audit_results.json`". That file comes from an unfinished run (305ae388, "run in progress"), and the section's own rule says unfinished results enter only after their RESULTS.md and a fresh review. | Addendum "Provisional" and "Still running"; MIGRATION "Unfinished runs" bullet | Pin the golden to a reviewed RESULTS.md commit. |
+| R2-09 | A10 acceptance | "No other slot constant exists" would also remove the deliberate upper bound in the watch-timing guard (`worker/src/run/config.ts:81-84`; round 1 m06). | `packages/worker/src/run/config.ts:81-84` | Allow a named upper-bound constant for guards, used only where a larger slot time is the stricter choice. |
+| R2-10 | Z07 card; Z09 card | The A08 ruling names Z07 (creator fee per pool, CORE-2 goldens, reserve timing), but Z07's row was not changed to carry it. The Z09 row still has no size sweep (round 1 M10). | MIGRATION Z07 and Z09 rows at `cb2a1458` | Add A08 to Z07, and the size sweep to Z09's A-M10-03 and A-M13-01. |
+| R2-11 | A01 acceptance; Z08 "A01 disk test on 55 GB" | A unit test cannot use "the real disk of the 2 GB host". | MIGRATION A01, Z08 | Say "the budget is sized for a 55 GB disk; the installer checks the real disk at install (D07 preflight)". |
+| R2-12 | Z0D | Z0D edits `docs/blueprint/` (ARCH, FACTS, C-xx), which was copied from Snipe-solana `74e7258` (L6). No line records that the local Blueprint now differs from its source, and no fresh review is named for design-authority edits. | MIGRATION L6, Z0D | Record in L6 that the Blueprint is now edited here. Give Z0D a fresh reviewer like any other card. |
+| R2-13 | DECISIONS "Blueprint addendum", A17 | The text says research goes on "within the owner's stop date and spend cap", but no values exist yet, because A17's values are still with the owner. Until then, no cap binds. | `docs/DECISIONS.md` (`cb2a1458`) "Blueprint addendum" | Add "until the owner sets them, no new research spend (owner rule 'No extra data spend')". |
+
+## Ticket order and DECISIONS: other checks (round 2)
+
+- **Z0D:** docs only. Its items match A02, A04, A06 (doc), A07 (q) and A20.
+- **Z08 and Z09 additions:** these match A01, A03, A02, A07 and A05.
+- **New DECISIONS table rows:** the Blueprint authority, the host move, "no bugs migrate" with the recorder and paper-engine exception, and the addendum row. All four match `CLAUDE.md` "Blueprint" and "Host".
+- **HANDOVER:** the A17 change and the owner decisions sent (A05, A06 item 2, A17 values, A18) match the addendum's note to the supervisor. That note listed A01 too, which is resolved.
