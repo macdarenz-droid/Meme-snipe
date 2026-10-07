@@ -48,7 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
-- 8:58 PM **S1 miss found and fixed: 4 builders idle since about 6–7 PM.** MEM-FIXES 01EtGSEd, A-FACTS 011dr7vM, LATE-LOG 01Gv9TEz and SOL-BOOKS 016adoqh did not act on S1's RESUME. They read S1's 5:36 PM interrupt_session as a person's stop, and a cross-session message does not override that for them. S1 sent each the fact (the stop was S1's interrupt + PAUSE; no person typed; the owner asked at 5:38 PM for at least 3 builders) plus its round, with a "NEED OWNER" reply option if a person must confirm. Rulings sent:
+- 8:48 PM **S1 miss found and fixed: 4 builders idle since about 6–7 PM.** MEM-FIXES 01EtGSEd, A-FACTS 011dr7vM, LATE-LOG 01Gv9TEz and SOL-BOOKS 016adoqh did not act on S1's RESUME. They read S1's 5:36 PM interrupt_session as a person's stop, and a cross-session message does not override that for them. S1 sent each the fact (the stop was S1's interrupt + PAUSE; no person typed; the owner asked at 5:38 PM for at least 3 builders) plus its round, with a "NEED OWNER" reply option if a person must confirm. Rulings sent:
   - MEM-FIXES: no global creates coverage gap (the deployer index keeps every create, so a gap would be false and block all coins up to 16 days). Per-coin create-expired stays. A test pins that the index still counts a let-go create.
   - LATE-LOG: 1(b) measured 0 reversed in 1,116,314 same-slot pairs, so 1(c) is dropped. The 273 unexplained non-chaining pairs are listed in the report and stay partial (fail closed per coin).
   - SOL-BOOKS: option 1 (test, then push) + RB-10.
