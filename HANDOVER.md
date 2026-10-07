@@ -111,6 +111,9 @@
   - Owner asked (7:40 AM): Triton's reply to the 4 Oct email; OK for 0.2–0.5 TB in zeroed-data.
   - Z01 round 6 (`b42c08f4`): red team round 5 found 1 MAJOR (RT5-01: a binary extension skips any content). Reviewer report pending. Round 7 to rule. RT5-04 (Android release wait vs check queue) becomes moot with APK-REMOVE.
 - **8 Oct about 7:42 AM, owner:** Triton "No reply"; storage "Store them". The archive-derived day files go in the private zeroed-data repo only, and publishing stays off until Triton answers (CLAUDE.md, under "History for the past-data test"). Sent to the Z-H-OF builder for #292.
+- **8 Oct about 7:50 AM:** #292 head `60612d8b`, which adds the C-76 commit. The reviewer and red team were told to review that head.
+  - Rulings on the builder's open points are in `docs/reviews/ZHOF.md` (`35880d11`): C-56 with MR-01 parked; retention K3; D30 parked, so the owner's D30 question is withdrawn; A-24b parked.
+  - Owner waits now: none open on strategy or data. The host move is the owner's to do.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
