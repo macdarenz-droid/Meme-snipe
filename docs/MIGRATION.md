@@ -26,7 +26,7 @@ Owner, 2026-10-07: "no bugs migrate". These bind every migration ticket.
 3. **Clean server state.**
    - The host, keys, Tailscale and the deploy gate are reused.
    - The old worker's saved state, ledgers and caches are not reused. The 2 GB host starts from a fresh install.
-   - Nothing runs on the server except the stand-in until the Blueprint's paper gates pass. The open question this raises is under Clashes, Process.
+   - Nothing runs on the server except the stand-in until the Blueprint's paper gates pass. The one exception the owner agreed (Clashes, Process): the Blueprint's keyless recorder once M1 is reviewed, and its paper engine once M3 starts, each through the deploy gate. No Zeroed worker and nothing that trades.
 4. **Research upgrades.** The verified addendum `research/BLUEPRINT_ADDENDUM.md` on `ccr-7fae2302-drz4co` is adopted item by item into this map and the tickets, each with its acceptance check. Each rejected item gets its reason in `docs/DECISIONS.md`. Until it lands, the input is `research/SUPERVISOR_MESSAGES.md` on that branch.
 
 ### Bugs left behind
@@ -135,7 +135,7 @@ _Filled by MIGRATION-B._
 | Merge approval | The owner approves each batch; this session's safety check refused approvals the supervisor recorded on its own (AGENTS.md there, 2026-10-07). | The supervisor merges after a fresh review passes and every check is green (AGENTS.md "Supervisor"). | Keep this repo's rule, with the red team added: the supervisor merges after a fresh review, a red team and green checks. If the safety check refuses a merge, the supervisor asks the owner once for that merge. |
 | Batch size | At most three cards at a time; no new card until the current ones are reviewed, red-teamed and merged (owner, 2026-10-06). | One fix task at a time, the owner picks (owner, 2026-10-06 about 8:55 PM). | Build cards for new Blueprint modules run in batches of at most three, in separate packages. Fixes to code the server runs stay one at a time. |
 | Parallel work | Helpers ran inside the supervisor's chat. | One visible session per task; no hidden agents in the supervisor's chat (owner, 2026-10-03). | This repo's rule; already followed for this map. |
-| Server before the paper gates | The Blueprint's M1 exit needs its keyless recorder to run 48 h on the server, and M3's paper gates (P-1 needs at least 21 days of paper) need the paper engine on live data (`docs/blueprint/INTEGRATION.md` milestones). | Owner, 7 Oct: nothing runs on the server except the stand-in until the Blueprint's paper gates pass. | Read as: no Zeroed worker and nothing that trades until the gates allow it. The Blueprint's keyless recorder runs on the server once M1 is reviewed, and the paper engine once M3 starts, each through the deploy gate. **Owner to confirm.** |
+| Server before the paper gates | The Blueprint's M1 exit needs its keyless recorder to run 48 h on the server, and M3's paper gates (P-1 needs at least 21 days of paper) need the paper engine on live data (`docs/blueprint/INTEGRATION.md` milestones). | Owner, 7 Oct: nothing runs on the server except the stand-in until the Blueprint's paper gates pass. | Read as: no Zeroed worker and nothing that trades until the gates allow it. The Blueprint's keyless recorder runs on the server once M1 is reviewed, and the paper engine once M3 starts, each through the deploy gate. **Owner agreed, 7 Oct ("Ok").** |
 | Models | Lighter steps on `claude-sonnet-5`. | Lighter steps on `claude-sonnet-5-5` at medium effort (owner, 2026-10-04). | This repo's rule. |
 
 ## Ticket order
