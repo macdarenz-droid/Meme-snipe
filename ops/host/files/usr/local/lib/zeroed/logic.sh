@@ -12,6 +12,7 @@ SMOKE_API_ADDR=127.0.0.1:8798
 SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
+PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
@@ -103,15 +104,57 @@ unit_sandbox() {
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
 
-# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when
-# the release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the
-# host's stand-in otherwise. Switching the host to the real worker is a decision, not a side effect of a merge.
+# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when the
+# release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the host's stand-in
+# when it says "worker": "stub", or when no release is deployed yet (RELEASE_DIR does not exist and is not a link: a
+# first install). Switching the host to the real worker is a decision, not a side effect of a merge. RC-M4: anything
+# else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
+# healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
+# "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
+# loudly.
+STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
 worker_entry() {
-  if [ "$(jq -r '.worker // "stub"' "$1/ops/host-config.json" 2>/dev/null || echo stub)" = release ] && [ -f "$1/packages/worker/src/main.ts" ]; then
-    printf '%s\n' "$1/packages/worker/src/main.ts"
-  else
-    printf '%s\n' /opt/zeroed/stub/worker.mjs
+  # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+    printf '%s\n' "$STUB_ENTRY"
+    return 0
   fi
+  local w
+  if ! w="$(jq -er 'if type == "object" then (.worker // "(missing)") | if type == "string" then . else "(not a string)" end else error("not an object") end' "$1/ops/host-config.json" 2>/dev/null)"; then
+    echo "refused: $1/ops/host-config.json is missing or cannot be read, so the worker to run is unknown" >&2
+    return 1
+  fi
+  case "$w" in
+    release)
+      if [ -f "$1/packages/worker/src/main.ts" ]; then
+        printf '%s\n' "$1/packages/worker/src/main.ts"
+      else
+        echo "refused: host-config says \"worker\": \"release\" but $1/packages/worker/src/main.ts is missing" >&2
+        return 1
+      fi
+      ;;
+    stub) printf '%s\n' "$STUB_ENTRY" ;;
+    *)
+      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
+      return 1
+      ;;
+  esac
+}
+
+# worker_refused FILE STATUS: why the worker refused to start, or nothing (RC-FIXES-2b, #280's contract). FILE is the
+# worker's <state>/refused.json ({reason, atMs, commit}); STATUS is the unit's ExecMainStatus, where 78 is a refusal.
+# One line, at most 200 characters, never the separator "|".
+worker_refused() {
+  local r
+  if [ -e "$1" ]; then
+    r="$(jq -r '"\(.reason // "no reason given") (commit \((.commit // "?") | tostring | .[0:12]))"' "$1" 2>/dev/null)" || r="refused.json cannot be read"
+    [ -n "$r" ] || r="refused.json cannot be read"
+  elif [ "$2" = 78 ]; then
+    r="exit 78 with no refused.json"
+  else
+    return 0
+  fi
+  printf '%s\n' "$r" | tr -d '\r|' | tr '\n' ' ' | cut -c1-200 | sed 's/ *$//'
 }
 
 # The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
@@ -192,11 +235,16 @@ prunable_releases() {
 # record_alerts NOW: reads the recording uploader's status.json (RECORD-UPLOAD; it runs as the worker's user, so its
 # alerts are raised here) on stdin and prints one "on|KEY|TEXT" or "off|KEY|TEXT" line per alert: 3 failed runs in a
 # row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
-# (the switch is off) clears them all; a status not written yet (before the first run) raises none.
+# (the switch is off) clears them all. RC-M5: with the switch on, a status with no report time (none written: '{}', the
+# uploader never ran) raises the no-report alert and leaves the others as they are; it never clears them. Input that
+# is not JSON prints nothing, so every alert keeps its state.
 record_alerts() {
   jq -r --argjson now "$1" '
     def clean: tostring | gsub("[\r\n|]"; " ") | .[0:300];
-    (.enabled != false and (.at | type) == "number") as $on
+    if .enabled != false and (.at | type) != "number" then
+      "on|record-upload-stale|ALERT Zeroed host: the recording upload is on but has never reported (no status written). Recordings may be deleted at the disk cap without being uploaded."
+    else
+    (.enabled != false) as $on
     | (((.failed_runs // 0) - (if .running == true then 1 else 0 end))) as $failed
     | (.kept // []) as $kept
     | [
@@ -212,5 +260,5 @@ record_alerts() {
         (if $on and ($now - (.at / 1000)) > 10800
          then "on|record-upload-stale|ALERT Zeroed host: the recording upload has not reported for over 3 hours."
          else "off|record-upload-stale|CLEARED Zeroed host: the recording upload reports again." end)
-      ] | .[]' 2>/dev/null || true
+      ] | .[] end' 2>/dev/null || true
 }

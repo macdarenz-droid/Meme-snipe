@@ -9,6 +9,9 @@ import type { Timers } from '../scheduler/timers.ts';
 import type { LiveFeed } from './live-feed.ts';
 import type { RpcHttp } from './solana-http.ts';
 
+/** RC-FIXES: the live fetcher's extra tries after a null answer; a fetch makes at most this + 1 calls per provider. */
+export const FETCH_TX_RETRIES = 3;
+
 export interface TxFetcherOptions {
   readonly clients: readonly RpcHttp[];
   readonly feed: LiveFeed;
@@ -45,18 +48,22 @@ export class TxFetcher {
     this.#o = o;
   }
 
-  /** Fetches and ingests `signature` once. Resolves to its arrival, or null if no provider had it. */
-  fetch(signature: string, priority: Priority, backfilled = false): Promise<Fetched | null> {
+  /**
+   * Fetches and ingests `signature` once. Resolves to its arrival, or null if no provider had it. `onCall` is told each
+   * provider call this fetch makes (RC-FIXES: a budgeted caller books what was spent); a repeat ask that joins a fetch
+   * already running, or finds it done, makes no call.
+   */
+  fetch(signature: string, priority: Priority, backfilled = false, onCall?: (provider: string) => void): Promise<Fetched | null> {
     const done = this.#done.get(signature);
     if (done !== undefined) return Promise.resolve({ ...done, again: true });
     const running = this.#inFlight.get(signature);
     if (running) return running;
-    const p = this.#run(signature, priority, backfilled).finally(() => this.#inFlight.delete(signature));
+    const p = this.#run(signature, priority, backfilled, onCall).finally(() => this.#inFlight.delete(signature));
     this.#inFlight.set(signature, p);
     return p;
   }
 
-  async #run(signature: string, priority: Priority, backfilled: boolean): Promise<Fetched | null> {
+  async #run(signature: string, priority: Priority, backfilled: boolean, onCall: ((provider: string) => void) | undefined): Promise<Fetched | null> {
     const o = this.#o;
     const started = o.timers.now();
     for (let attempt = 0; attempt <= o.retries; attempt++) {
@@ -65,6 +72,7 @@ export class TxFetcher {
       let failures = 0;
       for (const client of o.clients) {
         try {
+          onCall?.(client.provider);
           const record: TransactionRecord | null = await client.getTransaction(signature, priority);
           if (record === null) continue;
           const found: Fetched = { slot: record.slot, at: o.timers.now(), mono: (o.mono ?? (() => performance.now()))(), again: false, ...(decodable(record) ? {} : { undecodable: true as const }) };
