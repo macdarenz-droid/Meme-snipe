@@ -3335,6 +3335,24 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - Mutants, parts 1 and 3 run together: 19 of 20 killed.
       - Part 3 kills: no keep for the book; no `#bookOpen`; no `#bookTake`; taking within the opening transaction; taking pre-migration swaps; no partial when swaps were dropped; no partial when the entry was lost whole; the eviction hook not marking the book lost; the entry never deleted.
       - The survivor (each side taking every kept event, not only its own) is equivalent. An event is kept for the book alone only while the chain exists, and a chain is only built afresh after its pool's entry was deleted (unwatch or `#forgetPool`).
+- **Part 2: two PumpSwap events that leave the reserves unchanged (2026-10-07, S1; after DEDUP-PER-WATCH #264 merged).**
+  - **Why.** WATCH-1c stales a pool on any PumpSwap event other than a swap, so an unnamed event blocks carrying the pool's state until its next swap. REPLAY-1000 found two events doing this in ordinary trading: `929fbdac925838f4` inside buys, and `6161d7905d92167c` before them. They are `CloseUserVolumeAccumulatorEvent` and `ExtendAccountEvent`, identified by matching Anchor hashes.
+  - **Proof (research/pool-noop-events, keyless public RPC, slots 453,759,518 to 454,007,578).** For each case, the pool's swap just before and the one just after chain exactly across the event: base, vault and virtual reserves each compared, on contiguous tapes whose order is itself proven by chaining.
+    - CloseUserVolumeAccumulatorEvent: 80 unchanged, 0 changed, 58 inconclusive; 17 pools.
+    - ExtendAccountEvent: 62 unchanged, 0 changed, 16 inconclusive; 62 pools.
+    - Inconclusive means no contiguous tape, no swap on one side, or another PumpSwap event between. These cases are never counted either way.
+    - About two days of data: evidence, not proof for every pool.
+  - **Change.** `PUMP_AMM_NO_CHANGE_EVENTS` (`chain/events.ts`) holds exactly these two discriminators, on the PumpSwap program only. A matching event:
+    - does not stale the chain (`#chainOther`, before the first read too);
+    - does not taint a heal (`#holeTxOther`);
+    - is not echoed to other watches as an unnamed event (DEDUP-PER-WATCH's `canonical.ts` `unnamedPoolEvent`).
+    - Fail closed: any other unnamed event, the same bytes from the pump program, or a DEDUP echo (which carries no discriminator) still counts as a change. A log holding both a no-change event and an unknown one still echoes the unknown one.
+  - **Evidence.** Each new test fails on the code before part 2, or fails with its skip removed:
+    - core `pool-chain.test.ts`: both events leave the chain clean and carried; four other discriminators stay stale; a kept one leaves the first read clean.
+    - `trade-heal.test.ts`: a hole whose transaction holds one still heals; an unknown one does not.
+    - `no-change-events.test.ts`: the Anchor hashes; program and discriminator matched exactly.
+    - worker `dedup-per-watch.test.ts`: no echo for either event; an echo for an unknown one beside it.
+    - Mutants, 5 of 5 killed: accept any discriminator; no skip in `#chainOther`; no skip for heals; no skip for echoes; any program.
 - **Review fixes for parts 1 and 3 (2026-10-07, S1; each test-first).**
   - **A swap older than a non-swap pool event never re-bases the chain (must fix: fail-open, already in the base).**
     - The stale path re-based on any swap not older than the newest swap seen (`lastSlot`), which a non-swap event never moves. So a withdraw at S+3 followed by a swap from S+2 released after it rebuilt the chain clean, and the withdraw's change was lost.
