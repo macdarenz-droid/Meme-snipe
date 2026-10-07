@@ -333,7 +333,15 @@ The money in this market goes to three seats:
   - It costs nothing but the owner's time. If it passes, the bot's role becomes executing and protecting the owner's picks: cut-loss, a sizing floor, rug rejects.
   - If it fails, the evidence says this bot design has no reachable edge (§6.1). It should stay recording and paper trading, with no deposit.
 
-### 10.4 Still open
+### 10.4 Still open (updated 2026-10-08)
+- **Launch-delay probe: done, not supported.** Buying on the bonding curve 0.7 s to about 3 min after creation lost in all 40 entry/exit pairs. The validation primary was −7.1% (CI −8.7 to −5.8), and the fastest entries were the worst (`research/launch-probe/RESULTS.md`).
+- **Regime (hot-market) timing: no usable signal.** Hot stretches lost less (−17% vs −27% capped) but still lost. The hottest tenth lost 21% (`research/regime-probe/RESULTS.md`).
+- **New:** the absorption entry, which buys only after new demand beats a large seller. It is a three-group, transaction-level test (`research/absorption-probe/HYPOTHESIS.md`).
+- **Helius credits (owner, 2026-10-08):** "I dont mind u using credits on helius. That was intended for this project. So use wisely."
+  - Spent so far: execution audit about 0.63M, launch probe about 1.41M.
+  - The absorption probe is capped at 4M and spends in phases.
+  - About 3M of the 10M cycle (6 Oct to 6 Nov) stays in reserve for the recorder and the bot.
+- **Previously listed:**
 - the launch-delay probe (running);
 - hype Test 1 as a reject rule (running);
 - the survivorship-free D-REV3 re-test (downloading, about 30 h).
