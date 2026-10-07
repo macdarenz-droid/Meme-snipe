@@ -41,7 +41,7 @@ describe('RC-FIXES: a lost ledger is never a cold start', () => {
 });
 
 describe('RC-FIXES: a ledger with trades needs its files', () => {
-  const traded = { existed: true, traded: true, fills: ['sigA', 'sigB'] };
+  const traded = { existed: true, traded: true, positions: 1, fills: ['sigA', 'sigB'] };
   it('everything there: no refusal, nothing lost', () => {
     const d = dir({ 'account.json': TRADED_ACCOUNT, 'paper.json': typedText({ attempts: { sigA: {}, sigB: {}, sigC: {} } }), 'control.json': '{}' });
     expect(checkState(d, traded)).toEqual({ refuse: [], controlLost: false });
@@ -56,24 +56,32 @@ describe('RC-FIXES: a ledger with trades needs its files', () => {
   it('control.json missing after a start of this code (the marker): latched and paused, not refused; at a cold start: nothing', () => {
     const marked = { 'state-version.json': '{"version":1}' };
     expect(checkState(dir({ ...marked, 'account.json': TRADED_ACCOUNT, 'paper.json': typedText({ attempts: { sigA: {}, sigB: {} } }) }), traded)).toEqual({ refuse: [], controlLost: true });
-    expect(checkState(dir(marked), { existed: true, traded: false, fills: [] })).toEqual({ refuse: [], controlLost: true });
-    expect(checkState(dir(marked), { existed: false, traded: false, fills: [] })).toEqual({ refuse: [], controlLost: false });
+    expect(checkState(dir(marked), { existed: true, traded: false, positions: 0, fills: [] })).toEqual({ refuse: [], controlLost: true });
+    expect(checkState(dir(marked), { existed: false, traded: false, positions: 0, fills: [] })).toEqual({ refuse: [], controlLost: false });
   });
 
   it('R4-1: before the marker (a dir from a release that wrote control.json only on a trip or a pause), a missing control.json was never written', () => {
     expect(checkState(dir({ 'account.json': TRADED_ACCOUNT, 'paper.json': typedText({ attempts: { sigA: {}, sigB: {} } }) }), traded)).toEqual({ refuse: [], controlLost: false });
-    expect(checkState(dir(), { existed: true, traded: false, fills: [] })).toEqual({ refuse: [], controlLost: false });
+    expect(checkState(dir(), { existed: true, traded: false, positions: 0, fills: [] })).toEqual({ refuse: [], controlLost: false });
   });
 
   it('an empty ledger while paper attempts or exit plans say the bot traded: refused (an older ledger restored with newer files)', () => {
-    const empty = { existed: true, traded: false, fills: [] };
+    const empty = { existed: true, traded: false, positions: 0, fills: [] };
     expect(checkState(dir({ 'paper.json': typedText({ attempts: { s: {} } }), 'control.json': '{}' }), empty).refuse).toEqual([expect.stringContaining('the ledger holds no trades but paper.json holds 1 paper attempts')]);
     expect(checkState(dir({ 'exits.json': typedText({ p: {} }), 'control.json': '{}' }), empty).refuse).toEqual([expect.stringContaining('exits.json holds 1 exit plans')]);
   });
 
+  it('an open trade in account.json with no position in the ledger: refused; closed trades alone are not', () => {
+    const acct = (closedAtMs: number | null) => typedText({ openedAtMs: 1, openingEquity: 20_000_000n, walletLamports: 1n, trades: [{ positionId: 'p', closedAtMs }], entries: [] });
+    const flat = { existed: true, traded: false, positions: 0, fills: [] };
+    expect(checkState(dir({ 'account.json': acct(null), 'control.json': '{}' }), flat).refuse).toEqual([expect.stringContaining('account.json holds 1 open trades but the ledger holds no position')]);
+    expect(checkState(dir({ 'account.json': acct(5), 'control.json': '{}' }), flat).refuse).toEqual([]);
+    expect(checkState(dir({ 'account.json': acct(null), 'control.json': '{}', 'paper.json': typedText({ attempts: { sigA: {}, sigB: {} } }) }), { existed: true, traded: true, positions: 1, fills: [] }).refuse).toEqual([]);
+  });
+
   it('an attempt signed but never sent (in the ledger, not in paper.json) is no loss: only fills are asked for', () => {
     const d = dir({ 'account.json': TRADED_ACCOUNT, 'paper.json': typedText({ attempts: {} }), 'control.json': '{}' });
-    expect(checkState(d, { existed: true, traded: true, fills: [] })).toEqual({ refuse: [], controlLost: false });
+    expect(checkState(d, { existed: true, traded: true, positions: 1, fills: [] })).toEqual({ refuse: [], controlLost: false });
   });
 });
 
@@ -147,9 +155,11 @@ describe('RC-FIXES: the worker at start', () => {
     expect(existsSync(join(dir, 'cold_start'))).toBe(false);
     // R4-3: the reason is where it can be read: refused.json (with the exit code the unit does not restart) and the
     // journal (a start line of its own, a critical alert, a stop line).
-    const refused = JSON.parse(readFileSync(join(dir, 'refused.json'), 'utf8')) as { reason: string; exit: number };
-    expect(refused.exit).toBe(EXIT.stateRefused);
-    expect(refused.reason).toContain('ledger.sqlite is empty');
+    const refused = JSON.parse(readFileSync(join(dir, 'refused.json'), 'utf8')) as Record<string, unknown>;
+    expect(Object.keys(refused).sort()).toEqual(['atMs', 'commit', 'reason']);
+    expect(refused['reason']).toContain('ledger.sqlite is empty');
+    expect(refused['atMs']).toBe(h.timers.now());
+    expect(EXIT.stateRefused).toBe(78);
     const lines = readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
     const tail = lines.slice(-3).map((l) => [l['kind'], l['code'] ?? l['refused'] ?? null]);
     expect(tail).toEqual([['start', true], ['alert', 'state_refused'], ['stop', null]]);

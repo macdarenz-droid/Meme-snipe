@@ -409,11 +409,12 @@ export class StateRefused extends Error {
   override readonly name = 'StateRefused';
 }
 
-/** RC-STATE review R4-3: the refusal written where it can be read: `refused.json` beside the journal. */
+/** RC-STATE (S1's contract): the refusal written where it can be read, `<stateDir>/refused.json`. */
 export interface Refused {
-  readonly at: string;
   readonly reason: string;
-  readonly exit: number;
+  readonly atMs: number;
+  /** The release's commit (null when not known). */
+  readonly commit: string | null;
 }
 /** CREATE-AFTER-RESTART: the wait before the one retry of a create lookup stopped by a transient error. */
 export const CREATE_RETRY_MS = 60_000;
@@ -799,6 +800,7 @@ export class Worker {
     const verdict = checkState(c.stateDir, {
       existed,
       traded: this.#ledger.allIntents().length > 0 || this.#ledger.allPositions().length > 0,
+      positions: this.#ledger.allPositions().length,
       fills: this.#ledger.allFills().map((f) => String(f.signature)),
     });
     if (verdict.refuse.length > 0) {
@@ -2089,8 +2091,9 @@ export class Worker {
 
   /**
    * RC-STATE review R4-3: the start is refused on the saved state. Said in the journal (a start line of its own, a
-   * critical `state_refused` alert and a stop line, fsynced) and in `refused.json`, so the owner, the heartbeat and
-   * zeroed-update can read why; then thrown, and main.ts exits with `EXIT.stateRefused`, which the unit does not restart.
+   * critical `state_refused` alert and a stop line, fsynced) and in `refused.json` (written and fsynced before the exit),
+   * so the owner, zeroed-check and zeroed-update can read why; then thrown, and main.ts exits with `EXIT.stateRefused`
+   * (78), which the unit does not restart.
    */
   #refuse(reason: string, gitSha: string | null): never {
     try {
@@ -2102,7 +2105,7 @@ export class Worker {
       this.#d.log(`Journal: the refusal was not written: ${errorText(e)}.`);
     }
     try {
-      atomicWrite(join(this.#d.config.stateDir, REFUSED_FILE), `${JSON.stringify({ at: new Date(this.#d.timers.now()).toISOString(), reason, exit: EXIT.stateRefused } satisfies Refused)}\n`);
+      atomicWrite(join(this.#d.config.stateDir, REFUSED_FILE), `${JSON.stringify({ reason, atMs: this.#d.timers.now(), commit: gitSha } satisfies Refused)}\n`);
     } catch (e) {
       this.#d.log(`${REFUSED_FILE} not written: ${errorText(e)}.`);
     }

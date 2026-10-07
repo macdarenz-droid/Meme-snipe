@@ -555,9 +555,9 @@ ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile
 ExecStart=/usr/local/lib/zeroed/worker-start
 Restart=always
 RestartSec=5
-# A start refused on the saved state (EXIT.stateRefused, packages/runner/src/contract.ts) is not retried: the files must be
-# restored first; refused.json in the state dir says why.
-RestartPreventExitStatus=5
+# A start refused on the saved state (EXIT.stateRefused = 78, EX_CONFIG, packages/runner/src/contract.ts) is not retried:
+# the files must be restored first; refused.json in the state dir says why (ops/README.md, "A refused start").
+RestartPreventExitStatus=78
 TimeoutStopSec=30
 LoadCredentialEncrypted=helius_api_key:/etc/credstore.encrypted/helius_api_key
 LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
@@ -2670,7 +2670,7 @@ mapfile -t files < <(cd "$SRC" && find . -type f ! -path './recorder/*' ! -name 
   ! -name clean_stop ! -name planned_restart ! -name cold_start ! -name drill.token ! -name last_exit.json ! -name refused.json \
   | sed 's#^\./##' | LC_ALL=C sort)
 # The files that must agree with the ledger (state-check.ts): one cut with it.
-cut() { (cd "$SRC" && for f in account.json paper.json exits.json control.json entry-seeds.json exposure.json; do [ -f "$f" ] && sha256sum -- "$f"; done; true); }
+cut_hashes() { (cd "$SRC" && for f in account.json paper.json exits.json control.json entry-seeds.json exposure.json; do [ -f "$f" ] && sha256sum -- "$f"; done; true); }
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -2678,7 +2678,7 @@ same=""
 for _ in 1 2 3 4 5; do
   rm -rf "$work/snap"
   mkdir -p "$work/snap"
-  before="$(cut)"
+  before="$(cut_hashes)"
   for rel in "${files[@]}"; do
     [ -f "$SRC/$rel" ] || continue
     mkdir -p "$work/snap/$(dirname "$rel")"
@@ -2688,7 +2688,7 @@ for _ in 1 2 3 4 5; do
     mkdir -p "$work/snap/$(dirname "$rel")"
     sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
   done
-  if [ "$(cut)" = "$before" ]; then same=1; break; fi
+  if [ "$(cut_hashes)" = "$before" ]; then same=1; break; fi
   sleep 1
 done
 [ -n "$same" ] || { echo "The ledger and its state files kept changing; no consistent backup taken."; exit 1; }

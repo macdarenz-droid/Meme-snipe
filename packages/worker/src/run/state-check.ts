@@ -67,6 +67,8 @@ export interface LedgerEvidence {
   readonly existed: boolean;
   /** Book events (positions or intents): the bot has traded. */
   readonly traded: boolean;
+  /** Positions the ledger holds (any status). */
+  readonly positions: number;
   /**
    * The signatures of every fill the ledger holds: each was a paper attempt that landed, so paper.json must hold it. (An
    * attempt signed but never sent is in the ledger and not in paper.json: a death between the two.)
@@ -86,8 +88,24 @@ export interface StateVerdict {
   readonly controlLost: boolean;
 }
 
+/** Trades account.json holds still open (no close time), or 0 when it cannot say. */
+const openTrades = (dir: string): number => {
+  const p = join(dir, 'account.json');
+  if (!existsSync(p)) return 0;
+  try {
+    const v = parseTyped(readFileSync(p, 'utf8'));
+    return isObj(v) && Array.isArray(v['trades']) ? v['trades'].filter((t) => isObj(t) && t['closedAtMs'] === null).length : 0;
+  } catch {
+    return 0;
+  }
+};
+
 export const checkState = (dir: string, ledger: LedgerEvidence): StateVerdict => {
   const refuse: string[] = [];
+  // A trade account.json holds open is a position the ledger must hold (review of #280): with none there, its exit
+  // and its stop are gone.
+  const open = ledger.positions === 0 ? openTrades(dir) : 0;
+  if (open > 0) refuse.push(`account.json holds ${open} open trades but the ledger holds no position (their exits would never run)`);
   if (!ledger.traded) {
     // An empty ledger: no paper attempt or exit plan may say the bot traded (a ledger restored older than the files, or
     // emptied). account.json is left out here: tests and tools seed its trades alone, and a lost or empty ledger file
