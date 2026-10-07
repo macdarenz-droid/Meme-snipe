@@ -1,6 +1,6 @@
 {
  "retrieved": "2026-10-06",
- "note": "Verified fact register. Cite facts by ID. verification is confirmed, corrected or added_by_verifier; excluded claims must not be relied on.",
+ "note": "Edited in Meme-snipe from 2026-10-07 (card Z0D); source commit 74e7258 of macdarenz-droid/Snipe-solana main. Verified fact register. Cite facts by ID. verification is confirmed, corrected or added_by_verifier; excluded claims must not be relied on. RS-* facts (added 2026-10-07) are this repo's own research results, cited as path:line @ sha on branch ccr-7fae2302-drz4co; they can stop work or set priors, never pass a gate.",
  "facts": [
   {
    "id": "EX-01",
@@ -4364,6 +4364,721 @@
    "confidence": "medium",
    "design_relevance": "It gives a citable, reproducible definition for a creator or early-wallet dump detector and for labelling dump events in backtests, instead of an ad-hoc threshold.",
    "verification": "added_by_verifier"
+  },
+  {
+   "id": "RS-01",
+   "topic": "Deep-pool MR proxy, primary group",
+   "claim": "Deep-pool probe, rules pre-registered: 41 established pump.fun coins in canonical PumpSwap SOL pools at >= 49,120 SOL market cap, decisions 2026-07-22 to 2026-09-21T14:00Z, 5-minute vendor bars. MR-A (5-min drop >= 3 SD of the previous 3 days, +6%/-4%, 30 min) at $200: validation mean net -0.76% a trade (95% day-bootstrap CI -1.15% to -0.35%, n = 266), gross +0.35%; random entry -1.20%. Dip rules beat random entry by about +0.2 to +0.5 points but stay below costs. All five configurations: not supported.",
+   "sources": [
+    "research/deep-pool-probe/RESULTS.md:6 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/deep-pool-probe/RESULTS.md:13 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/deep-pool-probe/RESULTS.md:24 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/deep-pool-probe/PREREG.md:24 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/deep-pool-probe/results.json (MR-A, $200|AB|val) @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Negative sub-hour proxy evidence for MR-01 (ARCH 3.2, A-23).",
+   "verification": "confirmed",
+   "note": "Addendum A04. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Survivor-only coin list (RS-05). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/deep-pool-probe/RESULTS.md:6 @ 72f1793f",
+    "research/deep-pool-probe/RESULTS.md:13 @ 72f1793f",
+    "research/deep-pool-probe/RESULTS.md:24 @ 72f1793f",
+    "research/deep-pool-probe/PREREG.md:24 @ 72f1793f",
+    "research/deep-pool-probe/results.json (MR-A, $200|AB|val) @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-02",
+   "topic": "Deep-pool MR proxy, 0.30% tier",
+   "claim": "MR-A in group A (0.30% fee tier) alone, validation: gross +0.63%; net -0.11% at $50 (95% CI -0.65% to +0.38%, n = 99) and -0.17% at $200 (95% CI -0.71% to +0.32%); random entries at $200 -0.94%.",
+   "sources": [
+    "research/deep-pool-probe/RESULTS.md:19 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/deep-pool-probe/results.json (MR-A, $50|A|val and $200|A|val) @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Closest case to MR-01's universe; below the 65-71 bps lean g* of V5 (ARCH 2.2). Shows that an excess over random alone flatters (A05).",
+   "verification": "confirmed",
+   "note": "Addendum A04, A05. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/deep-pool-probe/RESULTS.md:19 @ 72f1793f",
+    "research/deep-pool-probe/results.json (MR-A, $50|A|val and $200|A|val) @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-03",
+   "topic": "Bounce timing after sharp drops",
+   "claim": "In the deep-pool probe most of the bounce after a sharp drop happens within the first 5 minutes: delaying the entry by one traded 5-minute bar removes most of it.",
+   "sources": [
+    "research/deep-pool-probe/RESULTS.md:25 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Sets the 0/1/2-bar delays of the Phase 0 kill-only check (C-48).",
+   "verification": "confirmed",
+   "note": "Addendum A05. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/deep-pool-probe/RESULTS.md:25 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-04",
+   "topic": "Low-volume MR variants",
+   "claim": "The low-volume variants MR-A-LV and MR-B-LV made 6-7 trades in each period: too few to say anything.",
+   "sources": [
+    "research/deep-pool-probe/RESULTS.md:17 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "No low-volume MR-01 configuration is pre-registered (ARCH 3.3, C-46).",
+   "verification": "confirmed",
+   "note": "Addendum A04. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/deep-pool-probe/RESULTS.md:17 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-05",
+   "topic": "Survivor bias of the research coin list",
+   "claim": "In a 900-coin random sample, 33 of 588 normal canonical graduates closed at least one day at >= 9,820 SOL market cap; only 1 of those 33 is in the 481-coin survivor list the daily and deep-pool probes used. Most coins that reach that size later die.",
+   "sources": [
+    "research/daily-probe/RESULTS.md:28 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "The proxy results are likely optimistic; the true result is likely worse (ARCH 3.2).",
+   "verification": "confirmed",
+   "note": "Addendum A04, A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/daily-probe/RESULTS.md:28 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-06",
+   "topic": "Zeroed fixed cost per round trip",
+   "claim": "Zeroed's conservative fixed cost is 414,009 lamports a round trip: about 53% modelled lost rent (14.5% of 1,513,840), about 32% failed exit attempts (0.7728 x 155,000) and about 14% fees on transactions that land.",
+   "sources": [
+    "docs/research/edge.md:156 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Shown only as a sensitivity line beside the conservative cost row (ARCH 2.3, C-50).",
+   "verification": "confirmed",
+   "note": "Addendum A07. Model figures under Zeroed's design, not measured. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:156 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-07",
+   "topic": "Break-even win rate with total losses",
+   "claim": "Break-even win rate p* = (L + c + q(1 - L))/(W + L), with q the share of trades lost entirely: a +2/-6 bracket at $200 in a deep pool needs 86% wins, or 98% if 1% of trades go to zero.",
+   "sources": [
+    "docs/research/edge.md:274 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "ARCH 2.3 formula with q (C-50).",
+   "verification": "confirmed",
+   "note": "Addendum A07. Algebra re-derived by the Z0D builder from expectancy = 0; with q = 0 it equals ARCH 2.1's p* = (1 + c/a)/(R + 1). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:274 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-08",
+   "topic": "Vendor 5-minute bars are optimistic",
+   "claim": "GeckoTerminal's 5-minute open always equals the previous close, so an entry at the signal bar's close has no delay and a gap through a stop never fires. On the realistic line (entry at the next bar with volume, stops at the worse of stop and close, fee at the signal price) every rule is worse: MR-A validation falls from -0.76% to -0.92%.",
+   "sources": [
+    "research/deep-pool-probe/PREREG.md:41-47 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/deep-pool-probe/RESULTS.md:21 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "A-M11-04 reports a realistic line beside CS-1's optimistic one (C-64).",
+   "verification": "confirmed",
+   "note": "Addendum A13. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/deep-pool-probe/PREREG.md:41-47 @ 72f1793f",
+    "research/deep-pool-probe/RESULTS.md:21 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-09",
+   "topic": "Interval coverage and survivor bias against random",
+   "claim": "A moving-block bootstrap with about 30 validation entry days covered a nominal 99% about 86% of the time at H = 7. Survivor bias does not cancel against random entries: keeping only live coins lifts rule minus random for reversal rules.",
+   "sources": [
+    "research/daily-probe/PREREG.md:36-37 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Gate intervals take the more conservative of the bootstrap and a calendar-day cluster t-interval; matched-random comparisons (C-65).",
+   "verification": "confirmed",
+   "note": "Addendum A14. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/daily-probe/PREREG.md:36-37 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-10",
+   "topic": "Slot length is not constant",
+   "claim": "From block-time anchors, slots averaged about 0.420 s on 2026-07-22 and about 0.317 s on 2026-09-06.",
+   "sources": [
+    "research/launch-probe/derived/slot_len.json (first and last day pairs of points) @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "One slot-to-time function, no fixed 400 ms (C-61).",
+   "verification": "confirmed",
+   "note": "Addendum A10. DERIVED by the Z0D builder: (t2 - t1)/(slot2 - slot1) on the first and last daily pairs; block time has 1 s resolution. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/launch-probe/derived/slot_len.json (first and last day pairs of points) @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-11",
+   "topic": "Dust and start-missing graduates",
+   "claim": "In 900 random graduates created 2026-07-22 to 08-20, 267 were dust pools and 127 had a first price far from the migration price (mostly pump-and-dumps); 506 were usable.",
+   "sources": [
+    "research/lottery-probe/RESULTS.md:3 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Fresh-graduate studies count dust and start-missing exclusions with a -100% sensitivity line (C-63).",
+   "verification": "confirmed",
+   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/lottery-probe/RESULTS.md:3 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-12",
+   "topic": "pump.fun ath_market_cap is not an outcome",
+   "claim": "pump.fun's ath_market_cap equals the GeckoTerminal maximum hourly high on all 492 coins checked; it includes the opening spike and fake high prints.",
+   "sources": [
+    "research/brainstorm/RESULTS.md:32 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "No field observed after the decision may enter a study (C-63).",
+   "verification": "confirmed",
+   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/brainstorm/RESULTS.md:32 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-13",
+   "topic": "Viewed research window",
+   "claim": "One research window was looked at over 200 times, and 286 of 492 holds overlap the validation days.",
+   "sources": [
+    "research/hype/RESEARCH.md:154 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "M13 keeps a viewed-window ledger (C-63).",
+   "verification": "confirmed",
+   "note": "Addendum A12. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/hype/RESEARCH.md:154 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-14",
+   "topic": "Program upgrade boundaries B1-B5",
+   "claim": "pump, PumpSwap and fee-program upgrades B1 (2026-07-15) to B5 (2026-10-02) with their slots; B2 (BOOST on), B3 (creator-fee config and flat fees) and B4 (holder rewards) changed trade economics.",
+   "sources": [
+    "docs/research/venues.md:157-165 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Regime breaks for studies (C-63) and L-4 boundaries (C-67).",
+   "verification": "confirmed",
+   "note": "Addendum A12, A16. Read from chain by the research; times UTC. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/venues.md:157-165 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-15",
+   "topic": "B5 event tail changes no money",
+   "claim": "After B5, 1,188 of 1,188 sampled PumpSwap trades with a non-zero event tail (36 pools, one 38-minute window on 2026-10-06) reproduce to the raw unit, quoted from pre-trade reserves (effective quote = vault + virtual_quote_reserves).",
+   "sources": [
+    "research/tail-proof/README.md:5-26 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "An unknown event length demotes the venue; this known one does not (C-67).",
+   "verification": "confirmed",
+   "note": "Addendum A16. One window on one day: evidence, not proof for every pool. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/tail-proof/README.md:5-26 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-16",
+   "topic": "Quote goldens and reserve timing",
+   "claim": "The CORE-2 quote goldens (313 curve swaps, 353 PumpSwap swaps) recorded after the upgrade reproduce exactly. PumpSwap events carry pre-trade reserves; the pump TradeEvent carries reserves after the trade.",
+   "sources": [
+    "docs/research/venues.md:146 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "docs/research/venues.md:94 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/tail-proof/README.md:11 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "A-M01 quote fixtures (C-59).",
+   "verification": "confirmed",
+   "note": "Addendum A08. Goldens import under Meme-snipe's migration Rules (no bugs migrate). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/venues.md:146 @ 72f1793f",
+    "docs/research/venues.md:94 @ 72f1793f",
+    "research/tail-proof/README.md:11 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-17",
+   "topic": "Drained pool after BOOST",
+   "claim": "After BOOST a pool keeps virtual_quote_reserves of about 17.58 SOL while the real vault can drain; one pool read showed 17.58 SOL virtual and 0.27 SOL real.",
+   "sources": [
+    "docs/research/edge.md:225 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Drained-pool fixture for M06 and M20 (C-60).",
+   "verification": "confirmed",
+   "note": "Addendum A09. One pool read. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:225 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-18",
+   "topic": "Trial policy cannot reach 300 trades",
+   "claim": "Zeroed's trial policy allows 1 open position, 3 entries a day and 1 per token a day: 3 a day x 28 days = 84 trades, under 300.",
+   "sources": [
+    "docs/research/edge.md:164 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Limits are lamport config owned by the owner; SOL-only property test (C-62).",
+   "verification": "confirmed",
+   "note": "Addendum A11. About Zeroed's policy file, not the Blueprint's. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:164 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-19",
+   "topic": "Graduate count and credit burn",
+   "claim": "85,111 pump.fun graduates with canonical pools were created 2026-06-01 to 09-21. Zeroed's worker burned about 80k Helius credits an hour with zero trades.",
+   "sources": [
+    "research/daily-probe/RESULTS.md:25 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/SUPERVISOR_MESSAGES.md:93 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "D30 budget from the first enumeration count; burn-rate test (C-58).",
+   "verification": "confirmed",
+   "note": "Addendum A03. The all-time pool count is unmeasured. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/daily-probe/RESULTS.md:25 @ 72f1793f",
+    "research/SUPERVISOR_MESSAGES.md:93 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-20",
+   "topic": "PumpPortal coverage and key",
+   "claim": "PumpPortal's free feed missed 13.6% of the successful creates that public-RPC logsSubscribe saw (n = 127 compared signatures); its api-key parameter is required only for paid streams.",
+   "sources": [
+    "docs/research/data.md:16 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "docs/research/data.md:225 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "PumpPortal not used for now; chain backfill on by default (D12, C-52).",
+   "verification": "confirmed",
+   "note": "Addendum A02. One sample. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/data.md:16 @ 72f1793f",
+    "docs/research/data.md:225 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-21",
+   "topic": "pump.fun requests stopped",
+   "claim": "Research scripts that sent pump.fun's own Origin and Referer headers were stopped on 2026-10-07; the owner kept the data already collected and stopped new pump.fun requests.",
+   "sources": [
+    "research/hype/RESEARCH.md:141-143 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "No request to any pump.fun-operated host; earlier pump.fun data serves research only (D12, C-52).",
+   "verification": "confirmed",
+   "note": "Addendum A02. Readings of terms, not legal advice. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/hype/RESEARCH.md:141-143 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-22",
+   "topic": "Judged chance of an edge",
+   "claim": "The research judges (not measures) that a small, free-data, non-insider bot most likely has no edge (about 75-85%), and that the cheapest-seat reversal idea has about a 3-8% chance of passing the gate.",
+   "sources": [
+    "docs/research/edge.md:116-117 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "low",
+   "design_relevance": "End state with no edge (D08, C-56).",
+   "verification": "confirmed",
+   "note": "Addendum A17. Judgement, not a measurement. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:116-117 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-23",
+   "topic": "SOL baselines",
+   "claim": "JitoSOL earned about 4.8% a year in SOL (5.7% over the last 12 months). In the trend probe, holding SOL beat holding large memes and beat every timing rule, measured in SOL, 2024-01-01 to 2026-09-14.",
+   "sources": [
+    "docs/research/edge.md:224 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/trend-probe/RESULTS.md:22 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "VM-09 shows hold-SOL and JitoSOL baselines (C-56).",
+   "verification": "confirmed",
+   "note": "Addendum A17. Staking itself is the owner's call. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:224 @ 72f1793f",
+    "research/trend-probe/RESULTS.md:22 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-24",
+   "topic": "Hour-1 runner",
+   "claim": "Runner probe, validation: 900 graduates created 2026-08-21 to 09-06, 443 usable; R1 (entry at hour 1, trail after 2x) on the hourly line at $10 lost 22.4% a trade (win rate 2.9%); primary R1 and R2-R4 not supported.",
+   "sources": [
+    "research/runner-probe/RESULTS.md:6 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/runner-probe/RESULTS.md:9-14 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/runner-probe/RESULTS.md:20 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "PM-01 neighbour; PM-01 screened only on swap-level or 1 Hz data (C-68); families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A19, A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/runner-probe/RESULTS.md:6 @ 72f1793f",
+    "research/runner-probe/RESULTS.md:9-14 @ 72f1793f",
+    "research/runner-probe/RESULTS.md:20 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-25",
+   "topic": "Mayhem prices and jackpot fill",
+   "claim": "A 0.023 SOL Mayhem-agent sell moved virtual SOL from 43.80 to 32.01. The runner probe's jackpot sold at about 36.2% of the peak position value by the minute-bar bound.",
+   "sources": [
+    "docs/research/edge.md:239 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/runner-probe/PREREG.md:39 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Mayhem and BOOST trades out of demand features; jackpot fixture (C-69).",
+   "verification": "confirmed",
+   "note": "Addendum A21. The swap-replay figure (26.9%) is from the unfinished execution audit and is not registered. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:239 @ 72f1793f",
+    "research/runner-probe/PREREG.md:39 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-26",
+   "topic": "Skewed-strategy statistics",
+   "claim": "In a simulation of runner-model returns (2,000 repetitions, true mean +5%), a t-interval with nominal 95% covered the true mean only 0.802 of the time at n = 300. The research proof gates cap the share of P&L from the top 1% of trades at 50%.",
+   "sources": [
+    "docs/research/quant.md:282 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "docs/research/quant.md:390 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "VM-09 reporting for skewed strategies (C-70).",
+   "verification": "confirmed",
+   "note": "Addendum A22. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/quant.md:282 @ 72f1793f",
+    "docs/research/quant.md:390 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-27",
+   "topic": "Sizing cannot add edge",
+   "claim": "On the runner trades, no sizing scheme improved return per unit staked (fixed -0.176 and -0.224, owner ladder -0.194 and -0.238); a ladder lost less only because it staked less.",
+   "sources": [
+    "research/sizing/RESULTS.md:28 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Sizing rules (C-71).",
+   "verification": "confirmed",
+   "note": "Addendum A23. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/sizing/RESULTS.md:28 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-28",
+   "topic": "Paid profiles",
+   "claim": "In the runner exploration sample, coins that paid for a DexScreener profile at least 2 min before entry (201) had mean net -31.7% against +27.9% for the rest (291); capped at 20x, -31.7% against -10.2%.",
+   "sources": [
+    "research/hype/RESEARCH.md:28-30 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Attention stays out of entry rules until a forward test passes (C-72).",
+   "verification": "confirmed",
+   "note": "Addendum A24. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/hype/RESEARCH.md:28-30 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-29",
+   "topic": "Graduation window",
+   "claim": "72 rule variants on 361 graduated tokens (backfill 2026-10-01T23:00Z to 10-02T11:00Z, inside a sealed holdout): none positive after costs, none with a CI above zero; strength at +5 min was the most negative signal.",
+   "sources": [
+    "docs/research/empirical.md:8 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "docs/research/empirical.md:35 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "docs/research/edge.md:75 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Holdout-contaminated window. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/empirical.md:8 @ 72f1793f",
+    "docs/research/empirical.md:35 @ 72f1793f",
+    "docs/research/edge.md:75 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-30",
+   "topic": "Copy-trading",
+   "claim": "Pre-registered copy of selected whale wallets (32 leaders), every pump.fun and PumpSwap trade 12:37-15:20 UTC on 2026-10-03, about 2 s behind at $5: -11.0% a trade (95% CI -15.9% to -5.9%, n = 178); none of 120 variants positive.",
+   "sources": [
+    "docs/research/copytrading.md:14-27 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "high",
+   "design_relevance": "Families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/copytrading.md:14-27 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-31",
+   "topic": "Lottery basket",
+   "claim": "900 random graduates created 2026-07-22 to 08-20 (506 usable), $20 bets held 7 or 30 days: -23.5% to -39.5% a trade after costs; LB-1H and LB-24H not supported.",
+   "sources": [
+    "research/lottery-probe/RESULTS.md:3 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/lottery-probe/RESULTS.md:6 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/lottery-probe/RESULTS.md:12-15 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/lottery-probe/RESULTS.md:3 @ 72f1793f",
+    "research/lottery-probe/RESULTS.md:6 @ 72f1793f",
+    "research/lottery-probe/RESULTS.md:12-15 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-32",
+   "topic": "Weekly trend on large memes",
+   "claim": "19 large memes, prices in SOL, weekly decisions 2024-01-01 to 2026-09-14: all four trend and cross-sectional rules not supported; holding SOL beat every rule.",
+   "sources": [
+    "research/trend-probe/RESULTS.md:3 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/trend-probe/RESULTS.md:6 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/trend-probe/RESULTS.md:22 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Coin list picked with hindsight. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/trend-probe/RESULTS.md:3 @ 72f1793f",
+    "research/trend-probe/RESULTS.md:6 @ 72f1793f",
+    "research/trend-probe/RESULTS.md:22 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-33",
+   "topic": "Short side",
+   "claim": "Shorting downtrends on every non-major Hyperliquid perp, weekly from 2024-01-01 (validation from 2025-07-01): -0.01% a week in validation (95% CI -2.5% to +2.5%, n = 62), no better than shorting everything.",
+   "sources": [
+    "research/short-probe/RESULTS.md:9 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/short-probe/RESULTS.md:17-21 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/short-probe/PREREG.md:13 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/short-probe/PREREG.md:21 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested (C-51); derivatives and cross-chain are outside the owner's rules.",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/short-probe/RESULTS.md:9 @ 72f1793f",
+    "research/short-probe/RESULTS.md:17-21 @ 72f1793f",
+    "research/short-probe/PREREG.md:13 @ 72f1793f",
+    "research/short-probe/PREREG.md:21 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-34",
+   "topic": "Being the LP",
+   "claim": "On pre-wall daily data across about 250 established coins, the median LP result in canonical PumpSwap pools was -2.5% to -7.4% in SOL.",
+   "sources": [
+    "docs/research/edge.md:238 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:238 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-35",
+   "topic": "Funding carry",
+   "claim": "Spot meme plus a short perp over 18 Hyperliquid meme perps: about +4.7% a year median in dollars, two liquidated even at 1x, about -1.6% a year median once flat in SOL.",
+   "sources": [
+    "docs/research/edge.md:237 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Window not stated in the source. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:237 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-36",
+   "topic": "Curve intensity and the BOOST window",
+   "claim": "Curve intensity (a published in-sample study with no fees and an impossible exit) and the BOOST window (inside a window already measured negative, and conflicting with H10) were dropped by analysis.",
+   "sources": [
+    "docs/research/edge.md:175-176 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:175-176 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-37",
+   "topic": "Atomic cross-pool arbitrage",
+   "claim": "In pre-wall blocks 73% of arbitrages landed in the same block as the trade that opened the gap and 22% in the next; trades two or more slots late held about 0.05% of the value.",
+   "sources": [
+    "docs/research/edge.md:236 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:236 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-38",
+   "topic": "Daily holds, re-test running",
+   "claim": "Daily-horizon probe on 477 survivor pools, decisions 2026-06-01 to 09-20: all five rules not supported; a survivorship-free re-test on 16,367 coins is downloading.",
+   "sources": [
+    "research/daily-probe/RESULTS.md:3 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/daily-probe/RESULTS.md:6 @ 72f1793f (branch ccr-7fae2302-drz4co)",
+    "research/daily-probe/RESULTS.md:30 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested: open (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). The re-test's result enters only after its RESULTS.md and a fresh review. Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "research/daily-probe/RESULTS.md:3 @ 72f1793f",
+    "research/daily-probe/RESULTS.md:6 @ 72f1793f",
+    "research/daily-probe/RESULTS.md:30 @ 72f1793f"
+   ]
+  },
+  {
+   "id": "RS-39",
+   "topic": "DLMM maker dip-buying",
+   "claim": "Resting Meteora DLMM limit bids are parked: fills come mostly from arbitrageurs after the canonical pool has moved, there is no decoder, builder or fill model, and Meteora is not on the signer allowlist.",
+   "sources": [
+    "docs/research/edge.md:174 @ 72f1793f (branch ccr-7fae2302-drz4co)"
+   ],
+   "source_type": "repo_research",
+   "as_of": "2026-10-07",
+   "confidence": "medium",
+   "design_relevance": "Families tested: parked (C-51).",
+   "verification": "confirmed",
+   "note": "Addendum A20. Exploration result from this repo's research branch, not proof: it can stop work or set a prior, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Checked against the cited lines by the Z0D builder on 2026-10-07; a fresh reviewer re-checks it.",
+   "verifier_evidence": [
+    "docs/research/edge.md:174 @ 72f1793f"
+   ]
   }
  ],
  "excluded": [

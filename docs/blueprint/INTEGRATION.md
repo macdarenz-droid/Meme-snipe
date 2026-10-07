@@ -1,5 +1,7 @@
 # Integration report
 
+Edited in Meme-snipe from 2026-10-07 (card Z0D); source commit `74e7258` of `macdarenz-droid/Snipe-solana` `main`.
+
 Integration audit of the Solana meme-coin trading bot design, run on 2026-10-06 against four files in this directory: `ARCH.md` (architecture, source of truth), `SPEC-A.md` (group A tickets, modules M01-M14), `SPEC-B.md` (group B tickets, modules M15-M30) and `UI.md` (dashboard design and UI tickets). All fixes were made in place with targeted edits; each file keeps its structure. Originals were kept outside this directory for comparison.
 
 Scope and limits of this audit:
@@ -8,7 +10,7 @@ Scope and limits of this audit:
 - Nothing here, and nothing in the four files, shows that the bot will make money. ARCH section 0 and A-23 state that the register holds **no evidence of an after-cost edge** for MR-01 or PM-01. Most of the plan below exists so that a strategy can fail cheaply (Phase 0 study, gates CS/B/R/P) before real funds are used.
 - Numbers were spot-checked against the fact register IDs cited in `ARCH.md` (rent figures 650,240 / 1,488,440 / 1,513,840 lamports, the 68,195,507-lamport signer example, the B-M21-02 stressed-loss example, landing limits [LD-18, LD-22, LD-27], Jupiter limits [EX-29, DA-30], fee tiers [EX-07], the 625,000-lamport signer exit cap). They agree. Facts in `UI.md` that are not in the verified register are labelled VERIFY (see the register below). Where a needed third-party detail is not in the register (for example how Helius Sender selects SWQOS-only mode, and the unit of Jupiter's `/execute` limit) this report and the edited tickets say VERIFY rather than supplying a value.
 
-Ticket counts after integration: **63** group A tickets, **79** group B tickets (78 plus the new B-M21-06), **32** UI tickets: **174** in total. The full dependency graph (internal and cross-group, using ticket IDs only) was checked by script: **no cycles**, and no ticket depends on a ticket in a later milestone.
+Ticket counts after integration: **63** group A tickets, **79** group B tickets (78 plus the new B-M21-06), **32** UI tickets: **174** in total. After the 2026-10-07 splits (B-M19-06 from B-M19-03, B-M29-05 from B-M29-04): **81** group B tickets, **176** in total; the dependency graph was not re-checked by script after the split (each new ticket depends only on tickets in the same or an earlier milestone, checked by hand). The full dependency graph (internal and cross-group, using ticket IDs only) was checked by script: **no cycles**, and no ticket depends on a ticket in a later milestone.
 
 ## Global build plan - milestones
 
@@ -17,10 +19,10 @@ Milestones follow ARCH section 18's gated phases (CB-14). A milestone starts onl
 | ID | Name | ARCH phase | Goal | Tickets | Exit condition (or stop) |
 |---|---|---|---|---|---|
 | M0 | Foundations | 0 | Shared contracts, CI, persistence, config, logging and the read path that every later ticket needs; design-system UI work starts | A-M01-01, A-M02-01, A-M02-02, A-M02-03, A-M07-01, A-M10-01, A-M13-03, A-M14-01, A-M14-02; B-M15-01, B-M19-01, B-M24-01, B-M24-02, B-M25-01, B-M27-01, B-M28-01, B-M30-01; UI-T01, UI-T02, UI-T03, UI-T04, UI-T05, UI-T06, UI-T07 (24) | `@bot/types` and `@bot/contract` frozen with fixture tests; CI enforces the dependency policy; the `node:sqlite` VERIFY result (A-45) is recorded; schema with group A tables migrates; two free providers answer reads; PumpSwap accounts decode from fixtures |
-| M1 | Recording and the Phase 0 decision | 0 | Record PumpSwap market data without a key and measure whether MR-01 is worth writing | A-M01-02, A-M01-03, A-M01-04, A-M01-05, A-M02-04, A-M02-05, A-M03-01, A-M03-02, A-M03-03, A-M03-04, A-M04-01, A-M04-02, A-M04-03, A-M05-01, A-M05-02, A-M05-03, A-M07-02, A-M07-03, A-M08-01, A-M08-02, A-M08-03, A-M10-03, A-M13-01, A-M14-03, A-M14-05 (25) | Recorder runs 48 h unattended with ≥ 95% snapshot coverage; A-24 / A-24b / A-48 report accepted. **Stop MR-01** if fewer than 10 eligible pools on more than half of the days (and M4b is not justified) or typical moves do not exceed the cost hurdle |
-| M2 | Research and the engine core in simulation | 1 | Screening, simulation, strategy and the engine's own order, position, risk and ledger code, so backtest and replay gates run on the code that would trade | A-M06-01..A-M06-06, A-M09-01, A-M09-02, A-M09-03 (optional PM track), A-M10-02, A-M10-04, A-M10-05, A-M11-01..A-M11-05, A-M13-02, A-M13-04, A-M13-05, A-M13-06, A-M13-08; B-M15-03, B-M16-01, B-M16-02, B-M16-03, B-M16-05, B-M19-02, B-M19-03 (simulation and paper wiring), B-M19-04, B-M19-05, B-M20-01, B-M20-02, B-M20-03, B-M20-04, B-M21-01, B-M21-02, B-M21-03, B-M21-06, B-M22-01, B-M22-02, B-M22-05, B-M23-01, B-M23-02, B-M23-03 (45) | Stage `replay_passed` (gates B on `W_B`, R on `W_R`), or the strategy is `failed` and work stops (D08) |
-| M3 | Paper | 2 | Run the full engine on live data with simulated fills and the operator dashboard; **first milestone producing paper-trading results** | A-M02-06, A-M12-01, A-M12-02, A-M13-07; B-M15-02, B-M20-05, B-M21-04, B-M21-05, B-M22-03, B-M23-04, B-M23-05, B-M24-03, B-M24-04, B-M25-02, B-M25-03, B-M26-01..B-M26-05, B-M27-02, B-M28-02, B-M28-03, B-M28-04, B-M28-05; UI-T08..UI-T31 (49) | Gates P-1..P-6 and P-9 pass (stage `paper_passed`), or stop. Paper results are simulated; they do not show that live trading would be profitable |
-| M4 | Live path to live-small | 3 | Custody, landing, expiry proofs, the sentinel and host hardening; then live-small under the go-live checklist | A-M14-04; B-M16-04, B-M16-07, B-M16-10, B-M17-01..B-M17-08, B-M18-01..B-M18-05, B-M22-04, B-M22-06, B-M29-01..B-M29-04, B-M30-02, B-M30-03, plus the live acceptance of B-M19-03; UI-T32 (26) | Gates P-7 and P-8 and the go-live checklist (ARCH 16.7) → `live_small`. Promotion to `live` needs the LS gates and D26 option (ii) or (iii) (LS-7) and adds no tickets |
+| M1 | Recording and the Phase 0 decision | 0 | Record PumpSwap market data without a key and measure whether MR-01 is worth writing | A-M01-02, A-M01-03, A-M01-04, A-M01-05, A-M02-04, A-M02-05, A-M03-01, A-M03-02, A-M03-03, A-M03-04, A-M04-01, A-M04-02, A-M04-03, A-M05-01, A-M05-02, A-M05-03, A-M07-02, A-M07-03, A-M08-01, A-M08-02, A-M08-03, A-M10-03, A-M13-01, A-M14-03, A-M14-05 (25) | Recorder runs 48 h unattended with ≥ 95% snapshot coverage; A-24 / A-24b / A-48 report accepted. **Stop MR-01** if fewer than 10 eligible pools on more than half of the days (and M4b is not justified) or typical moves do not exceed the cost hurdle, or on the kill-only check of its two configurations (A-M13-01 step 9, C-48; owner, 2026-10-07) |
+| M2 | Research and the engine core in simulation | 1 | Screening, simulation, strategy and the engine's own order, position, risk and ledger code, so backtest and replay gates run on the code that would trade | A-M06-01..A-M06-06, A-M09-01, A-M09-02, A-M09-03 (optional PM track), A-M10-02, A-M10-04, A-M10-05, A-M11-01..A-M11-05, A-M13-02, A-M13-04, A-M13-05, A-M13-06, A-M13-08; B-M15-03, B-M16-01, B-M16-02, B-M16-03, B-M16-05, B-M19-02, B-M19-03, B-M19-04, B-M19-05, B-M29-05, B-M20-01, B-M20-02, B-M20-03, B-M20-04, B-M21-01, B-M21-02, B-M21-03, B-M21-06, B-M22-01, B-M22-02, B-M22-05, B-M23-01, B-M23-02, B-M23-03 (46) | Stage `replay_passed` (gates B on `W_B`, R on `W_R`), plus the owner's pre-funding items 1 (10 identical replays, B-9), 2 (forward M07 data, plus the transaction-level replay of clean held history, B-10), 5 (the ARCH 16.5 failure-injection cases pass on the engine build) and 6 (rules fixed in advance, walk-forward, the `W_R` holdout with ≥ max(300, `n_80`) trades and a 95% CI above zero, R-1 and R-2), and the leak and parity tests (ARCH 16.4); or the strategy is `failed` and work stops (D08: by 31 Dec 2026 if both strategies fail) |
+| M3 | Paper | 2 | Run the full engine on live data with simulated fills and the operator dashboard; **first milestone producing paper-trading results** | A-M02-06, A-M12-01, A-M12-02, A-M13-07; B-M15-02, B-M20-05, B-M21-04, B-M21-05, B-M22-03, B-M23-04, B-M23-05, B-M24-03, B-M24-04, B-M25-02, B-M25-03, B-M26-01..B-M26-05, B-M27-02, B-M28-02, B-M28-03, B-M28-04, B-M28-05; UI-T08..UI-T31 (49) | Gates P-1..P-6, P-9 and P-10 pass (stage `paper_passed`), including the owner's items 3 (48 h dry run, ≥ 99% uptime, drills; P-5), 4 (≥ 95% of shadows simulate; P-6), 5 (fault injection on the promoted build; P-10) and 6's dry-run consistency (P-3); or stop. Paper results are simulated; they do not show that live trading would be profitable |
+| M4 | Live path to live-small | 3 | Custody, landing, expiry proofs, the sentinel and host hardening; then live-small under the go-live checklist | A-M14-04; B-M16-04, B-M16-07, B-M16-10, B-M17-01..B-M17-08, B-M18-01..B-M18-05, B-M22-04, B-M22-06, B-M19-06, B-M29-01..B-M29-04, B-M30-02, B-M30-03; UI-T32 (27) | All six owner pre-funding items passed (ARCH 3.4), gates P-7 and P-8, the go-live checklist (ARCH 16.7) and the owner → `live_small`. Promotion to `live` needs the LS gates and D26 option (ii) or (iii) (LS-7) and adds no tickets |
 | M4b | Raydium (conditional) | 3b | Only if M1 shows the PumpSwap-only universe is too small (D01, D18) | A-M01-06, A-M02-07, B-M16-09, plus Raydium additions inside B-M17-04/05 and B-M29-02 (3) | Raydium venue spec accepted; gate P-6 on Raydium pools |
 | Deferred | Research-only adapters | any | Built only when a research or PM-01 paper ticket needs them | B-M16-06, B-M16-08 (2) | — |
 
@@ -100,7 +102,7 @@ Every requirement, risk rule, decision branch, state machine, gate and revision-
 | D02 Landing path | B-M18-01, B-M18-02, A-M14-04 |
 | D03 Polling vs WebSocket vs gRPC | A-M04-01, A-M04-03 (transport seam), A-M14-05 (credit metering for the switch) |
 | D04 RPC providers | A-M14-01, A-M14-02, A-M14-05 |
-| D05 Language and runtime | B-M30-01, B-M19-03 (`build_sign_segment_ms`); switch alert **B-M27-02** |
+| D05 Language and runtime | B-M30-01, B-M19-06 (`build_sign_segment_ms`); switch alert **B-M27-02** |
 | D06 Database | B-M24-01; switch alert **B-M27-02** |
 | D07 Hosting | B-M30-02; switch alert **B-M27-02** |
 | D08 Strategy family | A-M13-05, A-M13-06, A-M09-02, A-M09-03 |
@@ -124,7 +126,7 @@ Every requirement, risk rule, decision branch, state machine, gate and revision-
 | D26 Signer availability after reboot | B-M17-02, B-M29-01, A-M13-06 (LS-7) |
 | D27 Out-of-band alert channel | B-M29-03, B-M27-02 |
 | D28 Clearing a sentinel or CLI latch | B-M17-08, B-M29-04, UI-T14 |
-| D29 Where research runs | A-M11-*, A-M13-08, B-M28-05, B-M29-04, UI-T23 |
+| D29 Where research runs | A-M11-*, A-M13-08, B-M28-05, B-M29-05, UI-T23 |
 | D30 Enumerating established pools | A-M03-03 |
 | D31 Simulation payer | A-M06-05, B-M16-05, B-M22-01 |
 
@@ -132,7 +134,7 @@ Every requirement, risk rule, decision branch, state machine, gate and revision-
 
 | Item | Tickets |
 |---|---|
-| 7.3 Order intent and attempt state machine | B-M19-02, B-M19-03, B-M19-04, B-M19-05; port states in A-M11-02, A-M12-01 (single `ExecutionPort`) |
+| 7.3 Order intent and attempt state machine | B-M19-02, B-M19-03, B-M19-04, B-M19-05, B-M19-06; port states in A-M11-02, A-M12-01 (single `ExecutionPort`) |
 | 7.3a On-chain failure taxonomy | B-M18-03 (classify), B-M19-05, B-M20-04 (act), A-M10-02 (simulated mix) |
 | 7.4 Position state machine | B-M20-01, B-M20-03, B-M20-05 |
 | 7.5 Token candidate state machine | A-M05-01 (inputs `position.terminal` from B-M20-01 and `risk.decision` from **B-M21-06**) |
@@ -147,8 +149,9 @@ Every requirement, risk rule, decision branch, state machine, gate and revision-
 |---|---|
 | CS-1 | A-M11-04, A-M13-06 |
 | B-1..B-8 | A-M11-02, A-M13-02, A-M13-03, A-M13-06 |
+| B-9 (owner item 1), B-10 (owner item 2) | A-M11-01, A-M11-03, A-M13-06 |
 | R-1..R-6 | A-M11-03, A-M10-04, A-M13-06 |
-| P-1..P-6, P-2b, P-9 | A-M12-01, A-M12-02 (P-6), A-M13-04, A-M13-06, B-M22-05 (P-5), B-M23-03 (P-9 via **B-M26-04 adapter**) |
+| P-1..P-6, P-2b, P-9, P-10 | A-M12-01, A-M12-02 (P-6, owner item 4), B-M26-04 (P-5 owner item 3, P-10 owner item 5), A-M13-04, A-M13-06, B-M22-05 (P-5), B-M23-03 (P-9 via **B-M26-04 adapter**) |
 | P-7, P-8 | B-M26-01, B-M29-04 (drills), B-M26-04 (checklist), A-M13-06 |
 | LS-1..LS-7, LS-3b | A-M13-06; inputs B-M23-03 (LS-2), B-M18-03 (LS-4), B-M22-03 (LS-5), B-M17-02 (LS-7) through **B-M26-04** |
 | L-1 (CUSUM, live-small and live) | A-M13-07, B-M21-04 |
@@ -183,7 +186,7 @@ Every requirement, risk rule, decision branch, state machine, gate and revision-
 | CA-23 | A-M13-06 (LS-1, LS-3), A-M13-07 |
 | CA-24 | A-M13-02, B-M25-01 |
 | CA-25 | A-M05-02, A-M10-04 |
-| CA-26 | A-M13-08, B-M28-05, B-M29-04 |
+| CA-26 | A-M13-08, B-M28-05, B-M29-05 |
 | CA-27 | A-M01-04, B-M16-09 |
 | CA-28 | A-M13-04, B-M22-06 |
 | CA-29 | B-M22-04 |
@@ -194,13 +197,13 @@ Every requirement, risk rule, decision branch, state machine, gate and revision-
 | CB-01 | A-M14-04, B-M18-01 |
 | CB-02 | A-M06-05, B-M22-01 |
 | CB-03 | B-M21-05, B-M23-03, A-M13-04 |
-| CB-04 | A-M04-02 (lag in slots), B-M19-03 (`build_sign_segment_ms`), B-M27-02 (D05 alert) |
+| CB-04 | A-M04-02 (lag in slots), B-M19-06 (`build_sign_segment_ms`), B-M27-02 (D05 alert) |
 | CB-05 | A-M14-05, B-M27-02 |
 | CB-06 | A-M03-03, A-M03-04 |
 | CB-07 | A-M01-06, B-M16-06, B-M16-09 |
 | CB-08 | A-M11-01, A-M11-04, A-M14-03 |
 | CB-09 | A-M13-02, A-M13-03 |
-| CB-10 | A-M13-08, B-M28-05, B-M29-04, UI-T23 |
+| CB-10 | A-M13-08, B-M28-05, B-M29-05, UI-T23 |
 | CB-11 | B-M19-01, B-M28-01 (`ExitReason` contract test), UI-T18 |
 | CB-12 | B-M28-03, A-M06-02 |
 | CB-13 | A-M10-05, B-M23-05 |
@@ -286,7 +289,7 @@ Every requirement, risk rule, decision branch, state machine, gate and revision-
 | High | There is no evidence of an after-cost edge for MR-01 or PM-01 (A-23). The plan is built so that a failing strategy stops at M1 (Phase 0 study) or M2 (gates B, R); M3 and M4 may never be reached. No ticket, gate or result in these files implies profit | Product owner; gates in A-M13-06 |
 | High | The live path cannot be completed until several third-party interface details are verified: PumpSwap pool-authority PDA seeds (U-A01; until then every pool is rejected), PumpSwap fee placement and rounding (U-A03; PumpSwap not quotable for live), Sender tip accounts (A-30), Sender key placement and per-region counting (A-40), how Sender selects SWQOS-only mode (integration item), the unit of Jupiter `/execute` limits (integration item), Jupiter router program ID (A-14), Compute Budget control-account placement (A-16), temporary-wSOL size fit (A-46) | Owning tickets in the register; go-live checklist item 11 |
 | Medium | Moving the engine core into M2 shifts roughly a third of group B's effort (B-M19/B-M20/B-M21/B-M22/B-M23 tickets) from Phase 2 to Phase 1. ARCH 18's effort split (A-33) was not re-estimated, and group B may now be the bottleneck of M2 | Leads re-estimate at the M0 exit |
-| Medium | B-M19-03 spans two milestones: simulation and paper wiring in M2, live acceptance (dependencies marked "live only": B-M16-04, B-M17-01, B-M18-01) in M4. Likewise B-M29-04's `import-run` subcommand is needed in M2 while the rest of `botctl` is M4 | Group B lead should split each into two tickets before M2 starts |
+| Resolved (2026-10-07) | B-M19-03 spanned two milestones, and B-M29-04's `import-run` was needed in M2 while the rest of `botctl` is M4 | Split in SPEC-B: B-M19-03 (simulation and paper wiring, M2) and B-M19-06 (live build, sign, persist, send, M4); B-M29-05 (`botctl import-run`, M2) and B-M29-04 (the rest of `botctl`, M4) |
 | Medium | Topic names and payloads `risk.decision`, `fill.events`, `pool.lp_changed` and the heartbeat `positions[]` were defined by this audit (ARCH 5.0b). They are internal contracts, not third-party facts, but they have not been reviewed by the two spec writers | Both leads review ARCH 5.0b before the `@bot/types` freeze (B-M19-01) |
 | Medium | The dashboard (UI-T08..UI-T31) sits at the end of the longest dependency chain because B-M28-03's projections need A-M13-06 gate evaluations. Fixture-first development removes most of the delay, but contract and end-to-end tests cannot pass until B-M28-03/04 merge | UI lead; build against `@bot/contract` fixtures from M0 |
 | Medium | `UI.md` mock-ups and examples still show 0.25 SOL position sizes and `LIVE-SMALL 0.25`, while ARCH 8.1 live-small `MAXPOS` is min(1.0% E, 66,666,667 lamports) ≈ 0.0667 SOL. VM-18 and UI-T22 now say the numbers are illustrative; the S-07 and S-13 drawings were not redrawn | UI lead; the UI never hard-codes limits (UI-T23 DoD), so this is cosmetic |
@@ -324,7 +327,7 @@ Every VERIFY, UNVERIFIED, ASSUMPTION and open vendor claim across the four files
 | 20 | ARCH A-20 | Token-2022 ATA size for pump mints is 170 bytes | ASSUMPTION (excluded claim says exact size unverified) | B-M16-02, B-M15-03 |
 | 21 | ARCH A-21 | `user_volume_accumulator` closability | UNVERIFIED | B-M16-03, B-M22-01 |
 | 22 | ARCH A-22 | Post-BOOST migration dynamics | UNVERIFIED (excluded) | A-M09-03 |
-| 23 | ARCH A-23 | Any edge for MR-01 on Solana DEX meme pools | No evidence | A-M13-06 (gates B, R, P) |
+| 23 | ARCH A-23 | Any edge for MR-01 on Solana DEX meme pools | Negative sub-hour proxy evidence; MR-01's 15 s signal untested (C-46) | A-M13-01 kill-only check (C-48); A-M13-06 (gates B, R, P) |
 | 24 | ARCH A-24 | Correct number of eligible MR pools (fee ≤ 30 bps, depth ≥ 300 SOL, age ≥ 24 h) | UNVERIFIED | A-M05-03, A-M13-01 |
 | 25 | ARCH A-24b | Short-horizon moves in eligible pools are large relative to a 0.6-0.75% round-trip cost plus the fixed-cost term | ASSUMPTION | A-M13-01 |
 | 26 | ARCH A-25 | RugCheck rate-limit window and terms for automated use | UNVERIFIED [TH-21] | A-M06-06 |

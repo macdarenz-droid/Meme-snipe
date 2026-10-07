@@ -1,9 +1,11 @@
 # Architecture
 
+Edited in Meme-snipe from 2026-10-07 (card Z0D); source commit `74e7258` of `macdarenz-droid/Snipe-solana` `main`.
+
 Solana meme-coin trading bot with an operator dashboard: system design, decision branches and the module map the build tickets will follow.
 
 - Author role: lead architect. Written 2026-10-06; revised the same day to resolve two independent architecture reviews (findings CA-01..CA-33 and CB-01..CB-27; section 20 is the revision log). Design only; no production code. Code-like fragments are interface specifications in TypeScript syntax, not implementations.
-- Inputs: the verified fact register (IDs `EX-*`, `LD-*`, `DA-*`, `TH-*`, `ST-*`, cited inline as [ID]), the dashboard document `UI.md` (its view models VM-01..VM-20 and its decisions D-UI-nn), and the researchers' implications (used as reasoning, never as facts).
+- Inputs: the verified fact register (IDs `EX-*`, `LD-*`, `DA-*`, `TH-*`, `ST-*`, and from 2026-10-07 `RS-*` for this repo's own research results, cited inline as [ID]), the dashboard document `UI.md` (its view models VM-01..VM-20 and its decisions D-UI-nn), and the researchers' implications (used as reasoning, never as facts).
 - Labels used in this document:
 
 | Label | Meaning |
@@ -298,6 +300,19 @@ Capital locked per open position: about 1,513,840 lamports of Token-2022 ATA ren
 | 10% | 3.0% | 86.7 | 65.0 | 52.0 | 43.3 | 32.5 |
 | 10% | 7.0% | 113.3 | 85.0 | 68.0 | 56.7 | 42.5 |
 
+**With trades that go to zero (C-50, 2026-10-07).** Let `W` = the win as a fraction of notional (`R × a`), `L` = the loss (`a`), `c` = round-trip cost, and `q` = the share of all trades that lose the whole stake (a rug, a drained pool, a sell that never lands). Then:
+
+```
+expectancy = p × (W − c) − (1 − p − q) × (L + c) − q × (1 + c) = 0   →   p* = (L + c + q × (1 − L)) / (W + L)
+```
+
+With `q = 0` this is the formula in 2.1. Example from the research: a +2% / −6% bracket at $200 in a deep pool needs 86% wins, and 98% if 1% of trades go to zero [RS-07]. The table above is `q = 0`, so it is a lower bound.
+
+**Conservative cost row (C-50).** Until each cost parameter is measured, M10 carries two cost rows and every report shows both:
+- **Conservative row (binding).** Built from the pessimistic Blueprint parameters: C-27's all-`unknown` failure mix, D15's High level on every leg (entries too), and janitor-close failure (rent not recovered) and dust-deposit rates at pessimistic priors that A-M10-03 states. Gates B-2 and R-2 must pass under this row until each parameter is measured; a measured value replaces only its own parameter.
+- **Sensitivity line (never a gate input).** Zeroed's 414,009-lamport fixed cost per round trip, which is about 53% modelled lost rent, 32% failed exit attempts and 14% fees on landed transactions [RS-06]. At 66,666,667 lamports that is about 0.62% of the trade (DERIVED: 414,009 ÷ 66,666,667).
+- **Fixed-cost cap.** No entry when the trade's fixed lamport cost (both legs, failed overhead, unrecovered rent) exceeds `k`% of the stake. `k` is fixed in the strategy's PREREG (A-M13-02) before any data is seen, and changing it is a new trial.
+
 ### 2.4 Conclusions on economic viability
 
 1. **Premium landing is uneconomic at this bankroll for any venue below $25 per trade.** The Premium landing scenario (a 0.001 SOL tip plus a 1,000,000 µlamports/CU priority-fee parameter) costs 754 bps of a $5 round trip, of which the tip alone is 600 bps; at $25 it costs 151 bps (tip 120 bps); at $50, 75 bps (tip 60 bps) (DERIVED: 2 × 1,000,000 lamports ÷ notional). Combined with an evidence base in which paying more did not buy faster inclusion [ST-23], the default is the 5,000-lamport Sender SWQOS-only path (D02).
@@ -336,14 +351,32 @@ At 10 trades per day this adds 40 bps (live-small) or 16 bps (live) to the 58-75
 
 | Rank | Family | Evidence | Latency tolerance | Economics (lean, section 2) | Verdict |
 |---|---|---|---|---|---|
-| 1 | **MR — short-horizon mean reversion on deep, low-fee pools** (long-only: buy sharp drops in pools with fee ≤ 30 bps per side, exit on reversion, stop or time) | N for the tested horizon. The nearest evidence is C and does not cover it: weekly reversal in small, illiquid CEX coins (t = −7.31) and daily/weekly/monthly reversals strongest in small, illiquid coins [ST-27], at horizons and in market structures orders of magnitude away from 5-15 minute moves in Solana AMM pools. Contested at CEX horizons by the momentum factor [ST-28]; no one-week momentum after survivorship adjustment [ST-26] (also CEX). No sub-hour or Solana-DEX study found. | High: seconds to minutes. Works with 1 Hz polling. | Best: `g*` ≈ 58-75 bps (V5-V7) | **Test first.** Only family whose costs are small relative to plausible moves and that does not compete on speed. |
+| 1 | **MR — short-horizon mean reversion on deep, low-fee pools** (long-only: buy sharp drops in pools with fee ≤ 30 bps per side, exit on reversion, stop or time) | N for the tested horizon. The nearest evidence is C and does not cover it: weekly reversal in small, illiquid CEX coins (t = −7.31) and daily/weekly/monthly reversals strongest in small, illiquid coins [ST-27], at horizons and in market structures orders of magnitude away from 5-15 minute moves in Solana AMM pools. Contested at CEX horizons by the momentum factor [ST-28]; no one-week momentum after survivorship adjustment [ST-26] (also CEX). No published sub-hour or Solana-DEX study found. **Negative sub-hour proxy evidence** from this repo's research (5-minute vendor bars, kill-only, not CS-1): the nearest dip-buying rules lost after costs [RS-01, RS-02]; MR-01's 15 s signal is untested (C-46). | High: seconds to minutes. Works with 1 Hz polling. | Best: `g*` ≈ 58-75 bps (V5-V7) | **Test first.** Only family whose costs are small relative to plausible moves and that does not compete on speed. |
 | 2 | **PM — post-migration momentum after the insider-unwind window** (enter only ≥ 20 min after migration if depth and independent participation hold) | N for the strategy; caution from D/B: about 73% of migrated coins fell below 40% of migration price within 20 min (pre-BOOST) [ST-10]; 82.8% of >100% gainers showed manipulation [ST-19]; wash volume in thin pools [ST-21, ST-V04]. Regime changed by BOOST [ST-06]. | Medium: seconds | Poor: `g*` ≈ 200-340 bps (V3/V4) | Second track: replay and paper only, post-BOOST data only. |
 | 3 | **GR — graduation play** (buy on curve, sell at or after graduation) | B, negative: buy-and-hold to graduation below break-even even with fees ignored [ST-02]; top-wallet conditioning still below break-even [ST-V01]; fees make it stricter [ST-V03]. Graduation rates changed with BOOST [ST-06]. | Medium | Poor: 272-426 bps (V1/V2) | Research-only hypothesis (replay); not eligible for paper until a dynamic variant beats break-even in replay. |
 | 4 | **MG — buy at migration** | B, negative: losses > 60% random, about 30% with best model, negative for every approach [ST-11]; pre-BOOST data only. | Low | Poor | Excluded from paper and live. Replay measurement only on post-BOOST data. |
 | 5 | **CT — copy-trading curve wallets** | B, negative: 14% leader vs 3% zero-latency copier, negative with statistical selection [ST-13]; adversarial bait [ST-14]; structural copier penalty [ST-V02]; very weak blog evidence of steep latency decay [ST-15]. | Very low | Poor (≥ 2.5% fee floor plus copier penalty) | Excluded. |
 | 6 | **SN — launch sniping** | B/D, negative for outsiders: bots in first five blocks in 84% of projects [ST-07]; creator buys in the create transaction in 98.7% [ST-09]; documented profitable sniping is deployer-funded insider activity [ST-12, TH-34]; fee size does not buy faster inclusion in one validator's data [ST-23]. | Extreme | Poor plus contested landing (Table 2-B) | Excluded (non-goal). A passive replay measurement of how many slots after creation our pipeline would act is allowed for research. |
 
-Why MR first, stated honestly: it is not chosen because evidence shows it works on Solana DEX meme coins (none was found). It is chosen because (a) it is the only family where the cost hurdle (about 0.6-0.75% per round trip, plus the fixed-cost term in section 2.4) is plausibly small relative to the short-horizon moves of meme-coin pools (ASSUMPTION A-24b), and (b) it needs neither speed nor insider position, so a $12-per-month stack can run it. **No evidence in the register covers sub-hour horizons; MR-01's parameters are untested hypotheses.** The CEX reversal results [ST-27] are weekly-to-monthly and are not support for these parameters. The A-24b study (distribution of 5-60 minute moves in eligible pools from the first week of M07 data) is therefore a **precondition for writing the MR-01 strategy ticket** (Phase 0, section 18). A specific hazard: in meme coins a sharp drop is often an insider dump that never reverts (92.22% of curve tokens with at least 30 swaps show a dump event [ST-04]). MR therefore restricts itself to established pools (age ≥ 24 h, depth ≥ 300 SOL, filters in section 8.4) and uses a time stop.
+Why MR first, stated honestly: it is not chosen because evidence shows it works on Solana DEX meme coins (none was found). It is chosen because (a) it is the only family where the cost hurdle (about 0.6-0.75% per round trip, plus the fixed-cost term in section 2.4) is plausibly small relative to the short-horizon moves of meme-coin pools (ASSUMPTION A-24b), and (b) it needs neither speed nor insider position, so a $12-per-month stack can run it. **The register holds negative sub-hour proxy evidence; MR-01's 15 s signal is untested, and its parameters are untested hypotheses** (C-46). The proxy: a 5-minute drop of at least 3σ, +6% / −4%, 30 min, in 41 established pump.fun coins in canonical PumpSwap SOL pools at ≥ 49,120 SOL market cap, decisions 2026-07-22 to 2026-09-21, lost 0.76% a trade after costs at $200 in validation (95% CI −1.15% to −0.35%, n = 266), while beating random entries [RS-01]. In the 0.30% tier alone it was −0.11% at $50 (95% CI −0.65% to +0.38%, n = 99) on +0.63% gross, below the 65-71 bps lean `g*` of V5 [RS-02]. Most of the bounce comes in the first 5 minutes [RS-03]. The proxy used 5-minute bars, a 3-day SD and fixed targets, with no depth-fall or `REGIME` filter, on a survivor-only coin list [RS-05], so the true result is likely worse. It is not the CS-1 coarse screen (C-46). The CEX reversal results [ST-27] are weekly-to-monthly and are not support for these parameters. The A-24b study (distribution of 5-60 minute moves in eligible pools from the first week of M07 data) is therefore a **precondition for writing the MR-01 strategy ticket** (Phase 0, section 18). A specific hazard: in meme coins a sharp drop is often an insider dump that never reverts (92.22% of curve tokens with at least 30 swaps show a dump event [ST-04]). MR therefore restricts itself to established pools (age ≥ 24 h, depth ≥ 300 SOL, filters in section 8.4) and uses a time stop.
+
+**Families already tested (C-51, 2026-10-07).** This repo's research tested these families before the Blueprint build. Every study is exploration, not proof: each used pre-wall or holdout-contaminated data, vendor bars or a survivor-biased list, so none can pass a gate or serve as a `W_B` window; they can only stop work or set priors. pump.fun data collected before 2026-10-07 serves research only, never a Blueprint universe or gate (C-52).
+
+| Family | Universe | Window | Result | Fact |
+|---|---|---|---|---|
+| Short-horizon dip-buying (MR proxy) | 41 established pump.fun coins, canonical PumpSwap SOL pools, ≥ 49,120 SOL market cap | Decisions 2026-07-22 to 2026-09-21 | Not supported (above) | RS-01, RS-02 |
+| Graduation window (graduation to +60 min, incl. +5 min momentum and the BOOST window) | 361 graduated tokens | Backfill 2026-10-01 23:00 to 2026-10-02 11:00 UTC (inside a sealed holdout) | Not supported: 0 of 72 rules positive after costs | RS-29 |
+| Copy-trading whale wallets | Every pump.fun and PumpSwap trade; 32 leader wallets in the main test | 2026-10-03, 12:37 to 15:20 UTC | Not supported: −11.0% a trade (95% CI −15.9% to −5.9%, n = 178) | RS-30 |
+| Lottery basket of fresh graduates | 900 random graduates (dead coins included); 506 usable | Created 2026-07-22 to 08-20; holds of 7 and 30 days | Not supported: −23.5% to −39.5% a trade at $20 | RS-31 |
+| Hour-1 runner (trail after 2×) | 900 random graduates; 443 usable | Created 2026-08-21 to 09-06 (validation) | Not supported: −22.4% a trade at $10 | RS-24 |
+| Weekly trend and cross-sectional momentum | 19 large memes, priced in SOL | Weekly, 2024-01-01 to 2026-09-14 | Not supported; holding SOL beat every rule | RS-32 |
+| Short side (perps) | Every non-major Hyperliquid perp | Weekly from 2024-01-01; validation from 2025-07-01 | Not supported: S2 −0.01% a week, no better than shorting everything; derivatives and cross-chain are outside the owner's rules | RS-33 |
+| Being the LP | About 250 established coins, canonical PumpSwap | Pre-wall daily data | Not supported: median −2.5% to −7.4% in SOL | RS-34 |
+| Funding carry (spot plus short perp) | 18 Hyperliquid meme perps | Not stated in the source | Not supported: about −1.6% a year median in SOL | RS-35 |
+| Curve intensity; BOOST window | Curve tokens; fresh migrations | Analysis of a published study (curve intensity) and of the graduation-window data (BOOST) | Ruled out by analysis | RS-36 |
+| Atomic cross-pool arbitrage | Pre-wall blocks | Pre-wall | Ruled out by analysis: 73% of arbitrages land in the same block, 22% in the next | RS-37 |
+| Daily holds (buy after a 22%+ fall, hold 1-3 days; weekly reversal and momentum) | 477 survivor pools (first run); 16,367 coins incl. dead ones (re-test) | Decisions 2026-06-01 to 09-20 | Open: the first run was survivor-biased (1 of 33); the survivorship-free re-test is running | RS-05, RS-38 |
+| Maker dip-buying (Meteora DLMM limit orders) | Deep-pool coins with a DLMM pool | — | Parked: new venue and signer program need the owner | RS-39 |
 
 ### 3.3 Strategy specifications to test (hypotheses, not claims)
 
@@ -354,6 +387,10 @@ Why MR first, stated honestly: it is not chosen because evidence shows it works 
 - Signal: robust z-score of the log return over lookback `L`, with scale = MAD / 0.67449 of the 15 s returns over the previous 6 h (the same robust scale as the dump detector in [ST-V08]). Entry when `z ≤ −z_entry`, depth has not fallen by more than 10% over `L`, no authority or fee-config change is pending, the market-regime filter is clear (section 8.1 `REGIME`) and the MR entry-rate limit allows it (section 8.1 `ENTRYRATE`).
 - Exit: two targets, whichever fires first: reversion to the 6 h rolling median price, or +6% (POLICY); stop at −`a`; time stop `T`; plus every universal exit in section 8.6.
 - Pre-registered configurations (trial budget from the calibrated MinBTL table in section 3.4): **at most 2 configurations** for the first evaluation window, because a 30-day window supports only 2 trials at an expected best annualised Sharpe of 2 and 3 at a Sharpe of 3: (`L`, `z_entry`, `a`, `T`) ∈ {(5 min, 3.0, 4%, 30 min), (15 min, 3.0, 5%, 60 min)}. Every other value that can change returns (universe filters, exits, cost-model and fill-model versions) is part of the trial identity (section 3.4), so changing it counts as a new trial.
+- Evidence: negative sub-hour proxy evidence; MR-01's 15 s signal is untested (section 3.2, C-46). MR-01 stays first because it is the cheapest to kill; M09 waits only for the Phase 0 report (A-24, A-24b and the kill-only check below).
+- **No low-volume configuration.** The proxy's low-volume variants made 6-7 trades a period [RS-04], too few to test, so none is pre-registered and none may be added to the 2 configurations above (C-46).
+- **Open point (beside C-22): drops caused by one large sale.** Whether a drop made by one large sale reverts differently from a broad drop is unknown; separating them needs trade-level data (D03). Until it is measured nothing filters or selects on it (C-47).
+- **Phase 0 kill-only check (A-M13-01, C-48).** On the Phase 0 week's 15 s M07 bars, exactly the two configurations above are run, with no selection: forward return 5-60 min after each signal at 0, 1 and 2-bar delays, and its excess over same-pool, same-hour random entries. MR-01 is stopped unless (a) the raw return beats the conservative-row hurdle (section 2.3) and (b) the excess is above zero. The check can never pass a configuration, and the week stays outside `W_B`.
 
 **PM-01 (second track, paper at most).** Canonical PumpSwap pools only, entry window 20-120 min after the `CompletePumpAmmMigrationEvent` [EX-03, DA-11]; requires depth ≥ 85 SOL effective with real/effective ratio ≥ 0.6 [EX-V01], holder and insider checks, 15 s bar breakout above the post-migration high with depth rising. Uses fee tier 1.25% while market cap < 420 SOL [EX-07], so its hurdle is about 3%. Post-21-July-2026 (BOOST) data only [ST-06]. Two exit rules run at once: a fixed stop and a trailing stop (section 8.6).
 
@@ -381,7 +418,7 @@ Principles (cited methodology; thresholds are POLICY):
 | `W_P` | Gate P (paper on live data) | 21 days | After `replay_passed` |
 | `W_LS` | Gates LS (live-small) | 14 days and the trade count in LS-1 | After promotion |
 
-So the earliest live-small date is at least about 65 days after recording starts, longer if trade counts are short. This is the honest cost of out-of-sample evidence.
+So the earliest live-small date is at least about 65 days after recording starts, longer if trade counts are short. This is the honest cost of out-of-sample evidence. Plan `W_B` itself for up to about 65 days: at a few trades a day, B-1's 300 trades may take that long (addendum A06, C-49); R-1's 300-trade holdout stretches `W_R` the same way.
 
 **MinBTL budget.** The register states MinBTL as an upper bound, MinBTL < 2 ln N / E[max_N]² years [ST-31], with two worked examples: 5 years allows 45 configurations and 2 years allows 7 (with an expected best annualised Sharpe of 1). Treating the bound as an equality contradicts those examples (it gives about 12 and 2.7), so the design does not do that. Instead it uses the paper's exact expression, `MinBTL ≈ [(1 − γ)·Z⁻¹(1 − 1/N) + γ·Z⁻¹(1 − 1/(N·e))]² / E[max_N]²` with γ ≈ 0.5772 (Euler-Mascheroni) and Z⁻¹ the standard normal quantile. **This expression is not in the register (UNVERIFIED);** the M13 ticket must quote it from the paper. As a check, it reproduces both register examples (DERIVED: 5.00 years for N = 45 and 1.92 years for N = 7 at E[max] = 1). Largest N with MinBTL ≤ window length (DERIVED from that expression):
 
@@ -415,7 +452,9 @@ MinTRL examples (DERIVED with the formula in [ST-32], one-sided 95%, SR_ref = 0,
 | | B-6 | t-statistic of mean net per-trade return ≥ 3.0 [ST-34] |
 | | B-7 | Max drawdown at intended live sizing ≤ 20% of `E` |
 | | B-8 | Positive in the final untouched holdout (last 20% of `W_B`) and in each calendar week of `W_B` separately [ST-06, ST-37] |
-| Backtest passed → Replay passed (on `W_R`) | R-1 | ≥ 14 days of self-recorded post-BOOST snapshot data after `W_B` and ≥ 200 trades |
+| | B-9 | Owner item 1: 10 replays of the evaluated run (same `RunSpec`, seed and build) give byte-identical decision logs (C-49) |
+| | B-10 | Owner item 2, extra check: the selected configuration replayed transaction by transaction through the same engine code on clean history already held (no holdout-contaminated day, no new bulk download, no new credits) shows zero crashes, illegal states or unreconciled intents; the days used are listed. It can fail the stage, never pass it alone (C-49) |
+| Backtest passed → Replay passed (on `W_R`) | R-1 | ≥ 14 days of self-recorded post-BOOST snapshot data after `W_B` and ≥ max(300, `n_80`) trades, where `n_80` = ⌈DEFF × ((1.960 + 0.842) / `S_B`)²⌉ is the count that gives 80% power at a two-sided 5% level for the selected configuration's per-trade net Sharpe `S_B` measured on `W_B`, and DEFF is the same-day design effect (A-M13-03). Owner item 6: `W_R` is the untouched out-of-sample holdout, and the selected rules are frozen before it starts (C-49) |
 | | R-2 | Net mean CI lower bound > 0 (as B-2) |
 | | R-3 | Replay mean ≥ 50% of the `W_B` point estimate (otherwise the bar-level backtest is optimistic; investigate before proceeding) |
 | | R-4 | Point estimate stays > 0 with injected latency = 2 × measured p95 decision-to-confirmed latency and with the sandwich probability doubled |
@@ -426,11 +465,12 @@ MinTRL examples (DERIVED with the formula in [ST-32], one-sided 95%, SR_ref = 0,
 | | P-2b | Fixed cost covered: (mean net per trade × observed trades per day × 30) − fixed monthly cost > 0, with the bootstrap 95% CI lower bound of that monthly figure > 0 (fixed cost from VM-14 items, converted at the live SOL/USD price) |
 | | P-3 | Paper mean not below the replay 95% CI lower bound (detects an optimistic simulator) |
 | | P-4 | Paper max drawdown ≤ 10% of `E` |
-| | P-5 | Market-data availability ≥ 99% of minutes during the window; zero unexplained paper-ledger differences |
-| | P-6 | Shadow simulation on ≥ 50 paper buys and ≥ 50 combined buy-then-sell round trips: build the real transaction and call `simulateTransaction` with the simulation payer (D31) [TH-46]; median absolute model-vs-simulated fill error ≤ 30 bps, p90 ≤ 100 bps. Standalone sell legs are not shadow-simulated (the payer holds no position tokens) |
+| | P-5 | Market-data availability ≥ 99% of minutes during the window; zero unexplained paper-ledger differences. Owner item 3: inside `W_P`, at least 48 h of the full engine on live feeds with ≥ 99% process uptime, restart and disconnect drills during those hours, and every decision logged with its reasons (C-49) |
+| | P-6 | Shadow simulation on ≥ 50 paper buys and ≥ 50 combined buy-then-sell round trips: build the real transaction and call `simulateTransaction` with the simulation payer (D31) [TH-46]; median absolute model-vs-simulated fill error ≤ 30 bps, p90 ≤ 100 bps. Owner item 4: ≥ 95% of shadow simulations succeed (status `ok`) with amounts within those bounds. Standalone sell legs are not shadow-simulated (the payer holds no position tokens); exits are measured by the round trips (C-49) |
 | | P-7 | Kill-switch drill passed in the last 7 days: HALT acknowledged by all components within 2 s; CLI kill with the engine stopped blocks signing |
 | | P-8 | Operator checklist (VM-18 `checklist[]`) ticked; typed phrase; step-up; 60 s delay (D-UI-13) |
 | | P-9 | Fixed monthly cost ≤ 3% of `E` (section 1.4) |
+| | P-10 | Owner item 5: the section 16.5 failure-injection cases for timeouts, stale feeds, rate limits and restarts mid-trade pass on the exact build being promoted, each ending in its documented state (C-49) |
 | Live-small → Live (on `W_LS`) | LS-1 | ≥ max(MinTRL from live moments, 100) live round trips and ≥ 14 days in live-small |
 | | LS-2 | Realised explicit cost per trade ≤ 1.25 × modelled |
 | | LS-3 | Live net mean per trade: bootstrap 95% CI lower bound > 0, **and** a non-inferiority test rejects "live mean ≤ paper mean − δ" at 5%, with δ = 50% of the paper mean (POLICY). A test that merely fails to reject "live ≥ paper" is not evidence and is not used |
@@ -444,7 +484,21 @@ MinTRL examples (DERIVED with the formula in [ST-32], one-sided 95%, SR_ref = 0,
 | | L-3 | Realised explicit cost > 1.5 × model over the last 50 trades → block entries |
 | | L-4 | Venue regime marker changes (fee-config change, program upgrade, new mandatory account) → demote to paper until replay revalidates |
 
-Stage `paper_passed` requires P-1..P-6 and P-9; P-7 (drills) and P-8 (checklist, phrase, step-up, delay) need the Phase 3 signer and sentinel and are evaluated only when the promotion command is submitted and again at its `effective_at`.
+Stage `paper_passed` requires P-1..P-6, P-9 and P-10; P-7 (drills) and P-8 (checklist, phrase, step-up, delay) need the Phase 3 signer and sentinel and are evaluated only when the promotion command is submitted and again at its `effective_at`.
+
+**Owner pre-funding items (binding; owner 2026-10-03, mapped 2026-10-07, C-49).** The owner's six items in `CLAUDE.md` "No deposit before proof" bind on top of the gates above. None replaces a Blueprint gate; where the two differ, the stricter holds.
+
+| Owner item | Requirement | Where it binds |
+|---|---|---|
+| 1 Deterministic replay | The same market data replayed 10 times gives identical decision logs | B-9; A-M11-01 acceptance; INTEGRATION M2 exit |
+| 2 Historical backtest | Owner's choice "both" (2026-10-07): gate B on forward M07 data (`W_B` ≥ 30 days), plus a transaction-level replay of clean history already held, through the same engine code, with zero crashes, illegal states or unreconciled intents | B-1..B-8 on `W_B`; B-10; INTEGRATION M2 exit |
+| 3 Live dry run | ≥ 48 h of the full engine on live feeds, ≥ 99% uptime, restart and disconnect drills, every decision logged with reasons | P-5; INTEGRATION M3 exit |
+| 4 Dry-run execution | Every paper entry and exit built as a real transaction and simulated (never sent); ≥ 95% simulate successfully with amounts within tolerance | P-6; A-M12-02; INTEGRATION M3 exit |
+| 5 Fault injection | Timeouts, stale feeds, rate limits and restarts mid-trade pass the acceptance cases | Section 16.5 tests at the M2 exit on the engine build; P-10 on the build promoted to `paper_passed` |
+| 6 Proven strategy | Rules fixed in advance (PREREG, trial key); walk-forward; a later untouched holdout with ≥ 300 out-of-sample trades whose 95% CI of mean net return is above zero, sample size designed for 80% power; dry-run paper trades consistent with the backtest | Pre-registration and walk-forward (principles above); R-1 and R-2 on `W_R` as the holdout; P-3 for consistency; INTEGRATION M2 and M3 exits |
+| Blindness | A leak test that plants a future-only marker and fails if any module sees it early; a parity test where data recorded in the live dry run, replayed through the backtester, reproduces the live decisions exactly | Section 16.4; A-M11-01 and A-M11-03 acceptance |
+
+M4 (live) needs all six items passed, plus every gate above and the owner.
 
 Demotion is always immediate (A1); promotion is always A3 with a cooldown of 7 days after any automatic demotion (VM-18 `cooldown_until`) and a minimum dwell (`min_dwell_until`) equal to the stage's minimum duration. A demoted strategy's stage drops to `replay_passed`; a fresh `W_P` starts after the cooldown.
 
@@ -748,7 +802,7 @@ The two module-group specifications (`SPEC-A.md`, `SPEC-B.md`) and the dashboard
 
 | # | Contract | Binding definition | Producer ticket(s) | Consumer ticket(s) | Source |
 |---|---|---|---|---|---|
-| I-01 | `ExecutionPort` (one definition in `@bot/types`) | `submit`, `status(): AttemptState`, `onResult`, `onNotLanded`; `AttemptState = 'building' \| 'build_failed' \| 'signing' \| 'sign_refused' \| AttemptStatus`; intents read through `OrderManager.intent` | B-M19-01 (type); B-M19-03 (live), A-M12-01 (paper), A-M11-02 (sim) | B-M19-04/05, B-M20-04 | C-29, CL-27 |
+| I-01 | `ExecutionPort` (one definition in `@bot/types`) | `submit`, `status(): AttemptState`, `onResult`, `onNotLanded`; `AttemptState = 'building' \| 'build_failed' \| 'signing' \| 'sign_refused' \| AttemptStatus`; intents read through `OrderManager.intent` | B-M19-01 (type); B-M19-03 (wiring), B-M19-06 (live), A-M12-01 (paper), A-M11-02 (sim) | B-M19-04/05, B-M20-04 | C-29, CL-27 |
 | I-02 | `OrderManager` additions | `intent`, `openIntentsFor`, `onIntentTerminal`, `submitMaintenance`; column `order_intent.purpose` | B-M19-02, B-M24-02 | A-M12-01, B-M22-04, B-M20-* | CL-29, CL-44 |
 | I-03 | `RungParams`, `ExitLadder` in `@bot/types` | as B-M19-01 | B-M19-01 (types), B-M20-04 (implementation) | B-M19-05 | CL-28 |
 | I-04 | `LandingPath` | adds `'jupiter_execute'`; M14 bucket at 80% of the documented `/execute` limit [EX-29] (unit VERIFY) | B-M19-01, A-M14-04 | B-M18-01, B-M18-05 | CL-04 |
@@ -775,7 +829,7 @@ The two module-group specifications (`SPEC-A.md`, `SPEC-B.md`) and the dashboard
 | I-25 | 403 `class_changed` | command submit whose server-derived class differs from the preview's | B-M26-02 | UI-T13 | integration |
 | I-26 | M08 `dumpFlagState()` | `'dump' \| 'clear' \| 'insufficient'`; `insufficient` → `error` for PM, `skipped` for MR | A-M08-02 | A-M06-04 | C-18 |
 | I-27 | M01 public surfaces | `VenueConfigCache`, `VenueStatusService`, `normalisePool`, `OrientationGuard`; unknown fee = 10,000 bps sentinel (fails every ceiling) | A-M01-02..05, A-M04-01 | B-M16-*, B-M20-03, B-M28-03 | C-01, C-08 |
-| I-28 | Run import | `botctl import-run` drops the bundle into a spool; the engine's import job (single writer) runs M13 `importRunBundle` | A-M13-08 (import), B-M29-04 (CLI) | A-M11-05 | C-38, CL-62 |
+| I-28 | Run import | `botctl import-run` drops the bundle into a spool; the engine's import job (single writer) runs M13 `importRunBundle` | A-M13-08 (import), B-M29-05 (CLI) | A-M11-05 | C-38, CL-62 |
 | I-29 | Unit types in `@bot/types` | Each 5.0 unit alias (`Lamports`, `SignedLamports`, `BaseUnits`, `MicroLamportsPerCu`, `Cu`, `Bps`, `Slot`, `BlockHeight`, `UnixMs`) is its 5.0 base type plus an optional, type-only unit tag: `type Lamports = Unit<bigint, 'Lamports'>`, where `Unit<T, U> = T & { readonly [unitTag]?: U }`. A plain `bigint` or `number` still assigns to any unit, so code written against the 5.0 aliases compiles unchanged; a value typed with one unit does not assign to another (`Slot` → `Lamports`, `Cu` → `Bps`, `SignedLamports` → `Lamports` are compile errors). The tag never exists at run time; runtime guards (`lamports()`, `cu()`, `bps()` and others) are in `units.ts`. `Pubkey`, `Signature`, `Id` and `DecimalStr` stay plain `string` | B-M19-01 | every consumer of `@bot/types` (group A first: M10, M12, M13) | B-M19-01 logic 1 (branded helpers, compile-time guards); C01 review finding m5 |
 
 ### M01 Venue registry and quote model (group A)
@@ -1621,6 +1675,7 @@ Each record: context, options, criteria, **default** for a <$1k bankroll with fa
 - **Switch triggers.** To (b): sustained (7-day) demand > 80% of the combined free capacity, or free-provider error rate > 2% on P0/P1 calls, **and** the section 1.4 rule (expected net PnL gain ≥ 3 × $49 per month) holds, **and** fixed cost stays ≤ 3% of equity (requires equity ≥ $2,033 for $49 + $12). At the current bankroll the trigger cannot be met; the alternative is to reduce the watchlist.
 - **What changes.** M14 limits; M15 can use staked sends; cost tracker fixed items.
 - **Interactions.** D02, D03, D15.
+- **Owner decision (2026-10-07, C-54).** Phase 0 recording reads from Shyft's free plan (option (a); $0; a new provider the owner approved). The backup is Chainstack's free plan at one read every 2 s (its 3M requests a month at the ≤ 50% rule allow 1.5M, about 0.58 reads a second, DERIVED). The owner's paid Helius Developer plan exists, but its headroom stays unused until the bot can buy coins with no blocker; it does not trigger the switch to (b), and the section 1.4 and P-9 tests are unchanged. Every external read stays at ≤ 50% of the provider's documented limit, honours `Retry-After` and stops after 3 failures (owner rule).
 
 ### D05 Language and runtime
 
@@ -1648,6 +1703,7 @@ Each record: context, options, criteria, **default** for a <$1k bankroll with fa
 - **What changes.** Deployment target; fixed-cost line.
 - **Interactions.** D02.
 - **Owner decision (2026-10-06).** The target is a dedicated Vultr instance bought for this bot: Frankfurt, Shared CPU plan `vc2-1c-2gb` (1 vCPU, 2 GB RAM, which the OS reports as about 1.9 GiB, 55 GB SSD), Ubuntu 24.04 LTS x64, US$10.00 per month, Vultr automatic backups off (the bot keeps its own encrypted backups). The owner's older 1 GB / 25 GB Vultr server runs another trading project and is never used for this bot. Rule: live trading runs only on a host that runs no other bot or project. The deployment preflight (`deploy/`) checks at least 1.9 GiB reported RAM and 50 GB free disk on the host itself and refuses to install below them.
+- **Owner decision (2026-10-07, C-53).** The bot moves to that `vc2-1c-2gb` host ("Lets use the 2gb"), installed with Meme-snipe's installer and key handoff (`ops/README.md`) from a fresh install. The 1 GB server `zeroed` is the one that ran Zeroed's worker, which ran out of V8 memory there; it is stopped, not deleted, until its ledger, saved state and journal are kept elsewhere, and its state is never reused. Gate windows count from the first recorded day on the new host.
 
 ### D08 Strategy family
 
@@ -1655,6 +1711,10 @@ Each record: context, options, criteria, **default** for a <$1k bankroll with fa
 - **Default.** **MR-01 first; PM-01 second track (paper at most); GR, MG, SN research-only; CT excluded** (section 3).
 - **Switch triggers.** MR-01 fails Phase 0 (A-24 or A-24b), the coarse screen CS-1, or gate B or R → stop MR work after at most the 2 pre-registered configurations on the first window; do not search further on the same data (MinBTL [ST-31]); move effort to PM-01 replay. PM-01 may enter paper only if it passes B and R on post-BOOST data. Any family that fails P is archived with its trial record.
 - **What changes.** Strategy plugin; universe filters; possibly D03 (if trade-level data is needed).
+- **The deep-pool proxy is not CS-1 (C-46).** The research proxy for MR-01 (5-minute vendor bars, rules registered on the research branch, a survivor-only list [RS-01, RS-05]) is negative evidence and a prior. It is not the CS-1 coarse screen: it ran other rules on other bars, so it neither stops MR-01 nor uses up CS-1. MR-01 can be stopped by Phase 0 (A-24, A-24b, the kill-only check C-48), CS-1 or gates B and R.
+- **PM-01 screen data (C-68).** PM-01 is screened only on swap-level data (A-M10-05's replayer) or 1 Hz M07 data. Its nearest neighbour lost 22.4% a trade on hourly bars [RS-24]; the evidence that hourly bars err in both directions comes from the unfinished execution audit and enters the register only after its RESULTS.md and a fresh review.
+- **End state with no edge (owner, 2026-10-07; C-56).** If MR-01 and PM-01 both fail, strategy work stops by 31 Dec 2026, and its spend cap is what the owner already pays (nothing new). The bot then only records, asks for no deposit and paper-trades no failed rule ("No knowingly losing trades"; the addendum's "and paper-trades" is not adopted). PerfStats (VM-09) shows hold-SOL and JitoSOL baselines beside every strategy [RS-23]; staking itself is the owner's call.
+- **No early coarse screen for now (owner, 2026-10-07; C-57).** The optional early CS-1 on CoinGecko minute bars (addendum A18) is not run now: the Phase 0 kill-only check gives the same kill from our own data, with no new provider or terms risk.
 
 ### D09 Exit execution method
 
@@ -1683,6 +1743,12 @@ Each record: context, options, criteria, **default** for a <$1k bankroll with fa
 
 - **Options.** (a) PumpPortal free new-token and migration streams + DexScreener + chain backfill [DA-01, DA-26]. (b) Helius Parsed Streams [DA-18]. (c) Own gRPC (D03(d)).
 - **Default.** **(a)** for new tokens and migrations, **plus D30's chain enumeration for established pools** (PumpPortal and the DexScreener endpoints used cannot list them [DA-01, DA-26]). Every discovered pool is verified on chain before use.
+- **Owner and supervisor rulings (2026-10-07, C-52).**
+  - The chain backfill (A-M03-02) is on by default and runs on its own; it is never a fallback that waits for PumpPortal.
+  - PumpPortal is not used for now (owner): A-M03-01 is built but not run against it, because whether pump.fun's Terms §21(h) reach it is not verified. Chain data covers new coins; PumpPortal missed 13.6% of creates in one sample [RS-20].
+  - No request goes to any pump.fun-operated host from any module, script or test. Pinned IDLs on GitHub and SDK test oracles from npm are not pump.fun hosts. A CI check fails on any such host (B-M30-01).
+  - pump.fun data collected before 2026-10-07 serves research only, never a Blueprint universe or gate [RS-21].
+  - The dated terms register lives in Meme-snipe's `docs/DECISIONS.md`, "Terms register (A02)".
 - **Switch triggers.** PumpPortal gaps > 1% of migrations against chain backfill over 7 days, or PumpPortal access disabled (its terms reserve this right [DA-03]) → (b) for migrations only (a few thousand events per day fit 1M credits only if under about 33k events per day; measure first).
 - **What changes.** M03 source adapter.
 
@@ -1784,6 +1850,7 @@ Each record: context, options, criteria, **default** for a <$1k bankroll with fa
 - **Switch triggers.** The notification drill (go-live checklist) fails to reach the operator within 5 minutes → add (b) or, with consent, (c).
 - **What changes.** M29 notifier targets; checklist.
 - **Interactions.** D26, D19 (tailnet), UI Q-08.
+- **Owner consent (2026-10-07, C-55).** The operator consented to option (c): Telegram (@Zeroed_alerts_bot) is the third-party channel. Message bodies carry codes only: no coin names, amounts or wallet addresses. The consent record is in Meme-snipe's `docs/DECISIONS.md` (2026-10-07), which B-M29-03's validator requires. Building it waits while alert work is parked (`CLAUDE.md` "Bot first").
 
 ### D28 Clearing a halt latch set by the sentinel or the CLI
 
@@ -2661,8 +2728,9 @@ Files: `/data/md/YYYY-MM-DD/HH/<stream>.ndjson.zst` + manifests and the daily un
 
 ### 16.4 Simulation tests
 
-- Determinism: the same `RunSpec` and seed produce byte-identical journals.
-- Replay of a recorded day through the full engine in `replay` mode equals the paper results of that day within the model's stated tolerance (catches mode-specific code drift).
+- Determinism: the same `RunSpec` and seed produce byte-identical journals; 10 replays of the same run give identical decision logs (owner item 1, gate B-9).
+- Parity: replay of a recorded day through the full engine in `replay` mode reproduces the paper (live dry-run) decisions of that day exactly, and with the same snapshots and draws the same fill amounts (owner, "Backtests are blind and reproduce live"; this replaces the earlier "within the model's stated tolerance"; catches mode-specific code drift).
+- Leak test: a future-only marker planted in recorded data after the simulated clock fails the run if any module reads it before its time (owner, "Backtests are blind and reproduce live").
 - Known-answer strategies: a strategy that buys at random must show negative after-cost expectancy (≈ −`g*` per trade); a "cheating" strategy with 1-bar lookahead must be detected by the no-lookahead test.
 - Statistics: DSR, PBO (CSCV), MinTRL, bootstrap implementations checked against hand-computed examples and against the MinTRL table in section 3.4 [ST-29, ST-30, ST-32]; the MinBTL expression reproduces the register's examples (45 configurations at 5 years, 7 at 2 years [ST-31]) and the budget table in 3.4; the L-1 CUSUM's in-control run length is within 10% of 500 trades in simulation.
 - Research hygiene: a replay trade that enters a pool later evicted is closed by the `no_data` rule, never dropped (CA-25); a gate evaluation with overlapping windows, shadow trades or an `affects_returns` mismatch is rejected (CA-22, CA-24); a coarse-screen run cannot pass a gate (CA-21).
@@ -2773,7 +2841,7 @@ Files: `/data/md/YYYY-MM-DD/HH/<stream>.ndjson.zst` + manifests and the daily un
 | A-20 | Token-2022 ATA size for pump mints is 170 bytes | ASSUMPTION (excluded claim says exact size unverified) | Rent figure slightly off | Read real ATA on chain |
 | A-21 | `user_volume_accumulator` closability | UNVERIFIED | One-time rent unrecoverable (small) | IDL review |
 | A-22 | Post-BOOST migration dynamics | UNVERIFIED (excluded) | PM-01 prior unknown | Self-recorded data (M07) |
-| A-23 | Any edge for MR-01 on Solana DEX meme pools | No evidence | The whole project's value | Gates B/R/P |
+| A-23 | Any edge for MR-01 on Solana DEX meme pools | Negative sub-hour proxy evidence; MR-01's 15 s signal untested [RS-01..RS-05] (C-46) | The whole project's value | Phase 0 kill-only check (C-48); gates B/R/P |
 | A-24 | Correct number of eligible MR pools (fee ≤ 30 bps, depth ≥ 300 SOL, age ≥ 24 h) | UNVERIFIED | Watchlist may be nearly empty, giving too few trades for MinTRL; PumpSwap-only live (D18) makes this more likely | First deliverable of Phase 0: daily count from the D30 enumeration, written to the universe manifest |
 | A-24b | Short-horizon moves in eligible pools are large relative to a 0.6-0.75% round-trip cost plus the fixed-cost term | ASSUMPTION | If moves are small, MR-01 cannot clear costs and is dropped before any strategy ticket is written | Distribution of 5-60 min returns from the first week of M07 data (Phase 0 precondition) |
 | A-25 | RugCheck rate-limit window and terms for automated use | UNVERIFIED [TH-21] | Soft check skipped | Read terms; cache aggressively |
@@ -2984,3 +3052,28 @@ Revision of 2026-10-06 in response to two independent architecture reviews. No f
 | CB-25 | minor | fixed | 3.2 states that no register evidence covers sub-hour horizons and that MR-01's parameters are untested hypotheses; A-24b is a precondition for the MR-01 strategy ticket (3.3, Phase 0) |
 | CB-26 | minor | fixed | Change-only delta recording; worst case about 1.56 GB/day raw, 0.31-0.52 GB/day compressed, 9-16 GB for 30 days; minimum disk 50 GB; A-27 must be resolved before ordering the droplet; segments deleted only after verified pull (M07, D07, 11.1) |
 | CB-27 | minor | fixed | CSCV only with ≥ 4 trials and on daily return matrices; with ≤ 3 trials B-4 is an out-of-sample rank-stability check (3.4, M13) |
+
+### Revision of 2026-10-07 (Meme-snipe card Z0D)
+
+From this date the Blueprint is edited in `macdarenz-droid/Meme-snipe` (source commit `74e7258` of Snipe-solana `main`). This revision carries the research addendum (`research/BLUEPRINT_ADDENDUM.md` @ `72f1793f`, branch `ccr-7fae2302-drz4co`) as ruled in Meme-snipe's `docs/MIGRATION.md` "Research addendum", and the owner's decisions of 2026-10-07 (Meme-snipe `docs/DECISIONS.md`). Every change only tightens or clarifies; no gate, limit or guard is loosened, and units stay lamports.
+
+| Change | Where | Source | Clarification |
+|---|---|---|---|
+| "No evidence covers sub-hour horizons" replaced by "negative sub-hour proxy evidence; MR-01's 15 s signal untested", with the proxy's numbers and caveats | 3.2 (ranking row and text), 3.3, A-23; SPEC-A A-M13-01 caveats; SPEC-B and INTEGRATION A-23 rows | A04 | C-46 |
+| The deep-pool proxy is not CS-1 | D08 | A04 | C-46 |
+| No low-volume configuration; open point "drops from one large sale" beside C-22 | 3.3; SPEC-A C-22 | A04 | C-46, C-47 |
+| Phase 0 kill-only check of MR-01's two configurations | 3.3; SPEC-A A-M13-01 (step 9, `killCheck`) | A05 (owner) | C-48 |
+| Owner pre-funding items 1-6 mapped to gates: B-9, B-10, R-1 (≥ max(300, `n_80`)), P-5 (48 h dry run), P-6 (≥ 95% simulate), new P-10 (fault injection); `paper_passed` needs P-10; plan `W_B` for up to about 65 days | 3.4; SPEC-A A-M11-01, A-M11-03, A-M12-02; SPEC-B B-M26-04; INTEGRATION M2, M3, M4 exits and gate table | A06 (item 2: owner) | C-49 |
+| Planted-marker leak test; replay-vs-paper parity made exact (was "within the model's stated tolerance"); 10 identical replays | 16.4; SPEC-A A-M11-01, A-M11-03 | A06 (owner rule "Backtests are blind and reproduce live") | C-49 |
+| q in the break-even formula; conservative cost row binding for B-2 and R-2 until measured; 414,009 lamports as a sensitivity line only; fixed-cost cap of `k`% fixed in the PREREG | 2.3 | A07 | C-50 |
+| Families already tested, each with universe and window | 3.2 | A20 | C-51 |
+| Chain backfill on by default; no request to any pump.fun-operated host; PumpPortal not used for now; terms register in Meme-snipe `docs/DECISIONS.md` | D12 | A02 (owner: PumpPortal) | C-52 |
+| The 2 GB host | D07 | A01 (owner) | C-53 |
+| Shyft free plan, Chainstack backup at one read every 2 s, Helius headroom unused | D04 | Owner | C-54 |
+| Telegram as the consented D27 (c) channel, codes only | D27 | Owner | C-55 |
+| Stop date 31 Dec 2026 and spend cap if both strategies fail; records only; SOL baselines in VM-09 | D08 | A17 (changed; values from the owner) | C-56 |
+| No early CoinGecko coarse screen for now | D08 | A18 (owner) | C-57 |
+| PM-01 screened only on swap-level or 1 Hz data | D08 | A19 | C-68 |
+| Rulings for A03, A08-A16, A21-A24 recorded; their ticket work stays with the cards Meme-snipe's map names | SPEC-A clarifications | A03, A08-A16, A21-A24 | C-58..C-67, C-69..C-72 |
+| B-M19-03 split into B-M19-03 (simulation and paper wiring, M2) and B-M19-06 (live port, M4); B-M29-04 split into B-M29-05 (`botctl import-run`, M2) and B-M29-04 (the rest, M4) | SPEC-B; INTEGRATION; ARCH 5.0b I-01, I-28 | INTEGRATION "Remaining issues" | — |
+| Register: RS-01..RS-39 added (this repo's research results, path:line @ `72f1793f`); `RS-*` added to the label line | FACTS.json; header | Addendum "Adopting" | — |

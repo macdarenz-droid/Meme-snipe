@@ -1,5 +1,7 @@
 # Build specification - group B
 
+Edited in Meme-snipe from 2026-10-07 (card Z0D); source commit `74e7258` of `macdarenz-droid/Snipe-solana` `main`.
+
 Execution, landing, positions, risk, custody, books and operations for the Solana meme-coin trading bot (modules M15-M30).
 
 - Written 2026-10-06 by the group B spec writer. Design and build specifications only; no production code. Code fragments are interface specifications in TypeScript, the language chosen in ARCH D05.
@@ -21,13 +23,13 @@ Group B work follows the gated phases of ARCH section 18. A phase's tickets star
 |---|---|---|---|
 | **M0 Foundations** | 0 | B-M15-01, B-M19-01, B-M24-01, B-M24-02, B-M25-01, B-M27-01, B-M28-01, B-M30-01 | Shared packages frozen with fixture tests; CI enforces the dependency policy; `node:sqlite` VERIFY result recorded; schema (including group A tables) migrates; config bootstrap; structured logging; slot clock reads two providers |
 | **M1 Recording and Phase 0 decision** | 0 | — (group A only; B tickets of M0 support it) | A-24/A-24b/A-48 report accepted (A-M13-01) |
-| **M2 Research and engine core in simulation** | 1 | B-M15-03, B-M16-01, B-M16-02, B-M16-03, B-M16-05, B-M19-02, B-M19-03, B-M19-04, B-M19-05, B-M20-01, B-M20-02, B-M20-03, B-M20-04, B-M21-01, B-M21-02, B-M21-03, B-M21-06, B-M22-01, B-M22-02, B-M22-05, B-M23-01, B-M23-02, B-M23-03 | Gates B and R evaluable with the engine's own code; stage `replay_passed` or stop (D08) |
+| **M2 Research and engine core in simulation** | 1 | B-M15-03, B-M16-01, B-M16-02, B-M16-03, B-M16-05, B-M19-02, B-M19-03, B-M19-04, B-M19-05, B-M29-05, B-M20-01, B-M20-02, B-M20-03, B-M20-04, B-M21-01, B-M21-02, B-M21-03, B-M21-06, B-M22-01, B-M22-02, B-M22-05, B-M23-01, B-M23-02, B-M23-03 | Gates B and R evaluable with the engine's own code; stage `replay_passed` or stop (D08) |
 | **M3 Paper** | 2 | B-M15-02, B-M20-05, B-M21-04, B-M21-05, B-M22-03, B-M23-04, B-M23-05, B-M24-03, B-M24-04, B-M25-02, B-M25-03, B-M26-01, B-M26-02, B-M26-03, B-M26-04, B-M26-05, B-M27-02, B-M28-02, B-M28-03, B-M28-04, B-M28-05 | Gates P-1..P-6 and P-9 evaluable; stage `paper_passed` or stop. **First milestone producing paper-trading results** |
-| **M4 Live path → live-small** (blocked by the M3 gate result) | 3 | B-M16-04, B-M16-07, B-M16-10, B-M17-01, B-M17-02, B-M17-03, B-M17-04, B-M17-05, B-M17-06, B-M17-07, B-M17-08, B-M18-01, B-M18-02, B-M18-03, B-M18-04, B-M18-05, B-M22-04, B-M22-06, B-M29-01, B-M29-02, B-M29-03, B-M29-04, B-M30-02, B-M30-03; plus B-M19-03 live acceptance (its `(live only)` dependencies) | Gates P-7, P-8 and the go-live checklist → `live_small`; LS gates → `live`; D26 (ii) or (iii) before `live` (LS-7) |
+| **M4 Live path → live-small** (blocked by the M3 gate result) | 3 | B-M16-04, B-M16-07, B-M16-10, B-M17-01, B-M17-02, B-M17-03, B-M17-04, B-M17-05, B-M17-06, B-M17-07, B-M17-08, B-M18-01, B-M18-02, B-M18-03, B-M18-04, B-M18-05, B-M19-06, B-M22-04, B-M22-06, B-M29-01, B-M29-02, B-M29-03, B-M29-04, B-M30-02, B-M30-03 | Gates P-7, P-8 and the go-live checklist → `live_small`; LS gates → `live`; D26 (ii) or (iii) before `live` (LS-7) |
 | **M4b Raydium** (only on the D01/D18 trigger) | 3b | B-M16-09; Raydium additions in B-M17-04/05 and B-M29-02 | M01 Raydium venue spec accepted; P-6 on Raydium pools |
 | **Deferred / research only** | any | B-M16-06, B-M16-08 | Built only when a research or PM-01 paper ticket needs it |
 
-`B-M29-04`'s `import-run` subcommand may be delivered early (M2) because it needs only B-M24-02 and A-M13-08's spool; the rest of the ticket is M4.
+Split on 2026-10-07 (INTEGRATION "Remaining issues"): `botctl import-run` is B-M29-05 (M2; it needs only B-M24-02 and A-M13-08's spool) and the rest of `botctl` is B-M29-04 (M4); the live execution port is B-M19-06 (M4) and the simulation and paper wiring stays B-M19-03 (M2).
 
 ### Ticket dependency list (group B internal and group A tickets; integration)
 
@@ -61,13 +63,14 @@ Group B work follows the gated phases of ARCH section 18. A phase's tickets star
 | B-M22-01 | B-M24-02, B-M25-01 | — | M2 |
 | B-M22-02 | B-M22-01 | A-M14-02 | M2 |
 | B-M22-03 | B-M22-02 | A-M02-03, A-M14-02 | M3 |
-| B-M22-04 | B-M22-03, B-M16-10, B-M19-03 | — | M4 |
+| B-M22-04 | B-M22-03, B-M16-10, B-M19-06 | — | M4 |
 | B-M22-05 | B-M22-01 | — | M2 |
 | B-M22-06 | B-M22-03, B-M23-01 | A-M02-03, A-M14-02 | M4 |
 | B-M19-02 | B-M24-02, B-M22-01 | — | M2 |
-| B-M19-03 | B-M19-02, B-M16-04 (live only), B-M17-01 (live only), B-M18-01 (live only) | — | M2 |
+| B-M19-03 | B-M19-02 | — | M2 |
 | B-M19-04 | B-M19-03, B-M22-02 | — | M2 |
 | B-M19-05 | B-M19-03 | A-M14-03 | M2 |
+| B-M19-06 | B-M19-03, B-M16-04, B-M17-01, B-M18-01 | — | M4 |
 | B-M18-01 | B-M19-01, B-M15-01 | A-M14-04 | M4 |
 | B-M18-02 | B-M18-01 | A-M14-03, A-M14-04 | M4 |
 | B-M18-03 | B-M18-01 | A-M02-03, A-M14-02 | M4 |
@@ -109,7 +112,8 @@ Group B work follows the gated phases of ARCH section 18. A phase's tickets star
 | B-M29-01 | B-M17-08 | — | M4 |
 | B-M29-02 | B-M29-01, B-M16-04, B-M18-04 (shared proof code) | A-M01-03, A-M02-02 | M4 |
 | B-M29-03 | B-M29-01 | — | M4 |
-| B-M29-04 | B-M29-01 (except `import-run`, which needs only B-M24-02) | A-M13-08 | M4 |
+| B-M29-04 | B-M29-01, B-M29-05 | — | M4 |
+| B-M29-05 | B-M24-02 | A-M13-08 | M2 |
 | B-M30-02 | B-M30-01, B-M17-01, B-M29-01 | — | M4 |
 | B-M30-03 | B-M30-02, B-M24-04 | A-M07-03 | M4 |
 
@@ -1158,7 +1162,7 @@ interface ExecutionPort {
   onResult(h: (r: AttemptResult) => void): () => void;    // added: final and intermediate results (landed_processed, confirmed_*, expired, unknown)
   onNotLanded(h: (e: { attemptId: Id; slotsSinceFirstSend: number }) => void): () => void;   // integration (C-29): drives exit supersession in every mode
 }
-// Integration (C-29/CL-27 merged): this is the single ExecutionPort for live (B-M19-03), paper (A-M12-01) and sim (A-M11-02).
+// Integration (C-29/CL-27 merged): this is the single ExecutionPort for live (B-M19-06, wired by B-M19-03), paper (A-M12-01) and sim (A-M11-02).
 // Ports read an attempt's intent through OrderManager.intent(intentId) (B-M19-02, CL-29); AttemptRequest carries no amounts.
 // CL-28: ladder parameters shared by M19 (executes attempts) and M20 (owns the ladder), so neither imports the other
 interface RungParams { rung: 1 | 2 | 3 | 4 | 5; route: 'direct' | 'jupiter_order'; slippageBps: Bps; cuPriceMultiplier: 1 | 2 | 3;
@@ -1228,44 +1232,28 @@ const TERMINAL_INTENT: ReadonlySet<OrderState> = new Set(['rejected', 'filled', 
 - **Facts used:** none external.
 - **Definition of done:** Common DoD; ARCH 16.2 state-machine properties pass.
 
-#### B-M19-03 — Live execution port: build → sign → persist → send
+#### B-M19-03 — Execution port wiring and attempt lifecycle (simulation and paper)
 
-- **Module:** M19 · **Size:** L (~2.5 engineer-days) · **Phase:** 2 (paper wiring with M12), 3 (live)
-- **Goal:** Implement `ExecutionPort` for live modes: build with M16, sign through the signer socket, persist the signature and signed bytes **before** sending, send through M18, and map every signer and builder response to the ARCH 7.3 transitions, including the signer timeout path through `status_of`.
-- **Depends on:** B-M19-02, B-M16-04 (and B-M16-07 for rung 4), B-M17-01 (protocol, live only), B-M18-01 (live only). Group A: M12 implements the same port for paper.
-- **Interfaces:** `ExecutionPort` (B-M19-01); signer client:
-
-```ts
-interface SignerClient {               // over /run/signer/engine.sock (identity 'engine' from SO_PEERCRED)
-  sign(r: SignRequest, timeoutMs: number): Promise<Result<SignResponse & { ok: true }, { code: SignerError | 'E_TIMEOUT' | 'E_SOCKET'; message: string; hintMismatch: boolean }>>;
-  statusOf(intentId: Id): Promise<Result<StatusOfResponse, { code: 'E_TIMEOUT' | 'E_SOCKET' }>>;
-  status(): Promise<Result<SignerStatus, { code: 'E_TIMEOUT' | 'E_SOCKET' }>>;
-  latch(r: LatchRequest): Promise<Result<true, { code: string }>>;
-  lease(r: LeaseRequest): Promise<Result<true, { code: string }>>;
-  setMode(r: SetModeRequest): Promise<Result<true, { code: string }>>;
-}
-```
-
+- **Module:** M19 · **Size:** S (~1 engineer-day) · **Phase:** 1-2 (simulation and paper; split from the original B-M19-03 on 2026-10-07, INTEGRATION "Remaining issues")
+- **Goal:** The mode-independent half of the execution port: the `tx_attempt` row lifecycle, port selection by mode (M11's simulation port, M12's paper port; the live port is B-M19-06), and the mapping of every `AttemptResult` to the ARCH 7.3 transitions, so the order manager runs the same code in every mode.
+- **Depends on:** B-M19-02. Group A: M11 (`SimExecutionPort`, A-M11-02) and M12 (`PaperExecutionPort`, A-M12-01) implement the same port.
+- **Interfaces:** `ExecutionPort` (B-M19-01); `selectExecutionPort(mode): ExecutionPort` (NEW).
 - **Logic:**
-  1. `submit(AttemptRequest)`: create the `tx_attempt` row (`building`), return `{ attemptId, signature: null }` immediately; continue asynchronously.
-  2. Build: `buildSwap` (rungs 1-3, 5) or `buildOrderExit` (rung 4). Map: `E_NO_ROUTE`/`E_QUOTE_DRIFT`/`E_ROUTE_POOL_MISMATCH`/`E_TOO_LARGE`/`E_ROUTE` → entry `abandoned` (reservation released), exit → next rung via B-M19-05; `E_ZERO_BALANCE` (sell) → `filled` if an earlier attempt of this intent or the sentinel journal shows the sale, otherwise `reconciling` (ARCH 7.3); `E_BLOCKHASH` → entry `abandoned`, exit retry in 2 s.
-  3. Sign: `sign({ kind: 'sign', requestId, intentId, messageBytesB64, hint, priorAttempts })` with `timeoutMs = 2,000` (ARCH 7.3). Mapping: `ok` → persist `signature`, `signedTxB64`, `lastValidBlockHeight` and the signer's `classification` on the attempt row **in one committed transaction before any send** (crash safety), then `in_flight`; `E_HALTED`/`E_EXITS_ONLY`/`E_MODE`/`E_CAP_DAY`/`E_HOTCAP` (buys) → `cancelled`, reservation released; `E_LEASE` (exit) → intent parked, position stays `closing`, alert (the sentinel owns exits for this mint); `E_BALANCE` (exit) → back to `building` with a fresh balance read, counted as `balance_mismatch`; `E_DUPLICATE` (exit, 2 unexpired) → wait for B-M18 results then rebuild; `E_PROOF_REQUIRED` (buy) → `reconciling`; any other policy refusal → `abandoned` and `security` critical alert; `hintMismatch: true` → `security` critical alert in every case.
-  4. Signer timeout or socket error → `statusOf(intentId)` first: if a message for this attempt's message hash exists, adopt its signature and go to `in_flight`; otherwise back to `building` (ARCH 7.3).
-  5. Send: M18 `send({ attemptId, side, signedTx, signature, lastValidBlockHeight, paths })`; `paths` = rung's paths (`sender` + `rpc` at rung 1; + `jito_tx` from rung 2; `jupiter_execute` at rung 4).
-  6. Results from M18 `onResult` update the attempt row and drive the intent (B-M19-04/05).
-  7. Paper mode: the same `OrderManager` uses M12's port (group A); no signer or sender calls exist in paper (a startup assertion refuses to construct the live port while mode is `paper` unless positions opened in live are being managed with `keep_managing`, ARCH 7.7).
-- **Shared resources and concurrency:** Attempt records (owner M19); signer state (owner M17, via protocol). The signed bytes persisted here are what M18 rebroadcasts after a restart.
-- **Config:** `m19.signer_timeout_ms` (2,000; 500-10,000); `m19.signer_socket_path`.
-- **Edge cases and failure handling:** Crash after signing, before send → on restart the signature is known (persisted) and the status query decides (ARCH 16.5); crash after sign returned but before persistence → `statusOf` adopts it (ARCH 7.6 step 4).
+  1. `submit(AttemptRequest)`: create the `tx_attempt` row (`building`), return `{ attemptId, signature: null }` immediately; continue asynchronously in the selected port.
+  2. Results from the port's `onResult` and `onNotLanded` update the attempt row and drive the intent (B-M19-04/05), with the same transitions the live port uses (ARCH 7.3).
+  3. Mode selection: `backtest`/`replay` → M11's port; `paper` → M12's port. A startup assertion refuses to construct the live port while mode is `paper` unless positions opened in live are being managed with `keep_managing` (ARCH 7.7); before B-M19-06 exists, any live mode refuses to start.
+- **Shared resources and concurrency:** Attempt records (owner M19).
+- **Config:** none beyond the mode.
+- **Edge cases and failure handling:** Engine restart with pending simulated or paper attempts → they resolve as M11/M12 define (paper: `expired`, pessimistic); the attempt row records it.
 - **Acceptance criteria:**
-  1. Given the signer returns a signature and the engine is killed before sending, when it restarts, then no second buy message is requested and the attempt is resolved by status query (landed or expired).
-  2. Given a signer timeout and `statusOf` showing a signature for the same message hash, then the attempt adopts it without re-signing.
-  3. Given `E_LEASE` on an exit, then the intent is parked and an alert is raised; no retry loop runs.
-- **Tests:** unit with a fake signer and fake sender (every response code); integration with the real signer binary in CI (three users); failure injection: kill at each step (ARCH 16.5 first two rows).
-- **Observability:** metrics `signer_latency_ms`, `signer_refusals_total` (code), `build_sign_segment_ms` (route; D05 trigger metric, CL-14); log codes `m19.signed`, `m19.sign_refused`, `m19.sign_timeout_adopted`.
-- **Security notes:** The engine never sees key material; it only sends message bytes. `hintMismatch` is always a security alert.
-- **Facts used:** LD-07 (same signed bytes rebroadcast idempotently).
-- **Definition of done:** Common DoD; ARCH 16.5 rows "Crash after signing", "Crash after send", "Signer down / refuses" pass.
+  1. Given mode `paper`, when the engine starts, then the live port is not constructed and no signer or sender call exists.
+  2. Given a paper `AttemptResult` for an entry and one for an exit, then the attempt rows and intents move through exactly the ARCH 7.3 transitions the live port would produce for the same result.
+  3. Given a live mode while B-M19-06 is absent, then the engine refuses to start.
+- **Tests:** unit with fake simulation and paper ports (every `AttemptStatus`); the replay-vs-paper parity test (A-M11-03).
+- **Observability:** metric `attempts_total{mode,status}`.
+- **Security notes:** No key, signer or sender path exists in this ticket.
+- **Facts used:** none external.
+- **Definition of done:** Common DoD; gate runs in M2 (A-M11-02/03) drive the order manager through this ticket.
 
 #### B-M19-04 — Entries: single attempt, fast evidence poll and reconciliation of unknown outcomes
 
@@ -1318,6 +1306,45 @@ interface SignerClient {               // over /run/signer/engine.sock (identity
 - **Security notes:** None beyond conventions.
 - **Facts used:** LD-02.
 - **Definition of done:** Common DoD; ARCH 16.5 exit rows pass.
+
+#### B-M19-06 — Live execution port: build → sign → persist → send
+
+- **Module:** M19 · **Size:** L (~2 engineer-days) · **Phase:** 3 (live; split from the original B-M19-03 on 2026-10-07, whose simulation and paper half is now B-M19-03)
+- **Goal:** Implement `ExecutionPort` for live modes: build with M16, sign through the signer socket, persist the signature and signed bytes **before** sending, send through M18, and map every signer and builder response to the ARCH 7.3 transitions, including the signer timeout path through `status_of`.
+- **Depends on:** B-M19-03, B-M16-04 (and B-M16-07 for rung 4), B-M17-01 (protocol), B-M18-01. Group A: M12 implements the same port for paper.
+- **Interfaces:** `ExecutionPort` (B-M19-01); signer client:
+
+```ts
+interface SignerClient {               // over /run/signer/engine.sock (identity 'engine' from SO_PEERCRED)
+  sign(r: SignRequest, timeoutMs: number): Promise<Result<SignResponse & { ok: true }, { code: SignerError | 'E_TIMEOUT' | 'E_SOCKET'; message: string; hintMismatch: boolean }>>;
+  statusOf(intentId: Id): Promise<Result<StatusOfResponse, { code: 'E_TIMEOUT' | 'E_SOCKET' }>>;
+  status(): Promise<Result<SignerStatus, { code: 'E_TIMEOUT' | 'E_SOCKET' }>>;
+  latch(r: LatchRequest): Promise<Result<true, { code: string }>>;
+  lease(r: LeaseRequest): Promise<Result<true, { code: string }>>;
+  setMode(r: SetModeRequest): Promise<Result<true, { code: string }>>;
+}
+```
+
+- **Logic:**
+  1. `submit(AttemptRequest)`: the attempt row and result handling are B-M19-03's; this port continues asynchronously from `building`.
+  2. Build: `buildSwap` (rungs 1-3, 5) or `buildOrderExit` (rung 4). Map: `E_NO_ROUTE`/`E_QUOTE_DRIFT`/`E_ROUTE_POOL_MISMATCH`/`E_TOO_LARGE`/`E_ROUTE` → entry `abandoned` (reservation released), exit → next rung via B-M19-05; `E_ZERO_BALANCE` (sell) → `filled` if an earlier attempt of this intent or the sentinel journal shows the sale, otherwise `reconciling` (ARCH 7.3); `E_BLOCKHASH` → entry `abandoned`, exit retry in 2 s.
+  3. Sign: `sign({ kind: 'sign', requestId, intentId, messageBytesB64, hint, priorAttempts })` with `timeoutMs = 2,000` (ARCH 7.3). Mapping: `ok` → persist `signature`, `signedTxB64`, `lastValidBlockHeight` and the signer's `classification` on the attempt row **in one committed transaction before any send** (crash safety), then `in_flight`; `E_HALTED`/`E_EXITS_ONLY`/`E_MODE`/`E_CAP_DAY`/`E_HOTCAP` (buys) → `cancelled`, reservation released; `E_LEASE` (exit) → intent parked, position stays `closing`, alert (the sentinel owns exits for this mint); `E_BALANCE` (exit) → back to `building` with a fresh balance read, counted as `balance_mismatch`; `E_DUPLICATE` (exit, 2 unexpired) → wait for B-M18 results then rebuild; `E_PROOF_REQUIRED` (buy) → `reconciling`; any other policy refusal → `abandoned` and `security` critical alert; `hintMismatch: true` → `security` critical alert in every case.
+  4. Signer timeout or socket error → `statusOf(intentId)` first: if a message for this attempt's message hash exists, adopt its signature and go to `in_flight`; otherwise back to `building` (ARCH 7.3).
+  5. Send: M18 `send({ attemptId, side, signedTx, signature, lastValidBlockHeight, paths })`; `paths` = rung's paths (`sender` + `rpc` at rung 1; + `jito_tx` from rung 2; `jupiter_execute` at rung 4).
+  6. Results from M18 `onResult` go to B-M19-03's result handling, which updates the attempt row and drives the intent (B-M19-04/05).
+  7. Paper mode never constructs this port (B-M19-03's startup assertion).
+- **Shared resources and concurrency:** Attempt records (owner M19); signer state (owner M17, via protocol). The signed bytes persisted here are what M18 rebroadcasts after a restart.
+- **Config:** `m19.signer_timeout_ms` (2,000; 500-10,000); `m19.signer_socket_path`.
+- **Edge cases and failure handling:** Crash after signing, before send → on restart the signature is known (persisted) and the status query decides (ARCH 16.5); crash after sign returned but before persistence → `statusOf` adopts it (ARCH 7.6 step 4).
+- **Acceptance criteria:**
+  1. Given the signer returns a signature and the engine is killed before sending, when it restarts, then no second buy message is requested and the attempt is resolved by status query (landed or expired).
+  2. Given a signer timeout and `statusOf` showing a signature for the same message hash, then the attempt adopts it without re-signing.
+  3. Given `E_LEASE` on an exit, then the intent is parked and an alert is raised; no retry loop runs.
+- **Tests:** unit with a fake signer and fake sender (every response code); integration with the real signer binary in CI (three users); failure injection: kill at each step (ARCH 16.5 first two rows).
+- **Observability:** metrics `signer_latency_ms`, `signer_refusals_total` (code), `build_sign_segment_ms` (route; D05 trigger metric, CL-14); log codes `m19.signed`, `m19.sign_refused`, `m19.sign_timeout_adopted`.
+- **Security notes:** The engine never sees key material; it only sends message bytes. `hintMismatch` is always a security alert.
+- **Facts used:** LD-07 (same signed bytes rebroadcast idempotently).
+- **Definition of done:** Common DoD; ARCH 16.5 rows "Crash after signing", "Crash after send", "Signer down / refuses" pass.
 
 ---
 
@@ -1440,7 +1467,7 @@ Shared interface (exact copy of ARCH M20): `ExitReason`, `ExitTrigger`, `Positio
 
 - **Module:** M20 · **Size:** M (~1.5 engineer-days) · **Phase:** 2 (close, flatten, write-off), 3 (lease, import)
 - **Goal:** Implement `close`, `flattenAll`, `writeOff`, lease-aware exit gating and `importSentinelFills` (ARCH 7.6 step 5, CA-13).
-- **Depends on:** B-M20-04. Group B: M17 lease status via B-M19-03 `SignerClient`, M22 `written_off` list, M23 journal.
+- **Depends on:** B-M20-04. Group B: M17 lease status via B-M19-06 `SignerClient` (live only), M22 `written_off` list, M23 journal.
 - **Interfaces:** `PositionManager.close`, `flattenAll`, `writeOff`, `importSentinelFills` (ARCH M20).
 - **Logic:**
   1. `close(positionId, reason, maxSlippageBps)`: allowed for non-terminal, non-`stuck` positions; creates (or returns the existing) exit intent with `maxSlippageBps` ≤ 2,500; reason `manual_close`.
@@ -1721,7 +1748,7 @@ interface Equity { E(): Lamports; Etrade(): Lamports; components(): { hotSol: La
 
 - **Module:** M22 · **Size:** M (~1.5 engineer-days) · **Phase:** 3
 - **Goal:** Close zero-balance ATAs to recover rent (CA-29), unwrap stray wSOL, sweep excess hot SOL to cold daily and on demand (leaving float, reservations, rent and a 0.01 SOL buffer), and execute the operator's `close_unsolicited` command.
-- **Depends on:** B-M22-03, B-M16-10, B-M19-03.
+- **Depends on:** B-M22-03, B-M16-10, B-M19-06.
 - **Interfaces:** `Wallet.janitor()`, `sweepIfAboveCap()` (ARCH M22); maintenance submission through M19 (`submitMaintenance`, CL-44).
 - **Logic:**
   1. Janitor (every 60 s, at most one janitor transaction per minute): candidate ATAs = registry entries with chain balance exactly 0 whose mint has no non-terminal position or intent, excluding mints in the D22 keep-open window (24 h after a close when the D22 switch is on); build with B-M16-10; submit as maintenance `janitor`; on confirmation book `rent_refund` per closed account (M23) and mark `closed_at`. Never counts toward cannot-sell.
@@ -2080,7 +2107,7 @@ Shared interface (exact copy of ARCH M26): `CommandService` (`preview`, `submit`
 
 - **Module:** M26 · **Size:** M (~2 engineer-days) · **Phase:** 2 (paper), 3 (signer latch, sentinel)
 - **Goal:** Own `system_state` (mode, trading state, `state_version`) and every trading-state transition of ARCH 7.7, implement HALT semantics D24 with component acknowledgements within 2 s, RESUME, `exits_only`, and the engine side of the sentinel heartbeat and `start_refused` protocol.
-- **Depends on:** B-M24-03, B-M27-01. Group B: B-M19-03 `SignerClient` (latch), M19 `cancelUnsent`, M20, M21; M29 heartbeat socket (B-M29-01).
+- **Depends on:** B-M24-03, B-M27-01. Group B: B-M19-06 `SignerClient` (latch; live modes only), M19 `cancelUnsent`, M20, M21; M29 heartbeat socket (B-M29-01).
 - **Interfaces:** `ModeController` (ARCH). Heartbeat messages (ARCH M29, plus CL-56):
 
 ```ts
@@ -2168,7 +2195,7 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
   4. Lowering (A1, immediate): `set_mode` down; `SignerClient.setMode(lower)` first (fail-safe order), then engine mode; `open_positions_policy` = `keep_managing` (default) or `flatten` (M20 `flattenAll`).
   5. Automatic demotion (from M21: L-1, L-2/DDKILL, L-4): mode → `paper` immediately, actor `risk_engine`, `cooldown_until = now + 7 days`, the strategy's stage drops to `replay_passed` (M13), pending A3 commands cancelled, positions `keep_managing`.
   6. VM-18 `blocking_reasons` include every failing guard with a code.
-  7. **`ExternalGateInputs` adapter (integration, C-39).** This ticket implements A-M13-06's `ExternalGateInputs` by aggregating: `drills()` from the drill records of B-M26-01 (halt acknowledgement times) and B-M29-04 (`botctl` kill drill); `checklist()` from this ticket's checklist; `paperLedgerUnexplainedDiffs()` from B-M22-05; `fixedMonthlyLamports()` from B-M23-03 and `equityLamports()` = the **real chain `E`** from B-M22-01 (CL-45); `realisedVsModelledCost()` from B-M23-03 step 4; `landing()` from B-M18-03 statistics; `reconciliation()` from B-M22-03; `signerUnlockOption()` from config of D26 (B-M17-02). Any unavailable source returns `null`/throws `input_unavailable` so the gate fails (A-M13-06 rule). The adapter is injected into M13 at engine start, so group A has no build dependency on group B for it.
+  7. **`ExternalGateInputs` adapter (integration, C-39).** This ticket implements A-M13-06's `ExternalGateInputs` by aggregating: `drills()` from the drill records of B-M26-01 (halt acknowledgement times) and B-M29-04 (`botctl` kill drill); `checklist()` from this ticket's checklist; `paperLedgerUnexplainedDiffs()` from B-M22-05; `fixedMonthlyLamports()` from B-M23-03 and `equityLamports()` = the **real chain `E`** from B-M22-01 (CL-45); `realisedVsModelledCost()` from B-M23-03 step 4; `landing()` from B-M18-03 statistics; `reconciliation()` from B-M22-03; `signerUnlockOption()` from config of D26 (B-M17-02). Any unavailable source returns `null`/throws `input_unavailable` so the gate fails (A-M13-06 rule). The adapter is injected into M13 at engine start, so group A has no build dependency on group B for it. Owner items 3 and 5 (2026-10-07, C-49): the adapter also supplies the dry-run uptime and drill records (P-5) and the failure-injection results of the build being promoted (P-10); A-M13-06 adds the matching `ExternalGateInputs` fields, and a missing input fails the gate.
   8. Stage changes: promotions call `StageMachine.onModeCommand`; automatic demotions call `StageMachine.onDemotion({ strategyId, reason: 'L-1' | 'L-2' | 'L-4' | 'operator' })` (DDKILL = L-2).
 - **Shared resources and concurrency:** System mode (owner M26); strategy stage (owner M13, changed through its API); signer mode (owner M17, via protocol).
 - **Config:** `m26.start_mode` (`paper`); `m26.cooldown_after_demotion_ms` (7 days).
@@ -2394,7 +2421,7 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 
 #### B-M29-01 — Sentinel process, heartbeat server, watchdog latch and balance-drop latch
 
-- **Module:** M29 · **Size:** M (~2 engineer-days) · **Phase:** 3 (the `import-run` spool part of B-M29-04 is Phase 1)
+- **Module:** M29 · **Size:** M (~2 engineer-days) · **Phase:** 3 (the `import-run` spool ticket B-M29-05 is Phase 1)
 - **Goal:** An independent process (user `sentinel`) that watches the engine's heartbeat, sets the signer latch when the engine is silent for 10 s, keeps its own cache of live positions, and latches on an unexplained hot-wallet balance drop (CA-01, CA-17).
 - **Depends on:** B-M17-08 (signer protocol on `ops.sock`). Uses the heartbeat protocol of B-M26-01.
 - **Interfaces:** server socket `/run/sentinel/engine.sock` (mode 0660, group `bot`); messages `EngineToSentinel`/`SentinelToEngine` (B-M26-01) with the heartbeat extended by `positions: Array<{ mint: Pubkey; poolId: Pubkey; venue: VenueId; tokenProgram: Pubkey; sizeBase: BaseUnits }>` (CL-61); state file `/var/lib/sentinel/state.json` (fsync'd).
@@ -2464,10 +2491,10 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 
 #### B-M29-04 — `botctl` operator CLI
 
-- **Module:** M29 · **Size:** M (~1.5 engineer-days) · **Phase:** 1 (`import-run`), 3 (all others)
-- **Goal:** The host CLI run by the operator's own login user over SSH on the tailnet: `status`, `halt`, `flatten`, `unlock`, `lock`, `resume-latch`, `release-lease`, `import-run`, `sweep`, plus `enroll-passkey` (CL-60).
-- **Depends on:** B-M29-01 (B-M24-02 only for `import-run`). Group A: M13 `importRunBundle` (via the engine's import job, CL-62).
-- **Interfaces:** command lines (ARCH M29): `botctl status`; `botctl halt --reason <text>`; `botctl flatten --max-slippage-bps <n>`; `botctl unlock [--exits-only]`; `botctl lock`; `botctl resume-latch --reason <text>`; `botctl release-lease`; `botctl import-run <bundle>`; `botctl sweep [--lamports <n>]`; `botctl enroll-passkey`.
+- **Module:** M29 · **Size:** M (~1.25 engineer-days) · **Phase:** 3 (`import-run` was split out as B-M29-05 on 2026-10-07)
+- **Goal:** The host CLI run by the operator's own login user over SSH on the tailnet: `status`, `halt`, `flatten`, `unlock`, `lock`, `resume-latch`, `release-lease`, `sweep`, plus `enroll-passkey` (CL-60); `import-run` is B-M29-05 and ships in the same `botctl` binary.
+- **Depends on:** B-M29-01, B-M29-05 (the `botctl` binary and its config). Group A: none.
+- **Interfaces:** command lines (ARCH M29): `botctl status`; `botctl halt --reason <text>`; `botctl flatten --max-slippage-bps <n>`; `botctl unlock [--exits-only]`; `botctl lock`; `botctl resume-latch --reason <text>`; `botctl release-lease`; `botctl sweep [--lamports <n>]`; `botctl enroll-passkey`.
 - **Logic:**
   1. `status`: signer `status` (ops.sock) + sentinel status + engine trading state (from the sentinel's last heartbeat).
   2. `halt`: signer `latch(halt)` directly (identity `operator_cli`) and a halt request to the engine relayed by the sentinel; works with the engine hung or dead (ARCH 12.6).
@@ -2475,7 +2502,7 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
   4. `unlock`: reads the passphrase with terminal echo disabled, sends it to the signer over `ops.sock`, zero-fills the buffer; never logged or echoed; `--exits-only` loads the key in `exits_only`.
   5. `resume-latch`: clears a latch set by the sentinel, the CLI or `system` (D28 (a)); prints that the dashboard RESUME (A2) is still required; the signer log entry is imported into the audit log.
   6. `release-lease`: returns exits to the engine after a takeover, only after confirming the sentinel journal was imported (prompts if not).
-  7. `import-run <bundle>`: copies the bundle into the import spool `/var/lib/bot/import-spool/` (group `botops`, write-only for the operator); the engine's single-writer import job runs M13 `importRunBundle` (signature against the root-owned research public key, manifest hashes against the host index) and writes the result file the CLI waits for (CL-62). No computation of runs happens on the host (CA-26).
+  7. `import-run`: see B-M29-05.
   8. `sweep [--lamports n]`: asks the engine to sweep (or a test sweep of `n` lamports, checklist item 4).
   9. `enroll-passkey`: asks M28 (through a local admin file in the spool) for a single-use enrollment token, valid 10 minutes, printed once.
 - **Shared resources and concurrency:** Uses the owners' protocols only.
@@ -2488,6 +2515,25 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 - **Facts used:** none external.
 - **Definition of done:** Common DoD; out-of-band instructions in `UI.md` U-14 match these commands exactly (ARCH 12.6).
 
+
+#### B-M29-05 — `botctl import-run`
+
+- **Module:** M29 · **Size:** S (~0.25 engineer-days) · **Phase:** 1 (split from B-M29-04 on 2026-10-07, INTEGRATION "Remaining issues")
+- **Goal:** The one `botctl` subcommand gate runs need in M2: hand a signed run bundle from the research machine to the engine's import job.
+- **Depends on:** B-M24-02. Group A: A-M13-08 (`importRunBundle`, run by the engine's import job, CL-62 = C-38).
+- **Interfaces:** `botctl import-run <bundle>`; `/etc/botctl/config.json` (spool path).
+- **Logic:**
+  1. Copy the bundle into the import spool `/var/lib/bot/import-spool/` (group `botops`, write-only for the operator); the engine's single-writer import job runs M13 `importRunBundle` (signature against the root-owned research public key, manifest hashes against the host index) and writes the result file the CLI waits for (CL-62). No computation of runs happens on the host (CA-26).
+  2. Print the result (imported, or the refusal code) and exit non-zero on refusal.
+- **Shared resources and concurrency:** The spool directory; the engine's import job is the only writer to `bot.db` (ARCH 4.5).
+- **Config:** `/etc/botctl/config.json` (spool path, result timeout).
+- **Edge cases and failure handling:** Engine down → the bundle waits in the spool; the CLI times out with a clear message and the bundle is imported at the next start. A tampered bundle → the import job refuses with `E_SIGNATURE`.
+- **Acceptance criteria:** Given a valid bundle, then it appears in VM-21 after import; given a bundle with one changed byte, then it is refused and nothing is written; `botctl` never writes `bot.db` directly.
+- **Tests:** integration with the engine's import job on a test host.
+- **Observability:** logs `botctl.import_run` (no secrets).
+- **Security notes:** The research key is not the trading key; a forged bundle is still checked against host manifests (A-M13-08).
+- **Facts used:** none external.
+- **Definition of done:** Common DoD; A-M11-05 bundles import on a clean host test.
 ---
 
 ### M30 Build, deploy and supply chain
@@ -2661,7 +2707,7 @@ Ambiguities in `ARCH.md` that a ticket had to resolve, with the reading chosen (
 | CL-59 | "Bind to 127.0.0.1 and reach it over a tailnet" needs a forwarding mechanism | Use Tailscale's local forwarding of a loopback port or a tailnet-only listener (VERIFY); never bind `0.0.0.0` | B-M28-02 |
 | CL-60 | No way to enroll the first passkey or recover from a lost one | `botctl enroll-passkey` issues a single-use 10-minute token on the host | B-M28-02, B-M29-04 |
 | CL-61 | The sentinel must flatten "live positions" without the engine's database | The heartbeat carries the live positions list (`mint`, `poolId`, `venue`, `tokenProgram`, `sizeBase`), persisted by the sentinel; on takeover it sells only cached mints with an on-chain balance **Integration:** the heartbeat type in B-M26-01 now carries `positions[]`. | B-M29-01, B-M29-02 |
-| CL-62 | `botctl import-run` "writes into `bot.db`", but the engine is the single writer and the CLI runs as the operator user | The CLI drops the bundle into an import spool; the engine's import job (single writer) runs M13 `importRunBundle` and writes a result the CLI waits for **Integration:** consistent with C-38; A-M13-08 owns `importRunBundle` in the engine. | B-M29-04 |
+| CL-62 | `botctl import-run` "writes into `bot.db`", but the engine is the single writer and the CLI runs as the operator user | The CLI drops the bundle into an import spool; the engine's import job (single writer) runs M13 `importRunBundle` and writes a result the CLI waits for **Integration:** consistent with C-38; A-M13-08 owns `importRunBundle` in the engine. | B-M29-05 (split from B-M29-04, 2026-10-07) |
 | CL-63 | `client_kind = mobile` restrictions rely on a client declaration | Recorded limitation: client kind is self-declared; the binding protection for A2/A3 is the passkey step-up | B-M28-02 |
 | CL-64 | "Strategies live at once" has no short code | Internal short code `MAXSTRAT` | B-M26-04 |
 | CL-65 | ARCH 18 puts M16 build-only work in Phase 2, but M06 (Phase 1) needs `buildSimulationOnly` | B-M16-01/02/03/05 and the rent oracle are pulled into Phase 1 (no key, simulation only) **Integration:** adopted and extended: the whole engine core moves to global milestone M2 (`INTEGRATION.md`); ARCH 18 amended. | Build order |
@@ -2700,7 +2746,7 @@ Rewritten at integration with producing **ticket IDs** (the "Depends on (group A
 | B-M26-03, B-M26-04 | A-M13-05, A-M13-06 | `evaluateGates`, `stage`, `StageMachine.onModeCommand` / `onDemotion` (CL-57), `ExternalGateInputs` implemented by B-M26-04 (C-39) |
 | B-M27-02 | A-M14-05, A-M03-01 | `health()`, `creditUsage()`, discovery `health()` |
 | B-M28-03 | A-M04-01, A-M05-01, A-M06-02, A-M06-03, A-M07-03, A-M08-03, A-M09-01, A-M13-04, A-M13-06, A-M13-08, A-M14-05 | projection sources for VM-04..VM-18, VM-21 |
-| B-M29-04 | A-M13-08 | `importRunBundle` (run by the engine's import job, CL-62 = C-38) |
+| B-M29-05 | A-M13-08 | `importRunBundle` (run by the engine's import job, CL-62 = C-38) |
 
 ## Unverified items affecting this group
 
@@ -2750,4 +2796,4 @@ Every item below must be resolved (source URL, date read, result) in `VERIFY.md`
 | Effectiveness of `jitodontfront` / `mev-protect` on small swaps | UNVERIFIED [LD-16, LD-22] | B-M16-01, B-M23-05 (measured by `detectSandwich`) | Post-trade sandwich detection |
 | Landing rate and confirm latency from Frankfurt | UNVERIFIED (excluded claims) | B-M18-01..03 targets, gate LS-4 | Live-small measurement |
 | Self-hosted push software for D27 (b) | UNVERIFIED | B-M29-03 option (b) | Dependency review if chosen |
-| Any edge for MR-01 | No evidence (A-23) | Whether any M4 ticket is ever built | Gates B, R and P |
+| Any edge for MR-01 | Negative sub-hour proxy evidence; MR-01's 15 s signal untested (A-23) | Whether any M4 ticket is ever built | Gates B, R and P |
