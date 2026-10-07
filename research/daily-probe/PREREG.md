@@ -47,3 +47,11 @@ The first run (RESULTS.md) used a survivor-only list. This re-test runs the same
 - Daily prices fetched exactly as before (GeckoTerminal daily OHLCV in SOL, bars ending by the wall). Coins with no data are counted and reported.
 - Known remaining gap: coins created before 2026-03-01 that were large in June to September and are now below about $81k are still missing.
 - Both runs are reported side by side; the survivorship-free run is the one that counts.
+
+## Survivorship-free check on a random sample (registered 2026-10-07, before it is computed)
+
+A count on the lottery-basket sample (no returns) showed the survivor list misses most of the real universe: of 588 normal canonical graduates (on-chain LP supply ≥ 4e12) created 2026-07-22 to 08-20, 33 closed at least one day at ≥ 9,820 SOL market cap, and only 1 of them is in the 481-coin list. The full re-test above needs daily prices for about 17,900 coins whose pump.fun all-time high passes the filter (about 35 hours of free calls), so it runs later. Now, the same five rules, costs and amended verdict run on the random sample itself:
+- Universe: the 900 sampled coins minus dust pools (the lottery probe's amended dust rule: first bar opens below 2.41e-8 SOL).
+- Daily bars built from the hourly bars (open of the first hour, high and low over the day, close of the last hour, volume summed; days with no hourly bar are missing and carried, as before). Only bars ending by the wall.
+- Same eligibility, signals, holds, costs and periods (discovery entries before 2026-08-16, validation after).
+- Expected to be small (a few dozen trades); reported with its intervals as a check on the survivor-only result, not as a verdict that can make a rule promising on its own.
