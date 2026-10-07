@@ -98,6 +98,8 @@ export interface ProducerOptions {
   /** Funder lookups cover the first this many distinct buyers (§16.3: 20). */
   readonly firstBuyers: number;
   readonly execHealth?: ExecHealthLimits;
+  /** MEM-FIXES: the most swaps all heals keep together (default HEAL_TAPES_TOTAL; tests set a smaller one). */
+  readonly healTapesTotal?: number;
 }
 
 /**
@@ -134,6 +136,13 @@ export const HEAL_WAIT_MS = 45 * MINUTE_MS;
 
 /** TRADE-GAP-HEAL: the most swaps one pool's heal keeps while it waits (20,000, a fifth of RETIRED_KEEP); past it the hole stays (memory bound). */
 export const HEAL_TAPE_MAX = RETIRED_KEEP / 5;
+
+/**
+ * MEM-FIXES (red team C round 2): the most swaps every pool's heal keeps together while they wait (20,000, one pool's
+ * HEAL_TAPE_MAX). Each pool's cap alone let 240 watched pools hold 4.8 million swaps between them. Past it, the heal
+ * that grew is let go (its holes stay, fail closed) and noted.
+ */
+export const HEAL_TAPES_TOTAL = HEAL_TAPE_MAX;
 
 /** TRADE-GAP-HEAL: hole signatures remembered (20,000, a fifth of RETIRED_KEEP), so a late fetched copy of a hole's swaps is never applied out of order. */
 export const HOLE_SIGS_KEEP = RETIRED_KEEP / 5;
@@ -568,11 +577,15 @@ export class FactProducer {
   /** The last insiders value written per mint, without its receipt time: unchanged values are not written again. */
   readonly #insidersSeen = new Map<string, string>();
 
-  constructor(options: ProducerOptions) {
+  /** MEM-FIXES: where the producer notes what it let go for memory (the worker's log); a note never changes a fact. */
+  readonly #note: (line: string) => void;
+
+  constructor(options: ProducerOptions, note: (line: string) => void = () => undefined) {
     for (const [k, v] of Object.entries(options)) {
       if (k !== 'execHealth' && !(Number.isSafeInteger(v) && (v as number) >= 0)) throw new RangeError(`producer option ${k} must be a whole number >= 0`);
     }
     this.#o = options;
+    this.#note = note;
     this.#volume = new ChainVolumeDays(options.volumeKeepMs);
   }
 
@@ -753,7 +766,10 @@ export class FactProducer {
     // swaps, out of order): they wait for the heal, which puts them in chain order, or are dropped with it.
     if (!seen.fromLogs && this.#holeSigs.has(`${d.pool} ${seen.signature}`)) {
       const h = this.#heals.get(d.pool);
-      if (h !== undefined && h.holes.has(seen.signature)) h.fetched.push({ ev, seen });
+      if (h !== undefined && h.holes.has(seen.signature)) {
+        h.fetched.push({ ev, seen });
+        this.#capHeals(d.pool);
+      }
       return;
     }
     const book = this.#books.get(d.pool);
@@ -816,6 +832,17 @@ export class FactProducer {
     if (h === undefined) return;
     h.tape.push({ ev, seen });
     if (this.#expired(h, seen.receivedAt)) this.#heals.delete(book.pool);
+    else this.#capHeals(book.pool);
+  }
+
+  /** MEM-FIXES: past HEAL_TAPES_TOTAL swaps across every heal, the heal of `pool` (the one that just grew) is let go: its holes stay. */
+  #capHeals(pool: string): void {
+    let n = 0;
+    for (const h of this.#heals.values()) n += h.tape.length + h.fetched.length;
+    const max = this.#o.healTapesTotal ?? HEAL_TAPES_TOTAL;
+    if (n <= max) return;
+    this.#heals.delete(pool);
+    this.#note(`Trade heal of pool ${pool} let go: the heals held ${n} swaps, over the total cap of ${max}; its holes stay.`);
   }
 
   /** The book (and its pool's chain) before the first swap of `slot`: a heal of a hole at that slot or later starts here. */
@@ -1011,8 +1038,10 @@ export class FactProducer {
   }
 
   /** OOM-MINT: how many entries the producer keeps per structure (tests and the memory ceiling). */
-  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number; readonly funders: number; readonly preReads: number } {
-    return { funders: this.#funders.size, books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size, preReads: this.#preReads.size };
+  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number; readonly funders: number; readonly preReads: number; readonly healSwaps: number } {
+    let healSwaps = 0;
+    for (const h of this.#heals.values()) healSwaps += h.tape.length + h.fetched.length;
+    return { healSwaps, funders: this.#funders.size, books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size, preReads: this.#preReads.size };
   }
 
   /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */
@@ -1224,17 +1253,17 @@ export class FactProducer {
     const at = e.moment.receivedAt;
     if (key.startsWith('read:accounts:')) {
       const r = parseAccountsRead(v);
-      if (r !== null && key === RAW.accounts(r.mint) && usable(r.commitment)) this.#accountsRead(r, provider, at, put);
+      if (r !== null && key === RAW.accounts(r.mint) && usable(r.commitment) && !this.#ahead(r.slot, e)) this.#accountsRead(r, provider, at, put);
     } else if (key.startsWith('read:holders:')) {
       const r = parseHoldersRead(v);
-      if (r === null || key !== RAW.holders(r.mint) || !usable(r.commitment)) return;
+      if (r === null || key !== RAW.holders(r.mint) || !usable(r.commitment) || this.#ahead(r.slot, e)) return;
       put(holdersKey(r.mint), {
         obs: { provider, slot: r.slot, receivedAt: at, quality: [], commitment: r.commitment }, supply: r.supply, coverage: 'largest',
         accounts: r.accounts.map((a) => ({ mint: r.mint, address: a.address, owner: a.owner, ownerProgram: a.ownerProgram, amount: a.amount, delegate: a.delegate, delegatedAmount: a.delegatedAmount })),
       });
     } else if (key.startsWith('read:holders-all:')) {
       const r = parseHoldersAllRead(v);
-      if (r === null || key !== RAW.holdersAll(r.mint) || !usable(r.commitment)) return;
+      if (r === null || key !== RAW.holdersAll(r.mint) || !usable(r.commitment) || this.#ahead(r.slot, e)) return;
       const c = checkHolders(r);
       if (c.ok) put(holdersKey(r.mint), { obs: { provider, slot: r.slot, receivedAt: at, quality: [], commitment: r.commitment }, ...c.set });
       // Abstentions and fallbacks per UTC day and reason, for the coverage report: what never formed, or formed only
@@ -1249,7 +1278,7 @@ export class FactProducer {
       }
     } else if (key.startsWith('read:sim:')) {
       const r = parseSimRead(v);
-      if (r === null || key !== RAW.sim(r.mint)) return;
+      if (r === null || key !== RAW.sim(r.mint) || this.#ahead(r.slot, e)) return;
       put(simKey(r.mint), { obs: { provider, slot: r.slot, receivedAt: at, quality: [] }, ok: r.ok, spend: r.spend, paid: r.paid, proceeds: r.proceeds, error: r.error });
     } else if (key.startsWith('read:rugcheck:') || key.startsWith('read:goplus:') || key.startsWith('read:jupiter-audit:')) {
       this.#xcheck(key, v, at, put);
@@ -1334,6 +1363,27 @@ export class FactProducer {
   }
 
   // ---------- Accounts: mint, pool, LP ----------
+
+  /**
+   * MEM-FIXES (red team C leak note): a chain read answered for a slot after the slot it is released at (an RPC node
+   * ahead of the slot notices) holds chain state from after the moment the engine sees it: it makes no fact (fail
+   * closed). The gates refused such facts already (`future`), but an exit's market and a paper fill read the pool fact
+   * without that check. A later read, or the swap stream, brings the state at its own moment. Noted at most once a
+   * minute of event time, with the count since.
+   */
+  #ahead(slot: bigint, e: MarketEvent): boolean {
+    if (slot <= e.moment.slot) return false;
+    this.#aheadCount += 1;
+    if (e.moment.receivedAt - this.#aheadNotedAt >= MINUTE_MS) {
+      this.#note(`Read ${e.key} refused: answered at slot ${slot}, after the slot it was released at (${e.moment.slot}); ${this.#aheadCount} such reads refused since the last note.`);
+      this.#aheadNotedAt = e.moment.receivedAt;
+      this.#aheadCount = 0;
+    }
+    return true;
+  }
+
+  #aheadCount = 0;
+  #aheadNotedAt = Number.NEGATIVE_INFINITY;
 
   #accountsRead(r: AccountsRead, provider: string, at: number, put: (k: string, v: unknown) => void): void {
     for (const a of r.accounts) {

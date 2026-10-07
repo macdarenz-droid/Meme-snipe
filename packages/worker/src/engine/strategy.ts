@@ -21,7 +21,7 @@ import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
-import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments, flatCopy } from '../../../core/src/engine/index.ts';
+import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments, flatCopy, retireTail } from '../../../core/src/engine/index.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
@@ -356,6 +356,12 @@ export { CREATE_KEEP_MS } from '../../../core/src/gates/index.ts';
  * process never saw (the create lookup of CREATE-AFTER-RESTART).
  */
 export const EXPIRED_CREATE_KEEP_MS = 7 * 24 * 3_600_000;
+
+/**
+ * MEM-FIXES: how long a let-go mint or pool is remembered, so a fact released for it later is let go too: an hour, far
+ * past a batch read's timeout and a closing watch's last notifications.
+ */
+export const LATE_LET_GO_MS = 3_600_000;
 
 /** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
 export interface SavedStateRef {
@@ -965,6 +971,7 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
+    this.#letGoLate(e);
     this.#gapBarsMerge(e.moment);
     this.#gapBarsClose(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
@@ -1487,6 +1494,56 @@ export class LiveStrategy implements Strategy {
     if (this.#held(mint) || this.#tail.has(mint)) return;
     this.#letGo.push(mint);
     if (pool !== null) this.#letGo.push(pool);
+    this.#forgetCoverage(pool === null ? [mint] : [mint, pool]);
+    this.#noteLetGo(mint, pool);
+  }
+
+  /**
+   * MEM-FIXES: mints and pools let go in the last LATE_LET_GO_MS, each with its mint, oldest first. A fact released for
+   * one after it was let go (a batch read that was in flight at its window's end, a watch's last swaps before it
+   * closed) would make its keys again in the store, the producer and the worker, and nothing would let them go again.
+   */
+  readonly #lateLetGo = new Map<string, { readonly mint: string; readonly at: number }>();
+
+  #noteLetGo(mint: string, pool: string | null): void {
+    const at = this.#lastMoment?.receivedAt ?? 0;
+    for (const id of pool === null ? [mint] : [mint, pool]) {
+      this.#lateLetGo.delete(id);
+      this.#lateLetGo.set(id, { mint, at });
+    }
+  }
+
+  /** MEM-FIXES: an event released for a recently let-go mint or pool (`#lateLetGo`) is let go again, unless its coin is live again. */
+  #letGoLate(e: MarketEvent): void {
+    for (const [id, x] of this.#lateLetGo) {
+      if (x.at + LATE_LET_GO_MS > e.moment.receivedAt) break;
+      this.#lateLetGo.delete(id);
+    }
+    if (this.#lateLetGo.size === 0) return;
+    const id = retireTail(e.key);
+    const x = id === null ? undefined : this.#lateLetGo.get(id);
+    if (x === undefined || this.#held(x.mint) || this.#tail.has(x.mint) || this.#cands.has(x.mint)) return;
+    this.#letGo.push(id!);
+    this.#forgetCoverage([id!]);
+  }
+
+  /**
+   * MEM-FIXES (red team C R2-H4): a let-go mint's and pool's own coverage streams (`coverage:trades:<pool>:*`,
+   * `coverage:mint-txs:<mint>:*`) leave the saved coverage and SEED-1's history: nothing watches them again, so a
+   * restart has nothing to fill for them, and the store retires their keys with the pool (`AsOfStore.retire`). Kept,
+   * every pool ever watched stayed for the process with every gap it had. The creates and rugs streams are untouched.
+   */
+  #forgetCoverage(ids: readonly string[]): void {
+    const gone = (key: string): boolean => {
+      const m = COVERAGE_FACT.exec(key);
+      if (m === null) return false;
+      const stream = key.slice('coverage:'.length, key.length - m[1]!.length - 1);
+      return ids.includes(stream.slice(stream.lastIndexOf(':') + 1)) && stream.includes(':');
+    };
+    let w = 0;
+    for (const e of this.#coverageFacts) if (!gone(e.key)) this.#coverageFacts[w++] = e;
+    this.#coverageFacts.length = w;
+    for (const k of [...this.#seedHistory.keys()]) if (gone(k)) this.#seedHistory.delete(k);
   }
 
   readonly #letGo: string[] = [];

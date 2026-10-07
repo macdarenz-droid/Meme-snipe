@@ -442,9 +442,12 @@ describe('the worker reads through core\'s FactFeed (FACTS-1b)', () => {
     const mint = FIX.accountsRead.mint;
     const before = h.worker.factsReleased;
     expect(h.worker.poolOf(mint)).toBeNull();
-    c.ingest.ingest('helius', { type: 'offchain', key: RAW.accounts(mint), value: { ...FIX.accountsRead, slot: BigInt(FIX.accountsRead.slot) } }, { receivedAt: c.sink.now() });
-    c.sink.fact(feesKey(mint), FEE_CONTEXT);
+    // MEM-FIXES: a read answered after the slot it is released at makes no fact, so the fixture read goes on the feed once
+    // slot notices run, dated at the slot already released.
     const m = new Market(h);
+    await m.run(500, 100, () => m.slot());
+    c.ingest.ingest('helius', { type: 'offchain', key: RAW.accounts(mint), value: { ...FIX.accountsRead, slot: h.worker.feed.releasedThrough } }, { receivedAt: c.sink.now() });
+    c.sink.fact(feesKey(mint), FEE_CONTEXT);
     await m.run(3_000, 100, () => m.slot());
     expect(h.worker.factsReleased).toBeGreaterThan(before);
     const live = h.worker.poolOf(mint);

@@ -13,6 +13,8 @@ const HEAVY = [
   'packages/backtest/test/research.test.ts',
   // RES-5: the CLI test writes a zstd fixture dataset.
   'packages/backtest/test/survival.test.ts',
+  // MEM-FIXES: red team C's heap probe drives the real worker for hours of simulated time in child processes (~90 s).
+  'packages/worker/test/redteam-c/heap-growth.test.ts',
 ];
 const MEASUREMENTS = [
   'packages/core/test/gates/deployer-compact.test.ts',

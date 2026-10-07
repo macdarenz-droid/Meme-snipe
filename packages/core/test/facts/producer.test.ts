@@ -742,6 +742,11 @@ describe('complete holder set', () => {
   });
   const fact = (r: unknown) => new FactWorld().push(offchain(RAW.holdersAll(MINT), r, BigInt(hc.gpa.slot), 1_791_100_000_000, 'helius')).last(holdersKey(MINT));
 
+  it('MEM-FIXES: a complete read released before the slot it was answered at makes no fact (fail closed)', () => {
+    expect(new FactWorld().push(offchain(RAW.holdersAll(MINT), read(), BigInt(hc.gpa.slot) - 1n, 1_791_100_000_000, 'helius')).facts(holdersKey(MINT))).toEqual([]);
+    expect(fact(read())).toBeDefined();
+  });
+
   it('one real program-account read gives every holder, summing to the supply exactly (coverage all)', () => {
     const f = parseHolders(fact(read()))!;
     expect(f.coverage).toBe('all');
@@ -1008,7 +1013,8 @@ describe('series: SOL/USD and chain volume', () => {
 describe('graduate survival', () => {
   it('a read of the pool within a minute after +30 min dates the graduate; a later one does not', () => {
     const mark = 1_791_032_673_000 + 30 * 60_000;
-    const read = { ...FIX.accountsRead, slot: BigInt(FIX.accountsRead.slot) };
+    // The fixture read dated at the slot it is released at (MEM-FIXES: a read answered ahead of its release makes no fact).
+    const read = { ...FIX.accountsRead, slot: migrate.slot + 4500n };
     const w = new FactWorld().push(...lifecycle(), offchain(RAW.accounts(MINT), read, migrate.slot + 4500n, mark + 20_000));
     const g = w.last(GRADUATES_KEY) as { items: { mint: string; migratedAtMs: number; reserveAfter: bigint }[] };
     const p = parsePool(w.last(poolKey(MINT)))!;
@@ -1019,7 +1025,7 @@ describe('graduate survival', () => {
 
   describe('PERSIST-2: graduates seeded from before this process', () => {
     const mark = 1_791_032_673_000 + 30 * 60_000;
-    const read = { ...FIX.accountsRead, slot: BigInt(FIX.accountsRead.slot) };
+    const read = { ...FIX.accountsRead, slot: migrate.slot + 4500n };
     const live = () => new FactWorld().push(...lifecycle(), offchain(RAW.accounts(MINT), read, migrate.slot + 4500n, mark + 20_000));
     type Items = { mint: string; migratedAtMs: number; reserveAfter: bigint }[];
     const items = (w: FactWorld) => (w.last(GRADUATES_KEY) as { items: Items } | undefined)?.items;
@@ -1176,6 +1182,39 @@ describe('blind to the future', () => {
     // Released only once the clock reached the create's own moment, never earlier.
     expect(f.now.slot >= createAt.slot).toBe(true);
     expect(seen.filter((x) => x.id.includes('~')).every((x) => x.now.slot >= create.slot)).toBe(true);
+  });
+});
+
+describe('MEM-FIXES: a read answered ahead of the slot it is released at (red team C leak note)', () => {
+  // The fixture read, as an RPC node a few slots ahead of the slot notices answers it: its chain state is from slot
+  // R + 5 while the feed releases it at slot R. Before MEM-FIXES it made the pool, mint and LP facts at slot R, and an
+  // exit's market or a paper fill (which read the pool fact without the gates' future check) priced from it.
+  const R = BigInt(FIX.accountsRead.slot) - 5n;
+  const read = { ...FIX.accountsRead, slot: R + 5n };
+  const chainKeys = [poolKey(MINT), mintKey(MINT), lpKey(MINT)];
+
+  it('makes no fact at all (fail closed) and is noted once a minute; the same read released at its own slot makes every fact', () => {
+    const notes: string[] = [];
+    const early = new FactWorld(OPTIONS, (l) => notes.push(l));
+    early.push(offchain(RAW.accounts(MINT), read, R, 1_791_100_000_000, 'helius'), offchain(RAW.accounts(MINT), read, R + 1n, 1_791_100_000_400, 'helius'));
+    for (const k of chainKeys) expect(early.facts(k), k).toEqual([]);
+    expect(early.released.filter((e) => e.id.includes('~')).every((e) => !chainKeys.includes(e.key))).toBe(true);
+    expect(notes).toEqual([`Read ${RAW.accounts(MINT)} refused: answered at slot ${R + 5n}, after the slot it was released at (${R}); 1 such reads refused since the last note.`]);
+    const atOwn = new FactWorld().push(offchain(RAW.accounts(MINT), read, R + 5n, 1_791_100_002_000, 'helius'));
+    for (const k of chainKeys) expect(atOwn.facts(k).length, k).toBe(1);
+    // A later read released at its own slot still lands after refused ones (nothing of the early read was kept).
+    early.push(offchain(RAW.accounts(MINT), read, R + 5n, 1_791_100_002_000, 'helius'));
+    expect(parsePool(early.last(poolKey(MINT)))).toEqual(parsePool(atOwn.last(poolKey(MINT))));
+  });
+
+  it('holders, holders-all and simulation reads ahead of their release slot make no fact either; at their slot they do', () => {
+    const at = 1_791_100_000_000;
+    const sim = { mint: MINT, slot: R + 3n, spend: 50_000_000n, ok: true, paid: 50_100_000n, proceeds: 48_000_000n, error: null };
+    expect(new FactWorld().push(offchain(RAW.sim(MINT), sim, R, at)).facts(simKey(MINT))).toEqual([]);
+    expect(new FactWorld().push(offchain(RAW.sim(MINT), sim, R + 3n, at)).facts(simKey(MINT)).length).toBe(1);
+    const holders = { mint: MINT, slot: R + 3n, commitment: 'confirmed', supply: 1_000n, accounts: [{ address: 'H1', owner: 'O1', ownerProgram: null, amount: 1_000n, delegate: null, delegatedAmount: 0n }] };
+    expect(new FactWorld().push(offchain(RAW.holders(MINT), holders, R, at)).facts(holdersKey(MINT))).toEqual([]);
+    expect(new FactWorld().push(offchain(RAW.holders(MINT), holders, R + 3n, at)).facts(holdersKey(MINT)).length).toBe(1);
   });
 });
 

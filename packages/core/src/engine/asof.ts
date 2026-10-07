@@ -133,6 +133,20 @@ const collapseOlder = (series: AsOfEntry[], keepOlder: (older: AsOfEntry) => boo
   series.length = w;
 };
 
+/**
+ * The part of a key `retire` finds it by: its last `:`-separated part (a mint or a pool), except a per-subject coverage
+ * key `coverage:<kind>:<subject>:start|gap|resume` (a pool's `trades:<pool>`, a mint's `mint-txs:<mint>`), found by its
+ * subject (MEM-FIXES, red team C R2-H4: by its last part, `start`, `gap` or `resume`, it never retired). A stream with
+ * no subject (`coverage:creates:start`) keeps its last part. `null`: a key with no `:`, never retired.
+ */
+const COVERAGE_SUBJECT = /^coverage:[^:]+(?::[^:]+)*:([^:]+):(?:start|gap|resume)$/;
+export const retireTail = (key: string): string | null => {
+  const c = COVERAGE_SUBJECT.exec(key);
+  if (c !== null) return c[1]!;
+  const at = key.lastIndexOf(':');
+  return at === -1 ? null : key.slice(at + 1);
+};
+
 export class AsOfStore {
   readonly #clock: Clock;
   readonly #series = new Map<string, AsOfEntry[]>();
@@ -140,7 +154,7 @@ export class AsOfStore {
   readonly #collapse: Collapse | null;
   readonly #keepOlder = new Map<string, ((older: AsOfEntry) => boolean | string) | null>();
   /**
-   * OOM-MINT review: keys by their last `:`-separated part, so a retire costs only the keys it forgets. CREATE-COMPACT:
+   * OOM-MINT review: keys by their last `:`-separated part (`retireTail`), so a retire costs only the keys it forgets. CREATE-COMPACT:
    * one key as itself, a Set only from the second (most parts end one or two keys; a Set each cost about 150 B).
    */
   readonly #byTail = new Map<string, string | Set<string>>();
@@ -166,9 +180,8 @@ export class AsOfStore {
       if (age === null || last === undefined || last.moment.receivedAt + age > nowMs) continue;
       this.#series.delete(key);
       this.#keepOlder.delete(key);
-      const at = key.lastIndexOf(':');
-      if (at !== -1) {
-        const tail = key.slice(at + 1);
+      const tail = retireTail(key);
+      if (tail !== null) {
         const keys = this.#byTail.get(tail);
         if (keys === key) this.#byTail.delete(tail);
         else if (keys !== undefined && typeof keys !== 'string') {
@@ -182,7 +195,7 @@ export class AsOfStore {
   }
 
   /**
-   * OOM-MINT: forgets every key whose last `:`-separated part is one of `ids` (a mint or a pool nothing will read again),
+   * OOM-MINT: forgets every key whose last `:`-separated part (`retireTail`) is one of `ids` (a mint or a pool nothing will read again),
    * with its cached rules. Returns how many keys went. A key recorded again later starts afresh.
    */
   retire(ids: ReadonlySet<string>): number {
@@ -237,9 +250,8 @@ export class AsOfStore {
       // A new key is kept as a flat copy too.
       const kept = flat(key);
       this.#series.set(kept, [entry]);
-      const at = kept.lastIndexOf(':');
-      if (at !== -1) {
-        const tail = kept.slice(at + 1);
+      const tail = retireTail(kept);
+      if (tail !== null) {
         const keys = this.#byTail.get(tail);
         if (keys === undefined) this.#byTail.set(tail, kept);
         else if (typeof keys === 'string') this.#byTail.set(tail, new Set([keys, kept]));

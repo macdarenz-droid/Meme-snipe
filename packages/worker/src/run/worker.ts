@@ -858,7 +858,7 @@ export class Worker {
         if (carry !== null) this.#carries.set(e.key.slice(CARRY_PREFIX.length), { carry, releasedAt: d.timers.now() });
       }
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
-    });
+    }, (ids) => this.#forgetMints(ids), (line) => d.log(line));
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: { run: (effect, moment) => {
       if (effect.type === 'broadcast') {
         const intent = this.#engine.book.intents[effect.intentId];
@@ -1484,6 +1484,16 @@ export class Worker {
    * The mint's newest whole market (merge rule M, as the strategy's #market): WATCH-1's snapshot when it is newer than
    * the pool fact; else the pool fact, unless POS-1 flagged it (a stale swap stream), which is no market at all.
    */
+  /**
+   * MEM-FIXES (red team C R2-H3): a mint the strategy let go (never one held or tailed, `LiveStrategy.#retire`) leaves
+   * the worker's per-mint copies too: its pool fact and release time, carry, fee terms and snapshot. Kept, every
+   * migrated mint ever seen stayed for the process (240 more an hour at 4 migrations a minute). A later fact for it
+   * starts afresh, as the store's and the producer's do.
+   */
+  #forgetMints(ids: readonly string[]): void {
+    for (const id of ids) for (const m of [this.#pools, this.#poolReleasedAt, this.#carries, this.#fees, this.#snapshots]) m.delete(id);
+  }
+
   #setPool(mint: string, value: unknown): void {
     this.#pools.set(mint, value);
     this.#poolReleasedAt.set(mint, this.#d.timers.now());
