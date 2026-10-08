@@ -286,3 +286,21 @@ No MAJOR is open, so these are the last text changes before merge (merge still w
 78. **r3 / reviewer m1 / m2.** Resolve the fee-recipient, creator-vault and `associated_quote_buyback_fee_recipient` accounts, and sell_v2's `user_volume_accumulator` and `associated_user_volume_accumulator`, from golden fixtures of real transactions (including first trades in new pools), not from the IDL alone; all named in the VERIFY at L228.
 79. **r4.** If the first run has already happened (L28), the screen runs as a later run against the frozen file; it can still only stop PM-01.
 80. **r5.** Before writing the first-run record, the run checks that the latest preRegister entry's sha equals the current merged head of the file; otherwise it refuses.
+
+## Round 11 (head `8397734f`): reviewer PASS (2 MINOR); red team 0 BLOCKER, 2 MAJOR, 4 MINOR
+
+- Block sha256 `d52035bd…a92d`, recomputed by both.
+- R9-M1: part 6 makes any new swap instruction economic, though the same day's data can show its amounts, fees and accounts match the old rules (B5 is that case); new-instruction upgrades are likely inside a 30–60-day W_B, so this blocks with no proven reason.
+- R9-M2: part 7's raw factor-2 band fails both ways: an honest busy day falls outside it; a 1.5× change stays inside.
+- Minors: the fallback sample has no data for parts 2, 3 and 7 (r1); the first-run sha check compares unlike shas (r2); start item 8 does not block (r3); the baseline after an economic ruling with no refreshed IDL is undefined (r4); reviewer m1, the fallback cap N is not in the block; reviewer m2, the restart estimate cites the wrong limit for W_B.
+
+### Supervisor rulings for round 12 (8 Oct 2026, 3:39 PM)
+
+81. **R9-M1.** Ruling 73's unscoped part 6 is replaced. A new swap instruction is not economic by itself: its trades are decoded with the refreshed pinned IDL and must pass parts 1–4 on the pinned pre-upgrade formula and fee split; for part 5 each of its accounts is mapped by role (same PDA seeds, or same ATA owner and mint) to the old instruction's account it replaces, and each created account must match that role's rule-table row. An unmapped role or any mismatch makes the upgrade economic. Part 6 stays only for an instruction no pinned IDL can decode. Re-check B5 under this rule and label it with the result.
+82. **R9-M2.** Part 7 compares normalised ratios per universe pool: buyback lamports ÷ fees collected that day, boost burn ÷ pool swap volume. Economic only when both a two-sample KS test rejects (α = 0.01, at least 100 events per side) and the median ratio moves by more than 10%; requiring both keeps a large sample from flagging trivial differences and a small one from missing real ones. Where a rule can be pinned (for example from `buyback_basis_points`; **VERIFY**), recompute exactly instead. Fewer than 100 events: pending one more day (cumulative), then economic. Put the test, α, the minimum count and the tolerance in `gates.boundary`, replacing the factor 2.
+83. **r1.** The fallback also fetches every migration of the day, a capped sample of curve trades, and every program-side reserve instruction on universe pools; the sample is stratified per hour; a part with no data makes the upgrade economic, stated.
+84. **r2.** Each preRegister entry records the blob sha of PREREG.md (`git hash-object` at the integration head) and pm01FrozenKey; the first-run check compares those, never a commit sha.
+85. **r3.** Start item 8 needs an explicit recorded choice in DECISIONS: capture path verified, fallback verified, or "every forward upgrade economic". The last choice decides whether PM-01 can finish, so the supervisor puts it to the owner with the expected restart rate (about 1 per 15 days, DERIVED) before the first run.
+86. **r4.** With no refreshed IDL pinned, the baseline stays the previous pinned IDL; every later boundary is judged against it, new instructions per ruling 81.
+87. **Reviewer m1.** Add `gates.boundary.fallbackSwapCap` (the N) to the block before the first run.
+88. **Reviewer m2.** Reword: "W_B would usually restart, and kill rule 4's 120-day clock would then send PM-01 to the owner; inside W_R or W_P, R4-3's one-restart limit does".
