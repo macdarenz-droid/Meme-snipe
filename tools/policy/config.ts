@@ -97,6 +97,14 @@ export const FORBIDDEN_IN_PACKAGES = ['node:module'];
 export const SQLITE = 'node:sqlite';
 export const SQLITE_ALLOWED_DIRS = ['packages/engine/src/m24/', 'packages/engine/test/m24/'];
 
+/**
+ * M24's schema transaction (Z02 round 6 ruling 29): only the migration runner and the database module import the file
+ * that holds it; the engine's tests reach it through their fixture helper.
+ */
+export const SCHEMA_TX_FILE = 'packages/engine/src/m24/schema-tx.ts';
+export const SCHEMA_TX_IMPORTERS = ['packages/engine/src/m24/db.ts', 'packages/engine/src/m24/migrate.ts'];
+export const SCHEMA_TX_TEST_DIR = 'packages/engine/test/';
+
 /** Internal package scope: always a workspace link, never fetched from a registry. */
 export const INTERNAL_SCOPE = '@bot/';
 /**

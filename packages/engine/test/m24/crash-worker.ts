@@ -3,7 +3,8 @@
 // SIGKILL at random points and restarts it; on restart the consumer reloads its watermark from the journal.
 // Usage: node crash-worker.ts <db path> <journal path> <total>
 import { closeSync, existsSync, openSync, readFileSync, writeSync } from 'node:fs';
-import { openDb, OUTBOX_DDL, OutboxConsumer, schemaTx } from '../../src/m24/db.ts';
+import { openDb, OUTBOX_DDL, OutboxConsumer } from '../../src/m24/db.ts';
+import { schemaTx } from '../../src/m24/schema-tx.ts';
 
 const [dbPath, journalPath, totalText] = process.argv.slice(2) as [string, string, string];
 const total = Number(totalText);

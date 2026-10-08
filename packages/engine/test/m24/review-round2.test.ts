@@ -218,13 +218,13 @@ describe('ruling 9: a damaged database or backup is named, not thrown raw or tru
   it('a start backup with a different page count (or failing quick_check) is not trusted: E_BACKUP_FAILED, nothing applied', async () => {
     const path = fresh();
     const db = openDb({ create: true, path, clock: fakeClock(T0) });
-    const short = { ...db, async backupTo(p: string): Promise<number> {
+    db.backupTo = async (p: string): Promise<number> => {                                  // a backup that copies the wrong thing
       const other = new DatabaseSync(p);
       other.exec('PRAGMA page_size=512; CREATE TABLE x (a); CREATE TABLE y (b); CREATE TABLE z (c)');
       other.close();
       return 1;
-    } };
-    const r = await prepareDatabase(short, { clock: fakeClock(T0), backupPath: `${path}.bak` });
+    };
+    const r = await prepareDatabase(db, { clock: fakeClock(T0), backupPath: `${path}.bak` });
     assert.deepEqual(r.ok ? null : [r.error.code, /pages/.test(r.error.message)], ['E_BACKUP_FAILED', true]);
     assert.equal(tables(db).includes('fill'), false);
     db.close();
@@ -277,7 +277,7 @@ describe('ruling 14: only the retention job writes retention_clock', () => {
       for (const f of readdirSync(dirPath, { recursive: true, encoding: 'utf8' })) {
         if (!f.endsWith('.ts')) continue;
         const rel = `${pkg}/src/${f}`;
-        if (['engine/src/m24/db.ts', 'engine/src/m24/retention.ts', 'engine/src/m24/schema.ts', 'engine/src/m24/ddl.ts', 'engine/src/m24/migrations/0001_initial.ts'].includes(rel)) continue;
+        if (['engine/src/m24/db.ts', 'engine/src/m24/retention.ts', 'engine/src/m24/schema-tx.ts', 'engine/src/m24/schema.ts', 'engine/src/m24/ddl.ts', 'engine/src/m24/migrations/0001_initial.ts'].includes(rel)) continue;
         if (/withRetentionClock|retention_clock/.test(readFileSync(join(dirPath, f), 'utf8'))) found.push(rel);
       }
     }
@@ -307,13 +307,15 @@ describe('round 3 rulings 17-19', () => {
     const path = fresh();
     writeFileSync(`${path}.bak`, 'previous backup');
     const db = openDb({ create: true, path, clock: fakeClock(T0) });
-    const bad = { ...db, async backupTo(p: string): Promise<number> {
+    const realBackup = db.backupTo;
+    db.backupTo = async (p: string): Promise<number> => {
       const other = new DatabaseSync(p);
       other.exec('CREATE TABLE x (a)');
       other.close();
       return 1;
-    } };
-    const r = await prepareDatabase(bad, { clock: fakeClock(T0), backupPath: `${path}.bak` });
+    };
+    const r = await prepareDatabase(db, { clock: fakeClock(T0), backupPath: `${path}.bak` });
+    db.backupTo = realBackup;
     assert.equal(r.ok ? null : r.error.code, 'E_BACKUP_FAILED');
     assert.equal(readFileSync(`${path}.bak`, 'utf8'), 'previous backup');
     assert.equal(existsSync(`${path}.bak.tmp`), false);
@@ -354,19 +356,15 @@ describe('round 4 ruling 22: only the migration runner changes the schema', () =
     db.close();
   });
 
-  it('no source file but db.ts and migrate.ts calls schemaTx; Db has no schema method (ruling 26)', () => {
-    const src = fileURLToPath(new URL('../../../', import.meta.url));
-    const found: string[] = [];
-    for (const pkg of readdirSync(src)) {
-      const dirPath = join(src, pkg, 'src');
-      if (!existsSync(dirPath)) continue;
-      for (const f of readdirSync(dirPath, { recursive: true, encoding: 'utf8' })) {
-        const rel = `${pkg}/src/${f}`;
-        if (!f.endsWith('.ts') || rel === 'engine/src/m24/db.ts' || rel === 'engine/src/m24/migrate.ts') continue;
-        if (/schemaTx|withSchemaTx|SCHEMA_TX/.test(readFileSync(join(dirPath, f), 'utf8'))) found.push(rel);
-      }
-    }
-    assert.deepEqual(found, []);
+  it('ruling 29: the schema runner is reachable neither through db.ts\'s exports nor through the Db object', async () => {
+    const dbModule = await import('../../src/m24/db.ts') as Record<string, unknown>;
+    assert.equal(dbModule['schema' + 'Tx'], undefined);
+    assert.deepEqual(Object.keys(dbModule).filter((k) => /schema|runner/i.test(k)), []);
+    const db = await migrated();
+    assert.deepEqual(Object.getOwnPropertySymbols(db), []);
+    assert.deepEqual(Reflect.ownKeys(db).filter((k) => typeof k !== 'string' || /schema|runner/i.test(k)), []);
+    assert.throws(() => schemaFixture({ ...db } as Db, () => 0), /needs a database opened by openDb/);   // a copy carries nothing
+    db.close();
   });
 });
 
