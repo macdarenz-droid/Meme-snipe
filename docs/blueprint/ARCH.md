@@ -3220,7 +3220,7 @@ Not registered: the addendum's A06 trade rates of 8.3 and 4.7 trades a day (disc
 
 | Change | Where | Source |
 |---|---|---|
-| Replay mode: `replay_unavailable` for `honeypot_sim` and pre-window holder state in a B-10 run only; "assumed pass, flagged" under a replay-only key refused in paper, live_small and live; tagged decisions excluded from B, R and P; `fee_config_known` and `venue_enabled` fail-closed until P12 | 3.4 B-10, 9.2; SPEC-A A-M10-05, A-M11-01, A-M13-06, C-78; SPEC-B B-M25-02; DECISIONS | ZH.md round 2 ruling 2 |
+| Replay mode: `replay_unavailable` for `honeypot_sim` and pre-window holder state in a B-10 run only; "assumed pass, flagged" under a replay-only key refused in paper, live_small and live; tagged decisions excluded from B, R and P; `fee_config_known` and `venue_enabled` fail-closed until P12 | 3.4 B-10, 9.2; SPEC-A A-M10-05, A-M11-01, A-M13-06, C-78; SPEC-B B-M25-02; DECISIONS | ZH.md, "Supervisor rulings for round 3", item 2 |
 | `exclusive=yes` means nothing outside the bot's own spend ledger uses the Helius account during the window or the 31 days before it | D04; SPEC-A A-M13-06, A-M14-05; MIGRATION; DECISIONS | Z-H red team R3-02 |
 | Z-H figures cited from RESULTS and estimate.json @ `c74ba7ea` (estimate 7,762,033, row cap 9,022,478, P10 432,000, total 9,454,478, 0.5–1.4 TB, 5.94 blocks/s effective needed, P10 ≥ 8); the db3050b3 figures removed | SPEC-A A-M14-05; MIGRATION; DECISIONS | Z-H review N1 |
 | A P10 `test=p10` ack with its own reservation, `U` equal to its cap, counted in S for 31 days; the main reservation refused until P10 passes | SPEC-A A-M14-05, A-M13-06 | Z-H rulings rounds 3 and 4 |
