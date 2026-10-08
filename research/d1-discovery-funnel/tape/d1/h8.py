@@ -94,24 +94,63 @@ def price_asof(hours: np.ndarray, close: np.ndarray, tau) -> np.ndarray:
 
 
 def add_h8(df: pd.DataFrame, hours: np.ndarray, close: np.ndarray) -> pd.DataFrame:
-    """Adds sol_usd and h8_s{5,20,50} (bool) from as-of data only."""
+    """H8_AMENDMENT_2 items 1-2 (AMENDMENT_3's H8-tradable subset), from as-of data only. Adds:
+    - sol_usd, u_tag (U2 / U1 / none, from age since migration and market cap);
+    - h8floor_s<usd>: the effective quote meets the floor of the point's universe at that size (none: never);
+    - h8_s<usd>: tradable as the bot stands at that size: the floor plus every gate passing (dust, H6, H9, H11 spike,
+      H11 chase for U2, H12, H13, H17). A missing gate column or an unknown gate (-1) is not a pass;
+    - h8_gate_unknown: some gate needed for the point is unknown (evidence missing on the tape)."""
+    from .gates import GATES, floor_for, universe_tag
     out = df.copy()
+    n = len(out)
     px = price_asof(hours, close, out.tau.to_numpy())
     out["sol_usd"] = px
     eff_usd = out.effective_quote_sol.to_numpy(dtype=float) * px
-    for s in C.H8_SIZES_USD:
+    age = out["age_since_mig_min"].to_numpy(dtype=float) * 60 if "age_since_mig_min" in out else np.full(n, np.nan)
+    mcap = out["mcap_rel_420"].to_numpy(dtype=float) * 420 if "mcap_rel_420" in out else np.full(n, np.nan)
+    tag = np.array([universe_tag(a, m) for a, m in zip(age, mcap)], dtype=object)
+    out["u_tag"] = tag
+    g = {k: (out[k].to_numpy() if k in out else np.full(n, -1)) for k in GATES}
+    need = [k for k in GATES if k != "gate_h11_chase"]
+    gates_ok = np.all([g[k] == 1 for k in need], axis=0) & ((tag != "U2") | (g["gate_h11_chase"] == 1))
+    unknown = np.any([g[k] == -1 for k in need], axis=0) | ((tag == "U2") & (g["gate_h11_chase"] == -1))
+    out["h8_gate_unknown"] = unknown
+    for s in C.H8_COUNT_SIZES_USD:
+        fl = np.array([floor_for(t, s) for t in tag], dtype=float)
         with np.errstate(invalid="ignore"):
-            out[f"h8_s{s}"] = ~np.isnan(eff_usd) & (eff_usd >= floor_usd(s))
+            floor_ok = ~np.isnan(eff_usd) & (eff_usd >= fl)
+        out[f"h8floor_s{s}"] = floor_ok
+        out[f"h8_s{s}"] = floor_ok & gates_ok
     return out
 
 
-def h8_counts(df: pd.DataFrame) -> Dict:
-    """Step A count row 4: per day and size, H8-eligible pool-hours and graduates (eligible decision points only)."""
+def h8_counts(df: pd.DataFrame, pool_days: pd.DataFrame = None) -> Dict:
+    """Count row (H8_AMENDMENT item 4 as extended by H8_AMENDMENT_2 item 4): per day and size ($5..$10,000), on each
+    point's universe floor, the pool-hours and graduates that are tradable (floor and gates) and that meet the floor
+    only; plus the canonical pools whose creator fee is 0 (from `pool_days`)."""
     res = {}
     for day, g in df[df.eligible.astype(bool)].groupby("day", sort=True):
-        res[day] = {}
-        for s in C.H8_SIZES_USD:
-            e = g[g[f"h8_s{s}"]]
-            res[day][f"${s}"] = {"pool_hours": int(e.assign(h=e.tau // 3600)[["pool", "h"]].drop_duplicates().shape[0]),
-                                 "graduates": int(e.pool.nunique())}
+        res[day] = {"points_by_universe": {k: int(v) for k, v in g.u_tag.value_counts().items()}}
+        for s in C.H8_COUNT_SIZES_USD:
+            row = {}
+            for key, col in (("tradable", f"h8_s{s}"), ("floor_only", f"h8floor_s{s}")):
+                e = g[g[col].astype(bool)]
+                row[key] = {"pool_hours": int(e.assign(h=e.tau // 3600)[["pool", "h"]].drop_duplicates().shape[0]),
+                            "graduates": int(e.pool.nunique())}
+            res[day][f"${s}"] = row
+        if pool_days is not None and len(pool_days):
+            pdd = pool_days[pool_days.day == day]
+            res[day]["canonical_pools_creator_fee_0"] = int(pdd.loc[pdd.creator_fee_zero, "pool"].nunique())
+            res[day]["canonical_pools"] = int(pdd.pool.nunique())
     return res
+
+
+def pool_days(book) -> pd.DataFrame:
+    """Per canonical pool on the tape and UTC day: whether the pool's last row of the day charged a 0 creator fee."""
+    rows = []
+    for p, r in book.rows.items():
+        day = r["block_time"] // 86400
+        last = np.r_[day[1:] != day[:-1], True]
+        for k in np.flatnonzero(last):
+            rows.append((p, pd.Timestamp(int(day[k]) * 86400, unit="s").strftime("%Y-%m-%d"), bool(r["creator_bps"][k] == 0)))
+    return pd.DataFrame(rows, columns=["pool", "day", "creator_fee_zero"])
