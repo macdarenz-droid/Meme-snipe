@@ -230,3 +230,7 @@ REVIEW PASS with fixes. Red team 0 BLOCKER, 1 MAJOR, 4 MINOR. Every verified cla
     - L58: drop "500 cap". Paging has no 500 cap. A `created` slice or status query that returns 1,000 results fails closed, or is split further (rulings 55 and 61).
     - L46: write "no archive-specific number published; the page says limits apply to all nodes, so the per-IP 429 → 10 s pause may apply to the archive too".
     - Also add: never use `gh run list` uncapped for counts.
+
+### #306 round 3 (head `99996584`)
+
+The supervisor checked the delta from `a2981261` itself: one file, ruling 62 applied as worded. **#306 is approved.** It waits for OF-2 (#296) to merge, then is retargeted to `ccr-14987baf-i6lrsl` (its own diff is then the one doc), merges the base and merges on green CI. Researcher `session_01A6P7TJYP1XZYZ7bAoBQsEe` stays parked until then.
