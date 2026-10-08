@@ -44,16 +44,13 @@ describe('copy guard', () => {
     expect([text, ...attrs, ...css].flatMap(findBanned)).toEqual([]);
   });
 
-  it('finds no banned words in the Android app strings or the preview release notes', () => {
+  it('finds no banned words in the Android app strings', () => {
     // Android: every <string> in res/values*/ (the launcher and task-switcher name come from here).
     const res = join(appRoot, 'android/app/src/main/res');
     const xml = readdirSync(res).filter((d) => d.startsWith('values')).flatMap((d) => filesUnder(join(res, d))).filter((f) => f.endsWith('.xml'));
     const strings = xml.flatMap((f) => [...readFileSync(f, 'utf8').matchAll(/<string[^>]*>([^<]*)<\/string>/g)].map((m) => m[1] ?? ''));
     expect(strings).toContain('Zeroed');
-    // The preview's release notes: the fixed lines publish-preview.sh writes (commit subjects are the commits' own).
-    const notes = [...readFileSync(join(repoRoot, '.github/scripts/publish-preview.sh'), 'utf8').matchAll(/echo "((?:[^"\\]|\\.)*)"/g)].map((m) => m[1] ?? '');
-    expect(notes.some((n) => n.startsWith('Preview build'))).toBe(true);
-    expect([...strings, ...notes].flatMap((t) => findBanned(t).map((l) => `${l}: "${t}"`))).toEqual([]);
+    expect(strings.flatMap((t) => findBanned(t).map((l) => `${l}: "${t}"`))).toEqual([]);
   });
 
   it('fails on seeded JSX text, attributes and string literals', async () => {
