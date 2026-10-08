@@ -83,7 +83,7 @@ def build_universe(creates: list, migrations: list, creation_days, pools_created
             ms, mt, pool = mig[m]
             rows.append(dict(mint=m, create_slot=int(e["slot"]), create_time=int(e["block_time"]),
                              bonding_curve=f.get("bonding_curve", ""), mig_slot=ms, mig_time=mt, pool=pool,
-                             token_program=f.get("token_program", ""), quote_at_migration=10**12))
+                             token_program=f.get("token_program", ""), quote_at_migration=qmig.get(pool, float("nan"))))
     cols = ["mint", "create_slot", "create_time", "bonding_curve", "mig_slot", "mig_time", "pool", "token_program",
             "quote_at_migration"]
     return pd.DataFrame(rows, columns=cols), why
