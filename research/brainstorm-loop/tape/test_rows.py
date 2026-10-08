@@ -369,6 +369,25 @@ class Rebuy(unittest.TestCase):
                                       pb[pb["hour"] == 1].reset_index(drop=True))
 
 
+class SolUsd(unittest.TestCase):
+    def test_kline_minutes_sha_and_range_flag(self):
+        import hashlib
+        import run_step_a
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "SOLUSDT-1m-2026-09-11.csv")
+        t0 = 1789084800000                                    # 2026-09-11 00:00 UTC in ms
+        with open(p, "w") as fh:
+            for i, c in enumerate([150.0, 151.0, 152.0]):
+                fh.write(f"{t0 + i * 60000},0,0,0,{c},0,0,0,0,0,0,0\n")
+        px, sha = run_step_a.read_sol_usd([p])
+        self.assertEqual(px, {"2026-09-11": (151.0, 150.0, 152.0)})
+        self.assertEqual(sha[0]["sha256"], hashlib.sha256(open(p, "rb").read()).hexdigest())
+        # a day whose minute range reaches $50k / 420 SOL (about 119) is flagged, though the median is far
+        self.assertTrue(R._overlap(420 / 1.05, 420 / 0.95, 50_000 / 125.0, 50_000 / 115.0))
+        g = R.placebo_grid(day_ranges=[(50_000 / 152.0, 50_000 / 150.0)])
+        self.assertTrue(all(not R._overlap(c / 1.1, c / 0.9, 50_000 / 152.0, 50_000 / 150.0) for c in g))
+
+
 class ReviewFixes(unittest.TestCase):
     def test_dev_zero_counts_zero_for_loaded_day_without_events(self):
         d = tempfile.mkdtemp()
