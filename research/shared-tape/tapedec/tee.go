@@ -213,14 +213,20 @@ func (t *tee) admit(ctx context.Context) bool {
 				return true
 			}
 		}
-		// A Retry-After that arrived while this request waited holds it too.
+		// A Retry-After that arrived while this request waited holds it too, and it then
+		// takes a new turn in the pace, so waiters never burst out together.
 		t.mu.Lock()
 		p := t.pauseUntil
-		t.mu.Unlock()
 		if !p.After(time.Now()) {
+			t.mu.Unlock()
 			return true
 		}
-		at = p
+		at = t.nextAt
+		if at.Before(p) {
+			at = p
+		}
+		t.nextAt = at.Add(t.interval)
+		t.mu.Unlock()
 	}
 }
 

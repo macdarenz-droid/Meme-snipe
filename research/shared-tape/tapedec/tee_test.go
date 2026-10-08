@@ -327,3 +327,47 @@ func TestTeePaceAndCap(t *testing.T) {
 		t.Fatalf("11 requests at 10 a second took %s", el)
 	}
 }
+
+// Requests waiting their turn when a 429 arrives wait out its Retry-After and then go
+// one per interval: no 1-second window after the pause holds more than the rate.
+func TestTeeNoBurstAfterPause(t *testing.T) {
+	var mu sync.Mutex
+	var sent []time.Time
+	var first atomic.Bool
+	up, _ := upstream(t, func(w http.ResponseWriter, req rpcReq) {
+		mu.Lock()
+		sent = append(sent, time.Now())
+		mu.Unlock()
+		if !first.Swap(true) {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte(`{"jsonrpc":"2.0","result":1,"id":1}`))
+	})
+	const rps = 10
+	r := newRig(t, up.URL+"/", rps, 100)
+	var wg sync.WaitGroup
+	for k := 0; k < 25; k++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			post(t, &http.Client{}, r.srv.URL, `{"jsonrpc":"2.0","id":1,"method":"getSlot"}`, nil)
+		}()
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	for i := range sent {
+		n := 0
+		for j := i; j < len(sent) && sent[j].Sub(sent[i]) < time.Second; j++ {
+			n++
+		}
+		if n > rps+1 { // +1: both ends of a window can hold a send
+			t.Fatalf("%d forwards within 1 s from send %d (rate %d)", n, i, rps)
+		}
+	}
+	if len(sent) != 25 {
+		t.Fatalf("%d forwards, want 25", len(sent))
+	}
+}

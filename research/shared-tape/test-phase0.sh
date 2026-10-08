@@ -39,7 +39,7 @@ git clone -q "$remote" "$T/seed" 2>/dev/null; echo x > "$T/seed/README.md"
 git -C "$T/seed" add -A && git -C "$T/seed" -c user.name=t -c user.email=t@t commit -qm seed && git -C "$T/seed" push -q origin main
 git clone -q --depth 1 "file://$remote" "$T/zdata"
 rc=0
-env HELIUS_API_KEY=CANARY-phase0 TAPE_UPSTREAM="http://127.0.0.1:$(cat "$T/port")/" ZEROED_DATA="$T/zdata" RPC_CONC=4 \
+env TAPE_TEST=1 HELIUS_API_KEY=CANARY-phase0 TAPE_UPSTREAM="http://127.0.0.1:$(cat "$T/port")/" ZEROED_DATA="$T/zdata" RPC_CONC=4 \
   bash "$here/phase0.sh" "$T/work" 10 25 3 > "$T/out.txt" 2>&1 || rc=$?
 pass=0 fail=0
 ok() { echo "ok   $1"; pass=$((pass+1)); }
@@ -52,7 +52,7 @@ grep -rq CANARY-phase0 "$T/work" --include='*.log' --include='*.json' && no "can
 u=$(cat "$T/work/credits-used"); a=$(jq .attempts "$T/work/ledger.json")
 [[ "$u" == "$a" && "$u" -gt 0 ]] && ok "credits booked ($u)" || no "credits booked $u vs $a"
 echo 5995 > "$T/work/credits-used"; rc=0
-env HELIUS_API_KEY=CANARY-phase0 TAPE_UPSTREAM="http://127.0.0.1:$(cat "$T/port")/" ZEROED_DATA="$T/zdata" \
+env TAPE_TEST=1 HELIUS_API_KEY=CANARY-phase0 TAPE_UPSTREAM="http://127.0.0.1:$(cat "$T/port")/" ZEROED_DATA="$T/zdata" \
   bash "$here/phase0.sh" "$T/work" 10 > "$T/out2.txt" 2>&1 || rc=$?
 [[ $rc != 0 && $(cat "$T/work/credits-used") -le 6000 ]] && ok "the cap holds across reruns (stopped at $(cat "$T/work/credits-used"))" || no "rerun cap: rc=$rc used $(cat "$T/work/credits-used")"
 echo "$pass passed, $fail failed"

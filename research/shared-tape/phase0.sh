@@ -17,6 +17,9 @@ zdata=${ZEROED_DATA:-/home/user/zeroed-data}
 mkdir -p "$work"
 log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$work/phase0.log" >&2; } # stderr: safe inside $(...)
 
+# The real key goes only to Helius; test-phase0.sh sets TAPE_TEST=1 for its local fake.
+upstream=${TAPE_UPSTREAM:-https://mainnet.helius-rpc.com/}
+[[ "$upstream" =~ ^https://[a-z0-9.-]+\.helius-rpc\.com/ || "${TAPE_TEST:-}" == 1 ]] || { log "refused: upstream must be https://*.helius-rpc.com/"; exit 2; }
 . "$root/research/historical/ci/archive-limits.conf"
 [[ " $HELIUS_DAYS " == *" $day "* ]] || { log "refused: $day is not in HELIUS_DAYS"; exit 2; }
 [ -n "${HELIUS_API_KEY:-}" ] || { log "refused: HELIUS_API_KEY is not set"; exit 2; }
@@ -39,7 +42,7 @@ used=$(cat "$work/credits-used" 2>/dev/null || echo 0)
 left=$(( cap - used ))
 (( left > 0 )) || { log "refused: Phase 0's $cap credits are spent ($used used)"; exit 3; }
 rm -f "$work/STOP" "$work/tee.addr" "$work/ledger.json"
-"$bin/zeroed-tapedec" tee -upstream "${TAPE_UPSTREAM:-https://mainnet.helius-rpc.com/}" -rps "$rps" -rps2 "$rps2" -switch-after "$switch" -max-credits "$left" -spool "$spool" \
+"$bin/zeroed-tapedec" tee -upstream "$upstream" -rps "$rps" -rps2 "$rps2" -switch-after "$switch" -max-credits "$left" -spool "$spool" \
   -ledger "$work/ledger.json" -stop-file "$work/STOP" -addr-file "$work/tee.addr" 2>> "$work/tee.log" &
 teepid=$!
 stop_tee() {
