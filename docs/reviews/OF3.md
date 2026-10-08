@@ -121,3 +121,9 @@ Trim-failure logs are kept, half-trimmed units are never sealed, and progress-pi
     - mv `migrations.list` out of it;
     - name it in an echo to the summary.
     Everything else is refused, and `eval` is refused in the CI scripts. One test for each form the red team listed.
+
+### Round 9 (head `84b56c0c`)
+
+- Reviewer: PASS final, 0/0/0. Rulings 25–30 met; with the round 9 files set back, 9 tests fail. Label `deps-reviewed:02ff30afb950a03de09d33ac0a4cf61a`.
+- Red team: final, 0 BLOCKER, 0 MAJOR, 1 MINOR: the same guard gap as OF-2 ruling 67. A logs entry cannot be opened as progress; no restore key prefix-matches the wrong entry; a failed job seals logs before saving.
+31. **Supervisor ruling (9 Oct about 5:20 AM).** OF-2 ruling 67 covers it (the guard lives on of2-holds and flows here). OF-3 takes it with the base merge `455739ae`.

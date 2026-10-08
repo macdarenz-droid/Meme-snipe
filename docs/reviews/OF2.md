@@ -251,3 +251,15 @@ Slice paging is sound: inclusive UTC slices leave no gaps, and every query fails
 65. **Pin scope.** Arming also refuses archive-workflow jobs that use `container:` or `services:`, or that call a reusable workflow. Test it.
 - Round 8 reviewer: PASS, final, at `8aa5c131`; safe-b `4ca9d41a` is consistent. m1: `OLD-FAITHFUL.md:379` and `test-ci.sh:2216` still say "500 cap".
 66. **m1.** Change both to "sliced created searches and status queries each fail closed at total_count ≥ 1,000 or rows < total_count".
+
+### Round 9 (heads: of2-holds `83bc8d01`, archive-safe-b `8c15b41b`; base `0f6f51bc` merged)
+
+- Reviewer: PASS final, 0 BLOCKER, 0 MAJOR, 1 MINOR (m1: test name at `test-ci.sh:2223` still says "more than 5,000 runs"). Rulings 63 (as replaced by OF-3 30) and 64–66 met; every base merge equals `git merge-tree` of its parents.
+- Red team: final, 0 BLOCKER, 0 MAJOR, 3 MINOR. The OF-3 red team found the same MINOR 1 independently.
+
+### Supervisor rulings for round 10 (9 Oct about 5:20 AM)
+
+67. **Red team MINOR 1 (both red teams), required.** The guard misses ordinary spellings of a log read-back: `cat "${out}/logs/…"`, `cat "$out"/logs/…`, `cd "$out" && cat logs/…`, `find "$out" … -exec cat {} +`. Match a `logs` path part after any spelling of `$out` or `$RUNNER_TEMP` (plain, quoted, braced), and refuse read commands (cat, grep, sed, awk, head, tail, cp, `find -exec`) whose path is `$out` itself or that follow a `cd` into it. One test per probe the red teams listed, each failing on `83bc8d01`. Variable indirection (`d=logs; … "$out/$d"`) and scripts sourced from outside `ci/` (red team MINOR 3) are declined as deliberate disguise that review catches; possible later hardening.
+68. **Red team MINOR 2, declined.** `[ -s "$qlog/…" ]` is refused, which fails closed, and no line uses it.
+69. **Reviewer m1.** Rename the test at `test-ci.sh:2223` to "each search fails closed at 1,000".
+- Merge the new base `455739ae` with round 10.
