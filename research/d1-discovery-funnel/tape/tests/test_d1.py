@@ -138,7 +138,9 @@ class Features(unittest.TestCase):
     def test_hand_computed(self):
         tape, book, clock, pts, _ = build()
         feats = compute_features(tape, book, pts, clock)
-        self.assertEqual(list(feats.columns[2:]), list(C.FEATURES))
+        self.assertEqual(list(feats.columns[2:30]), list(C.FEATURES))
+        from d1.gates import GATES
+        self.assertEqual(list(feats.columns[30:]), list(GATES))
         el = pts[pts.eligible]
         p = el.iloc[3]
         fr = feats.loc[el.index[3]]
