@@ -121,11 +121,13 @@ func main() {
 		}
 		return
 	case "migrations":
-		// OF-3: the pinned PM-01 migration list from stored days' units (one dir each).
+		// OF-3: the pinned PM-01 migration list of a day: its own units plus -prior.
 		fs := flag.NewFlagSet("migrations", flag.ExitOnError)
-		horizon := fs.Int64("horizon-s", pmHorizonS, "seconds kept after each migration")
+		horizon := fs.Int64("horizon-s", pmHorizonS, "seconds kept after each migration (PM-01 PREREG §3: 300 min)")
+		prior := fs.String("prior", "", "the earlier days' pinned list (empty: none)")
+		dayStart := fs.Int64("day-start", 0, "the day's first second (unix): prior lines ending before it are dropped")
 		fs.Parse(os.Args[2:])
-		lines, err := migrationList(fs.Args(), *horizon)
+		lines, err := migrationList(fs.Args(), *horizon, *prior, *dayStart)
 		if err != nil {
 			log.Printf("refused: %v", err)
 			os.Exit(2)

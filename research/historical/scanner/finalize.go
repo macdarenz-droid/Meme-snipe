@@ -1275,7 +1275,12 @@ func checkUnitLog(out, logPath string) error {
 	if err != nil {
 		return err
 	}
-	want := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	var want []string
+	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		if !strings.HasPrefix(l, "k2 ") { // a trimmed unit's K2 file hashes, kept with its line
+			want = append(want, l)
+		}
+	}
 	have, err := unitLog(out)
 	if err != nil {
 		return err
@@ -1295,16 +1300,32 @@ func checkUnitLog(out, logPath string) error {
 	return nil
 }
 
-// pmHorizonS is PM-01's holding horizon after a migration: entries up to 120 min after
-// the verified CompletePumpAmmMigrationEvent (docs/blueprint/SPEC-A.md PM-01 logic) plus
-// the 120 min time stop (docs/blueprint/ARCH.md, exits table), so 240 min.
-const pmHorizonS = 240 * 60
+// pmHorizonS is how long K3 keeps a listed pool after its migration: migration + 300 min
+// (research/pm01/PREREG.md §3, "For the B-10 history pull", PM01-P5 at c0bdb04a: last
+// entry at +120 min, time stop 120 min, plus 60 min for the exit ladder). The scanner and
+// the trim stay horizon-free: the list carries each mint's FROM and UNTIL.
+const pmHorizonS = 300 * 60
 
-// migrationList builds the pinned PM-01 migration list from the finished units under
-// each dir: every CompletePumpAmmMigrationEvent's mint, from its block time to block time
-// + horizonS, one line a mint (its first migration), sorted by mint.
-func migrationList(dirs []string, horizonS int64) ([]string, error) {
+// migrationList builds the pinned PM-01 migration list for a day from the finished units
+// under each dir (the day's own K2 units): every CompletePumpAmmMigrationEvent's mint, from
+// its block time to block time + horizonS, plus the lines of prior (the earlier days'
+// list, "" for none) whose window reaches dayStart or later; one line a mint (its first
+// migration), sorted by mint. D's list = the days before D + D's own migrations
+// (OLD-FAITHFUL.md §2).
+func migrationList(dirs []string, horizonS int64, prior string, dayStart int64) ([]string, error) {
 	first := map[string]int64{}
+	until := map[string]int64{}
+	if prior != "" {
+		l, _, err := loadMigrationList(prior)
+		if err != nil {
+			return nil, fmt.Errorf("prior list: %w", err)
+		}
+		for m, w := range l {
+			if w.until >= dayStart {
+				first[m], until[m] = w.from, w.until
+			}
+		}
+	}
 	for _, dir := range dirs {
 		paths, err := filepath.Glob(filepath.Join(dir, "units", "*", "*", "events.jsonl.zst"))
 		if err != nil {
@@ -1335,6 +1356,7 @@ func migrationList(dirs []string, horizonS int64) ([]string, error) {
 				}
 				if t, ok := first[e.Fields["mint"]]; !ok || e.BlockTime < t {
 					first[e.Fields["mint"]] = e.BlockTime
+					until[e.Fields["mint"]] = e.BlockTime + horizonS
 				}
 				return nil
 			})
@@ -1345,7 +1367,7 @@ func migrationList(dirs []string, horizonS int64) ([]string, error) {
 	}
 	lines := make([]string, 0, len(first))
 	for m, t := range first {
-		lines = append(lines, fmt.Sprintf("%s %d %d", m, t, t+horizonS))
+		lines = append(lines, fmt.Sprintf("%s %d %d", m, t, until[m]))
 	}
 	sort.Strings(lines)
 	return lines, nil

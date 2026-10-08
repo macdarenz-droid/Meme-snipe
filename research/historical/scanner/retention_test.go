@@ -448,8 +448,8 @@ func TestMigrationListFromUnits(t *testing.T) {
 		ev("pump", "CompletePumpAmmMigrationEvent", k3Mint, 300), ev("pump", "CompletePumpAmmMigrationEvent", k3Mint, 200), ev("amm", "CompletePumpAmmMigrationEvent", k3Pool2, 100)}, "\n") + "\n"
 	writeZst(t, filepath.Join(dir, "events.jsonl.zst"), []byte(lines))
 	os.WriteFile(filepath.Join(dir, "stats.json"), []byte("{}"), 0o644)
-	got, err := migrationList([]string{out}, pmHorizonS)
-	want := []string{k3Mint + " 200 14600", k3Mint2 + " 500 14900"}
+	got, err := migrationList([]string{out}, pmHorizonS, "", 0)
+	want := []string{k3Mint + " 200 18200", k3Mint2 + " 500 18500"}
 	if err != nil || strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("list %v %v", got, err)
 	}
@@ -457,7 +457,42 @@ func TestMigrationListFromUnits(t *testing.T) {
 	if l, _, err := loadMigrationList(p); err != nil || len(l) != 2 {
 		t.Fatalf("built list does not load: %v", err)
 	}
-	if _, err := migrationList([]string{t.TempDir()}, pmHorizonS); err == nil {
+	if _, err := migrationList([]string{t.TempDir()}, pmHorizonS, "", 0); err == nil {
 		t.Fatal("a dir without units accepted")
+	}
+}
+
+// D's list = the earlier days' list (only windows reaching D) + D's own migrations; a mint
+// already listed keeps its earlier migration; the horizon is PM-01's 300 min.
+func TestMigrationListMergesPriorDays(t *testing.T) {
+	if pmHorizonS != 18000 {
+		t.Fatalf("horizon %d s, PM-01 PREREG §3 says 300 min", pmHorizonS)
+	}
+	out := t.TempDir()
+	dir := filepath.Join(out, "units", "1046", "1-2")
+	os.MkdirAll(dir, 0o755)
+	b, _ := json.Marshal(map[string]any{"block_time": 100000, "program": "pump", "event": "CompletePumpAmmMigrationEvent", "fields": map[string]string{"mint": k3Mint2}})
+	b2, _ := json.Marshal(map[string]any{"block_time": 100100, "program": "pump", "event": "CompletePumpAmmMigrationEvent", "fields": map[string]string{"mint": k3Mint}})
+	writeZst(t, filepath.Join(dir, "events.jsonl.zst"), append(append(append(b, '\n'), b2...), '\n'))
+	os.WriteFile(filepath.Join(dir, "stats.json"), []byte("{}"), 0o644)
+	// prior: k3Mint migrated the day before (window reaches the day), k3Pool's mint ended before it.
+	prior := writeList(t, k3Mint+" 90000 108000", k3Pool2+" 70000 80000")
+	got, err := migrationList([]string{out}, pmHorizonS, prior, 86400*1+0)
+	want := []string{k3Mint + " 90000 108000", k3Mint2 + " 100000 118000"}
+	if err != nil || strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("merged list %v %v, want %v", got, err, want)
+	}
+}
+
+// The per-unit log's k2 lines (a trimmed unit's K2 file hashes) do not change the check.
+func TestUnitLogIgnoresK2HashLines(t *testing.T) {
+	list := writeList(t, k3Mint+" 100 200")
+	out := t.TempDir()
+	scanFixtureUnit(t, "K3", list, filepath.Join(out, "units", "1046", "1-2"))
+	lines, _ := unitLog(out)
+	logp := filepath.Join(t.TempDir(), "units.log")
+	os.WriteFile(logp, []byte(lines[0]+"\nk2 "+strings.Repeat("a", 64)+" 1046/1-2/raw.jsonl.zst\n"), 0o644)
+	if err := checkUnitLog(out, logp); err != nil {
+		t.Fatalf("k2 lines broke the check: %v", err)
 	}
 }

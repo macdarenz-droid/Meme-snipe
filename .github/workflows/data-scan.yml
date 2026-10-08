@@ -404,6 +404,22 @@ jobs:
           research/historical/ci/time-left.sh "$JOB_START" 355 45 || rc=$?
           if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
           exit "$rc"
+      # OF-3 (docs/reviews/OF3.md ruling 2): a day stored at K3 is read at K2 and trimmed
+      # here, before QA and storing; the per-unit log keeps each unit's K2 hashes. The day
+      # before's pinned list comes from the store (OF-5); until it is wired, only the
+      # first allow-listed day can be trimmed, so a K3 day fails closed here.
+      - name: Trim the day to K3
+        id: trim
+        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        env:
+          DAY: ${{ matrix.day }}
+        run: |
+          ret=$(research/historical/ci/archive-guard.sh local "$DAY")
+          if [ "$ret" = K3 ]; then
+            research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" - "$RUNNER_TEMP/work/assets"
+          else
+            echo "$DAY is stored at $ret: no trim" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Archive guard before QA
         id: guardqa
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
