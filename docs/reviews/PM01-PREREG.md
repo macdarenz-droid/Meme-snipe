@@ -181,3 +181,30 @@ All 19 round 1 findings are closed.
 43. **r6.** State that the voided-W_R kill (lean row) and R-3/P-3 (conservative row) use different rows on purpose.
 44. **r7.** List `burn_percent` as excluded, with the reason. The VERIFY source for the Rent fields is the Solana SDK `Rent` struct at a named version.
 45. **V-m1.** The VERIFY items (config addresses re-derived from the IDL PDA seeds, the graduation field, the Rent fields) become start-condition item 5, so the screen cannot start with them open.
+
+## Round 6 (head `55ad5258`): reviewer FAIL on 1 MAJOR, 3 MINOR; red team 0 BLOCKER, 1 MAJOR, 8 MINOR
+
+- Reviewer M1: the block configKey formula conflicts with SPEC-A A-M13-02 step 2.
+- Red team R4-M1: the mechanical decoder-only test checks only swap outputs.
+- Minors: ARCH values left null (PERTOKEN, LOSSRUN and others); lp_withdrawable_max; thresholds missing from gates; the file-sha reading; the pending boundary; what counts as fee-only; the monthly row hash; kill versus retry; whitelist_pda; the kill-rule-4 calendar cap.
+
+### Supervisor rulings for round 7 (8 Oct 2026, 3:13 PM)
+
+46. **Two keys (reviewer M1).** The block hash is named `pm01FrozenKey` (the R6-36 formula). The run refuses unless (1) pm01FrozenKey recomputes from the merged block and files, and (2) the engine's A-M13-02 configKey equals the configKey recomputed by A-M13-02 from the block's values. The change-one-value AC applies to both. SPEC-A is not amended.
+47. **The decoder-only test (R4-M1).** An upgrade is decoder-only only if all of the following hold over the full day:
+    - (i) every AMM swap's amounts match;
+    - (ii) every migration event's pool seed amounts match the pinned formula from the Global fields;
+    - (iii) every bonding-curve buy and sell matches;
+    - (iv) every swap's fee transfers (recipient and amount per leg) match the pre-upgrade split;
+    - (v) the swap instructions' required account list, and the rent paid per buy and sell, are unchanged.
+    Any failure, or any instruction that cannot be decoded, makes the upgrade economic. "The pinned formula" is the on-chain integer arithmetic (the decoder's quote function with its golden tests), not the exact-rational spot formula.
+48. **Pending boundary (r3).** A boundary is pending for one day: the window's counts pause and no entries count. If the test clears it, the window continues, with that day reported. If not, it ends as economic. Nothing is voided while it is pending.
+49. **Fee-only (r4).** "Fee-only" means only the numeric protocol and LP fee rates and tiers (lp_fee_basis_points, protocol_fee_basis_points, fee_basis_points, and the FeeConfig tiers and flat fees). Changes to creator or holder fees, fee_recipient(s), is_holder_reward_enabled or creator_fee_configurable end the window. "The higher of old and new" is applied per trade and per side, and to the random-entry benchmark too.
+50. **Files (r1).** The run recomputes each referenced file's sha256 from disk and refuses if it differs from the sha recorded in the block; the keys use the recorded sha. If a value appears both inline and in a file, the run refuses when they disagree.
+51. **Values (V-m1, V-m2, V-m3, r2).**
+    - Fill the ARCH values now: PERTOKEN 1, per-token daily entries 3, LOSSRUN 5 losses then a 60-min pause, WEEKLOSS 6%, DDHALF 10% (×0.5), DDKILL 15%, FEEDAY 2,000,000 lamports, and lp_withdrawable_max 5%.
+    - Add to : the R-4 stresses (2 × p95 latency, 2 × p_sw), the consistency flags (0.5×–2× trade rate, 15 pp stop share, 1.25× cost), the one-day decoder test, P-1's ≥ 100 trades, and the P-gate thresholds by reference to ARCH.
+52. **Monthly figure (r5).** At the window's start, the figure (USD value, DECISIONS commit sha, row text) is copied into the run bundle. The run refuses only if the figure read at evaluation differs from the copy.
+53. **Kill versus retry (r6).** The kill stands unless the failing gate, recomputed on the same window with the fix, passes. Then the window is burned, and the retry on unseen days counts as a new trial and goes to the owner first.
+54. **whitelist_pda (r7).** Drop the "unless": a change to it is always economic.
+55. **Kill rule 4 (r8).** "By 90 counted days, or 120 calendar days from the first W_B start, whichever comes first."
