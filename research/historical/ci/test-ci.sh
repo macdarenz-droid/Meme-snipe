@@ -126,7 +126,7 @@ run() { { bash "$here/assemble.sh" --download "$@" && env -u GH_TOKEN -u GITHUB_
 # ---- 1. full offline run: FROM 09-20, TO 09-22, lead-in 09-06 .. 09-19 ----
 reset_store
 if run 2026-09-20 2026-09-22 "$T/work"; then ok "assemble runs end to end"; else no "assemble runs end to end"; cat "$T/out.txt"; fi
-dl=$(sort "$T/downloads.log" | tr '\n' ' ')
+dl=$(grep '^data-day-' "$T/downloads.log" | sort | tr '\n' ' ')
 exp=$(for i in $(seq 1 16); do date -u -d "2026-09-05 + $i days" +data-day-%F; done | sort | tr '\n' ' ')
 [[ "$dl" == "$exp" ]] && ok "downloads exactly the 14 lead-in and 2 window days" || no "downloads: $dl"
 grep -q data-day-2026-09-05 "$T/downloads.log" && no "day before the lead-in was downloaded" || ok "no day before the lead-in is read"
@@ -3066,7 +3066,7 @@ case "$1" in
       repos/test/data/releases\?*)
         for d in "$S"/*/; do [ -d "$d" ] || continue
           t=$(basename "$d"); dr=false; [ -e "$d/.draft" ] && dr=true; b=$(cat "$d/.bytes" 2>/dev/null || echo 0)
-          sz=$(cat "$d/.sizes" 2>/dev/null | jq -R 'split(" ") | {(.[0]): (.[1] | tonumber)}' | jq -s 'add // {}')
+          sz=$( { cat "$d/.sizes" 2>/dev/null || true; } | jq -R 'split(" ") | {(.[0]): (.[1] | tonumber)}' | jq -s 'add // {}')
           (cd "$d" && ls) | jq -R . | jq -s --arg t "$t" --argjson dr "$dr" --argjson b "$b" --argjson sz "$sz" \
             '{tag_name: $t, draft: $dr, assets: ([.[] | {name: ., size: ($sz[.] // 0)}] + [{name: ".bulk", size: $b}])}'
         done | jq -s . | jq -r "$q" ;;
@@ -3220,7 +3220,7 @@ bad=""
 python3 - "$wf/data-scan.yml" > "$T/plan7.py" <<'PY'
 import sys, yaml
 st = next(x for x in yaml.safe_load(open(sys.argv[1]))["jobs"]["plan"]["steps"] if x.get("id") == "days")
-r = st["run"]; print(r[r.index("<<'EOF'") + len("<<'EOF'"):r.rindex("EOF")])
+r = st["run"]; i = r.index("\n", r.index("<<'EOF'")) + 1; print(r[i:r.rindex("EOF")])
 PY
 rc=0; MODE=scan DAYS=2026-07-22,2026-07-23 MAX_MBPS=40 SOURCE=archive MAX_CREDITS=0 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 python3 "$T/plan7.py" > "$T/plan7.out" 2>&1 || rc=$?
 [[ $rc != 0 ]] && grep -q "one UTC day per batch" "$T/plan7.out" && ! grep -q '^days=' "$T/plan7.out" || bad+=" [plan two days: $rc]"

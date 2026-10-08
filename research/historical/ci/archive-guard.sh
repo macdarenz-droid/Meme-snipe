@@ -357,11 +357,11 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
     text = open(f).read()
     if not MARK.search(text): continue
     name = os.path.basename(f)
-    try: wf = yaml.load(text, Loader=L)
-    except Exception: fail(name + " does not parse as YAML (or repeats a key)")
     # OF-4 ruling 8: no step reads the whole secrets context or forwards it
     for rx, what in ((r"toJSON\(\s*secrets\s*\)", "toJSON(secrets)"), (r"secrets\s*\[", "secrets[...]"), (r"secrets\s*:\s*inherit", "secrets: inherit")):
         if re.search(rx, text, re.I): fail(name + " uses " + what + " (OF-4 ruling 8)")
+    try: wf = yaml.load(text, Loader=L)
+    except Exception: fail(name + " does not parse as YAML (or repeats a key)")
     top = wf.get("permissions") if isinstance(wf, dict) else None
     if not isinstance(top, dict) or str(top.get("contents", "")).strip() != "read":
         fail(name + " has no explicit top-level permissions with contents: read")
