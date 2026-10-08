@@ -98,3 +98,7 @@ MAJOR: the same gap as the red team's m1. "Save progress" (`data-scan.yml:444`) 
 
 - **25 (refined).** shrinkqa, sealqa and the save after QA also run when `steps.trim.outcome == 'failure'`. Only `$out/logs` is sealed in that case; half-trimmed units never are. Add a workflow-structure assertion for it, alongside the forced-failure test.
 - **27. MINOR.** Whenever the full progress save is skipped or fails, seal and save `$out/logs` alone as a small separate entry (`if: always()`).
+
+### Round 6 reviewer (head `024399cb`): PASS, final
+
+The builder's reading of ruling 25 is right. After a trim failure, `$out` holds a half-trimmed day, so only the logs are sealed. The pre-trim "Save progress" entry stays as the intact K2 record, and progress-pick never resumes from a `-logs` key. MINOR: rulings 25–27 were not on the base or on `supervisor-docs-2`. They are in this log on `claude/supervisor-docs-3`, which goes to the base in the next supervisor docs PR.
