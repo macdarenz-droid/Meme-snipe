@@ -88,6 +88,11 @@ printf 'd\t1-2\trecords-1-2.tar\ts\t1\n' >> "$work/released.tsv"
 released d 1 2 && ok "all three assets: released" || no "released with three assets"
 # Credits are booked before a unit starts: a hard kill cannot lose them.
 grep -q 'book $(( tbase + tleft ))' "$here/stepa.sh" && ok "credits booked in advance" || no "advance booking"
+# KEEP_LOCAL=1: units are decoded and kept, nothing released.
+nrel=$(wc -l < "$T/work/released.tsv"); rc=0; run MAX_UNITS=1 KEEP_LOCAL=1 || rc=$?
+[[ $rc == 0 && $(wc -l < "$T/work/released.tsv") == "$nrel" && $(find "$T/work/research/units" -name stats.json | wc -l) == 1 ]] && ok "KEEP_LOCAL keeps a decoded unit locally, unreleased" || no "keep-local rc=$rc"
+rc=0; run MAX_UNITS=1 KEEP_LOCAL=1 || rc=$?
+[[ $rc == 0 && $(find "$T/work/research/units" -name stats.json | wc -l) == 2 ]] && ok "KEEP_LOCAL resume skips the kept unit" || no "keep-local resume"
 echo 999999 > "$T/work/stepa-credits-used"; rc=0; run || rc=$?
 [[ $rc == 3 ]] && ok "the Step A cap stops the run" || no "cap rc=$rc"
 echo "$pass passed, $fail failed"; [[ $fail == 0 ]]

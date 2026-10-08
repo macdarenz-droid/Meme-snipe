@@ -18,6 +18,7 @@ root=$(cd "$here/../.." && pwd)
 work=$1
 days=(2026-09-11 2026-09-10)
 holdout=$(date -u -d 2026-09-12 +%s)
+keep=${KEEP_LOCAL:-0} # 1: no release; finished units stay local (release creation was refused, 2026-10-08)
 max=${MAX_UNITS:-0} # read at most this many units in this run (0: all; tests and staged starts)
 rps=${RPS:-25} conc=${RPC_CONC:-32} cap=${STEPA_CAP:-650000} every=${REPLAY_EVERY:-30}
 upstream=${TAPE_UPSTREAM:-https://mainnet.helius-rpc.com/}
@@ -136,6 +137,7 @@ decode_unit() { # DAY EP FROM TO UDIR: research tables, completeness, then delet
   touch "$ud/decoded"
   rm -rf "$ud/spool"
   log "unit $from: decoded ($(jq -c '.rows' "$ud/decode-stats.json"))"
+  [ "$keep" == 1 ] && return 0
   release_unit "$day" "$ep" "$from" "$to"
 }
 released() { # all three assets of the unit read back
@@ -164,6 +166,7 @@ while read -r day ep from to; do
     log "unit $from is Phase 0's (on zeroed-data branch tape): not read again"; continue
   fi
   if [ -f "$unit/stats.json" ] && [ -f "$rdir/stats.json" ] && [ -f "$ud/decoded" ]; then
+    [ "$keep" == 1 ] && continue # kept local, done
     [ -z "$decpid" ] || { wait "$decpid" || exit 1; decpid=; }
     release_unit "$day" "$ep" "$from" "$to" || exit 1; continue
   fi
