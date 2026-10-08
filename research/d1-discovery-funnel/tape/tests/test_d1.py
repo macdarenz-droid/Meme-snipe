@@ -395,6 +395,26 @@ class Outcomes(unittest.TestCase):
         st = PoolBook(sim2.df()).state(5, 0)
         self.assertEqual((st.lp_bps, st.protocol_bps, st.creator_bps), (20, 5, 95))
 
+    def test_refused_exit_is_a_total_loss_R2_3(self):
+        """R2-3: an exit the pool cannot quote (no usable reserves in the worse state of the exit slot) is a total loss
+        (0 SOL back), as H1-CGO item 13 and G1 OQ-5 score it; it must never drop the trade from the sample."""
+        sim = S.AmmSim(S.POOL, S.MINT, base=206_900_000_000_000, vault=67_400_000_000, virt=17_600_000_000)
+        sim.trade(S.S0 + 10, "buy", 10**9, owner=101)
+        sim.trade(S.S0 + 100, "buy", 10**9, owner=102)
+        df = sim.df()
+        df.loc[1, "vault_after"] = 0                     # the pool's real vault is empty after the second row
+        book = PoolBook(df)
+        pts = pd.DataFrame({"pool": [S.POOL], "tau": [0], "mint": [S.MINT], "eligible": [True],
+                            "entry_slot": [S.S0 + 20], "entry_time": [int(S.bt_of(S.S0 + 20))],
+                            "valid_15": [True], "valid_60": [True], "exit_slot_15": [S.S0 + 100],
+                            "exit_slot_60": [S.S0 + 200]})
+        o = compute_outcomes(book, pts).iloc[0]
+        self.assertTrue(o.entry_ok)
+        for tag in (15, 60):
+            self.assertEqual(o[f"recv_{tag}"], 0)
+            self.assertAlmostEqual(o[f"net_ret_{tag}"], (0 - o.paid - o.fixed) / o.paid)
+            self.assertFalse(np.isnan(o[f"net_ret_{tag}_s5"]))
+
 
 def synthetic_search_frame(seed=1, planted=True, n_pools=60):
     rng = np.random.default_rng(seed)

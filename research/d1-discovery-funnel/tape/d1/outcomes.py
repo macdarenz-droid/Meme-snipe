@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from . import config as C
-from .costs import buy_exact_quote_in, fixed_for, sell
+from .costs import Fill, buy_exact_quote_in, fixed_for, sell
 from .pool_state import PoolBook
 
 
@@ -30,11 +30,16 @@ def _worse_buy(book, pool, slot, spend):
 
 
 def _worse_sell(book, pool, slot, base):
+    """The worse of the start and end states of the exit slot. A state that cannot quote the sell (no usable reserves)
+    is the worse one: the trade gets 0 SOL back, a total loss, and is never dropped (red team R2-3; as H1-CGO item 13
+    and G1 OQ-5)."""
     i_end = int(book.idx_le(pool, slot))
     i_start = int(book.idx_lt(pool, slot))
-    fills = [f for f in (sell(book.state(pool, i), base) for i in {i_start, i_end} if i >= 0) if f]
+    fills = [sell(book.state(pool, i), base) for i in {i_start, i_end} if i >= 0]
     if not fills:
         return None
+    if any(f is None for f in fills):
+        return Fill(base, 0, 0, 0, 0, None, True)
     return min(fills, key=lambda f: f.user)
 
 
