@@ -26,7 +26,8 @@ free=$(df -B1 --output=avail "$work" | tail -1)
 
 # Builds: rpcscan exactly as data-scan.yml builds it; the tapedec at its committed tree.
 bin="$work/bin"; mkdir -p "$bin"
-rev=$(cd "$root" && research/historical/ci/rpcscan-rev.sh) || exit 1
+export GO_VERSION=${GO_VERSION:-$(sed -n 's/^ *GO_VERSION: *"\([0-9.]*\)".*/\1/p' "$root/.github/workflows/data-scan.yml" | head -1)}
+rev=$(cd "$root" && research/historical/ci/rpcscan-rev.sh) || { log "rpcscan revision failed (GO_VERSION $GO_VERSION)"; exit 1; }
 (cd "$root/research/historical/rpcscan" && go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$bin/zeroed-rpcscan" .) || exit 1
 trev="tapedec$(git -C "$root" rev-parse HEAD:research/shared-tape/tapedec)"
 (cd "$here/tapedec" && go build -trimpath -ldflags "-X main.scannerRevision=$trev" -o "$bin/zeroed-tapedec" .) || exit 1
