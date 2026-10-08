@@ -128,6 +128,6 @@ if [ "${SOURCE:-archive}" != helius ]; then
   # OF-3: the release keeps the rescan unit's file hashes (equal to the day's unit, just
   # checked) and the per-unit log (revision, retention, migration list sha256 a unit).
   (cd "$again/units/$epoch/$range" && sha256sum -- *.zst | sed "s#  #  $epoch/$range/#") > "$assets/rescan-$day.sha256"
-  if [ -f "$out/units.log" ]; then cp "$out/units.log" "$assets/units-$day.log"; else zeroed-scan unitlog -out "$out" > "$assets/units-$day.log" 2>> "$qlog/unitlog.log"; fi
+  if [ -f "$out/units.log" ]; then cp "$out/units.log" "$assets/units-$day.log"; else zeroed-scan unitlog -out "$out" > "$qlog/units.log" 2>> "$qlog/unitlog.log"; cp "$qlog/units.log" "$assets/units-$day.log"; fi
 fi
 rm -rf "$ds" "$qlog" "$again"

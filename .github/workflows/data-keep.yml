@@ -6,8 +6,9 @@ name: data-keep
 # day's reads again). Progress entries are restored too (the newest per day). GitHub removes a cache entry
 # not accessed for 7 days and, at the 10 GB cap, the least recently accessed first.
 # Every 3 days this restores each data-rpc-assets-* entry, which counts as an access,
-# checks its files against SHA256SUMS-DAY (manifest included), and proves the access
-# refreshed the entry's last_accessed_at (the job fails if it did not).
+# checks it is a sealed entry (OF-2 round 7, ruling 51: only sealed entries are kept;
+# unsealed ones expire; their contents are checked by their MAC when data-scan opens
+# them), and proves the access refreshed the entry's last_accessed_at.
 # It never uploads an artifact, never creates or edits a release, never prints file
 # contents and uses no Helius key. The token reads the cache API only (actions: read).
 # Script: research/historical/ci/keep-check.sh.
@@ -62,26 +63,26 @@ jobs:
         if: matrix.entry.kind == 'assets'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/work/assets
+          path: ${{ runner.temp }}/work/sealed-assets
           key: ${{ matrix.entry.key }}
           fail-on-cache-miss: true
       - name: Restore the entry (progress)
         if: matrix.entry.kind == 'progress'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/work/data
+          path: ${{ runner.temp }}/work/sealed
           key: ${{ matrix.entry.key }}
           fail-on-cache-miss: true
-      - name: Check its files against SHA256SUMS
+      - name: Check it is a sealed entry (assets)
         if: matrix.entry.kind == 'assets'
         env:
           DAY: ${{ matrix.entry.day }}
-        run: research/historical/ci/keep-check.sh verify "$DAY" "$RUNNER_TEMP/work/assets"
-      - name: Check the progress is not empty
+        run: research/historical/ci/keep-check.sh verify "$DAY" "$RUNNER_TEMP/work/sealed-assets"
+      - name: Check it is a sealed entry (progress)
         if: matrix.entry.kind == 'progress'
         env:
           DAY: ${{ matrix.entry.day }}
-        run: research/historical/ci/keep-check.sh progress "$DAY" "$RUNNER_TEMP/work/data"
+        run: research/historical/ci/keep-check.sh progress "$DAY" "$RUNNER_TEMP/work/sealed"
       - name: Prove the restore refreshed its last access
         env:
           GH_TOKEN: ${{ github.token }}

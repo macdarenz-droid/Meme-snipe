@@ -129,8 +129,8 @@ if [ "$rec" = K3 ]; then
   # per-unit log is present and checks, and expect_units (if set) is met: no request,
   # trim-day.sh then does nothing and check-day.sh runs. Anything else is refused.
   units=$(find "$out/units" -mindepth 2 -maxdepth 2 -type d ! -name '*.tmp' 2>/dev/null | wc -l)
-  mkdir -p "$out/logs"
-  if [ -f "$out/units.log" ] && zeroed-scan unitlog -out "$out" -check "$out/units.log" > "$out/logs/unitlog.log" 2>&1 &&
+  slog="$out/logs"; mkdir -p "$slog"
+  if [ -f "$out/units.log" ] && zeroed-scan unitlog -out "$out" -check "$out/units.log" > "$slog/unitlog.log" 2>&1 &&
      { [ -z "${EXPECT_UNITS:-}" ] || [ "$units" -ge "$EXPECT_UNITS" ]; }; then
     echo "day $day is already read and trimmed ($units K3 units, per-unit log checked); no request" | tee -a "$summary"
     exit 0

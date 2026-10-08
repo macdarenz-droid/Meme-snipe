@@ -73,7 +73,8 @@ if [ ! -f "$list" ] || [ ! -d "$out/units.k3" ]; then
     prior_args=(-prior "$prior")
   fi
   [ ${#k2[@]} -gt 0 ] || refuse "$out holds no K2 units to build the list from"
-  zeroed-scan migrations -day-start "$(date -u -d "$day" +%s)" "${prior_args[@]}" "$out" > "$list.tmp" 2>> "$tlog/migrations.log"
+  zeroed-scan migrations -day-start "$(date -u -d "$day" +%s)" "${prior_args[@]}" "$out" > "$tlog/migrations.list" 2>> "$tlog/migrations.log"
+  mv "$tlog/migrations.list" "$list.tmp"
   [ -s "$list.tmp" ] || refuse "the day's pinned list is empty (no migration in the day or the window before it)"
   mv "$list.tmp" "$list"
 fi
@@ -138,7 +139,7 @@ echo "trim: $day trimmed to K3 (list sha256 $sha); K2 hashes in the per-unit log
 ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
 # OF-2 round 4, ruling 23: finalize and QA output go to $qlog next to the dataset, never
 # to the public job log or summary.
-qlog="$ds-log"; mkdir -p "$qlog"
+qlog="$out/logs/qa"; rm -rf "$qlog"; mkdir -p "$qlog"
 qa() { "$@" || { echo "trim: $1 failed for $day (exit $?); its output is in $qlog" | tee -a "$summary"; exit 1; }; }
 qa zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json" > "$qlog/finalize.log" 2>&1
 qa node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0 > "$qlog/qa.log" 2>&1
