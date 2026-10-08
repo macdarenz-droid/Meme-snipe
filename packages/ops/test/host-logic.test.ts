@@ -966,9 +966,45 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     const check = read('ops/host/files/usr/local/sbin/zeroed-check');
     expect(check).toContain(`if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then\n  rec="$(cat /var/lib/zeroed-record-upload/status.json 2>/dev/null || echo '{}')"`);
     expect(check).toContain(`if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi`);
-    expect(check).toContain('done < <(printf \'%s\' "$rec" | record_alerts "$(date +%s)")');
+    expect(check).toContain('done < <(printf \'%s\' "$rec" | record_alerts "$(date +%s)" /var/lib/zeroed/recorder)');
     // Before the key check's early exits, so it runs on a server whatever its pairing state.
     expect(check.indexOf('record_alerts')).toBeLessThan(check.indexOf('keys_stored || exit 0'));
+  });
+
+  // REC-UPLOAD-QUIET: the upload unit is skipped while its ConditionPathExists folder is missing, so it never writes a
+  // status; the alerts follow the same condition instead of raising "never reported" on a host with no recorder.
+  const recAlerts = (status: unknown, recorder: string) =>
+    sh(`record_alerts ${now} "${recorder}"`, JSON.stringify(status)).out.split('\n').map((l) => l.split('|').slice(0, 2).join(' '));
+  const recorder = join(tmp, 'rec-quiet', 'recorder');
+  const missing = join(tmp, 'rec-quiet', 'never-made');
+
+  it('(a) no recorder folder and no status: no alert is raised, and any open one is cleared', () => {
+    expect(recAlerts({}, missing)).toEqual(on([]));
+    expect(recAlerts({ ...ok, at: (now - 10_801) * 1000, failed_runs: 5, backlog_age_s: 90_000, kept: [{ key: 'k', why: 'w' }] }, missing)).toEqual(on([]));
+    expect(sh(`record_alerts ${now} "${missing}"`, '').out.split('\n').every((l) => l.startsWith('off|'))).toBe(true);
+  });
+
+  it('(b) recorder folder and no status: the "never reported" alert, as before', () => {
+    mkdirSync(recorder, { recursive: true });
+    expect(recAlerts({}, recorder)).toEqual(['on record-upload-stale']);
+    expect(sh(`record_alerts ${now} "${recorder}"`, '{}').out).toContain('has never reported (no status written)');
+  });
+
+  it('(c) recorder folder and a status older than 3 hours: the 3-hour alert, as before', () => {
+    mkdirSync(recorder, { recursive: true });
+    expect(recAlerts({ ...ok, at: (now - 10_801) * 1000 }, recorder)).toEqual(on(['stale']));
+    expect(recAlerts(ok, recorder)).toEqual(on([]));
+  });
+
+  it('zeroed-check passes the upload unit\'s ConditionPathExists folder, and install.sh carries the same', () => {
+    const unit = read('ops/host/files/etc/systemd/system/zeroed-record-upload@.service');
+    const cond = /^ConditionPathExists=(.+)$/m.exec(unit)?.[1];
+    expect(cond).toBe('/var/lib/zeroed/recorder');
+    const call = `done < <(printf '%s' "$rec" | record_alerts "$(date +%s)" ${cond})`;
+    expect(read('ops/host/files/usr/local/sbin/zeroed-check')).toContain(call);
+    const install = read('ops/install.sh');
+    expect(install).toContain(call);
+    expect(install).toContain('if [ -n "${2:-}" ] && [ ! -e "$2" ]; then status=\'{"enabled":false}\'; fi');
   });
 });
 

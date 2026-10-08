@@ -1578,9 +1578,14 @@ prunable_releases() {
 # row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
 # (the switch is off) clears them all. RC-M5: with the switch on, a status with no report time (none written: '{}', the
 # uploader never ran) raises the no-report alert and leaves the others as they are; it never clears them. Input that
-# is not JSON prints nothing, so every alert keeps its state.
+# is not JSON prints nothing, so every alert keeps its state. REC-UPLOAD-QUIET: with RECORDER given (zeroed-check passes
+# the upload unit's ConditionPathExists path) and nothing there, the unit is skipped and never writes a status, so the
+# status is read as {"enabled":false}: every alert is cleared, none raised. Once RECORDER exists, the above applies.
 record_alerts() {
-  jq -r --argjson now "$1" '
+  local status
+  status="$(cat)"
+  if [ -n "${2:-}" ] && [ ! -e "$2" ]; then status='{"enabled":false}'; fi
+  printf '%s' "$status" | jq -r --argjson now "$1" '
     def clean: tostring | gsub("[\r\n|]"; " ") | .[0:300];
     if .enabled != false and (.at | type) != "number" then
       "on|record-upload-stale|ALERT Zeroed host: the recording upload is on but has never reported (no status written). Recordings may be deleted at the disk cap without being uploaded."
@@ -2853,7 +2858,8 @@ install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
 (umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
 
 # 5. Recording upload (RECORD-UPLOAD): its alerts, from the status file the uploader writes (it runs as the worker's
-# user and cannot reach Telegram's token or this folder). The switch off clears them.
+# user and cannot reach Telegram's token or this folder). The switch off clears them, and so does a host with no recorder
+# folder yet (the upload unit's ConditionPathExists: it is skipped and never writes a status).
 if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
   rec="$(cat /var/lib/zeroed-record-upload/status.json 2>/dev/null || echo '{}')"
 else
@@ -2861,7 +2867,7 @@ else
 fi
 while IFS='|' read -r what key text; do
   if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
-done < <(printf '%s' "$rec" | record_alerts "$(date +%s)")
+done < <(printf '%s' "$rec" | record_alerts "$(date +%s)" /var/lib/zeroed/recorder)
 
 # 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
 # it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.

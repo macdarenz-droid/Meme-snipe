@@ -243,9 +243,14 @@ prunable_releases() {
 # row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
 # (the switch is off) clears them all. RC-M5: with the switch on, a status with no report time (none written: '{}', the
 # uploader never ran) raises the no-report alert and leaves the others as they are; it never clears them. Input that
-# is not JSON prints nothing, so every alert keeps its state.
+# is not JSON prints nothing, so every alert keeps its state. REC-UPLOAD-QUIET: with RECORDER given (zeroed-check passes
+# the upload unit's ConditionPathExists path) and nothing there, the unit is skipped and never writes a status, so the
+# status is read as {"enabled":false}: every alert is cleared, none raised. Once RECORDER exists, the above applies.
 record_alerts() {
-  jq -r --argjson now "$1" '
+  local status
+  status="$(cat)"
+  if [ -n "${2:-}" ] && [ ! -e "$2" ]; then status='{"enabled":false}'; fi
+  printf '%s' "$status" | jq -r --argjson now "$1" '
     def clean: tostring | gsub("[\r\n|]"; " ") | .[0:300];
     if .enabled != false and (.at | type) != "number" then
       "on|record-upload-stale|ALERT Zeroed host: the recording upload is on but has never reported (no status written). Recordings may be deleted at the disk cap without being uploaded."
