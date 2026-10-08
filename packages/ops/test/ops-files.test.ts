@@ -649,6 +649,10 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     expect(worker).toMatch(/^SupplementaryGroups=zeroed-pull zeroed-spool$/m);
     expect(worker.split('\n').filter((l) => !l.startsWith('#')).join('\n')).not.toContain('botops');
     expect(worker).toMatch(/^StateDirectoryMode=0700$/m);
+    // Ruling 32: the worker never sees receipts/ before its own filesystem is mounted, and is never held down by it.
+    expect(worker).toMatch(/^After=network-online\.target zeroed-signer\.service zeroed-receipts-fs\.service$/m);
+    expect(worker).toMatch(/^Wants=network-online\.target zeroed-receipts-fs\.service$/m);
+    expect(worker).not.toMatch(/^Requires=.*zeroed-receipts-fs/m);
     // The groups exist before any unit names them.
     expect(main.indexOf('groupadd --system zeroed-pull')).toBeLessThan(main.indexOf('# @@FILES@@'));
     expect(main.indexOf('groupadd --system zeroed-spool')).toBeLessThan(main.indexOf('# @@FILES@@'));

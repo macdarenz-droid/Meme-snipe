@@ -3714,5 +3714,8 @@ Rulings in `docs/reviews/Z05.md` on `claude/supervisor-docs-2` at `d95eb80f`. Th
     - The sentinel's user and unit (B-M30-02) do not exist on the host yet. Its unit must run with group `zeroed-sentinel`.
     - M14 must create the database and its `-wal` and `-shm` files as 0660, because the engine unit's `UMask=0077` would otherwise make them 0600.
     - The sentinel opens `rpc-usage.db` and its `-wal` and `-shm` files only after an `lstat` check that each is a regular file, or with `O_NOFOLLOW` (ruling 27). The folder is group-writable, so a link planted there must never lead it to another file.
+    - B-M30-02 makes the backup of `/var/lib/zeroed-usage` run as `zeroed-worker`, or only after an `lstat` check that each file is a regular file (ruling 33). `zeroed-backup` runs as root, and the folder is writable by the sentinel's group.
+    - M14 makes the engine itself `lstat`-check `rpc-usage.db` and its `-wal` and `-shm` files before opening them, or open them with `O_NOFOLLOW` (ruling 33).
+- **The worker starts after the receipts filesystem** (ruling 32). `zeroed-worker.service` has `After=` and `Wants=zeroed-receipts-fs.service`, so the worker never sees `receipts/` before the filesystem is mounted. A failed mount does not keep the worker down; `zeroed-check` alerts on it.
 - **SPEC fixes** (rulings 21–22). SPEC-A:1307 (day index path), SPEC-A:2513 (usage ledger), SPEC-B:2031 (no M24 backup step; `zeroed-backup` is the one owner) and SPEC-B:2584 (`/var/lib/zeroed` replaces `/var/lib/bot`; the usage folder added).
 - **Pull mounts are watched** (ruling 23). `zeroed-check` raises one alert while the receipts filesystem or either chroot bind is not active, and a CLEARED line after.

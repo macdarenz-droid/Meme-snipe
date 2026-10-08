@@ -645,8 +645,10 @@ install_file /etc/systemd/system/zeroed-worker.service 0644 <<'__ZEROED_FILE__'
 [Unit]
 Description=Zeroed worker
 Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
-After=network-online.target zeroed-signer.service
-Wants=network-online.target
+After=network-online.target zeroed-signer.service zeroed-receipts-fs.service
+# PATHS-FIX ruling 32: the worker starts after the receipts' own filesystem is mounted (Wants, so a failed mount never
+# keeps the worker down; zeroed-check alerts on it instead).
+Wants=network-online.target zeroed-receipts-fs.service
 # Starts only after the keys arrived and the owner's Telegram chat is paired.
 ConditionPathExists=/etc/credstore.encrypted/helius_api_key
 ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id
