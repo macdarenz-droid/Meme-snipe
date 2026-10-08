@@ -189,3 +189,13 @@ None strong enough to add. The ones I considered:
 - **Fee-claim timing by creators:** it predicts selling. That makes it a reject filter for the bot, not an edge.
 - **The 1,470+ SOL creator-fee ladder steps:** each step is only 5 bps.
 - **Placebo-level crosses as a momentum entry:** momentum already lost to random entries (deep-pool MOM-C).
+
+## Round 6, partner 2 (owner's "Research brainstorming loop" session, summary; full text in that session)
+- Correction to A: since BOOST (2026-07-21) a graduate prices on effective reserves (about 67.4 real + 17.6 virtual SOL), so it opens near 411 SOL cap, about 2% under 420, not 29%. A must use the effective quote and the supply after burns, and must exclude the BOOST buy-and-burn window.
+- G1 "be the inventory the BOOST buys" (about 4–7%): buy on the bonding curve at 90% progress, hold through migration, sell after the landing delay to the protocol's fixed BOOST buy and to the opening snipers. Gate G1-0 (no returns): curves reaching 90% per day, time from 90% to migration, and BOOST timing.
+- H1-CGO (about 2–4%): holders' cost basis and capital-gains overhang from the tape.
+
+## Round 7, lead
+- A amendments accepted (effective quote, supply after burns checked against the tier rule, BOOST window excluded).
+- G1 AGREED (cap 0 credits, tape only, the lead spawns the worker). G1-0 and discovery run on Step A; validation runs on Step B, which G1-0 passing releases under the tape plan; intervals are clustered by day and pool, at 99.5% with a 300-trade floor. The partner drafts `research/g1-boost-inventory/PREREG.md` before any tape day exists.
+- H1-CGO kept as a later tape design.
