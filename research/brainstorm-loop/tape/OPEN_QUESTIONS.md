@@ -33,18 +33,19 @@
   - The comparison is the top RB quintile against points within ±10 percentile points of the median RB, inside (day, drawdown tercile).
 - **[open] Rebuy readings.**
   - Points are hourly from migration time (not whole UTC hours).
-  - The mid is the post-swap effective-reserve mid of the last canonical-pool swap at or before t.
+  - The mid is the post-swap effective-reserve mid of the last canonical-pool swap at or before t, read from that swap's `chain_pool_*`. The next swap's pre-trade reserves are used only when that swap is itself at or before t (block_time ≤ t, slot ≤ the decision slot). Otherwise the state is NaN and the point is skipped, so a later deposit or swap is never read (reviewer L1). Row 6's market-cap segments likewise use no next-swap fallback.
+  - Top-quintile decisions a day count points with rb_pct > 0.8 (the materiality ranking within day × drawdown tercile) and RB > 0 (reviewer L2).
   - Past return is over 1 h; drawdown is from the peak mid since migration.
   - A rebuy is any buy of the mint by the ex-holder in (t, t + 2 h]. A buy also ends ex-holder status.
   - The odds-ratio population is the ex-holders who exited in the last 12 h, one row per (ex-holder, point). Gain = 0 is left out of the gain/loss odds ratio. An empty cell makes the odds ratio undefined, which fails the row.
   - Materiality pools the strata's (top − mid) mean differences, weighted by top counts. Top and mid membership is fixed at the point estimate, and the two sets are resampled separately.
-  - Top-quintile points per day = points with RB ≥ that day's 80th percentile, with 0 for a day without points.
   - R² is plain OLS with an intercept.
 - **Exits [open].** An exit is a SOL-quoted sale leaving the owner at 0 (tape `owner_token_post`, else the ledger). It closes a holding episode, and the episode's proceeds, tokens and known cost give the exit VWAP and the realised gain. Gain is unknown when any sold token had unknown cost. Readable means every sale of the episode was signed by the owner, with a signer SOL reading. Leaving by transfer is not an exit.
 - **Ledger [A1].** This is H1-CGO's `Ledger` (`research/h1-cgo/tape/h1cgo/ledger.py`), loaded read-only and fed with swaps (cost with fees, as H1-CGO counts it; proceeds after fees) and T transfer/mint/burn rows. History must be on the tape (Q2).
 
 ## 3 SEAT-DRIFT
-- **Q9 Busy vs lone [A1].** Lone = the bottom tercile and busy = the top tercile of N_m, over each day's eligible graduates. Ties are broken by migration order.
+- **Q9 Busy vs lone [A1, with an open reading for the lead].** Lone = the bottom tercile and busy = the top tercile of N_m, over each day's eligible graduates.
+  - *[open] Ties.* Graduates whose N_m value falls on both sides of a tercile cut are all dropped (conservative, at the reviewer's request; marked `tercile = -2`). N_m is a small integer, so this can remove many graduates; the lead should confirm or pick another tie rule.
 - **Q10 G1-CAP definitions.**
   - N_m counts other eligible graduates (canonical, SOL, not mayhem) whose creator seeds (create `creator`/`user`, pool `coin_creator`) are outside the coin's creator group as of m.
   - A graduate whose normalised name or symbol matches another graduate in the window is dropped (theme wave). The match uses only coins whose CreateEvent is on the tape.
@@ -68,7 +69,7 @@
 ## 6 Round-USD and Gate 3 split
 - **Q18 Placebo grid.** Design A gives "20 placebo cutoffs on a log grid from 340 to 1,300 SOL, each more than 10% from 420 and 1,470".
   - *Used:* `geomspace(340, 1300, 20)`, then the exclusions are applied, so fewer than 20 remain. The amendment then drops cutoffs within 10% of that day's $50k and $100k SOL levels.
-- **Q19 Market cap [A1: `base_supply` until A amendment (a)'s program read].** Market cap = (pool quote after the swap + `virtual_quote_reserves`) ÷ pool base after the swap × `base_supply`. Post-swap reserves come from `chain_pool_*`, or else from the next swap's pre-trade reserves. Pools are kept for hours 0–72 after migration, from the end of the last BOOST event (or m + 5 min) to the end of the loaded tape. Market-cap levels are as-of states, which A1 allows.
+- **Q19 Market cap [A1: `base_supply` until A amendment (a)'s program read].** Market cap = (pool quote after the swap + `virtual_quote_reserves`) ÷ pool base after the swap × `base_supply`. Post-swap reserves come from `chain_pool_*` only; a segment without that reading has no market cap (NaN), so no later state is used. Pools are kept for hours 0–72 after migration, from the end of the last BOOST event (or m + 5 min) to the end of the loaded tape. Market-cap levels are as-of states, which A1 allows.
 - **Bunching statistic.** It is Design A gate 2's statistic at each USD level: the log ratio of time in [L, 1.05 L) to time in [0.95 L, L), minus the median of the same ratio at the placebo cutoffs, with a pool-clustered bootstrap.
 - **"Round USD level".** Only $50k and $100k are checked, as named.
 - **Q22 SOL/USD input [A1, with an open reading].** `--sol-usd` takes the Binance SOLUSDT 1-minute kline CSVs, one per day and repeatable. Open times may be in ms or µs, and the UTC day comes from the open time. The summary records each file's sha256 (`sol_usd_files`).

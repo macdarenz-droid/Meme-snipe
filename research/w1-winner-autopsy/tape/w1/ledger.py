@@ -19,11 +19,23 @@ import pandas as pd
 
 from . import load
 from .addr import BUYBACK_AUTHORITY, MAYHEM_VAULT, on_curve
-from .costs import FIXED_PER_LEG, amendment_tx_cost
+from .costs import FIXED_PER_LEG, amendment_tx_cost, signer_cash
 from .venue import sell_vec
 
 BIG_BUY = 1_000_000_000  # PREREG §5: a buy of at least 1 SOL
 PAIR_SHIFT = 32
+
+
+ACC_AGG = {"cash": "sum", "paid": "sum", "cash_alt": "sum", "paid_alt": "sum", "nsig": "sum", "xin": "sum",
+           "nbuy": "sum", "nsell": "sum", "dirty": "any", "dstart": "any", "dother": "any", "buykey": "min",
+           "closekey": "max", "lastkey": "max", "lastslot": "max", "n": "sum", "end_ver": "last"}
+ACC_COLS = list(ACC_AGG)
+
+
+def _acct(acct, pair):
+    """Token account ids; a missing account becomes a pseudo-account private to its (owner, mint) pair."""
+    acct = np.asarray(acct, np.int64)
+    return np.where(acct >= 0, acct, -1 - np.asarray(pair, np.int64))
 
 
 def pair_of(owner, mint):
@@ -397,62 +409,136 @@ class Ledger:
         out["buykey"] = np.iinfo(np.int64).max
         return out[cols]
 
+    def _signer_method(self, sw):
+        """AMENDMENT_2 Q2: per-row cash under the signer's SOL change where the signer owns every swap of the
+        transaction (all SOL-quoted, tx_fee present, change plausible); else the venue method. Returns (net, used)."""
+        net = sw["net_alt"].to_numpy(np.float64).copy()
+        used = np.zeros(len(sw), bool)
+        if len(sw) == 0:
+            return net, used
+        own = (sw["owner"].to_numpy() == sw["signer"].to_numpy()) & (sw["owner"].to_numpy() >= 0) \
+            & sw["sol"].to_numpy(bool) & ~sw["overflow"].to_numpy(bool) & ~sw["tx_fee_na"].to_numpy(bool)
+        f = pd.DataFrame({"txk": sw["txk"].to_numpy(), "own": own, "cash": sw["cash"].to_numpy(np.float64),
+                          "mint": sw["mint"].to_numpy(), "is_buy": sw["is_buy"].to_numpy(bool),
+                          "pre": sw["pre"].to_numpy(), "post": sw["post"].to_numpy()})
+        g = f.groupby("txk", sort=False)
+        allown = g["own"].all()
+        elig = allown[allown].index
+        if len(elig) == 0:
+            return net, used
+        fe = f[f["txk"].isin(elig)]
+        ge = fe.groupby("txk", sort=False)
+        first = sw.loc[fe.index].groupby("txk", sort=False)[["spre", "spost", "tx_fee", "jito"]].first()
+        m = fe.groupby(["txk", "mint"], sort=False).agg(buy=("is_buy", "any"), sell=("is_buy", lambda x: (~x).any()),
+                                                         pre=("pre", "first"), post=("post", "first"))
+        m["open"] = m["buy"] & (m["pre"] == 0)
+        m["close"] = m["sell"] & (m["post"] == 0)
+        ko = m.groupby(level=0)["open"].sum().reindex(first.index)
+        kc = m.groupby(level=0)["close"].sum().reindex(first.index)
+        vsum = ge["cash"].sum().reindex(first.index)
+        gross = ge["cash"].apply(lambda x: x.abs().sum()).reindex(first.index)
+        cash, created, returned, ok = signer_cash(first["spost"] - first["spre"], vsum, first["tx_fee"], first["jito"],
+                                                   ko, kc, gross)
+        st = self.stats["signer_method"]
+        st["txs"] += int(len(first))
+        st["accepted"] += int(ok.sum())
+        st["rent_created"] += int((created[ok] > 0).sum())
+        st["rent_returned"] += int((returned[ok] > 0).sum())
+        n = ge.size().reindex(first.index).to_numpy()
+        per = pd.Series(np.where(ok, (vsum.to_numpy() - cash) / n, np.nan), index=first.index)
+        rows = fe.index.to_numpy()
+        extra = per.reindex(fe["txk"]).to_numpy()
+        hit = ~np.isnan(extra)
+        net[rows[hit]] = sw["cash"].to_numpy(np.float64)[rows[hit]] - extra[hit]
+        used[rows[hit]] = True
+        st["rows"] += int(hit.sum())
+        return net, used
+
     def _apply(self, evs):
-        """Balance checks and the per-pair unit aggregate (see the module docstring)."""
+        """Balance checks per token account, summed per owner (AMENDMENT_2 Q22), and the per-pair unit aggregate."""
         if len(evs) == 0:
             return
         evs = evs.sort_values(["pair", "key"], kind="stable")
+        for c_ in ("swap", "bad"):
+            evs[c_] = evs[c_].astype(bool)
         g = evs.groupby(["pair", "txk"], sort=False)
-        tx = g.agg(delta=("delta", "sum"), cash=("cash", "sum"), paid=("paid", "sum"), xin=("xin", "sum"),
+        tx = g.agg(delta=("delta", "sum"), cash=("cash", "sum"), paid=("paid", "sum"), cash_alt=("cash_alt", "sum"),
+                   paid_alt=("paid_alt", "sum"), nsig=("nsig", "sum"), xin=("xin", "sum"),
                    swap=("swap", "any"), nbuy=("nbuy", "sum"), nsell=("nsell", "sum"), bad=("bad", "any"),
                    key=("key", "max"), slot=("slot", "max"), buykey=("buykey", "min")).reset_index()
-        sw_only = evs[evs["swap"].astype(bool)]
-        pp = sw_only.groupby(["pair", "txk"], sort=False).agg(pre=("pre", "first"), post=("post", "first"))
+        pp = evs[evs["swap"]].groupby(["pair", "txk"], sort=False).agg(pre=("pre", "first"), post=("post", "first"))
         tx = tx.merge(pp, left_on=["pair", "txk"], right_index=True, how="left")
+        # accounts: tracked balance per (account, transaction)
+        A = evs.groupby(["acct", "txk"], sort=False).agg(pair=("pair", "first"), delta=("delta", "sum")).reset_index()
+        A = A.sort_values(["acct", "txk"], kind="stable").reset_index(drop=True)
+        start_a = self.cacct["bal"].reindex(A["acct"].unique()).fillna(0).astype(np.int64)
+        A["start"] = A["acct"].map(start_a).to_numpy()
+        A["raw"] = A["start"] + A.groupby("acct")["delta"].cumsum()
+        nacc = A.groupby(["pair", "txk"], sort=False).size().rename("nacc")
+        tx = tx.merge(nacc, left_on=["pair", "txk"], right_index=True, how="left")
+        A = A.merge(tx[["pair", "txk", "swap", "post", "nacc"]], on=["pair", "txk"], how="left")
+        A = A.sort_values(["acct", "txk"], kind="stable").reset_index(drop=True)
+        # one account touched by a swap: owner_token_post is that account's balance, so it anchors the account
+        A["anc"] = np.where(A["swap"].to_numpy(bool) & (A["nacc"].to_numpy() == 1),
+                            A["post"].to_numpy(np.float64) - A["raw"].to_numpy(np.float64), np.nan)
+        A["anc"] = A.groupby("acct")["anc"].ffill().fillna(0)
+        A["after"] = (A["raw"] + A["anc"]).astype(np.int64)
+        A["before"] = A.groupby("acct")["after"].shift(1)
+        A["before"] = A["before"].fillna(A["start"]).astype(np.int64)
+        A["chg"] = A["after"] - A["before"]
+        pa = A.groupby(["pair", "txk"], sort=False).agg(before_sum=("before", "sum"), chg=("chg", "sum"),
+                                                         neg=("after", "min"))
+        tx = tx.merge(pa, left_on=["pair", "txk"], right_index=True, how="left")
         tx = tx.sort_values(["pair", "txk"], kind="stable").reset_index(drop=True)
-        c = self.carry.reindex(tx["pair"].unique())
-        seen = c["bal"].notna()
-        start = c["bal"].fillna(0).astype(np.int64)
-        ok0 = c["ok"].where(seen, True).astype(bool)
-        ver0 = c["ver"].where(seen, False).astype(bool)
-        tx["start"] = tx["pair"].map(start).to_numpy()
-        tx["after"] = tx["start"] + tx.groupby("pair")["delta"].cumsum()
-        tx["before"] = tx["after"] - tx["delta"]
+        cp = self.carry.reindex(tx["pair"].unique())
+        seen = cp["bal"].notna()
+        ok0 = cp["ok"].where(seen, True).astype(bool)
+        ver0 = cp["ver"].where(seen, False).astype(bool)
+        pstart = self.cacct.groupby("pair")["bal"].sum().reindex(tx["pair"].unique()).fillna(0).astype(np.int64)
         sw_ = tx["swap"].to_numpy(bool)
-        mism = sw_ & ((tx["pre"].to_numpy() != tx["before"].to_numpy()) | (tx["post"].to_numpy() != tx["after"].to_numpy()))
-        mism |= tx["after"].to_numpy() < 0
+        bsum = tx["before_sum"].to_numpy()
+        mism = sw_ & ((tx["pre"].to_numpy() != bsum) | (tx["post"].to_numpy() != bsum + tx["delta"].to_numpy()))
+        mism |= tx["neg"].to_numpy() < 0
         tx["mism"] = mism
-        # anchored balance: the last swap's reported post plus later movements
-        anchor = np.where(sw_, tx["post"].to_numpy() - tx["after"].to_numpy(), np.nan)
-        tx["anchor"] = anchor
-        tx["anchor"] = tx.groupby("pair")["anchor"].ffill().fillna(0)
-        tx["bal"] = (tx["after"] + tx["anchor"]).astype(np.int64)
-        zero_by_swap = sw_ & (tx["post"].to_numpy() == 0)
+        # a pair not carried whose first swap disagrees: its start was never seen (Q22, Q14)
+        first_swap = sw_ & (tx.groupby("pair")["swap"].cumsum().to_numpy() == 1)
+        unseen = ~tx["pair"].map(seen).to_numpy(bool)
+        tx["mstart"] = mism & first_swap & unseen
+        tx["mother"] = mism & ~tx["mstart"].to_numpy()
+        tx["bal"] = (tx["pair"].map(pstart).to_numpy() + tx.groupby("pair")["chg"].cumsum()).astype(np.int64)
         tx["closekey"] = np.where(tx["bal"].to_numpy() == 0, tx["key"].to_numpy(), -1)
-        tx["zsw"] = zero_by_swap
+        tx["zsw"] = sw_ & (tx["post"].to_numpy() == 0)
         agg = tx.groupby("pair", sort=False).agg(
-            cash=("cash", "sum"), paid=("paid", "sum"), xin=("xin", "sum"), nbuy=("nbuy", "sum"),
-            nsell=("nsell", "sum"), bad=("bad", "any"), mism=("mism", "any"), anyswap=("swap", "any"),
+            cash=("cash", "sum"), paid=("paid", "sum"), cash_alt=("cash_alt", "sum"), paid_alt=("paid_alt", "sum"),
+            nsig=("nsig", "sum"), xin=("xin", "sum"), nbuy=("nbuy", "sum"),
+            nsell=("nsell", "sum"), bad=("bad", "any"), mism=("mism", "any"), mstart=("mstart", "any"),
+            mother=("mother", "any"), anyswap=("swap", "any"),
             end=("bal", "last"), lastzsw=("zsw", "last"), lastkey=("key", "max"), lastslot=("slot", "max"),
             buykey=("buykey", "min"), closekey=("closekey", "max"), n=("key", "size"))
         agg["ok0"] = ok0.reindex(agg.index).to_numpy()
         agg["ver0"] = ver0.reindex(agg.index).to_numpy()
-        agg["start"] = start.reindex(agg.index).to_numpy()
         clean = agg["ok0"] & ~agg["mism"] & ~agg["bad"]
         agg["dirty"] = ~clean
-        self.stats.setdefault("dirty_reasons", {"carried_unknown": 0, "balance_mismatch_or_unseen_start": 0, "unvalued_or_mint": 0})
+        agg["dstart"] = ~agg["ok0"] | agg["mstart"]
+        agg["dother"] = agg["mother"] | agg["bad"]
+        self.stats.setdefault("dirty_reasons", {"carried_unknown": 0, "start_not_seen": 0, "balance_mismatch": 0,
+                                                "unvalued_or_mint": 0})
         dr = self.stats["dirty_reasons"]
         dr["carried_unknown"] += int((~agg["ok0"]).sum())
-        dr["balance_mismatch_or_unseen_start"] += int((agg["ok0"] & agg["mism"]).sum())
+        dr["start_not_seen"] += int((agg["ok0"] & agg["mstart"]).sum())
+        dr["balance_mismatch"] += int((agg["ok0"] & agg["mother"]).sum())
         dr["unvalued_or_mint"] += int((agg["ok0"] & ~agg["mism"] & agg["bad"]).sum())
         closed = (agg["end"] == 0)
         agg["end_ok"] = clean | (closed & agg["lastzsw"])
         agg["end_ver"] = (agg["ver0"] | (agg["anyswap"] & clean)) | closed
-        self.acc.append(agg[["cash", "paid", "xin", "nbuy", "nsell", "dirty", "buykey", "closekey", "lastkey",
-                             "lastslot", "n", "end_ver"]])
+        self.acc.append(agg[ACC_COLS])
         if len(self.acc) >= 8:
             self._collapse_acc()
-        # carry update
+        # carry: accounts, then pairs
+        last_a = A.groupby("acct", sort=False).agg(bal=("after", "last"), pair=("pair", "first"))
+        ca = pd.concat([self.cacct[~self.cacct.index.isin(last_a.index)], last_a])
+        closed_pairs = agg.index[closed.to_numpy()]
+        self.cacct = ca[(ca["bal"] != 0) & ~ca["pair"].isin(closed_pairs)]
         keep = self.carry[~self.carry.index.isin(agg.index)]
         new = pd.DataFrame({"bal": agg["end"].astype(np.int64), "ok": agg["end_ok"].astype(bool),
                             "ver": agg["end_ver"].astype(bool),
@@ -464,10 +550,7 @@ class Ledger:
         """Merges the per-unit aggregates of the day into one frame (keeps memory flat over a day)."""
         a = pd.concat(self.acc)
         g = a.groupby(level=0, sort=False)
-        self.acc = [g.agg(cash=("cash", "sum"), paid=("paid", "sum"), xin=("xin", "sum"), nbuy=("nbuy", "sum"),
-                          nsell=("nsell", "sum"), dirty=("dirty", "any"), buykey=("buykey", "min"),
-                          closekey=("closekey", "max"), lastkey=("lastkey", "max"), lastslot=("lastslot", "max"),
-                          n=("n", "sum"), end_ver=("end_ver", "last"))]
+        self.acc = [g.agg(**{c: (c, ACC_AGG[c]) for c in ACC_COLS})]
 
     # ---------------------------------------------------------------- day end
     def finish_day(self):
@@ -477,17 +560,16 @@ class Ledger:
             self._collapse_acc()
             acc = self.acc[0]
         else:
-            acc = pd.DataFrame(columns=["cash", "paid", "xin", "nbuy", "nsell", "dirty", "buykey", "closekey",
-                                        "lastkey", "lastslot", "n", "end_ver"])
+            acc = pd.DataFrame(columns=ACC_COLS)
         ds = self.day_start
         idx = acc.index.union(ds.index)
         rows = pd.DataFrame(index=idx)
         rows["start_bal"] = ds["bal"].reindex(idx).fillna(0).astype(np.int64)
         rows["start_mark"] = ds["mark"].reindex(idx).fillna(0.0)
         start_ok = ds["ok"].reindex(idx).fillna(True).astype(bool)
-        for c_ in ("cash", "paid", "xin"):
+        for c_ in ("cash", "paid", "cash_alt", "paid_alt", "xin"):
             rows[c_] = acc[c_].reindex(idx).fillna(0.0).astype(np.float64)
-        for c_ in ("nbuy", "nsell", "n"):
+        for c_ in ("nbuy", "nsell", "n", "nsig"):
             rows[c_] = acc[c_].reindex(idx).fillna(0).astype(np.int64)
         rows["buykey"] = acc["buykey"].reindex(idx).fillna(np.iinfo(np.int64).max).astype(np.int64)
         rows["closekey"] = acc["closekey"].reindex(idx).fillna(-1).astype(np.int64)
@@ -518,6 +600,12 @@ class Ledger:
         part = np.isin(mint, np.fromiter(self.partial, np.int64, len(self.partial))) & held
         dirty = dirty.to_numpy() | unres_hit | part
         rows["dirty"] = dirty
+        # Q14: dirty only because the start was not seen (first day read, or carried in unknown)
+        start_rel = acc["dstart"].reindex(idx).fillna(False).astype(bool).to_numpy() | \
+            ((rows["start_bal"].to_numpy() > 0) & ~start_ok.to_numpy())
+        other = acc["dother"].reindex(idx).fillna(False).astype(bool).to_numpy() | unres_hit | part | \
+            ~end_ver.to_numpy()
+        rows["dirty_start_only"] = dirty & start_rel & ~other
         rows["unresolved"] = unres_hit
         rows["partial"] = part
         # carry: day-end mark becomes tomorrow's start mark; a held dirty position stays unknown until closed
@@ -532,6 +620,7 @@ class Ledger:
         cg = pd.DataFrame(self.cg, columns=["mint", "slot", "kind"])
         out = {
             "day": day, "lo": self.day_lo, "hi": self.day_hi, "gaps": self.day_gaps, "rows": rows,
+            "first_day": bool(self.day_first),
             "buys": pd.concat(self.buys, ignore_index=True) if self.buys else pd.DataFrame(),
             "big": pd.concat(self.big, ignore_index=True) if self.big else pd.DataFrame(),
             "xfers": pd.concat(self.xfers, ignore_index=True) if self.xfers else pd.DataFrame(
@@ -545,6 +634,7 @@ class Ledger:
             "hub_excluded_nodes": self._all_excluded_ids(),
         }
         self.prev_day = None
+        self.days_done += 1
         self._day_reset()
         return out
 
