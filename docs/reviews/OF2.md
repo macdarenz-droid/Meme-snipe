@@ -117,3 +117,8 @@ Round 3 items A, B and C are closed. No archive request is possible from current
   - Ruling 33 now means python3 with yaml only; yq is dropped because it keeps a repeated key.
   - `actions: write` is allowed only for archive-check.yml at the top level and for the continue job in data-scan.yml.
 - Risk from 42: archive-check reaches 500 listed runs in about 62 days, and then the guard fails closed. The cap stays as it is: the 31 days in batches should finish well before then. If the cap does trip, it goes to the owner, because deleting runs is hard to undo. A filter on run creation date stays a VERIFY idea in OLD-FAITHFUL; it is not built now.
+
+### Round 5 reviewer: PASS at `89f99393` (1 MINOR)
+
+- test-ci 218/219/233; 10 rows fail on the `dd08171c` files. Every zeroed-scan, finalize and qa call is redirected. data-scan.yml is refused until OF-4 (`contents: write`). No parser means fail closed. Merge-forwards are consistent.
+- m1 (the 500-run cap) is not changed: a `--created >= AG_SINCE` filter would hide re-runs of runs created before `AG_SINCE`, which is exactly what ruling 21 catches. The arm checklist records archive-check's run count and the date the cap is reached; a cap trip goes to the owner.
