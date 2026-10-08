@@ -219,16 +219,16 @@ export const M24_ROLLUP_LOG_CODES = {
 } as const;
 
 export interface RollupSinkOptions {
-  /** `m27.rollup_max_bytes`: above it, pool rows are dropped (aggregate rows are still written) and an error is logged. */
+  /** `m27.rollup_max_bytes`: at it, pool rows are dropped first, then aggregate rows, and an error is logged. */
   maxBytes: number;
   log?: Logger;
 }
 
 /**
  * B-M27-01 rollup sink: writes each minute's rollups to `metric_rollup_1m` in one transaction. The table's size is
- * tracked as rows x ROLLUP_ROW_BYTES (counted once at start, then per write and per retention delete); at the cap, pool
- * rows are dropped and each dropping minute logs `m24.rollup_cap_reached` at error, which the alert hook copies to the
- * alert store (Z02 round 2 ruling 7).
+ * tracked as rows x ROLLUP_ROW_BYTES (counted once at start, then per write and per retention delete); at the cap, rows
+ * are dropped (pool rows first) and each dropping minute logs `m24.rollup_cap_reached` at error, which the alert hook copies to the
+ * alert store (Z02 round 2 ruling 7). Aggregate rows have the room first; nothing is written past the cap.
  */
 export function metricRollupSink(db: Db, repo: MetricRollupRepo, clock: Clock, opts: RollupSinkOptions): RollupSink & { expired(n: number): void; storedRows(): number } {
   if (!Number.isSafeInteger(opts.maxBytes) || opts.maxBytes < ROLLUP_ROW_BYTES) throw new RangeError('m24: rollup maxBytes too small');
@@ -238,8 +238,9 @@ export function metricRollupSink(db: Db, repo: MetricRollupRepo, clock: Clock, o
       const room = Math.floor(opts.maxBytes / ROLLUP_ROW_BYTES) - stored;
       const aggregate = rows.filter((r) => r.scope === 'aggregate');
       const pool = rows.filter((r) => r.scope === 'pool');
-      const keepPool = Math.max(0, Math.min(pool.length, room - aggregate.length));
-      const kept = [...aggregate, ...pool.slice(0, keepPool)];
+      const keepAggregate = Math.max(0, Math.min(aggregate.length, room));
+      const keepPool = Math.max(0, Math.min(pool.length, room - keepAggregate));
+      const kept = [...aggregate.slice(0, keepAggregate), ...pool.slice(0, keepPool)];
       const createdAt = clock.nowMs();
       db.withTx((tx) => {
         for (const r of kept) {
@@ -248,7 +249,7 @@ export function metricRollupSink(db: Db, repo: MetricRollupRepo, clock: Clock, o
         }
       });
       stored += kept.length;
-      const dropped = pool.length - keepPool;
+      const dropped = rows.length - kept.length;
       if (dropped > 0) opts.log?.event('error', 'm24.rollup_cap_reached', { dropped_rows: dropped, stored_rows: stored, max_bytes: opts.maxBytes });
     },
     expired(n: number): void { stored = Math.max(0, stored - n); },

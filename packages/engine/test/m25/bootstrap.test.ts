@@ -214,3 +214,50 @@ describe('root-owned file check', () => {
     assert.throws(() => lstatOrNull(join(file, 'child')), /ENOTDIR/);
   });
 });
+
+describe('stored config versions and newer builds (Z02 round 2 rulings 3 and 4)', () => {
+  it('ruling 3: a stored version this build rejects runs exits_only on the newest version it accepts, never a refused start', async () => {
+    const { db, opts, lines } = await setup();
+    assert.equal(bootstrapConfig(opts).ok, true);                                      // version 1 from config.json
+    const at = Date.UTC(2026, 9, 8);
+    db.withTx((tx) => repos.config_version.insert(tx, { configVersion: 'c'.repeat(64), versionNo: 2, json: '{"m27.series_cap":-5}', appliedAt: at, appliedBy: '{}', createdAt: at }));
+    const r = bootstrapConfig(opts);
+    assert.deepEqual(r.ok ? [r.value.exitsOnly, r.value.versionNo, r.value.current()['m27.series_cap']] : r.error, [true, 1, 2_000]);
+    const log = JSON.parse(lines.findLast((l) => l.includes('m25.stored_invalid')) as string);
+    assert.deepEqual([log.level, log.version_no, log.used_version_no], ['critical', 2, 1]);
+    db.close();
+  });
+
+  it('ruling 3: with no stored version accepted, the newest one runs exits_only with each rejected key at its default', async () => {
+    const { db, opts } = await setup();
+    const at = Date.UTC(2026, 9, 8);
+    db.withTx((tx) => repos.config_version.insert(tx, { configVersion: 'd'.repeat(64), versionNo: 1, json: '{"m24.removed":1,"m27.series_cap":3000,"m27.log_retention_days":0}',
+      appliedAt: at, appliedBy: '{}', createdAt: at }));
+    const r = bootstrapConfig(opts);
+    assert.deepEqual(r.ok ? [r.value.exitsOnly, r.value.versionNo, r.value.current()['m27.series_cap'], r.value.current()['m27.log_retention_days']] : r.error,
+      [true, 1, 3_000, 14]);
+    db.close();
+  });
+
+  it('ruling 4: a build that adds a key stores the values in use as version + 1 (system actor) and logs it; the next start adds nothing', async () => {
+    const { db, opts, codes } = await setup();
+    const older = CONFIG_FIELDS.filter((f) => f.key !== 'm27.rollup_max_bytes');        // the build before the key existed
+    const first = bootstrapConfig({ ...opts, fields: older });
+    assert.equal(first.ok && first.value.versionNo, 1);
+    const second = bootstrapConfig(opts);
+    assert.equal(second.ok, true);
+    if (!second.ok) return;
+    const rows = repos.config_version.find(db.reader(), {}, { orderBy: 'versionNo' });
+    assert.deepEqual(rows.map((v) => v.versionNo), [1, 2]);
+    const v2 = rows[1] as (typeof rows)[number];
+    assert.equal(JSON.parse(v2.json)['m27.rollup_max_bytes'], 4_294_967_296);
+    assert.equal(v2.configVersion, createHash('sha256').update(v2.json).digest('hex'));
+    assert.deepEqual(JSON.parse(v2.appliedBy), JSON.parse(canonicalJson(SYSTEM_ACTOR)));
+    assert.deepEqual([second.value.versionNo, second.value.current().version, second.value.exitsOnly], [2, v2.configVersion, false]);
+    assert.ok(codes().includes('m25.defaults_added'));
+    const third = bootstrapConfig(opts);
+    assert.equal(third.ok && third.value.versionNo, 2);
+    assert.equal(repos.config_version.find(db.reader()).length, 2);
+    db.close();
+  });
+});

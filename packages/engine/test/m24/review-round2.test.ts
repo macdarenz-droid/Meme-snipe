@@ -1,0 +1,225 @@
+// Z02 round 2 rulings (docs/reviews/Z02.md on claude/supervisor-docs-2): each test fails on the round 1 head and
+// passes here. Rulings 3 and 4 are in m25/bootstrap.test.ts, 5 in packages/contract, 6 in tools/policy and
+// packages/core/test/ledger/labels.test.ts.
+import { strict as assert } from 'node:assert';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { gunzipSync } from 'node:zlib';
+import { describe, it } from 'vitest';
+import { DbOpenError, M24_LOG_CODES, openDb, type Db } from '../../src/m24/db.ts';
+import { prepareDatabase } from '../../src/m24/migrate.ts';
+import { createRepos, metricRollupSink, M24_ROLLUP_LOG_CODES, ROLLUP_ROW_BYTES } from '../../src/m24/repos.ts';
+import { deleteExpired } from '../../src/m24/retention.ts';
+import { createLogger, M27_LOG_CODES, mergeLogCodes } from '../../src/m27/log.ts';
+import { FileLogSink } from '../../src/m27/logfile.ts';
+import { MetricsRegistry, type RollupRow } from '../../src/m27/metrics.ts';
+import { fakeClock, tempDir } from '../helpers.ts';
+import { sampleRow, ulid } from './samples.ts';
+
+const dir = tempDir('round2');
+let n = 0;
+const fresh = (): string => join(dir, `r${n++}.db`);
+const repos = createRepos();
+const DAY = 86_400_000;
+const T0 = Date.UTC(2026, 9, 8, 12, 0, 0);
+
+function logger() {
+  const lines: string[] = [];
+  const log = createLogger({ clock: fakeClock(T0), codes: mergeLogCodes(M27_LOG_CODES, M24_LOG_CODES, M24_ROLLUP_LOG_CODES), runId: 'R', mode: 'paper',
+    sink: { write: (l) => { lines.push(l); return 'written'; } } });
+  return { log, lines, parsed: () => lines.map((l) => JSON.parse(l) as Record<string, unknown>) };
+}
+
+async function migrated(path = fresh()): Promise<Db> {
+  const db = openDb({ create: true, path, clock: fakeClock(T0) });
+  assert.equal((await prepareDatabase(db, { clock: fakeClock(T0), backupPath: `${path}.bak` })).ok, true);
+  return db;
+}
+
+const tables = (db: Db): string[] => db.reader().all("SELECT name FROM sqlite_schema WHERE type = 'table'").map((r) => r.name as string);
+
+describe('ruling 1: no login credentials are stored without the owner\'s approval', () => {
+  it('migration 0001 creates no operator, webauthn_credential, session or operator_preferences table', async () => {
+    const db = await migrated();
+    for (const t of ['operator', 'webauthn_credential', 'session', 'operator_preferences']) assert.equal(tables(db).includes(t), false, t);
+    db.close();
+  });
+});
+
+describe('ruling 2: a database is created only by an explicit init', () => {
+  it('a missing file refuses the start with a critical log; botctl init (create) and a first-start marker outside the directory create it', () => {
+    const { log, parsed } = logger();
+    const dbDir = join(dir, `db${n++}`);
+    mkdirSync(dbDir);
+    const path = join(dbDir, 'bot.db');
+    assert.throws(() => openDb({ path, clock: fakeClock(T0), log }), (e: unknown) => e instanceof DbOpenError && e.code === 'E_DATABASE_MISSING');
+    assert.deepEqual(parsed().map((l) => [l.level, l.code, l.error_code]), [['critical', 'm24.open_refused', 'E_DATABASE_MISSING']]);
+    assert.equal(existsSync(path), false);
+    const etc = join(dir, `etc${n++}`);
+    mkdirSync(etc);
+    const marker = join(etc, 'first-start');
+    assert.throws(() => openDb({ path, clock: fakeClock(T0), initMarker: marker }), /E_DATABASE_MISSING|does not exist/);  // no marker yet
+    writeFileSync(marker, '');
+    openDb({ path, clock: fakeClock(T0), initMarker: marker }).close();
+    assert.equal(existsSync(path), true);
+    assert.equal(existsSync(marker), false);                                               // spent
+    openDb({ path, clock: fakeClock(T0) }).close();                                         // exists now: no init needed
+    const other = join(dbDir, 'other.db');
+    assert.throws(() => openDb({ path: other, clock: fakeClock(T0), initMarker: join(dbDir, 'm') }), /outside the database directory/);
+    assert.throws(() => openDb({ path: other, clock: fakeClock(T0), initMarker: join(dbDir, 'sub', 'm') }), /outside the database directory/);
+    openDb({ path: other, clock: fakeClock(T0), create: true }).close();
+  });
+});
+
+describe('ruling 7: per-pool rollups keep 7 days, aggregate 1 year, under a byte cap that logs', () => {
+  it('a series labelled by pool or mint is scoped pool; the retention job removes pool rows after 7 days and keeps aggregate rows', async () => {
+    const rows: RollupRow[] = [];
+    const clock = fakeClock(T0);
+    const reg = new MetricsRegistry({ clock, seriesCap: 100, ringBudgetBytes: 0, sink: { append: (r) => { rows.push(...r); } } });
+    reg.counter('send_429_total', { path: 'rpc' }).inc();
+    reg.gauge('pool_snapshot_age_ms', { pool: 'P1' }).set(5);
+    reg.tick();
+    clock.advance(60_000);
+    reg.tick();
+    assert.deepEqual(rows.filter((r) => !r.metric.startsWith('metrics_')).map((r) => [r.metric, r.scope]).sort(),
+      [['pool_snapshot_age_ms', 'pool'], ['send_429_total', 'aggregate']]);
+
+    const db = await migrated();
+    const at = T0 - 8 * DAY;
+    db.withTx((tx) => {
+      repos.metric_rollup_1m.insert(tx, { ...sampleRow('metric_rollup_1m', 1), scope: 'pool', createdAt: at });
+      repos.metric_rollup_1m.insert(tx, { ...sampleRow('metric_rollup_1m', 2), scope: 'aggregate', createdAt: at });
+      repos.metric_rollup_1m.insert(tx, { ...sampleRow('metric_rollup_1m', 3), scope: 'pool', createdAt: T0 - 6 * DAY });
+    });
+    assert.equal(deleteExpired(db, 'metric_rollup_1m', fakeClock(T0)), 1);
+    assert.deepEqual(repos.metric_rollup_1m.find(db.reader()).map((r) => [r.scope, r.createdAt]).sort(), [['aggregate', at], ['pool', T0 - 6 * DAY]]);
+    db.close();
+  });
+
+  it('at the cap the sink drops pool rows first, then aggregate rows, never writes past it, and logs an error each time', async () => {
+    const db = await migrated();
+    const { log, parsed } = logger();
+    const sink = metricRollupSink(db, repos.metric_rollup_1m, fakeClock(T0), { maxBytes: 3 * ROLLUP_ROW_BYTES, log });
+    const row = (i: number, scope: 'pool' | 'aggregate'): RollupRow => ({ metric: `m${i}`, labelsHash: BigInt(i), minute: T0 as never, scope, count: 1, sum: 1, p50: null, p95: null, p99: null });
+    sink.append([row(1, 'pool'), row(2, 'aggregate'), row(3, 'pool'), row(4, 'pool')]);
+    assert.deepEqual(repos.metric_rollup_1m.find(db.reader(), {}, { orderBy: 'metric' }).map((r) => [r.metric, r.scope]), [['m1', 'pool'], ['m2', 'aggregate'], ['m3', 'pool']]);
+    sink.append([row(5, 'aggregate')]);
+    assert.equal(sink.storedRows(), 3);
+    assert.equal(repos.metric_rollup_1m.find(db.reader()).length, 3);
+    assert.deepEqual(parsed().map((l) => [l.level, l.code, l.dropped_rows]), [['error', 'm24.rollup_cap_reached', 1], ['error', 'm24.rollup_cap_reached', 1]]);
+    sink.expired(2);
+    sink.append([row(6, 'pool'), row(7, 'aggregate')]);
+    assert.deepEqual(repos.metric_rollup_1m.find(db.reader()).map((r) => r.metric).sort(), ['m1', 'm2', 'm3', 'm6', 'm7']);
+    db.close();
+  });
+});
+
+describe('ruling 8: a clock step neither deletes the log history nor overwrites a compressed day', () => {
+  const sinkAt = (logDir: string, clock: ReturnType<typeof fakeClock>) =>
+    new FileLogSink({ dir: logDir, clock, retentionDays: 14, maxBytesPerDay: 1_000_000, queueBytes: 1_000_000 });
+
+  it('a clock 30 days ahead deletes at most the one oldest day, and the history is still there when it comes back', async () => {
+    const logDir = join(dir, `log${n++}`);
+    mkdirSync(logDir);
+    const days = Array.from({ length: 14 }, (_, i) => new Date(T0 - (13 - i) * DAY).toISOString().slice(0, 10));
+    for (const d of days.slice(0, -1)) writeFileSync(join(logDir, `engine-${d}.ndjson.gz`), 'x');
+    const clock = fakeClock(T0);
+    const s = sinkAt(logDir, clock);
+    s.write('{"a":1}', 'info');
+    clock.advance(30 * DAY);
+    s.write('{"b":1}', 'info');
+    clock.set(T0 + 60_000);
+    s.write('{"c":1}', 'info');
+    await s.close();
+    const left = readdirSync(logDir).map((f) => f.slice(7, 17));
+    for (const d of days.slice(1)) assert.ok(left.includes(d), `${d} kept`);
+    assert.equal(left.includes(days[0] as string), false);
+  });
+
+  it('a clock back across midnight appends to the day already compressed; both writes read back from the .gz', async () => {
+    const logDir = join(dir, `log${n++}`);
+    const clock = fakeClock(Date.UTC(2026, 9, 7, 23, 59, 0));
+    const s = sinkAt(logDir, clock);
+    s.write('{"first":1}', 'info');
+    clock.set(Date.UTC(2026, 9, 8, 0, 1, 0));
+    s.write('{"next":1}', 'info');                                                       // 10-07 is compressed
+    clock.set(Date.UTC(2026, 9, 7, 23, 59, 30));                                         // back across midnight
+    s.write('{"again":1}', 'info');
+    clock.set(Date.UTC(2026, 9, 8, 0, 2, 0));
+    s.write('{"later":1}', 'info');                                                      // 10-07 compressed again
+    await s.close();
+    const gz = readFileSync(join(logDir, 'engine-2026-10-07.ndjson.gz'));
+    assert.equal(gunzipSync(gz).toString(), '{"first":1}\n{"again":1}\n');
+  });
+});
+
+describe('ruling 9: a damaged database or backup is named, not thrown raw or trusted', () => {
+  it('a torn header refuses the open with E_DATABASE_CORRUPT and a critical log', async () => {
+    const path = fresh();
+    (await migrated(path)).close();
+    const bytes = readFileSync(path);
+    bytes.fill(0x41, 0, 100);                                                             // the 100-byte header
+    writeFileSync(path, bytes);
+    const { log, parsed } = logger();
+    assert.throws(() => openDb({ path, clock: fakeClock(T0), log }), (e: unknown) => e instanceof DbOpenError && e.code === 'E_DATABASE_CORRUPT');
+    assert.equal(parsed()[0]?.error_code, 'E_DATABASE_CORRUPT');
+  });
+
+  it('quick_check runs before the start backup: a damaged table page refuses the migration with E_DATABASE_CORRUPT and takes no backup', async () => {
+    const path = fresh();
+    const db0 = openDb({ create: true, path, clock: fakeClock(T0) });
+    db0.withTx((tx) => { tx.run('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'); for (let i = 0; i < 200; i++) tx.run('INSERT INTO t VALUES (?, ?)', i, 'x'.repeat(100)); });
+    db0.close();                                                                          // checkpointed into the file
+    const raw = new DatabaseSync(path, { readOnly: true });
+    const root = (raw.prepare("SELECT rootpage FROM sqlite_schema WHERE name = 't'").get() as { rootpage: number }).rootpage;
+    const pageSize = (raw.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
+    raw.close();
+    const bytes = readFileSync(path);
+    bytes.fill(0xff, (root - 1) * pageSize + 8, (root - 1) * pageSize + 40);             // the root page's cell pointers
+    writeFileSync(path, bytes);
+    const { log, parsed } = logger();
+    let r: Awaited<ReturnType<typeof prepareDatabase>> | null = null;
+    try {
+      const db = openDb({ path, clock: fakeClock(T0), log });
+      r = await prepareDatabase(db, { clock: fakeClock(T0), backupPath: `${path}.bak` });
+      db.close();
+      assert.equal(r.ok ? null : r.error.code, 'E_DATABASE_CORRUPT');
+    } catch (e) {
+      assert.ok(e instanceof DbOpenError && e.code === 'E_DATABASE_CORRUPT', String(e));     // or refused at open
+      assert.equal(parsed()[0]?.error_code, 'E_DATABASE_CORRUPT');
+    }
+    assert.equal(existsSync(`${path}.bak`), false);
+  });
+
+  it('a start backup with a different page count (or failing quick_check) is not trusted: E_BACKUP_FAILED, nothing applied', async () => {
+    const path = fresh();
+    const db = openDb({ create: true, path, clock: fakeClock(T0) });
+    const short = { ...db, async backupTo(p: string): Promise<number> {
+      const other = new DatabaseSync(p);
+      other.exec('PRAGMA page_size=512; CREATE TABLE x (a); CREATE TABLE y (b); CREATE TABLE z (c)');
+      other.close();
+      return 1;
+    } };
+    const r = await prepareDatabase(short, { clock: fakeClock(T0), backupPath: `${path}.bak` });
+    assert.deepEqual(r.ok ? null : [r.error.code, /pages/.test(r.error.message)], ['E_BACKUP_FAILED', true]);
+    assert.equal(tables(db).includes('fill'), false);
+    db.close();
+  });
+});
+
+describe('ruling 10: deletes are judged by the retention job\'s clock, never SQLite\'s wall clock', () => {
+  it('a row old by the wall clock but young by the engine clock cannot be deleted; a row old by the engine clock can, whatever the wall clock says', async () => {
+    const db = await migrated();
+    const wall = Number(db.reader().get("SELECT unixepoch('now') * 1000 AS now")?.now);  // SQLite's wall clock (the old triggers' clock)
+    const wallAgo = wall - 40 * DAY;                                                      // 40 days old by the wall clock
+    db.withTx((tx) => repos.wallet_snapshot.insert(tx, { ...sampleRow('wallet_snapshot', 1), granularity: '30s', createdAt: wallAgo }));
+    assert.throws(() => db.withTx((tx) => tx.run('DELETE FROM wallet_snapshot')), /append_only/);   // no job, no delete
+    assert.equal(deleteExpired(db, 'wallet_snapshot', fakeClock(wallAgo + DAY)), 0);              // engine clock: 1 day old
+    const ahead = wall + 400 * DAY;                                                 // an engine clock far past the wall clock
+    db.withTx((tx) => repos.fill.insert(tx, { ...sampleRow('fill', 1), createdAt: ahead - 2_558 * DAY }));
+    assert.equal(deleteExpired(db, 'fill', fakeClock(ahead)), 1);
+    assert.equal(repos.fill.find(db.reader(), { fillId: ulid(1) }).length, 0);
+    db.close();
+  });
+});

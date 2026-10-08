@@ -11,7 +11,8 @@ import {
 import { SCHEMA_VERSIONS, VM_IDS, type VmId } from './versions.ts';
 
 const version = (vm: VmId) => z.literal(SCHEMA_VERSIONS[vm]);
-const big = (s: string): bigint => BigInt(s);
+/** The integer a decimal string holds, or null when it is not one (its field's own check reports that; Z02 ruling 5). */
+const big = (s: string): bigint | null => (/^-?(0|[1-9][0-9]*)$/.test(s) ? BigInt(s) : null);
 
 // ---- VM-01 Stream envelope, heartbeat and clock ----
 export const EnvelopeKind = z.enum(['snapshot', 'upsert', 'remove', 'replace', 'heartbeat', 'reset', 'incompatible']);
@@ -212,9 +213,13 @@ export const VM06Trade = z.strictObject({
   exit_signatures: z.array(Signature),
 }).superRefine((t, ctx) => {
   const c = t.costs;
-  const sum = big(c.network_base_lamports) + big(c.priority_lamports) + big(c.tips_lamports) + big(c.venue_fees_lamports) + big(c.failed_tx_lamports);
-  if (big(t.total_costs_lamports) !== sum) ctx.addIssue({ code: 'custom', path: ['total_costs_lamports'], message: 'total_costs_lamports must equal the sum of costs.*' });
-  if (big(t.net_pnl_lamports) !== big(t.gross_pnl_lamports) - big(t.total_costs_lamports)) {
+  const v = [c.network_base_lamports, c.priority_lamports, c.tips_lamports, c.venue_fees_lamports, c.failed_tx_lamports,
+    t.total_costs_lamports, t.net_pnl_lamports, t.gross_pnl_lamports].map(big);
+  if (v.some((x) => x === null)) return;                                // a malformed amount is already an issue of its field
+  const [base, priority, tips, venue, failed, total, net, gross] = v as bigint[];
+  const sum = (base as bigint) + (priority as bigint) + (tips as bigint) + (venue as bigint) + (failed as bigint);
+  if (total !== sum) ctx.addIssue({ code: 'custom', path: ['total_costs_lamports'], message: 'total_costs_lamports must equal the sum of costs.*' });
+  if (net !== (gross as bigint) - (total as bigint)) {
     ctx.addIssue({ code: 'custom', path: ['net_pnl_lamports'], message: 'net_pnl_lamports must equal gross_pnl_lamports - total_costs_lamports' });
   }
 });
@@ -296,7 +301,7 @@ export const VM08Token = z.strictObject({
 });
 
 // ---- VM-09 Strategy performance ----
-const nonPositive = (s: string): boolean => big(s) <= 0n;
+const nonPositive = (s: string): boolean => { const v = big(s); return v === null || v <= 0n; };
 export const VM09Performance = z.strictObject({
   schema_version: version('VM-09'),
   rows: z.array(z.strictObject({

@@ -35,9 +35,11 @@ describe('FileLogSink: daily files, 0600 in a 0700 directory', () => {
 
   it('rotates at the UTC day boundary, gzips the old day and deletes days past the retention', async () => {
     const dir = tempDir('rotate');
-    writeFileSync(join(dir, 'engine-2026-09-20.ndjson.gz'), 'old');   // 17 days old: deleted
-    writeFileSync(join(dir, 'engine-2026-09-24.ndjson.gz'), 'gone');  // 14 days old after rotation to 10-08: deleted
-    writeFileSync(join(dir, 'engine-2026-09-25.ndjson.gz'), 'kept');  // 13 days old: kept (14 days with today)
+    for (let d = 10; d <= 25; d++) writeFileSync(join(dir, `engine-2026-09-${d}.ndjson.gz`), 'old');
+    for (let d = 26; d <= 30; d++) writeFileSync(join(dir, `engine-2026-09-${d}.ndjson.gz`), 'kept');
+    for (let d = 1; d <= 6; d++) writeFileSync(join(dir, `engine-2026-10-0${d}.ndjson.gz`), 'kept');
+    // After rotation to 10-08: 09-25 and older are 13+ days old by date, but 09-25 is still among the 14 newest days
+    // (09-26..10-08 are 13 days), so it is kept; 09-24 and older are past both rules and deleted (ruling 8).
     writeFileSync(join(dir, 'engine-2026-10-01.ndjson.gz.tmp'), 'partial');
     writeFileSync(join(dir, 'unrelated.txt'), 'x');
     const { s, clock, errors } = sink(dir);
@@ -45,7 +47,8 @@ describe('FileLogSink: daily files, 0600 in a 0700 directory', () => {
     clock.advance(DAY);
     s.write('{"day":2}', 'info');
     await s.close();
-    assert.deepEqual(readdirSync(dir).sort(), ['engine-2026-09-25.ndjson.gz', 'engine-2026-10-07.ndjson.gz', 'engine-2026-10-08.ndjson', 'unrelated.txt']);
+    const kept = [...['25', '26', '27', '28', '29', '30'].map((d) => `engine-2026-09-${d}.ndjson.gz`), ...[1, 2, 3, 4, 5, 6].map((d) => `engine-2026-10-0${d}.ndjson.gz`)];
+    assert.deepEqual(readdirSync(dir).sort(), [...kept, 'engine-2026-10-07.ndjson.gz', 'engine-2026-10-08.ndjson', 'unrelated.txt']);
     assert.equal(gunzipSync(readFileSync(join(dir, 'engine-2026-10-07.ndjson.gz'))).toString(), '{"day":1}\n');
     assert.equal(s.path('2026-10-08'), join(dir, 'engine-2026-10-08.ndjson'));
     assert.deepEqual(errors, []);
@@ -166,13 +169,13 @@ describe('FileLogSink: daily files, 0600 in a 0700 directory', () => {
     assert.equal(readFileSync(join(dir, 'engine-2026-10-08.ndjson'), 'utf8'), '{"b":1}\n{"b":2}\n');
   });
 
-  it('keeps the plain file and reports when compression fails', async () => {
+  it('keeps the day\'s data and reports when compression fails; the next housekeeping retries it', async () => {
     const dir = tempDir('gzfail');
     mkdirSync(join(dir, 'engine-2026-10-06.ndjson'));                // yesterday's "file" cannot be read
     const { s, errors } = sink(dir);
     await s.close();
     assert.deepEqual(errors, ['compress']);
-    assert.ok(existsSync(join(dir, 'engine-2026-10-06.ndjson')));
+    assert.ok(existsSync(join(dir, 'engine-2026-10-06.ndjson.compressing')));   // renamed aside, not deleted
     assert.ok(!existsSync(join(dir, 'engine-2026-10-06.ndjson.gz')));
   });
 

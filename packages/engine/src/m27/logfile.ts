@@ -15,7 +15,16 @@
 // works again, so a short disk-full or I/O error loses at most the lines of that outage, not the rest of the day
 // (B-M27-01 logic 5).
 // The logger copies error and above to the alert store whatever the sink returns.
-import { createReadStream, createWriteStream, fstatSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, type WriteStream } from 'node:fs';
+//
+// Clock steps (Z02 round 2 ruling 8): a day file is deleted only when it is past the retention by date AND not among the
+// `retentionDays` newest days at or before the current day, so a clock that jumps ahead deletes at most one older day
+// (never the whole history), and a file dated after the current day is kept and not counted. A day already compressed
+// is never overwritten: when the clock goes back across midnight and that day's file is written again, its new lines
+// are appended to the `.gz` as another gzip member (gunzip reads every member).
+import {
+  appendFileSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync,
+  type WriteStream,
+} from 'node:fs';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
@@ -66,7 +75,7 @@ export class FileLogSink implements LogSink {
     this.opts = opts;
     if (!Number.isInteger(opts.retentionDays) || opts.retentionDays < 1) throw new RangeError('log: retentionDays must be an integer >= 1');
     this.prefix = opts.prefix ?? 'engine';
-    this.fileRe = new RegExp(`^${this.prefix}-(\\d{4}-\\d{2}-\\d{2})\\.ndjson(\\.gz|\\.gz\\.tmp)?$`);
+    this.fileRe = new RegExp(`^${this.prefix}-(\\d{4}-\\d{2}-\\d{2})\\.ndjson(\\.gz|\\.gz\\.tmp|\\.compressing)?$`);
     mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     this.rotate(dayOf(opts.clock.nowMs()));
   }
@@ -159,25 +168,45 @@ export class FileLogSink implements LogSink {
     } catch (e) {
       this.opts.onError?.({ op: 'prune', message: (e as Error).message });
     }
-    for (const name of names) {
+    const files = names.flatMap((name) => {
       const m = this.fileRe.exec(name);
-      if (m === null) continue;
-      const file = join(this.opts.dir, name);
-      const fileDay = m[1] as string;
-      const suffix = m[2];
-      if ((today - Date.parse(`${fileDay}T00:00:00Z`)) / DAY_MS >= this.opts.retentionDays || suffix === '.gz.tmp') {
+      return m === null ? [] : [{ file: join(this.opts.dir, name), fileDay: m[1] as string, suffix: m[2] }];
+    });
+    // The newest `retentionDays` days at or before today are kept whatever their date says (ruling 8).
+    const kept = new Set([...new Set(files.map((f) => f.fileDay).filter((d) => d <= day))].sort().reverse().slice(0, this.opts.retentionDays));
+    for (const { file, fileDay, suffix } of files) {
+      const old = (today - Date.parse(`${fileDay}T00:00:00Z`)) / DAY_MS >= this.opts.retentionDays && !kept.has(fileDay);
+      if (old || suffix === '.gz.tmp') {
         rmSync(file, { force: true, recursive: true });
         continue;
       }
-      if (suffix === undefined && fileDay < day) await this.compress(file);
+      // Never the file being written: after a clock step back, `day` can be later than the current day (ruling 8).
+      if ((suffix === undefined || suffix === '.compressing') && fileDay < day && fileDay !== this.day) await this.compress(file, suffix);
     }
   }
 
-  private async compress(file: string): Promise<void> {
+  /**
+   * Compresses one day's plain file. It is first renamed to `.compressing` (synchronously, right after the check that it
+   * is not the file being written), so lines written to that day later go to a new plain file and are never deleted
+   * with the old one; a crash leaves the `.compressing` file, which the next housekeeping compresses.
+   */
+  private async compress(file: string, suffix: string | undefined): Promise<void> {
+    const plain = suffix === '.compressing' ? file.slice(0, -'.compressing'.length) : file;
+    const source = `${plain}.compressing`;
     try {
-      await pipeline(createReadStream(file), createGzip(), createWriteStream(`${file}.gz.tmp`, { flags: 'wx', mode: 0o600 }));
-      renameSync(`${file}.gz.tmp`, `${file}.gz`);
-      rmSync(file);
+      if (suffix === undefined) {
+        if (existsSync(source)) return;                                  // a compression of this day is still running
+        renameSync(plain, source);
+      }
+      await pipeline(createReadStream(source), createGzip(), createWriteStream(`${plain}.gz.tmp`, { flags: 'wx', mode: 0o600 }));
+      if (existsSync(`${plain}.gz`)) {
+        // The day was compressed before (the clock went back across midnight): add a member, never overwrite.
+        appendFileSync(`${plain}.gz`, readFileSync(`${plain}.gz.tmp`));
+        rmSync(`${plain}.gz.tmp`);
+      } else {
+        renameSync(`${plain}.gz.tmp`, `${plain}.gz`);
+      }
+      rmSync(source);
     } catch (e) {
       this.opts.onError?.({ op: 'compress', message: (e as Error).message });
     }
