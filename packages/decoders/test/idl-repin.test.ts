@@ -1,0 +1,260 @@
+// Card IDL-REPIN (docs/reviews/Z03.md "IDL-REPIN"; findings in docs/reviews/VERIFYNEXT.md, V22): the IDLs re-pinned to
+// pump-public-docs 8cda1fa; PumpSwap v2 trades and `multi_hop_swap` hops get their quote mint; `PostCompleteBuyEvent`
+// is counted into the buyer's total; a trade invoked by an instruction the pin does not list is `unpinned_invoker`.
+// Each case fails on 6fab4c99 (the Z03 head). Recorded mainnet data (C03 and C11 fixtures), changed where a case
+// needs an instruction the sample lacks.
+import { strict as assert } from 'node:assert';
+import { describe, it } from 'vitest';
+import type { RawTransaction } from '@bot/types';
+import {
+  base58, decodeEvents, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction, tokenAccountMints,
+  type GapReason, type InnerIx, type PinnedIdl,
+} from '../src/index.ts';
+import { accountsOf, bytes, decoders, fixture, idls, WSOL, type FixtureAccount } from './fixtures.ts';
+
+interface TxRecord { signature: string; json: Record<string, unknown> }
+const TRADES = fixture<{ transactions: TxRecord[] }>('decoders/pump/trade_events_curve.json').transactions;
+const SWAP = (): TxRecord => fixture<TxRecord>('mainnet/tx/pumpswap/tx_2TipyhLt.json');
+const PREFIX = 'e445a52e51cb9a1d';
+
+const raw = (rec: TxRecord): RawTransaction => {
+  const r = readRpcTransaction(rec.signature, rec.json);
+  assert.ok(r.ok, r.ok ? '' : r.error.message);
+  return r.value;
+};
+const idl = (name: PinnedIdl['name']): PinnedIdl => idls().find((i) => i.name === name) as PinnedIdl;
+const discOf = (map: Map<string, { name: string }>, name: string): string => {
+  const hit = [...map.entries()].find(([, d]) => d.name === name);
+  assert.ok(hit !== undefined, name);
+  return hit[0];
+};
+const run = (t: RawTransaction) => {
+  const gaps: GapReason[] = [];
+  const located = decodeEventsLocated(t, idls(), { onGap: (g) => gaps.push(g) }, { wsolMint: WSOL });
+  return { located, gaps, kinds: located.map((l) => l.event.kind) };
+};
+
+/** The recorded PumpSwap `buy` (top-level) and its accounts by IDL name. */
+function swapBuy(t: RawTransaction): { ix: RawTransaction['message']['instructions'][number]; at: (name: string) => number } {
+  const amm = idl('pump_amm');
+  const ix = t.message.instructions.find((x) => amm.instructions.get(Buffer.from(x.dataB64, 'base64').subarray(0, 8).toString('hex'))?.name === 'buy');
+  assert.ok(ix !== undefined);
+  const names = amm.instructions.get(discOf(amm.instructions, 'buy'))?.accounts ?? [];
+  return { ix, at: (name) => ix.accounts[names.indexOf(name)] as number };
+}
+const withDisc = (dataB64: string, disc: string): string => {
+  const data = Buffer.from(dataB64, 'base64');
+  Buffer.from(disc, 'hex').copy(data, 0);
+  return data.toString('base64');
+};
+
+describe('re-pin to pump-public-docs 8cda1fa', () => {
+  it('pins the commit and the three sha256 values of VERIFY-NEXT V22, and loads PostCompleteBuyEvent and multi_hop_swap', () => {
+    assert.equal(IDL_COMMIT, '8cda1fa30ea658b20909d8aedf002047119388d2');
+    assert.deepEqual(PINNED_IDLS.map((p) => [p.file, p.sha256]), [
+      ['pump.json', '38b8abcc5b279bda85cf473e7c6f67bd15eb89df658cf93434687a43c88ad937'],
+      ['pump_amm.json', 'b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b'],
+      ['pump_fees.json', 'f111d2e5c9aa3d4e64d6a4e6b6f34300ccb1eaf6abc46834fe491836dc90aa74'],
+    ]);
+    assert.ok([...idl('pump').events.values()].some((d) => d.name === 'PostCompleteBuyEvent'));
+    assert.deepEqual(idl('pump_amm').multiHopSwap, { disc: discOf(idl('pump_amm').instructions, 'multi_hop_swap'), fixedAccounts: 16 });
+    assert.equal(idl('pump').multiHopSwap, null);
+  });
+
+  it('the v2 trades bind quote_mint to the pool at account 4, as the v1 trades do', () => {
+    const amm = idl('pump_amm');
+    for (const name of ['buy_v2', 'buy_exact_quote_in_v2', 'sell_v2']) assert.equal(amm.poolQuoteMint.get(discOf(amm.instructions, name)), 4, name);
+  });
+
+  it('a recorded trade event is described in full: creator_fee_unclaimed is no longer extra bytes', () => {
+    const r = run(raw(TRADES[0] as TxRecord));
+    assert.deepEqual([r.kinds, r.located[0]?.layoutExtended], [['pump_trade'], false]);
+    const s = run(raw(SWAP()));
+    assert.deepEqual([s.kinds, s.located[0]?.layoutExtended], [['pumpswap_buy'], false]);
+  });
+});
+
+describe('PumpSwap v2 trades and unpinned invokers', () => {
+  it('a buy_v2 on a SOL pool decodes (it was dropped as non_sol_quote under cb188ce)', () => {
+    const t = raw(SWAP());
+    const { ix } = swapBuy(t);
+    ix.dataB64 = withDisc(ix.dataB64, discOf(idl('pump_amm').instructions, 'buy_v2'));
+    const r = run(t);
+    assert.deepEqual([r.kinds, r.gaps], [['pumpswap_buy'], []]);
+  });
+
+  it('an invoker the pin does not list is counted unpinned_invoker, never non_sol_quote', () => {
+    const t = raw(SWAP());
+    const { ix } = swapBuy(t);
+    ix.dataB64 = withDisc(ix.dataB64, '0102030405060708');
+    const r = run(t);
+    assert.deepEqual([r.kinds, r.gaps], [[], ['unpinned_invoker']]);
+  });
+
+  it('an invoker whose data is shorter than a discriminator is unpinned_invoker', () => {
+    const t = raw(SWAP());
+    const { ix } = swapBuy(t);
+    ix.dataB64 = Buffer.from([1, 2, 3]).toString('base64');
+    assert.deepEqual(run(t).gaps, ['unpinned_invoker']);
+  });
+});
+
+describe('multi_hop_swap: each pool hop gets the quote mint of its own hop', () => {
+  /** The recorded buy rewritten as a `multi_hop_swap` with the given hops (5 account indexes each) after 16 fixed accounts. */
+  function multiHop(hops: (at: (name: string) => number) => number[][]): RawTransaction {
+    const t = raw(SWAP());
+    const { ix, at } = swapBuy(t);
+    ix.dataB64 = withDisc(ix.dataB64, discOf(idl('pump_amm').instructions, 'multi_hop_swap'));
+    ix.accounts = [...ix.accounts.slice(0, 16), ...hops(at).flat()];
+    return t;
+  }
+  const solHop = (at: (name: string) => number): number[] =>
+    [at('base_mint'), at('quote_mint'), at('pool'), at('pool_base_token_account'), at('pool_quote_token_account')];
+
+  it('the recorded vault holds wSOL, as the runtime\'s token balances say', () => {
+    const t = raw(SWAP());
+    const { at } = swapBuy(t);
+    assert.equal(tokenAccountMints(t).get(at('pool_quote_token_account')), WSOL);
+    assert.equal(t.message.accountKeys[at('quote_mint')], WSOL);
+  });
+
+  it('a one-hop route on a SOL pool decodes as pumpswap_buy (dropped as non_sol_quote under cb188ce)', () => {
+    const r = run(multiHop((at) => [solHop(at)]));
+    assert.deepEqual([r.kinds, r.gaps], [['pumpswap_buy'], []]);
+  });
+
+  it('the hop is found by pool among several hops', () => {
+    // A first hop on another pool (its slot 3 is the user, any key but the event's pool).
+    const r = run(multiHop((at) => [[at('base_mint'), at('base_mint'), at('user'), at('user_base_token_account'), at('user_quote_token_account')], solHop(at)]));
+    assert.deepEqual([r.kinds, r.gaps], [['pumpswap_buy'], []]);
+  });
+
+  it('a hop whose quote mint and vault are the base side is non_sol_quote', () => {
+    const r = run(multiHop((at) => [[at('base_mint'), at('base_mint'), at('pool'), at('pool_quote_token_account'), at('pool_base_token_account')]]));
+    assert.deepEqual([r.kinds, r.gaps], [[], ['non_sol_quote']]);
+  });
+
+  it('a slot-2 mint the vault does not hold is unresolved_quote: the account list alone never makes a trade SOL', () => {
+    const r = run(multiHop((at) => [[at('base_mint'), at('quote_mint'), at('pool'), at('pool_base_token_account'), at('pool_base_token_account')]]));
+    assert.deepEqual([r.kinds, r.gaps], [[], ['unresolved_quote']]);
+  });
+
+  it('a vault without a token balance, a pool no hop names, a pool two hops name and a broken hop list are unresolved_quote', () => {
+    const noBalance = multiHop((at) => [solHop(at)]);
+    noBalance.meta.preTokenBalances = [];
+    noBalance.meta.postTokenBalances = [];
+    const cases = [
+      noBalance,
+      multiHop((at) => [[at('base_mint'), at('quote_mint'), at('user'), at('pool_base_token_account'), at('pool_quote_token_account')]]),
+      multiHop((at) => [solHop(at), solHop(at)]),
+      multiHop((at) => [solHop(at).slice(0, 4)]),
+      multiHop(() => []),
+    ];
+    for (const [i, t] of cases.entries()) assert.deepEqual(run(t).gaps, ['unresolved_quote'], `case ${i}`);
+  });
+
+  it('token balance entries that disagree on a vault\'s mint give no mint', () => {
+    const t = raw(SWAP());
+    const { at } = swapBuy(t);
+    const vault = at('pool_quote_token_account');
+    t.meta.preTokenBalances = [...t.meta.preTokenBalances, { accountIndex: vault, mint: t.message.accountKeys[at('base_mint')] }];
+    assert.equal(tokenAccountMints(t).get(vault), null);
+  });
+});
+
+describe('PostCompleteBuyEvent: the pool part of a completing buy, counted into the buyer\'s total', () => {
+  /** A recorded curve buy with a PostCompleteBuyEvent emitted right after its TradeEvent (same program, same height). */
+  function completingBuy(quoteMint: Uint8Array = new Uint8Array(32)): { t: RawTransaction; mint: string } {
+    const rec = TRADES.find((x) => run(raw(x)).located.some((l) => l.event.kind === 'pump_trade' && l.event.isBuy));
+    assert.ok(rec !== undefined);
+    const t = raw(rec);
+    const trade = run(t).located[0];
+    assert.ok(trade?.event.kind === 'pump_trade');
+    const group = t.meta.innerInstructions.find((g) => g.index === trade.outerIx) as RawTransaction['meta']['innerInstructions'][number];
+    const tradeIx = group.instructions[trade.innerIx] as InnerIx;
+    const u64 = (v: bigint): Buffer => { const b = Buffer.alloc(8); b.writeBigUInt64LE(v); return b; };
+    const key = (k: string): Buffer => Buffer.from(base58.decode(k));
+    // PostCompleteBuyEvent fields in the order of the pinned pump.json.
+    const body = Buffer.concat([
+      key(trade.event.mint), key(trade.event.mint), key(trade.event.mint), Buffer.from(quoteMint), u64(1_760_000_000n),
+      u64(5_000_000n) /* base_out */, u64(250_000_000n) /* quote_in */, u64(95n), u64(2_375_000n), u64(5n), u64(125_000n),
+      u64(0n), u64(206_900_000_000_000n), u64(85_000_000_000n), u64(206_895_000_000_000n), u64(85_250_000_000n),
+    ]);
+    const disc = discOf(idl('pump').events, 'PostCompleteBuyEvent');
+    group.instructions.splice(trade.innerIx + 1, 0, { ...tradeIx, dataB64: Buffer.concat([Buffer.from(PREFIX + disc, 'hex'), body]).toString('base64') });
+    return { t, mint: trade.event.mint };
+  }
+
+  it('decodes the pool part as pump_post_complete_buy with its amounts and fees', () => {
+    const { t, mint } = completingBuy();
+    const r = run(t);
+    assert.deepEqual([r.kinds, r.gaps], [['pump_trade', 'pump_post_complete_buy'], []]);
+    const post = r.located[1];
+    assert.equal(post?.layoutExtended, false);
+    assert.deepEqual(post?.event, {
+      kind: 'pump_post_complete_buy', mint, solAmount: 250_000_000n, tokenAmount: 5_000_000n, feeBps: 95, fee: 2_375_000n,
+      creatorFeeBps: 5, creatorFee: 125_000n, quoteMint: null, slot: t.slot, signature: t.signature,
+    });
+  });
+
+  it('the buyer\'s total is the TradeEvent amounts plus the PostCompleteBuyEvent amounts', () => {
+    const { t, mint } = completingBuy();
+    const r = run(t);
+    const trade = r.located[0]?.event;
+    assert.ok(trade?.kind === 'pump_trade');
+    assert.deepEqual(pumpBuyTotals(r.located), [{
+      signature: t.signature, outerIx: r.located[0]?.outerIx, mint, solAmount: trade.solAmount + 250_000_000n,
+      tokenAmount: trade.tokenAmount + 5_000_000n, fee: trade.fee + 2_375_000n, creatorFee: trade.creatorFee + 125_000n,
+    }]);
+  });
+
+  it('decodeEvents keeps to DecodedEvent (the frozen @bot/types has no such variant); the decoders count it', () => {
+    const { t } = completingBuy();
+    assert.deepEqual(decodeEvents(t, idls(), {}, { wsolMint: WSOL }).map((e) => e.kind), ['pump_trade']);
+    assert.deepEqual(decoders().decodeTransactionEvents(t).map((e) => e.kind), ['pump_trade']);
+    const kinds: string[] = [];
+    decodeEventsLocated(t, idls(), { onEvent: (k) => kinds.push(k) }, { wsolMint: WSOL });
+    assert.deepEqual(kinds, ['pump_trade', 'pump_post_complete_buy']);
+  });
+
+  it('a pool part whose quote mint is not native SOL is refused (non_sol_quote)', () => {
+    const { t } = completingBuy(new Uint8Array(32).fill(7));
+    const r = run(t);
+    assert.deepEqual([r.kinds, r.gaps], [['pump_trade'], ['non_sol_quote']]);
+  });
+
+  it('sells are not counted; a trade without a pool part is its own total', () => {
+    const sell = TRADES.map(raw).find((t) => run(t).located.some((l) => l.event.kind === 'pump_trade' && !l.event.isBuy));
+    if (sell !== undefined) assert.deepEqual(pumpBuyTotals(run(sell).located), []);
+    const buy = TRADES.map(raw).find((t) => run(t).located.some((l) => l.event.kind === 'pump_trade' && l.event.isBuy)) as RawTransaction;
+    const e = run(buy).located[0]?.event;
+    assert.ok(e?.kind === 'pump_trade');
+    assert.deepEqual(pumpBuyTotals(run(buy).located).map((x) => [x.solAmount, x.tokenAmount]), [[e.solAmount, e.tokenAmount]]);
+  });
+});
+
+describe('accounts the new pin lengthens', () => {
+  const d = decoders();
+  it('the recorded pump Global (written before max_curve_depth) reads it as 0, flagged shortLegacy', () => {
+    const g = accountsOf('mainnet/config/pump_global.json').find((a) => a.role === 'pump_global') as FixtureAccount;
+    const r = d.decodeAccountWithFlags(g.owner, bytes(g));
+    assert.equal(r.account.kind, 'pump_global');
+    assert.equal(r.account.kind === 'pump_global' ? r.account.raw.max_curve_depth : -1, 0);
+    assert.deepEqual(r.flags, { layoutExtended: false, shortLegacy: true });
+  });
+
+  it('a Pool cut to the previous pin\'s layout reads protocol_fees and creator_fees as 0; shorter, or cut inside a field with data, is unknown', () => {
+    const pool = accountsOf('mainnet/pumpswap/pools/pool_9jkXWMyt.json').find((a) => a.role === 'pool') as FixtureAccount;
+    const full = bytes(pool);
+    const ok = d.decodeAccountWithFlags(pool.owner, full);
+    assert.equal(ok.account.kind, 'pumpswap_pool');
+    const old = d.decodeAccountWithFlags(pool.owner, full.slice(0, 8 + 263));          // cb188ce Pool: 263 bytes after the discriminator
+    assert.deepEqual([old.account, old.flags], [ok.account, { layoutExtended: false, shortLegacy: true }]);
+    assert.equal(d.decodeAccount(pool.owner, full.slice(0, 8 + 262)).kind, 'unknown');  // below the previous pin's layout
+    const inside = Uint8Array.from(full.slice(0, 8 + 267));                              // 4 bytes into protocol_fees
+    inside[8 + 266] = 1;
+    assert.equal(d.decodeAccount(pool.owner, inside).kind, 'unknown');
+    inside[8 + 266] = 0;                                                                 // zero bytes: capacity, read as 0
+    assert.equal(d.decodeAccountWithFlags(pool.owner, inside).flags.shortLegacy, true);
+  });
+});

@@ -14,20 +14,37 @@ export const EVENT_CPI_PREFIX = 'e445a52e51cb9a1d';
  * `decode_gap_total` reasons: `bad_trace` (an event-CPI instruction of a pump program whose invoker cannot be told: an
  * inconsistent stackHeight trace, or a group whose top-level instruction or program is missing; review C03 R9) and
  * `oversized` (pump or PumpSwap instruction data longer than any event, never decoded; review C03 R2) join the three
- * reasons of A-M02-03.
+ * reasons of A-M02-03. Card IDL-REPIN adds `unpinned_invoker` (a PumpSwap trade invoked by an instruction the pinned IDL
+ * does not list, so its quote mint cannot be read) and `unresolved_quote` (a `multi_hop_swap` hop whose quote mint
+ * cannot be established); neither is ever labelled `non_sol_quote`, which means a quote mint read and found not SOL.
  */
-export type GapReason = 'no_inner' | 'truncated' | 'unknown_disc' | 'bad_trace' | 'oversized' | 'non_sol_quote';
+export type GapReason = 'no_inner' | 'truncated' | 'unknown_disc' | 'bad_trace' | 'oversized' | 'non_sol_quote'
+  | 'unpinned_invoker' | 'unresolved_quote';
+/**
+ * The pool part of a pump curve buy that completes the curve (card IDL-REPIN): `base_out` tokens for `quote_in` SOL,
+ * with the fees on that part (pump-public-docs 8cda1fa, docs/SYNTHETIC_MIGRATION.md "Events and state"). Only from a
+ * SOL curve (ruling 3). It is not a `DecodedEvent` variant: `@bot/types` is frozen at 1.0.0 and a new variant needs a
+ * version with both sign-offs (packages/types/CHANGELOG.md), so it stays in this package until then; `decodeEvents`
+ * leaves it out, the located decoders return it, and `pumpBuyTotals` counts it into the buyer's total.
+ */
+export interface PumpPostCompleteBuy {
+  kind: 'pump_post_complete_buy'; mint: Pubkey; solAmount: Lamports; tokenAmount: BaseUnits; feeBps: Bps; fee: Lamports;
+  creatorFeeBps: Bps; creatorFee: Lamports; quoteMint: null; slot: Slot; signature: Signature;
+}
+/** Every event M02 decodes: the `DecodedEvent` variants and `PumpPostCompleteBuy`. */
+export type M02Event = DecodedEvent | PumpPostCompleteBuy;
+
 export interface EventHooks {
   /** `decode_events_total{kind}` and `decode_gap_total{reason}` (M27). */
-  onEvent?(kind: DecodedEvent['kind']): void;
+  onEvent?(kind: M02Event['kind']): void;
   onGap?(reason: GapReason): void;
   /**
    * `decode_layout_extended_total{kind}` (M27; Z03 ruling 2): the event's data holds `bytes` more than the pinned layout
-   * describes. Pump appended `creator_fee_unclaimed: u64` to TradeEvent, BuyEvent and SellEvent (pump-fun/pump-public-docs
-   * 8cda1fa, 2026-10-08; DEC-1 saw the 8 bytes on mainnet from 2026-10-02); a newer IDL is pinned only in its own
+   * describes, as TradeEvent, BuyEvent and SellEvent did under the earlier pin cb188ce (pump appended
+   * `creator_fee_unclaimed: u64` on 2026-10-02; the 8cda1fa pin describes it). A newer layout is pinned only in its own
    * reviewed change, so until then such events carry `layoutExtended` and are counted.
    */
-  onLayoutExtended?(kind: DecodedEvent['kind'], bytes: number): void;
+  onLayoutExtended?(kind: M02Event['kind'], bytes: number): void;
   /** `m02.unknown_event` (the registry logs it once per discriminator per hour). */
   onUnknown?(programId: Pubkey, discriminatorHex: string, signature: Signature): void;
 }
@@ -69,7 +86,7 @@ export interface QuoteMints { wsolMint?: Pubkey }
  * its position in that instruction's inner list, so with the signature a second delivery of the same event is told
  * from a second fill. `layoutExtended`: the event's data held bytes the pinned layout does not describe (ruling 2).
  */
-export interface LocatedEvent { event: DecodedEvent; outerIx: number; innerIx: number; layoutExtended: boolean }
+export interface LocatedEvent { event: M02Event; outerIx: number; innerIx: number; layoutExtended: boolean }
 
 function bps(v: unknown): Bps {
   if (typeof v !== 'bigint' || v > MAX_BPS) throw new DecodeError('E_BAD_VALUE', 'a fee is at most 10,000 bps');
@@ -86,13 +103,21 @@ const quoteMintOf = (v: unknown): Pubkey | null => (v === DEFAULT_PUBKEY ? null 
 
 /** Thrown for a trade whose quote is not SOL, so it never yields Lamports (Z03 ruling 3); counted as `non_sol_quote`. */
 class NonSolQuote extends Error {}
+/** Thrown for a PumpSwap trade whose invoking instruction the pin does not list (card IDL-REPIN); `unpinned_invoker`. */
+class UnpinnedInvoker extends Error {}
+/** Thrown for a `multi_hop_swap` trade whose hop quote mint cannot be established (card IDL-REPIN); `unresolved_quote`. */
+class UnresolvedQuote extends Error {}
+
+const gapOf = (e: unknown): GapReason => (e instanceof NonSolQuote ? 'non_sol_quote' : e instanceof UnpinnedInvoker
+  ? 'unpinned_invoker' : e instanceof UnresolvedQuote ? 'unresolved_quote' : 'truncated');
 
 /**
- * Maps a decoded IDL event to its `DecodedEvent` variant; null for an event the system does not use. `poolQuoteMint` is
- * the PumpSwap pool's quote mint, or null when it cannot be read (ruling 3).
+ * Maps a decoded IDL event to its `DecodedEvent` variant; null for an event the system does not use. `poolQuoteMint`
+ * gives the PumpSwap pool's quote mint, or null when its invoker binds none (ruling 3); it throws `UnpinnedInvoker` or
+ * `UnresolvedQuote` when the quote mint cannot be read (card IDL-REPIN).
  */
 function mapEvent(idl: PinnedIdl['name'], name: string, v: Record<string, unknown>, slot: Slot, signature: Signature,
-  poolQuoteMint: () => Pubkey | null, wsolMint: Pubkey | undefined): DecodedEvent | null {
+  poolQuoteMint: (pool: Pubkey) => Pubkey | null, wsolMint: Pubkey | undefined): M02Event | null {
   const key = `${idl}.${name}`;
   if (key === 'pump.TradeEvent') {
     // Ruling 3: `sol_amount` is Lamports only on a SOL curve; pump coins may also trade against other mints (pump-public-
@@ -109,6 +134,18 @@ function mapEvent(idl: PinnedIdl['name'], name: string, v: Record<string, unknow
     };
   }
   if (key === 'pump.CompleteEvent') return { kind: 'pump_complete', mint: v.mint as Pubkey, slot, signature };
+  if (key === 'pump.PostCompleteBuyEvent') {
+    // The pool part of a buy that completes a curve (pump-public-docs 8cda1fa, docs/SYNTHETIC_MIGRATION.md "Events and
+    // state": "the buyer's total is the TradeEvent amounts plus the PostCompleteBuyEvent amounts"); see `pumpBuyTotals`.
+    if (quoteMintOf(v.quote_mint) !== null) throw new NonSolQuote();          // ruling 3: `quote_in` is Lamports only on a SOL curve
+    const feeBps = bps(v.fee_basis_points);
+    const creatorFeeBps = bps(v.creator_fee_basis_points);
+    fitsTotal(feeBps, creatorFeeBps);
+    return {
+      kind: 'pump_post_complete_buy', mint: v.mint as Pubkey, solAmount: v.quote_in as Lamports, tokenAmount: v.base_out as BaseUnits,
+      feeBps, fee: v.fee as Lamports, creatorFeeBps, creatorFee: v.creator_fee as Lamports, quoteMint: null, slot, signature,
+    };
+  }
   if (key === 'pump.CompletePumpAmmMigrationEvent') {
     if (quoteMintOf(v.quote_mint) !== null) throw new NonSolQuote();          // ruling 3: `sol_amount` is Lamports only on a SOL curve
     return {
@@ -121,7 +158,7 @@ function mapEvent(idl: PinnedIdl['name'], name: string, v: Record<string, unknow
   // mirror of it (U-A05, U-A10: field names from the pinned pump_amm.json).
   if (key === 'pump_amm.BuyEvent' || key === 'pump_amm.SellEvent') {
     // Ruling 3: `quoteAmount` is Lamports only when the pool's quote mint is wSOL.
-    if (wsolMint === undefined || poolQuoteMint() !== wsolMint) throw new NonSolQuote();
+    if (wsolMint === undefined || poolQuoteMint(v.pool as Pubkey) !== wsolMint) throw new NonSolQuote();
     const buy = name === 'BuyEvent';
     const lpFeeBps = bps(v.lp_fee_basis_points);
     const protocolFeeBps = bps(v.protocol_fee_basis_points);
@@ -172,27 +209,89 @@ function invokerIndex(k: number, hs: readonly number[]): number | undefined {
  * top-level instruction must be the same program.
  */
 export function decodeEvents(tx: RawTransaction, idls: readonly PinnedIdl[], hooks: EventHooks = {}, quote: QuoteMints = {}): DecodedEvent[] {
-  return decodeEventsLocated(tx, idls, hooks, quote).map((e) => e.event);
+  return decodedOnly(decodeEventsLocated(tx, idls, hooks, quote));
+}
+
+/** The `DecodedEvent`s of located events: `pump_post_complete_buy` is left out (see `PumpPostCompleteBuy`). */
+export function decodedOnly(events: readonly LocatedEvent[]): DecodedEvent[] {
+  return events.flatMap((e) => (e.event.kind === 'pump_post_complete_buy' ? [] : [e.event]));
+}
+
+/**
+ * POLICY (card IDL-REPIN): a `multi_hop_swap` hop is 5 remaining accounts after the IDL's fixed ones, in route order;
+ * slot 2 is the hop's quote mint, slot 3 its pool (or bonding curve), slot 5 its quote vault. Source: pump-public-docs
+ * 8cda1fa, docs/instructions/MULTI_HOP_SWAP.md "Remaining accounts (5 per hop)" (the IDL does not describe them).
+ */
+const HOP_ACCOUNTS = 5;
+const HOP_QUOTE_MINT = 1;
+const HOP_POOL = 2;
+const HOP_QUOTE_VAULT = 4;
+
+/**
+ * The mints the runtime recorded for token accounts in `preTokenBalances` and `postTokenBalances`, by account key index
+ * (the index runs over the account keys, then the loaded writable and readonly addresses); null where entries disagree.
+ */
+export type TokenAccountMints = ReadonlyMap<number, Pubkey | null>;
+
+/** Reads the `accountIndex` and `mint` of each token balance entry; entries that disagree on one account give null. */
+export function tokenAccountMints(tx: RawTransaction): TokenAccountMints {
+  const out = new Map<number, Pubkey | null>();
+  for (const e of [...tx.meta.preTokenBalances, ...tx.meta.postTokenBalances]) {
+    if (typeof e !== 'object' || e === null) continue;
+    const { accountIndex, mint } = e as { accountIndex?: unknown; mint?: unknown };
+    if (!Number.isSafeInteger(accountIndex) || typeof mint !== 'string') continue;
+    const seen = out.get(accountIndex as number);
+    out.set(accountIndex as number, seen === undefined || seen === mint ? mint : null);
+  }
+  return out;
+}
+
+/**
+ * The quote mint of the `multi_hop_swap` hop that traded `pool` (card IDL-REPIN): the hop's slot-2 mint, and only when
+ * the runtime's token balances record the hop's quote vault (slot 5) as an account of that same mint, so the quote
+ * rests on what the vault holds and not on the caller's account list alone. Throws `UnresolvedQuote` when the hop list
+ * is malformed, no hop or more than one hop names the pool, or the vault's mint is missing, conflicting or different.
+ */
+function multiHopQuoteMint(accounts: readonly number[], fixed: number, keys: readonly Pubkey[], pool: Pubkey, mints: () => TokenAccountMints): Pubkey {
+  const rest = accounts.length - fixed;
+  if (rest < HOP_ACCOUNTS || rest % HOP_ACCOUNTS !== 0) throw new UnresolvedQuote();
+  const hops: Array<readonly number[]> = [];
+  for (let i = fixed; i < accounts.length; i += HOP_ACCOUNTS) hops.push(accounts.slice(i, i + HOP_ACCOUNTS));
+  const named = hops.filter((h) => keys[h[HOP_POOL] as number] === pool);
+  if (named.length !== 1) throw new UnresolvedQuote();
+  const hop = named[0] as readonly number[];
+  const quoteMint = keys[hop[HOP_QUOTE_MINT] as number];
+  const vault = mints().get(hop[HOP_QUOTE_VAULT] as number);
+  if (quoteMint === undefined || vault === undefined || vault === null || vault !== quoteMint) throw new UnresolvedQuote();
+  return quoteMint;
 }
 
 /**
  * The PumpSwap pool's quote mint for an event its program emitted (ruling 3): the `quote_mint` account of the PumpSwap
  * instruction that invoked the event-CPI, only when the pinned IDL marks that account `relations: ["pool"]` (Anchor
  * `has_one`: the program refuses an instruction whose `quote_mint` is not the pool's; ruling 14, the set built at IDL
- * load: `buy`, `buy_exact_quote_in`, `sell`, `deposit`, `withdraw`, `init_boost`, `boost_buy_and_burn` in cb188ce).
- * Null for any other invoker (`create_pool` among them), so its event gets no quote and is refused.
+ * load: at 8cda1fa `buy`, `buy_v2`, `buy_exact_quote_in`, `buy_exact_quote_in_v2`, `sell`, `sell_v2`, `deposit`,
+ * `withdraw`, `init_boost`, `boost_buy_and_burn`, `sweep_creator_fee`, `sweep_protocol_fee`), or the hop of a
+ * `multi_hop_swap` that traded `pool` (`multiHopQuoteMint`). Null for any other pinned invoker (`create_pool` among
+ * them), so its event gets no quote and is refused (`non_sol_quote`); an invoker the pin does not list throws
+ * `UnpinnedInvoker` (card IDL-REPIN).
  */
-function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonly Pubkey[]): Pubkey | null {
+function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonly Pubkey[], pool: Pubkey, mints: () => TokenAccountMints): Pubkey | null {
   if (invoker === undefined) return null;
   const length58 = (invoker as InnerIx).dataLength58;
-  if (length58 !== undefined && length58 > MAX_EVENT_DATA_B58) return null;
+  if (length58 !== undefined && length58 > MAX_EVENT_DATA_B58) throw new UnpinnedInvoker();
   const data = Buffer.from(invoker.dataB64, 'base64');
-  if (data.length < 8 || data.length > MAX_EVENT_DATA_BYTES) return null;
+  if (data.length < 8 || data.length > MAX_EVENT_DATA_BYTES) throw new UnpinnedInvoker();
+  const disc = data.subarray(0, 8).toString('hex');
   // Ruling 14: only an instruction the IDL binds to the pool (built at load) attributes a quote mint.
-  const at = idl.poolQuoteMint.get(data.subarray(0, 8).toString('hex'));
-  if (at === undefined) return null;
-  const index = invoker.accounts[at];
-  return index === undefined ? null : keys[index] ?? null;
+  const at = idl.poolQuoteMint.get(disc);
+  if (at !== undefined) {
+    const index = invoker.accounts[at];
+    return index === undefined ? null : keys[index] ?? null;
+  }
+  if (idl.multiHopSwap !== null && disc === idl.multiHopSwap.disc) return multiHopQuoteMint(invoker.accounts, idl.multiHopSwap.fixedAccounts, keys, pool, mints);
+  if (!idl.instructions.has(disc)) throw new UnpinnedInvoker();
+  return null;
 }
 
 /** `decodeEvents` with each event's place in the transaction and its layout flag (rulings m11 and 2). */
@@ -207,6 +306,8 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
     return [];
   }
   const out: LocatedEvent[] = [];
+  let mints: TokenAccountMints | undefined;
+  const tokenMints = (): TokenAccountMints => (mints ??= tokenAccountMints(tx));
   for (const group of tx.meta.innerInstructions) {
     const parent = tx.message.instructions[group.index];
     const top = parent === undefined ? undefined : programOf(parent);   // undefined: a bad trace for any event below
@@ -234,15 +335,15 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
         out.push({ event: { kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature }, outerIx: group.index, innerIx: k, layoutExtended: false });
         continue;
       }
-      let ev: DecodedEvent | null;
+      let ev: M02Event | null;
       let extra = 0;
       try {
         const r = new Reader(data.subarray(16));
         const value = def.read(r) as Record<string, unknown>;
         extra = r.remaining();
-        ev = mapEvent(idl.name, def.name, value, tx.slot, tx.signature, () => invokerQuoteMint(invokerIx, idl, keys), quote.wsolMint);
+        ev = mapEvent(idl.name, def.name, value, tx.slot, tx.signature, (pool) => invokerQuoteMint(invokerIx, idl, keys, pool, tokenMints), quote.wsolMint);
       } catch (e) {
-        hooks.onGap?.(e instanceof NonSolQuote ? 'non_sol_quote' : 'truncated');   // never a guessed event
+        hooks.onGap?.(gapOf(e));                              // never a guessed event
         continue;
       }
       if (ev === null) continue;
@@ -252,6 +353,28 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
     }
   }
   return out;
+}
+
+/** One buyer's curve purchase of one coin in one top-level instruction, the pool part of a completing buy included. */
+export interface PumpBuyTotal { signature: Signature; outerIx: number; mint: Pubkey; solAmount: Lamports; tokenAmount: BaseUnits; fee: Lamports; creatorFee: Lamports }
+
+/**
+ * The buyer's totals of pump curve buys (card IDL-REPIN): each `pump_trade` buy plus the `pump_post_complete_buy` of
+ * the same coin in the same top-level instruction, summed per signature, top-level instruction and coin in the order
+ * first seen. pump-public-docs 8cda1fa, docs/SYNTHETIC_MIGRATION.md: "the buyer's total is the `TradeEvent` amounts
+ * plus the `PostCompleteBuyEvent` amounts"; a `multi_hop_swap` curve hop may be followed by the same events. A curve
+ * hop and a coin bought twice in one instruction are summed per coin. Sells are not counted.
+ */
+export function pumpBuyTotals(events: readonly LocatedEvent[]): PumpBuyTotal[] {
+  const totals = new Map<string, PumpBuyTotal>();
+  for (const { event: e, outerIx } of events) {
+    if (e.kind !== 'pump_trade' && e.kind !== 'pump_post_complete_buy') continue;
+    if (e.kind === 'pump_trade' && !e.isBuy) continue;
+    const key = `${e.signature} ${outerIx} ${e.mint}`;
+    const t = totals.get(key) ?? { signature: e.signature, outerIx, mint: e.mint, solAmount: 0n, tokenAmount: 0n, fee: 0n, creatorFee: 0n };
+    totals.set(key, { ...t, solAmount: t.solAmount + e.solAmount, tokenAmount: t.tokenAmount + e.tokenAmount, fee: t.fee + e.fee, creatorFee: t.creatorFee + e.creatorFee });
+  }
+  return [...totals.values()];
 }
 
 export type ReadTxError = { code: 'E_TX_SHAPE' | 'E_TX_VERSION'; message: string };
