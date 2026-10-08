@@ -13,6 +13,7 @@ import noAwaitInWithTx from '../rules/no-await-in-withtx.ts';
 import noNumberFormatting from '../rules/no-number-formatting.ts';
 import noNumberOnMoney, { MONEY_FIELD } from '../rules/no-number-on-money.ts';
 import noNumberOnUnits from '../rules/no-number-on-units.ts';
+import noProgramIdLiteral, { base58Runs, CONSTANTS_FILE, isAddressLiteral, knownProgramIds } from '../rules/no-program-id-literal.ts';
 import noSharedTypeRedefinition, { exportedTypeNames } from '../rules/no-shared-type-redefinition.ts';
 
 RuleTester.describe = describe;
@@ -23,10 +24,10 @@ const tester = new RuleTester({ languageOptions: { parser: tsParser, ecmaVersion
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
 describe('plugin', () => {
-  it('exports the six rules under the bot namespace', () => {
+  it('exports the eight rules under the bot namespace', () => {
     assert.equal(plugin.meta?.name, 'bot');
     assert.deepEqual(Object.keys(plugin.rules ?? {}).sort(),
-      ['no-ambient-clock-or-random', 'no-await-in-withtx', 'no-number-formatting', 'no-number-on-money', 'no-number-on-units', 'no-shared-type-redefinition']);
+      ['no-ambient-clock-or-random', 'no-await-in-withtx', 'no-fixtures-import', 'no-number-formatting', 'no-number-on-money', 'no-number-on-units', 'no-program-id-literal', 'no-shared-type-redefinition']);
   });
 });
 
@@ -430,4 +431,82 @@ tester.run('no-await-in-withtx', noAwaitInWithTx, {
     { code: 'this.db.withTx(function* (tx) { yield tx; })', errors: [{ messageId: 'asyncCallback' }] },
     { code: 'db.withTx((tx) => { if (a) { await b; } })', errors: [{ messageId: 'awaitInTx' }] },
   ],
+});
+
+// A-M01-01 logic 1 (ported from Snipe-solana card C03 #6 @ 6ae4d62). The IDs come from the registry itself, so this
+// test file holds none.
+const ids = [...knownProgramIds()];
+const pump = ids[0] as string;
+tester.run('no-program-id-literal', noProgramIdLiteral, {
+  valid: [
+    "const a = 'not a program id';",
+    `const a = \`\${x}${pump}\`;`,
+    'const n = 7;',
+    "import { PROGRAMS } from '@bot/venue/constants'; const p = PROGRAMS.pumpCurve;",
+    'const r = String.raw`\\unicode`;',                       // a tagged template with no cooked value
+  ],
+  invalid: [
+    { code: `const p = '${pump}';`, errors: [{ messageId: 'literal' }] },
+    { code: `const p = "${ids[12] as string}";`, errors: [{ messageId: 'literal' }] },
+    { code: `const p = \`${ids[13] as string}\`;`, errors: [{ messageId: 'literal' }] },
+    { code: `f({ program: '${ids[3] as string}' });`, errors: [{ messageId: 'literal' }] },
+    // Z03 ruling 16: an ID inside a longer string (a log line) is reported too; it was valid before round 3.
+    { code: `const a = 'Program ${pump} invoke [1]';`, errors: [{ messageId: 'literal' }] },
+  ],
+});
+
+describe('knownProgramIds', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-constants-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  it('reads the 14 program IDs of the constants registry (A-M01-01), base58 of 32-44 characters', () => {
+    assert.equal(CONSTANTS_FILE, join(root, 'packages/venue/src/constants.ts'));
+    assert.equal(ids.length, 14);
+    for (const id of ids) assert.match(id, /^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+  });
+  it('reads only the PROGRAMS object, and nothing from a file without one', () => {
+    writeFileSync(join(dir, 'a.ts'), "export const MINTS = { a: 'x' };\nexport const PROGRAMS = Object.freeze({ a: 'P1', b: 'P2' } as const);\n");
+    assert.deepEqual([...knownProgramIds(join(dir, 'a.ts'))].sort(), ['P1', 'P2']);
+    writeFileSync(join(dir, 'b.ts'), "export const MINTS = { a: 'x' };\n");
+    assert.deepEqual([...knownProgramIds(join(dir, 'b.ts'))], []);
+  });
+});
+
+// Z03 round 2, ruling m7: any base58 literal that decodes to 32 bytes is an address. Built at run time here, so this
+// file holds none.
+const WSOL = `So${'1'.repeat(40)}2`;                                   // the wrapped SOL mint
+const DEFAULT = '1'.repeat(32);                                        // Pubkey::default()
+tester.run('no-program-id-literal (addresses)', noProgramIdLiteral, {
+  valid: [
+    `const a = '${'1'.repeat(31)}';`,                                  // 31 zero bytes
+    `const a = '${'1'.repeat(33)}';`,                                  // 33 zero bytes
+    `const sig = '${'2'.repeat(88)}';`,                                // a signature is 64 bytes
+    `const s = 'solana:${'1'.repeat(31)} pay';`,                       // a 31-byte token in a longer string
+    "const c = 'So' + 'x';",                                           // concatenation: out of scope (Z03-9)
+  ],
+  invalid: [
+    { code: `const m = '${WSOL}';`, errors: [{ messageId: 'address' }] },
+    { code: `const d = \`${DEFAULT}\`;`, errors: [{ messageId: 'address' }] },
+    // Z03 ruling 16: an address inside a longer string literal.
+    { code: `const u = 'solana:${WSOL}';`, errors: [{ messageId: 'address' }] },
+    { code: `const v = '${WSOL}0';`, errors: [{ messageId: 'address' }] },   // '0' is not base58: the address is a token of its own
+    { code: `const p = '  ${WSOL}  ';`, errors: [{ messageId: 'address' }] },
+    { code: `const q = 'https://x.example/${WSOL}?a=1';`, errors: [{ messageId: 'address' }] },
+  ],
+});
+
+describe('isAddressLiteral', () => {
+  it('is true exactly for base58 text that decodes to 32 bytes', () => {
+    assert.equal(isAddressLiteral(WSOL), true);
+    assert.equal(isAddressLiteral(DEFAULT), true);
+    for (const id of ids) assert.equal(isAddressLiteral(id), true, id);
+    for (const no of ['1'.repeat(31), '1'.repeat(33), `${WSOL}x`, 'I'.repeat(32), '2'.repeat(88), '']) assert.equal(isAddressLiteral(no), false, no);
+  });
+});
+
+describe('base58Runs (Z03 ruling 16)', () => {
+  it('splits a string at every character outside the base58 alphabet', () => {
+    assert.deepEqual(base58Runs(`pay:${WSOL}?x=1`), ['pay', WSOL, 'x', '1']);
+    assert.deepEqual(base58Runs('solana'), ['so', 'ana']);                 // 'l' is not in the base58 alphabet
+    assert.deepEqual(base58Runs('  '), []);
+  });
 });
