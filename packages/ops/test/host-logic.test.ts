@@ -990,6 +990,20 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     expect(sh(`record_alerts ${now} "${recorder}"`, '{}').out).toContain('has never reported (no status written)');
   });
 
+  it('a recorder folder younger than 70 minutes holds only the "never reported" alert (the first upload run is 10 min after boot)', () => {
+    const aged = (name: string, ageS: number) => {
+      const d = join(tmp, 'rec-quiet', name);
+      mkdirSync(d, { recursive: true });
+      expect(sh(`touch -d @${now - ageS} "${d}"`).status).toBe(0);
+      return d;
+    };
+    const young = aged('young', 600);
+    expect(sh(`record_alerts ${now} "${young}"`, '{}').out).toBe('');
+    // The others are not held: a status that reports keeps its alerts.
+    expect(recAlerts({ ...ok, failed_runs: 3 }, young)).toEqual(on(['failed']));
+    expect(recAlerts({}, aged('old', 71 * 60))).toEqual(['on record-upload-stale']);
+  });
+
   it('(c) recorder folder and a status older than 3 hours: the 3-hour alert, as before', () => {
     mkdirSync(recorder, { recursive: true });
     expect(recAlerts({ ...ok, at: (now - 10_801) * 1000 }, recorder)).toEqual(on(['stale']));
