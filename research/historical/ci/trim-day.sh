@@ -36,8 +36,9 @@ refuse() { echo "refused: $*" | tee -a "$summary" >&2; exit 2; }
 # shellcheck source=archive-guard.sh
 . "$here/archive-guard.sh"
 list="$out/list-$day.txt" log="$out/units.log" partial="$out/units.log.partial"
-# OF-2 round 4, ruling 36: the scanner's output goes to $tlog next to the data.
-tlog="$out-log"
+# OF-2 round 4, ruling 36: the scanner's output goes to $tlog inside the day's progress,
+# saved with it, sealed (OF-3 ruling 24).
+tlog="$out/logs"
 mkdir -p "$assets" "$tlog"
 k2=() k3=()
 for u in "$out"/units/*/*; do

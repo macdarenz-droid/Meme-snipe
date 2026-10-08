@@ -129,8 +129,8 @@ if [ "$rec" = K3 ]; then
   # per-unit log is present and checks, and expect_units (if set) is met: no request,
   # trim-day.sh then does nothing and check-day.sh runs. Anything else is refused.
   units=$(find "$out/units" -mindepth 2 -maxdepth 2 -type d ! -name '*.tmp' 2>/dev/null | wc -l)
-  mkdir -p "$out-log"
-  if [ -f "$out/units.log" ] && zeroed-scan unitlog -out "$out" -check "$out/units.log" > "$out-log/unitlog.log" 2>&1 &&
+  mkdir -p "$out/logs"
+  if [ -f "$out/units.log" ] && zeroed-scan unitlog -out "$out" -check "$out/units.log" > "$out/logs/unitlog.log" 2>&1 &&
      { [ -z "${EXPECT_UNITS:-}" ] || [ "$units" -ge "$EXPECT_UNITS" ]; }; then
     echo "day $day is already read and trimmed ($units K3 units, per-unit log checked); no request" | tee -a "$summary"
     exit 0
@@ -183,9 +183,10 @@ while true; do
   # Interrupted (SIGINT) at the budget's end; it finishes nothing new after that and
   # exits within 2 min, else it is killed (an unfinished unit is never renamed into place).
   # OF-2 round 4, ruling 36: the scanner's output (plan and per-unit counts) goes to
-  # $slog next to the data, never to the public log; the log keeps the exit code and the
-  # 429 log (429.log) only.
-  slog="$out-log"; mkdir -p "$slog"
+  # $slog inside the day's progress, never to the public log; the log keeps the exit code
+  # and the 429 log (429.log) only. OF-3 ruling 24: $out/logs is saved with the progress,
+  # sealed (cache-crypt.sh), so a failed day's reasons stay private and readable.
+  slog="$out/logs"; mkdir -p "$slog"
   rm -f "$out/disk-stop"
   disk_watch "$$" &
   wpid=$!
