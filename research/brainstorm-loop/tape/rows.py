@@ -36,7 +36,8 @@ def boot_lb_clustered(stat, groups, cols, n=None, q=0.025, seed=SEED):
     for g in groups:
         g = g.reset_index(drop=True)
         arrs = {c: g[c].to_numpy() for c in cols}
-        strata = [list(dd.groupby("pool", sort=True).indices.values()) for _, dd in g.groupby("day", sort=True)]
+        strata = [[np.asarray(ix) for ix in dd.groupby("pool", sort=True).groups.values()]   # labels = positions in g
+                  for _, dd in g.groupby("day", sort=True)]
         prep.append((arrs, strata))
     rng = np.random.default_rng(seed)
     vals = np.empty(n)

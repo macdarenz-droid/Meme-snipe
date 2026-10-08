@@ -10,6 +10,7 @@ import pandas as pd
 import zstandard
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rebuy as RB  # noqa: E402
 import rows as R  # noqa: E402
 from tapeio import AMM_COLS, CURVE_COLS, SOL_NATIVE, WSOL, Tape  # noqa: E402
 
@@ -30,18 +31,18 @@ class Unit:
                 "signer": signer or owner, "user_token_owner": owner, "owner_token_pre": 0, "owner_token_post": 0,
                 "signer_sol_pre": 1, "signer_sol_post": 1}
 
-    def cbuy(self, slot, owner, mint, sol=1e9, buy=True, pre=0, post=0, creator="DEV"):
+    def cbuy(self, slot, owner, mint, sol=1e9, buy=True, pre=0, post=0, creator="DEV", tokens=1, protocol=0):
         r = self._base(slot, owner)
-        r.update({"mint": mint, "is_buy": int(buy), "sol_amount": sol, "token_amount": 1, "quote_mint": SOL_NATIVE,
-                  "protocol": 0, "mayhem_mode": 0, "creator": creator, "owner_token_pre": pre, "owner_token_post": post})
+        r.update({"mint": mint, "is_buy": int(buy), "sol_amount": sol, "token_amount": tokens,
+                  "quote_mint": SOL_NATIVE, "protocol": protocol, "mayhem_mode": 0, "creator": creator, "owner_token_pre": pre, "owner_token_post": post})
         self.curve.append(r)
         return r
 
     def aswap(self, slot, owner, mint, pool, sol=1e9, buy=True, pre=0, post=0, creator="DEV", signer=None,
-              sig=None, quote=80e9, virtual=20e9, base=1e14):
+              sig=None, quote=80e9, virtual=20e9, base=1e14, tokens=1):
         r = self._base(slot, owner, signer)
         r.update({"base_mint": mint, "pool": pool, "side": "buy" if buy else "sell", "quote_amount": sol,
-                  "base_amount": 1, "quote_mint": WSOL, "protocol": 0, "canonical": 1, "coin_creator": creator,
+                  "base_amount": tokens, "quote_mint": WSOL, "protocol": 0, "canonical": 1, "coin_creator": creator,
                   "pool_base_token_reserves": base, "pool_quote_token_reserves": quote, "chain_pool_base": base,
                   "chain_pool_quote": quote, "virtual_quote_reserves": virtual, "base_supply": SUPPLY,
                   "owner_token_pre": pre, "owner_token_post": post})
@@ -70,7 +71,8 @@ class Unit:
         z = dict(index=False, compression="zstd")
         pd.DataFrame(self.curve, columns=CURVE_COLS).to_csv(os.path.join(p, "S_curve.csv.zst"), **z)
         pd.DataFrame(self.amm, columns=AMM_COLS).to_csv(os.path.join(p, "S_amm.csv.zst"), **z)
-        pd.DataFrame(self.t, columns=["slot", "mint", "kind", "from_owner", "to_owner"]).to_csv(
+        pd.DataFrame(self.t, columns=["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner",
+                                      "to_owner", "amount"]).to_csv(
             os.path.join(p, "T.csv.zst"), **z)
         pd.DataFrame(self.w, columns=["slot", "from", "to"]).to_csv(os.path.join(p, "W.csv.zst"), **z)
         pd.DataFrame({"slot": range(self.lo, self.hi + 1), "block_time": [T0 + s for s in range(self.lo, self.hi + 1)]}
@@ -256,6 +258,115 @@ class SeatDrift(unittest.TestCase):
         tape, s, adj = load(self._unit(link=True))
         df, _ = R.seat_drift(tape, s, adj)
         self.assertEqual(df.set_index("pool").at["PA", "N_m"], 0)   # same creator cluster: not counted
+
+
+class Amendment1(unittest.TestCase):
+    def test_q1_bootstrap_is_pool_clustered_and_stratified_by_day(self):
+        g = pd.DataFrame({"day": ["d1"] * 4 + ["d2"] * 4, "pool": ["a", "a", "b", "b", "c", "c", "e", "e"],
+                          "v": [0, 0, 0, 0, 10, 10, 10, 10]})
+        lb = R.boot_lb_clustered(lambda x: np.mean(x["v"]), [g], ["v"], n=200)
+        self.assertEqual(lb, 5.0)          # unstratified draws would move the mean
+        g2 = pd.DataFrame({"day": ["d1"] * 4, "pool": ["a", "a", "b", "b"], "v": [0, 4, 0, 0]})
+        draws = []
+        lb = R.boot_lb_clustered(lambda x: (draws.append(len(x["v"])), 0.0)[1], [g2], ["v"], n=50)
+        self.assertEqual(set(draws), {4})  # whole pools come along
+
+    def test_q13_only_clusters_of_2_to_50_are_labelled(self):
+        u = Unit()
+        chain = [f"c{i}" for i in range(51)]                     # 51 owners linked in a chain, no hub
+        for a, b in zip(chain, chain[1:]):
+            u.w.append({"slot": 1, "from": a, "to": b})
+        u.cbuy(500, "c0", "Z")
+        u.cbuy(600, "c50", "Z", buy=False)
+        u.w.append({"slot": 1, "from": "A", "to": "B"})
+        u.cbuy(500, "A", "Y")
+        u.cbuy(700, "B", "Y", buy=False)
+        tape, s, _ = load(u)
+        labels, summ = R.two_sided_clusters(tape)
+        self.assertEqual(set(labels["owner"]), {"A", "B"})
+        x = summ["either_rule"]
+        self.assertAlmostEqual(x["rows_labelled_share_uncapped"], 1.0)
+        self.assertAlmostEqual(x["rows_labelled_share_capped"], 0.5)
+        self.assertFalse(s.loc[s["owner"] == "c0", "fake"].any())
+
+    def test_protocol_1_rows_excluded(self):
+        u = Unit()
+        u.cbuy(10, "A", "M", protocol=1)
+        u.cbuy(11, "B", "M")
+        tape, s, _ = load(u)
+        self.assertEqual(list(s.loc[s["ftb"], "owner"]), ["B"])
+
+    def test_odds_ratio_and_stratum_diff(self):
+        x = [1, 1, 1, 0, 0, 0, 1, 0]
+        y = [1, 1, 0, 0, 0, 1, 0, 0]
+        self.assertAlmostEqual(RB.odds_ratio(x, y), (2 * 3) / (2 * 1))
+        self.assertTrue(np.isnan(RB.odds_ratio([1, 1], [1, 1])))
+        top = pd.DataFrame({"stratum": ["a", "a", "b"], "net_rebuy_flow": [0.1, 0.3, 0.5]})
+        mid = pd.DataFrame({"stratum": ["a", "c"], "net_rebuy_flow": [0.0, 9.0]})
+        self.assertAlmostEqual(RB.stratum_diff(top, mid), 0.2)   # stratum b has no mid, c no top
+
+
+def rebuy_unit(leak=False):
+    u = Unit(0, 15000)
+    u.create(10, "M")
+    u.migrate(100, "M", "P")
+    u.cbuy(50, "X", "M", sol=0.5e9, tokens=1e12, post=1e12)                       # cost 0.5 SOL
+    u.cbuy(60, "Y", "M", sol=3e9, tokens=1e12, post=1e12)                         # cost 3 SOL
+    u.aswap(150, "o", "M", "P")                                                  # mid 1e-3 lamports/token
+    u.aswap(2000, "X", "M", "P", sol=2e9, buy=False, tokens=1e12, pre=1e12, post=0)   # gain exit, vwap 2e-3
+    r = u.aswap(2100, "Y", "M", "P", sol=2e9, buy=False, tokens=1e12, pre=1e12, post=0)  # loss exit
+    u.aswap(3000, "o", "M", "P")
+    if leak:
+        u.aswap(3750, "z", "M", "P", quote=1e15, sol=1)                           # a price after t1: never read
+    u.aswap(3800, "X", "M", "P", sol=1e9)                                        # X rebuys after t1 + 23 slots
+    return u
+
+
+class Rebuy(unittest.TestCase):
+    def test_ledger_exits(self):
+        L = RB.load_ledger_class()
+        u = Unit()
+        u.cbuy(10, "A", "M", sol=1e9, tokens=100, post=100)
+        u.cbuy(20, "A", "M", sol=3e9, tokens=100, buy=False, pre=100, post=0)
+        u.cbuy(30, "B", "M", sol=1e9, tokens=100, post=100)
+        r = u.cbuy(40, "B", "M", sol=1e9, tokens=100, buy=False, pre=100, post=0)
+        r["signer"] = "router"
+        u.t.append({"slot": 45, "tx_idx": 0, "outer_ix": 0, "inner_ix": 0, "mint": "M", "kind": "transfer",
+                    "from_owner": "Q", "to_owner": "C", "amount": 100})
+        u.cbuy(50, "C", "M", sol=1e9, tokens=100, buy=False, pre=100, post=0)    # unknown cost
+        tape, s, _ = load(u)
+        ex = RB.ledger_exits(s[s["mint"] == "M"], tape.moves[tape.moves["mint"] == "M"], L).set_index("owner")
+        self.assertEqual(ex.at["A", "gain"], 2e9)
+        self.assertEqual(ex.at["A", "exit_vwap"], 3e9 / 100)
+        self.assertTrue(ex.at["A", "readable"])
+        self.assertFalse(ex.at["B", "readable"])
+        self.assertTrue(np.isnan(ex.at["C", "gain"]))
+
+    def test_points_pairs_and_flows(self):
+        tape, s, _ = load(rebuy_unit())
+        ex, pts, prs, summ = RB.rebuy_anchor(tape, s)
+        self.assertEqual(len(ex), 2)
+        p1 = pts[pts["hour"] == 1].iloc[0]
+        self.assertAlmostEqual(p1["mid"], 1e-3)
+        self.assertAlmostEqual(p1["RB"], 2e9 / 100e9)          # only the readable gain ex-holder above the mid
+        self.assertAlmostEqual(p1["net_rebuy_flow"], 1e9 / 100e9)
+        q = prs[prs["hour"] == 1].set_index("owner")
+        self.assertTrue(q.at["X", "below"] and q.at["X", "rebuy_2h"])
+        self.assertTrue(q.at["Y", "below"] and not q.at["Y", "rebuy_2h"])
+        self.assertNotIn("X", set(prs.loc[prs["hour"] == 2, "owner"]))   # X rebought: no longer an ex-holder
+        self.assertEqual(summ["proceeds_readable_share"], 1.0)
+        self.assertEqual(summ["top_quintile_points_per_day"], {DAY: 1})
+
+    def test_no_price_after_the_decision_point_is_read(self):
+        tape, s, _ = load(rebuy_unit())
+        _, a, pa, _ = RB.rebuy_anchor(tape, s)
+        tape, s, _ = load(rebuy_unit(leak=True))
+        _, b, pb, _ = RB.rebuy_anchor(tape, s)
+        cols = ["mid", "eff_quote", "RB", "drawdown", "past_return_1h"]
+        pd.testing.assert_frame_equal(a[a["hour"] == 1][cols].reset_index(drop=True),
+                                      b[b["hour"] == 1][cols].reset_index(drop=True))
+        pd.testing.assert_frame_equal(pa[pa["hour"] == 1].reset_index(drop=True),
+                                      pb[pb["hour"] == 1].reset_index(drop=True))
 
 
 class ReviewFixes(unittest.TestCase):

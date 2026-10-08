@@ -117,33 +117,36 @@ class Vocab:
 
 
 def read_table(path, cols, int_cols=(), nrows=None):
-    """Reads the wanted columns; integer columns exactly (nullable Int64, then 0 for missing; a value beyond int64
-    is read as text and its row flagged in column `_overflow`)."""
+    """Reads the wanted columns as text, then integer columns exactly as int64 (missing -> 0 with a `<col>_na`
+    flag; a value outside int64 -> 0 with its row flagged in `_overflow`). pandas' nullable Int64 reader wraps
+    out-of-range values silently, so it is not used."""
     head = pd.read_csv(path, compression="zstd", nrows=0).columns
     use = [c for c in cols if c in head]
-    ints = [c for c in int_cols if c in use]
-    try:
-        df = pd.read_csv(path, compression="zstd", usecols=use, dtype={**{c: "Int64" for c in ints},
-                         **{c: "str" for c in use if c not in ints}}, nrows=nrows, keep_default_na=False,
-                         na_values={c: [""] for c in ints})
-        df["_overflow"] = False
-    except (OverflowError, ValueError):
-        df = pd.read_csv(path, compression="zstd", usecols=use, dtype=str, nrows=nrows, keep_default_na=False)
-        bad = np.zeros(len(df), bool)
-        for c in ints:
-            num = pd.to_numeric(df[c].replace("", np.nan), errors="coerce")
-            over = num.notna() & (num.abs() >= 9.2e18)
-            bad |= over.to_numpy()
-            df[c] = num.where(~over).round().astype("Int64")
-        df["_overflow"] = bad
-    for c in ints:
-        df[c + "_na"] = df[c].isna().to_numpy()
-        df[c] = df[c].fillna(0).astype(np.int64)
+    df = pd.read_csv(path, compression="zstd", usecols=use, dtype=str, nrows=nrows, keep_default_na=False)
+    bad = np.zeros(len(df), bool)
+    for c in int_cols:
+        if c not in df.columns:
+            df[c] = 0
+            df[c + "_na"] = True
+            continue
+        sv = df[c].to_numpy(dtype=object)
+        na = sv == ""
+        sv = np.where(na, "0", sv)
+        try:
+            vals = sv.astype(np.int64)
+        except (OverflowError, ValueError):
+            vals = np.zeros(len(sv), np.int64)
+            for i, x in enumerate(sv):
+                try:
+                    vals[i] = int(x)
+                except (OverflowError, ValueError):
+                    bad[i] = True
+        df[c] = vals
+        df[c + "_na"] = na
+    df["_overflow"] = bad
     for c in cols:
         if c not in df.columns:
-            df[c] = 0 if c in int_cols else ""
-            if c in int_cols:
-                df[c + "_na"] = True
+            df[c] = ""
     if len(df) and "block_time" in df.columns:
         df = df[df["block_time"] < WALL_TS]
     return df.reset_index(drop=True)
