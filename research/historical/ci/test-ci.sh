@@ -1842,12 +1842,12 @@ mkk2; rc=0; TRIM_FAIL_ON=3-4 td 2026-07-22 - || rc=$?
 [[ $(grep -c "^trim " "$T/trim.args") == 1 && $(grep -c "^trim .*/units.k3/1046/3-4 " "$T/trim.args") == 1 && $(grep -c "^migrations" "$T/trim.args") == 0 && $(grep -c "^k2 " "$T/tk2/units.log") == 6 && ! -e "$T/tk2/units.k3" ]] || bad+=" resumed-once"
 mkfx "$T/fxbudget" ARCHIVE_TRIM_BUDGET_S=0; mkk2; rc=0
 FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$TB:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$T/fxbudget/research/historical/ci/trim-day.sh" 2026-07-22 "$T/tk2" - "$T/tassets" > "$T/out.txt" 2>&1 || rc=$?
-[[ $rc == 75 && -d "$T/tk2/units/1046/1-2" ]] && ! grep -q "^trim " "$T/trim.args" && grep -q "time budget (0 s) spent after 0 units" "$T/out.txt" || bad+=" budget:$rc"
-grep -q 'sync "$partial"' "$here/trim-day.sh" && [[ $(grep -n 'sync "$partial"' "$here/trim-day.sh" | cut -d: -f1) -lt $(grep -n 'mv "$u" "$u.del"' "$here/trim-day.sh" | cut -d: -f1) ]] || bad+=" fsync-before-delete"
+[[ $rc == 1 && -d "$T/tk2/units/1046/1-2" ]] && ! grep -q "^trim " "$T/trim.args" && grep -q "time budget (0 s) spent after 0 units; the day fails (not resumable)" "$T/out.txt" || bad+=" budget:$rc"
+grep -q 'sync "$partial"' "$here/trim-day.sh" && [[ $(grep -n 'sync "$partial"' "$here/trim-day.sh" | tail -1 | cut -d: -f1) -lt $(grep -n 'mv "$u" "$u.del"' "$here/trim-day.sh" | cut -d: -f1) ]] || bad+=" fsync-before-delete"
 # a delete cut short (the .del copy left) resumes
 mkk2; rc=0; TRIM_FAIL_ON=3-4 td 2026-07-22 - || rc=$?; mkdir -p "$T/tk2/units/1046/1-2.del"; echo half > "$T/tk2/units/1046/1-2.del/B.zst"
 td 2026-07-22 - && [[ ! -e "$T/tk2/units/1046/1-2.del" && $(grep -c "^k2 " "$T/tk2/units.log") == 6 ]] || bad+=" half-deleted:$(tail -2 "$T/out.txt")"
-[[ -z "$bad" ]] && ok "OF-3 ruling 15: a trim stopped after unit 1 leaves its K3 copy and its 3 k2 lines on disk and its K2 copy deleted; the rerun trims only unit 2 with the kept list; the k2 lines are fsynced before each K2 copy is deleted, and a delete cut short (a .del copy left) resumes; a spent ARCHIVE_TRIM_BUDGET_S stops it resumably (exit 75) before any trim" || no "OF-3 trim resume:$bad"
+[[ -z "$bad" ]] && ok "OF-3 ruling 15: a trim stopped after unit 1 leaves its K3 copy and its 3 k2 lines on disk and its K2 copy deleted; the rerun trims only unit 2 with the kept list; the k2 lines are fsynced before each K2 copy is deleted, and a delete cut short (a .del copy left) resumes; a spent ARCHIVE_TRIM_BUDGET_S fails the day (exit 1, ruling 20) before any trim" || no "OF-3 trim resume:$bad"
 bad=""
 # Ruling 9: a restored day already trimmed is read done: trim-day does nothing, scan-day
 # exits 0 with no request; anything short of that is refused.
@@ -1875,15 +1875,37 @@ for v in "SPL= SPS=" "SPS=" "SPS=$T/badsums"; do
 done
 [[ -z "$bad" ]] && ok "OF-3 ruling 8: a day after the first with no prior list, no SHA256SUMS or a wrong one is refused before the disk guard, the back-off and any scanner call" || no "OF-3 prior before reading:$bad"
 bad=""
+# Round 3, ruling 18: the same prior inputs pass scan-day and trim-day.
+mkprior 2026-07-23; o="$T/of3same"; rm -rf "$o"; mkdir -p "$o"; rc=0
+SPL=$PRIORL SPS=$PRIORS SDAY=2026-07-23 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
+[[ $rc == 0 && $(calls) == "scan " ]] || bad+=" scan:$rc"
+mkk2; TPS=$PRIORS td 2026-07-23 "$PRIORL" && [[ -f "$T/tassets/units-2026-07-23.log" ]] || bad+=" trim:$(tail -1 "$T/out.txt")"
+mkk2; TPS=$PRIORS td 2026-07-23 "$PRIORL" --list-only && [[ -f "$T/tassets/list-2026-07-23.txt" ]] || bad+=" list-only"
+[[ -z "$bad" ]] && ok "OF-3 ruling 18: one prior list and SHA256SUMS pass both scan-day (before any read) and trim-day (trim and --list-only)" || no "OF-3 same prior inputs:$bad"
+bad=""
+# Ruling 21: a torn append is dropped and the unit's lines rewritten before its K2 copy goes.
+mkk2; rc=0; TRIM_FAIL_ON=3-4 td 2026-07-22 - || rc=$?
+(cd "$T/tk2/units" && sha256sum -- 1046/3-4/B.zst 1046/3-4/a.zst) | sed 's/^\([0-9a-f]\{64\}\)  /k2 \1 /' >> "$T/tk2/units.log.partial"
+printf 'k2 12ab' >> "$T/tk2/units.log.partial"
+td 2026-07-22 - || bad+=" resume:$(tail -1 "$T/out.txt")"
+[[ $(grep -c "^k2 " "$T/tk2/units.log") == 6 ]] && ! grep -q "12ab" "$T/tk2/units.log" && grep -qx "k2 $(h raw3-4) 1046/3-4/raw_canonical.jsonl.zst" "$T/tk2/units.log" || bad+=" torn:$(grep -c "^k2 " "$T/tk2/units.log" 2>/dev/null)"
+[[ -z "$bad" ]] && ok "OF-3 ruling 21: after a torn append (2 of a unit's 3 k2 lines and a cut line), the resumed trim drops the cut line, rewrites the unit's lines from a temp file and deletes the K2 copy only with one line per file" || no "OF-3 torn k2 append:$bad"
+bad=""
+# Ruling 22: a restored trimmed day's list must be the one its units were trimmed with.
+mkk2; td 2026-07-22 - >/dev/null; rm -rf "$T/tassets"; : > "$T/trim.args"
+echo "other 1 2" > "$T/tk2/list-2026-07-22.txt"; rc=0; td 2026-07-22 - || rc=$?
+[[ $rc == 2 && ! -e "$T/tassets/list-2026-07-22.txt" ]] && grep -q "was not trimmed with" "$T/out.txt" || bad+=" other-list:$rc"
+[[ -z "$bad" ]] && ok "OF-3 ruling 22: a restored trimmed day whose list sha256 is not every unit's migration_list_sha256 is refused before anything is copied" || no "OF-3 restored list check:$bad"
+bad=""
 # Ruling 14: between units, free space below the largest unit + the trim headroom stops the scan (exit 75).
 mkfx "$T/fxdisk" ARCHIVE_TRIM_HEADROOM_BYTES=60000000000 ARCHIVE_RETENTION=K3
 o="$T/of3w"; rm -rf "$o"; mkdir -p "$o"; rc=0; t0=$(date +%s)
 SLOW=1 ARCHIVE_DISK_POLL_S=1 FAKE_AVAIL=55000000000 SDAY=2026-07-24 SFX=$T/fxdisk/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
-[[ $rc == 75 && $(calls) == "scan interrupted " ]] && (( $(date +%s) - t0 < 15 )) && grep -q "free disk fell to 55000000000 bytes, below the largest unit (0) + the trim headroom" "$T/out.txt" || bad+=" stop:$rc:$(calls)"
+[[ $rc == 1 && $(calls) == "scan interrupted " ]] && (( $(date +%s) - t0 < 15 )) && grep -q "free disk fell to 55000000000 bytes, below the largest unit (0) + the trim headroom .*the day fails, not resumable" "$T/out.txt" || bad+=" stop:$rc:$(calls)"
 o="$T/of3w2"; rm -rf "$o"; mkdir -p "$o"; rc=0
 ARCHIVE_DISK_POLL_S=1 FAKE_AVAIL=55000000000 SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
 [[ $rc == 0 && $(calls) == "scan " ]] || bad+=" room:$rc"
-[[ -z "$bad" ]] && ok "OF-3 ruling 14: while the K2 day is read, free space below the largest unit so far + ARCHIVE_TRIM_HEADROOM_BYTES interrupts the scan between units (exit 75, progress kept); with room it scans on" || no "OF-3 disk watch:$bad"
+[[ -z "$bad" ]] && ok "OF-3 ruling 14: while the K2 day is read, free space below the largest unit so far + ARCHIVE_TRIM_HEADROOM_BYTES interrupts the scan between units and fails the day (exit 1, ruling 20); with room it scans on" || no "OF-3 disk watch:$bad"
 bad=""
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' || bad+=" workflow-trim"
 import sys, yaml
@@ -1892,9 +1914,13 @@ ids = [s.get("id") or s.get("name") for s in steps]
 assert ids.index("qatime") < ids.index("trim") == ids.index("guardqa") - 1 < ids.index("qa"), ids
 t = steps[ids.index("trim")]
 assert t["if"] == "steps.published.outputs.complete != 'true' && inputs.source != 'helius'" and "github.token" not in str(t) and "secrets." not in str(t), t
-assert 'archive-guard.sh local "$DAY"' in t["run"] and 'trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" - "$RUNNER_TEMP/work/assets"' in t["run"], t
+assert 'archive-guard.sh local "$DAY"' in t["run"], t
+# OF-3 ruling 18: both trim calls take the prior list scan-day checks (ARCHIVE_PRIOR_LIST, "-" until OF-5)
+assert t["run"].count('trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" "${ARCHIVE_PRIOR_LIST:--}" "$RUNNER_TEMP/work/assets"') == 2 and " - " not in t["run"], t
+# ruling 20: a trim out of budget is not resumable
+assert "resumable" not in t["run"] and all("steps.trim.outputs.resumable" not in str(st.get("if", "")) for st in steps), t
 PY
-[[ -z "$bad" ]] && ok "OF-3 data-scan: the trim step runs after the scan and right before the QA guard, with no token, behind the local guard, with no prior list until OF-5 (so a K3 day other than the first fails closed)" || no "OF-3 workflow trim:$bad"
+[[ -z "$bad" ]] && ok "OF-3 data-scan: the trim step runs after the scan and right before the QA guard, with no token, behind the local guard; both trim calls take \${ARCHIVE_PRIOR_LIST:--} (rulings 18; until OF-5 a K3 day other than the first fails closed); a trim out of budget is never chained (ruling 20)" || no "OF-3 workflow trim:$bad"
 bad=""
 
 # ---- OF-2 round 2 (docs/reviews/OF2.md rulings 1-10) ----

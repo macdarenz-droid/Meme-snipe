@@ -151,7 +151,8 @@ echo "retention for $day: read at K2, stored as $cfg_ret" | tee -a "$summary"
 "$(dirname "$0")/disk-guard.sh" "$out" "$ARCHIVE_K2_PEAK_BYTES" "a K2 day (units at the high estimate, then its trim and QA)" || exit 2
 # Ruling 14: while the day is read, between units, free space must stay above the
 # largest unit so far + ARCHIVE_TRIM_HEADROOM_BYTES; otherwise the scan is interrupted
-# (SIGINT: units are written whole) and the day stops with exit 75.
+# (SIGINT: units are written whole) and the day fails with exit 1 (OF-3 ruling 20: not
+# resumable; the chain holds for a decision).
 # The scan runs in the foreground (SIGINT reaches it); the watch, in the background,
 # signals the scan's `timeout` the way the budget does.
 disk_watch() {
@@ -189,8 +190,8 @@ while true; do
   kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
   if [ -f "$out/disk-stop" ]; then
     read -r avail big < "$out/disk-stop"; rm -f "$out/disk-stop"
-    echo "free disk fell to $avail bytes, below the largest unit ($big) + the trim headroom ($ARCHIVE_TRIM_HEADROOM_BYTES): the scan stopped between units; progress kept (OF-3 ruling 14)" | tee -a "$summary"
-    exit 75
+    echo "free disk fell to $avail bytes, below the largest unit ($big) + the trim headroom ($ARCHIVE_TRIM_HEADROOM_BYTES): the scan stopped between units; the day fails, not resumable (OF-3 rulings 14, 20)" | tee -a "$summary"
+    exit 1
   fi
   if [ $(( deadline - $(date +%s) )) -le 0 ] && [ $rc -ne 0 ] && [ $rc -ne 75 ]; then
     echo "time budget reached while scanning (scanner exit $rc); progress kept for the next run" | tee -a "$summary"

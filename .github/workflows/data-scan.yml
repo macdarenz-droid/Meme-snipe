@@ -407,8 +407,10 @@ jobs:
           exit "$rc"
       # OF-3 (docs/reviews/OF3.md ruling 2): a day stored at K3 is read at K2 and trimmed
       # here, before QA and storing; the per-unit log keeps each unit's K2 hashes. The day
-      # before's pinned list comes from the store (OF-5); until it is wired, only the
-      # first allow-listed day can be trimmed, so a K3 day fails closed here.
+      # before's pinned list comes from the store (OF-5) as ARCHIVE_PRIOR_LIST and
+      # ARCHIVE_PRIOR_SUMS, the same inputs scan-day.sh checks (OF-3 ruling 18); until it is
+      # wired, only the first allow-listed day can be read or trimmed. A trim out of budget
+      # fails the day (ruling 20).
       - name: Trim the day to K3
         id: trim
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
@@ -418,13 +420,11 @@ jobs:
           ret=$(research/historical/ci/archive-guard.sh local "$DAY")
           rc=0
           if [ "$ret" = K3 ]; then
-            research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" - "$RUNNER_TEMP/work/assets" || rc=$?
+            research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" "${ARCHIVE_PRIOR_LIST:--}" "$RUNNER_TEMP/work/assets" || rc=$?
           else
             # a day stored at K2 still writes its pinned list (the next day's prior)
-            research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" - "$RUNNER_TEMP/work/assets" --list-only || rc=$?
+            research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" "${ARCHIVE_PRIOR_LIST:--}" "$RUNNER_TEMP/work/assets" --list-only || rc=$?
           fi
-          # the trim's own budget ran out (ARCHIVE_TRIM_BUDGET_S): resumable
-          if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
           exit "$rc"
       - name: Archive guard before QA
         id: guardqa
@@ -480,12 +480,12 @@ jobs:
           key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
       # Chained only when this run's progress was saved; a failed save stops for review.
       - name: Mark the day resumable for the next chained run
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.trim.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
         env:
           DAY: ${{ matrix.day }}
         run: mkdir -p "$RUNNER_TEMP/resume" && echo "$DAY" > "$RUNNER_TEMP/resume/day"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.trim.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
         with:
           name: resume-${{ matrix.day }}
           path: ${{ runner.temp }}/resume

@@ -12,10 +12,11 @@
 #      migrations; PM-01 PREREG §3), kept as OUT/list-DAY.txt and copied to the assets (the
 #      next day's prior). --list-only stops here (a day stored at K2).
 #   2. Per unit: it is trimmed into OUT/units.k3 (zeroed-scan trim); its K2 file hashes are
-#      appended to OUT/units.log.partial and fsynced; then its K2 copy is renamed to .del
-#      and deleted. A stopped
+#      written to a temp file, appended to OUT/units.log.partial and fsynced; its K2 copy is
+#      renamed to .del and deleted only when that file holds one k2 line per .zst file of it
+#      (a torn line is dropped and the unit's lines rewritten). A stopped
 #      trim resumes from units.k3, that file and the kept list. Between units it stops
-#      resumably (exit 75) once ARCHIVE_TRIM_BUDGET_S is spent.
+#      (exit 1, the day fails) once ARCHIVE_TRIM_BUDGET_S is spent.
 #   3. The trimmed units replace the K2 ones; the per-unit log (OUT/units.log: unit lines
 #      "EPOCH/RANGE REVISION K3 LIST_SHA256", then the k2 lines sorted by path with
 #      LC_ALL=C) is checked (zeroed-scan unitlog -check) and copied to the assets.
@@ -48,6 +49,11 @@ done
 if [ ${#k2[@]} -eq 0 ] && [ ${#k3[@]} -gt 0 ] && [ ! -e "$out/units.k3" ]; then
   [ -f "$log" ] && [ -f "$list" ] || refuse "$day's K3 units have no per-unit log or list"
   zeroed-scan unitlog -out "$out" -check "$log" || refuse "$day's per-unit log does not match its K3 units"
+  # Ruling 22: the list copied is the one every unit was trimmed with.
+  lsha=$(sha256sum "$list" | cut -d' ' -f1)
+  for u in "${k3[@]}"; do
+    grep -q "\"migration_list_sha256\": *\"$lsha\"" "$u/stats.json" || refuse "$u was not trimmed with $list (sha256 $lsha)"
+  done
   cp "$log" "$assets/units-$day.log"; cp "$list" "$assets/list-$day.txt"
   echo "trim: $day is already trimmed (${#k3[@]} units); nothing to do" | tee -a "$summary"
   exit 0
@@ -77,23 +83,37 @@ fi
 # 2. Per unit: trim, log the K2 hashes durably, delete the K2 copy.
 mkdir -p "$out/units.k3"
 touch "$partial"
+# Ruling 21: an append cut short leaves a torn last line; only whole k2 lines are kept,
+# and each unit's count is checked below before its K2 copy goes.
+if [ -s "$partial" ] && [ -n "$(tail -c1 "$partial")" ]; then sed -i '$d' "$partial"; fi
+grep -E '^k2 [0-9a-f]{64} [0-9]+/[0-9]+-[0-9]+/[^/ ]+\.zst$' "$partial" > "$partial.ok" || true
+mv "$partial.ok" "$partial"; sync "$partial"
 start=$(date +%s) n=0
 for u in "${k2[@]}"; do
   epoch=$(basename "$(dirname "$u")") range=$(basename "$u")
   k3u="$out/units.k3/$epoch/$range"
   if [ ! -d "$k3u" ]; then
     if [ $(( $(date +%s) - start )) -ge "$ARCHIVE_TRIM_BUDGET_S" ]; then
-      echo "trim: time budget ($ARCHIVE_TRIM_BUDGET_S s) spent after $n units; stopping resumably" | tee -a "$summary"
-      exit 75
+      # Ruling 20: not resumable; the day counts as failed and the chain holds (ruling 7).
+      echo "trim: time budget ($ARCHIVE_TRIM_BUDGET_S s) spent after $n units; the day fails (not resumable)" | tee -a "$summary"
+      exit 1
     fi
     rm -rf "$k3u.tmp"; mkdir -p "$out/units.k3/$epoch"
     zeroed-scan trim -in "$u" -out "$k3u" -migration-list "$list"
   fi
-  if ! grep -q " $epoch/$range/[^/]*\$" "$partial"; then
-    lines=$( (cd "$out/units" && sha256sum -- "$epoch/$range"/*.zst) | sed 's/^\([0-9a-f]\{64\}\)  /k2 \1 /')
-    printf '%s\n' "$lines" >> "$partial"
+  # Ruling 21: the unit's k2 lines go to a temp file, then are appended and synced; the
+  # K2 copy is deleted only when the partial log holds one line per .zst file of it.
+  want=$(find "$u" -maxdepth 1 -name '*.zst' | wc -l)
+  have=$(grep -c " $epoch/$range/[^/]*\$" "$partial" || true)
+  if [ "$have" -ne "$want" ]; then
+    grep -v " $epoch/$range/[^/]*\$" "$partial" > "$partial.tmp" || true
+    mv "$partial.tmp" "$partial"
+    (cd "$out/units" && sha256sum -- "$epoch/$range"/*.zst) | sed 's/^\([0-9a-f]\{64\}\)  /k2 \1 /' > "$partial.unit"
+    cat "$partial.unit" >> "$partial"; rm -f "$partial.unit"
     sync "$partial"
+    have=$(grep -c " $epoch/$range/[^/]*\$" "$partial" || true)
   fi
+  [ "$have" -eq "$want" ] || refuse "$epoch/$range: $have k2 lines for $want files; its K2 copy is kept"
   # renamed first, so a delete cut short leaves a .del copy (its k2 lines already on disk)
   mv "$u" "$u.del" && rm -rf "$u.del"
   n=$((n + 1))
