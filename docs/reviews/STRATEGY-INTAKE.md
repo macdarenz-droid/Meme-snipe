@@ -364,3 +364,17 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
 101. **Y1.** Cost- and fill-model config inputs get their own tag, group M, set in B-M25-01 and enforced by the CI tag test. Their changes never take the limit paths, whatever the key's riskDirection: they follow the "Code deploys" value rule (the four-window SOL test). Not more favourable → `recost` (no k, no r; demote through B-M26-04 if a gate fails). More favourable → a trial inside k, or the fresh-window state at k = 0. A flipped fill or reject outcome → the re-run rule. The operator sees A2 (it changes money state); the server picks the path from the SOL test, never from the class. ACs: (a) lowering an assumed fee in config is more favourable, a k trial, never an A1 re-freeze; (b) raising it at r = 0 is a `recost`, not refused.
 102. **y1.** Only operator or owner changes create `applycheck` trials. System-initiated tightenings (breakers, demotions) are not searches and create none. The DSR counts trials by distinct configKey evaluated, so the same value checked twice counts once.
 103. **Reviewer n1.** AC-78: "an intermediate value and an A1 change each register one `applycheck` trial when the check reads W_R".
+
+## Round 13 (head `f342b664`): reviewer PASS (2 optional MINOR); red team 0 BLOCKER, 1 MAJOR, 2 MINOR
+
+- Z1: one apply that mixes a group M key with an S or admission key takes the other key's path (A1 re-freeze, or a what-if under the optimistic model), so the M change skips the SOL test.
+- z1: a hand-set tag can be wrong, and some keys sit in two groups (a slippage cap is a cap and can flip fills). Reviewer n2 is the same point.
+- z2: L125 does not say the A1 apply-time check still runs for system tightenings.
+- Reviewer n1: :260 and :682 still say "the group S gate re-run after a model deploy".
+
+### Supervisor rulings for round 14 (8 Oct 2026, 3:30 PM)
+
+104. **Z1.** A diff with a group M key and any other key is refused (`E_MIXED_GROUP_M`); the UI splits it into two submits, the M part first. AC: a diff with MAXPOS (A1) and an assumed fee (M) is refused.
+105. **z1 and reviewer n2.** The tag is derived from which modules read the key, using B-M25-01's static key-usage check (if B-M25-01 has none, add it, PROPOSED): read by the cost or fill model → M; read by M21 admission → P (admission); read only by sizing → S. A key read by more than one takes the strictest path (admission > M > S). CI fails when a hand tag disagrees with the derived one. A key that can flip a fill or reject outcome is never S; the slippage caps are named explicitly.
+106. **z2.** For a system-initiated tightening the apply-time check still runs and blocks as usual; only the `applycheck` trial is not registered. "System" means the M21 or M26 actor as SPEC-A names it (**VERIFY** the actor names), never an agent or operator session.
+107. **Reviewer n1.** :260 and :682 read "the recost or k-trial recomputation after a model change (group M or a model deploy)".
