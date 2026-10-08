@@ -203,8 +203,11 @@ recommendation, before `ARCHIVE_ARM` is set:
    GitHub allows a re-run only within 30 days of the run, per GitHub Docs "Re-running workflows and jobs", **VERIFY**
    the page and wording at arm time). The runs are read page by page from the runs API (round 7, ruling 49), so no
    500-run cap applies (a capped list would have tripped about 62 days after the first archive check, or two months
-   after a re-arm); only an API error or more than 5,000 runs fails closed, and such a trip goes to the owner, since
-   deleting runs is hard to undo. The guard logs the runner's gh version.
+   after a re-arm). GitHub returns at most 1,000 results for one filtered search and paging then simply stops (REST
+   "List workflow runs for a workflow", VERIFY), so the window is read in 7-day created slices, and a slice or status
+   query that reports 1,000 or more runs, or returns fewer rows than it reports, fails closed (rulings 55 and 61); such
+   a trip goes to the owner, since deleting runs is hard to undo. The guard logs the runner's gh version. The archive
+   workflows run on the pinned `ubuntu-24.04` image (ruling 59).
 3. The repository's Actions log retention (ruling 28; the back-off annotations and the run history the guard reads
    must outlive the window it reads). Read through the API if the arming session can (read only,
    `repos/{owner}/{repo}/actions/permissions/artifact-and-log-retention`, **VERIFY** the endpoint and the permission it
