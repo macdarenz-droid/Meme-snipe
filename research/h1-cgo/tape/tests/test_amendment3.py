@@ -235,13 +235,23 @@ class H8Stratum(unittest.TestCase):
         s = H8.SolUsd({DAY0: 100_000_000}, [])  # $100 a SOL: $50 floor = 500 SOL; $5 floor = 150 SOL
         r = S.h8_stratum(f, outs(f), FROZEN, VDAYS, s)
         self.assertEqual(r["$50"]["n_trades"], 180)  # 1 in 4 pools hold 500 SOL, all of them in the high extreme
-        self.assertFalse(r["tradable_as_bot_stands"])
-        self.assertEqual(r["note"], "this works only in pools below H8's floor")
+        self.assertFalse(r["tradable_under_superseded_h8_rule"])
+        self.assertIsNot(r["tradable_as_bot_stands"], True)                 # R2-10: no claim until H8 amendment 2
         f2 = val_feats(800)
         r2 = S.h8_stratum(f2, outs(f2), FROZEN, VDAYS, s)
         self.assertEqual(r2["$5"]["n_trades"], 600)
-        self.assertTrue(r2["tradable_as_bot_stands"])
-        self.assertIsNone(r2["note"])
+        self.assertTrue(r2["tradable_under_superseded_h8_rule"])
+
+    def test_tradable_claim_waits_for_h8_amendment_2_R2_10(self):
+        """R2-10: H8 amendment 2 (frozen) makes "tradable as the bot stands" need 300+ positive trades at $5 under the
+        floor of the universe the bot would tag (U2 60-240 min with H11; U1 $50k; 4-24 h not tradable), plus H6. Until
+        that is implemented the stratum never claims tradability; it reports its rows only."""
+        f2 = val_feats(800)
+        s = H8.SolUsd({DAY0: 100_000_000}, [])
+        r2 = S.h8_stratum(f2, outs(f2), FROZEN, VDAYS, s)
+        self.assertEqual(r2["$5"]["n_trades"], 600)
+        self.assertIsNot(r2["tradable_as_bot_stands"], True)
+        self.assertIn("H8 amendment 2", r2["note"])
 
     def test_count_rows(self):
         f = val_feats(8).assign(decision_day="2026-09-11", has_state=True)

@@ -217,8 +217,11 @@ def h8_stratum(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_da
         r = _judge(t, base)
         res[f"${s}"] = r
         tradable = tradable or (r["n_trades"] >= MIN_TRADES and r.get("mean_net_sol", 0) > 0)
-    res["tradable_as_bot_stands"] = tradable
-    res["note"] = None if tradable else "this works only in pools below H8's floor"
+    # R2-10: H8 amendment 2 (frozen 2026-10-08) replaces this rule: tradable needs 300+ positive trades at $5 under
+    # the floor of the universe the bot would tag, with H6 and H11. Until it is implemented no claim is made.
+    res["tradable_under_superseded_h8_rule"] = tradable
+    res["tradable_as_bot_stands"] = None
+    res["note"] = "not judged: H8 amendment 2 (universe-aware floor, $5) is not implemented yet"
     res["sol_usd_files"] = sol.files
     return res
 
