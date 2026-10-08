@@ -190,3 +190,68 @@ class Replay(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Pipeline(unittest.TestCase):
+    def test_rank_test_bootstrap_on_synthetic_days(self):
+        from test_leak import synth_day
+        d1, d2 = synth_day("2026-09-07", seed=1), synth_day("2026-09-08", seed=2)
+        trader, _ = clusters.build([d1, d2], "2026-09-07")
+        ranked, info = persist.rank(d1, trader)
+        self.assertEqual(info["ranked"], 40)
+        self.assertEqual(sorted(ranked["decile"].unique().tolist()), list(range(1, 11)))
+        self.assertTrue((ranked.groupby("decile")["t"].min().diff().dropna() > 0).all())
+        tp, rep = persist.test_day_returns(d2, trader, ranked)
+        self.assertEqual(rep[10]["eligible_5plus"], 4)
+        g = persist.groups(tp)
+        self.assertEqual(len(g["top"][0]), 4)
+        self.assertEqual(len(g["mid"][0]), 8)
+        self.assertTrue(np.isfinite(persist.bootstrap(g, b=500)).all())
+
+    def test_scoring_stages_refuse_without_flag(self):
+        from w1 import run
+        for stage in (["gate", "--days", "2026-09-10"], ["discovery", "--rank", "2026-09-10", "--test", "2026-09-11"],
+                      ["validation", "--rank", "2026-09-07", "--test", "2026-09-08"]):
+            with self.assertRaises(SystemExit) as e:
+                run.main([stage[0], "--work", "/nonexistent"] + stage[1:])
+            self.assertIn("--score", str(e.exception.code))
+
+
+class ReplayAndFeaturesOnTape(unittest.TestCase):
+    def test_replay_and_features_read_fixture_units(self):
+        import tempfile
+        from fixtures import Unit
+        from w1 import load, replay
+        from w1.ledger import Ledger
+        with tempfile.TemporaryDirectory() as root:
+            u = Unit(root, "2026-09-08", 446_004_500, 446_008_999)
+            mint, pool, a, b = address("m"), address("p", False), address("a"), address("b")
+            base, vault = 2 * 10**14, 80 * 10**9
+            for i, slot in enumerate([446_004_510, 446_004_540, 446_004_600]):
+                u.amm(slot, 1, 0, a if i == 0 else b, mint, pool, "buy", 10**12, 10**9, base - i * 10**12,
+                      vault + i * 10**9, 0, pre=0, post=10**12)
+            u.write()
+            units = load.parse_units([u.dir])
+            v = load.Vocab()
+            led = Ledger(v)
+            led.process_unit(units[0])
+            m = v.get(mint)
+            trades = pd.DataFrame({"mint": [m], "entry_slot": [446_004_510], "exit_slot": [446_004_580],
+                                   "open_at_end": [False], "day_hi": [446_008_999]})
+            out = replay.replay_trades(trades, units, v)
+            # entry at the end of slot 533 sees only the first trade; exit at the end of 603 sees all three
+            st_in = ("a", base - 10**12, vault + 10**9, 0, 30)
+            tok, _ = venue.buy_exact_in(st_in, costs.REPLAY_SPEND)
+            st_out = ("a", base - 3 * 10**12, vault + 3 * 10**9, 0, 30)
+            want = (venue.sell(st_out, tok) - costs.REPLAY_SPEND - costs.FIXED_ROUND_TRIP) / costs.REPLAY_SPEND
+            self.assertAlmostEqual(out["ret_replay"].iat[0], want)
+            info = {"create": led.create, "migr": led.migr, "boost_done": led.boost_done}
+            tapes = rules.tapes_for(units, v, {m}, info, lambda o: False)
+            ent = pd.DataFrame({"mint": [m], "key": [int(load.make_key(446_004_600, 1, 0))],
+                                "bt": [u.bt(446_004_600)], "paid": [10**9]})
+            f = rules.entry_features(ent, tapes, info)
+            self.assertEqual(list(f.columns), rules.FEATURES)
+            self.assertEqual(f["buys_5m"].iat[0], 2)
+            self.assertEqual(f["uniq_buyers_5m"].iat[0], 2)
+            self.assertEqual(f["venue"].iat[0], 1)
+            self.assertAlmostEqual(f["top10_share"].iat[0], 2 * 10**12 / 10**15)
