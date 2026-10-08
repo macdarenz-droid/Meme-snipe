@@ -40,6 +40,7 @@ MIN_VALID_PAIRS = 8  # AMENDMENT_1 item 7: fewer valid (buy, placebo) pairs on a
 PLACEBO_SEED = 20261008
 BOOT_SEED = 20261009
 BOOT_N = 10_000
+REGISTERED_BOOT = 10_000  # what --decide requires (AMENDMENT_1 item 7)
 
 
 # ---------------------------------------------------------------- Step A plan check (for --decide)
@@ -354,6 +355,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     plan_sha = None
     if a.decide:
+        if a.boot != REGISTERED_BOOT:   # AMENDMENT_1 item 7: 10,000 resamples (red team R1-8)
+            ap.error(f"--decide uses the registered {REGISTERED_BOOT} resamples; --boot {a.boot} is refused")
         try:
             plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
         except PlanError as e:

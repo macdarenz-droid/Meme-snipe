@@ -259,10 +259,28 @@ class Plan(unittest.TestCase):
         with self.assertRaises(SystemExit):                    # missing middle unit
             F.main(sum([["--unit", x] for x in u[:1] + u[2:]], []) + ["--out", out, "--decide", "--plan", self.plan])
         self.assertFalse(os.path.exists(out))
-        F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--plan", self.plan, "--boot", "50"])
+        F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--plan", self.plan])
         s = json.load(open(os.path.join(out, "f1_summary.json")))
         self.assertEqual(s["min_valid_pairs"], 8)
         self.assertEqual(len(s["plan"]["sha256"]), 64)
+
+
+
+class RedTeamR1(unittest.TestCase):
+    """research/brainstorm-loop/CODE_REDTEAM.md, R1 findings on F1."""
+
+    def test_decide_uses_the_registered_resample_count(self):
+        # R1-8: AMENDMENT_1 item 7 fixes 10,000 resamples; --decide with another --boot re-draws every bound
+        d = tempfile.mkdtemp()
+        plan = os.path.join(d, "plan.txt")
+        with open(plan, "w") as fh:
+            fh.write("2026-09-11 1 1000 1999\n2026-09-10 1 9000 9999\n")
+        u = [write_unit(d, F.DAY1, 1000, 1999, [curve_row(1001, "x", "m")]),
+             write_unit(d, F.DAY2, 9000, 9999, [curve_row(9001, "x", "m")])]
+        out = os.path.join(d, "o")
+        with self.assertRaises(SystemExit):
+            F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--plan", plan, "--boot", "50"])
+        self.assertFalse(os.path.exists(out))
 
 
 if __name__ == "__main__":
