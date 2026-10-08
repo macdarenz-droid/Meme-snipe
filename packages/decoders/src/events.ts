@@ -177,9 +177,10 @@ export function decodeEvents(tx: RawTransaction, idls: readonly PinnedIdl[], hoo
 
 /**
  * The PumpSwap pool's quote mint for an event its program emitted (ruling 3): the `quote_mint` account of the PumpSwap
- * instruction that invoked the event-CPI. The pinned pump_amm.json marks that account `relations: ["pool"]` on `buy`,
- * `buy_exact_quote_in` and `sell` (Anchor `has_one`: the program refuses an instruction whose `quote_mint` is not the
- * pool's), so it is the pool account's own quote mint. Null when the invoker is not such an instruction.
+ * instruction that invoked the event-CPI, only when the pinned IDL marks that account `relations: ["pool"]` (Anchor
+ * `has_one`: the program refuses an instruction whose `quote_mint` is not the pool's; ruling 14, the set built at IDL
+ * load: `buy`, `buy_exact_quote_in`, `sell`, `deposit`, `withdraw`, `init_boost`, `boost_buy_and_burn` in cb188ce).
+ * Null for any other invoker (`create_pool` among them), so its event gets no quote and is refused.
  */
 function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonly Pubkey[]): Pubkey | null {
   if (invoker === undefined) return null;
@@ -187,9 +188,9 @@ function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonl
   if (length58 !== undefined && length58 > MAX_EVENT_DATA_B58) return null;
   const data = Buffer.from(invoker.dataB64, 'base64');
   if (data.length < 8 || data.length > MAX_EVENT_DATA_BYTES) return null;
-  const ix = idl.instructions.get(data.subarray(0, 8).toString('hex'));
-  const at = ix === undefined ? -1 : ix.accounts.indexOf('quote_mint');
-  if (at < 0) return null;
+  // Ruling 14: only an instruction the IDL binds to the pool (built at load) attributes a quote mint.
+  const at = idl.poolQuoteMint.get(data.subarray(0, 8).toString('hex'));
+  if (at === undefined) return null;
   const index = invoker.accounts[at];
   return index === undefined ? null : keys[index] ?? null;
 }

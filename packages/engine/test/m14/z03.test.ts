@@ -9,7 +9,7 @@ import { M01_LOG_CODES, PROGRAMS } from '@bot/venue/constants';
 import type { RequestOptions, RpcClient } from '../../src/m14/client.ts';
 import { M14_CONFIG } from '../../src/m14/config.ts';
 import { DEFAULT_PROVIDERS } from '../../src/m14/defaults.ts';
-import { createRpcGateway, STOP_AFTER_LIMITED } from '../../src/m14/gateway.ts';
+import { createRpcGateway, JSON_RPC_NODE_UNHEALTHY, STOP_AFTER_LIMITED } from '../../src/m14/gateway.ts';
 import { M14_LOG_CODES } from '../../src/m14/log.ts';
 import { envSecrets, loadProviders, maxRpsUnder, validateProviderConfigs, withOwnerCap } from '../../src/m14/providers.ts';
 import { m14Settings } from '../../src/m14/settings.ts';
@@ -25,12 +25,12 @@ type Reply = Result<CallValue<unknown>, RpcError>;
 
 /** A fake client that records each request's start time; `answer` decides the reply. */
 class FakeClient implements RpcClient {
-  sent: Array<{ label: string; at: number }> = [];
+  sent: Array<{ label: string; at: number; byteBudget?: number }> = [];
   answer: (label: string) => Reply = (label) => ({ ok: true, value: { value: 1, providerLabel: label, latencyMs: 0, contextSlot: null } });
   private readonly time: FakeTime;
   constructor(time: FakeTime) { this.time = time; }
-  async request<T>(p: ResolvedProvider, _m: string, _params: readonly unknown[], _o: RequestOptions): Promise<Result<CallValue<T>, RpcError>> {
-    this.sent.push({ label: p.config.label, at: this.time.now });
+  async request<T>(p: ResolvedProvider, _m: string, _params: readonly unknown[], o: RequestOptions): Promise<Result<CallValue<T>, RpcError>> {
+    this.sent.push({ label: p.config.label, at: this.time.now, ...(o.byteBudget === undefined ? {} : { byteBudget: o.byteBudget }) });
     return this.answer(p.config.label) as Result<CallValue<T>, RpcError>;
   }
 }
@@ -218,13 +218,14 @@ describe('Z03 round 2: gateway pauses, served methods, JSON-RPC rate limits, 503
     assert.deepEqual(DEFAULT_PROVIDERS.map((c) => c.methods.includes('getProgramAccounts')), [false, false]);
   });
 
-  it('ruling 4: a documented JSON-RPC rate-limit code in an HTTP 200 answer pauses, counts toward the stop and fails over', async () => {
+  it('ruling 4: a JSON-RPC error the provider documents as a rate limit (code and message) pauses, counts toward the stop and fails over', async () => {
     const time = new FakeTime();
     const client = new FakeClient(time);
     client.answer = (label) => (label === 'chainstack'
-      ? { ok: false, error: { code: 'E_RPC', message: 'rate limited', rpcCode: -32005 } }
+      ? { ok: false, error: { code: 'E_RPC', message: 'rate limited', rpcCode: -32099 } }
       : { ok: true, value: { value: 1, providerLabel: label, latencyMs: 0, contextSlot: null } });
-    const primaryFirst = { ...chainstack, unmeteredPrimary: true, metering: null, failoverOrder: 0 };
+    // A provider documenting { -32099, "rate limited" } (synthetic: neither default provider documents one; ruling 13).
+    const primaryFirst = { ...chainstack, unmeteredPrimary: true, metering: null, failoverOrder: 0, rateLimitRpcErrors: [{ code: -32099, message: 'rate limited' }] };
     const backup = { ...shyft, unmeteredPrimary: false, failoverOrder: 1 };
     const { gw, lines } = engineOf([primaryFirst, backup], client, time);
     const r = await settle(time, gw.call('getSlot', [], read(1)));
@@ -240,6 +241,34 @@ describe('Z03 round 2: gateway pauses, served methods, JSON-RPC rate limits, 503
     const r2 = await settle(time2, gw2.call('getSlot', [], read(1)));
     assert.deepEqual(r2, { ok: false, error: { code: 'E_RPC', message: 'other', rpcCode: -32002 } });
     assert.equal(gw2.status()[0]?.recentLimited, 0);
+  });
+
+  it('ruling 13: Shyft 503, Chainstack HTTP 200 -32005 "Node is behind by 42 slots" on 3 P0 getSlot calls: Chainstack is never stopped', async () => {
+    const time = new FakeTime();
+    const client = new FakeClient(time);
+    client.answer = (label) => (label === 'shyft'
+      ? { ok: false, error: { code: 'E_HTTP', message: 'http_503', httpStatus: 503 } }
+      : { ok: false, error: { code: 'E_RPC', message: 'Node is behind by 42 slots', rpcCode: JSON_RPC_NODE_UNHEALTHY } });
+    const { gw, lines } = engineOf([shyft, chainstack], client, time);
+    for (let i = 0; i < 3; i++) {
+      const r = await settle(time, gw.call('getSlot', [], read(0)));
+      // Both providers were tried: the node-behind answer fails over like a 503 does, and is no rate limit.
+      assert.deepEqual(r, { ok: false, error: { code: 'E_ALL_PROVIDERS_DOWN', message: 'all_failed:E_RPC' } }, `call ${i}`);
+      await time.advance(3_000);
+    }
+    const cs = gw.status().find((s) => s.label === 'chainstack');
+    assert.deepEqual([cs?.stopped, cs?.recentLimited], [false, 0]);
+    assert.ok(!lines.some((l) => l.code === 'm14.provider_stopped' || l.code === 'm14.provider_paused'));
+    assert.deepEqual(DEFAULT_PROVIDERS.map((c) => c.rateLimitRpcErrors), [[], []]);
+    // A node-behind answer to a P0 read on Chainstack first fails over to Shyft.
+    client.answer = (label) => (label === 'shyft'
+      ? { ok: true, value: { value: 7, providerLabel: label, latencyMs: 0, contextSlot: null } }
+      : { ok: false, error: { code: 'E_RPC', message: 'Node is behind by 42 slots', rpcCode: JSON_RPC_NODE_UNHEALTHY } });
+    const first = { ...chainstack, unmeteredPrimary: true, metering: null, failoverOrder: 0 };
+    const second = { ...shyft, unmeteredPrimary: false, failoverOrder: 1 };
+    const { gw: gw2 } = engineOf([first, second], client, time);
+    const r = await settle(time, gw2.call('getSlot', [], read(0)));
+    assert.ok(r.ok && r.value.providerLabel === 'shyft');
   });
 
   it('ruling m9: a 503 with Retry-After pauses that provider (not counted toward the stop)', async () => {
@@ -275,3 +304,38 @@ describe('Z03 round 2: gateway pauses, served methods, JSON-RPC rate limits, 503
 });
 
 class RecordingLogPort { events: Array<{ code: string }> = []; event(_l: string, code: string): void { this.events.push({ code }); } }
+
+describe('Z03 round 3, ruling 15: byte budgets are split across processes like rate budgets', () => {
+  const publicRpc: ProviderConfig = {
+    label: 'public', transport: 'https', urlSecretRef: 'RPC_PUBLIC_URL', roles: ['read'], unmeteredPrimary: true, failoverOrder: 0,
+    limits: { rps: 5, perMethodRps: 2 }, documentedLimits: [{ scope: 'total', count: 100, windowMs: 10_000, fact: 'LD-26' }],
+    methods: ['getSlot'], rateLimitRpcErrors: [], metering: null, allowInLivePaths: false,
+  };
+  const firstByteBudget = async (shareBps: number): Promise<number | undefined> => {
+    const secrets = envSecrets({ RPC_PUBLIC_URL: 'https://api.mainnet-beta.solana.com/' });
+    const loaded = loadProviders([publicRpc], secrets, { context: 'research', allocation: { consumer: 'research', shares: { public: { research: shareBps, other: 10_000 - shareBps } } } }, new RecordingLogPort());
+    assert.ok(loaded.ok);
+    assert.equal(loaded.value.providers[0]?.config.budgetShareBps, shareBps);
+    const time = new FakeTime();
+    const client = new FakeClient(time);
+    const { log, metrics } = m27(time);
+    const gw = createRpcGateway({ registry: loaded.value, context: 'research', client, clock: time, scheduler: time, log, metrics,
+      stopStore: new MemoryStopStore(), overshootBytes: 0 });
+    await settle(time, gw.call('getSlot', [], { priority: 3, role: 'read', commitment: 'confirmed', timeoutMs: 60_000 }));
+    return client.sent[0]?.byteBudget;
+  };
+
+  it('the research process reads public-RPC bytes under its share: 20% of the 50 MB budget, less the 10% reserve', async () => {
+    // LD-26: 100 MB per 30 s per IP → 50 MB at the owner's 50%; a read of unknown size keeps a 10% reserve.
+    assert.equal(await firstByteBudget(10_000), 45_000_000);
+    assert.equal(await firstByteBudget(2_000), 9_000_000);
+  });
+
+  it('shares above 10,000 bps on one provider are refused, research included', () => {
+    const secrets = envSecrets({ RPC_PUBLIC_URL: 'https://api.mainnet-beta.solana.com/' });
+    const r = loadProviders([publicRpc], secrets, { context: 'research', allocation: { consumer: 'research', shares: { public: { research: 6_000, engine: 5_000 } } } }, new RecordingLogPort());
+    assert.ok(!r.ok && r.error.problems.some((p) => p.key === 'rpc.allocation[public]'));
+    const none = loadProviders([publicRpc], secrets, { context: 'research' }, new RecordingLogPort());
+    assert.ok(!none.ok && none.error.problems[0]?.key === 'rpc.allocation');
+  });
+});

@@ -158,3 +158,30 @@ describe('ruling m11: each event carries its place in the transaction', () => {
     assert.notEqual(twice[0]?.innerIx, twice[1]?.innerIx);
   });
 });
+
+describe('Z03 round 3, ruling 14: the instructions trusted for a PumpSwap quote mint are built at IDL load', () => {
+  it('the set is every pump_amm instruction whose quote_mint is bound to the pool, and nothing else', () => {
+    const amm = idls().find((i) => i.name === 'pump_amm') as PinnedIdl;
+    const names = [...amm.poolQuoteMint.keys()].map((h) => amm.instructions.get(h)?.name).sort();
+    assert.deepEqual(names, ['boost_buy_and_burn', 'buy', 'buy_exact_quote_in', 'deposit', 'init_boost', 'sell', 'withdraw']);
+    assert.ok([...amm.poolQuoteMint.values()].every((at) => at === 4));
+    assert.equal((idls().find((i) => i.name === 'pump') as PinnedIdl).poolQuoteMint.size, 0);
+  });
+
+  it('an event invoked by another PumpSwap instruction (create_pool, whose quote_mint has no pool relation) gets no quote and is refused', () => {
+    const t = raw(SWAP);
+    assert.deepEqual(run(t).located.map((l) => l.event.kind), ['pumpswap_buy']);
+    const amm = idls().find((i) => i.name === 'pump_amm') as PinnedIdl;
+    const createPool = [...amm.instructions.entries()].find(([, d]) => d.name === 'create_pool')?.[0] as string;
+    const buyIx = t.message.instructions.find((ix) => {
+      const d = Buffer.from(ix.dataB64, 'base64');
+      return amm.instructions.get(d.subarray(0, 8).toString('hex'))?.name === 'buy';
+    });
+    assert.ok(buyIx !== undefined);
+    const data = Buffer.from(buyIx.dataB64, 'base64');
+    Buffer.from(createPool, 'hex').copy(data, 0);                // same accounts, same quote_mint position, another instruction
+    buyIx.dataB64 = data.toString('base64');
+    const r = run(t);
+    assert.deepEqual([r.located.length, r.gaps], [0, ['non_sol_quote']]);
+  });
+});

@@ -21,6 +21,8 @@ const secrets = envSecrets({
 });
 /** Every provider of these tests wholly to the engine (Z03 ruling m12: the engine context needs an allocation). */
 const WHOLE = { consumer: 'engine', shares: Object.fromEntries(['shyft', 'chainstack', 'public', 'helius', 'ws', 'live'].map((l) => [l, { engine: 10_000 }])) };
+/** Every provider wholly to one research process (Z03 ruling 15: research reads under its own configured share). */
+const RESEARCH = { consumer: 'research', shares: Object.fromEntries(['shyft', 'chainstack', 'public', 'helius', 'ws', 'live'].map((l) => [l, { research: 10_000 }])) };
 const engine = { context: 'engine' as const, egressHosts: ['rpc.shyft.example', 'chainstack.example', 'api.mainnet-beta.solana.com'], allocation: WHOLE };
 
 function problems(raw: unknown, ctx: 'engine' | 'research' = 'engine'): string[] {
@@ -160,14 +162,14 @@ describe('A-M14-01 secrets and registry', () => {
   });
 
   it('research processes never allow live modes; config errors pass through loadProviders', () => {
-    const r = loadProviders([{ ...publicRpc, unmeteredPrimary: true }], secrets, { context: 'research', egressHosts: ['api.mainnet-beta.solana.com'] }, new RecordingLog());
+    const r = loadProviders([{ ...publicRpc, unmeteredPrimary: true }], secrets, { context: 'research', egressHosts: ['api.mainnet-beta.solana.com'], allocation: RESEARCH }, new RecordingLog());
     assert.ok(r.ok);
     assert.equal(r.value.liveModesAllowed, false);
     assert.equal(loadProviders('x', secrets, engine, new RecordingLog()).ok, false);
   });
 
   it('holds a public-host provider to the LD-26 limits whatever its config says (review C03 R4)', () => {
-    const research = { context: 'research' as const, egressHosts: ['api.mainnet-beta.solana.com'] };
+    const research = { context: 'research' as const, egressHosts: ['api.mainnet-beta.solana.com'], allocation: RESEARCH };
     const madeUp = provider({ label: 'public', unmeteredPrimary: true, failoverOrder: 0, allowInLivePaths: false, limits: { rps: 50, perMethodRps: 50 },
       documentedLimits: [{ scope: 'total', count: 1_000, windowMs: 1_000, fact: 'made-up' }] });
     assert.deepEqual(problems([madeUp], 'research'), []);                // the config alone passes the static check
@@ -184,7 +186,7 @@ describe('A-M14-01 secrets and registry', () => {
     assert.ok(fine.ok);
     assert.deepEqual(fine.value.providers[0]?.config.documentedLimits, [...madeUp.documentedLimits, ...PUBLIC_MAINNET_LIMITS]);
     const other = loadProviders([{ ...madeUp, limits: { rps: 5, perMethodRps: 2 } }],
-      envSecrets({ RPC_URL_PUBLIC: 'https://api.mainnet.solana.com/' }), { context: 'research' }, new RecordingLog());
+      envSecrets({ RPC_URL_PUBLIC: 'https://api.mainnet.solana.com/' }), { context: 'research', allocation: RESEARCH }, new RecordingLog());
     assert.ok(other.ok);
     assert.equal(other.value.providers[0]?.config.documentedLimits.length, 4);
   });
@@ -193,11 +195,11 @@ describe('A-M14-01 secrets and registry', () => {
     const madeUp = provider({ label: 'public', unmeteredPrimary: true, failoverOrder: 0, allowInLivePaths: false, limits: { rps: 50 },
       documentedLimits: [{ scope: 'total', count: 1_000, windowMs: 1_000, fact: 'made-up' }] });
     for (const url of ['https://api.mainnet-beta.solana.com./', 'https://API.Mainnet.Solana.com../x']) {
-      const r = loadProviders([madeUp], envSecrets({ RPC_URL_PUBLIC: url }), { context: 'research', egressHosts: ['api.mainnet-beta.solana.com', 'api.mainnet.solana.com'] }, new RecordingLog());
+      const r = loadProviders([madeUp], envSecrets({ RPC_URL_PUBLIC: url }), { context: 'research', egressHosts: ['api.mainnet-beta.solana.com', 'api.mainnet.solana.com'], allocation: RESEARCH }, new RecordingLog());
       assert.ok(!r.ok, url);
       assert.deepEqual(r.error.problems.map((p) => p.key), ['rpc.providers[public].limits.rps', 'rpc.providers[public].limits.perMethodRps'], url);
       const fine = loadProviders([{ ...madeUp, limits: { rps: 5, perMethodRps: 2 } }], envSecrets({ RPC_URL_PUBLIC: url }),
-        { context: 'research', egressHosts: ['api.mainnet-beta.solana.com', 'api.mainnet.solana.com'] }, new RecordingLog());
+        { context: 'research', egressHosts: ['api.mainnet-beta.solana.com', 'api.mainnet.solana.com'], allocation: RESEARCH }, new RecordingLog());
       assert.ok(fine.ok && fine.value.providers[0]?.config.documentedLimits.length === 4, url);
       assert.deepEqual(fine.value.warnings, [], url);                    // the same host for the egress allowlist
     }

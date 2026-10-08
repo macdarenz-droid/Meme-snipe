@@ -16,16 +16,17 @@ export interface RegistryOptions {
   /** Hosts of the M30 egress allowlist; a provider host not listed is a warning (A-M14-01 logic 1). */
   egressHosts?: readonly string[];
   /**
-   * How each provider's budget (its rates at most 50% of the documented limits) is split between the processes that read
-   * it (Z03 ruling m12; ARCH D04 and 11.1, SPEC-A A-M14-05: the engine, the sentinel and the signer all read providers).
-   * Required in the engine context. See `Allocation`.
+   * How each provider's budget (its rates and response bytes, at most 50% of the documented limits) is split between the
+   * processes that read it (Z03 rulings m12 and 15; ARCH D04 and 11.1, SPEC-A A-M14-05: the engine, the sentinel and the
+   * signer all read providers, and a research process reads under its own share). Required in every context. See
+   * `Allocation`.
    */
   allocation?: Allocation;
 }
 
 /**
- * The split of every provider's rate budget between consumers, in basis points of that budget, and the consumer this
- * process is. Per provider the shares add up to at most 10,000, or the load refuses (`E_CONFIG`,
+ * The split of every provider's budget (rates and response bytes) between consumers, in basis points of that budget,
+ * and the consumer this process is. Per provider the shares add up to at most 10,000, or the load refuses (`E_CONFIG`,
  * `allocation_exceeds_cap`; SPEC-A A-M14-05 `E_ALLOCATION_EXCEEDS_CAP`). A provider with no share, or a share of 0, for
  * this consumer is not used by this process. Every rate of a provider is scaled by this consumer's share. A-M14-05
  * reads it from the root-owned `/etc/bot/rpc-allocation.json`.
@@ -184,8 +185,9 @@ function checkOne(raw: unknown, i: number, problems: ConfigProblem[]): ProviderC
     || c.methods.some((m) => typeof m !== 'string' || methodSpec(m) === null)) {
     bad('methods', 'must be a non-empty list of distinct methods the gateway knows (the methods the provider serves)');
   }
-  if (!Array.isArray(c.rateLimitRpcCodes) || c.rateLimitRpcCodes.some((n) => !Number.isSafeInteger(n))) {
-    bad('rateLimitRpcCodes', 'must be a list of the JSON-RPC error codes the provider documents for rate limits (empty when none)');
+  if (!Array.isArray(c.rateLimitRpcErrors)
+    || c.rateLimitRpcErrors.some((e) => !isObject(e) || !Number.isSafeInteger(e.code) || typeof e.message !== 'string' || e.message.length === 0)) {
+    bad('rateLimitRpcErrors', 'must list the { code, message } JSON-RPC errors the provider documents as rate limits (empty when none)');
   }
   if (c.unmeteredPrimary === true && c.metering !== null) bad('unmeteredPrimary', 'the unmetered primary must have metering null');
   if (c.unmeteredPrimary === true && Array.isArray(c.roles) && !c.roles.includes('read')) bad('unmeteredPrimary', 'the unmetered primary must have the read role');
@@ -238,10 +240,11 @@ export function loadProviders(raw: unknown, secrets: SecretSource, opts: Registr
   const valid = validateProviderConfigs(raw, opts);
   if (!valid.ok) return valid;
   const problems: ConfigProblem[] = [];
-  if (opts.context === 'engine' && opts.allocation === undefined) {
-    return { ok: false, error: { code: 'E_CONFIG', problems: [{ key: 'rpc.allocation', message: 'the engine needs the provider allocation (the engine, sentinel and signer share each budget; ARCH D04)' }] } };
+  // Z03 rulings m12 and 15: every process, research included, reads providers under its configured share of each budget.
+  if (opts.allocation === undefined) {
+    return { ok: false, error: { code: 'E_CONFIG', problems: [{ key: 'rpc.allocation', message: 'the provider allocation is required (each process reads under its share of every budget; ARCH D04)' }] } };
   }
-  const shares = opts.allocation === undefined ? null : sharesOf(opts.allocation, valid.value.map((c) => c.label), problems);
+  const shares = sharesOf(opts.allocation, valid.value.map((c) => c.label), problems);
   if (problems.length > 0) return { ok: false, error: { code: 'E_CONFIG', problems } };
   const providers: ResolvedProvider[] = [];
   const disabled: ProviderRegistry['disabled'] = [];
@@ -250,13 +253,13 @@ export function loadProviders(raw: unknown, secrets: SecretSource, opts: Registr
     warnings.push({ label: '*', code: 'egress_allowlist_missing', message: 'no egress allowlist given; provider hosts not cross-checked' });
   }
   for (const configured of valid.value) {
-    const share = shares?.get(configured.label) ?? 10_000;
+    const share = shares.get(configured.label) ?? 0;
     if (share === 0) {
       disabled.push({ label: configured.label, reason: 'no_allocation' });
       log.event('info', 'm14.provider_disabled', { provider: configured.label, reason: 'no_allocation' });
       continue;
     }
-    const c = share === 10_000 ? configured : mapRates(configured, (v) => (v * share) / 10_000);
+    const c = { ...(share === 10_000 ? configured : mapRates(configured, (v) => (v * share) / 10_000)), budgetShareBps: share };
     const key = `rpc.providers[${c.label}]`;
     const url = secrets.get(c.urlSecretRef);
     if (url === undefined || url.trim() === '') {

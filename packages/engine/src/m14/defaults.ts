@@ -24,7 +24,9 @@
 //   (helius.dev getpriorityfeeestimate.md), not a Solana RPC method, so neither provider below serves it.
 // - Chainstack Developer: https://docs.chainstack.com/docs/limits.md ("Solana method availability": getProgramAccounts,
 //   getSupply, getTokenAccountsByOwner are paid plans only, getLargestAccounts dedicated nodes only; "A request over the
-//   limit returns HTTP 429 with JSON-RPC error -32005").
+//   limit returns HTTP 429 with JSON-RPC error -32005"). That answer is an HTTP 429, a rate limit by its status. In an
+//   HTTP 200 answer -32005 is Solana's NodeUnhealthy ("Node is behind by N slots"; Z03 ruling 13, gateway.ts
+//   JSON_RPC_NODE_UNHEALTHY), not a rate limit, so Chainstack lists no rate-limit JSON-RPC error.
 import { METHODS } from './methods.ts';
 import type { ProviderConfig } from './types.ts';
 
@@ -35,14 +37,14 @@ export const DEFAULT_PROVIDERS: readonly ProviderConfig[] = Object.freeze([
     label: 'shyft', transport: 'https', urlSecretRef: 'RPC_SHYFT_URL', roles: ['read'], unmeteredPrimary: true, failoverOrder: 0,
     limits: { rps: 5 },
     documentedLimits: [{ scope: 'total', count: 10, windowMs: 1_000, fact: 'VF-09' }],
-    methods: SERVED_EXCEPT('getProgramAccounts', 'getPriorityFeeEstimate'), rateLimitRpcCodes: [],
+    methods: SERVED_EXCEPT('getProgramAccounts', 'getPriorityFeeEstimate'), rateLimitRpcErrors: [],
     metering: null, allowInLivePaths: true,
   },
   {
     label: 'chainstack', transport: 'https', urlSecretRef: 'RPC_CHAINSTACK_URL', roles: ['read'], unmeteredPrimary: false, failoverOrder: 1,
     limits: { rps: 2.5, ownerMaxRps: 0.5 },
     documentedLimits: [{ scope: 'total', count: 5, windowMs: 1_000, fact: 'VF-10' }],
-    methods: SERVED_EXCEPT('getProgramAccounts', 'getPriorityFeeEstimate'), rateLimitRpcCodes: [-32005],
+    methods: SERVED_EXCEPT('getProgramAccounts', 'getPriorityFeeEstimate'), rateLimitRpcErrors: [],
     metering: { unit: 'requests', monthlyAllowance: 3_000_000, methodCost: { getSignaturesForAddress: 2 } }, allowInLivePaths: true,
   },
 ]);

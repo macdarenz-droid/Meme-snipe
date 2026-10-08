@@ -59,11 +59,17 @@ export interface ProviderConfig {
    */
   methods: string[];
   /**
-   * JSON-RPC error codes the provider documents for rate limiting in an HTTP 200 answer (Z03 ruling 4, for example
-   * Chainstack's -32005); such an answer counts as a rate limit (pause, stop count, failover). Empty when none is
-   * documented.
+   * JSON-RPC errors the provider documents as rate limits in an HTTP 200 answer, by exact code and exact message (Z03
+   * rulings 4 and 13): such an answer counts as a rate limit (pause, stop count, failover). Any other JSON-RPC error is
+   * not a rate limit; an HTTP 429 always is. Empty when the provider documents none.
    */
-  rateLimitRpcCodes: number[];
+  rateLimitRpcErrors: Array<{ code: number; message: string }>;
+  /**
+   * This process's share of the provider's budgets, in basis points (Z03 rulings m12 and 15), set by `loadProviders`
+   * from the allocation: the rates above are already scaled by it, and the gateway meters response bytes against
+   * `50% of each documented byte limit × budgetShareBps / 10,000`. Absent: the whole budget (a registry built by hand).
+   */
+  budgetShareBps?: number;
   metering: { unit: 'credits' | 'requests'; monthlyAllowance: number; methodCost: Record<string, number> } | null;
   allowInLivePaths: boolean;
 }

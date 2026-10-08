@@ -259,9 +259,13 @@ class ByteMeter {
   }
 }
 
-/** A provider's byte windows: half of each documented byte limit (owner rule). */
+/**
+ * A provider's byte windows: half of each documented byte limit (owner rule), times this process's share of it (Z03
+ * ruling 15; `ProviderConfig.budgetShareBps`, the whole budget when absent).
+ */
 const byteLimits = (p: ResolvedProvider): Array<{ budget: number; windowMs: number }> =>
-  p.config.documentedLimits.filter((d) => d.scope === 'bytes').map((d) => ({ budget: d.count * 0.5, windowMs: d.windowMs }));
+  p.config.documentedLimits.filter((d) => d.scope === 'bytes')
+    .map((d) => ({ budget: Math.floor((d.count * 0.5 * (p.config.budgetShareBps ?? 10_000)) / 10_000), windowMs: d.windowMs }));
 /** The most a read of unknown size may use in empty windows of these budgets: the least budget less its reserve, less the overshoot. */
 const emptyRoom = (budgets: readonly number[], overshoot: number): number =>
   Math.floor(Math.min(...budgets.map((b) => b - (b * RESERVE_BPS) / 10_000))) - overshoot;
@@ -298,9 +302,18 @@ interface ProviderState {
   timer: { at: number; cancel: () => void } | null;
 }
 
+/**
+ * Solana's JSON-RPC NodeUnhealthy error, "Node is behind by N slots" or "Node is unhealthy" (Z03 ruling 13; VERIFY:
+ * anza-xyz/agave rpc-client-api/src/custom_error.rs at 4cd046d7fea12e330bbab0af9f0b019650e8afbe, read 2026-10-08:
+ * `JSON_RPC_SERVER_ERROR_NODE_UNHEALTHY: i64 = -32005`). The node is lagging, not limiting us: a P0/P1 read fails over
+ * to the next provider, and the answer never counts toward the stop rule.
+ */
+export const JSON_RPC_NODE_UNHEALTHY = -32005;
+
 const PRIORITIES: readonly Priority[] = [0, 1, 2, 3, 4];
 const failoverable = (e: RpcError): boolean => e.code === 'E_RATE_LIMITED' || e.code === 'E_TIMEOUT'
-  || (e.code === 'E_HTTP' && (e.httpStatus === undefined || e.httpStatus === 403 || e.httpStatus >= 500));
+  || (e.code === 'E_HTTP' && (e.httpStatus === undefined || e.httpStatus === 403 || e.httpStatus >= 500))
+  || (e.code === 'E_RPC' && e.rpcCode === JSON_RPC_NODE_UNHEALTHY);
 const isLimited = (e: RpcError): boolean => e.code === 'E_RATE_LIMITED' || (e.code === 'E_HTTP' && e.httpStatus === 403);
 const err = (code: RpcError['code'], message: string, retryAfterMs?: number): { ok: false; error: RpcError } =>
   ({ ok: false, error: { code, message, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) } });
@@ -599,10 +612,12 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
     o.onTooLarge = (t) => { tooLarge = t; };
     const settle = (answer: Result<CallValue<unknown>, RpcError>): void => {
       st.inFlight = false;
-      // Z03 ruling 4: a JSON-RPC error code the provider documents for rate limiting (HTTP 200) is a rate limit.
-      const r: Result<CallValue<unknown>, RpcError> = !answer.ok && answer.error.code === 'E_RPC' && answer.error.rpcCode !== undefined
-        && st.p.config.rateLimitRpcCodes.includes(answer.error.rpcCode)
-        ? { ok: false, error: { code: 'E_RATE_LIMITED', message: 'rpc_rate_limited', rpcCode: answer.error.rpcCode } }
+      // Z03 rulings 4 and 13: a JSON-RPC error (HTTP 200) is a rate limit only when the provider documents that exact code
+      // and message as one.
+      const rateLimited = !answer.ok && answer.error.code === 'E_RPC'
+        && st.p.config.rateLimitRpcErrors.some((e) => e.code === answer.error.rpcCode && e.message === answer.error.message);
+      const r: Result<CallValue<unknown>, RpcError> = rateLimited && !answer.ok
+        ? { ok: false, error: { code: 'E_RATE_LIMITED', message: 'rpc_rate_limited', ...(answer.error.rpcCode === undefined ? {} : { rpcCode: answer.error.rpcCode }) } }
         : answer;
       if (r.ok) {
         if (cap !== undefined) {

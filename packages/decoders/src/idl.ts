@@ -50,6 +50,12 @@ export interface PinnedIdl {
   accounts: Map<string, IdlTypeDef>;        // key: discriminator hex
   events: Map<string, IdlTypeDef>;
   instructions: Map<string, IdlInstrDef>;
+  /**
+   * The instructions whose `quote_mint` account the IDL binds to the pool (`relations: ["pool"]`, Anchor `has_one`), by
+   * discriminator hex, with that account's index (Z03 ruling 14): the only instructions trusted for a PumpSwap trade's
+   * quote mint. Built here, at load, from the hash-verified IDL.
+   */
+  poolQuoteMint: Map<string, number>;
 }
 
 export type IdlErrorCode = 'E_IDL_HASH' | 'E_IDL_MISSING' | 'E_IDL_PARSE';
@@ -219,17 +225,21 @@ function compileOrThrow(doc: unknown, pin: PinnedIdlSpec, sha256: string): Pinne
   const events = table(doc.events, 'events');
   if (!Array.isArray(doc.instructions)) return fail('instructions must be a list');
   const instructions = new Map<string, IdlInstrDef>();
+  const poolQuoteMint = new Map<string, number>();
   for (const ix of doc.instructions as unknown[]) {
     if (!isObject(ix) || typeof ix.name !== 'string' || !Array.isArray(ix.accounts)) return fail('an instruction needs a name and accounts');
     const hex = discriminator(ix.discriminator, `instructions.${ix.name}`);
     if (instructions.has(hex)) fail(`instructions.${ix.name}: discriminator ${hex} is used twice`);
     const accts = (ix.accounts as unknown[]).map((a) => (isObject(a) && typeof a.name === 'string' ? a.name : fail(`instructions.${ix.name}: bad account`)));
     instructions.set(hex, { name: ix.name, accounts: accts, args: compiler.fields(ix.args, `instructions.${ix.name}`) });
+    const at = (ix.accounts as Array<Record<string, unknown>>).findIndex((a) => a.name === 'quote_mint'
+      && Array.isArray(a.relations) && a.relations.includes('pool'));
+    if (at >= 0) poolQuoteMint.set(hex, at);
   }
   const names = (m: Map<string, IdlTypeDef>): Set<string> => new Set([...m.values()].map((d) => d.name));
   for (const a of pin.accounts) if (!names(accounts).has(a)) fail(`account ${a} is missing`);
   for (const e of pin.events) if (!names(events).has(e)) fail(`event ${e} is missing`);
-  return { name: pin.name, program: doc.address, file: pin.file, commit: IDL_COMMIT, sha256, accounts, events, instructions };
+  return { name: pin.name, program: doc.address, file: pin.file, commit: IDL_COMMIT, sha256, accounts, events, instructions, poolQuoteMint };
 }
 
 /**

@@ -11,7 +11,7 @@ import plugin from '../plugin.ts';
 import noAmbientClockOrRandom from '../rules/no-ambient-clock-or-random.ts';
 import noAwaitInWithTx from '../rules/no-await-in-withtx.ts';
 import noNumberOnUnits from '../rules/no-number-on-units.ts';
-import noProgramIdLiteral, { CONSTANTS_FILE, isAddressLiteral, knownProgramIds } from '../rules/no-program-id-literal.ts';
+import noProgramIdLiteral, { base58Runs, CONSTANTS_FILE, isAddressLiteral, knownProgramIds } from '../rules/no-program-id-literal.ts';
 import noSharedTypeRedefinition, { exportedTypeNames } from '../rules/no-shared-type-redefinition.ts';
 
 RuleTester.describe = describe;
@@ -208,7 +208,6 @@ const pump = ids[0] as string;
 tester.run('no-program-id-literal', noProgramIdLiteral, {
   valid: [
     "const a = 'not a program id';",
-    `const a = 'Program ${pump} invoke [1]';`,
     `const a = \`\${x}${pump}\`;`,
     'const n = 7;',
     "import { PROGRAMS } from '@bot/venue/constants'; const p = PROGRAMS.pumpCurve;",
@@ -219,6 +218,8 @@ tester.run('no-program-id-literal', noProgramIdLiteral, {
     { code: `const p = "${ids[12] as string}";`, errors: [{ messageId: 'literal' }] },
     { code: `const p = \`${ids[13] as string}\`;`, errors: [{ messageId: 'literal' }] },
     { code: `f({ program: '${ids[3] as string}' });`, errors: [{ messageId: 'literal' }] },
+    // Z03 ruling 16: an ID inside a longer string (a log line) is reported too; it was valid before round 3.
+    { code: `const a = 'Program ${pump} invoke [1]';`, errors: [{ messageId: 'literal' }] },
   ],
 });
 
@@ -246,12 +247,18 @@ tester.run('no-program-id-literal (addresses)', noProgramIdLiteral, {
   valid: [
     `const a = '${'1'.repeat(31)}';`,                                  // 31 zero bytes
     `const a = '${'1'.repeat(33)}';`,                                  // 33 zero bytes
-    `const a = '${WSOL}0';`,                                           // not base58
     `const sig = '${'2'.repeat(88)}';`,                                // a signature is 64 bytes
+    `const s = 'solana:${'1'.repeat(31)} pay';`,                       // a 31-byte token in a longer string
+    "const c = 'So' + 'x';",                                           // concatenation: out of scope (Z03-9)
   ],
   invalid: [
     { code: `const m = '${WSOL}';`, errors: [{ messageId: 'address' }] },
     { code: `const d = \`${DEFAULT}\`;`, errors: [{ messageId: 'address' }] },
+    // Z03 ruling 16: an address inside a longer string literal.
+    { code: `const u = 'solana:${WSOL}';`, errors: [{ messageId: 'address' }] },
+    { code: `const v = '${WSOL}0';`, errors: [{ messageId: 'address' }] },   // '0' is not base58: the address is a token of its own
+    { code: `const p = '  ${WSOL}  ';`, errors: [{ messageId: 'address' }] },
+    { code: `const q = 'https://x.example/${WSOL}?a=1';`, errors: [{ messageId: 'address' }] },
   ],
 });
 
@@ -261,5 +268,13 @@ describe('isAddressLiteral', () => {
     assert.equal(isAddressLiteral(DEFAULT), true);
     for (const id of ids) assert.equal(isAddressLiteral(id), true, id);
     for (const no of ['1'.repeat(31), '1'.repeat(33), `${WSOL}x`, 'I'.repeat(32), '2'.repeat(88), '']) assert.equal(isAddressLiteral(no), false, no);
+  });
+});
+
+describe('base58Runs (Z03 ruling 16)', () => {
+  it('splits a string at every character outside the base58 alphabet', () => {
+    assert.deepEqual(base58Runs(`pay:${WSOL}?x=1`), ['pay', WSOL, 'x', '1']);
+    assert.deepEqual(base58Runs('solana'), ['so', 'ana']);                 // 'l' is not in the base58 alphabet
+    assert.deepEqual(base58Runs('  '), []);
   });
 });

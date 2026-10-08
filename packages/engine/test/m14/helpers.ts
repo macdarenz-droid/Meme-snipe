@@ -122,7 +122,7 @@ export function provider(over: Partial<ProviderConfig> & { label: string }): Pro
     limits: { rps: 5 },
     documentedLimits: [{ scope: 'total', count: 10, windowMs: 1_000, fact: 'LD-33' }],
     methods: Object.keys(METHODS),                     // Z03 ruling 4: every method unless a case says otherwise
-    rateLimitRpcCodes: [],
+    rateLimitRpcErrors: [],
     metering: null,
     allowInLivePaths: true,
     ...over,

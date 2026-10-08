@@ -6,7 +6,9 @@
 // ported (it reads the network), so the registry is the only exempt file here.
 // Z03 round 2 (ruling m7): any base58 literal that decodes to 32 bytes (an address: a mint, a fixed account or a
 // program not yet in the registry) is reported too, so ACCOUNTS and MINTS are covered as well. Deliberate string
-// building at run time is out of scope (docs/DECISIONS.md Z03-9); review catches it.
+// building at run time is out of scope (docs/DECISIONS.md Z03-9); review catches it. Round 3 (ruling 16): an address
+// inside a longer string (`solana:<address>`, padding, a URL path) is reported too: every run of base58 characters,
+// split at any other character, is checked. Concatenation and JSON config stay out of scope (Z03-9).
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parse } from '@typescript-eslint/parser';
@@ -43,6 +45,11 @@ export function isAddressLiteral(s: string): boolean {
   return zeros + body === 32;
 }
 
+/** The runs of base58 characters in `s`, split at every other character (a candidate address token each). */
+export function base58Runs(s: string): string[] {
+  return s.split(/[^1-9A-HJ-NP-Za-km-z]+/).filter((t) => t.length > 0);
+}
+
 let cached: Set<string> | null = null;
 
 const rule: Rule.RuleModule = {
@@ -59,8 +66,9 @@ const rule: Rule.RuleModule = {
     cached ??= knownProgramIds();
     const ids = cached;
     const check = (node: Rule.Node, value: string): void => {
-      if (ids.has(value)) context.report({ node, messageId: 'literal' });
-      else if (isAddressLiteral(value)) context.report({ node, messageId: 'address' });
+      const runs = base58Runs(value);
+      if (runs.some((t) => ids.has(t))) context.report({ node, messageId: 'literal' });
+      else if (runs.some(isAddressLiteral)) context.report({ node, messageId: 'address' });
     };
     return {
       Literal(node) {
