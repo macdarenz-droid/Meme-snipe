@@ -1,0 +1,88 @@
+{
+  "schema": "snipe-solana.mainnet-fixture.v1",
+  "kind": "pumpswap_pool_set",
+  "pool": "8JZiCe7yzUJphDdKsj2eSyErBja5xdhB23ziewyqVPpy",
+  "found_via": "DexScreener search \"pumpswap\" (dexId pumpswap, quote wSOL)",
+  "method": "getMultipleAccounts {encoding: base64, commitment: confirmed}, one call for all five accounts",
+  "selection": {
+    "canonical": true,
+    "pool_authority": "9B1AekAk3F16oPeWdAbXZoXh1QznjUafiV3gCwbJsVsA",
+    "base_token_program": "token_2022",
+    "market_cap_lamports_vault": "1304895175375",
+    "market_cap_lamports_effective": "1459305236134",
+    "fee_tier_range_sol_vault": "420-1470",
+    "fee_tier_range_sol_effective": "420-1470"
+  },
+  "accounts": [
+    {
+      "role": "pool",
+      "pubkey": "8JZiCe7yzUJphDdKsj2eSyErBja5xdhB23ziewyqVPpy",
+      "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+      "lamports": 2179320,
+      "executable": false,
+      "space": 301,
+      "data_base64": "8ZptBBGxbbz+AAB5bX3cQlRRsWPLGsvTYRlfg3nCUvYcujb6xH+TKDvsbZ0/jjvv6mzyVmoX1pX1KKRkWCn+P7ZaQYZKEMT+EC3fBpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAHH5azqXP8oZivVyA+l+j/tYO+H5gu19bEQZ0nrYyJrHs4Knnmu5y8K78S6s3UYOnlfbNCOM9GwF+ZaFlymToA7tS+Cib6xgFEoM2WmVpy5PRSGQo4z/cWxFBZsrpOMcirsQmtZ0AMAAP2Z/gopSDV4Ew+8ak9rhUNk3dLfd585kxM17Qtbd2ltAADVmhcYBAAAAAAAAAAAAAAAAAAAAAAAAAAAAKsrAAAAAAAASHsGAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "context_slot": 453967958,
+      "fetched_at": "2026-10-06T17:25:31.495Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "canonical PumpSwap pool; chosen for the 420-1470 SOL fee-tier range; market cap at capture in the 420-1470 SOL range [EX-07]"
+    },
+    {
+      "role": "base_vault",
+      "pubkey": "EsJNt9xFthwP3Wj6JzPE1QBc1fBDHz2Ks77iusXJYM2A",
+      "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+      "lamports": 1513840,
+      "executable": false,
+      "space": 170,
+      "data_base64": "nT+OO+/qbPJWahfWlfUopGRYKf4/tlpBhkoQxP4QLd9sgar/OtaZ7oi5oKwwPh3qCl2HIo6ZsAwwh4Zeye7vVqUppuGkZgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgcAAAA=",
+      "context_slot": 453967958,
+      "fetched_at": "2026-10-06T17:25:31.495Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "pool_base_token_account of the pool"
+    },
+    {
+      "role": "quote_vault",
+      "pubkey": "DCGp4E7rCLXQxf2oqUpBwfC9u4TDVgNHdhb7KjwdzvFb",
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "lamports": 148601697023,
+      "executable": false,
+      "space": 165,
+      "data_base64": "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAFsgar/OtaZ7oi5oKwwPh3qCl2HIo6ZsAwwh4Zeye7vVsc8Q5kiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEAAAA4thYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "context_slot": 453967958,
+      "fetched_at": "2026-10-06T17:25:31.495Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "pool_quote_token_account of the pool"
+    },
+    {
+      "role": "base_mint",
+      "pubkey": "BaqDcVARx7Bcs73o6pvexwNcpnHuW8z11zaw2Mjepump",
+      "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+      "lamports": 2773680,
+      "executable": false,
+      "space": 418,
+      "data_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1EcXy1eFAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJ0/jjvv6mzyVmoX1pX1KKRkWCn+P7ZaQYZKEMT+EC3fEwC0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAnT+OO+/qbPJWahfWlfUopGRYKf4/tlpBhkoQxP4QLd8OAAAAY2F0IHdpZiBrYXRhbmEGAAAAY2F0YW5hUAAAAGh0dHBzOi8vaXBmcy5pby9pcGZzL2JhZmtyZWlldmo2NGZrZ21vNncya2kyc3Z3ZW5ybTQ2azR4bTU3c2Jhb2NmM3hwZng0Y2VmZHh3ZGY0AAAAAA==",
+      "context_slot": 453967958,
+      "fetched_at": "2026-10-06T17:25:31.495Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "base mint (token_2022)"
+    },
+    {
+      "role": "quote_mint",
+      "pubkey": "So11111111111111111111111111111111111111112",
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "lamports": 1849313380620,
+      "executable": false,
+      "space": 82,
+      "data_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "context_slot": 453967958,
+      "fetched_at": "2026-10-06T17:25:31.495Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "quote mint (wSOL)"
+    }
+  ]
+}

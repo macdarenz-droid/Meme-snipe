@@ -10,5 +10,9 @@
   },
   "dependencies": {
     "@bot/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@bot/decoders": "workspace:*",
+    "@bot/venue": "workspace:*"
   }
 }

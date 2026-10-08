@@ -114,6 +114,10 @@ describe('checkImports (C01 red-team M2)', () => {
     ['E_THIRD_PARTY_RUNTIME']);
   });
 
+  it('@bot/decoders may import only node: built-ins and @bot/* packages (A-M02-01, C-02; ported from C03)', () => {
+    assert.deepEqual(check('packages/decoders/src/rt-kit.ts', "import { address } from '@solana/kit';\nexport const a = address;\n"), ['E_THIRD_PARTY_RUNTIME']);
+  });
+
   it('dynamic import and createRequire of @solana/web3.js in the engine are refused', () => {
     assert.deepEqual(check('packages/engine/src/rt-web3.ts', [
       '// red team: dynamic import and createRequire are not covered by no-restricted-imports',

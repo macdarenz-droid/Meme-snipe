@@ -11,6 +11,7 @@ import plugin from '../plugin.ts';
 import noAmbientClockOrRandom from '../rules/no-ambient-clock-or-random.ts';
 import noAwaitInWithTx from '../rules/no-await-in-withtx.ts';
 import noNumberOnUnits from '../rules/no-number-on-units.ts';
+import noProgramIdLiteral, { CONSTANTS_FILE, knownProgramIds } from '../rules/no-program-id-literal.ts';
 import noSharedTypeRedefinition, { exportedTypeNames } from '../rules/no-shared-type-redefinition.ts';
 
 RuleTester.describe = describe;
@@ -21,9 +22,9 @@ const tester = new RuleTester({ languageOptions: { parser: tsParser, ecmaVersion
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
 describe('plugin', () => {
-  it('exports the four rules under the bot namespace', () => {
+  it('exports the five rules under the bot namespace', () => {
     assert.equal(plugin.meta?.name, 'bot');
-    assert.deepEqual(Object.keys(plugin.rules ?? {}).sort(), ['no-ambient-clock-or-random', 'no-await-in-withtx', 'no-number-on-units', 'no-shared-type-redefinition']);
+    assert.deepEqual(Object.keys(plugin.rules ?? {}).sort(), ['no-ambient-clock-or-random', 'no-await-in-withtx', 'no-number-on-units', 'no-program-id-literal', 'no-shared-type-redefinition']);
   });
 });
 
@@ -198,4 +199,41 @@ tester.run('no-await-in-withtx', noAwaitInWithTx, {
     { code: 'this.db.withTx(function* (tx) { yield tx; })', errors: [{ messageId: 'asyncCallback' }] },
     { code: 'db.withTx((tx) => { if (a) { await b; } })', errors: [{ messageId: 'awaitInTx' }] },
   ],
+});
+
+// A-M01-01 logic 1 (ported from Snipe-solana card C03 #6 @ 6ae4d62). The IDs come from the registry itself, so this
+// test file holds none.
+const ids = [...knownProgramIds()];
+const pump = ids[0] as string;
+tester.run('no-program-id-literal', noProgramIdLiteral, {
+  valid: [
+    "const a = 'not a program id';",
+    `const a = 'Program ${pump} invoke [1]';`,
+    `const a = \`\${x}${pump}\`;`,
+    'const n = 7;',
+    "import { PROGRAMS } from '@bot/venue/constants'; const p = PROGRAMS.pumpCurve;",
+    'const r = String.raw`\\unicode`;',                       // a tagged template with no cooked value
+  ],
+  invalid: [
+    { code: `const p = '${pump}';`, errors: [{ messageId: 'literal' }] },
+    { code: `const p = "${ids[12] as string}";`, errors: [{ messageId: 'literal' }] },
+    { code: `const p = \`${ids[13] as string}\`;`, errors: [{ messageId: 'literal' }] },
+    { code: `f({ program: '${ids[3] as string}' });`, errors: [{ messageId: 'literal' }] },
+  ],
+});
+
+describe('knownProgramIds', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-constants-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  it('reads the 14 program IDs of the constants registry (A-M01-01), base58 of 32-44 characters', () => {
+    assert.equal(CONSTANTS_FILE, join(root, 'packages/venue/src/constants.ts'));
+    assert.equal(ids.length, 14);
+    for (const id of ids) assert.match(id, /^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+  });
+  it('reads only the PROGRAMS object, and nothing from a file without one', () => {
+    writeFileSync(join(dir, 'a.ts'), "export const MINTS = { a: 'x' };\nexport const PROGRAMS = Object.freeze({ a: 'P1', b: 'P2' } as const);\n");
+    assert.deepEqual([...knownProgramIds(join(dir, 'a.ts'))].sort(), ['P1', 'P2']);
+    writeFileSync(join(dir, 'b.ts'), "export const MINTS = { a: 'x' };\n");
+    assert.deepEqual([...knownProgramIds(join(dir, 'b.ts'))], []);
+  });
 });

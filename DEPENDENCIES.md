@@ -74,6 +74,49 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `@rolldown/binding-win32-arm64-msvc` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@rolldown/binding-win32-x64-msvc` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@rolldown/pluginutils` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `@solana/accounts` | Transitive, required by `@solana/kit`, `@solana/plugin-interfaces` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/addresses` | Transitive, required by `@solana/accounts`, `@solana/kit` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/assertions` | Transitive, required by `@solana/addresses`, `@solana/keys` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/codecs` | Transitive, required by `@solana/kit` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/codecs-core` | Transitive, required by `@solana/accounts`, `@solana/addresses` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/codecs-data-structures` | Transitive, required by `@solana/codecs`, `@solana/offchain-messages` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/codecs-numbers` | Transitive, required by `@solana/codecs`, `@solana/codecs-data-structures` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/codecs-strings` | Transitive, required by `@solana/accounts`, `@solana/addresses` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/errors` | Transitive, required by `@solana/accounts`, `@solana/addresses` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/fast-stable-stringify` | Transitive, required by `@solana/rpc`, `@solana/rpc-subscriptions` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/fixed-points` | Transitive, required by `@solana/codecs`, `@solana/rpc-types` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/functional` | Transitive, required by `@solana/kit`, `@solana/rpc` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/instruction-plans` | Transitive, required by `@solana/kit`, `@solana/plugin-interfaces` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/instructions` | Transitive, required by `@solana/instruction-plans`, `@solana/kit` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/keys` | Transitive, required by `@solana/instruction-plans`, `@solana/kit` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/kit` | Solana SDK 8.3.0 (exact pin, published 2026-09-09; 8.4.0, published 2026-09-28, is under 14 days old): `getProgramDerivedAddress` for the PDA checks of the constants registry in `@bot/venue` (A-M01-01, C-45); nothing else of it is used. New in Z03 (ported from C03) | MIT | pending |
+| `@solana/nominal-types` | Transitive, required by `@solana/addresses`, `@solana/keys` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/offchain-messages` | Transitive, required by `@solana/kit`, `@solana/signers` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/options` | Transitive, required by `@solana/codecs` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/plugin-core` | Transitive, required by `@solana/kit` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/plugin-interfaces` | Transitive, required by `@solana/kit`, `@solana/program-client-core` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/program-client-core` | Transitive, required by `@solana/kit` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/programs` | Transitive, required by `@solana/kit` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/promises` | Transitive, required by `@solana/instruction-plans`, `@solana/keys` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc` | Transitive, required by `@solana/kit`, `@solana/transaction-confirmation` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-api` | Transitive, required by `@solana/kit`, `@solana/program-client-core` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-parsed-types` | Transitive, required by `@solana/kit`, `@solana/rpc-api` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-spec` | Transitive, required by `@solana/accounts`, `@solana/plugin-interfaces` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-spec-types` | Transitive, required by `@solana/kit`, `@solana/rpc` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-subscriptions` | Transitive, required by `@solana/kit`, `@solana/transaction-confirmation` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-subscriptions-api` | Transitive, required by `@solana/rpc-subscriptions` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-subscriptions-channel-websocket` | Transitive, required by `@solana/rpc-subscriptions` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-subscriptions-spec` | Transitive, required by `@solana/plugin-interfaces`, `@solana/rpc-subscriptions` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-transformers` | Transitive, required by `@solana/rpc`, `@solana/rpc-api` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-transport-http` | Transitive, required by `@solana/rpc` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/rpc-types` | Transitive, required by `@solana/accounts`, `@solana/kit` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/signers` | Transitive, required by `@solana/kit`, `@solana/plugin-interfaces` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/subscribable` | Transitive, required by `@solana/kit`, `@solana/rpc-spec` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/sysvars` | Transitive, required by `@solana/kit` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/transaction-confirmation` | Transitive, required by `@solana/kit` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/transaction-introspection` | Transitive, required by `@solana/kit` (new in Z03, ported from C03) | MIT | pending |
+| `@solana/transaction-messages` | Transitive, required by `@solana/instruction-plans`, `@solana/kit` and others (new in Z03, ported from C03) | MIT | pending |
+| `@solana/transactions` | Transitive, required by `@solana/instruction-plans`, `@solana/kit` and others (new in Z03, ported from C03) | MIT | pending |
 | `@types/chai` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@types/deep-eql` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@types/esrecurse` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -117,6 +160,8 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `brace-expansion` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `cacheable` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `chai` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `chalk` | Transitive, required by `@solana/errors` (new in Z03, ported from C03) | MIT | pending |
+| `commander` | Transitive, required by `@solana/errors` (new in Z03, ported from C03) | MIT | pending |
 | `cross-spawn` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `debug` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `deep-is` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -198,13 +243,14 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `ts-api-utils` | Transitive (dev only), required by `@typescript-eslint/parser` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `type-check` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `typescript` | Type checker: 7.0.2 for `pnpm typecheck` and every package's `tsc` (in the integration branch before Z01). 6.0.3 (published 2026-04-16, Apache-2.0) only in `tools/`, as the TypeScript peer of `@typescript-eslint/parser`: its peer range is below 6.1.0 and TypeScript 7 has no JS compiler API; used only by ESLint and the import-graph check (`tools/eslint/test/typescript6.test.ts`); remove it once typescript-eslint supports TypeScript 7 (dev only) | Apache-2.0 | supervisor (7.0.2 in the integration branch before Z01; 6.0.3 approved 2026-10-07, limited to `tools/`) |
-| `undici-types` | Transitive (dev only), required by `@types/node`, `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `undici-types` | Transitive: 6.21.0 (dev only), required by `@types/node`, `vitest`; 8.11.0 (production, type declarations only), required by `@solana/rpc-transport-http` under `@solana/kit` (new in Z03: C03 pinned 8.10.2 by an `overrides` entry, which this repository refuses, so pnpm resolves 8.11.0, published 2026-09-22, at least 14 days old) | MIT | 6.21.0: supervisor (in the integration branch before Z01); 8.11.0: pending |
 | `uri-js` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | BSD-2-Clause | supervisor (Z01 brief, 2026-10-07) |
 | `vite` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `vitest` | Test runner for `pnpm test` (dev only) | MIT | supervisor (in the integration branch before Z01) |
 | `which` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | ISC | supervisor (in the integration branch before Z01) |
 | `why-is-node-running` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `word-wrap` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
+| `ws` | Transitive, required by `@solana/rpc-subscriptions-channel-websocket` under `@solana/kit`; 8.21.3 as C03 pinned it, here resolved by pnpm's 14-day rule (8.22.0, 2026-09-26, is younger) with no override (overrides are refused here). New in Z03 | MIT | pending |
 | `yocto-queue` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `zod` | Runtime schema check of every dashboard view model in `@bot/contract` (B-M28-01; UI.md UI-F32), imported by the dashboard and the server; production dependency. 4.6.5, published 2026-09-13 (24 days old on 2026-10-07), no dependencies of its own, no install script (npm registry, read 2026-10-07) | MIT | supervisor (Z02 brief, 2026-10-08) |
 

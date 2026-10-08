@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'vitest';
 import { ESLint } from 'eslint';
 import { LINT_COMMAND } from '../../policy/lintconfig.ts';
+import { knownProgramIds } from '../rules/no-program-id-literal.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const eslint = new ESLint({ cwd: root, overrideConfigFile: 'eslint.config.mjs' });
@@ -77,5 +78,20 @@ describe('npm run lint loads only eslint.config.mjs (C01 review R1)', () => {
       assert.equal(r.status, 1);
       assert.match(r.stdout, /no-undef/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// A-M01-01 (ported from Snipe-solana card C03 #6 @ 6ae4d62; C11's tools/fixtures/lib.ts is not ported, so the
+// registry is the only exempt file).
+describe('eslint.config.mjs: program ID literals (A-M01-01)', () => {
+  const id = [...knownProgramIds()][1] as string;
+  const code = `export const p = '${id}';\n`;
+  for (const file of ['packages/engine/src/a.ts', 'packages/decoders/src/a.ts', 'packages/engine/test/a.test.ts', 'tools/a.ts', 'packages/venue/src/other.ts']) {
+    it(`a program ID literal in ${file} fails lint`, async () => {
+      assert.deepEqual(await rulesHit(file, code), ['bot/no-program-id-literal']);
+    });
+  }
+  it('packages/venue/src/constants.ts may hold program IDs', async () => {
+    assert.deepEqual(await rulesHit('packages/venue/src/constants.ts', code), []);
   });
 });

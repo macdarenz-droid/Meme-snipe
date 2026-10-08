@@ -1,0 +1,24 @@
+{
+  "schema": "snipe-solana.mainnet-fixture.v1",
+  "kind": "pump_bonding_curve",
+  "mint": "2m6iJh2hXzYMd45aXH8RnTSegZzVPd5cYNBxWErApump",
+  "complete": true,
+  "found_via": "CompletePumpAmmMigrationEvent in 3xcn7YbYaM3hCJ3B1HbsD5aZibjaGjibzf7qfyQHqjVvtErzN2qQPBtqWZ4isWK2phJuSMukzxeV3qje1mproEeo; PDA [\"bonding-curve\", mint]",
+  "method": "getMultipleAccounts {encoding: base64, commitment: confirmed}",
+  "accounts": [
+    {
+      "role": "bonding_curve",
+      "pubkey": "9ergzzPtPwvSiThTkiuqJRP4rLFcXmYKQv4ZyDXBXPjd",
+      "owner": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+      "lamports": 1366520,
+      "executable": false,
+      "space": 141,
+      "data_base64": "F7f4N2DYrGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAxqR+jQMAARYXzOGOHhcIkFBeyRa/s3Njmw2p4sqxhG7PiLjrlNadAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "context_slot": 453968197,
+      "fetched_at": "2026-10-06T17:26:33.776Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "bonding curve with complete=true (migrated) (A-M02-02)"
+    }
+  ]
+}

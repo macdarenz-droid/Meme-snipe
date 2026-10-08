@@ -22,7 +22,7 @@ const MEASUREMENTS = [
 ];
 // The Blueprint packages (B-M30-01) and the policy tools: their own project, without Zeroed's engine runtime trap,
 // which closes the Function constructor for the whole run (ESLint's rule-schema validator compiles with it).
-const BLUEPRINT_PACKAGES = ['types', 'botctl', 'contract', 'dashboard', 'engine', 'exitpath', 'research', 'sentinel', 'signer', 'venue'];
+const BLUEPRINT_PACKAGES = ['types', 'botctl', 'contract', 'dashboard', 'decoders', 'engine', 'exitpath', 'research', 'sentinel', 'signer', 'venue'];
 const BLUEPRINT = [...BLUEPRINT_PACKAGES.map((p) => `packages/${p}/test/**/*.test.ts`), 'tools/**/test/**/*.test.ts'];
 
 export default defineConfig({

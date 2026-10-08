@@ -14,6 +14,12 @@ importers:
 
   packages/contract: {}
 
+  packages/decoders:
+    dependencies:
+      '@bot/types':
+        specifier: workspace:*
+        version: link:../types
+
   packages/engine:
     dependencies:
       '@bot/types':

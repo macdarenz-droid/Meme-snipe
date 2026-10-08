@@ -21,6 +21,9 @@ const WEB3_V1 = 'Banned in the engine and signer: use @solana/kit (B-M30-01; LD-
  */
 const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts'];
 
+/** The only file that may hold program ID literals (A-M01-01 logic 1): the constants registry. Exact path, as above. */
+const PROGRAM_ID_FILES = ['packages/venue/src/constants.ts'];
+
 /**
  * Every JavaScript and TypeScript source extension, so no module escapes the rules by its extension. The policy check
  * also refuses any source under packages/ and tools/ that is not .ts (E_SOURCE_TYPE), so `tsc` sees every module.
@@ -42,6 +45,7 @@ export default [
       'bot/no-shared-type-redefinition': 'error',
       // B-M24-01 logic 3: no await inside a withTx callback (ARCH 7.1).
       'bot/no-await-in-withtx': 'error',
+      'bot/no-program-id-literal': 'error',
       // Code built from strings loads modules the import check cannot see (C01 review finding R2).
       'no-eval': 'error',
       'no-new-func': 'error',
@@ -51,6 +55,10 @@ export default [
   {
     files: CLOCK_AND_RNG_MODULES,
     rules: { 'bot/no-ambient-clock-or-random': 'off' },
+  },
+  {
+    files: PROGRAM_ID_FILES,
+    rules: { 'bot/no-program-id-literal': 'off' },
   },
   {
     files: [...sources('packages/engine/'), ...sources('packages/signer/')],

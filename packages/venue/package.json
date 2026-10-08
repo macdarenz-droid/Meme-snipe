@@ -6,6 +6,12 @@
   "description": "Venue registry, quote model and IDL decoders (M01, M02).",
   "license": "UNLICENSED",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./constants": "./src/constants.ts"
+  },
+  "dependencies": {
+    "@bot/decoders": "workspace:*",
+    "@bot/types": "workspace:*",
+    "@solana/kit": "8.3.0"
   }
 }
