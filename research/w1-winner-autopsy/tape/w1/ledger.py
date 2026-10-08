@@ -336,7 +336,9 @@ class Ledger:
             return pd.DataFrame(columns=cols)
         mv = mv[mv["mint"].isin(self.sol_mints) & (mv["kind"] <= 2)]
         # a transfer with an empty owner is left out (its transaction is marked unresolved in T_coverage)
-        mv = mv[~((mv["kind"] == 0) & ((mv["frm"] < 0) | (mv["to"] < 0)))].reset_index(drop=True)
+        mv = mv[~((mv["kind"] == 0) & ((mv["frm"] < 0) | (mv["to"] < 0)))]
+        # a leg through the owner's own temp account (from == to) nets to zero (historical-data.md)
+        mv = mv[~((mv["kind"] == 0) & (mv["frm"] == mv["to"]))].reset_index(drop=True)
         if len(mv) == 0:
             return pd.DataFrame(columns=cols)
         st = self.states.asof(unit_states, mv["mint"].to_numpy(), mv["key"].to_numpy())
@@ -412,6 +414,11 @@ class Ledger:
         agg["start"] = start.reindex(agg.index).to_numpy()
         clean = agg["ok0"] & ~agg["mism"] & ~agg["bad"]
         agg["dirty"] = ~clean
+        self.stats.setdefault("dirty_reasons", {"start_unknown": 0, "balance_mismatch": 0, "unvalued_or_mint": 0})
+        dr = self.stats["dirty_reasons"]
+        dr["start_unknown"] += int((~agg["ok0"]).sum())
+        dr["balance_mismatch"] += int((agg["ok0"] & agg["mism"]).sum())
+        dr["unvalued_or_mint"] += int((agg["ok0"] & ~agg["mism"] & agg["bad"]).sum())
         closed = (agg["end"] == 0)
         agg["end_ok"] = clean | (closed & agg["lastzsw"])
         agg["end_ver"] = (agg["ver0"] | (agg["anyswap"] & clean)) | closed

@@ -1,5 +1,6 @@
 """Statistics registered in PREREG §8–§9 and the amendments' gates."""
 import math
+import warnings
 from typing import Dict, Optional
 
 import numpy as np
@@ -87,6 +88,7 @@ def spearman_boot(x: np.ndarray, y: np.ndarray, clusters: np.ndarray, strata: np
         cl = pd.Series(m).groupby(clusters[m]).apply(lambda v: v.to_numpy())
         groups.append(list(cl.values))
     reps = np.empty(n)
+    warnings.simplefilter("ignore")
     for b in range(n):
         idx = np.concatenate([np.concatenate([g[i] for i in rng.integers(0, len(g), len(g))]) for g in groups])
         r = spearmanr(x[idx], y[idx]).statistic

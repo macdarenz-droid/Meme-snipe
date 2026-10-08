@@ -98,16 +98,19 @@ class Holders:
         return float(np.clip(v, 0, None).sum())
 
 
-def _events(tape: Tape, mint: int, pool: int) -> pd.DataFrame:
+def _events(tape: Tape, book: PoolBook, mint: int, pool: int) -> pd.DataFrame:
     c = tape.curve[(tape.curve.mint == mint) & (tape.curve.sol_quote == 1)]
-    a = tape.amm[tape.amm.pool == pool]
+    r = book.rows[pool]
+    a = pd.DataFrame({"slot": r["slot"], "tx_idx": r["tx_idx"], "outer_ix": r["outer_ix"], "inner_ix": r["inner_ix"],
+                      "side": r["side"], "owner": r["owner"], "base_amount": r["base_amount"],
+                      "user_quote": r["user_quote"], "owner_pre": r["owner_pre"], "owner_post": r["owner_post"]})
     t = tape.t[tape.t.mint == mint]
     parts = []
     if len(c):
         parts.append(pd.DataFrame({
             "slot": c.slot, "tx_idx": c.tx_idx, "outer_ix": c.outer_ix, "inner_ix": c.inner_ix, "src": 0,
             "typ": np.where(c.is_buy == 1, 0, 1), "owner": c.owner, "other": -1, "tok": c.token_amount,
-            "cost": c.sol_amount + c.fee + c.creator_fee, "pre": c.owner_pre, "post": c.owner_post}))
+            "cost": c.sol_amount.astype(np.int64) + c.fee.astype(np.int64) + c.creator_fee.astype(np.int64), "pre": c.owner_pre, "post": c.owner_post}))
     if len(a):
         parts.append(pd.DataFrame({
             "slot": a.slot, "tx_idx": a.tx_idx, "outer_ix": a.outer_ix, "inner_ix": a.inner_ix, "src": 0,
@@ -133,7 +136,7 @@ def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame) -> pd.DataFram
         if mint in ce.index:
             curves.add(int(ce.at[mint, "bonding_curve"]))
         H = Holders({pool, -1} | curves)
-        ev = _events(tape, int(mint), int(pool))
+        ev = _events(tape, book, int(mint), int(pool))
         cols = [ev[c].to_numpy() for c in ("slot", "tx_idx", "typ", "owner", "other", "tok", "cost", "pre", "post", "src")]
         sl, tx, typ, own, oth, tok, cost, pre, post, src = cols
         n = len(sl)

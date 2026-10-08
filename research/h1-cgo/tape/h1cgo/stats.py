@@ -40,6 +40,10 @@ def gate0(feats: pd.DataFrame, days) -> dict:
     """§5. (a) eligible decision points with coverage >= 90% per day; (b) R² of CGO on past 1 h, 6 h and since-migration
     returns < 0.8; (c) P80 - P20 of CGO >= 0.2. Conservative readings (OPEN_QUESTIONS Q4, Q5): (a) counts the first
     eligible decision point per mint per UTC day; (b) closes if simple or log returns give R² >= 0.8."""
+    if feats.empty or "eligible" not in feats.columns:
+        return dict(days=list(days), eligible_points=0, eligible_first_per_mint_day=0, per_day_first=0.0,
+                    per_day_all=0.0, a_pass=False, b_pass=False, c_pass=False, passed=False,
+                    reason="no decision points")
     _check_days(feats, DISCOVERY_DAYS, "gate0")
     e = eligible(feats)
     n_days = len(days)
@@ -147,10 +151,12 @@ def interval(boot: np.ndarray, level: float) -> tuple:
     return float(lo), float(hi)
 
 
-def primary(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict) -> dict:
+def primary(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_days) -> dict:
     """§8 on validation days: mean net return per trade in SOL for entries in the frozen extreme, pooled; pool-clustered
     bootstrap stratified by day (10,000, fixed seed), 99.5% and 95% two-sided; pass needs all four conditions."""
     _check_days(feats, VALIDATION_DAYS, "primary")
+    if list(decision_days) != list(VALIDATION_DAYS):
+        raise ValueError(f"primary needs exactly the validation days {VALIDATION_DAYS}; got {list(decision_days)}")
     if frozen.get("sign") not in ("high", "low") or "p20" not in frozen.get("breakpoints", {}):
         raise ValueError("primary needs the frozen sign and breakpoints from discovery")
     bp, side = frozen["breakpoints"], frozen["sign"]
@@ -166,7 +172,7 @@ def primary(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict) -> dict:
     lo, hi = interval(boot, CI_PRIMARY)
     lo95, hi95 = interval(boot, CI_SECONDARY)
     per_day = t.groupby("decision_day").net_lamports.mean() / 1e9
-    days_ok = all(per_day.get(d, float("nan")) > 0 for d in sorted(set(feats.decision_day)))
+    days_ok = all(per_day.get(d, float("nan")) > 0 for d in VALIDATION_DAYS)
     lift = float(sol.mean() - base.net_lamports.mean() / 1e9)
     res.update(mean_net_sol=float(sol.mean()), mean_net_ret=float(t.net_ret.mean()), ci995=(lo, hi), ci95=(lo95, hi95),
                per_day_mean_sol={k: float(v) for k, v in per_day.items()}, lift_net_sol=lift,

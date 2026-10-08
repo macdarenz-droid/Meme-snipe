@@ -267,7 +267,7 @@ def movements(unit: Unit, vocab: Vocab, mints=None):
                         "bt": t["block_time"].astype(np.int64), "mint": vocab.ids(t["mint"]), "kind": kind,
                         "frm": vocab.ids(t["from_owner"]), "to": vocab.ids(t["to_owner"]),
                         "amount": t["amount"].astype(np.int64)})
-    out["txk"] = out["key"] >> KEY_TX_SHIFT
+    out["txk"] = out["key"].to_numpy(np.int64) >> KEY_TX_SHIFT
     return out.sort_values("key", kind="stable").reset_index(drop=True)
 
 

@@ -46,8 +46,9 @@ class FastClass:
             ok = (prev >= 0)
             ok[ok] = big["mint"].to_numpy()[prev[ok]] == big["mint"].to_numpy()[ok]
             big["prev_other_slot"] = np.where(ok, big["slot"].to_numpy()[np.clip(prev, 0, None)], -10 ** 12)
-            j = pd.merge_asof(b[["key", "mint", "trader", "slot"]], big[["key", "mint", "trader", "slot", "prev_other_slot"]]
-                              .rename(columns={"trader": "bt", "slot": "bs"}), on="key", by="mint", allow_exact_matches=False)
+            right = big[["key", "mint", "trader", "slot", "prev_other_slot"]].rename(columns={"trader": "bt", "slot": "bs"})
+            j = pd.merge_asof(b[["key", "mint", "trader", "slot"]], right.sort_values("key", kind="stable"),
+                              on="key", by="mint", allow_exact_matches=False)
             cand = np.where(j["bt"].to_numpy() != j["trader"].to_numpy(), j["bs"].to_numpy(), j["prev_other_slot"].to_numpy())
             cand = np.nan_to_num(cand.astype(float), nan=-1e15)
             b["after_big"] = (b["slot"].to_numpy() - cand) <= 2

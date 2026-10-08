@@ -49,8 +49,9 @@ def stage1(args):
     from d1.pool_state import PoolBook
     from d1.universe import Clock, decision_points, migrations
     os.makedirs(args.out, exist_ok=True)
-    tape = load(_units(args), args.days)
+    tape = load(_units(args), args.days, all_pools=args.dev_unknown_migration)
     book = PoolBook(tape.amm)
+    tape.amm = tape.amm.iloc[:0]   # the pool book holds the rows from here on
     clock = Clock(tape)
     migs = migrations(tape, book, dev_unknown_migration=args.dev_unknown_migration)
     pts = decision_points(tape, book, migs, clock)
@@ -72,7 +73,8 @@ def stage2(args):
     from d1.load import dump_json, load, manifest
     from d1.outcomes import compute_outcomes
     from d1.pool_state import PoolBook
-    tape = load(_units(args), args.days)
+    m1 = json.load(open(os.path.join(args.out, "manifest_stage1.json")))
+    tape = load(_units(args), args.days, all_pools=bool(m1.get("dev")))
     book = PoolBook(tape.amm)
     pts = pd.read_pickle(os.path.join(args.out, "points.pkl"))
     out = compute_outcomes(book, pts) if len(pts) else pd.DataFrame()

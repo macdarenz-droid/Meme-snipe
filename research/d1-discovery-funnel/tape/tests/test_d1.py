@@ -37,7 +37,8 @@ class Costs(unittest.TestCase):
         self.assertEqual(round(expected_fixed()), C.EXPECTED_FIXED_LAMPORTS_REPO)
         p = os.path.join(REPO, "research", "edge", "costs.json")
         if os.path.exists(p):
-            self.assertEqual(round(FIXED), json.load(open(p))["rows"][0]["fixedLamports"])
+            with open(p) as fh:
+                self.assertEqual(round(FIXED), json.load(fh)["rows"][0]["fixedLamports"])
 
     def test_spend(self):
         self.assertEqual(C.SPEND_LAMPORTS, 419_252_054)
@@ -226,7 +227,8 @@ class Features(unittest.TestCase):
 
     def test_feature_code_never_imports_outcomes(self):
         for name in ("features.py", "universe.py", "clusters.py", "holders.py", "pool_state.py", "load.py"):
-            tree = ast.parse(open(os.path.join(HERE, "d1", name)).read())
+            with open(os.path.join(HERE, "d1", name)) as fh:
+                tree = ast.parse(fh.read())
             mods = set()
             for n in ast.walk(tree):
                 if isinstance(n, ast.ImportFrom):

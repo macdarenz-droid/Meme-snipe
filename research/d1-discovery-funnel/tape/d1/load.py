@@ -164,7 +164,29 @@ def _wall(df: pd.DataFrame, name: str, u: Unit):
         raise RuntimeError(f"{u.path} {name}: a row at or after 2026-09-12T00:00Z (holdout); refusing to load")
 
 
-def load(unit_dirs: Sequence[str], days: Sequence[str]) -> Tape:
+def migrated_pools(units: Sequence[Unit]) -> set:
+    """First pass: pools of every CompletePumpAmmMigrationEvent on the tape (only these can enter the universe)."""
+    pools = set()
+    for u in units:
+        ep = os.path.join(u.research, "E.jsonl.zst")
+        if os.path.exists(ep):
+            e = pd.read_json(ep, compression="zstd", lines=True, dtype=False)
+            for f in e.loc[e.event == "CompletePumpAmmMigrationEvent", "fields"]:
+                pools.add(f.get("pool"))
+    return pools
+
+
+def _down(df: pd.DataFrame) -> pd.DataFrame:
+    """Downcast integer columns that fit in int32 (slots < 2^31, codes, indexes, bps) to save memory."""
+    for c in df.columns:
+        if df[c].dtype == np.int64 and len(df) and df[c].min() >= -2**31 and df[c].max() < 2**31:
+            df[c] = df[c].astype(np.int32)
+    return df
+
+
+def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False) -> Tape:
+    """all_pools=False keeps pool rows only for pools migrated on the tape (the universe); True keeps every canonical
+    WSOL pool (dev shape checks)."""
     units = sorted((parse_unit(p) for p in unit_dirs), key=lambda u: u.from_slot)
     days = tuple(sorted(days))
     for u in units:
@@ -173,6 +195,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str]) -> Tape:
         if C.epoch(u.day) >= C.WALL_EPOCH:
             raise ValueError(f"day {u.day} is at or after the holdout start 2026-09-12")
     codec = Codec()
+    mig_pools = None if all_pools else migrated_pools(units)
     parts: Dict[str, list] = {k: [] for k in ("b", "amm", "buys", "curve", "t", "w", "f", "cf")}
     evp: Dict[str, list] = {k: [] for k in E_EVENTS}
     v1 = []
@@ -196,7 +219,9 @@ def load(unit_dirs: Sequence[str], days: Sequence[str]) -> Tape:
             "mint": codec.encode(ab.base_mint), "owner": codec.encode(ab.user_token_owner),
             "sol": np.where(ab.quote_mint.isin(SOL_QUOTES).to_numpy(), _num(ab.quote_amount), np.nan)}))
         # canonical WSOL pool rows (universe, pool state, flow, holders)
-        keep = ((a.canonical == "1") & (a.quote_mint == C.WSOL)).to_numpy()
+        keep = ((a.canonical == "1") & (a.quote_mint == C.WSOL)).to_numpy().copy()
+        if mig_pools is not None:
+            keep &= a.pool.isin(mig_pools).to_numpy()
         k = a[keep]
         side = np.where((k.side == "buy").to_numpy(), 1, -1)
         tp = k.top_program
@@ -278,6 +303,9 @@ def load(unit_dirs: Sequence[str], days: Sequence[str]) -> Tape:
         if not parts[name]:
             return pd.DataFrame({c: pd.Series(dtype=np.int64) for c in (cols or ["slot"])})
         df = pd.concat(parts[name], ignore_index=True)
+        parts[name] = []
+        if name not in ("amm",):
+            df = _down(df)
         return df.sort_values(list(sort), kind="mergesort").reset_index(drop=True)
 
     b = cat("b").drop_duplicates("slot")

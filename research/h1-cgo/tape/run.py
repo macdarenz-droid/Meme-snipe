@@ -40,10 +40,29 @@ def _dump(path, obj):
 
 
 def _read_feats(out):
-    f = pd.read_csv(os.path.join(out, "features.csv"), dtype={"decision_day": str})
+    try:
+        f = pd.read_csv(os.path.join(out, "features.csv"), dtype={"decision_day": str})
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
     for c in [c for c in f.columns if c.startswith("in_time_")] + ["eligible", "unresolved", "has_state", "bad_pool"]:
         f[c] = f[c].astype(bool)
     return f
+
+
+def _verify_meta(out):
+    """Re-checks, from features_meta.json, that the features read every planned unit of every day they used."""
+    meta = _load_json(os.path.join(out, "features_meta.json"))
+    for k in ("plan", "plan_sha256", "unit_records", "days_used", "inputs"):
+        if meta.get(k) is None:
+            sys.exit(f"features_meta.json lacks {k}: rerun the features stage")
+    if tapeio.sha256_file(meta["plan"]) != meta["plan_sha256"]:
+        sys.exit("the unit plan changed since the features stage")
+    us = [tapeio.Unit(r["day"], r["from_slot"], r["to_slot"], r["dir"]) for r in meta["unit_records"]]
+    try:
+        tapeio.check_complete(us, meta["days_used"], tapeio.load_plan(meta["plan"]))
+    except ValueError as e:
+        sys.exit(f"incomplete input: {e}")
+    return meta
 
 
 def main(argv=None):
@@ -55,7 +74,7 @@ def main(argv=None):
     a.add_argument("--out", required=True)
     a.add_argument("--frozen")
     a.add_argument("--counts-only", action="store_true", help="outcomes: print status counts, write no returns")
-    a.add_argument("--no-hash", action="store_true", help="skip input hashing (development only)")
+    a.add_argument("--plan", default=tapeio.PLAN_PATH, help="committed unit plan (DAY EPOCH FROM TO per unit)")
     o = a.parse_args(argv)
     os.makedirs(o.out, exist_ok=True)
 
@@ -64,28 +83,45 @@ def main(argv=None):
         for d in o.decision_days:
             if d not in DISCOVERY_DAYS + VALIDATION_DAYS:
                 sys.exit(f"{d} is neither a discovery nor a validation day")
-        kinds = {d in DISCOVERY_DAYS for d in o.decision_days}
+        kinds = {d in DISCOVERY_DAYS for d in o.decision_days + (o.creation_days or [])}
         if len(kinds) != 1:
-            sys.exit("decision days must be all discovery or all validation days")
+            sys.exit("decision and creation days must be all discovery or all validation days")
+        days = sorted(set(o.decision_days) | set(o.creation_days or []))
+        try:
+            tapeio.check_complete(us, days, tapeio.load_plan(o.plan))
+        except ValueError as e:
+            sys.exit(f"features: {e}")
         feats, uni, diag = features.run(us, o.decision_days, o.creation_days, log=lambda m: print(m, file=sys.stderr))
         feats.to_csv(os.path.join(o.out, "features.csv"), index=False)
         uni.to_csv(os.path.join(o.out, "universe.csv"), index=False)
-        diag.update(decision_days=o.decision_days, creation_days=o.creation_days or o.decision_days,
-                    code=tapeio.code_hash(), inputs=None if o.no_hash else tapeio.input_hashes(us))
+        diag.update(decision_days=o.decision_days, creation_days=o.creation_days or o.decision_days, days_used=days,
+                    plan=o.plan, plan_sha256=tapeio.sha256_file(o.plan),
+                    unit_records=[tapeio.unit_record(u) for u in sorted(us, key=lambda x: x.from_slot)],
+                    code=tapeio.code_hash(), inputs=tapeio.input_hashes(us))
         _dump(os.path.join(o.out, "features_meta.json"), diag)
         n_el = int(feats.eligible.sum()) if len(feats) else 0
         print(json.dumps(dict(universe=diag["universe"], decision_points=len(feats), eligible=n_el, rows=diag["rows"])))
 
     elif o.stage == "gate0":
+        meta = _verify_meta(o.out)
         f = _read_feats(o.out)
-        days = _load_json(os.path.join(o.out, "features_meta.json"))["decision_days"]
-        g = stats.gate0(f, days)
+        if f.empty:
+            sys.exit("gate0: features.csv holds no decision points; nothing to judge")
+        g = stats.gate0(f, meta["decision_days"])
         _dump(os.path.join(o.out, "gate0.json"), g)
         print("gate H1-CGO-0:", "pass" if g["passed"] else "closed", f"(a {g['a_pass']}, b {g['b_pass']}, c {g['c_pass']})")
 
     elif o.stage == "outcomes":
+        meta = _verify_meta(o.out)
         f = _read_feats(o.out)
         us = _units(o.units)
+        recs = [tapeio.unit_record(u) for u in sorted(us, key=lambda x: x.from_slot)]
+        if recs != meta["unit_records"]:
+            sys.exit("outcomes: --units differ from the units the features read")
+        if tapeio.input_hashes(us) != meta["inputs"]:
+            sys.exit("outcomes: an input file changed since the features stage (sha256)")
+        if f.empty:
+            sys.exit("outcomes: no decision points")
         books = outcomes.load_books(us, set(f[f.eligible].pool))
         out = outcomes.run(f, books)
         if o.counts_only:
@@ -98,10 +134,10 @@ def main(argv=None):
         gp = os.path.join(o.out, "gate0.json")
         if not os.path.exists(gp) or not _load_json(gp)["passed"]:
             sys.exit("freeze runs only after gate H1-CGO-0 passed (run gate0 first)")
+        meta = _verify_meta(o.out)
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
         res = stats.sign_and_futility(f, out)
-        meta = _load_json(os.path.join(o.out, "features_meta.json"))
         res.update(code=tapeio.code_hash(), feature_inputs=meta.get("inputs"), discovery_days=meta["decision_days"])
         _dump(os.path.join(o.out, "frozen.json"), res)
         print("frozen:", res["verdict"], "sign", res["sign"])
@@ -112,9 +148,14 @@ def main(argv=None):
         frozen = _load_json(o.frozen)
         if frozen.get("verdict") != "continue":
             sys.exit(f"discovery closed H1-CGO ({frozen.get('verdict')}); nothing to score")
+        if frozen.get("code") != tapeio.code_hash():
+            sys.exit("score: the code differs from the code that froze the discovery result")
+        meta = _verify_meta(o.out)
+        if list(meta["decision_days"]) != list(VALIDATION_DAYS):
+            sys.exit(f"score needs decision days exactly {VALIDATION_DAYS}; got {meta['decision_days']}")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
-        p = stats.primary(f, out, frozen)
+        p = stats.primary(f, out, frozen, meta["decision_days"])
         s = stats.secondary(f, out, frozen)
         p.update(code=tapeio.code_hash())
         _dump(os.path.join(o.out, "primary.json"), p)

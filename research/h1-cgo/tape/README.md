@@ -20,13 +20,18 @@ The order:
 
 The code refuses any unit dated 2026-09-12 or later, and any run that mixes discovery and validation days.
 
+**Completeness (Step A guard).** `features` loads the committed unit plan (`--plan`, default `research/shared-tape/stepa-plan.txt`, one `DAY EPOCH FROM TO` line per unit). For every day used (decision and creation days), it requires exactly that day's planned units, contiguous from the day's first FROM to its last TO, each with its tables on disk. It refuses units from any other day. `gate0`, `outcomes`, `freeze` and `score` repeat the check from `features_meta.json` (unit records, plan sha256).
+- `outcomes` also requires the same units, with the same sha256, as `features`, and `Book` refuses any slot outside the loaded range.
+- `score` requires the decision days to be exactly 2026-09-07, 09-08 and 09-09, and the code hash to equal `frozen.json`'s.
+- `gate0` stops with a message when there are no decision points.
+
 Example (development, counts only):
 ```
 nice -n 19 python3 run.py features --units /home/user/tape-cache/2026-09-11/446274000-446278499 \
-  /home/user/tape-cache/2026-09-11/446278500-446282999 --decision-days 2026-09-11 --out /tmp/h1 --no-hash
+  /home/user/tape-cache/2026-09-11/446278500-446282999 --decision-days 2026-09-11 --out /tmp/h1   # now refused: 09-11 is incomplete (Step A guard)
 ```
 
-Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 40 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
+Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 51 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
 
 ## Look-ahead
 - `h1cgo/features.py` builds one stream per coin. `MintStream.advance(d)` applies exactly the rows with slot ≤ d, and every feature reads only what has been applied:

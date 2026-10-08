@@ -11,6 +11,8 @@ from .decide import flags_asof, create_index
 from .features import FeatureContext
 from .flows import FastClass, migration_flows
 from .market import Market
+from scipy.stats import spearmanr
+
 from .stats import spearman_boot
 
 
@@ -160,6 +162,14 @@ def strata_rows(d: pd.DataFrame, grads: pd.DataFrame, flows: Dict[int, dict]) ->
     return out
 
 
+def _rho(x, y) -> float:
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    ok = ~(np.isnan(x) | np.isnan(y))
+    if ok.sum() < 3 or np.ptp(x[ok]) == 0 or np.ptp(y[ok]) == 0:
+        return math.nan
+    return float(spearmanr(x[ok], y[ok]).statistic)
+
+
 def hc_gate(trig: pd.DataFrame, flows: Dict[int, dict], days) -> dict:
     """Amendment 1 gates (a)–(d) on the discovery days."""
     t = trig.copy()
@@ -172,7 +182,10 @@ def hc_gate(trig: pd.DataFrame, flows: Dict[int, dict], days) -> dict:
     filt = has_r[(has_r["R"] < med_r) & has_r["catchable"]]
     per_day = {str(k): int(v) for k, v in filt.groupby("day").size().items()}
     avg = sum(per_day.get(str(x), 0) for x in days) / max(len(days), 1)
-    terc = pd.qcut(has_r["R"], 3, labels=["low", "mid", "high"], duplicates="drop") if len(has_r) >= 3 else None
+    terc = None
+    if len(has_r):
+        q1, q2 = has_r["R"].quantile(1 / 3), has_r["R"].quantile(2 / 3)
+        terc = pd.Series(np.where(has_r["R"] <= q1, "low", np.where(has_r["R"] <= q2, "mid", "high")))
     age = (has_r["t0"] - has_r["create_slot"]).to_numpy()
     out = {
         "a_spearman_R_vs_share_sold": a,
@@ -182,7 +195,7 @@ def hc_gate(trig: pd.DataFrame, flows: Dict[int, dict], days) -> dict:
         "b_pass": bool(pooled >= P.HC_GATE_COVERAGE and float(cov.median()) >= P.HC_GATE_COVERAGE) if len(cov) else False,
         "b_dropped_created_before_tape": int((t["hc_reason"] == "created-before-tape").sum()),
         "c_filtered_catchable_per_day": per_day, "c_avg": avg, "c_pass": avg >= P.HC_GATE_MIN_PER_DAY,
-        "d_spearman_R_vs_create_to_trigger_slots": spearman_boot(has_r["R"].to_numpy(), age, has_r["mint"].to_numpy(), has_r["day"].to_numpy(), n=1) if len(has_r) >= 3 else None,
+        "d_spearman_R_vs_create_to_trigger_slots": _rho(has_r["R"].to_numpy(), age),
         "d_counts_by_R_tercile": {str(k): int(v) for k, v in terc.value_counts().items()} if terc is not None else {},
         "median_R": med_r,
     }
@@ -195,7 +208,7 @@ def cap_gate(trig: pd.DataFrame, flows: Dict[int, dict], g10_pass: bool, days) -
     t = trig[trig["Z"].notna() & (trig["cap_reason"] == "")].copy()
     t["net_flow"] = [flows.get(m, {}).get("net_opening_flow_sol", np.nan) for m in t["mint_c"]]
     t["fast_buy"] = [flows.get(m, {}).get("fast_buy_sol", np.nan) for m in t["mint_c"]]
-    zl = spearman_boot(t["Z"].to_numpy(), t["lam"].to_numpy(), t["mint"].to_numpy(), t["day"].to_numpy(), n=1) if len(t) >= 3 else {"rho": math.nan}
+    zl = {"rho": _rho(t["Z"].to_numpy(), t["lam"].to_numpy())}
     iqr = float(t["Z"].quantile(0.75) - t["Z"].quantile(0.25)) if len(t) else math.nan
     c = spearman_boot(t["Z"].to_numpy(), t["net_flow"].to_numpy(), t["mint"].to_numpy(), t["day"].to_numpy())
     c2 = spearman_boot(t["Z"].to_numpy(), t["fast_buy"].to_numpy(), t["mint"].to_numpy(), t["day"].to_numpy())

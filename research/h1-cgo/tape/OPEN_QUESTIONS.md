@@ -46,5 +46,7 @@ Each item is a point where `../PREREG.md` is silent or ambiguous. The code uses 
 22. **Futility cost.** §7 says "the median round-trip cost of the discovery trades at $50". **Used:** the median of (fees + impact on both legs + fixed) ÷ paid over the discovery entries of the chosen extreme.
 23. **Secondary "holders who bought after migration only."** **Used:** owners with at least one PumpSwap buy and no curve buy, counting their post-migration lots. That CGO gets its own P20 and P80 from discovery, frozen with the rest.
 
+24. **Validation plan.** `research/shared-tape/stepa-plan.txt` lists only 2026-09-10 and 09-11. The validation stage needs Step B's committed plan, passed with `--plan`. Until it exists, validation runs are refused.
+
 ## Not done here
-24. §9.4 asks for the code, seeds and input hashes to be committed before validation days are read. `features_meta.json` and `frozen.json` record the sha256 of every input file and source file. The commit itself is for the supervisor (this builder runs no git).
+25. §9.4 asks for the code, seeds and input hashes to be committed before validation days are read. `features_meta.json` and `frozen.json` record the sha256 of every input file and source file. The commit itself is for the supervisor (this builder runs no git).

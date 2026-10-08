@@ -22,7 +22,8 @@ class PoolBook:
         amm = amm.sort_values(["pool", "slot", "tx_idx", "ev_idx"], kind="mergesort")
         cols = ["slot", "block_time", "side", "base_amount", "quote_amount", "user_quote", "base_before", "vault_before",
                 "base_after", "vault_after", "virt", "lp_bps", "protocol_bps", "creator_bps", "supply", "owner",
-                "coin_creator", "app_routed", "tx_idx", "ev_idx", "mint"]
+                "coin_creator", "app_routed", "tx_idx", "ev_idx", "mint", "outer_ix", "inner_ix", "owner_pre",
+                "owner_post"]
         arrs = {c: amm[c].to_numpy() for c in cols}
         pools = amm.pool.to_numpy()
         starts = np.flatnonzero(np.r_[True, pools[1:] != pools[:-1]])

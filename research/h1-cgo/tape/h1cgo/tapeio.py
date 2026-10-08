@@ -113,3 +113,59 @@ def code_hash() -> dict:
     files = [os.path.join(here, f) for f in sorted(os.listdir(here)) if f.endswith(".py")]
     files.append(os.path.join(os.path.dirname(here), "run.py"))
     return {os.path.relpath(f, os.path.dirname(here)): sha256_file(f) for f in files if os.path.exists(f)}
+
+
+# ---------------------------------------------------------------- Step A completeness
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+PLAN_PATH = os.path.join(REPO, "research", "shared-tape", "stepa-plan.txt")
+REQUIRED_TABLES = ("E.jsonl.zst", "B.csv.zst", "S_curve.csv.zst", "S_amm.csv.zst", "T.csv.zst", "T_coverage.csv.zst")
+
+
+def load_plan(path: str = PLAN_PATH) -> dict:
+    """The committed unit plan: one 'DAY EPOCH FROM TO' line per unit. Returns {day: sorted [(from, to)]}."""
+    plan = {}
+    with open(path) as f:
+        for n, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            parts = line.split()
+            if len(parts) != 4:
+                raise ValueError(f"{path}:{n}: expected 'DAY EPOCH FROM TO'")
+            plan.setdefault(parts[0], []).append((int(parts[2]), int(parts[3])))
+    return {d: sorted(v) for d, v in plan.items()}
+
+
+def check_complete(units, days, plan: dict) -> None:
+    """Every day used must be read whole: exactly that day's planned units, contiguous from its first FROM to its last
+    TO, each present on disk with the tables the code reads. Units of any other day are refused. Raises ValueError."""
+    days = sorted(set(days))
+    if not days:
+        raise ValueError("no day given")
+    extra = sorted({u.day for u in units} - set(days))
+    if extra:
+        raise ValueError(f"units from days outside this stage's days {days}: {extra}")
+    for d in days:
+        want = plan.get(d)
+        if not want:
+            raise ValueError(f"day {d} has no planned units")
+        for (a0, b0), (a1, _) in zip(want, want[1:]):
+            if a1 != b0 + 1:
+                raise ValueError(f"day {d}: the plan is not contiguous at {b0}..{a1}")
+        have = sorted((u.from_slot, u.to_slot) for u in units if u.day == d)
+        if len(have) != len(set(have)):
+            raise ValueError(f"day {d}: a unit is listed twice")
+        missing = sorted(set(want) - set(have))
+        unplanned = sorted(set(have) - set(want))
+        if missing or unplanned:
+            raise ValueError(f"day {d} incomplete: missing units {missing[:5]}{'…' if len(missing) > 5 else ''} "
+                             f"({len(missing)}), unplanned units {unplanned[:5]}")
+        for u in units:
+            if u.day == d:
+                absent = [t for t in REQUIRED_TABLES if not os.path.exists(os.path.join(u.dir, t))]
+                if absent:
+                    raise ValueError(f"unit {d} {u.from_slot}-{u.to_slot} lacks {absent} on disk")
+
+
+def unit_record(u: Unit) -> dict:
+    return dict(day=u.day, from_slot=u.from_slot, to_slot=u.to_slot, dir=u.dir)

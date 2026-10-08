@@ -7,12 +7,14 @@ import pandas as pd
 from h1cgo import outcomes as O
 from h1cgo import pumpswap as ps
 from h1cgo import stats as S
-from h1cgo.constants import spend_of
+from h1cgo.constants import VALIDATION_DAYS, spend_of
+
+VDAYS = list(VALIDATION_DAYS)
 from tests.synth import AMM_COLS, amm_row, frame
 
 
 def book(rows):
-    return O.books_from_rows(frame(rows, AMM_COLS))["P"]
+    return O.books_from_rows(frame(rows, AMM_COLS), 0, 10**6)["P"]
 
 
 class Pricing(unittest.TestCase):
@@ -47,6 +49,16 @@ class Pricing(unittest.TestCase):
         self.assertEqual(t["tokens"], ps.buy_exact_quote_in(post, spend_of(50), self.tiers, 10**15).base)
         self.assertAlmostEqual(t["gross"], 0.0)
         self.assertLess(t["net_ret"], 0)
+
+    def test_book_refuses_slots_outside_its_loaded_range(self):
+        r1 = amm_row(100, 1, "X", "buy", 10**12, 200 * 10**12, 80 * 10**9)
+        b = O.books_from_rows(frame([r1], AMM_COLS), 50, 500)["P"]
+        self.assertIsNotNone(b.end(500))
+        for slot in (501, 49):
+            with self.assertRaises(ValueError):
+                b.start(slot)
+            with self.assertRaises(ValueError):
+                b.end(slot)
 
     def test_refusals(self):
         r1 = amm_row(100, 1, "X", "buy", 10**12, 200 * 10**12, 80 * 10**9)
@@ -144,7 +156,7 @@ class Primary(unittest.TestCase):
     def test_pass(self):
         f = self._f(240)
         net = np.where(f.cgo > 1, 2e7 + 1e6 * np.sin(np.arange(len(f))), -1e7)
-        p = S.primary(f, outs_for(f, net), self.frozen)
+        p = S.primary(f, outs_for(f, net), self.frozen, VDAYS)
         self.assertEqual(p["n_trades"], 360)
         self.assertEqual(p["verdict"], "pass")
         self.assertLess(p["ci995"][0], p["ci95"][0])
@@ -153,19 +165,29 @@ class Primary(unittest.TestCase):
     def test_unresolved_and_not_supported(self):
         f = self._f(100)
         net = np.where(f.cgo > 1, 2e7, -1e7)
-        self.assertEqual(S.primary(f, outs_for(f, net), self.frozen)["verdict"], "unresolved")
+        self.assertEqual(S.primary(f, outs_for(f, net), self.frozen, VDAYS)["verdict"], "unresolved")
         f = self._f(240)
         net = np.where(f.cgo > 1, np.where(f.decision_day == "2026-09-08", -1e6, 2e7), -1e7)
-        p = S.primary(f, outs_for(f, net), self.frozen)
+        p = S.primary(f, outs_for(f, net), self.frozen, VDAYS)
         self.assertFalse(p["conditions"]["every_day_above_0"])
         self.assertEqual(p["verdict"], "not supported")
 
+    def test_a_validation_day_with_no_trades_fails(self):
+        f = self._f(320)
+        f = f[f.decision_day != "2026-09-08"]  # every trade on the other two days is positive
+        net = np.where(f.cgo > 1, 2e7, -1e7)
+        p = S.primary(f, outs_for(f, net), self.frozen, VDAYS)
+        self.assertFalse(p["conditions"]["every_day_above_0"])
+        self.assertEqual(p["verdict"], "not supported")
+        with self.assertRaises(ValueError):  # the stage must have read exactly the validation days
+            S.primary(f, outs_for(f, net), self.frozen, ["2026-09-07", "2026-09-09"])
+
     def test_guards(self):
         with self.assertRaises(ValueError):
-            S.primary(feats_table(), outs_for(feats_table(), 1.0), self.frozen)  # discovery day
+            S.primary(feats_table(), outs_for(feats_table(), 1.0), self.frozen, VDAYS)  # discovery day
         f = self._f(10)
         with self.assertRaises(ValueError):
-            S.primary(f, outs_for(f, 1.0), dict(sign=None, breakpoints={}))
+            S.primary(f, outs_for(f, 1.0), dict(sign=None, breakpoints={}), VDAYS)
 
 
 class Bootstrap(unittest.TestCase):

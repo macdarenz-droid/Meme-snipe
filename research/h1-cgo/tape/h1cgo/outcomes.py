@@ -19,15 +19,22 @@ BOOK_COLS = ["slot", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "pool", "side",
 
 
 class Book:
-    """One pool's trades in order: per row (slot, pre, post, base_supply, creator_charged)."""
+    """One pool's trades in order: per row (slot, pre, post, base_supply, creator_charged). `lo`..`hi` is the slot range
+    the rows were loaded from; a state outside it is refused, never extrapolated."""
 
-    def __init__(self, rows):
+    def __init__(self, rows, lo: int, hi: int):
         self.rows = rows
         self.slots = [r[0] for r in rows]
+        self.lo, self.hi = lo, hi
+
+    def _guard(self, slot):
+        if not (self.lo <= slot <= self.hi):
+            raise ValueError(f"slot {slot} is outside the loaded range {self.lo}..{self.hi}")
 
     def start(self, slot):
         """Pool state at the start of `slot`: post-state of the last trade before it (= the pre-state of the slot's
         first trade)."""
+        self._guard(slot)
         k = bisect.bisect_left(self.slots, slot)
         if k < len(self.rows) and self.slots[k] == slot:
             r = self.rows[k]
@@ -39,6 +46,7 @@ class Book:
 
     def end(self, slot):
         """Pool state at the end of `slot`: post-state of the last trade at or before it."""
+        self._guard(slot)
         k = bisect.bisect_right(self.slots, slot)
         if k == 0:
             return None
@@ -46,7 +54,7 @@ class Book:
         return r[2], r[3], r[4]
 
 
-def books_from_rows(amm: pd.DataFrame) -> dict:
+def books_from_rows(amm: pd.DataFrame, lo: int, hi: int) -> dict:
     def k(r):
         return (int(r["slot"]), int(r["tx_idx"]), int(r["outer_ix"] or 0), int(r["inner_ix"] or -1), int(r["ev_idx"] or -1))
     by = {}
@@ -55,7 +63,7 @@ def books_from_rows(amm: pd.DataFrame) -> dict:
         supply = int(r["base_supply"]) if r["base_supply"] else None
         charged = r["coin_creator"] != DEFAULT_KEY  # empty: charged (the dearer reading)
         by.setdefault(r["pool"], []).append((int(r["slot"]), pre, post, supply, charged))
-    return {p: Book(v) for p, v in by.items()}
+    return {p: Book(v, lo, hi) for p, v in by.items()}
 
 
 def load_books(units, pools) -> dict:
@@ -64,7 +72,10 @@ def load_books(units, pools) -> dict:
     for u in sorted(units, key=lambda x: x.from_slot):
         a = tapeio.read_table(u, "S_amm", BOOK_COLS)
         fs.append(a[a.pool.isin(pools)])
-    return books_from_rows(pd.concat(fs, ignore_index=True) if fs else pd.DataFrame(columns=BOOK_COLS))
+    iv = tapeio.coverage_intervals(units)
+    if len(iv) != 1:
+        raise ValueError(f"outcome units are not one contiguous range: {iv}")
+    return books_from_rows(pd.concat(fs, ignore_index=True) if fs else pd.DataFrame(columns=BOOK_COLS), iv[0][0], iv[0][1])
 
 
 def price_trade(book: Book, entry_slot: int, exit_slot: int, spend: int, tiers, fixed: float) -> dict:
