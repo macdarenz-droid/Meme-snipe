@@ -32,3 +32,24 @@ test-ci re-run gives 186/0 at the head and 143/44 on the base. Go, lint and the 
 9. **m11 and reviewer M2.** The arm check refuses while `publish-day.sh` or the skip step targets `GITHUB_REPOSITORY`, so OF-4 and OF-5 must land before arming, enforced in code. Add a test case.
 10. **Reviewer M3: Retry-After.** archive-check parses Retry-After from its probe's 429. The scan records its back-off end where archive-check can read it (for example an Actions cache key `archive-backoff-<end>`). Hold 2 waits for max(3 h, the recorded end). The owner's rule is to honour Retry-After.
 11. **Reviewer M1 and m7.** OF-3 adds the flag (in progress). After OF-3, test-ci checks that the real binary accepts `-retention`.
+
+## Round 2 (head `b731b0b5`): reviewer PASS (4 MINOR); red team 0 BLOCKER, 3 MAJOR, 4 MINOR
+
+- Round 1 BLOCKERs and MAJORs closed in code (both).
+- Red team M1: old branches (319 remote refs) carry the pre-OF-2 data-scan.yml with no guard; a dispatch from one reads the archive unguarded, and its publish success counts as S.
+- Red team M2 and reviewer m3: the private-storage arm check is a literal-string deny-list (`${GITHUB_REPOSITORY}`, `-R`, `GH_REPO=`, a dropped `--repo`, a new script, a renamed artifact, and assemble.sh all slip past).
+- Red team M3 and reviewer m2: the Retry-After end lives only in an evictable cache key, and a missing key reads as "no back-off".
+- Red team m4: a re-run continue job can grant an extra restart. m5: ag_full has no lane-busy check. m6: a lost runner can leave the probe step with a null conclusion, uncounted. m7: unparsed or huge Retry-After values are ignored.
+- Reviewer m1: test-ci:335 aborts a fail-before run under set -e. m4: --probe has no arm or allow-list check of its own.
+
+### Supervisor rulings for round 3 (8 Oct 2026, 3:55 PM)
+
+12. **M1.** (a) ag_history counts S only from default-branch runs whose plan job's "Archive guard" step succeeded. (b) A hold: any data-scan archive run from a non-default branch since `ARCHIVE_REARM_AT` stops the chain (no request) until a reviewed re-arm; test it. (c) A read-only script in ci/ lists remote refs whose data-scan.yml can read the archive without archive-guard.sh. Deleting hundreds of branches is hard to undo, so at arm time the supervisor puts that list to the owner with a recommendation; it is not deleted by an agent.
+13. **M2 and reviewer m3.** Test the capability, not the spelling. Arming refuses unless: data-scan.yml's scan, volume and assemble jobs have no `contents: write`; the scan job has no `actions/upload-artifact` other than the `resume-` one; every `gh release` call under `research/historical/ci/` (assemble.sh included) carries `--repo "$DATA_REPO"`. Add a test-ci case for each bypass form named above.
+14. **M3 and reviewer m2.** The failing run records the back-off end durably as a check-run annotation (`archive-backoff` title, `end=<unix>`), and hold 2 reads it for every counted failure since `ARCHIVE_REARM_AT`; an unreadable record fails closed. The cache key stays as a fast path. **VERIFY** that annotations stay readable for at least the 3-failure window. This replaces my 3:47 PM message that put a durable tag in OF-4.
+15. **m4.** The continue step refuses `GITHUB_RUN_ATTEMPT` ≠ 1.
+16. **m5.** ag_full refuses while any other non-Helius data-scan run is not completed, and treats it as ending now for the 60-min check.
+17. **m6.** Count the probe step when its conclusion is anything but success or skipped on a completed attempt, null included.
+18. **m7.** Parse Retry-After strictly (delta-seconds or IMF-fixdate, RFC 9110). Present but unclean, or above 7 days: record a sentinel that holds the chain until a reviewed re-arm.
+19. **Reviewer m1.** Guard test-ci.sh:335 so a fail-before run completes.
+20. **Reviewer m4.** `--probe` runs `ag_local` itself before any request.
