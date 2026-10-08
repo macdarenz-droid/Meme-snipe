@@ -195,3 +195,15 @@ MAJOR 1: the runs API returns at most 1,000 results for a search filtered by `cr
 55. **MAJOR 1.** Fail closed when `.total_count` differs from the rows read. Also slice the window into `created` ranges that each stay under 1,000, so the 1,000 limit is never reached in normal use. VERIFY the 1,000 limit in the GitHub REST docs ("List workflow runs for a workflow") and cite it. Test: a stub with total_count 1,200 and 1,000 rows fails closed; sliced ranges read all 1,200.
 56. **MINOR 2.** `ag_caches_sealed` lists only `ref=refs/heads/<default branch>`; fork and PR caches are never restored by default-branch runs. Test: an unsealed key on a PR ref does not halt arming, and the same key on the default branch does.
 57. **MINOR 3.** Also refuse: `ln` that targets the log directories, `printf -v` and `:=` assignments to qlog, slog and tlog, and `zeroed-*` in workflow `env:` values. One test per form. Extended by OF-3 ruling 26: any non-plain write to qlog, slog or tlog (`for`, `read`, `printf -v`, `declare`, `:=`), and `ln`, `cat`, `tee`, `head` or `tail` on their paths.
+
+### Round 7 reviewer `session_017x89LKh2CEx5Hwkte14btR`: FAIL at `e67b2a2f` (1 MAJOR, 1 MINOR)
+
+Same M1 as the red team's MAJOR 1. The reviewer confirmed the 1,000-result limit on the GitHub REST page "List workflow runs for a workflow", fetched 8 Oct. Ruling 54 is not applied: DECISIONS:123 and :126, OLD-FAITHFUL.md:33, :95, :254 and :263, and test-ci.sh:968, :1707 and :1712 still say 31 days. m1: DECISIONS:126 still says "the 500 cap applies inside that window", which is stale since ruling 49. The key on fd 3 with PBKDF2 at 1 iteration is sound: the input is a 256-bit HMAC output. Ruling 53 checks out.
+
+### Ruling 55 tightened and ruling 58 (9 Oct 2026, about 12:38 AM)
+
+- **55 (tightened).** AG_RUNS_MAX is at most 1,000. For each `created` slice: fail closed when `total_count` is 1,000 or more, or when the rows read are fewer than `total_count`. Add a stub test with 1,001 runs where paging ends at 1,000.
+- **54 (again).** Apply it everywhere the reviewer lists.
+- **58. m1.** Update the stale "500 cap" wording in the DECISIONS:126 row to ruling 49 and ruling 55.
+
+Round 8 = rulings 54, 55, 56, 57 (as extended by OF-3 ruling 26) and 58, plus OF-3 rulings 25 and 26.
