@@ -257,3 +257,9 @@ Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining
 74. **s3.** When a deploy changes W_LS trades but no W_P trades, W_LS restarts at `live_small`.
 75. **s4.** Owner-strategy results stay in the private location as well. Public text uses only the opaque id and stage names.
 76. **Reviewer n1.** Add the Dependencies rows "B-M21-02 / B-M25-02 | fake M21" and "A-M13-02 registerTrial and budget | fake registry".
+
+**Ruling 69(c) amended (8 Oct 2026, 3:10 PM).** The example "a 30-day W_B with 2 configurations and k = 2 is accepted" is withdrawn. It conflicts with ARCH 3.4's MinBTL table (Sharpe 2: N = 2 at 30 days, N = 3 at 91 days). k is a PREREG field (k ≥ 0), fitted so that configurations + k fits the table for the planned W_B. With k = 0 there are no re-runs, and a proposal-changing deploy goes straight to the fresh-window state. AC-50: 1 configuration + k = 2 on 91 days is accepted; 2 configurations + k = 2 on 30 days is refused with E_BUDGET.
+
+## Round 7 (head `5be4b143`)
+
+Reviewer: PASS (1 optional MINOR: record this withdrawal here, now done). Red team round 7 pending.
