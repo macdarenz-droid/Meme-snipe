@@ -38,6 +38,21 @@ def _worse_sell(book, pool, slot, base):
     return min(fills, key=lambda f: f.user)
 
 
+def _sized(book, p, size_usd, fixed, rec):
+    """H8_AMENDMENT: the same entry and exits at another trade size (net_ret_<h>_s<usd>); reporting only."""
+    spend = int((size_usd / C.SOL_USD) * 1e9)
+    buy = _worse_buy(book, p.pool, int(p.entry_slot), spend)
+    if buy is None:
+        return
+    for h in C.HOLDS_S:
+        tag = h // 60
+        if not getattr(p, f"valid_{tag}"):
+            continue
+        s = _worse_sell(book, p.pool, int(getattr(p, f"exit_slot_{tag}")), buy.base)
+        if s is not None:
+            rec[f"net_ret_{tag}_s{size_usd}"] = (s.user - buy.user - fixed) / buy.user
+
+
 def compute_outcomes(book: PoolBook, pts: pd.DataFrame, token_programs: dict = None,
                      spend: int = C.SPEND_LAMPORTS) -> pd.DataFrame:
     """token_programs: mint code -> token program id (from CreateEvent); a mint not in it pays the larger rent."""
@@ -68,9 +83,14 @@ def compute_outcomes(book: PoolBook, pts: pd.DataFrame, token_programs: dict = N
             rec[f"recv_{tag}"] = s.user
             rec[f"capped_{tag}"] = s.capped
             rec[f"net_ret_{tag}"] = (s.user - buy.user - fixed) / buy.user
+            rec[f"net_ret_{tag}_s{C.SIZE_USD}"] = rec[f"net_ret_{tag}"]
+        for size in C.H8_SIZES_USD:
+            if size != C.SIZE_USD:
+                _sized(book, p, size, fixed, rec)
         rows.append((ix, rec))
     cols = ["pool", "tau", "entry_ok", "fixed", "paid", "tokens", "rt_cost"] + [
-        f"{k}_{h // 60}" for h in C.HOLDS_S for k in ("recv", "capped", "net_ret")]
+        f"{k}_{h // 60}" for h in C.HOLDS_S for k in ("recv", "capped", "net_ret")] + [
+        f"net_ret_{h // 60}_s{s}" for h in C.HOLDS_S for s in C.H8_SIZES_USD]
     if not rows:
         return pd.DataFrame(columns=cols)
     out = pd.DataFrame([r for _, r in rows], index=[i for i, _ in rows])

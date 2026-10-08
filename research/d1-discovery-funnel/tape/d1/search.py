@@ -15,6 +15,9 @@
   reported only.
 - Binary features (config.BINARY_FEATURES): top = 1, bottom = 0. A feature whose training q20 equals its q80 gives no
   rule in that fold (AMENDMENT_1 item 23).
+- H8_AMENDMENT (reporting only, never used to qualify or rank): each rule's pooled out-of-fold trades and mean on the
+  H8-eligible stratum at $5, $20 and $50 (`h8_s<usd>_n`, `h8_s<usd>_mean`), at that size's own fills, throttled
+  inside the stratum.
 - Advance at most 5 rules (over both holds) by score; freeze their definitions and full-discovery quintile edges.
 """
 import itertools
@@ -111,6 +114,14 @@ def run_search(df: pd.DataFrame) -> Dict:
         pool, tau, ret = d.pool.to_numpy(), d.tau.to_numpy(), d[f"net_ret_{hm}"].to_numpy(dtype=float)
         X = {f: d[f].to_numpy(dtype=float) for f in C.FEATURES}
         stats = {rule_id(r): [] for r in rules}
+        h8 = all(f"h8_s{sz}" in d.columns for sz in C.H8_SIZES_USD)
+        h8_arr, h8_stats = {}, {}
+        if h8:
+            for sz in C.H8_SIZES_USD:
+                rs = d.get(f"net_ret_{hm}_s{sz}", pd.Series(np.nan, index=d.index)).to_numpy(dtype=float)
+                h8_arr[sz] = (d[f"h8_s{sz}"].to_numpy(dtype=bool) & ~np.isnan(rs), rs)
+                for r in rules:
+                    h8_stats[(rule_id(r), sz)] = [0, 0.0]
         for j in range(C.N_BLOCKS):
             train, test = fold_masks(d, j, hm)
             masks = {}
@@ -124,6 +135,11 @@ def run_search(df: pd.DataFrame) -> Dict:
                     m = m & masks[(r[0][1], r[1][1])]
                 k = throttle(pool, tau, m)
                 stats[rule_id(r)].append((int(k.sum()), float(ret[k].sum())))
+                if h8:
+                    for sz, (hm8, rs) in h8_arr.items():   # the bot enters only H8-eligible pools: throttle inside
+                        k8 = throttle(pool, tau, m & hm8)
+                        h8_stats[(rule_id(r), sz)][0] += int(k8.sum())
+                        h8_stats[(rule_id(r), sz)][1] += float(rs[k8].sum())
         for r in rules:
             st = stats[rule_id(r)]
             n = np.array([s[0] for s in st])
@@ -137,7 +153,11 @@ def run_search(df: pd.DataFrame) -> Dict:
             table.append({"rule": rule_id(r), "hold_min": hm, "n_total": int(n.sum()),
                           **{f"n_f{j}": int(n[j]) for j in range(C.N_BLOCKS)},
                           **{f"mean_f{j}": float(means[j]) for j in range(C.N_BLOCKS)},
-                          "score": float(score), "same_sign": same, "qualifies": ok})
+                          "score": float(score), "same_sign": same, "qualifies": ok,
+                          **({f"h8_s{sz}_{k}": v for sz in C.H8_SIZES_USD for k, v in (
+                              ("n", h8_stats[(rule_id(r), sz)][0]),
+                              ("mean", h8_stats[(rule_id(r), sz)][1] / h8_stats[(rule_id(r), sz)][0]
+                               if h8_stats[(rule_id(r), sz)][0] else float("nan")))} if h8 else {})})
     tab = pd.DataFrame(table)
     q = tab[tab.qualifies].sort_values(["score", "rule", "hold_min"], ascending=[False, True, True], kind="mergesort")
     adv = q.head(C.N_ADVANCE)

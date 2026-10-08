@@ -115,6 +115,11 @@ Q_LOW, Q_HIGH = 0.20, 0.80
 MIN_TRADES_PER_FOLD = 30
 N_ADVANCE = 5
 
+# ---- H8 at trade size (research/brainstorm-loop/H8_AMENDMENT.md; reporting only) ----------------------------------
+H8_MIN_QUOTE_USD = 15_000          # policy.ts:205
+H8_SIZE_MULTIPLE = 1_000           # floor = max($15,000, 1,000 x trade size)
+H8_SIZES_USD = (5, 20, 50)
+
 # ---- Validation (PREREG §6; bootstrap size and seed as H1-CGO §8 / G1 §9) ---------------------------------------
 ALPHA = 0.005
 N_BOOT = 10_000

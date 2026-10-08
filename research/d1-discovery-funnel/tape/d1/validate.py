@@ -65,4 +65,30 @@ def judge(df: pd.DataFrame, frozen: Dict, days: Sequence[str]) -> Dict:
     passed = (lo995 > 0) and n >= C.MIN_TRADES_VALIDATION and all(
         not np.isnan(v) and v > 0 for v in per_day.values()) and lift > 0
     res["verdict"] = "pass" if passed else ("unresolved" if n < C.MIN_TRADES_VALIDATION else "not supported")
+    res.update(h8_report(df, frozen))
+    if res["verdict"] == "pass" and not res["tradable_as_bot_stands"]:
+        res["owner_note"] = "this works only in pools below H8's floor"
     return res
+
+
+def h8_report(df: pd.DataFrame, frozen: Dict) -> Dict:
+    """H8_AMENDMENT items 1-3: the rule on the H8-eligible stratum at $5, $20 and $50, each at its own fills.
+    Tradable as the bot stands only if some size has >= 300 stratum trades and a positive point mean."""
+    hm = frozen["hold_min"]
+    if not all(f"h8_s{s}" in df.columns for s in C.H8_SIZES_USD):
+        return {"h8": None, "tradable_as_bot_stands": False}
+    d = usable(df, hm)
+    m = np.ones(len(d), dtype=bool)
+    for t in frozen["terms"]:
+        m &= side_mask(d[t["feature"]].to_numpy(dtype=float), tuple(t["edges_q20_q80"]), t["side"],
+                       bool(t.get("binary", t["feature"] in C.BINARY_FEATURES)))
+    out, tradable = {}, False
+    for s in C.H8_SIZES_USD:
+        col = f"net_ret_{hm}_s{s}"
+        rs = d[col].to_numpy(dtype=float) if col in d.columns else np.full(len(d), np.nan)
+        k = throttle(d.pool.to_numpy(), d.tau.to_numpy(), m & d[f"h8_s{s}"].to_numpy(dtype=bool) & ~np.isnan(rs))
+        n = int(k.sum())
+        mean = float(rs[k].mean()) if n else float("nan")
+        out[f"${s}"] = {"n_trades": n, "mean": mean}
+        tradable |= n >= C.MIN_TRADES_VALIDATION and mean > 0
+    return {"h8": out, "tradable_as_bot_stands": bool(tradable)}

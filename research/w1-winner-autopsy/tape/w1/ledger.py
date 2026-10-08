@@ -228,28 +228,6 @@ class Ledger:
         self.sol_mints |= set(sw.loc[sw["sol"].astype(bool), "mint"].tolist())
         self.pump_mints |= set(sw.loc[(sw["venue"] == 0) | (sw["canonical"] == 1), "mint"].tolist())
 
-        # transaction costs (PREREG §4, AMENDMENT_1)
-        sw = sw.copy()
-        cost = (sw["tx_fee"] + sw["jito"]).to_numpy(np.float64) / np.maximum(sw["n_tx"].to_numpy(), 1)
-        na = sw["tx_fee_na"].to_numpy(bool)
-        if na.any():
-            g = sw[na].groupby("txk")
-            own_all = g.apply(lambda d: bool((d["owner"] == d["signer"]).all()), include_groups=False)
-            net = g["cash"].sum()
-            first = g[["spre", "spost", "n_tx"]].first()
-            amend = pd.Series([amendment_tx_cost(int(a), int(b), int(c)) for a, b, c in
-                               zip(first["spre"], first["spost"], net)], index=first.index) / first["n_tx"]
-            per = np.where(own_all.reindex(sw.loc[na, "txk"]).to_numpy(bool),
-                           amend.reindex(sw.loc[na, "txk"]).to_numpy(), FIXED_PER_LEG)
-            cost[na] = per
-            n_am = int(own_all.reindex(sw.loc[na, "txk"]).to_numpy(bool).sum())
-            self.stats["cost_source"]["amendment"] += n_am
-            self.stats["cost_source"]["fixed_leg"] += int(na.sum()) - n_am
-        self.stats["cost_source"]["tx_fee"] += int((~na).sum())
-        sw["cost"] = cost
-        sw["net_alt"] = sw["cash"].to_numpy() - cost          # venue method (AMENDMENT_2 Q2 "otherwise")
-        sw["net"], sw["sig"] = self._signer_method(sw)          # signer's SOL change where it owns every swap
-
         ex = self._excluded(sw["owner"].to_numpy())
         # protocol flow: the protocol column, boost_buy_and_burn, and (every schema version alike) any swap in a
         # transaction that emitted a BoostBuyAndBurnEvent in E
@@ -260,6 +238,32 @@ class Ledger:
             if t:
                 self.ex_seen.setdefault(t, set()).add(int(o))
         tracked = sw["sol"].to_numpy(bool) & ~sw["overflow"].to_numpy(bool) & (ex == "")
+        # transaction costs (PREREG §4, AMENDMENT_1, AMENDMENT_3 Q29): tx_fee + jito_tip is charged only to the
+        # transaction's included rows, split evenly over them (one owner of every included row pays all of it)
+        sw = sw.copy()
+        n_inc = pd.Series(tracked, index=sw.index).groupby(sw["txk"]).transform("sum").to_numpy()
+        n_inc = np.maximum(n_inc, 1)
+        cost = np.where(tracked, (sw["tx_fee"] + sw["jito"]).to_numpy(np.float64) / n_inc, 0.0)
+        na = sw["tx_fee_na"].to_numpy(bool) & tracked
+        if na.any():
+            g = sw[na].groupby("txk")
+            own_all = g.apply(lambda d: bool((d["owner"] == d["signer"]).all()), include_groups=False)
+            net = g["cash"].sum()
+            first = g[["spre", "spost"]].first()
+            ninc_tx = pd.Series(n_inc, index=sw.index)[na].groupby(sw.loc[na, "txk"]).first()
+            amend = pd.Series([amendment_tx_cost(int(a), int(b), int(c)) for a, b, c in
+                               zip(first["spre"], first["spost"], net)], index=first.index) / ninc_tx
+            per = np.where(own_all.reindex(sw.loc[na, "txk"]).to_numpy(bool),
+                           amend.reindex(sw.loc[na, "txk"]).to_numpy(), FIXED_PER_LEG)
+            cost[na] = per
+            n_am = int(own_all.reindex(sw.loc[na, "txk"]).to_numpy(bool).sum())
+            self.stats["cost_source"]["amendment"] += n_am
+            self.stats["cost_source"]["fixed_leg"] += int(na.sum()) - n_am
+        self.stats["cost_source"]["tx_fee"] += int((tracked & ~na).sum())
+        sw["cost"] = cost
+        sw["net_alt"] = sw["cash"].to_numpy() - cost          # venue method (AMENDMENT_2 Q2 "otherwise")
+        sw["net"], sw["sig"] = self._signer_method(sw)          # signer's SOL change where it owns every swap
+
         self.stats["overflow_rows"] += int(sw["overflow"].sum())
         self.stats["excluded_rows"] += int((sw["sol"].to_numpy(bool) & (ex != "")).sum())
 

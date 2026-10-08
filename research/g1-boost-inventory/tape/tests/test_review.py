@@ -134,17 +134,38 @@ class PerDayMinimum(unittest.TestCase):
                              "Z": -1.0 if i % 2 == 0 else 1.0, "lam": float(i % 7), "cap_reason": ""})
         return pd.DataFrame(rows)
 
-    def test_hc_c_and_cap_d_use_every_day(self):
+    def test_amendment_4_pooled_and_40_percent_floor(self):
         from g1lib.gate import cap_gate, hc_gate
-        t = self.trig([340, 80])             # filtered (half): 170 and 40 a day, average 105
+        # filtered = half: 170 and 40 a day. Pooled 210 >= 200 and 40 >= 40% of 100: passes (a per-day minimum failed it)
+        t = self.trig([340, 80])
         hc = hc_gate(t, {}, self.days)
-        self.assertEqual(hc["c_min_day"], 40)
+        self.assertEqual(hc["c_count_gate"]["pooled"], 210)
+        self.assertTrue(hc["c_pass"])
+        self.assertTrue(cap_gate(t, {}, True, self.days)["d_pass"])
+        # one day carries the pooled count (200 + 30 = 230 >= 200; average 115) but 30 < 40: fails
+        t = self.trig([400, 60])
+        hc = hc_gate(t, {}, self.days)
         self.assertFalse(hc["c_pass"])
-        cap = cap_gate(t, {}, True, self.days)
-        self.assertEqual(cap["d_min_day"], 40)
-        self.assertFalse(cap["d_pass"])
-        ok = self.trig([220, 220])
-        self.assertTrue(hc_gate(ok, {}, self.days)["c_pass"])
+        self.assertEqual(hc["c_count_gate"]["days_ok"], {"2026-09-10": True, "2026-09-11": False})
+        t = self.trig([400, 30])             # cap (d): 200 + 15, floor 20
+        self.assertFalse(cap_gate(t, {}, True, self.days)["d_pass"])
+        # every day above the floor but the pooled count short: fails
+        self.assertFalse(hc_gate(self.trig([180, 180]), {}, self.days)["c_pass"])
+        # a missing day counts as 0
+        self.assertFalse(hc_gate(self.trig([440, 0]), {}, self.days)["c_pass"])
+
+
+class PartialDays(unittest.TestCase):
+    def test_no_verdict_anywhere(self):
+        import g1
+        res = {"G1_0": {"passes": False, "kills": ["x"]}, "G1_HC": {"c_pass": True, "c_count_gate": {"passes": True}},
+               "G1_CAP": {"d_pass": True, "passes": True}}
+        out = g1.strip_verdict(res)
+        self.assertIsNone(out["G1_0"]["passes"])
+        self.assertIsNone(out["G1_0"]["kills"])
+        self.assertIsNone(out["G1_HC"]["c_count_gate"]["passes"])
+        self.assertIsNone(out["G1_CAP"]["passes"])
+        self.assertTrue(out["verdict"].startswith("none"))
 
 
 if __name__ == "__main__":

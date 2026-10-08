@@ -44,8 +44,10 @@
 - **Ledger [A1].** This is H1-CGO's `Ledger` (`research/h1-cgo/tape/h1cgo/ledger.py`), loaded read-only and fed with swaps (cost with fees, as H1-CGO counts it; proceeds after fees) and T transfer/mint/burn rows. History must be on the tape (Q2).
 
 ## 3 SEAT-DRIFT
-- **Q9 Busy vs lone [A1, with an open reading for the lead].** Lone = the bottom tercile and busy = the top tercile of N_m, over each day's eligible graduates.
-  - *[open] Ties.* Graduates whose N_m value falls on both sides of a tercile cut are all dropped (conservative, at the reviewer's request; marked `tercile = -2`). N_m is a small integer, so this can remove many graduates; the lead should confirm or pick another tie rule.
+- **Q9 Busy vs lone [A1, ties ruled in `../COUNT_ROWS_AMENDMENT_2.md`].** Lone = the bottom tercile and busy = the top tercile of N_m, over each day's eligible graduates.
+  - The cuts are c1 and c2, the 1/3 and 2/3 quantiles (numpy linear).
+  - Bins: lone is N_m ≤ c1, middle is c1 < N_m ≤ c2, busy is N_m > c2. A value equal to a cut goes to the lower bin, the same way on every day, and no graduate is dropped.
+  - The summary reports each day's cuts and the rows tied at each one (`tercile_cuts_and_ties`).
 - **Q10 G1-CAP definitions.**
   - N_m counts other eligible graduates (canonical, SOL, not mayhem) whose creator seeds (create `creator`/`user`, pool `coin_creator`) are outside the coin's creator group as of m.
   - A graduate whose normalised name or symbol matches another graduate in the window is dropped (theme wave). The match uses only coins whose CreateEvent is on the tape.

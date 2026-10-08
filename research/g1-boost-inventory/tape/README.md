@@ -1,6 +1,6 @@
 # G1 scoring code (shared tape)
 
-Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md`, `../AMENDMENT_2.md` and `../AMENDMENT_3.md`. It reads the shared tape (`research/shared-tape/README.md`) and nothing else. Where the design is silent, the most conservative reading is used and listed in `OPEN_QUESTIONS.md` (OQ-n in the code).
+Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md`, `../AMENDMENT_2.md`, `../AMENDMENT_3.md` and `../AMENDMENT_4.md`. It reads the shared tape (`research/shared-tape/README.md`) and nothing else. Where the design is silent, the most conservative reading is used and listed in `OPEN_QUESTIONS.md` (OQ-n in the code).
 
 ## Entry point
 
@@ -111,6 +111,7 @@ The gate's per-day counts assume whole days: run it once every unit of a day is 
 | Review 1: plan, units, manifest and score guards | `guard.load_plan`, `guard.check_units`, `guard.verify`, `guard.check_score`, `load.find_units`; `tests/test_review.py::Guards` |
 | Review 2: Z rows by slot at or before the cutoff | `features.FeatureContext.feature_z`; `tests/test_pipeline.py::test_z_counts_rows_by_slot` |
 | Review 3: all validation days present, each mean > 0 | `stats.primary(required_days=…)`; `tests/test_review.py::RequiredDays` |
-| Review 4: per-day minimum for A1 (c) and A2 (d) (OQ-27) | `gate.hc_gate`, `gate.cap_gate`; `tests/test_review.py::PerDayMinimum` |
+| A4: count gates A1 (c), A2 (d): pooled count reaches the threshold and each day at least 40% of it (OQ-27) | `gate.count_gate`, `gate.hc_gate`, `gate.cap_gate`, `params.COUNT_GATE_DAY_FLOOR`; `tests/test_review.py::PerDayMinimum` |
+| Partial days give no verdict | `g1.strip_verdict`; `tests/test_review.py::PartialDays` |
 | Review 5: catchable excludes dropped-by-time | `gate.g1_0`; `tests/test_pipeline.py::test_gate` |
 | Review 6: BOOST and buyback rows without the protocol column | `market.Market.__init__` (`is_boost`, `is_buyback`, `is_protocol`), `flows.migration_flows`; `tests/test_pipeline.py::test_gate` |

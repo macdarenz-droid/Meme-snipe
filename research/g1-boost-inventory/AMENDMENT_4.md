@@ -7,3 +7,5 @@ A count gate passes only if:
 - each Step A day's own count reaches at least 40% of that threshold, so that one day cannot carry the gate.
 
 This replaces the per-day minimum the code used pending the ruling.
+
+Implementation note (builder, 2026-10-08): the frozen thresholds are per day ("a day"), so the pooled count is compared with the threshold × the number of Step A days, the stricter reading. Each day must also reach 40% of the per-day threshold.

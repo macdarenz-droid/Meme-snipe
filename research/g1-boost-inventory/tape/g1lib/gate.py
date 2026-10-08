@@ -201,6 +201,19 @@ def strata_rows(d: pd.DataFrame, grads: pd.DataFrame, flows: Dict[int, dict]) ->
     return out
 
 
+def count_gate(per_day: dict, days, threshold: int) -> dict:
+    """Amendment 4 (OQ-27): a count gate passes only if the pooled Step A count reaches the threshold (per day, so
+    pooled >= threshold × number of days, i.e. the pooled daily average reaches it) and each day's own count reaches
+    at least 40% of the threshold."""
+    counts = {str(x): int(per_day.get(str(x), 0)) for x in days}
+    pooled = sum(counts.values())
+    need_pooled = threshold * len(counts)
+    floor = P.COUNT_GATE_DAY_FLOOR * threshold
+    days_ok = {d: c >= floor for d, c in counts.items()}
+    return {"per_day": counts, "pooled": pooled, "pooled_needed": need_pooled, "day_floor": floor,
+            "days_ok": days_ok, "passes": bool(counts) and pooled >= need_pooled and all(days_ok.values())}
+
+
 def _rho(x, y) -> float:
     x, y = np.asarray(x, float), np.asarray(y, float)
     ok = ~(np.isnan(x) | np.isnan(y))
@@ -221,7 +234,7 @@ def hc_gate(trig: pd.DataFrame, flows: Dict[int, dict], days) -> dict:
     filt = has_r[(has_r["R"] < med_r) & has_r["catchable"]]
     per_day = {str(k): int(v) for k, v in filt.groupby("day").size().items()}
     # "at least 100 ... a day": every day must reach it (per-day minimum, review finding 4; OQ-27)
-    day_min = min(per_day.get(str(x), 0) for x in days) if len(days) else 0
+    cg = count_gate(per_day, days, P.HC_GATE_MIN_PER_DAY)
     terc = None
     if len(has_r):
         q1, q2 = has_r["R"].quantile(1 / 3), has_r["R"].quantile(2 / 3)
@@ -234,7 +247,7 @@ def hc_gate(trig: pd.DataFrame, flows: Dict[int, dict], days) -> dict:
         "b_min_coverage": float(cov.min()) if len(cov) else math.nan,
         "b_pass": bool(pooled >= P.HC_GATE_COVERAGE and float(cov.median()) >= P.HC_GATE_COVERAGE) if len(cov) else False,
         "b_dropped_created_before_tape": int((t["hc_reason"] == "created-before-tape").sum()),
-        "c_filtered_catchable_per_day": per_day, "c_min_day": day_min, "c_pass": day_min >= P.HC_GATE_MIN_PER_DAY,
+        "c_filtered_catchable_per_day": per_day, "c_count_gate": cg, "c_pass": cg["passes"],
         "d_spearman_R_vs_create_to_trigger_slots": _rho(has_r["R"].to_numpy(), age),
         "d_counts_by_R_tercile": {str(k): int(v) for k, v in terc.value_counts().items()} if terc is not None else {},
         "median_R": med_r,
@@ -255,7 +268,7 @@ def cap_gate(trig: pd.DataFrame, flows: Dict[int, dict], g10_pass: bool, days) -
     med_z = float(t["Z"].median()) if len(t) else math.nan
     low = t[(t["Z"] <= med_z) & t["catchable"]]
     per_day = {str(k): int(v) for k, v in low.groupby("day").size().items()}
-    day_min = min(per_day.get(str(x), 0) for x in days) if len(days) else 0   # per-day minimum (OQ-27)
+    cg = count_gate(per_day, days, P.CAP_GATE_MIN_PER_DAY)
     out = {
         "a_g1_0_passes": g10_pass,
         "b_rho_Z_lambda": zl["rho"], "b_iqr_Z": iqr,
@@ -264,7 +277,7 @@ def cap_gate(trig: pd.DataFrame, flows: Dict[int, dict], g10_pass: bool, days) -
         "c_pass": bool(c["rho"] <= P.CAP_GATE_RHO_FLOW and c["upper_95"] < 0) if not math.isnan(c["rho"]) else False,
         "c2_spearman_Z_vs_fast_buys": c2,
         "c2_pass": bool(c2["rho"] <= P.CAP_GATE_RHO_FLOW and c2["upper_95"] < 0) if not math.isnan(c2["rho"]) else False,
-        "d_low_Z_catchable_per_day": per_day, "d_min_day": day_min, "d_pass": day_min >= P.CAP_GATE_MIN_PER_DAY,
+        "d_low_Z_catchable_per_day": per_day, "d_count_gate": cg, "d_pass": cg["passes"],
         "excluded_by_reason": {str(k): int(v) for k, v in trig[trig["cap_reason"] != ""].groupby("cap_reason").size().items()} if "cap_reason" in trig else {},
         "median_Z": med_z,
     }

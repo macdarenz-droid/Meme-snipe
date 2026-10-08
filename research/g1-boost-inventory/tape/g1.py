@@ -105,10 +105,12 @@ def _remap(d, tape):
 
 def strip_verdict(res: dict) -> dict:
     """A gate run on partial days gives no verdict: every pass field becomes None."""
-    out = dict(res)
-    for k in list(out):
-        if k == "passes" or k.endswith("_pass") or k.endswith("_passes"):
-            out[k] = None
+    def strip(x):
+        if not isinstance(x, dict):
+            return x
+        return {k: (None if (k == "passes" or k.endswith("_pass") or k.endswith("_passes") or k == "kills")
+                    else strip(v)) for k, v in x.items()}
+    out = strip(res)
     out["verdict"] = "none: partial days (dev subset)"
     return out
 

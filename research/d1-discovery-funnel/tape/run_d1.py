@@ -108,6 +108,15 @@ def stage2(args):
     print(json.dumps({"outcome_rows": len(out), "entry_ok": int(out.entry_ok.sum()) if len(out) else 0}, indent=1))
 
 
+def with_h8(df: pd.DataFrame, solusd: str):
+    """H8_AMENDMENT: H8-eligible flags at $5, $20, $50 from the committed hourly SOL/USD file (as-of)."""
+    from d1.h8 import add_h8, load_solusd
+    if not solusd:
+        sys.exit("refusing: --solusd (hourly SOL/USD, Binance public archive) is required for the H8 stratum")
+    hours, close, sha = load_solusd(solusd)
+    return add_h8(df, hours, close), sha
+
+
 def joined(run: str) -> pd.DataFrame:
     pts = pd.read_pickle(os.path.join(run, "points.pkl"))
     feats = pd.read_pickle(os.path.join(run, "features.pkl"))
@@ -126,6 +135,11 @@ def summary(args):
            "feature_non_null": {f: int(feats[f].notna().sum()) for f in C.FEATURES} if len(feats) else {},
            "feature_quantiles_5_50_95": {f: [round(float(x), 6) for x in feats[f].quantile([.05, .5, .95])]
                                          for f in C.FEATURES} if len(feats) else {}}
+    if args.solusd and len(feats):
+        from d1.h8 import h8_counts
+        el = pts[pts.eligible].merge(feats[["pool", "tau", "effective_quote_sol"]], on=["pool", "tau"])
+        df, px_sha = with_h8(el, args.solusd)
+        rep["h8_counts"] = {"solusd_sha256": px_sha, "per_day": h8_counts(df)}
     p = os.path.join(args.run, "outcomes.pkl")
     if os.path.exists(p):
         o = pd.read_pickle(p)
@@ -185,6 +199,8 @@ def validate_guard(run, frozen, confirm, plan_path=None):
     _common_guard(ms, plan_path or PLAN_DEFAULT)
     if frozen.get("code_sha256") != code_hash():
         sys.exit("refusing: the frozen rules came from different code")
+    if "H8_AMENDMENT" not in frozen.get("amendments", []):
+        sys.exit("refusing: the frozen rules predate the H8 amendment")
     days = ms["stage1"]["days"]
     if set(days) & set(frozen["discovery_days"]) or set(days) & set(C.DISCOVERY_DAYS):
         sys.exit("refusing: validation days overlap the discovery days")
@@ -194,7 +210,8 @@ def validate_guard(run, frozen, confirm, plan_path=None):
 def search(args):
     from d1.search import run_search
     search_guard(args.run, args.plan)
-    res = run_search(joined(args.run))
+    df, px_sha = with_h8(joined(args.run), args.solusd)
+    res = run_search(df)
     res["table"].to_csv(os.path.join(args.run, "search_table.csv"), index=False)
     m1 = json.load(open(os.path.join(args.run, "manifest_stage1.json")))
     frozen = {"design": "D1", "amendments": ["AMENDMENT_1", "AMENDMENT_2"], "median_rt_cost": res["median_rt_cost"],
@@ -211,8 +228,8 @@ def validate(args):
     with open(args.frozen) as fh:
         frozen = json.load(fh)
     ms = validate_guard(args.run, frozen, args.confirm_validation_read, args.plan)
-    df = joined(args.run)
-    res = [judge(df, r, ms["stage1"]["days"]) for r in frozen["advanced"]]
+    df, px_sha = with_h8(joined(args.run), args.solusd)
+    res = [dict(judge(df, r, ms["stage1"]["days"]), solusd_sha256=px_sha) for r in frozen["advanced"]]
     with open(os.path.join(args.run, "validation_result.json"), "w") as fh:
         json.dump(res, fh, indent=1)
     print(json.dumps(res, indent=1))
@@ -234,13 +251,16 @@ def main(argv=None):
     p.add_argument("--out", required=True, help="run directory of stage 1")
     p = sub.add_parser("summary")
     p.add_argument("--run", required=True)
+    p.add_argument("--solusd", help="hourly SOL/USD file: adds the H8 count row (H8_AMENDMENT item 4)")
     p = sub.add_parser("search")
     p.add_argument("--run", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--plan", default=None)
+    p.add_argument("--solusd", help="hourly SOL/USD (Binance public archive), required")
     p = sub.add_parser("validate")
     p.add_argument("--run", required=True)
     p.add_argument("--plan", default=None)
+    p.add_argument("--solusd", help="hourly SOL/USD (Binance public archive), required")
     p.add_argument("--frozen", required=True)
     p.add_argument("--confirm-validation-read", action="store_true")
     a = ap.parse_args(argv)

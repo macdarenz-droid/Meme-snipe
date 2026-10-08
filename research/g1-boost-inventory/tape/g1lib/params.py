@@ -64,6 +64,9 @@ CAP_GATE_IQR_Z = 1.0                          # gate (b) IQR of Z >= 1
 CAP_GATE_RHO_FLOW = -0.10                     # gate (c) rho <= -0.10, one-sided 95% upper bound < 0
 CAP_GATE_MIN_PER_DAY = 50                     # gate (d)
 
+# --- AMENDMENT_4: count gates over the Step A days ---------------------------------------------------
+COUNT_GATE_DAY_FLOOR = 0.40                   # each day >= 40% of the threshold, plus the pooled count
+
 # --- Fixed costs and rent ------------------------------------------------------------------------
 with open(os.path.join(HERE, "fixed_costs.json")) as _f:
     FIXED = json.load(_f)                     # produced by fixed_costs.ts from edge-costs.ts

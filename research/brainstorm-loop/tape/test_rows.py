@@ -255,9 +255,23 @@ class SeatDrift(unittest.TestCase):
         self.assertEqual((d.at["PA", "N_m"], d.at["PB", "N_m"], d.at["PC", "N_m"]), (1, 1, 0))
         self.assertAlmostEqual(d.at["PA", "w1_share"], 10e9 / 100e9)
         self.assertAlmostEqual(d.at["PA", "w2_share"], 1e9 / 100e9)
-        # Q9: terciles of N_m per day; N_m = 1 (PA, PB) ties across the cut between terciles 1 and 2: dropped
+        # Q9 (AMENDMENT_2): N_m = [0, 1, 1]; cuts c1 = 2/3, c2 = 1; a value equal to a cut goes to the lower bin
         self.assertEqual((summ["busy"], summ["lone"]), (0, 1))
-        self.assertEqual((d.at["PC", "tercile"], d.at["PA", "tercile"], d.at["PB", "tercile"]), (0, -2, -2))
+        self.assertEqual((d.at["PC", "tercile"], d.at["PA", "tercile"], d.at["PB", "tercile"]), (0, 1, 1))
+        ties = summ["tercile_cuts_and_ties"][DAY]
+        self.assertEqual((ties["tied_at_c1"], ties["tied_at_c2"]), (0, 2))
+        self.assertAlmostEqual(ties["c2"], 1.0)
+
+    def test_q9_cut_ties_go_to_lower_bin(self):
+        ok = pd.DataFrame({"day": [DAY] * 6, "N_m": [0, 1, 2, 2, 3, 5]})
+        out, ties = R.assign_terciles(ok)
+        c1, c2 = np.quantile([0, 1, 2, 2, 3, 5], [1 / 3, 2 / 3])
+        n = ok["N_m"].to_numpy(float)
+        self.assertEqual(list(out["tercile"]), list(np.where(n <= c1, 0, np.where(n <= c2, 1, 2))))
+        ok2 = pd.DataFrame({"day": [DAY] * 3, "N_m": [1, 1, 1]})
+        out2, ties2 = R.assign_terciles(ok2)
+        self.assertEqual(list(out2["tercile"]), [0, 0, 0])             # all equal to c1: lower bin, none dropped
+        self.assertEqual(ties2[DAY]["tied_at_c1"], 3)
         tape, s, adj = load(self._unit(link=True))
         df, _ = R.seat_drift(tape, s, adj)
         self.assertEqual(df.set_index("pool").at["PA", "N_m"], 0)   # same creator cluster: not counted

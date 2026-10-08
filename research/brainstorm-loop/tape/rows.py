@@ -324,6 +324,11 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
         out["net"] = (out["ftb_sol_late"] - out["holder_sell_late"]) / eq if eq > 0 else np.nan
         rows.append(out)
     df = pd.DataFrame(rows)
+    return df, dev_summary(df, sorted({d for d, _, _ in tape.ranges}))
+
+
+def dev_summary(df, days):
+    """Per-arm summary of DEV-ZERO rows; `days` = every loaded day (0 where no event)."""
     summ = {}
     for arm, _, _ in DEV_ARMS:
         a = df[(df.get("arm") == arm)] if len(df) else df
@@ -336,7 +341,6 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
                                 [e.dropna(subset=["net"]), c.dropna(subset=["net"])], ["net"])
               if med is not None else None)
         fa = float(e["ftb_sol_all"].sum()) if len(e) else 0.0
-        days = sorted({d for d, _, _ in tape.ranges})   # every loaded day, 0 where no event
         summ[arm] = {
             "events_found": int((a["kind"] == "event").sum()) if len(a) else 0,
             "controls_found": int((a["kind"] == "control").sum()) if len(a) else 0,
@@ -346,7 +350,7 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
             "late_share_of_ftb": (float(e["ftb_sol_late"].sum()) / fa) if fa else None,
             "events_per_day": {d: int((e["day"] == d).sum()) if len(e) else 0 for d in days},
         }
-    return df, summ
+    return summ
 
 
 def dev_zero_decide(summ):
@@ -426,20 +430,13 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
         rows.append(out)
     df = pd.DataFrame(rows)
     ok = df[df["dropped"] == ""] if len(df) else df
-    # COUNT_ROWS_AMENDMENT_1 Q9: lone = bottom tercile of N_m, busy = top tercile, per discovery day over the
-    # day's eligible graduates (ties broken by migration order).
+    ok, tie_counts = assign_terciles(ok)
     if len(ok):
-        ok = ok.sort_values(["day", "m_slot"]).copy()
-        ok["tercile"] = -1
-        for d, g in ok.groupby("day"):
-            if len(g) >= 3:
-                ter = pd.qcut(g["N_m"].rank(method="first"), 3, labels=False).astype(int)
-                # an N_m value whose graduates fall in more than one tercile ties across a cut: drop them all
-                # (conservative; OPEN_QUESTIONS Q9)
-                split = ter.groupby(g["N_m"]).transform("nunique") > 1
-                ter[split] = -2
-                ok.loc[g.index, "tercile"] = ter
         df.loc[ok.index, "tercile"] = ok["tercile"]
+    return df, seat_summary(df, ok, tie_counts)
+
+
+def seat_summary(df, ok, tie_counts=None):
     busy = ok[ok["tercile"] == 2] if len(ok) else ok
     lone = ok[ok["tercile"] == 0] if len(ok) else ok
 
@@ -456,8 +453,28 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
     summ = {"graduates": int(len(df)), "used": int(len(ok)), "busy": int(len(busy)), "lone": int(len(lone)),
             "dropped": df["dropped"].value_counts().to_dict() if len(df) else {},
             "w1_busy_minus_lone_median": d1, "w1_lb95": lb1, "w2_busy_minus_lone_median": d2,
-            "drift_all_w1_median_share": float(ok["w1_share"].median()) if len(ok) else None}
-    return df, summ
+            "drift_all_w1_median_share": float(ok["w1_share"].median()) if len(ok) else None,
+            "tercile_cuts_and_ties": tie_counts or {}}
+    return summ
+
+
+def assign_terciles(ok):
+    """COUNT_ROWS_AMENDMENT_1 Q9 with AMENDMENT_2: per day over the eligible graduates, cuts c1, c2 = the 1/3 and
+    2/3 quantiles of N_m (numpy linear). Lone (0): N_m <= c1; middle (1): c1 < N_m <= c2; busy (2): N_m > c2.
+    A value equal to a cut goes to the lower bin, the same way on every day. Reports the rows tied at each cut."""
+    ties = {}
+    if not len(ok):
+        return ok, ties
+    ok = ok.copy()
+    ok["tercile"] = -1
+    for d, g in ok.groupby("day"):
+        if len(g) < 3:
+            continue
+        c1, c2 = (float(x) for x in np.quantile(g["N_m"].to_numpy(float), [1 / 3, 2 / 3]))
+        n = g["N_m"].to_numpy(float)
+        ok.loc[g.index, "tercile"] = np.where(n <= c1, 0, np.where(n <= c2, 1, 2))
+        ties[d] = {"c1": c1, "c2": c2, "tied_at_c1": int((n == c1).sum()), "tied_at_c2": int((n == c2).sum())}
+    return ok, ties
 
 
 def seat_drift_decide(summ):
