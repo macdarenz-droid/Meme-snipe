@@ -225,3 +225,35 @@ Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining
 66. **m2 and reviewer n2.** The private location runs the same pin CI. Public CI compares only the commitment hash with the pin entry (AC-46).
 67. **m3.** Add a test row for gate B failing on a re-run. A failure with sufficient data is `failed` (A-M13-05 step 3); with insufficient data, the strategy goes to `research`.
 68. **Reviewer n1.** In §2 "Document" and "Order", say that the in-repo path is for agent-origin strategies only; owner-origin ones use the private location, with only the commitment here.
+
+## Round 6 (head `fdbaf99c`): reviewer PASS (1 optional MINOR); red team 0 BLOCKER, 3 MAJOR, 4 MINOR
+
+- Reviewer n1: Dependencies rows for the M21 side (size_not_profitable, admission replay) and for the registerTrial budget.
+- Red team:
+  - S1: the re-run trial budget is zero at the default W_B, and "fresh forward window" is undefined.
+  - S2: admission changes and group S raises do not inherit the re-run safeguards (trials, no P on simulated trades).
+  - S3: "not more favourable" is backwards for buy fills.
+  - s1–s4: wording on the public commitments; a no-cooldown drop needs SPEC and must not shorten an existing cooldown; the W_LS gap; owner results in public text.
+
+### Supervisor rulings for round 7 (8 Oct 2026, 3:06 PM)
+
+69. **S1.**
+    - (a) The PREREG reserves k = 2 re-run trials. MinBTL is computed on configurations + k, and preRegister refuses a W_B too short for that.
+    - (b) "Fresh forward window" means the strategy drops to `backtest_passed`, through B-M26-04 when live. It is disabled in paper and live with exits kept, then records a new W_R and after it a new W_P. W_B is re-run only inside the budget.
+    - (c) AC: a 30-day W_B with 2 configurations and k = 2 is accepted; a re-run inside k proceeds; the (k+1)-th goes to the fresh-window state.
+70. **S2.** One shared re-run rule for code deploys, admission changes and group S raises:
+    - every re-run is a registered trial inside the budget;
+    - B and R are re-run on their own windows;
+    - P and LS are never re-run on simulated trades. If a change adds or removes any W_P or W_LS trade, a raise applies only as "W_P restarts under the new setting from `replay_passed`" (a stage drop through B-M26-04, with no cooldown for cause), or it is refused until the owner accepts that restart in the A3 preview.
+    - AC: an A3 MAXOPEN raise that admits a new W_P trade is never judged by P on simulated trades.
+71. **S3.** "Not more favourable" is measured in SOL outcome, per trade and side:
+    - buy: tokens received ≤ old;
+    - sell: SOL received ≤ old;
+    - modelled costs in lamports ≥ old;
+    - net SOL P&L per trade ≤ old.
+    The AC covers a buy and a sell separately.
+72. **s1.** "Nothing except the opaque id, the hashes and the export row."
+73. **s2.** Add the no-cooldown drop to the open point 6 amendments (B-M26-04, A-M13-05). It never shortens an existing `cooldown_until` (max of existing and none).
+74. **s3.** When a deploy changes W_LS trades but no W_P trades, W_LS restarts at `live_small`.
+75. **s4.** Owner-strategy results stay in the private location as well. Public text uses only the opaque id and stage names.
+76. **Reviewer n1.** Add the Dependencies rows "B-M21-02 / B-M25-02 | fake M21" and "A-M13-02 registerTrial and budget | fake registry".
