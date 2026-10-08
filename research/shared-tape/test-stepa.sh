@@ -52,7 +52,7 @@ chmod +x "$T/gh"; mkdir -p "$T/rel"
 "$T/tapedec" zcat "$root/research/historical/rpcscan/testdata/rpc/452277009.json.zst" > "$T/block.json" || exit 1
 python3 "$T/fake.py" "$T/port" "$T/block.json" "$T/getblock.log" & fpid=$!
 for _ in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
-run() { env GH="$T/gh" FAKE_GH="$T/rel" TAPE_TEST=1 HELIUS_API_KEY=CANARY-stepa TAPE_UPSTREAM="http://127.0.0.1:$(cat "$T/port")/" RPC_CONC=4 REPLAY_EVERY=2 "$@" bash "$here/stepa.sh" "$T/work" >> "$T/out.txt" 2>&1; }
+run() { env STORE=release GH="$T/gh" FAKE_GH="$T/rel" TAPE_TEST=1 HELIUS_API_KEY=CANARY-stepa TAPE_UPSTREAM="http://127.0.0.1:$(cat "$T/port")/" RPC_CONC=4 REPLAY_EVERY=2 "$@" bash "$here/stepa.sh" "$T/work" >> "$T/out.txt" 2>&1; }
 pass=0 fail=0
 ok() { echo "ok   $1"; pass=$((pass+1)); }
 no() { echo "FAIL $1"; fail=$((fail+1)); }

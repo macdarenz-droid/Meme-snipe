@@ -18,6 +18,7 @@ root=$(cd "$here/../.." && pwd)
 work=$1
 days=(2026-09-11 2026-09-10)
 holdout=$(date -u -d 2026-09-12 +%s)
+store=${STORE:-hf} # hf: the owner's private dataset Mrcdrnz/zeroed-tape (hfstore.py); release: tape-* release assets
 keep=${KEEP_LOCAL:-0} # 1: no release; finished units stay local (release creation was refused, 2026-10-08)
 max=${MAX_UNITS:-0} # read at most this many units in this run (0: all; tests and staged starts)
 rps=${RPS:-25} conc=${RPC_CONC:-32} cap=${STEPA_CAP:-650000} every=${REPLAY_EVERY:-30}
@@ -140,15 +141,21 @@ decode_unit() { # DAY EP FROM TO UDIR: research tables, completeness, then delet
   [ "$keep" == 1 ] && return 0
   release_unit "$day" "$ep" "$from" "$to"
 }
-released() { # all three assets of the unit read back
+released() { # stored and read back
+  if [ "$store" == hf ]; then grep -q "^$1	$2-$3	" "$work/stored-units.txt" 2>/dev/null; return; fi
   [ "$(awk -v u="$2-$3" '$2 == u {sub(/-.*/, "", $3); print $3}' "$work/released.tsv" 2>/dev/null | sort -u | wc -l)" -eq 3 ]
 }
 release_unit() { # DAY EP FROM TO: release assets, read back, then free the local copy
   local day=$1 ep=$2 from=$3 to=$4
-  bash "$here/release.sh" "$work" "$day" "$ep" "$from" "$to" >> "$work/release.log" 2>&1 || { log "unit $from: release failed (kept locally)"; return 1; }
+  if [ "$store" == hf ]; then
+    hfcmd=(python3 "$here/hfstore.py"); [ -z "${HFSTORE:-}" ] || hfcmd=("$HFSTORE")
+    "${hfcmd[@]}" "$work" "$day" "$ep" "$from" "$to" >> "$work/release.log" 2>&1 || { log "unit $from: store failed (kept locally)"; return 1; }
+  else
+    bash "$here/release.sh" "$work" "$day" "$ep" "$from" "$to" >> "$work/release.log" 2>&1 || { log "unit $from: release failed (kept locally)"; return 1; }
+  fi
   released "$day" "$from" "$to" || { log "unit $from: release not recorded"; return 1; }
   rm -rf "$out/units/$ep/$from-$to" "$res/units/$ep/$from-$to"
-  log "unit $from: released to tape-$day and read back; local copy removed"
+  log "unit $from: stored ($store) and read back; local copy removed"
 }
 
 s12=$(cat "$work/plan.s12") && [[ "$s12" =~ ^[0-9]+$ ]] || { log "plan.s12 missing: replan"; exit 1; }
