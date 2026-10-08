@@ -112,6 +112,25 @@ describe('dashboard copy guard', () => {
     assert.equal(normaliseCopy('\u1D00\u026A'), 'ai');
   });
 
+  it('Z05 round 4 (ruling 17): every single-letter confusable skeleton, both l/I readings, and combining overlays are caught', () => {
+    const seeded: ReadonlyArray<[string, string, string]> = [
+      ['Lisu', "const t = '\uA4E2\uA4DF\uA4EE\uA4E3\uA4D4 entries';", 'smart'],
+      ['Lisu A and I', "const t = '\uA4EE\uA4F2 picks';", 'AI'],
+      ['Greek lunate sigma', "const t = '\u03F2utting-edge';", 'cutting-edge'],
+      ['Coptic o', "const t = 'r\u2C9Fbust';", 'robust'],
+      ['short solidus overlay', "const t = 's\u0337mart';", 'smart'],
+      ['long stroke overlay', "const t = 's\u0336mart';", 'smart'],
+      ['combining accent', "const t = 'se\u0301amless';", 'seamless'],
+    ];
+    for (const [form, code, label] of seeded) {
+      assert.ok(scan(code).some((hit) => hit.startsWith(`${label}:`)), `${form}: ${code} → ${scan(code).join(' | ')}`);
+    }
+    assert.equal(normaliseCopy('\uA4EE\uA4F2', 'I'), 'AI');
+    assert.equal(normaliseCopy('\uA4EE\uA4F2'), 'Al');
+    // Plain text with real l and I keeps its letters: "Al" and "Daily loss" are not hits.
+    assert.deepEqual(findBanned('Al · Daily loss · Pool momentum'), []);
+  });
+
   it('normaliseCopy reads text as a reader sees it, and leaves plain text alone', () => {
     assert.equal(normaliseCopy('\u0405m\u200Bart'), 'Smart');
     assert.equal(normaliseCopy('\uFF21\uFF29'), 'AI');

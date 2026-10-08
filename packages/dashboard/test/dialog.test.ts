@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, it, vi } from 'vitest';
 import { createElement as h, useState, type ReactElement } from 'react';
 import type { Clock, Mode, UnixMs } from '@bot/types';
 import { Countdown } from '../src/components/countdown.ts';
-import { Dialog, StepUpAuth, TypedConfirmDialog, type CloseReason, type ConnectionView, type DialogProps, type StepUpStatus, type TypedConfirmStatus } from '../src/components/dialog.ts';
+import { Dialog, StepUpAuth, TypedConfirmDialog, type CloseReason, type ConnectionView, type DialogAction, type DialogProps, type StepUpStatus, type TypedConfirmStatus } from '../src/components/dialog.ts';
 import { DiffView } from '../src/components/diff-view.ts';
 import { CLICK_AFTER_UP_MS, HoldButton, type HoldServerStatus } from '../src/components/hold-button.ts';
 import { DIALOG_EXIT_MS, HOLD_REWIND_MS, HOLD_TO_CONFIRM_MS, type SystemStateView } from '../src/lib/safety.ts';
@@ -264,6 +264,51 @@ describe('UI-T07 Dialog (C15)', () => {
     const r = mount(h(Stuck, { mode: 'paper' }));
     r.rerender(h(Stuck, { mode: 'live' }));
     assert.equal(btn(dialogEl(r), 'dialog__secondary').getAttribute('aria-disabled'), 'true', 'in the render where the mode changed');
+  });
+
+  it('Z05 round 4 (ruling 19): only HALT\'s secondary may be risk-reducing; a mode change disables every button but HALT\'s confirm', () => {
+    const onSecondary = vi.fn();
+    // The type refuses the mark on a non-HALT dialog.
+    // @ts-expect-error riskReducing is only allowed with halt: true
+    const typed: DialogProps = { open: true, connection: 'connected', system: PAPER, title: 'T', description: 'D', secondary: { label: 'More', onClick: onSecondary, riskReducing: true }, onClose: () => undefined };
+    void typed;
+    // The runtime refuses it too: a mark that got past the type (a cast) keeps the gate.
+    const marked = { label: 'Sell all…', onClick: onSecondary, riskReducing: true } as unknown as DialogAction;
+    for (const [connection, system] of [['reconnecting', PAPER], ['unknown', LIVE], ['disconnected', LIVE], ['connected', null]] as const) {
+      const r = mount(h(Dialog, { open: true, inline: true, connection, system, title: 'Close position', description: 'D', secondary: marked, confirm: { label: 'Close', onClick: () => undefined }, onClose: () => undefined }));
+      const b = btn(r.container, 'dialog__secondary');
+      assert.equal(b.getAttribute('aria-disabled'), 'true', `${connection} ${system?.mode ?? 'unknown'}`);
+      click(b);
+    }
+    assert.equal(onSecondary.mock.calls.length, 0);
+    // In the render where the mode changed: HALT's confirm stays enabled; its risk-reducing secondary, and a wrongly
+    // marked non-HALT secondary, are disabled.
+    const onHalt = vi.fn();
+    function Halt(props: { mode: Mode }): ReactElement {
+      return h(Dialog, {
+        open: true, halt: true, connection: 'connected', system: sys(props.mode), title: 'Halt trading', description: 'D',
+        secondary: { label: 'Halt and flatten all…', onClick: onSecondary, riskReducing: true },
+        confirm: { label: 'Halt now', onClick: onHalt }, onClose: () => undefined,
+      });
+    }
+    const halt = mount(h(Halt, { mode: 'paper' }));
+    assert.equal(btn(dialogEl(halt), 'dialog__secondary').getAttribute('aria-disabled'), null, 'before the change');
+    halt.rerender(h(Halt, { mode: 'live' }));
+    assert.equal(btn(dialogEl(halt), 'dialog__confirm').getAttribute('aria-disabled'), null, 'HALT stays enabled');
+    click(btn(dialogEl(halt), 'dialog__confirm'));
+    assert.equal(onHalt.mock.calls.length, 1);
+    const flatten = btn(dialogEl(halt), 'dialog__secondary');
+    assert.equal(flatten.getAttribute('aria-disabled'), 'true', 'the risk-reducing secondary is disabled in that frame');
+    click(flatten);
+    function Plain(props: { mode: Mode }): ReactElement {
+      return h(Dialog, { open: true, connection: 'connected', system: sys(props.mode), title: 'T', description: 'D', secondary: marked, onClose: () => undefined });
+    }
+    const plain = mount(h(Plain, { mode: 'paper' }));
+    plain.rerender(h(Plain, { mode: 'live' }));
+    const wrong = btn(dialogEl(plain), 'dialog__secondary');
+    assert.equal(wrong.getAttribute('aria-disabled'), 'true', 'a wrongly marked secondary is disabled in that frame');
+    click(wrong);
+    assert.equal(onSecondary.mock.calls.length, 0);
   });
 
   it('Z05 round 2 (red team M3): a change to or from an unknown mode is a mode change', () => {
@@ -736,6 +781,24 @@ describe('UI-T07 HoldButton (C03)', () => {
     tick(CLICK_AFTER_UP_MS);
     click(b);
     assert.equal(onOpenDialog.mock.calls.length, 2, 'no click came: the claim expired');
+  });
+
+  it('Z05 round 4 (ruling 18): with no pointer capture, a press moved away and lifted outside the button does not swallow a later click', () => {
+    for (const away of ['move', 'leave'] as const) {
+      const { b, onConfirm, onOpenDialog } = setup();
+      // No setPointerCapture: the pointer up lands outside the button, so the button sees no pointerup and no click.
+      Object.defineProperty(b, 'setPointerCapture', { value: undefined, configurable: true });
+      fire(b, pointer('pointerdown', { clientX: 100, clientY: 100 }));
+      tick(300);
+      if (away === 'move') fire(b, pointer('pointermove', { clientX: 100, clientY: 140 }));
+      else fire(b, pointer('pointerout', { relatedTarget: document.body }));
+      assert.equal(b.dataset['state'], 'released-early', away);
+      tick(CLICK_AFTER_UP_MS);
+      // A screen reader's activation: a click no pointer press started.
+      fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 }));
+      assert.equal(onOpenDialog.mock.calls.length, 1, `${away}: the later click opens the HALT dialog`);
+      assert.equal(onConfirm.mock.calls.length, 0, away);
+    }
   });
 
   it('pressing twice without releasing starts one hold only', () => {

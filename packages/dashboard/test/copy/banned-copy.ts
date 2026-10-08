@@ -4,7 +4,7 @@
  * from either. copy-guard.test.ts checks that this list keeps every entry of the apps/web list and every phrase quoted
  * in CLAUDE.md's rule.
  */
-import { GENERATED_LOOKALIKE } from './lookalikes.ts';
+import { CHEROKEE_SMALL, GENERATED_LOOKALIKE, L_OR_I, SMALL_CAPITALS } from './lookalikes.ts';
 
 export interface Banned {
   label: string;
@@ -73,18 +73,28 @@ const LOOKALIKE: Readonly<Record<string, string>> = {
 /**
  * The text a reader sees, for matching (Z05 round 2, red team m1; round 3, ruling 14): NFKC (fullwidth and
  * compatibility letters become plain ones), format characters and other default-ignorable code points removed, and
- * look-alike letters (the table above, and Cherokee letters and Latin small capitals from lookalikes.ts) mapped to Latin.
+ * look-alike letters (the table above, then every single-letter skeleton of Unicode's confusables.txt, lookalikes.ts)
+ * mapped to Latin; combining marks dropped after NFD.
  */
-export function normaliseCopy(text: string): string {
+export function normaliseCopy(text: string, lOrI: 'l' | 'I' = 'l'): string {
   // Format characters and every default-ignorable code point (combining grapheme joiner, Hangul fillers, variation
-  // selectors, tag characters: Z05 round 3, ruling 14) are invisible, so a reader sees the text without them.
-  const plain = text.normalize('NFKC').replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '');
-  return [...plain].map((c) => LOOKALIKE[c] ?? GENERATED_LOOKALIKE[c] ?? c).join('').normalize('NFKC');
+  // selectors, tag characters: Z05 round 3, ruling 14) are invisible, so a reader sees the text without them. Combining
+  // marks are dropped after NFD (round 4, ruling 17), so an overlay such as s\u0337mart or s\u0336mart reads as smart.
+  // Look-alikes are mapped before NFKC and again after it: NFKC turns some of them into other letters first (the lunate
+  // sigma U+03F2 becomes a final sigma), and turns others into look-alikes (a compatibility form of a Greek letter).
+  const one = (c: string): string => LOOKALIKE[c] ?? (L_OR_I.has(c) ? lOrI : GENERATED_LOOKALIKE[c] ?? SMALL_CAPITALS[c] ?? CHEROKEE_SMALL[c]) ?? c;
+  const map = (t: string): string => [...t].map(one).join('');
+  // The first pass leaves a character NFKC turns into plain ASCII (full-width \uFF29 is I, not an l look-alike).
+  const early = (t: string): string => [...t].map((c) => (/^[\x00-\x7f]+$/.test(c.normalize('NFKC')) ? c : one(c))).join('');
+  const visible = text.replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '');
+  const plain = early(visible).normalize('NFKC').replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '').normalize('NFD').replace(/\p{Mn}/gu, '');
+  return map(plain).normalize('NFKC');
 }
 
+/** The banned labels `text` hits, read both ways where a look-alike could be `l` or `I` (round 4, ruling 17). */
 export function findBanned(text: string): string[] {
-  const seen = normaliseCopy(text);
-  return BANNED.filter((b) => b.pattern.test(seen)).map((b) => b.label);
+  const readings = [normaliseCopy(text, 'l'), normaliseCopy(text, 'I')];
+  return BANNED.filter((b) => readings.some((r) => b.pattern.test(r))).map((b) => b.label);
 }
 
 /**

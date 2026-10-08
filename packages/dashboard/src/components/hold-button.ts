@@ -76,13 +76,18 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
     setPhase('released-early');
     rewind.current = setTimeout(() => { rewind.current = null; setPhase('idle'); }, HOLD_REWIND_MS);
   };
+  /** The press's claim on its click ends CLICK_AFTER_UP_MS from now. */
+  const expireClaim = (): void => {
+    if (upTimer.current !== null) clearTimeout(upTimer.current);
+    upTimer.current = setTimeout(() => { upTimer.current = null; press.current = null; }, CLICK_AFTER_UP_MS);
+  };
   /** The pointer went up on the button: a click follows, which belongs to this press and opens nothing. */
   const up = (): void => {
     rewindHold();
     if (press.current === null) return;
     press.current.up = true;
     // If the browser sends no click after all, the mark expires, so it never swallows a later activation.
-    upTimer.current = setTimeout(() => { upTimer.current = null; press.current = null; }, CLICK_AFTER_UP_MS);
+    expireClaim();
   };
   /** The press ended without a pointer up on the button (touch cancel, lost capture): no click follows. */
   const abort = (): void => {
@@ -92,12 +97,14 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
   /**
    * A finger resting on HALT while the page scrolls is not a hold: a move over HOLD_MOVE_PX, or leaving the button,
    * cancels it. The press keeps its claim on the click its pointer up brings, so releasing on the button opens nothing
-   * (Z05 round 3, ruling 13); the claim expires as after any pointer up.
+   * (Z05 round 3, ruling 13). The claim expires CLICK_AFTER_UP_MS after the move, as after a pointer up: without pointer
+   * capture the pointer may lift outside the button, and no pointer up or click ever comes (Z05 round 4, ruling 18).
    */
   const moveAway = (): void => {
     const p = press.current;
     if (p === null || p.up) return;
     rewindHold();
+    if (upTimer.current === null) expireClaim();
   };
   const move = (e: PointerEvent<HTMLButtonElement>): void => {
     const p = press.current;
