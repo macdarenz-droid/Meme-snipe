@@ -81,6 +81,9 @@ EXCLUDE_PROTOCOL_SWAPS = True
 
 # Step A plan (research/shared-tape/stepa-plan.txt: "DAY EPOCH FROM TO" per unit). Its sha256 is fixed here.
 STEPA_PLAN_SHA256 = "fa99c8788f845a7d9f4a5c967d7cce18c0a7f476082c1969fc35cf4f57f38fc7"
+# Step B plan (research/shared-tape/stepb-plan.txt, registered 2026-10-08 with stepb-plan.sha256; the same sha W1's
+# guard fixes). Validation is judged only on every planned unit of every Step B day (red team R2-1).
+STEPB_PLAN_SHA256 = "44f133a5b825876b8ca29bb9b807e3d75e2d2fb375780e26f3570fdab03058d5"
 
 # ---- Feature windows (PREREG §4) --------------------------------------------------------------------------------
 W5 = 5 * 60

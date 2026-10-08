@@ -12,6 +12,7 @@ from .load import Unit, segments
 
 PLAN_DEFAULT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
                                              "shared-tape", "stepa-plan.txt"))
+STEPB_PLAN_DEFAULT = os.path.join(os.path.dirname(PLAN_DEFAULT), "stepb-plan.txt")
 
 
 def sha256_file(path: str) -> str:

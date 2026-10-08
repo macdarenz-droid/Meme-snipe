@@ -41,6 +41,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - **H8 stratum.** `--solusd` defaults to `research/brainstorm-loop/sol-usd`. Each needed day is checked against `SHA256SUMS`, and a missing day or a mismatch is refused. `validate` refuses frozen rules made before the H8 amendment (`run_d1.FROZEN_AMENDMENTS`).
 - `search` refuses dev runs and any day that is not a discovery day.
 - `validate` refuses unless `--confirm-validation-read` is passed, and refuses when its days overlap the discovery days.
+- `validate` refuses unless the run read exactly the Step B days and every unit of the registered Step B plan (`config.STEPB_PLAN_SHA256`), with no gap (red team R2-1).
 - `--dev-unknown-migration` exists only for shape checks on the few units cached now. It gives pools that migrated before the tape a pseudo migration. Its runs are marked `dev` and can never be searched or validated.
 
 ## Blindness

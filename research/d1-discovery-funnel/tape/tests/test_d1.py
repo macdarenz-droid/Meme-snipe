@@ -614,14 +614,15 @@ class Guards(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.plan = os.path.join(REPO, "research", "shared-tape", "stepa-plan.txt")
 
-    def _run(self, days, dev=False, complete=True, hashes=None, sha_ok=True, code=None, units2=None):
+    def _run(self, days, dev=False, complete=True, hashes=None, sha_ok=True, code=None, units2=None, units=None):
         run = tempfile_dir = os.path.join(self.dir, f"r{len(os.listdir(self.dir))}")
         os.makedirs(run)
         h = hashes if hashes is not None else {"a": "1"}
         code = code or self.R.code_hash()
-        m1 = {"days": list(days), "dev": dev, "code_sha256": code, "input_sha256": h, "unit_dirs": ["u1"],
+        units = units or ["u1"]
+        m1 = {"days": list(days), "dev": dev, "code_sha256": code, "input_sha256": h, "unit_dirs": units,
               "stepa_plan": {"plan_sha_ok": sha_ok, "complete": complete}}
-        m2 = {"days": list(days), "dev": dev, "code_sha256": code, "input_sha256": h, "unit_dirs": units2 or ["u1"]}
+        m2 = {"days": list(days), "dev": dev, "code_sha256": code, "input_sha256": h, "unit_dirs": units2 or units}
         for n, m in (("stage1", m1), ("stage2", m2)):
             with open(os.path.join(run, f"manifest_{n}.json"), "w") as fh:
                 json.dump(m, fh)
@@ -648,22 +649,44 @@ class Guards(unittest.TestCase):
         self.refuses(self.R.search_guard, ok, bad)                           # plan sha mismatch
         self.assertFalse(hasattr(self.R, "allow_partial_discovery"))
 
+    def _stepb_units(self, days=C.VALIDATION_DAYS_STEP_B):
+        from d1.stepa import read_plan
+        rows = read_plan(os.path.join(REPO, "research", "shared-tape", "stepb-plan.txt"))
+        return [f"/x/{d}/{a}-{b}" for d, a, b in rows if d in days]
+
     def test_validate_guard(self):
         val = C.VALIDATION_DAYS_STEP_B
         frozen = {"code_sha256": self.R.code_hash(), "discovery_days": list(C.DISCOVERY_DAYS),
                   "amendments": ["AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT"], "solusd_sha256": C.SOLUSD_SUMS_SHA256}
-        self.R.validate_guard(self._run(val), frozen, True, self.plan)
-        self.refuses(self.R.validate_guard, self._run(val), frozen, False, self.plan)
-        self.refuses(self.R.validate_guard, self._run(val, dev=True), frozen, True, self.plan)
-        self.refuses(self.R.validate_guard, self._run(val + (C.DISCOVERY_DAYS[0],)), frozen, True, self.plan)
-        self.refuses(self.R.validate_guard, self._run(val), dict(frozen, code_sha256="0" * 64), True, self.plan)
-        self.refuses(self.R.validate_guard, self._run(val, hashes="skipped"), frozen, True, self.plan)
-        self.refuses(self.R.validate_guard, self._run(val), dict(frozen, amendments=["AMENDMENT_1"]), True, self.plan)
-        self.refuses(self.R.validate_guard, self._run(val), dict(frozen, solusd_sha256="0" * 64), True, self.plan)
+        U = self._stepb_units()
+        self.R.validate_guard(self._run(val, units=U), frozen, True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val, units=U), frozen, False, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val, dev=True, units=U), frozen, True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val + (C.DISCOVERY_DAYS[0],), units=U), frozen, True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val, units=U), dict(frozen, code_sha256="0" * 64), True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val, hashes="skipped", units=U), frozen, True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val, units=U), dict(frozen, amendments=["AMENDMENT_1"]), True,
+                     self.plan)
+        self.refuses(self.R.validate_guard, self._run(val, units=U), dict(frozen, solusd_sha256="0" * 64), True,
+                     self.plan)
         bad = os.path.join(self.dir, "plan2.txt")
         with open(bad, "w") as fh:
             fh.write("2026-09-11 1 2 3\n")
-        self.refuses(self.R.validate_guard, self._run(val), frozen, True, bad)
+        self.refuses(self.R.validate_guard, self._run(val, units=U), frozen, True, bad)
+
+    def test_validate_needs_whole_step_b_R2_1(self):
+        """R2-1: validation is judged only on the whole of Step B (every day, every planned unit, no gap); a subset of
+        days or units could otherwise be chosen after looking (multiple looks, cherry-picked hours)."""
+        val = C.VALIDATION_DAYS_STEP_B
+        frozen = {"code_sha256": self.R.code_hash(), "discovery_days": list(C.DISCOVERY_DAYS),
+                  "amendments": ["AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT"], "solusd_sha256": C.SOLUSD_SUMS_SHA256}
+        U = self._stepb_units()
+        one = self._stepb_units(val[:1])
+        self.refuses(self.R.validate_guard, self._run(val[:1], units=one), frozen, True, self.plan)   # one day only
+        self.refuses(self.R.validate_guard, self._run(val, units=U[:-1]), frozen, True, self.plan)   # a unit dropped
+        holed = U[:10] + U[11:]
+        self.refuses(self.R.validate_guard, self._run(val, units=holed), frozen, True, self.plan)    # a gap
+        self.refuses(self.R.validate_guard, self._run(val, units=["u1"]), frozen, True, self.plan)   # not the plan
 
     def test_stage1_no_hash_and_stage2_inputs(self):
         self.refuses(self.R.main, ["stage1", "--units", "x", "--days", S.DAY, "--out", self.dir, "--no-hash"])

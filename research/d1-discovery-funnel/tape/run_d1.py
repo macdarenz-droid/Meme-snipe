@@ -218,6 +218,20 @@ def validate_guard(run, frozen, confirm, plan_path=None, solusd=None):
     days = ms["stage1"]["days"]
     if set(days) & set(frozen["discovery_days"]) or set(days) & set(C.DISCOVERY_DAYS):
         sys.exit("refusing: validation days overlap the discovery days")
+    # R2-1: PREREG §6 judges the rules on Step B as a whole. A subset of its days or units (chosen after a look) is
+    # refused: the run must read every unit of the registered Step B plan for each of 09-07, 09-08 and 09-09, no gap.
+    if sorted(days) != sorted(C.VALIDATION_DAYS_STEP_B):
+        sys.exit(f"refusing: validation reads exactly the Step B days {C.VALIDATION_DAYS_STEP_B}, got {days}")
+    from d1.load import parse_unit
+    from d1.stepa import STEPB_PLAN_DEFAULT, plan_check
+    try:
+        units = [parse_unit(u) for u in ms["stage1"].get("unit_dirs", [])]
+    except ValueError as e:
+        sys.exit(f"refusing: {e}")
+    chk = plan_check(units, days, STEPB_PLAN_DEFAULT, C.STEPB_PLAN_SHA256)
+    if not chk["complete"]:
+        sys.exit("refusing: the validation run is not the whole Step B plan (sha "
+                 f"{chk['plan_sha256']}, ok {chk['plan_sha_ok']}, per day {chk['per_day']})")
     return ms
 
 
