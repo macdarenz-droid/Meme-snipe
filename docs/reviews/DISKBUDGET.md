@@ -70,3 +70,16 @@ BLOCKER (`m07/receipts.ts:85`): `rmSync(path, { recursive: true })` on an entry 
 21. **MINOR 1.** Fix SPEC-A:1307 and :2513. For `rpc-usage.db`, find in the specs who writes it. If the sentinel must write it, give it its own shared state folder with the right group instead of the 0700 worker folder. Record the decision in DECISIONS.
 22. **MINOR 2.** SPEC-B:2031: "M24 backup step not built; zeroed-backup is the one backup owner (DISK-BUDGET §2.6)". SPEC-B:2584: replace `/var/lib/bot`.
 23. **MINOR 3.** `zeroed-check` alerts when a pull mount is inactive. This is monitoring of a component this PR adds, so it is in scope here. Test: inactive mount gives the alert; active gives none.
+
+### #311 round 2 (head `c4d5d6db`, contains `e99e61af`; #312 carried forward to `3c09b1b0`)
+
+Rulings 19–23 applied, as the builder reports:
+- 19: unlink and rmdir only; a race test covers it.
+- 20: a 64 MiB ext4 image with 32,768 inodes, caps of 30,000 receipts / 24 MiB, and segment-bound names.
+- 21–22: rpc-usage.db moves to `/var/lib/zeroed-usage` (2770 zeroed-worker:zeroed-sentinel, setgid), because A-M14 says both the engine and the sentinel write it; SPEC lines fixed.
+- 23: pull-mount alerts.
+
+### Supervisor rulings (9 Oct 2026, about 1:48 AM)
+
+24. **Builder MAJOR, rpc-usage.db not backed up.** Add `/var/lib/zeroed-usage` to zeroed-backup, as a consistent online copy (SQLite backup API or `.backup`, the same way as the other databases), counted in the backup budget. Test: a backup bundle contains rpc-usage.db, and a restore drill restores it.
+25. **Builder MINORs.** No code now; they are card notes. The sentinel user and unit (B-M30-02) must run with group `zeroed-sentinel`. M14 must create the db, -wal and -shm as 0660 under UMask=0077. Both lines go in the PR's DECISIONS row.
