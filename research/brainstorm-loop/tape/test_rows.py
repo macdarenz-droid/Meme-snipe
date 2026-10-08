@@ -821,6 +821,22 @@ class RedTeamR1(unittest.TestCase):
             run_step_a.main(["--unit", u, "--out", os.path.join(d, "o"), "--decide", "--plan", plan, "--boot", "50"])
         self.assertFalse(os.path.exists(os.path.join(d, "o")))
 
+    def test_no_prereg_is_earned_without_the_payer_mass_bar(self):
+        # R1-5: PAYER_MASS.md adds a necessary bar to DEV-ZERO, REBUY-ANCHOR and SEAT-DRIFT; until it is computed
+        # no row may report a PREREG earned, even when its own thresholds pass
+        import run_step_a
+        from unittest import mock
+        d, u, plan = self._decide_plan()
+        with mock.patch.object(R, "dev_zero_decide", lambda s: {"le5": True, "zero": True, "le3": True}), \
+                mock.patch.object(R, "seat_drift_decide", lambda s: True), \
+                mock.patch.object(RB, "rebuy_decide", lambda s: True):
+            summ = run_step_a.run([u], os.path.join(d, "o"), None, n_boot=20, decide=True, plan={"path": plan})
+        dec = summ["decision"]
+        self.assertFalse(any(dec["1_dev_zero_prereg_by_arm"].values()))
+        self.assertFalse(dec["2_rebuy_anchor_prereg"])
+        self.assertFalse(dec["3_seat_drift_prereg"])
+        self.assertTrue(all(dec["own_thresholds"]["1_dev_zero_by_arm"].values()))
+        self.assertIsNone(dec["payer_mass_bar"]["passed"])
 
 if __name__ == "__main__":
     unittest.main()
