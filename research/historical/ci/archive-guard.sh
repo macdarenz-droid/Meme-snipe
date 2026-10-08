@@ -308,6 +308,14 @@ def check_steps(steps, name, j, depth=0):
         if not isinstance(st, dict): continue
         uses = str(st.get("uses", "")).strip()
         where = name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?")))
+        # OF-4 ruling 5: the store token only in a clean env -i step (shell without BASH_ENV
+        # or ENV, the script under env -i with a fixed PATH, the loader variables emptied)
+        env = st.get("env") or {}
+        if "DATA_STORE_TOKEN" in str(env) or "DATA_STORE_TOKEN" in str(st.get("with") or {}):
+            clean = (str(st.get("shell", "")).startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc")
+                     and str(st.get("run", "")).startswith("/usr/bin/env -i PATH=/usr/bin:/bin ")
+                     and isinstance(env, dict) and all(str(env.get(k, "x")) == "" for k in ("BASH_ENV", "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH")))
+            if not clean: fail(where + " holds the store token outside a clean env -i step (OF-4 ruling 5)")
         # ruling 46: the whole upload family; only the resume- marker in data-scan scan
         if uses.startswith("actions/upload-"):
             art = str((st.get("with") or {}).get("name", ""))
@@ -358,6 +366,7 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
         for k, v in (env or {}).items():
             if "zeroed-" in str(v): fail(where + " env " + str(k) + " names a scanner binary (ruling 57)")
     envcheck(wf.get("env"), name)
+    if "DATA_STORE_TOKEN" in str(wf.get("env") or {}): fail(name + " holds the store token in its top-level env (OF-4 ruling 5)")
     for j, job in (wf.get("jobs") or {}).items():
         if not isinstance(job, dict): continue
         e = scopes(job.get("permissions"), name, j)
@@ -367,6 +376,7 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
             if len(sts) != 2 or not str(sts[0].get("uses", "")).startswith("actions/checkout@") or "uses" in sts[1] or str(sts[1].get("run", "")).strip() != "research/historical/ci/cache-forget.sh \"$PREFIX\"":
                 fail(name + " job forget holds actions: write and may run only a checkout and cache-forget.sh (OF-4 ruling 1)")
         envcheck(job.get("env"), name + " job " + str(j))
+        if "DATA_STORE_TOKEN" in str(job.get("env") or {}): fail(name + " job " + str(j) + " holds the store token in its job env (OF-4 ruling 5)")
         for st in job.get("steps") or []:
             if isinstance(st, dict): envcheck(st.get("env"), name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))))
         # ruling 65: no job container, service containers or reusable workflow (none is checked)

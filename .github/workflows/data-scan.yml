@@ -934,17 +934,48 @@ jobs:
           rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
           go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Assemble the dataset
+      # OF-4 ruling 5: the store token only in the clean download and store steps; the
+      # extraction, finalize, QA and parity run without any token.
+      - name: Prepare the work disk
         if: inputs.mode == 'assemble'
+        run: |
+          # about 4 GB per scanned day of units: work on the runner's larger /mnt volume
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          df -h / /mnt
+      - name: Download the days from the private store
+        if: inputs.mode == 'assemble'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
           GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
           DATA_REPO: ${{ vars.DATA_REPO }}
           FROM: ${{ inputs.from }}
           TO: ${{ inputs.to }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/assemble.sh" --download "$FROM" "$TO" /mnt/work
+      - name: Assemble the dataset
+        if: inputs.mode == 'assemble'
+        env:
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
           ALLOW_REVISIONS: ${{ inputs.allow_revisions }}
-        run: |
-          set -euo pipefail
-          # about 4 GB per scanned day of units: work on the runner's larger /mnt volume
-          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
-          df -h / /mnt
-          research/historical/ci/assemble.sh "$FROM" "$TO" /mnt/work
+        run: research/historical/ci/assemble.sh "$FROM" "$TO" /mnt/work
+      - name: Store the dataset in the private store
+        if: inputs.mode == 'assemble'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/assemble.sh" --store "$FROM" "$TO" /mnt/work

@@ -118,7 +118,8 @@ reset_store() {
     else make_day "$d" "u$i"; fi
   done
 }
-run() { bash "$here/assemble.sh" "$@" > "$T/out.txt" 2>&1; }
+# OF-4 ruling 5: download (store token), build (no token), store (store token)
+run() { { bash "$here/assemble.sh" --download "$@" && env -u GH_TOKEN -u GITHUB_TOKEN bash "$here/assemble.sh" "$@" && bash "$here/assemble.sh" --store "$@"; } > "$T/out.txt" 2>&1; }
 
 # ---- 1. full offline run: FROM 09-20, TO 09-22, lead-in 09-06 .. 09-19 ----
 reset_store
@@ -155,7 +156,7 @@ run 2026-09-20 2026-09-22 "$T/work" && no "missing lead-in day skipped silently"
   { grep -q "data-day-2026-09-10 is missing" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "missing lead-in day fails before any download" || no "missing day: $(cat "$T/out.txt")"; }
 
 reset_store
-FAKE_AVAIL=1000 run 2026-09-20 2026-09-22 "$T/work" && no "disk guard passed" || { grep -q "not enough disk" "$T/out.txt" && ok "free-space guard (3x tar + 10 GB)" || no "disk guard message"; }
+FAKE_AVAIL=1000 run 2026-09-20 2026-09-22 "$T/work" && no "disk guard passed" || { grep -q "not enough disk" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "free-space guard (all the days' assets + 10 GB before the download; 2x a day's assets + 10 GB before its extraction)" || no "disk guard message"; }
 
 reset_store; echo junk >> "$T/rel/data-day-2026-09-21/units-2026-09-21.tar.part00"
 run 2026-09-20 2026-09-22 "$T/work" && no "corrupt part accepted" || { grep -q "checksum mismatch" "$T/out.txt" && ok "corrupt window part fails the checksum" || no "checksum message: $(cat "$T/out.txt")"; }
@@ -2976,8 +2977,10 @@ for dr in "" test/repo TEST/Repo; do
   [[ ! -s "$T/ghcalls4.log" ]] || bad+=" [gh called with '$dr']"
 done
 DATA_REPO="" PATH="$T/bin:$PATH" bash "$here/volume-day.sh" --download 2026-09-30 "$T/v4" >/dev/null 2>&1 && bad+=" [volume-day download]"
-out=$(DATA_REPO=test/repo bash -c '. "$1"; main 2026-09-20 2026-09-21 "$2"' _ "$here/assemble.sh" "$T/as4" 2>&1) && bad+=" [assemble]"
-[[ "$out" == *"not the private store"* ]] || bad+=" [assemble msg: ${out:0:80}]"
+for m in --download --store; do
+  out=$(DATA_REPO=test/repo bash "$here/assemble.sh" $m 2026-09-20 2026-09-21 "$T/as4" 2>&1) && bad+=" [assemble $m]"
+  [[ "$out" == *"not the private store"* ]] || bad+=" [assemble $m msg: ${out:0:80}]"
+done
 [[ -z "$bad" ]] && ok "OF-4: every release call in this suite named the private store (DATA_REPO); publish-day (and --check), publish-volume, storage-check, volume-day --download and assemble refuse before any gh call without DATA_REPO or when it is this repository" || no "OF-4 private store only:$bad"
 bad=""
 # The day release carries the per-unit log, and the OF-3 files SHA256SUMS lists.
@@ -3022,9 +3025,14 @@ for j, job in jobs.items():
         if any(k in run for k in ("publish-day.sh", "publish-volume.sh", "storage-check.sh", "volume-day.sh\" --download")):
             assert env.get("GH_TOKEN") == "${{ secrets.DATA_STORE_TOKEN }}" and env.get("DATA_REPO") == "${{ vars.DATA_REPO }}", st
             assert st["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and run.startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), st
-        if "DATA_STORE_TOKEN" in str(env) and "cache-crypt.sh" not in run and "archive-guard.sh" not in run:
-            assert run.startswith("/usr/bin/env -i ") or "assemble.sh" in run, st
-assert jobs["assemble"]["steps"][-1]["env"]["GH_TOKEN"] == "${{ secrets.DATA_STORE_TOKEN }}"
+        if "DATA_STORE_TOKEN" in str(env):
+            assert run.startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), st
+# OF-4 ruling 5: assemble downloads and stores in clean steps; the build holds no token
+asm = {x.get("name"): x for x in jobs["assemble"]["steps"]}
+for k, m in (("Download the days from the private store", "--download"), ("Store the dataset in the private store", "--store")):
+    assert asm[k]["env"]["GH_TOKEN"] == "${{ secrets.DATA_STORE_TOKEN }}" and asm[k]["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin ") and ('assemble.sh" ' + m + ' "$FROM" "$TO" /mnt/work') in asm[k]["run"], asm[k]
+b = asm["Assemble the dataset"]; assert "TOKEN" not in str(b.get("env")) and b["run"] == 'research/historical/ci/assemble.sh "$FROM" "$TO" /mnt/work', b
+names = list(asm); assert names.index("Download the days from the private store") < names.index("Assemble the dataset") < names.index("Store the dataset in the private store"), names
 steps = jobs["scan"]["steps"]; names = [s.get("id") or s.get("name") for s in steps]
 assert "Store this day's volume hours" in names and names.index("store") < names.index("Store this day's volume hours") < names.index("Storage check after the batch"), names
 sc = steps[names.index("Storage check after the batch")]
@@ -3159,6 +3167,35 @@ PY
 done
 mkfx "$T/fxf"; ACFX=$T/fxf/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" [control: $(tail -c 300 "$A/summary.md")]"
 [[ -z "$bad" ]] && ok "OF-4 ruling 1: cache-forget deletes exactly the stored day's data-scan-DAY-k<kid>-* entries (progress, -qa, -logs; not another day or key id), refuses any other prefix before a call and deletes nothing when the list fails; the forget job alone (with continue) holds actions: write, needs the scan job's prefix, which is set only after the read-back passed; the guard refuses an extra step, another command in it, or actions: write in the scan job; the tree as it is arms" || no "OF-4 forget:$bad"
+bad=""
+
+# ---- OF-4 ruling 5: the store token only in clean env -i steps; the assemble build holds none ----
+bad=""; gdreset; touch "$GD/noguard-$NG"
+for v in step job top; do
+  mkfx "$T/fxt"; w="$T/fxt/.github/workflows/data-scan.yml"
+  python3 - "$w" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+if v == "step":
+    a = "          ALLOW_REVISIONS: ${{ inputs.allow_revisions }}\n"
+    assert s.count(a) == 1; s = s.replace(a, a + "          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}\n")
+elif v == "job":
+    i = s.index("\n  assemble:"); j = s.index("\n    runs-on:", i)
+    s = s[:j] + "\n    env:\n      TOK: ${{ secrets.DATA_STORE_TOKEN }}" + s[j:]
+else:
+    a = "\nenv:\n"; assert s.count(a) == 1; s = s.replace(a, a + "  TOK: ${{ secrets.DATA_STORE_TOKEN }}\n")
+open(p, "w").write(s)
+PY
+  ACFX=$T/fxt/research/historical/ci ac env AC_STATUS=206
+  [[ ! -e "$A/curl.calls" ]] && grep -q "holds the store token" "$A/summary.md" || bad+=" [guard $v: $(grep -o 'refused[^|]*' "$A/summary.md" | head -1 | cut -c1-120)]"
+done
+reset_store; rc=0; bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" >/dev/null 2>&1 || rc=$?
+out=$(GH_TOKEN=x bash "$here/assemble.sh" 2026-09-20 2026-09-22 "$T/work" 2>&1) && bad+=" [build with GH_TOKEN]"
+[[ $rc == 0 && "$out" == *"runs without a token"* && ! -e "$T/work/data/units" ]] || bad+=" [build msg: $rc ${out:0:80}]"
+out=$(env -u GH_TOKEN GITHUB_TOKEN=y bash "$here/assemble.sh" 2026-09-20 2026-09-22 "$T/work" 2>&1) && bad+=" [build with GITHUB_TOKEN]"
+out=$(bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/w5" 2>&1) && bad+=" [store without a build]"
+[[ "$out" == *"no built release"* ]] || bad+=" [store msg: ${out:0:80}]"
+[[ -z "$bad" ]] && ok "OF-4 ruling 5: arming refuses the store token in a step outside a clean env -i step, in a job env or in the top-level env; assemble's build refuses to run with GH_TOKEN or GITHUB_TOKEN set, and --store refuses without a built release" || no "OF-4 store token:$bad"
 bad=""
 
 echo "$pass passed, $fail failed"
