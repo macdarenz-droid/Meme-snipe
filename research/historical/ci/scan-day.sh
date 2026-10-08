@@ -137,9 +137,10 @@ while true; do
   # Interrupted (SIGINT) at the budget's end; it finishes nothing new after that and
   # exits within 2 min, else it is killed (an unfinished unit is never renamed into place).
   # OF-2 round 4, ruling 36: the scanner's output (plan and per-unit counts) goes to
-  # $slog next to the data, never to the public log; the log keeps the exit code and the
-  # 429 log (429.log) only.
-  slog="$out-log"; mkdir -p "$slog"
+  # $slog inside the day's progress, never to the public log; the log keeps the exit code
+  # and the 429 log (429.log) only. OF-3 ruling 24: $out/logs is saved with the progress,
+  # sealed (cache-crypt.sh), so a failed day's reasons stay private and readable.
+  slog="$out/logs"; mkdir -p "$slog"
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
     -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop >> "$slog/run.log" 2>&1
   rc=$?

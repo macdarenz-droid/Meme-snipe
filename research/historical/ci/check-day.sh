@@ -34,7 +34,7 @@ fi
 # phase NAME CMD...: runs CMD and logs pass or fail and its duration to the summary
 # (sizes the 45 min QA-phase budget in data-scan.yml from real days). OF-2 round 4,
 # ruling 23: the output of finalize and the QA tools (block and trade counts, accounts,
-# slots) goes to $qlog next to the dataset, on the same runner volume, never to the
+# slots) goes to $qlog in the day's progress (sealed when saved), never to the
 # public job log or summary (archive-guard.sh ag_private_storage checks the redirects).
 phase() {
   local name=$1 t0 rc=0
@@ -52,7 +52,9 @@ phase() {
 units_bytes=$(du -sb "$out/units" | cut -f1)
 "$here/disk-guard.sh" "${DATASET_PARENT:-/tmp}" $(( units_bytes + 5000000000 )) "the one-day QA dataset"
 ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
-qlog="$ds-log"; mkdir -p "$qlog"
+# OF-3 ruling 24: inside the day's progress ($out/logs/qa), so a failed QA's output is
+# saved with it, sealed (the "Save progress after QA" step), private and readable.
+qlog="$out/logs/qa"; rm -rf "$qlog"; mkdir -p "$qlog"
 # A single-day dataset without lead-in: universes are tokens created or graduated in
 # that day's units. The multi-day dataset (assemble.sh) uses the 14-day lead-in.
 phase finalize zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json" > "$qlog/finalize.log" 2>&1

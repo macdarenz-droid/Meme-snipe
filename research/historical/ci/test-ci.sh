@@ -345,6 +345,7 @@ echo scan >> "$T/calls.log"; echo "$*" > "$T/scan.args"
 while (( $# )); do [[ "$1" == -out ]] && out=$2; shift; done
 # SLOW: a scan that outlasts the budget; interrupted (SIGINT) it exits 1 like the scanner
 echo "plan: 12 units curve=5 amm=3" # (ruling 36: archive-derived counts, never in the public log)
+[[ -n "${SCAN_FAIL_RC:-}" ]] && exit "$SCAN_FAIL_RC" # a scanner failure (OF-3 ruling 24)
 if [[ -n "${SLOW:-}" ]]; then trap 'echo interrupted >> "$T/calls.log"; exit 1' INT; /bin/sleep 30 & wait; exit 0; fi
 if [[ $(grep -c scan "$T/calls.log") == 1 && "${FIRST_RC:-0}" == 75 ]]; then
   now=$(date +%s); echo "$now 10 $((now + 10))" > "$out/archive-429.state"
@@ -2061,7 +2062,7 @@ cd23() { rm -rf "$T/cd23" "$T/cd23-assets" "$T/cd-ds"; mkdir -p "$T/cd23/units/1
 rc=0; cd23 || rc=$?
 [[ $rc == 0 ]] && ! grep -q "QA-REPORT" "$T/out.txt" "$T/summary.md" && grep -q "^phase qa (2026-07-22): passed, " "$T/summary.md" || bad+=" pass:$rc"
 rc=0; QA_FAIL_ON=check.mjs cd23 || rc=$?
-l=$(ls "$T"/cd-ds/*-log/qa.log 2>/dev/null | head -1)
+l=$(ls "$T"/cd23/logs/qa/qa.log 2>/dev/null | head -1)
 [[ $rc != 0 ]] && ! grep -q "QA-REPORT" "$T/out.txt" "$T/summary.md" && grep -q "^phase qa (2026-07-22): failed (exit 1)" "$T/summary.md" && [[ -n "$l" ]] && grep -q "QA-REPORT blocks=123" "$l" && grep -q "QA-REPORT stderr" "$l" || bad+=" fail:$rc"
 for v in plain phase-no-redirect wrapper; do
   mkfx "$T/fxq"; c="$T/fxq/research/historical/ci"
@@ -2157,7 +2158,7 @@ bad=""; gdreset
 gdreset; bad=""; now=$(date -u +%s); touch "$GD/noguard-$NG"
 # 36. The scanner's counts go to a private log next to the data, never the job log or summary.
 o="$T/r36"; rm -rf "$o" "$o-log"; mkdir -p "$o"; : > "$T/summary.md"; rc=0; scan "$o" || rc=$?
-[[ $rc == 0 ]] && ! grep -q "curve=5" "$T/out.txt" "$T/summary.md" && grep -q "curve=5" "$o-log/run.log" || bad+=" scan-log:$rc"
+[[ $rc == 0 ]] && ! grep -q "curve=5" "$T/out.txt" "$T/summary.md" && grep -q "curve=5" "$o/logs/run.log" || bad+=" scan-log:$rc"
 for v in run unit; do
   mkfx "$T/fx36"; c="$T/fx36/research/historical/ci"
   echo "zeroed-scan $v -out \"\$out\" -from 2026-07-22" >> "$c/scan-day.sh"
@@ -2349,6 +2350,18 @@ rc=0; out=$(GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r bash "$here/unguarded-refs.
 [[ $rc == 0 && "$out" == "tag preview" ]] && grep -q "contents/.github/workflows/data-scan.yml?ref=refs/tags/preview" "$GD/gh.log" && grep -q "contents/.github/workflows/data-scan.yml?ref=refs/heads/preview" "$GD/gh.log" || bad+=" same-name:$rc:$out"
 [[ -z "$bad" ]] && ok "OF-2 r6 ruling 48: a branch and a tag both named preview are read as refs/heads/preview and refs/tags/preview; only the unguarded tag is listed" || no "OF-2 r6 tag refs:$bad"
 bad=""; gdreset
+
+# ---- OF-3 ruling 24: a failed day's reasons are saved with its progress, sealed ----
+bad=""
+o="$T/r24"; rm -rf "$o"; mkdir -p "$o"; rc=0; SCAN_FAIL_RC=3 scan "$o" || rc=$?
+[[ $rc != 0 ]] && grep -q "curve=5" "$o/logs/run.log" && ! grep -q "curve=5" "$T/out.txt" "$T/summary.md" || bad+=" scan-fail:$rc"
+rc=0; QA_FAIL_ON=check.mjs cd23 || rc=$?; [[ $rc != 0 && -f "$T/cd23/logs/qa/qa.log" ]] || bad+=" qa-fail:$rc"
+for d in "$o" "$T/cd23"; do
+  rm -rf "$T/r24s"; DATA_STORE_TOKEN=tok24 bash "$here/cache-crypt.sh" seal "$d" "$T/r24s" > /dev/null || bad+=" seal"
+  ! grep -rqE "curve=5|QA-REPORT" "$T/r24s" || bad+=" plaintext"
+  rm -rf "$T/r24o"; DATA_STORE_TOKEN=tok24 bash "$here/cache-crypt.sh" open "$T/r24s" "$T/r24o" > /dev/null && grep -rqE "curve=5|QA-REPORT blocks=123" "$T/r24o/logs" || bad+=" readable"
+done
+[[ -z "$bad" ]] && ok "OF-3 ruling 24: a failed scan's and a failed QA's output stay in the day's progress (logs/), so the sealed cache carries them with no plaintext byte and they read back after opening" || no "OF-3 failed-day logs:$bad"
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
