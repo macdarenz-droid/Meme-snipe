@@ -38,6 +38,8 @@ Updated 2026-10-08 07:40 AEDT. "Chance" is my judgement of the chance that the i
 | Paid attention at entry (hype Test 1; 1,603 fresh coins) | **kill (a):** paid −27.1% vs unpaid −22.3% a trade; gap −4.8 points, 98.33% CI −11.5 to +2.8; paid sits inside the random-group band. Unfiltered R1 basket −24.1% a trade (`research/hype/test1/RESULTS.md`) |
 | Squeeze, spot (H1) | registered primary **UNRESOLVED** (AMM v4 data check failed on dust swaps); new trial H1-T2 **KILLED:** −0.71% a trade after costs over 238 events, lift over ordinary breakouts +0.32% (not significant); every secondary arm negative (`research/squeeze-probe/RESULTS.md`) |
 | Maker seat: resting bids on 12 deep-pool coins (design C, `EDGE_DIALOGUE.md`) | **not supported:** −1.41% a fill over 152 fills (99.58% CI −2.68% to −0.42%); lift over random buys −0.43 points; dips deep enough to fill kept falling (`research/maker-probe/RESULTS.md`) |
+| Crowd-break short on perps (CROWD-BREAK-SHORT) | **KILLED:** −0.92% a trade over 376 events (99.5% CI −1.96% to +0.27%); the crowd does get flushed (OI flush 9.6% vs 3.2%), but shorting it does not pay (`research/crowd-break-short/RESULTS.md`) |
+| Funding spread, Hyperliquid vs Binance (FUND-SPREAD) | **CLOSED at the gate:** only 27 executable entries (300 needed), and 2.96% of 72 h windows had a 50% move (limit 1%); no return read (`research/fund-spread/RESULTS.md`) |
 | Stacked loss-reducers (A-FULL) | judged in `CONNECT_THE_DOTS.md`, not run: every part was found on viewed windows and stacked losers still lose |
 | LP, carry, arbitrage, cashback | not reachable or not positive |
 
