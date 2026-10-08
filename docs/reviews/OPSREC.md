@@ -78,3 +78,11 @@ The builder found the premise wrong. Telegram's `getWebhookInfo` reply (WebhookI
 ### #310 round 3 (head `f5399438`)
 
 The supervisor checked the delta from `fc106e20` itself: one file, rulings 9–12 applied as worded. **#310 is approved.** It merges in the docs bundle (#305).
+
+### #309 round 3 (head `715fa2b2`): REVIEW PASS, final; red team 0 BLOCKER, 0 MAJOR, 1 MINOR
+
+The restart-loop MAJOR is closed: only `zeroed-check` writes the stamp. MINOR: when the stamp cannot be written, `recorder_first_seen` still prints "now", so the hold lasts forever (fails open).
+
+### Supervisor ruling for round 4 (9 Oct 2026, about 12:38 AM)
+
+13. **Fix now, because it fails open.** Print the time only if the write and the move both succeed; otherwise print nothing, which counts as old (the alert fires): `{ printf … > "$3.new" && mv -f "$3.new" "$3"; } || return 0`. Test: an unwritable stamp path with no status gives the alert.
