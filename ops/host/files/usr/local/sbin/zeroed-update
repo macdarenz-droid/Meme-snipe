@@ -182,7 +182,11 @@ probation_check() {
   open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
   pos="$(cat /var/lib/zeroed/open_positions 2>/dev/null || echo unknown)"
   if [ "$open" != 0 ] || [ "$pos" != 0 ]; then
-    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents, $pos open positions. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once nothing is open."
+    # OPS-CLEAN round 6 (DECISIONS): a dead worker's counts are its last; only the owner clears them, after checking.
+    note=""
+    systemctl is-active --quiet zeroed-worker.service ||
+      note=" The worker is not running, so these counts are its last (/var/lib/zeroed/open_intents, /var/lib/zeroed/open_positions); check the positions before clearing them. Newer deploys wait until then."
+    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents, $pos open positions. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once nothing is open.$note"
     return 0
   fi
   why="$pdue"
@@ -234,11 +238,13 @@ realign_current() {
   ln -sfn "/opt/zeroed/releases/$d" /opt/zeroed/current.new
   mv -Tf /opt/zeroed/current.new /opt/zeroed/current
   log "Put current back to the deployed release ${d:0:12} (it pointed at ${c:0:12})."
+  if systemctl is-active --quiet zeroed-worker.service; then realigned_active=1; fi
   # OPS-CLEAN round 5: a worker already running (started by a reboot) runs the other release; it comes back to the
-  # deployed one through a held start (unheld_start), which waits for open intents and dry runs like any. The deployed
-  # release is the last one that ran, so it is its own marker's rollback target: a failed hold of it alerts that there is
-  # no earlier release, and a later switch still goes back to it.
-  if systemctl is-active --quiet zeroed-worker.service && [ "$(cut -d'|' -f1 "$STATE_DIR/switch_unheld" 2>/dev/null || true)" != "$d" ]; then
+  # deployed one through a held start (unheld_start), which waits for open intents and dry runs like any. With no marker,
+  # the deployed release is the last one that ran, so it is its own rollback target: a failed hold of it alerts that there
+  # is no earlier release, and a later switch still goes back to it. An existing marker is kept (OPS-CLEAN round 6): it
+  # holds the real target, and unheld_start rewrites it for the deployed release.
+  if systemctl is-active --quiet zeroed-worker.service && [ ! -s "$STATE_DIR/switch_unheld" ]; then
     printf '%s|%s|%s\n' "$d" "/opt/zeroed/releases/$d" "$d" > "$STATE_DIR/switch_unheld"
   fi
 }
@@ -257,11 +263,23 @@ unheld_start() {
   local deployed
   deployed="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
   if [ "$commit" != "$deployed" ]; then
-    # Written for a switch that never happened (a crash before current moved). If the deployed release is the one that
-    # ran, nothing is unheld; otherwise it is a release that never started, with the same release to go back to.
-    if [ "$deployed" = "$current" ]; then rm -f "$STATE_DIR/switch_unheld"; else printf '%s|%s|%s\n' "$deployed" "$prev" "$current" > "$STATE_DIR/switch_unheld"; fi
-    flock -u 9 2>/dev/null || true
-  elif systemctl is-active --quiet zeroed-worker.service && { [ -n "$(active_run)" ] || [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]; }; then
+    # Written for a switch that never became deployed (a crash before the record moved). If the deployed release is the
+    # one that ran, nothing is unheld, unless realign_current just took current back from under a running worker: then
+    # the deployed release gets a held restart, as its own rollback target. Otherwise the deployed release never
+    # started, with the same release to go back to. Either way the held start follows in this call.
+    if [ "$deployed" = "$current" ]; then
+      if [ -n "${realigned_active:-}" ]; then
+        printf '%s|%s|%s\n' "$deployed" "/opt/zeroed/releases/$deployed" "$deployed" > "$STATE_DIR/switch_unheld"
+      else
+        rm -f "$STATE_DIR/switch_unheld"
+      fi
+    else
+      printf '%s|%s|%s\n' "$deployed" "$prev" "$current" > "$STATE_DIR/switch_unheld"
+    fi
+    if [ ! -s "$STATE_DIR/switch_unheld" ]; then flock -u 9 2>/dev/null || true; return 0; fi
+    IFS='|' read -r commit prev current < "$STATE_DIR/switch_unheld" || true
+  fi
+  if systemctl is-active --quiet zeroed-worker.service && { [ -n "$(active_run)" ] || [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]; }; then
     flock -u 9 2>/dev/null || true
     # Once per run: the check on the way out would say it again.
     [ -n "${held_wait_logged:-}" ] || log "Waiting on the first held start of ${commit:0:12}: a qualifying dry run is active or the worker has open intents."

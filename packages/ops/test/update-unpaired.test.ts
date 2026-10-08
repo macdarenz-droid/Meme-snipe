@@ -564,3 +564,39 @@ describe('OPS-CLEAN round 5: a resumable rollback, no switch over a due one, a r
     expect(h.read('state/probation')).toMatch(new RegExp(`^${A}\\|${h.rel(A)}\\|${A}\\|`));
   });
 });
+
+describe('OPS-CLEAN round 6: the marker keeps the real rollback target; a dead worker\'s counts are named', () => {
+  it('B unheld behind A, a killed switch to C, a reboot: the marker becomes B|A|A again and a failed hold of B goes back to A (22)', () => {
+    const h = unpairedSwitch();
+    h.set('sd/tag', C);
+    h.set('sd/kill_after_mv');
+    expect(h.update().status).not.toBe(0);
+    expect(h.current()).toBe(h.rel(C));
+    expect(h.read('state/deployed').trim()).toBe(B);
+    expect(h.read('state/switch_unheld')).toBe(`${C}|${h.rel(A)}|${A}\n`);
+    // The pairing, then a reboot that starts the worker on C; B's worker cannot hold.
+    h.set('cred/telegram_chat_id', 'x');
+    h.set('sd/active');
+    h.set('sd/tag', B);
+    h.set('sd/crash');
+    const r = h.update();
+    expect(r.status, r.out).toBe(1);
+    expect(h.read('log')).toContain(`Put current back to the deployed release ${B.slice(0, 12)}`);
+    expect(h.current()).toBe(h.rel(A));
+    expect(h.read('state/deployed').trim()).toBe(A);
+    expect(h.read('state/failed_release').trim()).toBe(B);
+  });
+
+  it('a rollback held by a dead worker\'s last counts: the alert names the files and says to check the positions (23)', () => {
+    const h = host([...KEYS, 'telegram_chat_id']);
+    expect(h.update().status).toBe(0);
+    h.set('sd/nrestarts', '1');
+    h.set('var/lib/zeroed/open_positions', '1');
+    spawnSync('rm', ['-f', join(h.root, 'sd/active')]);
+    const r = h.update();
+    expect(r.status, r.out).toBe(0);
+    // The harness moves /var/lib/zeroed/ under its scratch root.
+    expect(h.read('notify')).toContain(`The worker is not running, so these counts are its last (${h.root}/var/lib/zeroed/open_intents, ${h.root}/var/lib/zeroed/open_positions); check the positions before clearing them. Newer deploys wait until then.`);
+    expect(h.current()).toBe(h.rel(B));
+  });
+});
