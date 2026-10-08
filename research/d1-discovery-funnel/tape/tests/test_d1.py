@@ -199,7 +199,7 @@ class Features(unittest.TestCase):
         big.update({"slot": m, "block_time": int(S.bt_of(m)), "tx_idx": 10**6, "side": 1, "base_amount": 10**14,
                     "quote_amount": 10**13, "quote_lp_adj": 10**13, "user_quote": 10**13, "owner": 777,
                     "base_after": 1, "vault_after": 10**14, "owner_pre": 0, "owner_post": 10**14})
-        amm2 = pd.concat([amm, pd.DataFrame([big])], ignore_index=True).sort_values(["slot", "tx_idx"]).reset_index(drop=True)
+        amm2 = pd.concat([amm, pd.DataFrame([big]).astype(amm.dtypes.to_dict())], ignore_index=True).sort_values(["slot", "tx_idx"]).reset_index(drop=True)
         t2 = S.make_tape(amm2, tape.segs[0][0], tape.segs[0][1], migs=[tuple(x) for x in tape.ev["CompletePumpAmmMigrationEvent"].itertuples(index=False)],
                          w=pd.DataFrame({"slot": [m] * 120, "src": [500] * 120, "dst": list(range(100, 220))}),
                          t=pd.DataFrame({"slot": [m, m], "tx_idx": [1, 2], "outer_ix": [0, 0], "inner_ix": [-1, -1],

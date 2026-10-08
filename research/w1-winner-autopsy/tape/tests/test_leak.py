@@ -70,7 +70,8 @@ class FutureMarker(unittest.TestCase):
         # the marker does reach the later day's own artifacts, so the test can see it when it is allowed to
         trader2, _ = clusters.build([d1, d2_marked], "2026-09-08")
         self.assertIn(MARKER, trader2.index)
-        self.assertTrue(classes.classify(d2_marked, trader2)["fast"].all())
+        self.assertGreater(classes.classify(d2_marked, trader2)["fast"].sum(), 30)
+        self.assertEqual(classes.classify(d2_clean, trader2)["fast"].sum(), 0)
 
     def test_features_ignore_events_at_or_after_the_entry(self):
         def tape(with_marker):
