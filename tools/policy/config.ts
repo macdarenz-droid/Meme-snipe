@@ -172,10 +172,15 @@ export const NEW_PACKAGE_DIRS = ['apps/'];
 export const ZEROED_PACKAGE_PREFIXES = ['packages/backtest/', 'packages/core/', 'packages/ops/', 'packages/runner/', 'packages/worker/', 'apps/web/'];
 /**
  * Import findings that are safety checks (ruling 3.1): a package nobody declared, @solana/web3.js where it is banned,
- * node:module in a workspace package, a third-party runtime import in a zero-dependency package. They run on every new
+ * node:module in a workspace package, a third-party runtime import in a zero-dependency package, M24's schema
+ * transaction or test code reached from where it may not be (Z02 ruling 30). They run on every new
  * file and on the added lines of old Zeroed files. Every other import finding is a structure rule.
  */
-export const SAFETY_IMPORT_CODES = ['E_UNDECLARED_IMPORT', 'E_WEB3_BANNED', 'E_IMPORT_FORBIDDEN', 'E_THIRD_PARTY_RUNTIME'];
+export const SAFETY_IMPORT_CODES = [
+  'E_UNDECLARED_IMPORT', 'E_WEB3_BANNED', 'E_IMPORT_FORBIDDEN', 'E_THIRD_PARTY_RUNTIME',
+  // Z02 ruling 30: what may reach M24's schema transaction and test code holds for every file in the workspace.
+  'E_SCHEMA_TX_IMPORT', 'E_SRC_IMPORTS_TEST',
+];
 /** Zeroed's workflows (operations and data). ci.yml and the policy's own workflows are always checked. */
 export const ZEROED_WORKFLOWS = [
   'archive-check.yml', 'backtest-trial.yml', 'data-helius-pilot.yml', 'data-keep.yml', 'data-scan.yml',
