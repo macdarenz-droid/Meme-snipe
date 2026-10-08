@@ -25,4 +25,7 @@ t0=$(date +%s)
 (cd "$out" && tar --exclude='*.tmp' --remove-files -cf - units) | split -b 1900m -d -a 2 - "$assets/units-$day.tar.part"
 echo "phase package ($day): $(( $(date +%s) - t0 )) s" | tee -a "$summary"
 { echo "### Disk after packaging ($day)"; echo '```'; df -h "$assets" 2>/dev/null; ls -l "$assets"; echo '```'; } >> "$summary"
-(cd "$assets" && sha256sum units-"$day".tar.part* events-"$day".tar qa-"$day".* parity-"$day".json manifest-"$day".json > "SHA256SUMS-$day")
+# OF-3: the per-unit log and the rescan unit's hashes, when check-day.sh or trim-day.sh wrote them.
+extra=()
+for f in units-"$day".log rescan-"$day".sha256 list-"$day".txt; do [ -f "$assets/$f" ] && extra+=("$f"); done
+(cd "$assets" && sha256sum units-"$day".tar.part* events-"$day".tar qa-"$day".* parity-"$day".json manifest-"$day".json "${extra[@]}" > "SHA256SUMS-$day")
