@@ -8,7 +8,7 @@
   - *Used:* a buy is first-time when it is the owner's first buy of the mint on the loaded tape. It counts only when the coin's CreateEvent lies in the same contiguous run of units, so the whole history is on the tape (W1's rule). Without that, the event is dropped (`history_not_on_tape`).
   - This removes most graduates whose curve began before the loaded units. It can be switched off with `require_history=False`, but that is not the conservative reading.
 - **Q3 Coverage.** A window counts only if one contiguous run of loaded units of one day covers it, so windows across a day boundary are dropped.
-- **Q4 Mayhem.** It is read from CreateEvent, then CreatePoolEvent, then curve rows. A coin whose mayhem flag is unknown is dropped.
+- **Q4 Mayhem [`../COUNT_ROWS_AMENDMENT_3.md`].** Mayhem is the mint's flag, taken in order from its CreateEvent, then any curve trade of the mint (`mayhem_mode`), then CreatePoolEvent (`Tape.mayhem_of_mint`). A 2B `base_supply` is never used to infer it. A coin whose flag is unknown is dropped from rows. In the H8 capacity row, its pool-hours are reported apart as `*_mayhem_unknown` and are never counted as H8-eligible.
 - **BOOST rows [A1].** Removing them by `BoostBuyAndBurnEvent` signature is correct; the v1/v2 `protocol` flag of 0 is a decoder defect. Decoder v3 sets `protocol=1` on BOOST swaps. Any non-zero `protocol` is excluded, and the signature match stays for older units (tested both ways).
 - **SOL amounts.** The code uses `sol_amount` on curve rows and `quote_amount` on PumpSwap rows (pool-side, without user fees). Non-SOL-quoted swaps carry no SOL amount.
 
@@ -85,7 +85,7 @@
 
 ## H8 stratum and capacity row (`../H8_AMENDMENT.md`)
 - **Rule.** H8 holds when the effective quote (SOL) × that hour's SOL/USD ≥ max($15,000, 1,000 × size), at sizes $5, $20 and $50 (`h8.eligible`). A missing price or effective quote makes the row not eligible.
-- **Q23 "That hour's SOL/USD" [open].**
+- **Q23 "That hour's SOL/USD" [confirmed by `../COUNT_ROWS_AMENDMENT_3.md`].**
   - *Used:* the close of the Binance 1-minute bar that ends at the hour start, which is the last value known when the hour begins (no look-ahead). It is read from the same `--sol-usd` kline files, whose sha256 are recorded.
   - Without minute files, the stratum and the capacity row report "needs SOL/USD 1-minute closes".
 - **Q24 Which state is tested [open].** Each row's own as-of point is used:
