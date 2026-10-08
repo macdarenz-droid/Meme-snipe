@@ -48,6 +48,10 @@ Already tested and lost: dip-buying, breakouts, launch sniping (all 40 versions)
 - **Absorption, second step:** waits on absorption, which is too rare.
 - **Sealed test window (22 Sep–20 Oct, opens after 21 Oct):** no idea has earned it yet, so it stays sealed.
 
+## Update 09:40: your answers
+- **Helius price settled.** Your dashboard rose 549,779 credits while our tests made about 241,000 calls. That fits 1 credit for normal calls and about 10 for each large history call (10 per 100 transactions returned). Our counters booked about 3.3M for these tests, about 6 times the real spend. About 9.3M credits are left this month.
+- **Shared tape: approved.** A builder session is building it and will run one small first step (Phase 0), then stop for a check.
+
 ## What I need from you (only you can do these)
 1. **Helius dashboard:** open it and tell me the "used" credits number. That settles 1 vs 10 credits a call.
 2. **Shared tape, yes or no:** a step-by-step download of on-chain trades for research only, kept private and outside the repo. It costs about 2.4–2.9M credits if a block read costs 1 credit, and it is cancelled if it costs 10. Three ideas need it (#4, #8, #9). Your 6 Oct rule says "no bulk historical downloads", so it needs your OK, and you would read the dashboard once before and once after its first small step.
