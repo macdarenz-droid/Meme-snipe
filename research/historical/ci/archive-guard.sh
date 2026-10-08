@@ -190,7 +190,32 @@ TOUCH = re.compile(r"(?:^|[\s;&|(])(?:ln|cat|tee|head|tail)\b[^#;|]*\$\{?(?:qlog
 # it, mv migrations.list out of it, or name it in an echo to the step summary (and the
 # sealing call, cache-crypt.sh seal, takes the logs path). Anything else is refused, and
 # eval is refused in the CI scripts.
-LOGREF = re.compile(r"\$\{?(?:qlog|slog|tlog)\b|(?<![\w$])(?:qlog|slog|tlog)\b|\$(?:out|RUNNER_TEMP|\{RUNNER_TEMP[^}]*\})[\w./${}-]*/logs\b")
+# OF-2 ruling 67: any spelling of $out or $RUNNER_TEMP (plain, braced, quoted) then a logs part
+OUTV = r"\$(?:\{(?:out|RUNNER_TEMP)(?:[:?][^}]*)?\}|(?:out|RUNNER_TEMP)\b)"
+LOGREF = re.compile(r"\$\{?(?:qlog|slog|tlog)\b|(?<![\w$])(?:qlog|slog|tlog)\b|" + OUTV + r"[\w./${}\x22\x27*?-]*/logs\b")
+# ... and no read command on $out itself (or a glob of its top level), with find -exec or
+# into xargs, or after a cd into it (on the same line, or anywhere after a top-level cd)
+READ = r"(?:cat|tac|nl|grep|egrep|fgrep|rg|sed|awk|head|tail|cp|rsync|od|xxd|strings|base64|zcat|zstdcat|diff|find)"
+OUTARG = re.compile(r"(?:^|\s)\x22?" + OUTV + r"\x22?(?:/\.?|/[^\s/]*[*?[][^\s]*)?\x22?(?=\s|$)")
+CDOUT = re.compile(r"^(?:cd|pushd)\s+\x22?" + OUTV + r"\x22?/?\.?\x22?\s*$")
+def out_reads(line, state):
+    segs, last, cdl = [], 0, False
+    for m in SEP.finditer(line + ";"):
+        segs.append((line[last:m.start()], m.group(0))); last = m.end()
+    prev = ";"
+    for seg, sep in segs:
+        head = KW.sub("", seg, count=1); cmd = re.match(r"^(?:\S+/)?(\w+)", head); cmd = cmd.group(1) if cmd else ""
+        if CDOUT.match(head):
+            cdl = True
+            if prev not in ("(", "$(", "`"): state["cd"] = True
+        elif re.fullmatch(READ, cmd):
+            # find only lists names, unless it runs a command on them (-exec, xargs)
+            if cmd == "find" and not (re.search(r"\s-(?:exec|execdir|ok|okdir|delete|fprint\w*)\b", head) or "xargs" in line): pass
+            elif state.get("cd") or cdl: return "a read command after a cd into $out or $RUNNER_TEMP"
+            elif OUTARG.search(head): return "a read command on $out or $RUNNER_TEMP itself"
+        prev = sep
+    return None
+
 SEP = re.compile(r";|&&|\|\||\||\$\(|[<>]\(|`|\(|\)")
 KW = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{|time)\s+)*")
 EVAL = re.compile(r"(?:^|[\s;&|(`!{])eval\b")
@@ -209,8 +234,11 @@ def logref_ok(line, m):
     return False
 VIA = re.compile(r"(?:^|[\s;])(?:local\s+|export\s+)?\w+=[\x22\x27]?[^\s$(#]*zeroed-(?:scan|rpcscan)|command\s+-v\s+zeroed-|which\s+zeroed-|type\s+-p\s+zeroed-")
 def bad_lines(text):
+    state = {}
     for n, line in enumerate(text.split("\n"), 1):
         if line.lstrip().startswith("#"): continue
+        r = out_reads(line, state)
+        if r: yield n, r + ": " + line.strip()[:100]
         for m in ASSIGN.finditer(line):
             if not UNDER.match(m.group(2)): yield n, "log directory " + m.group(1) + " not under $out or $RUNNER_TEMP: " + line.strip()[:100]
         if VIA.search(line): yield n, "scanner binary through a variable: " + line.strip()[:100]

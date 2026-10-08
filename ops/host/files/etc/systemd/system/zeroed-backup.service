@@ -12,4 +12,4 @@ PrivateNetwork=yes
 NoNewPrivileges=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/var/backups/zeroed /var/lib/zeroed
+ReadWritePaths=/var/backups/zeroed /var/lib/zeroed /var/lib/zeroed-usage
