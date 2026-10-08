@@ -60,6 +60,8 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 22:03 | Lead relayed an owner instruction: the red team is 2 agents on the test code (visible session "Code red team (2 agents)"). Partner's 3-agent design red team stopped about 22:02; no agent had finished and the partial transcripts held no stated finding, so nothing was committed |
 | 2026-10-08 23:20 | Sweep 5 finished (10 ideas, 8 agents, 85 min, widened scope): nothing beats W1, D1 or G1-HC; perps fail on cost or visibility; best is the MIG-SEAT pool-open seat, about 0.5%. Facts: synthetic migration documented 2026-10-07 (live date UNVERIFIED); the decoder lacks the v3 items; the 16,367-coin list came from the pump.fun API |
 | 2026-10-08 23:22 | Count rows amendment 5, G1 amendment 6, W1 amendment 7 committed (85fd4e3) and sent to the lead |
+| 2026-10-08 23:24 | Lead: sweep 5 files frozen from 85fd4e3 (19b8546c). The survivorship-free list was already ruled: owner 2026-10-07 about 20:15, "Yes keep what we collected as is" (research/hype/RESEARCH.md line 143); the daily download uses GeckoTerminal only |
+| 2026-10-08 23:24 | MAYHEM-SNAP question put to the owner |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
