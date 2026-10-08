@@ -34,3 +34,10 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-4 bullet, plus the OF2.md ruling 73 notes
 ### Supervisor ruling for round 3 (9 Oct about 10:06 AM)
 
 13. **Red team MINOR, required.** The store-token checks match the literal `DATA_STORE_TOKEN` case-sensitively, while only the `run:` regex ignores case. GitHub's handling of secret-name case is not verified here, so the guard fails closed: every store-token check matches the secret name case-insensitively (for example `secrets\s*\.\s*data_store_token` with `re.I`). Test: `GH_TOKEN: ${{ secrets.data_store_token }}` in a step that is not clean is refused.
+
+## Round 3 (head `ab2c9b87`)
+
+- Ruling 13 built; red team delta: closed, PASS 0/0/0; no legitimate line refused. test-ci 270/0 (builder).
+- Guarded diff (archive-check.yml, data-scan.yml) read by the supervisor's Opus read job: OK to label. No new write scope except the forget job's `actions: write`; all 21 store-token steps clean; `uses:` pinned; only the resume marker is an artifact; caps and `ARCHIVE_ARM` unchanged; nothing loosened.
+14. **Read job's note, ruled (9 Oct about 10:57 AM).** "Storage check after the batch" (data-scan.yml:739) is skipped if the volume step fails after the day is stored; the job still fails and the chain stops, so it fails closed. Fold into OF-5 #316 (same file): the storage check also runs when the day was stored and a later step failed (`!cancelled()` and the stored output), with a test.
+- #315 approved at `ab2c9b87`; marked ready; label `deps-reviewed:77c497b7b9abb6b3335ae2d31087e6f3` added 23:55 UTC after the head; merges on green labelled CI.

@@ -18,3 +18,4 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-5 bullet. Builder: data builder `session_
 
 - Builder: rulings 1–3 built; test-ci 275/0; the new tests fail on `5478dd5b`; label unchanged.
 4. **Builder's note, ruled (9 Oct about 10:55 AM), required.** `assemble.sh --download` reads `data-day-D` without the `readback-ok` check. It uses the shared `release-state.sh` and accepts only "done" releases (complete and marked); anything else stops for review. Test: a complete but unmarked day is refused before any download.
+5. **From OF4.md 14, required here.** The storage check runs whenever the day was stored, also when a later step failed (`!cancelled()` and the stored output). Test it.
