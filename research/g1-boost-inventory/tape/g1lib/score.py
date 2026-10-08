@@ -20,6 +20,27 @@ def arms(trades: pd.DataFrame, decisions: pd.DataFrame, frozen: dict):
     return g1, s0, hc, cap
 
 
+def secondary(trades: pd.DataFrame) -> dict:
+    """PREREG §10, reported and never judged: every variant with gross return, fixed costs, percentage fees and
+    price impact shown separately; infeasible sizes; exit-B share and mean; the decomposition."""
+    out = {}
+    for (kind, variant), g in trades.groupby(["kind", "variant"]):
+        f = g[g["filled"]]
+        row = {"rows": int(len(g)), "filled": int(len(f)),
+               "misses": {str(k): int(v) for k, v in g.loc[~g["filled"], "miss"].value_counts().items()}}
+        if len(f):
+            row.update({c: float(f[c].mean()) for c in ("ret", "gross_ret", "fees_pct", "impact_pct", "fixed_pct") if c in f})
+            b = f[f["exit"] == "B"]
+            row["share_exit_B"] = float(len(b) / len(f))
+            row["mean_ret_exit_B"] = float(b["ret"].mean()) if len(b) else math.nan
+            a = f[f["exit"] == "A"]
+            for c in ("dec_curve_leg", "dec_migration_step", "dec_window"):
+                if c in a and len(a):
+                    row[c + "_pct_of_paid"] = float((a[c] / a["paid"]).mean())
+        out[f"{kind} | {variant}"] = row
+    return out
+
+
 def judge(trades: pd.DataFrame, decisions: pd.DataFrame, frozen: dict, role: str) -> dict:
     g1, s0, hc, cap = arms(trades, decisions, frozen)
     if role == "discovery":
@@ -31,7 +52,8 @@ def judge(trades: pd.DataFrame, decisions: pd.DataFrame, frozen: dict, role: str
         return out
     return {"G1": primary(g1, control=s0),
             "G1_HC": primary(hc, control=s0, lift_over={"G1": g1}),
-            "G1_CAP": primary(cap, control=s0, lift_over={"G1": g1})}
+            "G1_CAP": primary(cap, control=s0, lift_over={"G1": g1}),
+            "secondary": secondary(trades)}
 
 
 def freeze(decisions: pd.DataFrame) -> dict:

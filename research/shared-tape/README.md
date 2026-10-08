@@ -64,7 +64,7 @@ O (other-venue coverage per `pump` coin and hour) is derived from T after a day 
 - `bash test-upload.sh`: a local stand-in for zeroed-data.
 
 ## Schema versions
-- v1 (no `top_program` or `cu_price` on S, no CF, no `cu_price` on F): the units stored before 2026-10-08 07:30Z. Their raw input is gone, and their slots are never read again (ARCHIVE-NODUP):
+- v1 (no `top_program` or `cu_price` on S, no CF, no `cu_price` on F): the units stored before 2026-10-08 07:30Z. Their raw input is gone and their slots are never fetched from Helius again (ARCHIVE-NODUP); they stay in the plan and the analyses use them, without the v2 columns:
   - 2026-09-11 446017500-446021999 (Phase 0)
   - 2026-09-11 446278500-446282999
   - 2026-09-11 446283000-446287499

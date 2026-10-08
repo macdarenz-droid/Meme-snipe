@@ -1,8 +1,7 @@
 """Integer-exact quotes for the pump curve and PumpSwap, ported from packages/core/src/amm/pump-curve.ts and
 pump-swap.ts (the repo's golden-tested formulas). Python ints, so no overflow. Fee rates come from the caller
 (here: the fee fields of the neighbouring on-chain trades, PREREG §2 and §4)."""
-from dataclasses import dataclass, replace
-from typing import Optional
+from dataclasses import dataclass
 
 BPS = 10_000
 
@@ -162,7 +161,3 @@ def worse_sell(fills):
     if len(ok) < len(fills):
         return next(x for x in fills if not x.ok)
     return min(ok, key=lambda x: x.user_quote)
-
-
-__all__ = ["Fees", "CurveState", "PoolState", "Fill", "fee_of", "curve_buy_exact_quote_in", "curve_sell",
-           "curve_spot_value", "pool_sell", "pool_spot_value", "worse_buy", "worse_sell", "replace", "Optional"]
