@@ -1064,6 +1064,14 @@ class BotGates(unittest.TestCase):
         el = pts[pts.eligible]
         return gate_frame(tape, book, el, clock), el, mig_slot
 
+    def test_u2_window_end_is_excluded_R2_16(self):
+        """R2-16: the bot ends a U2 candidate at migration + 240 min (packages/worker/src/engine/strategy.ts:
+        atMs >= migratedAtMs + windowToMs), so U2 is 60 <= age < 240 min, as H1-CGO AMENDMENT_5 H5 reads it."""
+        from d1.gates import universe_tag
+        self.assertEqual(universe_tag(60 * 60, 0.0), "U2")
+        self.assertEqual(universe_tag(240 * 60 - 1, 0.0), "U2")
+        self.assertEqual(universe_tag(240 * 60, 0.0), "none")
+
     def test_pool_gates(self):
         sim, amm, migs, mig_slot, lo, hi = S.standard()
         old = int(S.slot_at(S.T0 - 600))                           # created 10 min before migration
