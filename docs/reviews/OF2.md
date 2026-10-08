@@ -175,3 +175,7 @@ Closed: checker bypasses, composites and the upload-* actions, the sha cache, br
     - Arm check: list the caches and assert that no unsealed `data-scan-` / `data-rpc-` entry remains. If one is still there at arm time, deleting it goes to the owner.
 52. **m4.** Keep the AES key out of argv where the runner allows it: an in-process cipher (python `cryptography`, if present on the runner; VERIFY, print its version), or pass the key through a file descriptor. If neither works without weakening the scheme, the accepted-risk DECISIONS row stays, naming the background-process case.
 53. **m5.** Redirect targets must be one of the named log variables (`$qlog`, `$slog`, `$tlog`, `$out-log`), and each one's assignment is checked to be a path under `$RUNNER_TEMP` or `$out`. A scanner binary called through a variable is refused.
+
+### Round 6 reviewer: PASS at `4fc50e38` (1 MINOR)
+
+The reviewer exercised the seal directly: a round trip, a wrong key, a flipped byte, a swapped IV and an extra file. The token appears only in clean steps. A failed open stops before the scan, and the day never starts fresh. The m1 run-window concern is the same one the red team reported as MAJOR 1, and ruling 49 covers it. The arm checklist also moves `ARCHIVE_REARM_AT` to the arm time.
