@@ -62,6 +62,16 @@ jobs:
           REF: ${{ github.ref_name }}
           DAY: ${{ steps.check.outputs.day }}
         run: research/historical/ci/archive-check.sh --probe "$DAY"
+      # OF-2 round 4, ruling 25: the back-off end goes out first, as the one annotation of
+      # its own step (title archive-backoff, end=<unix> or end=hold), the durable record
+      # archive-guard.sh reads for every counted failure. A probe failure with no annotation
+      # (the step ended before writing its output) reads as end=hold there.
+      - name: Record the back-off annotation
+        if: always() && steps.probe.outcome != 'success' && steps.probe.outcome != 'skipped'
+        env:
+          END: ${{ steps.probe.outputs.backoff_annotation }}
+        run: |
+          if [[ "$END" =~ ^([0-9]{9,11}|hold)$ ]]; then echo "::warning title=archive-backoff::end=$END"; fi
       # A Retry-After from the archive becomes cache key archive-backoff-<end>-<run id>;
       # every later hold 2 waits for max(3 h, that end).
       - name: Record the archive's Retry-After

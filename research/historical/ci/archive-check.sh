@@ -110,7 +110,9 @@ if [[ "${1:-}" == --probe ]]; then
   code=$(tr -d '\r' < "$hdr" | awk '/^HTTP\//{c=$2} END{print c}')
   got=$(wc -c < "$body")
   ray=$(tr -d '\r' < "$hdr" | sed -n 's/^[Cc][Ff]-[Rr][Aa][Yy]: *//p' | tail -1)
-  ra=$(tr -d '\r' < "$hdr" | sed -n 's/^[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]: *//p' | tail -1)
+  ra=$(tr -d '\r' < "$hdr" | sed -n 's/^[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]://p' | tail -1)
+  # Round 4, ruling 27: surrounding whitespace is not part of the value (RFC 9110 OWS).
+  ra=${ra#"${ra%%[![:space:]]*}"}; ra=${ra%"${ra##*[![:space:]]}"}
   at=$(date -u +%FT%TZ)
   {
     echo "| time (UTC) | status | bytes | curl exit | cf-ray | retry-after |"
@@ -135,7 +137,9 @@ if [[ "${1:-}" == --probe ]]; then
       if [[ "$e" != hold ]] && (( e > now + 7 * 86400 )); then e=hold; fi
       if [[ "$e" == hold ]]; then end=hold; elif (( e > end )); then end=$e; fi
     fi
-    echo "::warning title=archive-backoff::end=$end"
+    # Round 4, ruling 25: the annotation is written first, by its own step ("Record the
+    # back-off annotation"), so no other annotation of this job can crowd it out.
+    echo "backoff_annotation=$end" >> "$output"
     if [[ "$end" != hold ]]; then
       echo "backoff_end=$end" >> "$output"
       mkdir -p "${RUNNER_TEMP:-/tmp}/archive-backoff" && echo "$end" > "${RUNNER_TEMP:-/tmp}/archive-backoff/end"
@@ -172,7 +176,7 @@ ag_history || hold 2 "the run history cannot be read (fail closed)"
 [[ "${GITHUB_REF:-}" == "refs/heads/$AG_BRANCH" ]] || hold 1 "ref '${GITHUB_REF:-}' is not the default branch refs/heads/$AG_BRANCH"
 msg=$(ag_backoff_ok 2>&1) || hold 2 "${msg#refused: }"
 (( AG_FAILS < 3 )) || hold 3 "the chain is stopped: $AG_FAILS failures since ARCHIVE_REARM_AT $ARCHIVE_REARM_AT with no successful batch between them; only a reviewed change re-arms it"
-(( AG_FOREIGN == 0 )) || hold 3 "the chain is stopped: $AG_FOREIGN data-scan run(s) outside the Helius lane ran from another branch since ARCHIVE_REARM_AT; only a reviewed change re-arms it"
+(( AG_FOREIGN == 0 )) || hold 3 "the chain is stopped: $AG_FOREIGN run(s) since ARCHIVE_REARM_AT may have read the archive unguarded (a scan or an archive check from another branch, or a re-run of a commit without archive-guard.sh); only a reviewed change re-arms it"
 msg=$(ag_store_ok 2>&1) || hold 3 "${msg#refused: }"
 # 4. ARCHIVE-SAFE: the scanner's request cap
 if ! cap=$("$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}"); then
@@ -181,7 +185,7 @@ fi
 # 5. one archive lane: no run that may read the archive active or queued (Helius-only
 # runs read another host, in their own concurrency group, ARCHIVE-LANE) ...
 archive=0
-while IFS=$'\t' read -r id st _ _ _ _ _ title; do
+while IFS=$'\t' read -r id st _ _ _ _ _ _ title; do
   [[ -n "$id" && "$st" != completed ]] || continue
   if [[ "$title" == "data-scan scan source=helius" || ",$named," == *",$id,"* ]]; then continue; fi
   archive=$(( archive + 1 ))
@@ -200,7 +204,7 @@ while read -r key; do
   t=$(date -u -d "${d:0:4}-${d:4:2}-${d:6:2}T${BASH_REMATCH[2]}:${BASH_REMATCH[3]}:${BASH_REMATCH[4]}Z" +%s 2>/dev/null) || continue
   (( now - t < 900 )) || continue
   listed=0
-  while IFS=$'\t' read -r id _ _ cr _ _ _ title; do
+  while IFS=$'\t' read -r id _ _ cr _ _ _ _ title; do
     [[ -n "$id" && "$title" != "data-scan scan source=helius" ]] || continue
     c=$(ag_ts "$cr") && (( c >= t )) && { listed=1; break; }
   done <<< "$AG_DS_RUNS"
