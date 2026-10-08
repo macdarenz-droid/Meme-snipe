@@ -1,0 +1,100 @@
+"""Registered constants of D1 (research/d1-discovery-funnel/PREREG.md). Nothing here is tuned on data.
+
+Every value cites the PREREG section, the sibling design it borrows a definition from, or the repo file it copies.
+Readings chosen where the PREREG is silent are marked CONSERVATIVE and listed in ../OPEN_QUESTIONS.md.
+"""
+import calendar
+import time
+
+# ---- Days (PREREG §2) -------------------------------------------------------------------------------------------
+DISCOVERY_DAYS = ("2026-09-10", "2026-09-11")          # Step A
+VALIDATION_DAYS_STEP_B = ("2026-09-07", "2026-09-08", "2026-09-09")  # Step B, only if released
+
+
+def epoch(day: str) -> int:
+    return calendar.timegm(time.strptime(day, "%Y-%m-%d"))
+
+
+# U1-B's holdout starts 2026-09-12; the wall is 2026-09-21T14:00Z; the sealed window starts 2026-09-22.
+# No tape row may be at or after this instant (SHARED_TAPE_PLAN P5, tape README "decode").
+WALL_EPOCH = epoch("2026-09-12")  # 1789171200
+
+# ---- Universe (PREREG §3) ---------------------------------------------------------------------------------------
+WSOL = "So11111111111111111111111111111111111111112"
+SYSTEM_PROGRAM = "11111111111111111111111111111111"
+PUMPSWAP_PROGRAM = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+H10_MIN_AGE_S = 60 * 60            # migration + 60 min (H10, packages/core/src/config/policy.ts excludedWindowMs)
+MAX_AGE_S = 24 * 60 * 60           # to migration + 24 h
+MIN_EFFECTIVE_QUOTE = 50 * 10**9   # lamports: vault + signed virtual_quote_reserves
+MIN_REAL_VAULT = 30 * 10**9        # lamports
+GRID_S = 5 * 60                    # decision points every 5 minutes (CONSERVATIVE reading: UTC-aligned marks)
+
+# ---- Trade (PREREG §3) --------------------------------------------------------------------------------------------
+DELAY_SLOTS = 23                   # buy at decision + 23 slots; exit trigger + 23 slots (CONSERVATIVE, as H1-CGO §6)
+HOLDS_S = (15 * 60, 60 * 60)       # two hold arms
+THROTTLE_S = 60 * 60               # at most one entry per pool per hour (CONSERVATIVE: rolling 60 min)
+SOL_USD = 119.26                   # packages/backtest/src/research/edge-costs.ts SOL_USD
+SIZE_USD = 50
+SPEND_LAMPORTS = int((SIZE_USD / SOL_USD) * 1e9)  # edge-costs.ts spendOf: floor -> 419,252,054
+MCAP_REF_LAMPORTS = 420 * 10**9    # "market cap relative to 420 SOL"
+
+# Fixed costs per filled round trip, exactly as edge-costs.ts `expectedFixed()` (conservative scenario,
+# packages/core/src/config/fills.ts and policy.ts). Recomputed in costs.py and tested against research/edge/costs.json.
+SIGNATURES_PER_TX = 1
+BASE_FEE_PER_SIGNATURE = 5_000
+ENTRY_PRIORITY_FEE = 20_000
+TIP = 5_000
+LADDER_PRIORITY_FEES = (20_000, 60_000, 150_000, 500_000)
+LADDER_MAX_ATTEMPTS = 5
+LAND_PPM_PUMPSWAP_CONSERVATIVE = 560_000
+TOKEN_ACCOUNT_RENT = 1_513_840
+CLOSE_SUCCESS_PPM = 900_000
+DUST_PPM = 50_000
+EXPECTED_FIXED_LAMPORTS_REPO = 414_009  # research/edge/costs.json fixedLamports (rounded)
+
+# ---- W1 fast class (research/w1-winner-autopsy/PREREG.md §3, §5) -------------------------------------------------
+FAST_NEAR_EVENT_SLOTS = 2
+FAST_NEAR_EVENT_SHARE = 0.10
+FAST_FOLLOW_SLOTS = 2
+FAST_FOLLOW_SHARE = 0.30
+FAST_LEADER_MIN_LAMPORTS = 1 * 10**9
+HUB_MAX_LINKS = 50                 # an address linked to more than 50 owners is never used for joining
+
+# ---- Feature windows (PREREG §4) --------------------------------------------------------------------------------
+W5 = 5 * 60
+W15 = 15 * 60
+W60 = 60 * 60
+CF_WINDOW_S = 60 * 60
+WHO_WINDOW_S = 15 * 60             # CONSERVATIVE: the PREREG names 15 min only for failed buys; used for all "Who"
+
+FEATURES = (
+    # price path (5)
+    "ret_5m", "ret_15m", "ret_60m", "ret_since_mig", "rv_15m",
+    # flow (9)
+    "buys_5m", "sells_5m", "net_sol_5m", "buys_15m", "sells_15m", "net_sol_15m",
+    "uniq_buyers_15m", "first_buyers_15m", "max_sell_share_15m",
+    # who (4)
+    "fast_buy_share", "creator_cluster_buy_share", "app_routed_buy_share", "failed_buy_share_15m",
+    # holders (4)
+    "top10_share", "creator_share", "cgo", "cgo_coverage",
+    # protocol (3)
+    "boost_finished", "mcap_rel_420", "cf_collections_1h",
+    # pool (3)
+    "effective_quote_sol", "real_vault_sol", "age_since_mig_min",
+)
+assert len(FEATURES) == 28
+
+# ---- Search (PREREG §5) -----------------------------------------------------------------------------------------
+N_BLOCKS = 4
+BLOCK_S = 6 * 60 * 60
+FOLD_GAP_S = 60 * 60
+Q_LOW, Q_HIGH = 0.20, 0.80
+MIN_TRADES_PER_FOLD = 30
+N_ADVANCE = 5
+
+# ---- Validation (PREREG §6; bootstrap size and seed as H1-CGO §8 / G1 §9) ---------------------------------------
+ALPHA = 0.005
+N_BOOT = 10_000
+BOOT_SEED = 20261008
+MIN_TRADES_VALIDATION = 300

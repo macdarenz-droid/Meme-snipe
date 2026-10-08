@@ -1,0 +1,16 @@
+{
+ "source": "packages/backtest/src/research/edge-costs.ts",
+ "terms": {
+  "entryLanded": 30000,
+  "exitFixed": 30000,
+  "failedExit": 155000,
+  "failProbability": 0.43999999999999995,
+  "maxAttempts": 5,
+  "rent": 1513840,
+  "closeSuccess": 0.9,
+  "dust": 0.05
+ },
+ "expectedFailedExits": 0.7727565823999999,
+ "rentBack": 0.855,
+ "expectedFixedLamports": 414009.07027200004
+}

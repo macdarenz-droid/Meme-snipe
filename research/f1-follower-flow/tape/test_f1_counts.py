@@ -1,0 +1,186 @@
+"""Unit tests for f1_counts.py on small synthetic tables.  Run: python3 -m unittest -v (from this folder)."""
+import io
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+import numpy as np
+import pandas as pd
+import zstandard
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import f1_counts as F  # noqa: E402
+
+SOLN = F.SOL_NATIVE
+
+
+def curve_row(slot, owner, mint, buy=True, sol=1_000_000, tx=0, ev=0, sig=None, quote=SOLN, protocol="0"):
+    return {"slot": slot, "tx_idx": tx, "ev_idx": ev, "signature": sig or f"s{slot}-{tx}-{ev}-{owner}",
+            "user_token_owner": owner, "mint": mint, "is_buy": 1 if buy else 0, "sol_amount": sol,
+            "quote_mint": quote, "protocol": protocol}
+
+
+def write_unit(root, day, lo, hi, curve, amm=None, t=None, w=None, boost_sigs=()):
+    p = os.path.join(root, day, f"{lo}-{hi}", "research")
+    os.makedirs(p, exist_ok=True)
+    pd.DataFrame(curve, columns=["slot", "tx_idx", "ev_idx", "signature", "user_token_owner", "mint", "is_buy",
+                                 "sol_amount", "quote_mint", "protocol"]).to_csv(
+        os.path.join(p, "S_curve.csv.zst"), index=False, compression="zstd")
+    pd.DataFrame(amm or [], columns=["slot", "tx_idx", "ev_idx", "signature", "user_token_owner", "base_mint", "side",
+                                     "quote_amount", "quote_mint", "protocol"]).to_csv(
+        os.path.join(p, "S_amm.csv.zst"), index=False, compression="zstd")
+    pd.DataFrame(t or [], columns=["mint", "kind", "from_owner", "to_owner"]).to_csv(
+        os.path.join(p, "T.csv.zst"), index=False, compression="zstd")
+    pd.DataFrame(w or [], columns=["from", "to"]).to_csv(os.path.join(p, "W.csv.zst"), index=False, compression="zstd")
+    lines = "".join(json.dumps({"event": "BoostBuyAndBurnEvent", "signature": s, "fields": {}}) + "\n" for s in boost_sigs)
+    with open(os.path.join(p, "E.jsonl.zst"), "wb") as fh:
+        fh.write(zstandard.ZstdCompressor().compress(lines.encode()))
+    return os.path.dirname(p)
+
+
+class Definitions(unittest.TestCase):
+    def test_leader_candidate_needs_10_distinct_mints_on_day1(self):
+        rows = [curve_row(100 + i, "L", f"m{i}") for i in range(10)]
+        rows += [curve_row(200 + i, "N", f"m{i}") for i in range(9)]
+        rows += [curve_row(300 + i, "R", "m0", tx=i) for i in range(12)]          # 12 buys, one mint
+        rows += [curve_row(400 + i, "S", f"m{i}", buy=False) for i in range(12)]  # sells do not count
+        s = F.normalise_swaps(pd.DataFrame(rows), pd.DataFrame(columns=["slot", "tx_idx", "ev_idx", "signature",
+                              "user_token_owner", "base_mint", "side", "quote_amount", "quote_mint", "protocol"]),
+                              set(), F.DAY1)
+        self.assertEqual(F.leader_candidates(s), {"L"})
+
+    def test_boost_protocol_nonsol_and_ownerless_rows_dropped(self):
+        rows = [curve_row(1, "A", "m", sig="boost"), curve_row(2, "B", "m", protocol="boost_buy_and_burn"),
+                curve_row(3, "C", "m", quote="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+                curve_row(4, None, "m"), curve_row(5, "E", "m")]
+        s = F.normalise_swaps(pd.DataFrame(rows), pd.DataFrame(columns=["slot", "tx_idx", "ev_idx", "signature",
+                              "user_token_owner", "base_mint", "side", "quote_amount", "quote_mint", "protocol"]),
+                              {"boost"}, F.DAY1)
+        self.assertEqual(list(s["owner"]), ["E"])
+
+    def test_coverage(self):
+        r = [("d", 0, 99), ("d", 100, 199), ("d", 300, 399)]
+        self.assertTrue(F.covered(r, "d", 10, 190))
+        self.assertFalse(F.covered(r, "d", 150, 310))
+        self.assertFalse(F.covered(r, "x", 10, 20))
+
+
+def by_mint(rows):
+    df = pd.DataFrame(rows).rename(columns={"user_token_owner": "owner", "sol_amount": "sol"})
+    df = df.sort_values(["slot", "tx_idx", "ev_idx"])
+    return {m: {c: g[c].to_numpy() for c in ("slot", "tx_idx", "ev_idx", "owner", "sol")} for m, g in df.groupby("mint")}
+
+
+class Followers(unittest.TestCase):
+    def setUp(self):
+        self.rows = [
+            curve_row(1000, "B0", "m", tx=1),                  # same slot, earlier tx: not after
+            curve_row(1000, "L", "m", tx=5),                   # the leader buy
+            curve_row(1000, "F1", "m", tx=9, sol=10),          # same slot, later tx: follower, not late
+            curve_row(1023, "F2", "m", sol=20),                # 23 slots: not late
+            curve_row(1024, "F3", "m", sol=40),                # 24 slots: late
+            curve_row(1300, "F3", "m", sol=80),                # second buy by F3: one owner, volume adds
+            curve_row(1600, "F4", "m", sol=160),               # 600 slots: in window
+            curve_row(1601, "F5", "m", sol=320),               # 601: out
+            curve_row(1100, "L", "m", sol=640),                # the leader itself
+            curve_row(1200, "LW", "m", sol=1280),              # linked by SOL (W)
+            curve_row(1201, "LT", "m", sol=2560),              # linked by a transfer of this mint (T)
+            curve_row(1202, "OT", "m", sol=5120),              # transfer of another mint only: not linked
+        ]
+        sol_pairs, mint_pairs = F.build_links(
+            pd.DataFrame({"mint": ["m", "other"], "from_owner": ["LT", "L"], "to_owner": ["L", "OT"]}),
+            pd.DataFrame({"from_owner": ["L"], "to_owner": ["LW"]}))
+        self.links = (sol_pairs, mint_pairs)
+
+    def test_follow_count_window_links_and_timing(self):
+        ev = {"mint": "m", "owner": "L", "slot": 1000, "tx_idx": 5, "ev_idx": 0}
+        n, vol, late = F.follow_stats(by_mint(self.rows), ev, *self.links)
+        self.assertEqual(n, 5)  # F1, F2, F3, F4, OT
+        self.assertEqual(vol, 10 + 20 + 40 + 80 + 160 + 5120)
+        self.assertEqual(late, 40 + 80 + 160 + 5120)
+
+    def test_wsol_token_transfer_links(self):
+        sol_pairs, _ = F.build_links(pd.DataFrame({"mint": [F.WSOL], "from_owner": ["a"], "to_owner": ["b"]}),
+                                     pd.DataFrame(columns=["from_owner", "to_owner"]))
+        self.assertIn(("a", "b"), sol_pairs)
+
+
+class Placebo(unittest.TestCase):
+    def _swaps(self, rows, day=F.DAY1):
+        amm = pd.DataFrame(columns=["slot", "tx_idx", "ev_idx", "signature", "user_token_owner", "base_mint", "side",
+                                    "quote_amount", "quote_mint", "protocol"])
+        return F.normalise_swaps(pd.DataFrame(rows), amm, set(), day)
+
+    def test_placebo_is_noncandidate_in_reach_and_seeded(self):
+        rows = [curve_row(5000, "L", "m"), curve_row(5000 + 1801, "P_far", "m"), curve_row(5000 - 1800, "P1", "m"),
+                curve_row(5100, "P2", "m"), curve_row(5200, "C2", "m")]
+        s = self._swaps(rows)
+        ranges = [(F.DAY1, 0, 20000)]
+        e1 = F.event_table(s, {"L", "C2"}, F.DAY1, ranges, set(), {}, seed=1)
+        e2 = F.event_table(s, {"L", "C2"}, F.DAY1, ranges, set(), {}, seed=1)
+        pd.testing.assert_frame_equal(e1, e2)
+        picks = set(e1.loc[e1["leader"] == "L", "placebo_owner"])
+        self.assertTrue(picks <= {"P1", "P2"})
+        many = {F.event_table(s, {"L", "C2"}, F.DAY1, ranges, set(), {}, seed=k).iloc[0]["placebo_owner"] for k in range(30)}
+        self.assertEqual(many, {"P1", "P2"})
+
+    def test_no_placebo_or_no_tape_drops(self):
+        s = self._swaps([curve_row(5000, "L", "m"), curve_row(5100, "C2", "m")])
+        e = F.event_table(s, {"L", "C2"}, F.DAY1, [(F.DAY1, 0, 20000)], set(), {})
+        self.assertEqual(set(e["dropped"]), {"no_placebo_in_reach"})
+        e = F.event_table(s, {"L"}, F.DAY1, [(F.DAY1, 4000, 20000)], set(), {})
+        self.assertEqual(set(e["dropped"]), {"window_not_on_tape"})
+
+    def test_day2_placebo_excludes_all_day1_candidates(self):
+        s = self._swaps([curve_row(5000, "L", "m"), curve_row(5100, "C2", "m"), curve_row(5200, "P", "m")], F.DAY2)
+        e = F.event_table(s, {"L"}, F.DAY2, [(F.DAY2, 0, 20000)], set(), {}, candidates={"L", "C2"})
+        self.assertEqual(e.iloc[0]["placebo_owner"], "P")
+
+
+class LeaderTest(unittest.TestCase):
+    def test_followed_needs_positive_lower_bound(self):
+        ev = pd.DataFrame({"leader": ["A"] * 5 + ["B"] * 5 + ["C"] * 4, "dropped": [""] * 14,
+                           "follow": [3] * 5 + [1] * 5 + [9, 0, 0, 0], "placebo_follow": [1] * 5 + [1] * 5 + [0] * 4})
+        t = F.leader_test(ev, n_boot=2000).set_index("leader")
+        self.assertTrue(t.at["A", "followed"])
+        self.assertFalse(t.at["B", "followed"])    # no difference
+        self.assertFalse(t.at["C", "followed"])    # one lucky buy: 0.5% bound is 0
+        self.assertAlmostEqual(t.at["C", "diff"], 2.25)
+
+    def test_decide(self):
+        base = {"followed_day1": 20, "persistent_share": 0.5, "late_share": 0.5, "day2_persistent_leader_buys": 15}
+        self.assertFalse(F.decide(base)["f1_closes"])
+        for k, v in (("followed_day1", 19), ("persistent_share", 0.49), ("late_share", 0.49),
+                     ("day2_persistent_leader_buys", 14)):
+            self.assertTrue(F.decide({**base, k: v})["f1_closes"], k)
+
+
+class EndToEnd(unittest.TestCase):
+    def test_run_on_synthetic_units(self):
+        with tempfile.TemporaryDirectory() as root:
+            def day_rows(base, leader_follows):
+                rows = []
+                for i in range(10):
+                    s0 = base + 3000 + i * 100
+                    rows.append(curve_row(s0, "L", f"m{i}"))
+                    rows.append(curve_row(s0 + 700, f"pl{i}", f"m{i}"))       # placebo buy, no followers after it
+                    for k in range(leader_follows):
+                        rows.append(curve_row(s0 + 30 + k, f"f{i}_{k}", f"m{i}", sol=1000))
+                return rows
+            u1 = write_unit(root, F.DAY1, 1000, 9999, day_rows(1000, 3))
+            u2 = write_unit(root, F.DAY2, 20000, 29999, day_rows(20000, 3))
+            summ, tabs = F.run([u1, u2], n_boot=500)
+            self.assertEqual(summ["leader_candidates_day1"], 1)
+            self.assertEqual(summ["followed_day1"], 1)
+            self.assertEqual(summ["persistent_day2"], 1)
+            self.assertEqual(summ["day2_persistent_leader_buys"], 10)
+            self.assertEqual(summ["late_share"], 1.0)
+            self.assertFalse(tabs["events_day1"]["placebo_owner"].eq("L").any())
+            self.assertTrue((tabs["events_day1"]["placebo_follow"] < 3).all())
+            self.assertTrue((tabs["events_day1"]["follow"] == 3).all())
+
+
+if __name__ == "__main__":
+    unittest.main()
