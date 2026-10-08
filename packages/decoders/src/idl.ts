@@ -9,25 +9,24 @@ import type { Pubkey, Result } from '@bot/types';
 import { DecodeError, decodePubkey, Reader, toHex } from './codec.ts';
 
 /**
- * Pinned inputs: `pump-fun/pump-public-docs` at commit cb188ce08b5069196eef1f3e4a0c43b70099793b (2026-09-29, the
- * repository head on 2026-10-07; the three IDL files last changed in e0687ae9b7e064a0f54efc7297c65eecfbba3a8f,
- * 2026-09-12). VERIFY U-A09 (DA-11 could not confirm the SHA): read with `git log` from
- * https://github.com/pump-fun/pump-public-docs on 2026-10-07. Files: idl/pump.json, idl/pump_amm.json and
- * idl/pump_fees.json, vendored byte for byte in packages/decoders/idl/. A change to a file or to these hashes is a
- * reviewed commit.
+ * Pinned inputs: `pump-fun/pump-public-docs` at commit 8cda1fa30ea658b20909d8aedf002047119388d2 (2026-10-08, "docs: v3 /
+ * v2 trades, multi-hop swap, pump coins as quote mints, fee sweeps, synthetic migration"; the repository head when read
+ * from https://github.com/pump-fun/pump-public-docs with `git log` on 2026-10-08; card IDL-REPIN, re-pinned from
+ * cb188ce, the hashes as in VERIFY-NEXT V22). Files: idl/pump.json, idl/pump_amm.json and idl/pump_fees.json, vendored
+ * byte for byte in packages/decoders/idl/. A change to a file or to these hashes is a reviewed commit.
  */
-export const IDL_COMMIT = 'cb188ce08b5069196eef1f3e4a0c43b70099793b';
+export const IDL_COMMIT = '8cda1fa30ea658b20909d8aedf002047119388d2';
 export const PINNED_IDLS: ReadonlyArray<{ name: 'pump' | 'pump_amm' | 'pump_fees'; file: string; sha256: string; accounts: readonly string[]; events: readonly string[] }> = [
   {
-    name: 'pump', file: 'pump.json', sha256: 'ffe966c42f1af41652ee753fe2f1e3f7cd4077d7e6f49faf3138959c8b56064b',
-    accounts: ['BondingCurve', 'Global'], events: ['TradeEvent', 'CompleteEvent', 'CompletePumpAmmMigrationEvent'],
+    name: 'pump', file: 'pump.json', sha256: '38b8abcc5b279bda85cf473e7c6f67bd15eb89df658cf93434687a43c88ad937',
+    accounts: ['BondingCurve', 'Global'], events: ['TradeEvent', 'CompleteEvent', 'CompletePumpAmmMigrationEvent', 'PostCompleteBuyEvent'],
   },
   {
-    name: 'pump_amm', file: 'pump_amm.json', sha256: '2091433899b07d003d98118ae6cd3c628960fd393b40710b6e15bce6d0e7f2d1',
+    name: 'pump_amm', file: 'pump_amm.json', sha256: 'b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b',
     accounts: ['Pool', 'GlobalConfig'], events: ['BuyEvent', 'SellEvent', 'InitBoostEvent'],
   },
   {
-    name: 'pump_fees', file: 'pump_fees.json', sha256: 'd87b52305fd6b2ec487d4ba1e08a49990c23fa9b8b76092b2097df0164fa3859',
+    name: 'pump_fees', file: 'pump_fees.json', sha256: 'f111d2e5c9aa3d4e64d6a4e6b6f34300ccb1eaf6abc46834fe491836dc90aa74',
     accounts: ['FeeConfig'], events: [],
   },
 ];
@@ -56,7 +55,21 @@ export interface PinnedIdl {
    * quote mint. Built here, at load, from the hash-verified IDL.
    */
   poolQuoteMint: Map<string, number>;
+  /**
+   * PumpSwap `multi_hop_swap` (card IDL-REPIN): its discriminator hex and the number of fixed accounts the IDL lists
+   * (16 at 8cda1fa); the hops follow as remaining accounts, which no IDL describes, so its trades are `unpinned_invoker`
+   * (see `invokerQuoteMint` in events.ts). Null when the IDL has no such instruction (pump, pump_fees).
+   */
+  multiHopSwap: { disc: string; fixedAccounts: number } | null;
+  /**
+   * The discriminators of the instructions that run a multi-hop route (ruling 44): PumpSwap `multi_hop_swap` and pump
+   * `multi_hop_curve_swap` (which only PumpSwap may call). An event with one among its invokers is a route hop.
+   */
+  routeInstructions: ReadonlySet<string>;
 }
+
+/** The instruction names that run a multi-hop route (pump-public-docs 8cda1fa, docs/instructions/MULTI_HOP_SWAP.md). */
+const ROUTE_INSTRUCTIONS = new Set(['multi_hop_swap', 'multi_hop_curve_swap']);
 
 export type IdlErrorCode = 'E_IDL_HASH' | 'E_IDL_MISSING' | 'E_IDL_PARSE';
 export interface IdlError { code: IdlErrorCode; file: string; expected?: string; actual?: string; message?: string }
@@ -226,6 +239,8 @@ function compileOrThrow(doc: unknown, pin: PinnedIdlSpec, sha256: string): Pinne
   if (!Array.isArray(doc.instructions)) return fail('instructions must be a list');
   const instructions = new Map<string, IdlInstrDef>();
   const poolQuoteMint = new Map<string, number>();
+  let multiHopSwap: PinnedIdl['multiHopSwap'] = null;
+  const routeInstructions = new Set<string>();
   for (const ix of doc.instructions as unknown[]) {
     if (!isObject(ix) || typeof ix.name !== 'string' || !Array.isArray(ix.accounts)) return fail('an instruction needs a name and accounts');
     const hex = discriminator(ix.discriminator, `instructions.${ix.name}`);
@@ -235,11 +250,13 @@ function compileOrThrow(doc: unknown, pin: PinnedIdlSpec, sha256: string): Pinne
     const at = (ix.accounts as Array<Record<string, unknown>>).findIndex((a) => a.name === 'quote_mint'
       && Array.isArray(a.relations) && a.relations.includes('pool'));
     if (at >= 0) poolQuoteMint.set(hex, at);
+    if (ix.name === 'multi_hop_swap') multiHopSwap = { disc: hex, fixedAccounts: accts.length };
+    if (ROUTE_INSTRUCTIONS.has(ix.name)) routeInstructions.add(hex);
   }
   const names = (m: Map<string, IdlTypeDef>): Set<string> => new Set([...m.values()].map((d) => d.name));
   for (const a of pin.accounts) if (!names(accounts).has(a)) fail(`account ${a} is missing`);
   for (const e of pin.events) if (!names(events).has(e)) fail(`event ${e} is missing`);
-  return { name: pin.name, program: doc.address, file: pin.file, commit: IDL_COMMIT, sha256, accounts, events, instructions, poolQuoteMint };
+  return { name: pin.name, program: doc.address, file: pin.file, commit: IDL_COMMIT, sha256, accounts, events, instructions, poolQuoteMint, multiHopSwap, routeInstructions };
 }
 
 /**

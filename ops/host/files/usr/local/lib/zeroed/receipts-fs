@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# PATHS-FIX ruling 20: the pull receipts live on their own small filesystem, so the pull account can never fill the
+# host's disk or run it out of inodes: a 64 MiB ext4 image with 1 KiB blocks and 32,768 inodes, loop-mounted at
+# /var/lib/zeroed-md/receipts. Measured: 32,757 receipt files fit, then every write fails with "No space left on
+# device" (fails closed: a segment without a receipt is only kept longer). The image is preallocated: it always
+# takes 64 MiB of the server's disk, counted in the disk budget. At the recorder's 30-day retention that is
+# room for about 45 streams an hour (the stream count is UNVERIFIED). The image is root-only and outside every bot path.
+# Run by zeroed-receipts-fs.service: "start" checks, makes (once) and mounts it; "stop" unmounts it.
+set -euo pipefail
+IMG_DIR=/var/lib/zeroed-receipts
+IMG="$IMG_DIR/receipts.img"
+MNT=/var/lib/zeroed-md/receipts
+SIZE=64M
+INODES=32768
+
+case "${1:-}" in
+  start)
+    mountpoint -q "$MNT" && exit 0
+    install -d -m 0700 -o root -g root "$IMG_DIR"
+    if [ ! -s "$IMG" ]; then
+      # Ruling 26: the whole 64 MiB is allocated now and stays so: fallocate; mkfs without discard (which frees it
+      # again); and the inode tables and journal written by mkfs itself, because the kernel's background init after the
+      # first mount zeroes them through the loop device, which punches holes in this file (measured: 131,080 -> 114,768
+      # 512-byte blocks within 20 s of mounting). So the image always takes its budgeted space and never fails later
+      # for lack of disk.
+      fallocate -l "$SIZE" "$IMG.new"
+      mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"
+      chmod 0600 "$IMG.new"
+      mv -f "$IMG.new" "$IMG"
+    fi
+    # Repairs what is safe to repair; anything worse stops here and the mount stays off (zeroed-check alerts).
+    rc=0; e2fsck -p "$IMG" >/dev/null || rc=$?
+    [ "$rc" -le 1 ] || { echo "receipts filesystem needs a manual check (e2fsck exit $rc)"; exit 1; }
+    install -d -m 2770 -o zeroed-worker -g zeroed-pull "$MNT"
+    mount -o loop,nodev,nosuid,noexec "$IMG" "$MNT"
+    chown zeroed-worker:zeroed-pull "$MNT"
+    chmod 2770 "$MNT"
+    rmdir "$MNT/lost+found" 2>/dev/null || true
+    ;;
+  stop)
+    if mountpoint -q "$MNT"; then umount "$MNT"; fi
+    ;;
+  *) echo "Usage: receipts-fs start|stop" >&2; exit 2 ;;
+esac

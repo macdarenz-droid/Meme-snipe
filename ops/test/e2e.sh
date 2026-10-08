@@ -174,6 +174,35 @@ in_c "nft list ruleset" >"$LOGS/nft.txt"
 grep -q 'hook input priority filter; policy drop;' "$LOGS/nft.txt" && ! grep -q 'dport 22' "$LOGS/nft.txt" || fail "inbound not closed"
 in_c "systemctl is-enabled unattended-upgrades && grep -q 'Unattended-Upgrade \"1\"' /etc/apt/apt.conf.d/20auto-upgrades" >/dev/null || fail "unattended security updates not on"
 pass "install: 6-word EFF deploy code shown (root-only 0400 on disk), signer up, worker waiting, timers on, inbound policy drop with no SSH, unattended upgrades on"
+# PATHS-FIX: the engine's folders outside its state, the pull account and its chroot, and the systemd it runs under.
+in_c "systemctl --version | head -1" >"$LOGS/systemd-version.txt"
+[ "$(in_c "stat -c '%a %U %G %n' /var/lib/zeroed-md /var/lib/zeroed-md/receipts /var/lib/zeroed-spool /var/lib/zeroed-usage /srv/zeroed_pull")" = "$(printf '%s\n' \
+  '2750 zeroed-worker zeroed-pull /var/lib/zeroed-md' '2770 zeroed-worker zeroed-pull /var/lib/zeroed-md/receipts' \
+  '2730 zeroed-worker zeroed-spool /var/lib/zeroed-spool' '2770 zeroed-worker zeroed-sentinel /var/lib/zeroed-usage' '755 root root /srv/zeroed_pull')" ] || fail "PATHS-FIX: folder owner, group or mode"
+in_c "id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-pull && id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-spool && ! id -nG zeroed-worker | tr ' ' '\n' | grep -qx botops" || fail "PATHS-FIX: worker groups"
+[ "$(in_c "getent passwd zeroed-pull | cut -d: -f7")" = /usr/sbin/nologin ] || fail "PATHS-FIX: the pull account has a shell"
+in_c "systemctl is-active srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount" >/dev/null || fail "PATHS-FIX: chroot binds not mounted"
+# Ruling 20: receipts/ is its own 64 MiB ext4 with 32,768 inodes, root-only image outside every bot path.
+in_c "systemctl is-active zeroed-receipts-fs.service" >/dev/null || fail "PATHS-FIX: receipts filesystem not started"
+in_c "findmnt /var/lib/zeroed-md/receipts; findmnt -no PROPAGATION /; grep zeroed /proc/self/mountinfo" >"$LOGS/receipts-mounts.txt" 2>&1 || true
+[ "$(in_c "findmnt -no FSTYPE /var/lib/zeroed-md/receipts")" = ext4 ] || { cat "$LOGS/receipts-mounts.txt"; fail "PATHS-FIX: receipts/ is not its own filesystem"; }
+# The chroot binds are private: restarting them never stacks a second mount on receipts/ (/ is shared under systemd).
+in_c "systemctl restart srv-zeroed_pull-md-receipts.mount && systemctl restart srv-zeroed_pull-md-receipts.mount"
+[ "$(in_c "grep -c ' /var/lib/zeroed-md/receipts ' /proc/self/mountinfo")" = 1 ] || { in_c "grep zeroed /proc/self/mountinfo"; fail "PATHS-FIX: mounts stack on receipts/"; }
+[ "$(in_c "df --output=itotal /var/lib/zeroed-md/receipts | tail -1 | tr -d ' '")" = 32768 ] || fail "PATHS-FIX: receipts inode count"
+[ "$(in_c "stat -c '%a %U %s' /var/lib/zeroed-receipts/receipts.img")" = "600 root 67108864" ] || fail "PATHS-FIX: receipts image owner, mode or size"
+# Ruling 26: preallocated, so its 64 MiB is really taken on disk.
+[ "$(in_c "stat -c '%b %B' /var/lib/zeroed-receipts/receipts.img" | awk '{ print ($1 * $2 >= 67108864) ? "full" : "sparse" }')" = full ] || { in_c "stat /var/lib/zeroed-receipts/receipts.img"; fail "PATHS-FIX: receipts image is not preallocated"; }
+in_c "! touch /srv/zeroed_pull/md/x 2>/dev/null && touch /srv/zeroed_pull/md/receipts/x && test -e /var/lib/zeroed-md/receipts/x && rm /var/lib/zeroed-md/receipts/x" || fail "PATHS-FIX: md must be read-only and receipts writable through the chroot"
+in_c "sshd -t && sshd -T -C user=zeroed-pull,host=h,addr=127.0.0.1" >"$LOGS/sshd-pull.txt" || fail "PATHS-FIX: sshd refuses its settings"
+for l in 'chrootdirectory /srv/zeroed_pull' 'forcecommand internal-sftp -u 0027' 'authorizedkeysfile /etc/zeroed/pull-keys/%u' 'allowtcpforwarding no' 'permittty no' 'passwordauthentication no'; do
+  grep -qx "$l" "$LOGS/sshd-pull.txt" || fail "PATHS-FIX: pull account sshd setting missing: $l"
+done
+# Saved, then read: piped into grep -q under pipefail, sshd's output past the first match hits a closed pipe and fails.
+in_c "sshd -T -C user=root,host=h,addr=127.0.0.1" >"$LOGS/sshd-root.txt" || fail "PATHS-FIX: sshd refuses its settings for root"
+grep -qx 'chrootdirectory none' "$LOGS/sshd-root.txt" || fail "PATHS-FIX: the pull account's Match block reaches other users"
+in_c "! systemctl is-active ssh.service ssh.socket" >/dev/null || fail "PATHS-FIX: SSH must stay off on a default install"
+pass "PATHS-FIX: md 2750 and receipts 2770 (group zeroed-pull; receipts its own 64 MiB ext4 with 32,768 inodes), spool 2730 (group zeroed-spool), worker in both and not botops; pull account sftp-only and chrooted with md read-only and receipts writable; SSH still off; $(cat "$LOGS/systemd-version.txt")"
 
 # ---------- 3. Deploy with a wrong code fails cleanly ----------
 publish() { # issued log code [extra env...]
@@ -347,6 +376,18 @@ git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-serve
 pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
 # ---------- 9. Backup and restore drill ----------
+# PATHS-FIX ruling 24: the provider usage ledger (its own shared folder) is in every backup and the drill checks it.
+# Section 8 applied the deployed release's host files (right for a release); until this branch merges, that release's
+# backup and drill predate the usage ledger, so put this branch's back, as 9c and 10b do, and test those.
+t0=$SECONDS
+in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-branch-files-9.txt" 2>&1 || { cat "$LOGS/console/update-branch-files-9.txt"; fail "install --update (this branch's host files, 9)"; }
+# An update with the pull mounts already running starts nothing: no start job waits out systemd's 90 s job timeout.
+upd_s=$((SECONDS - t0))
+[ "$upd_s" -lt 60 ] || { in_c "journalctl -b -o cat --no-pager | grep -i 'timed out' | tail -5"; fail "install --update took ${upd_s}s (a start job waited out systemd's timeout)"; }
+for f in usr/local/sbin/zeroed-backup usr/local/sbin/zeroed-restore-drill etc/systemd/system/zeroed-backup.service; do
+  docker exec -i "$C" cmp -s "/$f" - <"$ROOT/ops/host/files/$f" || fail "test setup: this branch's /$f not in place"
+done
+in_c "sqlite3 /var/lib/zeroed-usage/rpc-usage.db 'PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS reservations(x); INSERT INTO reservations VALUES (1);' >/dev/null" || fail "PATHS-FIX: test usage ledger"
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
 bk="$(in_c "ls -1 /var/backups/zeroed/ | tail -1")"
 [[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.age$ ]] || fail "no backup file"
@@ -355,8 +396,12 @@ in_c "cp /var/backups/zeroed/$bk /root/tampered.age && printf 'x' | dd of=/root/
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key /root/tampered.age" >"$LOGS/drill-tampered.txt" 2>&1 && fail "tampered backup passed"
 in_c "rm -f /root/tampered.age"
 grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
+grep -q 'zeroed-usage/rpc-usage.db reservations: ' "$LOGS/drill-host.txt" || fail "PATHS-FIX: the usage ledger is not in the backup"
+# Ruling 26, minutes after the first mount: the receipts image is still fully allocated (no lazy-init hole punching).
+[ "$(in_c "stat -c '%b %B' /var/lib/zeroed-receipts/receipts.img" | awk '{ print ($1 * $2 >= 67108864) ? "full" : "sparse" }')" = full ] || { in_c "stat /var/lib/zeroed-receipts/receipts.img"; fail "PATHS-FIX: receipts image lost blocks after mounting"; }
+in_c "rm -f /var/lib/zeroed-usage/rpc-usage.db*"
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
-pass "backup: hourly timer, $bk encrypted; restore drill PASS into a scratch directory, FAIL on a tampered file"
+pass "backup: hourly timer, $bk encrypted (with the usage ledger); restore drill PASS into a scratch directory, FAIL on a tampered file"
 
 # Off-server copy: the owner's backup code (shown once, never stored), then a silent Telegram document.
 BCODE="$(in_c "zeroed-backup-code" | tee "$LOGS/console/backup-code.txt" | sed -n 's/^  \([a-z -]*\)$/\1/p')"

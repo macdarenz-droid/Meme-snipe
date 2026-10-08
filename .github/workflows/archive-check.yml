@@ -1,13 +1,18 @@
 name: archive-check
 
-# ARCHIVE-CHECK (owner decision, 2026-10-04; docs/DECISIONS.md): every 3 hours, one
-# 64-byte request to the Old Faithful archive with the scanner's own User-Agent. If it
-# is served and no data-scan run is active or queued, the next scan batch is
-# dispatched (research/historical/ci/archive-check.sh). Never another agent, host,
+# ARCHIVE-CHECK (owner decision, 2026-10-04; docs/DECISIONS.md; batches OF-2): every 3
+# hours, after every hold of research/historical/ci/archive-check.sh (arm, back-off,
+# 3-failure stop, private store, request cap, one lane and the dispatch marker, 60 min
+# pause, queue), one 64-byte request to the Old Faithful archive with the scanner's own
+# User-Agent, in its own step "Archive probe (a failure unless served)". If it is served,
+# the dispatch marker is saved to the Actions cache and then the next allow-listed day is
+# dispatched; otherwise that step fails, which is the countable record of the failure,
+# and a Retry-After is saved as cache key archive-backoff-<end>. A re-run (attempt 2 or
+# later) and a run off the default branch never probe. Never another agent, host,
 # address, proxy or client, and no retries inside a check.
 #
-# The checkout sets persist-credentials: false; the token reaches only the check step,
-# which reads data-scan runs and day releases and dispatches data-scan.yml.
+# The checkout sets persist-credentials: false; the tokens reach only the check and
+# dispatch steps.
 
 on:
   schedule:
@@ -29,16 +34,65 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: One archive request; dispatch the next scan batch if served
+      # Every hold of research/historical/ci/archive-check.sh; no request.
+      - name: Holds
+        id: check
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           REF: ${{ github.ref_name }}
           HELIUS_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.helius_runs || '' }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
         run: research/historical/ci/archive-check.sh
+      # The one request. This step starting is the probe-sent mark: it succeeds only when
+      # served, so any other end (not served, cancelled, timed out) is a counted failure
+      # (archive-guard.sh reads this step by name, on every attempt of every run).
+      - name: Archive probe (a failure unless served)
+        id: probe
+        if: steps.check.outputs.ready == 'true'
+        env:
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          DAY: ${{ steps.check.outputs.day }}
+        run: research/historical/ci/archive-check.sh --probe "$DAY"
+      # OF-2 round 4, ruling 25: the back-off end goes out first, as the one annotation of
+      # its own step (title archive-backoff, end=<unix> or end=hold), the durable record
+      # archive-guard.sh reads for every counted failure. A probe failure with no annotation
+      # (the step ended before writing its output) reads as end=hold there.
+      - name: Record the back-off annotation
+        if: always() && steps.probe.outcome != 'success' && steps.probe.outcome != 'skipped'
+        env:
+          END: ${{ steps.probe.outputs.backoff_annotation }}
+        run: |
+          if [[ "$END" =~ ^([0-9]{9,11}|hold)$ ]]; then echo "::warning title=archive-backoff::end=$END"; fi
+      # A Retry-After from the archive becomes cache key archive-backoff-<end>-<run id>;
+      # every later hold 2 waits for max(3 h, that end).
+      - name: Record the archive's Retry-After
+        if: failure() && steps.probe.outputs.backoff_end != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/archive-backoff
+          key: archive-backoff-${{ steps.probe.outputs.backoff_end }}-${{ github.run_id }}
+      # The marker (UTC time and day only) is saved before the dispatch, so a later check
+      # holds until the dispatched run is listed. A failed save skips the dispatch.
+      - name: Save the dispatch marker
+        if: steps.probe.outputs.served == 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/archive-dispatch
+          key: ${{ steps.probe.outputs.marker }}
+      - name: Dispatch the day
+        if: steps.probe.outputs.served == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          DAY: ${{ steps.check.outputs.day }}
+        run: research/historical/ci/archive-check.sh --dispatch "$DAY"

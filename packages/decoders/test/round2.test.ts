@@ -51,27 +51,29 @@ const run = (t: RawTransaction, wsolMint: string | null = WSOL) => {
 };
 
 describe('ruling 2: bytes after the pinned event layout are flagged and counted', () => {
-  it('a recorded trade carries the 8 bytes of 2026-10-02; the pinned layout alone is clean; 40 junk bytes more are flagged', () => {
+  it('a recorded trade fills the pinned layout exactly (8cda1fa describes the 8 bytes of 2026-10-02); 40 junk bytes more are flagged', () => {
     const t = raw(TRADES[0] as TxRecord);
     const ix = tradeIx(t);
     const data = Buffer.from(ix.dataB64, 'base64');
     const body = data.subarray(16);
     const exact = layoutLength(body);
-    assert.equal(body.length - exact, 8);                        // creator_fee_unclaimed: u64 (pump-public-docs 8cda1fa)
+    assert.equal(body.length - exact, 0);                        // creator_fee_unclaimed: u64 is in the pin since IDL-REPIN
     const recorded = run(t);
-    assert.deepEqual([recorded.located.length, recorded.located[0]?.layoutExtended, recorded.extended], [1, true, [8]]);
-    ix.dataB64 = data.subarray(0, 16 + exact).toString('base64');
-    const clean = run(t);
-    assert.deepEqual([clean.located[0]?.layoutExtended, clean.extended], [false, []]);
+    assert.deepEqual([recorded.located.length, recorded.located[0]?.layoutExtended, recorded.extended], [1, false, []]);
     ix.dataB64 = Buffer.concat([data, Buffer.alloc(40, 0xab)]).toString('base64');
     const junk = run(t);
-    assert.deepEqual([junk.located[0]?.layoutExtended, junk.extended], [true, [48]]);
+    assert.deepEqual([junk.located[0]?.layoutExtended, junk.extended], [true, [40]]);
   });
 
   it('the decoders count decode_layout_extended_total{kind}', () => {
     const seen: string[] = [];
     const d = createDecoders(idls(), { wsolMint: WSOL, metrics: { counter: (name, l) => ({ inc: () => { if (name === 'decode_layout_extended_total') seen.push(String(l.kind)); } }) } });
-    d.decodeTransactionEvents(raw(TRADES[0] as TxRecord));
+    const t = raw(TRADES[0] as TxRecord);
+    d.decodeTransactionEvents(t);
+    assert.deepEqual(seen, []);                                  // the recorded trade fills the 8cda1fa layout exactly
+    const ix = tradeIx(t);
+    ix.dataB64 = Buffer.concat([Buffer.from(ix.dataB64, 'base64'), Buffer.alloc(8, 0xab)]).toString('base64');
+    d.decodeTransactionEvents(t);
     assert.deepEqual(seen, ['pump_trade']);
   });
 });
@@ -162,9 +164,10 @@ describe('ruling m11: each event carries its place in the transaction', () => {
 describe('Z03 round 3, ruling 14: the instructions trusted for a PumpSwap quote mint are built at IDL load', () => {
   it('the set is every pump_amm instruction whose quote_mint is bound to the pool, and nothing else', () => {
     const amm = idls().find((i) => i.name === 'pump_amm') as PinnedIdl;
-    const names = [...amm.poolQuoteMint.keys()].map((h) => amm.instructions.get(h)?.name).sort();
-    assert.deepEqual(names, ['boost_buy_and_burn', 'buy', 'buy_exact_quote_in', 'deposit', 'init_boost', 'sell', 'withdraw']);
-    assert.ok([...amm.poolQuoteMint.values()].every((at) => at === 4));
+    const named = [...amm.poolQuoteMint.entries()].map(([h, at]) => [amm.instructions.get(h)?.name, at]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    // At 8cda1fa (IDL-REPIN): the v2 trades and the two fee sweeps join; the sweeps carry quote_mint at account 3.
+    assert.deepEqual(named, [['boost_buy_and_burn', 4], ['buy', 4], ['buy_exact_quote_in', 4], ['buy_exact_quote_in_v2', 4], ['buy_v2', 4],
+      ['deposit', 4], ['init_boost', 4], ['sell', 4], ['sell_v2', 4], ['sweep_creator_fee', 3], ['sweep_protocol_fee', 3], ['withdraw', 4]]);
     assert.equal((idls().find((i) => i.name === 'pump') as PinnedIdl).poolQuoteMint.size, 0);
   });
 

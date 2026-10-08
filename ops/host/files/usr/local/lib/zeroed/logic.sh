@@ -93,11 +93,13 @@ serve_ok() {
 }
 
 # unit_sandbox UNIT_FILE: the unit's [Service] settings that make its sandbox, limits and environment, one per line, for
-# worker-smoke's trial: everything except its identity and groups, credentials, state directory, restarts, start and
-# stop commands, its memory limit and its OOM score (the trial sets its own user, cap, OOM score and stop timeout).
+# worker-smoke's trial: everything except its identity and groups, credentials, state directory, the live folders it may
+# write (ReadWritePaths: PATHS-FIX's market data and import spool, which the trial, running as the worker's user, must
+# never write beside the live worker; it writes only its own temporary folder), restarts, start and stop commands, its
+# memory limit and its OOM score (the trial sets its own user, cap, OOM score and stop timeout).
 unit_sandbox() {
   sed -n '/^\[Service\]/,/^\[/p' "$1" | grep -E '^[A-Z][A-Za-z]*=' |
-    grep -Ev '^(Type|User|Group|SupplementaryGroups|Environment|EnvironmentFile|ExecStart|ExecStartPre|ExecStop|Restart|RestartSec|TimeoutStopSec|LoadCredential|LoadCredentialEncrypted|ImportCredential|SetCredential|StateDirectory|StateDirectoryMode|MemoryMax|OOMScoreAdjust)=' || true
+    grep -Ev '^(Type|User|Group|SupplementaryGroups|Environment|EnvironmentFile|ExecStart|ExecStartPre|ExecStop|Restart|RestartSec|TimeoutStopSec|LoadCredential|LoadCredentialEncrypted|ImportCredential|SetCredential|StateDirectory|StateDirectoryMode|ReadWritePaths|MemoryMax|OOMScoreAdjust)=' || true
 }
 
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
@@ -236,6 +238,25 @@ prunable_releases() {
     [ "$i" -gt 3 ] || continue
     printf '%s\n' "$d"
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+}
+
+# PATHS-FIX ruling 23: the pull account's own filesystem and its two chroot binds.
+PULL_MOUNT_UNITS=(zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount)
+
+# pull_mount_alerts UNIT...: reads `systemctl is-active UNIT...` on stdin (one state per line, in the same order) and
+# prints "on|pull-mounts|TEXT" naming each unit that is not active, or "off|pull-mounts|TEXT" when all are. A missing
+# line counts as not active.
+pull_mount_alerts() {
+  local u s down=()
+  for u in "$@"; do
+    IFS= read -r s || s=unknown
+    [ "$s" = active ] || down+=("$u ${s:-unknown}")
+  done
+  if [ "${#down[@]}" -gt 0 ]; then
+    printf 'on|pull-mounts|ALERT Zeroed host: the market-data pull folders are not all mounted (%s). Pulls and receipts stop until they are.\n' "$(IFS=,; printf '%s' "${down[*]}" | sed 's/,/, /g')"
+  else
+    printf 'off|pull-mounts|CLEARED Zeroed host: the market-data pull folders are mounted again.\n'
+  fi
 }
 
 # recorder_first_seen NOW RECORDER STAMP: the time RECORDER was first seen, kept in STAMP (written once, by

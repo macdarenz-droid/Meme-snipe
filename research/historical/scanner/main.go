@@ -48,7 +48,7 @@ func (u unitSpec) dir(out string) string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: zeroed-scan run|unit ...")
+		fmt.Fprintln(os.Stderr, "usage: zeroed-scan run|unit|finalize|trim|unitlog|migrations ...")
 		os.Exit(2)
 	}
 	debug.SetGCPercent(400)
@@ -65,10 +65,16 @@ func main() {
 		workers := fs.Int("workers", 4, "block workers")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		prof := fs.String("cpuprofile", "", "write a CPU profile")
-		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 80")
+		maxMBps := fs.Float64("max-mbps", 40, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 40")
 		on429u := fs.String("on-429", "stop", "stop: end the run (exit code 75); pause: wait max(1 h, Retry-After) and retry")
 		state := fs.String("state", "", "directory holding 429.log and the persisted back-off (default: -out)")
+		retention := fs.String("retention", "", "K2 or K3 (OF-3; empty: today's units)")
+		mlist := fs.String("migration-list", "", "K3: the pinned PM-01 migration list")
 		fs.Parse(os.Args[2:])
+		if err := setRetention(*retention, *mlist); err != nil {
+			log.Printf("refused: %v", err)
+			os.Exit(2)
+		}
 		if *state == "" {
 			*state = *out
 		}
@@ -102,6 +108,55 @@ func main() {
 		}
 		log.Printf("unit done: blocks=%d curve=%d amm=%d other=%d pumpTx=%d failed=%d decodeFail=%d %.0fs",
 			st.Blocks, st.CurveTrades, st.AmmTrades, st.OtherEvents, st.PumpTxs, st.PumpTxsFailed, st.DecodeFailures, st.Seconds)
+	case "trim":
+		// OF-3: a K2 unit trimmed to K3 with the pinned migration list; no network.
+		fs := flag.NewFlagSet("trim", flag.ExitOnError)
+		in := fs.String("in", "", "the K2 unit directory")
+		outU := fs.String("out", "", "the K3 unit directory to write (must not exist)")
+		mlist := fs.String("migration-list", "", "the pinned PM-01 migration list")
+		fs.Parse(os.Args[2:])
+		if err := TrimUnit(*in, *outU, *mlist); err != nil {
+			log.Printf("refused: %v", err)
+			os.Exit(2)
+		}
+		return
+	case "migrations":
+		// OF-3: the pinned PM-01 migration list of a day: its own units plus -prior.
+		fs := flag.NewFlagSet("migrations", flag.ExitOnError)
+		horizon := fs.Int64("horizon-s", pmHorizonS, "seconds kept after each migration (PM-01 PREREG §3: 300 min)")
+		prior := fs.String("prior", "", "the earlier days' pinned list (empty: none)")
+		dayStart := fs.Int64("day-start", 0, "the day's first second (unix): prior lines ending before it are dropped")
+		fs.Parse(os.Args[2:])
+		lines, err := migrationList(fs.Args(), *horizon, *prior, *dayStart)
+		if err != nil {
+			log.Printf("refused: %v", err)
+			os.Exit(2)
+		}
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+		return
+	case "unitlog":
+		// OF-3: the per-unit log of OUT's units; with -check, refuse units that differ from it.
+		fs := flag.NewFlagSet("unitlog", flag.ExitOnError)
+		outD := fs.String("out", "", "the directory holding units/")
+		check := fs.String("check", "", "a per-unit log to compare the units with")
+		fs.Parse(os.Args[2:])
+		if *check != "" {
+			if err := checkUnitLog(*outD, *check); err != nil {
+				log.Printf("refused: %v", err)
+				os.Exit(2)
+			}
+			return
+		}
+		lines, err := unitLog(*outD)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+		return
 	case "run":
 		fs := flag.NewFlagSet("run", flag.ExitOnError)
 		out := fs.String("out", "data", "output dir")
@@ -113,9 +168,15 @@ func main() {
 		newestFirst := fs.Bool("newest-first", true, "scan the most recent units first")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		slots := fs.String("slots", "", "only units inside this slot range, FROM-TO (for tests)")
-		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 80")
+		maxMBps := fs.Float64("max-mbps", 40, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 40")
 		on429 := fs.String("on-429", "stop", "stop: end the run (exit code 75) so a scheduler can back off; pause: wait max(1 h, Retry-After) and retry")
+		retention := fs.String("retention", "", "K2 or K3 (OF-3; empty: today's units)")
+		mlist := fs.String("migration-list", "", "K3: the pinned PM-01 migration list")
 		fs.Parse(os.Args[2:])
+		if err := setRetention(*retention, *mlist); err != nil {
+			log.Printf("refused: %v", err)
+			os.Exit(2)
+		}
 		if !validMBps(*maxMBps) || (*on429 != "stop" && *on429 != "pause") {
 			log.Printf("refused: -max-mbps must be in (0, %d] and -on-429 stop or pause", maxAllowedMBps)
 			os.Exit(2)

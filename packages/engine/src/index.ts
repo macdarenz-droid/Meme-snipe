@@ -1,2 +1,2 @@
-// Skeleton (card C01, B-M30-01). Later cards fill this package.
-export {};
+// @bot/engine. Later cards add their modules here.
+export * from './recorder/index.ts';

@@ -33,7 +33,7 @@ describe('A-M02-02 PumpSwap pools', () => {
     }
   });
 
-  it('decodes all 13 recorded pools; every account carries 30 bytes the pinned IDL does not describe', () => {
+  it('decodes all 13 recorded pools; the 30 bytes past the cb188ce layout are protocol_fees, creator_fees and 14 zero bytes (IDL-REPIN)', () => {
     let extended = 0;
     for (const file of POOLS) {
       const pool = role(file, 'pool');
@@ -41,10 +41,10 @@ describe('A-M02-02 PumpSwap pools', () => {
       const p = as(r.account, 'pumpswap_pool');
       assert.equal(p.quoteMint, role(file, 'quote_mint').pubkey);                  // wSOL, as C11 recorded it
       assert.ok(p.lpSupply > 0n && p.lpMint.length >= 32);
-      assert.equal(bytes(pool).length, 301);                    // the IDL layout is 271 bytes
+      assert.equal(bytes(pool).length, 301);                    // the IDL layout is 287 bytes at 8cda1fa (271 at cb188ce)
       if (r.flags.layoutExtended) extended++;
     }
-    assert.equal(extended, 11);                                  // 2 of 13 pools hold only zeros there
+    assert.equal(extended, 0);                                   // was 11 under cb188ce: the bytes it did not describe are fields now
   });
 
   it('a negative virtual_quote_reserves (i128 high bit set) decodes as a negative bigint [DA-14]', () => {
@@ -112,7 +112,7 @@ describe('A-M02-02 pump bonding curves [DA-13, DA-15, DA-V01]', () => {
     assert.equal(c.complete, false);
     assert.equal(c.quoteMint, null);                                                   // was DEFAULT_PUBKEY before Z03 m6
     assert.ok(c.virtualQuote > c.realQuote && c.virtualToken > c.realToken);
-    assert.deepEqual(r.flags, { layoutExtended: true, shortLegacy: false });
+    assert.deepEqual(r.flags, { layoutExtended: false, shortLegacy: true });   // 143 bytes: inside the fields 8cda1fa appends, zero there (IDL-REPIN)
     const done = as(d.decodeAccount(PUMP, bytes(curve('curve_9ergzzPt.json'))), 'pump_bonding_curve');
     assert.equal(done.complete, true);
     assert.equal(done.realToken, 0n);
@@ -146,7 +146,8 @@ describe('A-M02-02 pump bonding curves [DA-13, DA-15, DA-V01]', () => {
         assert.deepEqual(r, { account: { kind: 'unknown', owner: PUMP, discriminatorHex: '17b7f83760d8ac60' }, flags: { layoutExtended: false, shortLegacy: false } }, `${n} bytes`);
       }
     }
-    assert.deepEqual(d.decodeAccountWithFlags(PUMP, full.slice(0, 125)).flags, { layoutExtended: false, shortLegacy: false });
+    // 125 bytes ended the cb188ce layout; at 8cda1fa the curve's appended fields read as 0 from there (IDL-REPIN).
+    assert.deepEqual(d.decodeAccountWithFlags(PUMP, full.slice(0, 125)).flags, { layoutExtended: false, shortLegacy: true });
   });
 });
 
