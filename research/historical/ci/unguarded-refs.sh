@@ -6,12 +6,16 @@
 # that probes the archive itself. Read only: it lists and reads files through the GitHub
 # API, and never deletes, edits or dispatches anything. At arm time the supervisor puts the
 # list to the owner with a recommendation; no agent deletes a branch.
-#   unguarded-refs.sh            prints one branch a line, then a count to stderr
+#   unguarded-refs.sh            prints one branch ("NAME") or tag ("tag NAME") a line, then
+#                                a count to stderr
 # Env: GH_REPO (owner/repo), GH_TOKEN; GH_BIN is for tests only.
 set -euo pipefail
 gh=${GH_BIN:-gh}
 : "${GH_REPO:?}"
 branches=$("$gh" api --paginate "repos/$GH_REPO/branches?per_page=100" --jq '.[].name')
+# Round 4, ruling 37: tags too (a workflow can be dispatched on a tag); printed "tag NAME".
+# No agent deletes or moves a tag: the supervisor puts each one to the owner at arm time.
+tags=$("$gh" api --paginate "repos/$GH_REPO/tags?per_page=100" --jq '.[].name' | sed 's/^/tag /')
 n=0 found=0
 # file BRANCH PATH: the file's text on BRANCH; exit 3 when it is not there (404).
 file() {
@@ -24,8 +28,9 @@ file() {
   rm -f "$err"
   base64 -d <<< "$content"
 }
-while read -r b; do
-  [[ -n "$b" ]] || continue
+while read -r line; do
+  [[ -n "$line" ]] || continue
+  b=${line#tag }
   n=$((n + 1))
   unguarded=0
   rc=0; wf=$(file "$b" .github/workflows/data-scan.yml) || rc=$?
@@ -38,6 +43,6 @@ while read -r b; do
     if grep -qE 'old-faithful|curl' <<< "$wf" || ! grep -q 'archive-check\.sh' <<< "$wf" || (( rc == 3 )) ||
        ! grep -qE '^[[:space:]]*\.[[:space:]]+"\$here/archive-guard\.sh"' <<< "$sh"; then unguarded=1; fi
   elif (( rc != 3 )); then exit 1; fi
-  if (( unguarded )); then echo "$b"; found=$((found + 1)); fi
-done <<< "$branches"
-echo "unguarded-refs: $found of $n branches carry a data-scan.yml or archive-check.yml that reads the archive without archive-guard.sh" >&2
+  if (( unguarded )); then echo "$line"; found=$((found + 1)); fi
+done <<< "$branches"$'\n'"$tags"
+echo "unguarded-refs: $found of $n branches and tags carry a data-scan.yml or archive-check.yml that reads the archive without archive-guard.sh" >&2
