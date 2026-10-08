@@ -9,7 +9,8 @@
 //   the orchid top border. If the mode changes while the dialog is open, it closes and says "Mode changed to X —
 //   review again" next to the control that opened it.
 // - While the stream is disconnected, a non-HALT dialog says "Disconnected · cannot confirm current state" and its
-//   submit is disabled; HALT stays enabled (UI.md HALT flow).
+//   submit is disabled; HALT stays enabled (UI.md HALT flow). Only HaltDialog is HALT: it owns its title and its
+//   confirm, and the generic Dialog never exempts an action (Z05 round 5, ruling 23).
 // - No native modal library: Radix Dialog's modal mode injects a <style> element, which the dashboard CSP refuses
 //   (style-src 'self'; VERIFY.md C05, Radix menus).
 import { createElement as h, Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactElement, type ReactNode } from 'react';
@@ -81,15 +82,32 @@ export interface DialogBaseProps {
   onClose(reason: CloseReason): void;
 }
 
+/** Every dialog but HALT's: no action is exempt from the fail-closed gates (Z05 round 5, ruling 23). */
+export interface DialogProps extends DialogBaseProps {
+  /** Another action between cancel and confirm, gated like confirm. */
+  secondary?: DialogAction;
+}
+
+/** The HALT dialog's title and confirm label (UI.md HALT flow). */
+export const HALT_TITLE = 'Halt trading';
+export const HALT_CONFIRM_LABEL = 'Halt now';
+
 /**
- * `halt`: the HALT dialog: initial focus on the confirm action, and it stays enabled while disconnected and in the
- * render where the mode changed. `secondary`: another action between cancel and confirm (HALT: "Halt and flatten
- * all…"); only HALT's may be marked risk-reducing (Z05 round 4, ruling 19).
+ * The HALT dialog (UI.md HALT flow). It owns its title and its confirm, which sends the halt command (`onHalt`), so
+ * the exemption from the fail-closed gates cannot be given to any other action (Z05 round 5, ruling 23).
  */
-export type DialogProps = DialogBaseProps & (
-  | { halt: true; secondary?: HaltSecondaryAction }
-  | { halt?: false; secondary?: DialogAction }
-);
+export interface HaltDialogProps extends Omit<DialogBaseProps, 'title' | 'confirm' | 'kind' | 'moneyAffecting' | 'children'> {
+  /** Sends the halt command (UI-T14). */
+  onHalt(): void;
+  /** "Halt and flatten all…" (the A2 flatten flow): gated unless it is marked risk-reducing (ruling 19). */
+  secondary?: HaltSecondaryAction;
+}
+
+/** What the shared dialog body renders: `halt` is set only by HaltDialog. */
+interface DialogViewProps extends DialogBaseProps {
+  halt: boolean;
+  secondary?: HaltSecondaryAction | DialogAction | undefined;
+}
 
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
@@ -105,7 +123,20 @@ export function titlePrefix(mode: Mode | null, moneyAffecting: boolean): string 
 
 type Phase = 'closed' | 'open' | 'closing';
 
+/** A dialog (C15). Never exempt: a `halt` key from any caller is overridden here. */
 export function Dialog(props: DialogProps): ReactElement {
+  return h(DialogView, { ...props, halt: false });
+}
+
+/** The HALT dialog: initial focus on "Halt now", which stays enabled while disconnected or the mode is unknown. */
+export function HaltDialog(props: HaltDialogProps): ReactElement {
+  return h(DialogView, {
+    ...props, halt: true, kind: 'alert', moneyAffecting: true, title: HALT_TITLE,
+    confirm: { label: HALT_CONFIRM_LABEL, onClick: props.onHalt },
+  });
+}
+
+function DialogView(props: DialogViewProps): ReactElement {
   const id = useId();
   const ref = useRef<HTMLDialogElement>(null);
   const [phase, setPhase] = useState<Phase>('closed');
@@ -118,8 +149,8 @@ export function Dialog(props: DialogProps): ReactElement {
   const status = props.status ?? 'open';
   const busy = status === 'submitting';
   // Fail closed (Z05 round 2, red team M3): a money-affecting non-HALT confirm needs a connected stream and a known mode.
-  const unknownReason = moneyAffecting && props.halt !== true ? unknownStateReason(props.connection, mode)
-    : props.connection === 'disconnected' && props.halt !== true ? unknownStateReason('disconnected', mode) : undefined;
+  const unknownReason = moneyAffecting && !props.halt ? unknownStateReason(props.connection, mode)
+    : props.connection === 'disconnected' && !props.halt ? unknownStateReason('disconnected', mode) : undefined;
   const { onClose } = props;
 
   // Open: remember the control to return to and the mode, then show modally and focus the initial action.
@@ -134,7 +165,7 @@ export function Dialog(props: DialogProps): ReactElement {
     setNotice(null);
     if (!el.open) el.showModal();
     setPhase('open');
-    const initial = el.querySelector<HTMLElement>(props.halt === true ? 'button.dialog__confirm' : 'button.dialog__cancel');
+    const initial = el.querySelector<HTMLElement>(props.halt ? 'button.dialog__confirm' : 'button.dialog__cancel');
     (initial ?? focusables(el)[0] ?? el).focus();
   }, [props.open, phase, mode, props.halt]);
 
@@ -197,12 +228,12 @@ export function Dialog(props: DialogProps): ReactElement {
   // In the frame between a mode change and the close, confirm is already disabled (Z05 round 2, red team m3).
   // HALT's confirm alone stays enabled in that frame (Z05 round 4, ruling 19): halting is always allowed.
   const modeMoved = !inline && phase !== 'closed' && mode !== openedMode.current;
-  const confirmReason = modeMoved && props.halt !== true ? MODE_CHANGED_CONFIRM_TEXT : unknownReason ?? confirm?.disabledReason;
+  const confirmReason = modeMoved && !props.halt ? MODE_CHANGED_CONFIRM_TEXT : unknownReason ?? confirm?.disabledReason;
   // The secondary action is gated like a money-affecting confirm, HALT's exemption included only when it is marked
   // risk-reducing itself (HALT's "Halt and flatten all…" sells, so it is gated). The mark counts only on the HALT
   // dialog: a non-HALT secondary marked risk-reducing past the type (a cast) is refused the exemption (ruling 19).
   const secondary = props.secondary;
-  const riskReducing = props.halt === true && secondary?.riskReducing === true;
+  const riskReducing = props.halt && (secondary as HaltSecondaryAction | undefined)?.riskReducing === true;
   const secondaryGate = riskReducing ? undefined
     : moneyAffecting ? unknownStateReason(props.connection, mode)
       : props.connection === 'disconnected' ? unknownStateReason('disconnected', mode) : undefined;
@@ -240,12 +271,12 @@ export function Dialog(props: DialogProps): ReactElement {
         ...(secondaryReason === undefined ? {} : { disabledReason: secondaryReason }),
       }, secondary.label),
       confirm === undefined ? null : h(Button, {
-        variant: confirm.variant ?? (props.halt === true ? 'danger' : live ? 'live-confirm' : 'primary'),
+        variant: confirm.variant ?? (props.halt ? 'danger' : live ? 'live-confirm' : 'primary'),
         className: 'dialog__confirm',
         onClick: confirm.onClick,
         ...(busy ? { status: 'pending' as const } : {}),
         ...(confirmReason === undefined ? {} : { disabledReason: confirmReason }),
-      }, confirm.label, live && props.halt !== true ? h('span', { className: 'btn__sublabel' }, 'real funds') : null))) : null);
+      }, confirm.label, live && !props.halt ? h('span', { className: 'btn__sublabel' }, 'real funds') : null))) : null);
 }
 
 export type StepUpStatus = 'prompting' | 'success' | 'cancelled' | 'failed' | 'unsupported';

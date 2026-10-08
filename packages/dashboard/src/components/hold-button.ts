@@ -43,6 +43,8 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
   /** The pointer press in progress or just released (its click follows); null when there is none. */
   const press = useRef<{ x: number; y: number; up: boolean } | null>(null);
   const upTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The window-level listener that sees the press's pointer up wherever it lands (no pointer capture). */
+  const windowUp = useRef<((e: globalThis.PointerEvent) => void) | null>(null);
   const status = props.status ?? 'idle';
   const state: HoldState = status === 'idle' ? props.preview ?? phase : status;
   const label = props.label ?? 'Halt';
@@ -51,6 +53,7 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
     if (hold.current !== null) clearTimeout(hold.current);
     if (rewind.current !== null) clearTimeout(rewind.current);
     if (upTimer.current !== null) clearTimeout(upTimer.current);
+    if (windowUp.current !== null) window.removeEventListener('pointerup', windowUp.current, true);
   }, []);
 
   const start = (e: PointerEvent<HTMLButtonElement>): void => {
@@ -59,6 +62,12 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
     if (e.button !== 0 || status === 'sending' || hold.current !== null) return;
     press.current = { x: e.clientX, y: e.clientY, up: false };
     if (upTimer.current !== null) { clearTimeout(upTimer.current); upTimer.current = null; }
+    // The press's pointer up starts the claim's expiry wherever it lands: on the button, or outside it when the
+    // browser gave no pointer capture (Z05 round 5, ruling 22).
+    const id = e.pointerId;
+    if (windowUp.current !== null) window.removeEventListener('pointerup', windowUp.current, true);
+    windowUp.current = (w) => { if (w.pointerId === id) up(); };
+    window.addEventListener('pointerup', windowUp.current, true);
     e.currentTarget.setPointerCapture?.(e.pointerId);
     if (rewind.current !== null) { clearTimeout(rewind.current); rewind.current = null; }
     setPhase('holding');
@@ -81,9 +90,13 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
     if (upTimer.current !== null) clearTimeout(upTimer.current);
     upTimer.current = setTimeout(() => { upTimer.current = null; press.current = null; }, CLICK_AFTER_UP_MS);
   };
-  /** The pointer went up on the button: a click follows, which belongs to this press and opens nothing. */
+  const stopWindowUp = (): void => {
+    if (windowUp.current !== null) { window.removeEventListener('pointerup', windowUp.current, true); windowUp.current = null; }
+  };
+  /** The press's pointer went up: a click on the button may follow, which belongs to this press and opens nothing. */
   const up = (): void => {
     rewindHold();
+    stopWindowUp();
     if (press.current === null) return;
     press.current.up = true;
     // If the browser sends no click after all, the mark expires, so it never swallows a later activation.
@@ -92,19 +105,20 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
   /** The press ended without a pointer up on the button (touch cancel, lost capture): no click follows. */
   const abort = (): void => {
     rewindHold();
+    stopWindowUp();
     if (press.current !== null && !press.current.up) press.current = null;
   };
   /**
    * A finger resting on HALT while the page scrolls is not a hold: a move over HOLD_MOVE_PX, or leaving the button,
    * cancels it. The press keeps its claim on the click its pointer up brings, so releasing on the button opens nothing
-   * (Z05 round 3, ruling 13). The claim expires CLICK_AFTER_UP_MS after the move, as after a pointer up: without pointer
-   * capture the pointer may lift outside the button, and no pointer up or click ever comes (Z05 round 4, ruling 18).
+   * (Z05 round 3, ruling 13). The claim is kept while the pointer is down, however long; its expiry starts from the
+   * pointer up, on the button or anywhere on the page (Z05 round 5, ruling 22, replacing round 4's expiry from the
+   * move), or the claim ends on touch cancel or lost capture.
    */
   const moveAway = (): void => {
     const p = press.current;
     if (p === null || p.up) return;
     rewindHold();
-    if (upTimer.current === null) expireClaim();
   };
   const move = (e: PointerEvent<HTMLButtonElement>): void => {
     const p = press.current;

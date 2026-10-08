@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, it, vi } from 'vitest';
 import { createElement as h, useState, type ReactElement } from 'react';
 import type { Clock, Mode, UnixMs } from '@bot/types';
 import { Countdown } from '../src/components/countdown.ts';
-import { Dialog, StepUpAuth, TypedConfirmDialog, type CloseReason, type ConnectionView, type DialogAction, type DialogProps, type StepUpStatus, type TypedConfirmStatus } from '../src/components/dialog.ts';
+import { Dialog, HaltDialog, StepUpAuth, TypedConfirmDialog, type CloseReason, type ConnectionView, type DialogAction, type DialogProps, type HaltDialogProps, type StepUpStatus, type TypedConfirmStatus } from '../src/components/dialog.ts';
 import { DiffView } from '../src/components/diff-view.ts';
 import { CLICK_AFTER_UP_MS, HoldButton, type HoldServerStatus } from '../src/components/hold-button.ts';
 import { DIALOG_EXIT_MS, HOLD_REWIND_MS, HOLD_TO_CONFIRM_MS, type SystemStateView } from '../src/lib/safety.ts';
@@ -37,11 +37,12 @@ const buttonByText = (root: ParentNode, text: string): HTMLButtonElement =>
   [...root.querySelectorAll('button')].find((b) => b.textContent?.includes(text) === true) as HTMLButtonElement;
 
 /** A trigger button and a controlled Dialog, like a page would use it. */
-function Harness(props: { system: SystemStateView | null; onClose?: (r: CloseReason) => void; dialog?: Partial<DialogProps> }): ReactElement {
+function Harness(props: { system: SystemStateView | null; onClose?: (r: CloseReason) => void; dialog?: Partial<DialogProps>; halt?: Partial<HaltDialogProps> }): ReactElement {
   const [open, setOpen] = useState(false);
   return h('div', null,
     h('button', { type: 'button', id: 'trigger', onClick: () => setOpen(true) }, 'Open'),
-    h(Dialog, { connection: 'connected',
+    props.halt !== undefined ? h(HaltDialog, { connection: 'connected', open, system: props.system, description: 'Stop new entries.', onHalt: () => undefined,
+      ...props.halt, onClose: (r) => { props.onClose?.(r); setOpen(false); } }) : h(Dialog, { connection: 'connected',
       open, system: props.system, title: 'Close position', description: 'Sell now.',
       confirm: { label: 'Close position', onClick: () => undefined },
       ...props.dialog,
@@ -176,7 +177,7 @@ describe('UI-T07 Dialog (C15)', () => {
     click(confirm);
     assert.equal(onConfirm.mock.calls.length, 0);
     const onHalt = vi.fn();
-    const halt = openHarness(PAPER, { dialog: { halt: true, connection: 'disconnected', title: 'Halt trading', confirm: { label: 'Halt now', onClick: onHalt } } });
+    const halt = openHarness(PAPER, { halt: { connection: 'disconnected', onHalt } });
     const hd = dialogEl(halt.r);
     assert.equal(hd.querySelector('.banner--disconnected'), null);
     const haltNow = btn(hd, 'dialog__confirm');
@@ -230,7 +231,7 @@ describe('UI-T07 Dialog (C15)', () => {
     }
     // HALT reduces risk: it stays enabled in every one of these states.
     for (const [connection, system] of cases) {
-      const r = mount(h(Dialog, { open: true, inline: true, halt: true, connection, system, title: 'Halt', description: 'D', confirm: { label: 'Halt now', onClick: () => undefined }, onClose: () => undefined }));
+      const r = mount(h(HaltDialog, { open: true, inline: true, connection, system, description: 'D', onHalt: () => undefined, onClose: () => undefined }));
       assert.equal(btn(r.container, 'dialog__confirm').getAttribute('aria-disabled'), null, connection);
     }
     // A dialog that does not affect money is not blocked by an unknown mode or a reconnecting stream.
@@ -241,11 +242,10 @@ describe('UI-T07 Dialog (C15)', () => {
   it('Z05 round 3 (ruling 15): the secondary action gets the confirm gate unless it is marked risk-reducing', () => {
     const onSecondary = vi.fn();
     const frame = (connection: ConnectionView, system: SystemStateView | null, riskReducing?: boolean, halt?: boolean): HTMLButtonElement => {
-      const r = mount(h(Dialog, {
-        open: true, inline: true, connection, system, title: 'Halt trading', description: 'D', ...(halt === true ? { halt: true } : {}),
-        secondary: { label: 'Halt and flatten all…', onClick: onSecondary, ...(riskReducing === undefined ? {} : { riskReducing }) },
-        confirm: { label: 'Halt now', onClick: () => undefined }, onClose: () => undefined,
-      }));
+      const secondary = { label: 'Halt and flatten all…', onClick: onSecondary, ...(riskReducing === undefined ? {} : { riskReducing }) };
+      const r = mount(halt === true
+        ? h(HaltDialog, { open: true, inline: true, connection, system, description: 'D', secondary, onHalt: () => undefined, onClose: () => undefined })
+        : h(Dialog, { open: true, inline: true, connection, system, title: 'Halt trading', description: 'D', secondary: secondary as unknown as DialogAction, confirm: { label: 'Halt now', onClick: () => undefined }, onClose: () => undefined }));
       return btn(r.container, 'dialog__secondary');
     };
     for (const [connection, system] of [['reconnecting', PAPER], ['unknown', LIVE], ['disconnected', LIVE], ['connected', null]] as const) {
@@ -269,7 +269,7 @@ describe('UI-T07 Dialog (C15)', () => {
   it('Z05 round 4 (ruling 19): only HALT\'s secondary may be risk-reducing; a mode change disables every button but HALT\'s confirm', () => {
     const onSecondary = vi.fn();
     // The type refuses the mark on a non-HALT dialog.
-    // @ts-expect-error riskReducing is only allowed with halt: true
+    // @ts-expect-error riskReducing is only allowed on HaltDialog's secondary
     const typed: DialogProps = { open: true, connection: 'connected', system: PAPER, title: 'T', description: 'D', secondary: { label: 'More', onClick: onSecondary, riskReducing: true }, onClose: () => undefined };
     void typed;
     // The runtime refuses it too: a mark that got past the type (a cast) keeps the gate.
@@ -285,10 +285,9 @@ describe('UI-T07 Dialog (C15)', () => {
     // marked non-HALT secondary, are disabled.
     const onHalt = vi.fn();
     function Halt(props: { mode: Mode }): ReactElement {
-      return h(Dialog, {
-        open: true, halt: true, connection: 'connected', system: sys(props.mode), title: 'Halt trading', description: 'D',
-        secondary: { label: 'Halt and flatten all…', onClick: onSecondary, riskReducing: true },
-        confirm: { label: 'Halt now', onClick: onHalt }, onClose: () => undefined,
+      return h(HaltDialog, {
+        open: true, connection: 'connected', system: sys(props.mode), description: 'D',
+        secondary: { label: 'Halt and flatten all…', onClick: onSecondary, riskReducing: true }, onHalt, onClose: () => undefined,
       });
     }
     const halt = mount(h(Halt, { mode: 'paper' }));
@@ -309,6 +308,33 @@ describe('UI-T07 Dialog (C15)', () => {
     assert.equal(wrong.getAttribute('aria-disabled'), 'true', 'a wrongly marked secondary is disabled in that frame');
     click(wrong);
     assert.equal(onSecondary.mock.calls.length, 0);
+  });
+
+  it('Z05 round 5 (ruling 23): a free `halt` flag never carries the exemption; HaltDialog owns its title and confirm', () => {
+    const onClose = vi.fn();
+    const closeAction = vi.fn();
+    const haltProps = { halt: true, title: 'Halt trading', description: 'D', confirm: { label: 'Halt now', onClick: () => undefined } };
+    for (const [connection, system] of [['reconnecting', PAPER], ['unknown', LIVE], ['disconnected', LIVE], ['connected', null]] as const) {
+      // A generic Dialog given HALT's props, then reused for another action, is gated like any money confirm.
+      const props = { ...haltProps, open: true, inline: true, connection, system, title: 'Close position', confirm: { label: 'Close position', onClick: closeAction }, onClose } as unknown as DialogProps;
+      const r = mount(h(Dialog, props));
+      const confirm = btn(r.container, 'dialog__confirm');
+      assert.equal(confirm.getAttribute('aria-disabled'), 'true', `${connection} ${system?.mode ?? 'unknown'}`);
+      assert.ok(!confirm.classList.contains('btn--danger'), 'no HALT styling either');
+      click(confirm);
+    }
+    assert.equal(closeAction.mock.calls.length, 0);
+    // HaltDialog ignores a title or confirm slipped past its type: the confirm is always "Halt now", sending onHalt.
+    const onHalt = vi.fn();
+    const sneaky = { open: true, inline: true, connection: 'disconnected', system: LIVE, description: 'D', onHalt, onClose, title: 'Close position', confirm: { label: 'Close position', onClick: closeAction } } as unknown as HaltDialogProps;
+    const r = mount(h(HaltDialog, sneaky));
+    assert.equal(r.container.querySelector('.dialog__title')?.textContent, 'LIVE: Halt trading');
+    const haltNow = btn(r.container, 'dialog__confirm');
+    assert.equal(haltNow.textContent, 'Halt now');
+    assert.equal(haltNow.getAttribute('aria-disabled'), null);
+    click(haltNow);
+    assert.equal(onHalt.mock.calls.length, 1);
+    assert.equal(closeAction.mock.calls.length, 0);
   });
 
   it('Z05 round 2 (red team M3): a change to or from an unknown mode is a mode change', () => {
@@ -783,7 +809,7 @@ describe('UI-T07 HoldButton (C03)', () => {
     assert.equal(onOpenDialog.mock.calls.length, 2, 'no click came: the claim expired');
   });
 
-  it('Z05 round 4 (ruling 18): with no pointer capture, a press moved away and lifted outside the button does not swallow a later click', () => {
+  it('Z05 round 4 (ruling 18, with ruling 22): with no pointer capture, a press moved away and lifted outside the button does not swallow a later click', () => {
     for (const away of ['move', 'leave'] as const) {
       const { b, onConfirm, onOpenDialog } = setup();
       // No setPointerCapture: the pointer up lands outside the button, so the button sees no pointerup and no click.
@@ -793,12 +819,45 @@ describe('UI-T07 HoldButton (C03)', () => {
       if (away === 'move') fire(b, pointer('pointermove', { clientX: 100, clientY: 140 }));
       else fire(b, pointer('pointerout', { relatedTarget: document.body }));
       assert.equal(b.dataset['state'], 'released-early', away);
+      // The pointer lifts outside the button: only the page sees the pointer up (ruling 22).
+      fire(document.body, pointer('pointerup'));
       tick(CLICK_AFTER_UP_MS);
       // A screen reader's activation: a click no pointer press started.
       fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 }));
       assert.equal(onOpenDialog.mock.calls.length, 1, `${away}: the later click opens the HALT dialog`);
       assert.equal(onConfirm.mock.calls.length, 0, away);
     }
+  });
+
+  it('Z05 round 5 (ruling 22): the claim is kept while the pointer is down, so a long scroll released on the button opens no dialog', () => {
+    const { b, onConfirm, onOpenDialog } = setup();
+    fire(b, pointer('pointerdown', { clientX: 100, clientY: 100 }));
+    fire(b, pointer('pointermove', { clientX: 100, clientY: 130 }));
+    assert.equal(b.dataset['state'], 'released-early');
+    tick(CLICK_AFTER_UP_MS + 500);
+    fire(b, pointer('pointerup', { clientX: 100, clientY: 130 }));
+    fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    assert.equal(onOpenDialog.mock.calls.length, 0, 'held more than 1 s after the drag, released on the button: no dialog');
+    assert.equal(onConfirm.mock.calls.length, 0);
+    // The same after leaving the button and coming back.
+    tick(HOLD_REWIND_MS);
+    fire(b, pointer('pointerdown'));
+    fire(b, pointer('pointerout', { relatedTarget: document.body }));
+    tick(CLICK_AFTER_UP_MS * 3);
+    fire(b, pointer('pointerup'));
+    fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    assert.equal(onOpenDialog.mock.calls.length, 0, 'left and came back');
+    // A pointer up of another pointer elsewhere does not end the claim.
+    fire(b, pointer('pointerdown', { clientX: 0, clientY: 0 }));
+    fire(b, pointer('pointermove', { clientX: 0, clientY: 50 }));
+    fire(document.body, pointer('pointerup', { pointerId: 2 }));
+    tick(CLICK_AFTER_UP_MS * 2);
+    fire(b, pointer('pointerup'));
+    fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    assert.equal(onOpenDialog.mock.calls.length, 0, 'another pointer');
+    // After the claimed click, the next activation opens the dialog.
+    click(b);
+    assert.equal(onOpenDialog.mock.calls.length, 1);
   });
 
   it('pressing twice without releasing starts one hold only', () => {
@@ -871,7 +930,7 @@ describe('UI-T07 VM-03 fixtures (fixture first: INTEGRATION.md, UI-T07 depends o
     it(`${file}: the HALT and typed dialogs take the fixture's mode`, () => {
       const vm = JSON.parse(readFileSync(join(dir, file), 'utf8')) as SystemStateView;
       const system: SystemStateView = { state_version: vm.state_version, mode: vm.mode, simulated: vm.simulated, trading_state: vm.trading_state };
-      const halt = mount(h(Dialog, { connection: 'connected', open: true, inline: true, halt: true, system, title: 'Halt trading', description: 'D', confirm: { label: 'Halt now', onClick: () => undefined }, onClose: () => undefined }));
+      const halt = mount(h(HaltDialog, { connection: 'connected', open: true, inline: true, system, description: 'D', onHalt: () => undefined, onClose: () => undefined }));
       assert.equal(halt.container.querySelector('.dialog__title')?.textContent, `${PREFIX[vm.mode]} Halt trading`);
       assert.equal(halt.container.querySelector('dialog')?.dataset['mode'], vm.mode);
       const typed = mount(h(TypedConfirmDialog, { connection: 'connected',

@@ -7,7 +7,7 @@ import { createElement as h, Fragment, useEffect, useState, type ReactElement, t
 import type { Clock, Mode, UnixMs } from '@bot/types';
 import { Button } from '../../components/button.ts';
 import { Countdown } from '../../components/countdown.ts';
-import { Dialog, StepUpAuth, TypedConfirmDialog, type ConnectionView, type StepUpStatus, type TypedConfirmStatus } from '../../components/dialog.ts';
+import { Dialog, HaltDialog, StepUpAuth, TypedConfirmDialog, type ConnectionView, type StepUpStatus, type TypedConfirmStatus } from '../../components/dialog.ts';
 import { DiffView, type DiffLine } from '../../components/diff-view.ts';
 import { HoldButton, type HoldServerStatus } from '../../components/hold-button.ts';
 import { MODE_NAME, type SystemStateView } from '../../lib/safety.ts';
@@ -36,12 +36,12 @@ function Frame(props: { title: string; children?: ReactNode }): ReactElement {
 
 const HALT_TEXT = 'Stop new entries and cancel queued entries. Open positions (3) keep their stops and targets. This does not sell anything.';
 
-function HaltDialog(props: { open: boolean; system: SystemStateView | null; connection?: ConnectionView; inline?: boolean; onClose: () => void; onConfirm: () => void }): ReactElement {
-  return h(Dialog, {
-    open: props.open, system: props.system, halt: true, title: 'Halt trading', description: HALT_TEXT,
+function HaltDemo(props: { open: boolean; system: SystemStateView | null; connection?: ConnectionView; inline?: boolean; onClose: () => void; onConfirm: () => void }): ReactElement {
+  return h(HaltDialog, {
+    open: props.open, system: props.system, description: HALT_TEXT,
     connection: props.connection ?? 'connected', ...(props.inline === true ? { inline: true } : {}),
     secondary: { label: 'Halt and flatten all…', onClick: noop },
-    confirm: { label: 'Halt now', onClick: props.onConfirm },
+    onHalt: props.onConfirm,
     onClose: props.onClose,
   });
 }
@@ -80,7 +80,7 @@ function ModeGallery(props: { label: string; system: SystemStateView }): ReactEl
       h(Frame, { title: 'Dialog, reconnecting' }, h(Dialog, { open: true, inline: true, system: s, connection: 'reconnecting', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
       h(Frame, { title: 'Dialog, mode unknown' }, h(Dialog, { open: true, inline: true, system: null, connection: 'connected', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
       h(Frame, { title: 'Standard dialog' }, h(Dialog, { open: true, inline: true, kind: 'standard', moneyAffecting: false, connection: 'connected', system: s, title: 'Column settings', description: 'Choose the columns this table shows.', confirm: { label: 'Save', onClick: noop }, onClose: noop })),
-      h(Frame, { title: 'HALT dialog, disconnected (stays enabled)' }, h(HaltDialog, { open: true, inline: true, system: s, connection: 'disconnected', onClose: noop, onConfirm: noop }))),
+      h(Frame, { title: 'HALT dialog, disconnected (stays enabled)' }, h(HaltDemo, { open: true, inline: true, system: s, connection: 'disconnected', onClose: noop, onConfirm: noop }))),
     h('h3', { className: 'tokens__heading' }, `${props.label}: typed confirmation`),
     h('div', { className: 'dialog-gallery__grid' },
       TYPED_STATES.map(([title, status, phrase, stepUp]) => h(Frame, { key: title, title }, h(TypedFrame, { system: s, status, phrase, ...(stepUp === undefined ? {} : { stepUp }) })))));
@@ -148,7 +148,7 @@ function OpenDialogDemo(): ReactElement {
       h(Button, { variant: 'secondary', onClick: () => setOpen('typed') }, 'Switch to LIVE-SMALL'),
       h(Button, { variant: 'secondary', onClick: () => setOpen('standard') }, 'Close position')),
     h('output', { className: 'demo__out', 'data-confirms': confirms, 'data-last': last }, `Confirmed ${confirms} · last: ${last === '' ? 'none' : last}`),
-    h(HaltDialog, { open: open === 'halt', system, connection, onClose: () => close('halt-cancel'), onConfirm: () => confirmed('halt-dialog') }),
+    h(HaltDemo, { open: open === 'halt', system, connection, onClose: () => close('halt-cancel'), onConfirm: () => confirmed('halt-dialog') }),
     h(TypedConfirmDialog, {
       open: open === 'typed', system, connection, actionClass: 'A3', requiredPhrase: phrase, actionName: 'the switch to LIVE-SMALL',
       title: 'Switch to LIVE-SMALL', description: 'Real funds, at most 0.25 SOL per trade and 2 open positions.', confirmLabel: 'Switch mode',

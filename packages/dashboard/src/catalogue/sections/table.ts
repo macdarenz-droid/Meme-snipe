@@ -204,19 +204,19 @@ const DEMO_AS_OF = '2026-10-06T14:02:11.123Z';
 
 /** Fixed demo rows: digits that show tabular alignment, untrusted text, and the row states. */
 export const DEMO_ROWS: readonly FixturePosition[] = [
-  { position_id: 'A1', strategy_id: 'mr', mint: 'MintA', symbol: 'ONES', name: 'Ones', decimals: 4, state: 'open', opened_at: '2026-10-06T13:41:05.512Z',
+  { position_id: 'R1', strategy_id: 'mr', mint: 'MintA', symbol: 'ONES', name: 'Ones', decimals: 4, state: 'open', opened_at: '2026-10-06T13:41:05.512Z',
     size_base: '11111111', entry_cost_lamports: '1111111111', entry_price_sol_per_token: '0.1111', mark_price_sol_per_token: '0.1111', exit_value_est_lamports: '1111111111',
     unrealized_pnl_net_lamports: '11111111', unrealized_pnl_net_bps: 111, price_impact_exit_bps: 11, close_failed_reason: null },
-  { position_id: 'A2', strategy_id: 'pm', mint: 'MintB', symbol: 'EIGHTS', name: 'Eights', decimals: 4, state: 'open', opened_at: '2026-10-06T13:58:05.512Z',
+  { position_id: 'R2', strategy_id: 'pm', mint: 'MintB', symbol: 'EIGHTS', name: 'Eights', decimals: 4, state: 'open', opened_at: '2026-10-06T13:58:05.512Z',
     size_base: '88888888', entry_cost_lamports: '8888888888', entry_price_sol_per_token: '0.8888', mark_price_sol_per_token: '0.8888', exit_value_est_lamports: '8888888888',
     unrealized_pnl_net_lamports: '-88888888', unrealized_pnl_net_bps: -888, price_impact_exit_bps: 88, close_failed_reason: null },
-  { position_id: 'A3', strategy_id: 'mr', mint: 'MintC', symbol: 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', name: 'NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN', decimals: 9,
+  { position_id: 'R3', strategy_id: 'mr', mint: 'MintC', symbol: 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', name: 'NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN', decimals: 9,
     state: 'open', opened_at: '2026-10-06T14:01:05.512Z', size_base: '1000000000', entry_cost_lamports: '500000000', entry_price_sol_per_token: '0.51',
     mark_price_sol_per_token: '0.000004712', exit_value_est_lamports: '509620000', unrealized_pnl_net_lamports: '0', unrealized_pnl_net_bps: 0, price_impact_exit_bps: 42, close_failed_reason: null },
-  { position_id: 'A4', strategy_id: 'pm', mint: 'MintD', symbol: 'US\u202EDC', name: 'Ꮪolana Ꭰollar', decimals: null, state: 'closing', opened_at: '2026-10-06T14:02:01.512Z',
+  { position_id: 'R4', strategy_id: 'pm', mint: 'MintD', symbol: 'US\u202EDC', name: 'Ꮪolana Ꭰollar', decimals: null, state: 'closing', opened_at: '2026-10-06T14:02:01.512Z',
     size_base: '5000000', entry_cost_lamports: '27500000', entry_price_sol_per_token: '0.0054', mark_price_sol_per_token: null, exit_value_est_lamports: null,
     unrealized_pnl_net_lamports: null, unrealized_pnl_net_bps: null, price_impact_exit_bps: null, close_failed_reason: null },
-  { position_id: 'A5', strategy_id: 'mr', mint: 'MintE', symbol: 'STUCK', name: 'Close failed', decimals: 6, state: 'close_failed', opened_at: '2026-10-06T12:02:11.123Z',
+  { position_id: 'R5', strategy_id: 'mr', mint: 'MintE', symbol: 'STUCK', name: 'Close failed', decimals: 6, state: 'close_failed', opened_at: '2026-10-06T12:02:11.123Z',
     size_base: '4000000', entry_cost_lamports: '40000000', entry_price_sol_per_token: '0.0098', mark_price_sol_per_token: '0.0098', exit_value_est_lamports: '39200000',
     unrealized_pnl_net_lamports: '-800000', unrealized_pnl_net_bps: -200, price_impact_exit_bps: 42, close_failed_reason: 'Slippage above the limit' },
 ];
@@ -243,7 +243,7 @@ export function TableStates(props: { variant: 'standard' | 'dense'; loadingClock
   const v = props.variant;
   const base = { columns: DEMO_COLUMNS, rowId: demoId, variant: v, clock: demoClock, ...(props.loadingClock === undefined ? {} : { loadingClock: props.loadingClock }) } as const;
   return h('div', { className: 'demos' },
-    demo('Rows', h(DataTable<FixturePosition>, { ...base, label: 'Rows', rows: DEMO_ROWS, rowState: demoState, selected: new Set(['A2']), onToggleSelect: noop,
+    demo('Rows', h(DataTable<FixturePosition>, { ...base, label: 'Rows', rows: DEMO_ROWS, rowState: demoState, selected: new Set(['R2']), onToggleSelect: noop,
       sorting: [{ id: 'pnl', desc: true }], columnVisibility: { name: false } })),
     demo('Grouped', h(DataTable<FixturePosition>, { ...base, label: 'Grouped', columns: GROUPED_COLUMNS, rows: DEMO_ROWS.slice(0, 3), sorting: [{ id: 'symbol', desc: false }] })),
     demo('Streamed', h(StreamedDemo, { variant: v })),

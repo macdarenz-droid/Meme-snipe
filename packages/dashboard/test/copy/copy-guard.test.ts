@@ -127,13 +127,33 @@ describe('dashboard copy guard', () => {
     }
     assert.equal(normaliseCopy('\uA4EE\uA4F2', 'I'), 'AI');
     assert.equal(normaliseCopy('\uA4EE\uA4F2'), 'Al');
-    // Plain text with real l and I keeps its letters: "Al" and "Daily loss" are not hits.
-    assert.deepEqual(findBanned('Al · Daily loss · Pool momentum'), []);
+    // Plain trading copy with real l and I is not a hit (round 5, ruling 21, reads ASCII "Al" as AI: see below).
+    assert.deepEqual(findBanned('Daily loss · Pool momentum · Limit 1 · Fill'), []);
+  });
+
+  it('Z05 round 5 (ruling 21): letter pairs, ASCII l/I/1/|, dashes, apostrophes, white space and marks are read as a reader sees them', () => {
+    const seeded: ReadonlyArray<[string, string]> = [
+      ['srnart', 'smart'], ['rnodels', 'models'], ['lnsights', 'insights'], ['unIock', 'unlock'], ['Al picks', 'AI'],
+      ['cutting\u2011edge', 'cutting-edge'], ['game\u2010changer', 'game-changer'], ['Here\u02BCs', "Here's"], ['Let\u2032s', "Let's"],
+      ['powered  by', 'powered by'], ['s\u20DDmart', 'smart'], ['sm\u0903art', 'smart'],
+      // The other pairs and characters the ruling names.
+      ['vvizard journey', 'journey'], ['cleep dive', 'deep dive'], ['A1 picks', 'AI'], ['A| picks', 'AI'],
+      ['powered\u00A0\u2003by', 'powered by'],
+    ];
+    for (const [text, label] of seeded) {
+      const code = `const t = '${text}';`;
+      assert.ok(scan(code).some((hit) => hit.startsWith(`${label}:`)), `${JSON.stringify(text)} → ${scan(code).join(' | ')}`);
+    }
+    // A banned word that holds a pair is still caught as written: the pairs reduce the word too.
+    assert.ok(findBanned('harness the data').includes('harness'));
+    assert.ok(findBanned('Pick your jou\u0072\u006Eey').includes('journey'));
+    // Ordinary trading copy with pairs, digits and dashes stays allowed.
+    assert.deepEqual(findBanned('Modern turn · Close all · Slippage 1\u20132% · Tier 1 · Fill rate'), []);
   });
 
   it('normaliseCopy reads text as a reader sees it, and leaves plain text alone', () => {
     assert.equal(normaliseCopy('\u0405m\u200Bart'), 'Smart');
-    assert.equal(normaliseCopy('\uFF21\uFF29'), 'AI');
+    assert.equal(normaliseCopy('\uFF21\uFF29', 'I'), 'AI');
     assert.equal(normaliseCopy('Daily loss · 0.25 SOL'), 'Daily loss · 0.25 SOL');
     // Words that only look close stay allowed.
     assert.deepEqual(findBanned('Paid fees · Aim price · aide'), []);
