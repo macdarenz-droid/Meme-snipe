@@ -22,6 +22,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 16:46 | Lead round 12: H1-CGO and F1 gate frozen on its branch at 013205df; W1 fixes accepted; tape order G1, W1, A, H1-CGO, F1-gate, one shared tape worker on Step A |
 | 2026-10-08 16:48 | W1 PREREG committed (eab1f4a) and sent (round 13) |
 | 2026-10-08 17:15 | Owner: "P2 No". P2 closed; told the lead |
+| 2026-10-08 18:10 | Sweep 1 finished (16 ideas, 9 agents, 87 min): survivors G1-HC, APP-TOLL, MAYHEM-24, CREATOR-BUY, FLUSH-BUY, each about 1–2% (judgement); report `SWEEP_1.md`. G1 amendment 1 (G1-HC arm, BOOST floor check) and W1 amendment 1 (S has no tx_fee column) drafted |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
@@ -34,3 +35,8 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | F1 | Buy after a followed wallet's buy, sell into slower followers | Copy and alert followers | about 2–4% | Counts gate only (`research/f1-follower-flow/GATE.md`); owner ethics ruling before any return test |
 | P2 | PumpSwap non-arbitrage net flow predicting Hyperliquid perp moves | Slow perp traders | about 2–3% | **Closed by the owner** (2026-10-08 17:15: "P2 No") |
 | W1 | Winner autopsy: do slow wallets' profits persist day to day, and what are their rules? (lead) | n/a (finds the seat) | about 5% (partner) | PREREG `research/w1-winner-autopsy/PREREG.md` (eab1f4a); waits on Step A |
+| G1-HC | G1 only where little pre-migration supply is ready to sell into BOOST | BOOST, snipers | about 2% | `research/g1-boost-inventory/AMENDMENT_1.md`; must freeze before Step A |
+| APP-TOLL | Retail-app buying wave into a float without mechanical sellers | Late app buyers | about 1% | Needs S columns (top_program, app-fee transfer, CU price) before Step A |
+| MAYHEM-24 | Surviving mayhem coins after the agent's 24 h burn | Screen-bound buyers | about 1% | Counts only; core change and owner needed |
+| CREATOR-BUY | Creator group's own open-market buying after migration | Sellers into it | about 1% | Fee claims are dropped by the decoder; ethics ruling needed |
+| FLUSH-BUY | Buy after forced perp long liquidations | Liquidated longs | about 1% | Needs the owner on perps (P2 was closed) |
