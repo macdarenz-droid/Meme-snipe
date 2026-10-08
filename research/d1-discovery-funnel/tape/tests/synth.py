@@ -76,16 +76,23 @@ def empty(cols):
 
 
 def make_tape(amm: pd.DataFrame, slot_lo: int, slot_hi: int, migs=(), creates=(), buys=None, curve=None, t=None, w=None,
-              f=None, cf=None, boost=None, segs=None, n_codes=1000, v1=()):
+              f=None, cf=None, boost=None, segs=None, n_codes=1000, v1=(), extra_ev=None):
     slots = np.arange(slot_lo, slot_hi + 1)
     b = pd.DataFrame({"slot": slots, "block_time": bt_of(slots)})
     codec = Codec()
     codec.names = [f"a{i}" for i in range(n_codes)]
     ev = {
         "CompletePumpAmmMigrationEvent": pd.DataFrame(list(migs), columns=["slot", "signature", "mint", "pool", "bonding_curve", "quote_mint"]),
-        "CreatePoolEvent": pd.DataFrame([(m[0], m[1], m[3], m[2], C.WSOL, 0) for m in migs],
-                                        columns=["slot", "signature", "pool", "base_mint", "quote_mint", "is_mayhem_mode"]),
-        "CreateEvent": pd.DataFrame(list(creates), columns=["slot", "signature", "mint", "creator", "user", "bonding_curve", "is_mayhem_mode", "quote_mint"]),
+        "CreatePoolEvent": pd.DataFrame([(m[0], m[1], m[3], m[2], C.WSOL, 0, 85 * 10**9, 206_900_000_000_000) for m in migs],
+                                        columns=["slot", "signature", "pool", "base_mint", "quote_mint", "is_mayhem_mode",
+                                                 "pool_quote_amount", "pool_base_amount"]),
+        "CreateEvent": pd.DataFrame([tuple(c) + (C.TOKEN_2022_PROGRAM, 0)[len(c) - 8:] for c in creates],
+                                    columns=["slot", "signature", "mint", "creator", "user", "bonding_curve", "is_mayhem_mode",
+                                             "quote_mint", "token_program", "is_cashback_enabled"]),
+        "CompleteEvent": empty(["slot", "signature", "mint"]),
+        "DepositEvent": empty(["slot", "signature", "pool", "lp_token_amount_out"]),
+        "WithdrawEvent": empty(["slot", "signature", "pool", "lp_token_amount_in"]),
+        "ExtendAccountEvent": empty(["slot", "signature", "account", "new_size"]),
         "InitBoostEvent": empty(["slot", "signature", "pool", "mint"]),
         "BoostBuyAndBurnEvent": boost if boost is not None else empty(["slot", "signature", "pool", "mint", "boost_vault_remaining"]),
     }
@@ -102,7 +109,7 @@ def make_tape(amm: pd.DataFrame, slot_lo: int, slot_hi: int, migs=(), creates=()
                 w=w if w is not None else empty(["slot", "src", "dst"]),
                 f=f if f is not None else empty(["slot", "block_time", "pool"]),
                 cf=cf if cf is not None else empty(["slot", "block_time", "creator"]),
-                ev=ev, schema_v1_slots=list(v1))
+                ev={**ev, **(extra_ev or {})}, schema_v1_slots=list(v1))
 
 
 POOL, MINT, CURVE = 1, 2, 3

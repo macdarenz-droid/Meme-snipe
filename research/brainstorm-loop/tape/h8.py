@@ -1,11 +1,17 @@
-"""H8 at trade size (research/brainstorm-loop/H8_AMENDMENT.md, frozen): the H8-eligible stratum for count
-rows 1-3, and the H8 capacity count row.
+"""H8 at trade size: the H8-eligible stratum for count rows 1-3, and the H8 capacity count row.
 
-H8 (packages/core/src/gates/hard.ts:286-315, policy.ts:205) rejects a pool unless its effective quote
-(vault + virtual reserves), valued in USD at the hourly SOL/USD, is at least max($15,000, 1,000 x trade size).
-Everything here reads as-of states only (Q14): the effective quote at the row's own decision or event point.
+Frozen texts: research/brainstorm-loop/H8_AMENDMENT.md and H8_AMENDMENT_2.md (the floor depends on the universe tag).
+Checked against packages/core/src/gates/hard.ts (H6, H8 with dust-at-migration, H11) and config/policy.ts (trial
+values) and config/research.ts (U2 window).
+- U2 (60-240 min after migration): max($15k, 1,000 x size), plus H11 (candle spike and the +5 min chase check).
+- U1 (1-14 days after migration): max($50k, 1,000 x size), plus H11's candle-spike check (Q26).
+- 4-24 h, under 60 min (H10) or over 14 days: not tradable without a new universe tag.
+- Always: H6 (no outstanding LP) and dust at migration (at least 5 SOL in the pool at migration).
+Everything reads as-of states only (Q14): trades and events at or before the point, and the hour-start SOL/USD close.
 """
 from __future__ import annotations
+
+from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -14,14 +20,25 @@ import rebuy as RB
 import rows as R
 from tapeio import WSOL, Tape
 
-SIZES_USD = (5, 20, 50)
+SIZES_USD = (5, 20, 50, 100, 200, 500, 1000, 10000)     # H8_AMENDMENT_2 item 4 adds $100 ... $10,000
+TRIAL_SIZE_USD = 5                                       # item 3: "tradable as the bot stands" is judged at $5 only
 FLOOR_MIN_USD = 15_000.0
+U1_FLOOR_USD = 50_000.0
 FLOOR_PER_USD_TRADED = 1_000.0
+U2_FROM_S, U2_TO_S = 60 * 60, 240 * 60
+U1_FROM_S, U1_TO_S = 24 * 3600, 14 * 24 * 3600
+DUST_AT_MIGRATION = 5 * 10**9                            # policy.gates.dustPoolMinAtMigration = 5 SOL
+CANDLE_SPIKE = 0.25                                      # candleSpikeBps 2500
+CANDLE_WINDOW_S = 3 * 60                                 # candleWindowMs
+CHASE_AFTER_S = 5 * 60                                   # chaseCheckAfterMs; chaseMaxAboveMigrationBps = 0
+SIZE_NOTES = {f"${z}": ("trial maximum: the bot as it stands" if z == TRIAL_SIZE_USD
+                        else "research line: needs the owner to raise maxNotional") for z in SIZES_USD}
 
 
 def hourly_px(minutes: pd.Series | None) -> dict:
     """{hour start (epoch s): SOL/USD}. The hour's value is the close of the 1-minute bar that ends at the hour
-    start (opens at hour start - 60 s), i.e. the last close known when the hour begins (Q23)."""
+    start (opens at hour start - 60 s), i.e. the last close known when the hour begins (Q23, confirmed by
+    COUNT_ROWS_AMENDMENT_3)."""
     if minutes is None or not len(minutes):
         return {}
     out = {}
@@ -35,17 +52,137 @@ def px_asof(hourly: dict, t) -> float:
     return hourly.get(int(t) // 3600 * 3600, np.nan)
 
 
-def floor_usd(size):
-    return max(FLOOR_MIN_USD, FLOOR_PER_USD_TRADED * size)
+def universe(age_s):
+    if age_s is None or not np.isfinite(age_s):
+        return "age_unknown"
+    if U2_FROM_S <= age_s <= U2_TO_S:
+        return "U2"
+    if U1_FROM_S <= age_s <= U1_TO_S:
+        return "U1"
+    if age_s < U2_FROM_S:
+        return "under_60min"
+    if age_s < U1_FROM_S:
+        return "4_24h"
+    return "over_14d"
 
 
-def eligible(eq_lamports, t, size, hourly) -> bool:
-    """True when the effective quote at time t, in USD at that hour's SOL/USD, meets H8's floor at `size`.
-    A missing price or effective quote is not eligible (missing evidence means no trade)."""
+def floor_usd(size, uni="U2"):
+    """liquidityFloor (hard.ts:285): max($15k, 1,000 x size), raised to $50k for U1. None outside U1/U2."""
+    if uni not in ("U1", "U2"):
+        return None
+    f = max(FLOOR_MIN_USD, FLOOR_PER_USD_TRADED * size)
+    return max(f, U1_FLOOR_USD) if uni == "U1" else f
+
+
+def eligible(eq_lamports, t, size, hourly, uni="U2") -> bool:
+    """The H8 floor alone: effective quote x the hour's SOL/USD >= the universe floor at `size`. A missing price,
+    effective quote or universe is not eligible (missing evidence means no trade)."""
     px = px_asof(hourly, t)
-    if not (np.isfinite(px) and eq_lamports is not None and np.isfinite(eq_lamports)):
+    fl = floor_usd(size, uni)
+    if fl is None or not (np.isfinite(px) and eq_lamports is not None and np.isfinite(eq_lamports)):
         return False
-    return eq_lamports / R.LAMPORTS * px >= floor_usd(size)
+    return eq_lamports / R.LAMPORTS * px >= fl
+
+
+class GateCtx:
+    """As-of H6, dust-at-migration, H11 and H8 checks for canonical pools on the tape."""
+
+    def __init__(self, tape: Tape, s: pd.DataFrame, hourly: dict):
+        self.tape, self.hourly = tape, hourly
+        self.pp = R.by_pool(s)
+        mig = tape.migrations.drop_duplicates("pool")
+        self.mig = {r.pool: (int(r.block_time), int(r.slot)) for r in mig.itertuples(index=False)}
+        pc = tape.pool_creates
+        self.mig_price, self.mig_quote = {}, {}
+        for r in pc.itertuples(index=False):
+            q, b = r.pool_quote_amount, r.pool_base_amount
+            self.mig_quote[r.pool] = q
+            self.mig_price[r.pool] = (q / b) if (q is not None and b) else None
+        self.lp = {p: (g["slot"].to_numpy(np.int64), g["lp_delta"].to_numpy(float).cumsum())
+                   for p, g in tape.lp_moves.sort_values("slot").groupby("pool")}
+        self._trades = {}
+
+    def trades(self, pool):
+        """Per pool swap (all rows, BOOST included, as the core candle book): time, slot, pre and post price on
+        effective reserves; post from the event (base +/- base amount, quote +/- lp-adjusted quote)."""
+        if pool not in self._trades:
+            g = self.pp.get(pool)
+            if g is None:
+                self._trades[pool] = None
+            else:
+                v = g["virtual_quote"].fillna(0)
+                qpre, bpre = g["pool_quote_pre"], g["pool_base_pre"]
+                sign = np.where(g["is_buy"], 1.0, -1.0)
+                qpost = qpre + sign * g["lp_adj"]
+                bpost = bpre - sign * g["base"]
+                pre = ((qpre + v) / bpre).where(bpre > 0)
+                post = ((qpost + v) / bpost).where(bpost > 0)
+                self._trades[pool] = {"bt": g["block_time"].to_numpy(), "slot": g["slot"].to_numpy(),
+                                      "pre": pre.to_numpy(float), "post": post.to_numpy(float)}
+        return self._trades[pool]
+
+    def h11(self, pool, t, st, uni):
+        """hard.ts h11: 1-minute candles (open = first trade's pre, high = max of pre/post, close = last post) from
+        trades at or before t; reject a candle in the last 3 min whose high is more than 25% above its open; for U2,
+        reject when the close of the last candle ending by m + 5 min is above the migration price, or no such candle."""
+        tr = self.trades(pool)
+        if tr is None:
+            return "h11_no_candles"
+        k = int(np.searchsorted(tr["bt"], t, side="right"))
+        k = min(k, int(np.searchsorted(tr["slot"], st, side="right")))
+        if k == 0:
+            return "h11_no_candles"
+        pre, post, bt = tr["pre"][:k], tr["post"][:k], tr["bt"][:k]
+        if not (np.isfinite(pre).all() and np.isfinite(post).all()):
+            return "h11_partial"
+        minute = bt // 60 * 60
+        recent = minute + 60 > t - CANDLE_WINDOW_S
+        for m0 in np.unique(minute[recent]):
+            idx = np.nonzero(minute == m0)[0]
+            op = pre[idx[0]]
+            hi = max(np.max(pre[idx]), np.max(post[idx]))
+            if hi > op * (1 + CANDLE_SPIKE):
+                return "h11_spike"
+        if uni != "U2":
+            return None
+        m = self.mig.get(pool)
+        pm = self.mig_price.get(pool)
+        if m is None or pm is None:
+            return "h11_no_migration_price"
+        at = m[0] + CHASE_AFTER_S
+        ok = (minute + 60 <= at)
+        if not ok.any():
+            return "h11_not_covered"
+        last = minute[ok].max()
+        if last + 60 <= m[0]:
+            return "h11_not_covered"
+        close = post[np.nonzero(minute == last)[0][-1]]
+        return "h11_chase" if close > pm else None
+
+    def check(self, pool, t, st, eq, size):
+        """'ok' or the first failing check, in the order: universe, dust, H6, H11, SOL/USD, H8 floor."""
+        m = self.mig.get(pool)
+        uni = universe(t - m[0]) if m is not None else "age_unknown"
+        if uni not in ("U1", "U2"):
+            return uni
+        q = self.mig_quote.get(pool)
+        if q is None:
+            return "dust_unknown"
+        if q < DUST_AT_MIGRATION:
+            return "dust_at_migration"
+        lp = self.lp.get(pool)
+        if lp is not None:
+            i = int(np.searchsorted(lp[0], st, side="right")) - 1
+            if i >= 0 and lp[1][i] > 0:
+                return "h6_lp_outstanding"
+        r = self.h11(pool, t, st, uni)
+        if r:
+            return r
+        if not np.isfinite(px_asof(self.hourly, t)):
+            return "no_sol_usd"
+        if eq is None or not np.isfinite(eq):
+            return "no_effective_quote"
+        return "ok" if eligible(eq, t, size, self.hourly, uni) else f"below_{uni}_floor"
 
 
 # ------------------------------------------------------------------ stratum reports for rows 1-3
@@ -53,44 +190,52 @@ def no_price(times, hourly):
     return int(sum(1 for t in times if not np.isfinite(px_asof(hourly, t))))
 
 
-def dev_zero_stratum(dz: pd.DataFrame, days, hourly):
+def _reasons(ctx, rows, size):
+    """rows: iterable of (pool, t, st, eq). Returns (mask, Counter of reasons)."""
+    res = [ctx.check(p, t, st, q, size) for p, t, st, q in rows]
+    return np.array([r == "ok" for r in res], bool), Counter(res)
+
+
+def dev_zero_stratum(dz: pd.DataFrame, days, hourly, ctx=None):
     used = dz[dz["dropped"] == ""] if len(dz) else dz
-    out = {"rows_without_sol_usd": no_price(used["block_time"], hourly) if len(used) else 0}
+    out = {"rows_without_sol_usd": no_price(used["block_time"], hourly) if len(used) else 0, "size_notes": SIZE_NOTES}
     for size in SIZES_USD:
-        if not len(dz) or "eff_quote" not in dz:
+        if not len(used) or "eff_quote" not in used or ctx is None:
             out[f"${size}"] = R.dev_summary(dz.iloc[:0] if len(dz) else dz, days)
             continue
-        ok = (dz["dropped"] == "").to_numpy() & np.array(
-            [eligible(q, t, size, hourly) for q, t in zip(dz["eff_quote"], dz["block_time"])], bool)
-        out[f"${size}"] = R.dev_summary(dz[ok], days)
+        ok, why = _reasons(ctx, zip(used["pool"], used["block_time"], used["slot"], used["eff_quote"]), size)
+        out[f"${size}"] = {**R.dev_summary(used[ok], days), "h8_checks": dict(why)}
     return out
 
 
-def seat_drift_stratum(sd: pd.DataFrame, hourly):
-    """Graduates whose effective quote at the entry point (m + 60 min) meets the floor. Lone/busy keep the
-    terciles of the full row (Q24)."""
+def seat_drift_stratum(sd: pd.DataFrame, hourly, ctx=None):
+    """Graduates whose pool passes the checks at the entry point (m + 60 min, U2). Lone/busy keep the terciles
+    of the full row (Q24)."""
     used = sd[sd["dropped"] == ""] if len(sd) else sd
-    out = {"rows_without_sol_usd": no_price(used["m_time"] + 3600, hourly) if len(used) else 0}
+    out = {"rows_without_sol_usd": no_price(used["m_time"] + 3600, hourly) if len(used) else 0, "size_notes": SIZE_NOTES}
     for size in SIZES_USD:
-        if not len(sd) or "w1_eff_quote" not in sd:
+        if not len(used) or "w1_eff_quote" not in used or ctx is None:
             out[f"${size}"] = R.seat_summary(sd.iloc[:0] if len(sd) else sd, sd.iloc[:0] if len(sd) else sd)
             continue
-        el = pd.Series([eligible(q, m + 3600, size, hourly) for q, m in zip(sd["w1_eff_quote"], sd["m_time"])],
-                       index=sd.index)
-        sub = sd[el]
-        ok = sub[sub["dropped"] == ""]
-        out[f"${size}"] = R.seat_summary(sub, ok)
+        pts = [(p, m + 3600, RB.last_block_slot(ctx.tape, m + 3600), q)
+               for p, m, q in zip(used["pool"], used["m_time"], used["w1_eff_quote"])]
+        ok, why = _reasons(ctx, pts, size)
+        sub = used[ok]
+        out[f"${size}"] = {**R.seat_summary(sub, sub), "h8_checks": dict(why)}
     return out
 
 
-def rebuy_stratum(tape: Tape, exits, pts, prs, hourly):
-    out = {"rows_without_sol_usd": no_price(pts["t"], hourly) if len(pts) else 0}
+def rebuy_stratum(tape: Tape, exits, pts, prs, hourly, ctx=None):
+    out = {"rows_without_sol_usd": no_price(pts["t"], hourly) if len(pts) else 0, "size_notes": SIZE_NOTES}
     for size in SIZES_USD:
-        el = [eligible(q, t, size, hourly) for q, t in zip(pts["eff_quote"], pts["t"])] if len(pts) else []
-        p = pts[np.asarray(el, bool)] if len(pts) else pts
+        if not len(pts) or ctx is None:
+            out[f"${size}"] = RB.summarise(tape, exits, pts.iloc[:0], prs.iloc[:0])
+            continue
+        ok, why = _reasons(ctx, zip(pts["pool"], pts["t"], pts["decision_slot"], pts["eff_quote"]), size)
+        p = pts[ok]
         keys = set(zip(p["pool"], p["t"]))
         q = prs[[k in keys for k in zip(prs["pool"], prs["t"])]] if len(prs) else prs
-        out[f"${size}"] = RB.summarise(tape, exits, p, q)
+        out[f"${size}"] = {**RB.summarise(tape, exits, p, q), "h8_checks": dict(why)}
     return out
 
 

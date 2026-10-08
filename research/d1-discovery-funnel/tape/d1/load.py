@@ -130,7 +130,11 @@ T_COLS = ["slot", "block_time", "tx_idx", "outer_ix", "inner_ix", "mint", "kind"
 W_COLS = ["slot", "block_time", "from", "to"]
 F_COLS = ["slot", "block_time", "venue", "side", "err_class", "pool_or_curve"]
 CF_COLS = ["slot", "block_time", "creator"]
-E_EVENTS = ("CreateEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent", "InitBoostEvent", "BoostBuyAndBurnEvent")
+E_EVENTS = ("CreateEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent", "InitBoostEvent", "BoostBuyAndBurnEvent",
+            # H8_AMENDMENT_2 gates: H9 (graduation time), H6 (LP outstanding), H17 (pool account size)
+            "CompleteEvent", "DepositEvent", "WithdrawEvent", "ExtendAccountEvent")
+_NUMERIC_EVENT_FIELDS = ("is_mayhem_mode", "boost_vault_remaining", "is_cashback_enabled", "pool_quote_amount",
+                         "pool_base_amount", "lp_token_amount_out", "lp_token_amount_in", "new_size")
 SOL_QUOTES = {C.WSOL, C.SYSTEM_PROGRAM}
 
 
@@ -341,11 +345,16 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
 
 def _code_events(name: str, frames: list, codec: Codec) -> pd.DataFrame:
     spec = {
-        "CreateEvent": ["mint", "creator", "user", "bonding_curve", "is_mayhem_mode", "quote_mint", "token_program"],
+        "CreateEvent": ["mint", "creator", "user", "bonding_curve", "is_mayhem_mode", "quote_mint", "token_program",
+                        "is_cashback_enabled"],
         "CompletePumpAmmMigrationEvent": ["mint", "pool", "bonding_curve", "quote_mint"],
-        "CreatePoolEvent": ["pool", "base_mint", "quote_mint", "is_mayhem_mode"],
+        "CreatePoolEvent": ["pool", "base_mint", "quote_mint", "is_mayhem_mode", "pool_quote_amount", "pool_base_amount"],
         "InitBoostEvent": ["pool", "mint"],
         "BoostBuyAndBurnEvent": ["pool", "mint", "boost_vault_remaining"],
+        "CompleteEvent": ["mint"],
+        "DepositEvent": ["pool", "lp_token_amount_out"],
+        "WithdrawEvent": ["pool", "lp_token_amount_in"],
+        "ExtendAccountEvent": ["account", "new_size"],
     }[name]
     if not frames:
         return pd.DataFrame({c: pd.Series(dtype=np.int64) for c in ["slot", "signature"] + spec})
@@ -355,7 +364,7 @@ def _code_events(name: str, frames: list, codec: Codec) -> pd.DataFrame:
             df[c] = np.nan
     out = pd.DataFrame({"slot": df.slot.astype(np.int64).to_numpy(), "signature": df.signature.to_numpy()})
     for c in spec:
-        if c in ("is_mayhem_mode", "boost_vault_remaining"):
+        if c in _NUMERIC_EVENT_FIELDS:
             out[c] = _int(df[c])
         elif c in ("quote_mint", "token_program"):
             out[c] = df[c].to_numpy()

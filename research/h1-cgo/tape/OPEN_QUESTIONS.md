@@ -92,5 +92,22 @@
 - **H3.** For each size, the stratum keeps the entries of the frozen rule whose pool passes H8 at that size, priced at that size and held 60 min. Its baseline for lift is the H8-eligible eligible points at the same size. It is tradable as the bot stands only if some size has at least 300 trades and a mean above 0. Otherwise the note reads "this works only in pools below H8's floor".
 - **H4. Count row** (in `gate0.json`). H8-eligible pool-hours and graduates per day at each size, on two bases: decision points with a pool state, and H1-CGO-eligible points. `--sol-usd` defaults to the committed folder.
 
+## Readings for H8_AMENDMENT_2 (open until the design owner confirms; each is the conservative one)
+Code: `h8.universe_tag/floor_micro_usd/tradable/count_rows`, `MintStream._candle/h11`, `features.lp_events_of`, `stats.h8_stratum`.
+- **H5. Universe tag by age.** Age is the decision hour − the migration time.
+  - U2: 60 ≤ age < 240 min. The end is excluded, which gives fewer tradable points.
+  - U1: 24 h ≤ age ≤ 14 days (ARCHITECTURE §3.2).
+  - Otherwise there is no tag, and the point is not tradable.
+  - The floors are max($15k, 1,000 × size), raised to $50k on U1 (hard.ts `liquidityFloor`).
+- **H6. H11 as the bot runs it** (hard.ts `h11`, producer.ts `#addTrade`):
+  - **Candles.** 1-minute candles of each pool trade's pre- and post-trade price on effective reserves, built as of the decision.
+  - **Spike.** A spike rejects: a known candle ending inside the last 3 minutes before the decision hour whose high is more than 25% above its open.
+  - **Chase (U2 only).** It rejects when the close of the last candle ending by migration + 5 min is above the migration price, which is the migration pool's `CreatePoolEvent` quote ÷ base. It also rejects when no candle lies between migration and + 5 min, or no `CreatePoolEvent` was seen.
+  - **Out-of-order trades.** A trade stamped before the latest candle makes the candles partial, and both checks then reject (fail closed).
+- **H7. H6: LP outstanding.** Migration LP is burned, so a canonical pool starts at 0. As of the decision slot, outstanding = Σ `DepositEvent.lp_token_amount_out` − Σ `WithdrawEvent.lp_token_amount_in` on the pool, and any value other than 0 rejects. The bot reads the LP mint's supply instead. The tape has no LP mint supply outside these events, so a burn made outside a withdrawal is not seen.
+- **H8. Tradable.** At $5 only: at least 300 validation trades in the $5 stratum with a mean above 0. The $20 and $50 rows carry "research: needs the owner to raise maxNotional". There is no longer any flag under the flat floor.
+- **H9. Count row.** Sizes $5, $20, $50, $100, $200, $500, $1,000 and $10,000, each on its universe floor with H6, H11 and the dust check, on the two bases of H4.
+  - Per day, it also counts distinct canonical pools whose latest trade, as of a decision point that day, charged no creator fee: the creator is the default key, or the creator fee bps is 0.
+
 ## Not done here
 25. §9.4 asks for the code, seeds and input hashes to be committed before validation days are read. `features_meta.json` and `frozen.json` record the sha256 of every input file and source file. The commit itself is for the supervisor (this builder runs no git).

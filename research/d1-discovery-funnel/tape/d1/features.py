@@ -12,6 +12,7 @@ import pandas as pd
 
 from . import config as C
 from .clusters import who_shares
+from .gates import GATES, gate_frame
 from .holders import holder_features
 from .load import Tape
 from .pool_state import PoolBook, flow_rows
@@ -168,14 +169,19 @@ def price_flow_pool_protocol(tape: Tape, book: PoolBook, pts: pd.DataFrame, cloc
     return pd.concat(frames) if frames else pd.DataFrame()
 
 
-def compute_features(tape: Tape, book: PoolBook, pts: pd.DataFrame, clock: Clock = None) -> pd.DataFrame:
+def compute_features(tape: Tape, book: PoolBook, pts: pd.DataFrame, clock: Clock = None,
+                     funders: dict = None) -> pd.DataFrame:
     """Features for the eligible decision points of `pts` (index preserved)."""
     clock = clock or Clock(tape)
     el = pts[pts.eligible]
     if len(el) == 0:
-        return pd.DataFrame(columns=["pool", "tau"] + list(C.FEATURES))
+        return pd.DataFrame(columns=["pool", "tau"] + list(C.FEATURES) + list(GATES))
     base = price_flow_pool_protocol(tape, book, el, clock)
     who = who_shares(tape, book, el, base[["_iD", "_l15"]])
-    hold = holder_features(tape, book, el)
-    out = base.join(who).join(hold)
-    return out[["pool", "tau"] + list(C.FEATURES)]
+    hold = holder_features(tape, book, el, funders)
+    gates = gate_frame(tape, book, el, clock)
+    out = base.join(who).join(hold).join(gates)
+    # H8_AMENDMENT_2 / AMENDMENT_3: the bot's gates as of d, kept beside the 28 features (never a search feature)
+    for g in GATES:
+        out[g] = out[g].fillna(-1).astype(np.int64)
+    return out[["pool", "tau"] + list(C.FEATURES) + list(GATES)]
