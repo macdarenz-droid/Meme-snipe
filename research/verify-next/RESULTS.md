@@ -60,7 +60,7 @@ Each row is counted once, under the status that decides its spec question.
 - corrected (7 rows): V5, V9, V17, V20, V21, V22, V25
 - UNVERIFIED (7 rows): V3, V4, V7, V15, V18, V23, V26
 
-Rows V8, V12, V21 and V26 carry one UNVERIFIED sub-part each (V8: no numeric threshold; V12: the runner's gh version; V21: the date the sysvar changed; V26: `__Host-` on plain localhost). Counting those sub-parts, UNVERIFIED parts total 11.
+Rows V8, V12 and V21 are counted above as confirmed or corrected but also carry one UNVERIFIED sub-part each (V8: no numeric threshold; V12: the runner's gh version; V21: the date the sysvar changed), so 10 UNVERIFIED parts in all.
 
 ## Changes to a spec
 
