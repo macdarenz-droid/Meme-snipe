@@ -3022,7 +3022,7 @@ assert jobs["assemble"]["steps"][-1]["env"]["GH_TOKEN"] == "${{ secrets.DATA_STO
 steps = jobs["scan"]["steps"]; names = [s.get("id") or s.get("name") for s in steps]
 assert "Store this day's volume hours" in names and names.index("store") < names.index("Store this day's volume hours") < names.index("Storage check after the batch"), names
 sc = steps[names.index("Storage check after the batch")]
-assert sc["if"] == "steps.store.outcome == 'success' && inputs.source != 'helius'", sc
+assert sc["if"] == "steps.published.outputs.complete != 'true' && steps.store.outcome == 'success' && inputs.source != 'helius'", sc
 head = open(sys.argv[1]).read().split("\nname:")[0]
 assert "contents: write for this" not in head and "private store" in head, "header"
 ac = yaml.safe_load(open(sys.argv[2]))
