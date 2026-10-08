@@ -26,6 +26,10 @@ nice -n 19 python3 g1.py gate   --units /home/user/tape-cache --days 2026-09-10 
 nice -n 19 python3 g1.py freeze --out out/A
 ```
 
+## Guards
+- `find_units` refuses unless each day's units equal the rows of the frozen Step A plan (`research/shared-tape/stepa-plan.txt`, sha256 checked) with no gap. `--dev-subset` (development only) accepts part of a day; `freeze`, `score` and `outcome` with returns refuse a manifest made that way.
+- `decide` writes `manifest.json` (plan sha, units, sha256 of every input table, code hash of `g1.py`, `g1lib/*.py` and `fixed_costs.*`, decisions sha). `gate`, `freeze`, `outcome` and `score` refuse unless their units, inputs, code and files match it. `freeze` copies the hashes into `frozen.json` and needs exactly 09-10 and 09-11. `score` refuses unless the code hash equals frozen.json's and the role's decisions and trades cover exactly its days (validation 09-07, 09-08, 09-09; discovery 09-10, 09-11), and the validation verdict needs all three days present with a mean above 0.
+
 ## Order of work
 1. A reviewer passes this code. Until then only `checks`, `decide`, `gate` and `outcome --counts-only` run on real data, and no return is printed.
 2. Step A complete (both discovery days, every unit): `checks`, `decide`, `gate`. If G1-0 kills, G1 closes with no return read; the amendment arms close on their own gate failures.
@@ -41,7 +45,7 @@ The gate's per-day counts assume whole days: run it once every unit of a day is 
 - `tests/test_pipeline.py::test_planted_future_marker` plants a SOL link, a mayhem-flagged trade by a new holder and a token transfer one slot after the decision and requires every decision and feature to be unchanged, and the same rows at the decision slot to change them. Two deliberate leaks (holdings replayed one slot late; links read without their slot) both fail it.
 
 ## Tests
-`cd research/g1-boost-inventory/tape && python3 -m unittest discover -s tests` (synthetic tables only; about 3 s).
+`cd research/g1-boost-inventory/tape && python3 -m unittest discover -s tests` (synthetic tables only; about 3 s). Each review fix was checked by reverting it: the matching test fails.
 
 ## Files
 - `g1.py`: command line.
@@ -104,3 +108,9 @@ The gate's per-day counts assume whole days: run it once every unit of a day is 
 | A3 OQ-14 cap headroom per BOOST slice, by slice order and slot after m (descriptive) | `gate.cap_headroom`, `gate.headroom_summary` |
 | A3 OQ-6 rent by date: 6,960 / 6,333 / 5,080 lamports per byte | `params.RENT_LAMPORTS_PER_BYTE`, `costs.token_account_rent` |
 | A3 OQ-16 fallback tier at effective quote × base_supply ÷ base | `market.fallback_tier`, `Market.pool_fees` |
+| Review 1: plan, units, manifest and score guards | `guard.load_plan`, `guard.check_units`, `guard.verify`, `guard.check_score`, `load.find_units`; `tests/test_review.py::Guards` |
+| Review 2: Z rows by slot at or before the cutoff | `features.FeatureContext.feature_z`; `tests/test_pipeline.py::test_z_counts_rows_by_slot` |
+| Review 3: all validation days present, each mean > 0 | `stats.primary(required_days=…)`; `tests/test_review.py::RequiredDays` |
+| Review 4: per-day minimum for A1 (c) and A2 (d) (OQ-27) | `gate.hc_gate`, `gate.cap_gate`; `tests/test_review.py::PerDayMinimum` |
+| Review 5: catchable excludes dropped-by-time | `gate.g1_0`; `tests/test_pipeline.py::test_gate` |
+| Review 6: BOOST and buyback rows without the protocol column | `market.Market.__init__` (`is_boost`, `is_buyback`, `is_protocol`), `flows.migration_flows`; `tests/test_pipeline.py::test_gate` |
