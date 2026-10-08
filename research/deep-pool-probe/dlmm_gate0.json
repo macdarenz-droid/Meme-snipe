@@ -1,0 +1,193 @@
+{
+ "source": "DexScreener token-pairs/v1/solana/<mint>, fetched 2026-10-08 about 04:05Z; Meteora DLMM pairs quoted in SOL; liquidity.quote = SOL side",
+ "rule": "Gate 0 of design C in research/EDGE_DIALOGUE.md: fewer than 10 coins with >= 50 SOL closes C",
+ "universe": "the 41 A+B coins of research/deep-pool-probe/eligible.json",
+ "coins_with_dlmm_sol_pool": 23,
+ "coins_passing": 12,
+ "coins": [
+  {
+   "mint": "9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump",
+   "symbol": "ANSEM",
+   "dlmm_sol_pools": 5,
+   "best_pool": "6e7V9eegCHw997T72MxgwwJipZ6GJyZF8NvjkzT1rvpN",
+   "best_pool_sol_side": 4421.681,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "Ai66LHZG9MCzg1WKdawwqduVAXpNDUuV8M3uyq5ppump",
+   "symbol": "CATE",
+   "dlmm_sol_pools": 8,
+   "best_pool": "qhJ7kLjrE68sbDF11CpwMt3P9rqiwZtretM5ZzeAX6o",
+   "best_pool_sol_side": 4142.972,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "MukLDtJ8Cx9DxLbeyLRSWPSposTMWuwHANbuaudpump",
+   "symbol": "OTC",
+   "dlmm_sol_pools": 3,
+   "best_pool": "Ekm4LYkihEdQgZx2UReDMJ3eCDDjExPQLG94WfWmfyWr",
+   "best_pool_sol_side": 1254.676,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "Cm6fNnMk7NfzStP9CZpsQA2v3jjzbcYGAxdJySmHpump",
+   "symbol": "Buttcoin",
+   "dlmm_sol_pools": 2,
+   "best_pool": "FmMXv9kLxzn1vaJXMD4rnWumeYVchtwinyVJ9zxBJqjM",
+   "best_pool_sol_side": 1185.417,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "98kfF7rmsg1QDUEoCqNE7g7M1FdrTt92TEp2CLzypump",
+   "symbol": "PAID",
+   "dlmm_sol_pools": 6,
+   "best_pool": "Gc5hVCBydc6k3Z7oc2cQEW4GThFQi2Fqk5HfKABqa2q8",
+   "best_pool_sol_side": 567.68,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "CTPoyCwkjMvoJwU4xvZZqoD8tiYk6yDchySiN5gGpump",
+   "symbol": "fone",
+   "dlmm_sol_pools": 5,
+   "best_pool": "fAeDy2q7ZjZZZFt6Q1FtbHaCU5dtLEPmYcwcwfAexNA",
+   "best_pool_sol_side": 489.016,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "Ge87EtsjwRQbHaqQmKRno69RFTwh9bfSsm99XNxTpump",
+   "symbol": "Jimothy",
+   "dlmm_sol_pools": 3,
+   "best_pool": "E3SotafntrgRg9XjppxqoJWSR4GUaJV7sA8u4a89rYo6",
+   "best_pool_sol_side": 403.76,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "J8PSdNP3QewKq2Z1JJJFDMaqF7KcaiJhR7gbr5KZpump",
+   "symbol": "TripleT",
+   "dlmm_sol_pools": 1,
+   "best_pool": "3WY9N19nTtPSqrbWTeaFn2HfJ9MfdyLRSrRvy97GnDgY",
+   "best_pool_sol_side": 316.585,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "BCdwQBAn8dYB5YjTsoB6TdHAWokxv28k2oZUodERpump",
+   "symbol": "MANIFEST",
+   "dlmm_sol_pools": 2,
+   "best_pool": "b7eB5J3Mb8uA2G6fXe2BXuRsj9REqz9F6NTNDTpvRxy",
+   "best_pool_sol_side": 124.889,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "A13oRB9FFaiUjfi6LdCg6p9ka1u8SfGkUFs4SKvPpump",
+   "symbol": "TOAD",
+   "dlmm_sol_pools": 2,
+   "best_pool": "AFT9ZhYVHMRQrnntMYnqVrKvVrAxpaspCEMBXQNVMwLo",
+   "best_pool_sol_side": 114.135,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "9Pfync3ejPC9eHqVzq3nYQJAhyhjqpnB9UsaSfLxpump",
+   "symbol": "KET",
+   "dlmm_sol_pools": 3,
+   "best_pool": "2TD1fMPg2w7Hjt8bASSdxi92YFNQFgvdznqVApe3NGpn",
+   "best_pool_sol_side": 114.03,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "6NwarBvDkXhByqVp2Qkq5i9XbtA2B3Bwe8SWGu9vpump",
+   "symbol": "Cupsey",
+   "dlmm_sol_pools": 3,
+   "best_pool": "3S86WtfvZroac8tGH3h1bKZmPK7uaZWNCg2U6kZH9vvd",
+   "best_pool_sol_side": 81.71,
+   "passes_50_sol": true
+  },
+  {
+   "mint": "42cXQvAAr7hcPBPWAS4ocVtDyeJ4Fa6gRR2uG4gppump",
+   "symbol": "TBB",
+   "dlmm_sol_pools": 2,
+   "best_pool": "Gc2UacoW7uzE8yYGzvxbNiKV6zHKitNb67a8meZMKsKv",
+   "best_pool_sol_side": 40.812,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "zj1jpp7QMveWHLs61vL9KMZf254KvW7j4AAmBF8ry2k",
+   "symbol": "BULLSHIT",
+   "dlmm_sol_pools": 2,
+   "best_pool": "3vzCDcWV1gWExDYtd2YGtoAD1wvMNv9ceiGzFs7ZrnpM",
+   "best_pool_sol_side": 36.575,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "utLyQQCPvjuCc6zeaXdsFeEC3JNdxKS3vxaZWoGdoge",
+   "symbol": "OGDOGE",
+   "dlmm_sol_pools": 1,
+   "best_pool": "9fDhNADFNAfQKUmh4dnE2FTbt8PWsaJ4jZKPyqabz5tX",
+   "best_pool_sol_side": 35.777,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "6nR8wBnfsmXfcdDr1hovJKjvFQxNSidN6XFyfAFZpump",
+   "symbol": "Clash",
+   "dlmm_sol_pools": 1,
+   "best_pool": "5PZxdYK5FjV3k2Hg53wXM7hSsYytELEikWm9Pj9nUBPx",
+   "best_pool_sol_side": 19.405,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "Tqj8yFmagrg7oorpQkVGYR52r96RFTamvWfth9bpump",
+   "symbol": "KINS",
+   "dlmm_sol_pools": 2,
+   "best_pool": "3XrDjwbifkR5ezES5M5BZCxNHjWdZP2c4krG7VyYJrWR",
+   "best_pool_sol_side": 16.583,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "HcfnJxLov6tY8i1dq9uYRRZKCvxADPpovcfkyXzdpump",
+   "symbol": "Chonketha",
+   "dlmm_sol_pools": 1,
+   "best_pool": "F18pMsjajVztK8HPJThChK9ecSbKMUhAbZtX85Gyg6Wp",
+   "best_pool_sol_side": 15.904,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "FZqdw6oSDCbHtKYxmhnfbi97SnyVy8jaYpdCoMrrjKa2",
+   "symbol": "Pistacio",
+   "dlmm_sol_pools": 1,
+   "best_pool": "5Mk7BiBhs1uh9YVpLs5hv6L9kXv5e466LrT3m3MYm1cZ",
+   "best_pool_sol_side": 10.009,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "E3i7sTY5QYEBh3itepnomZQt7Eh5kzmHFk1vkm2pump",
+   "symbol": "cc",
+   "dlmm_sol_pools": 1,
+   "best_pool": "DuHBVqxU67AQyobt65evwcLWjgAQZyAMGLC2MLGaTGvv",
+   "best_pool_sol_side": 6.679,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "739dnZEG4yaBWFsY8L8ZwrfhGG6dhtCSercW8Umspump",
+   "symbol": "CLAW",
+   "dlmm_sol_pools": 1,
+   "best_pool": "6BBQMacaBUofjVhWarQ2e54jWt1h2aaMT7PqDM9CAR1p",
+   "best_pool_sol_side": 2.025,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "3B1ijcocM5EDga6XxQ7JLW7weocQPWWjuhBYG8Vepump",
+   "symbol": "BP",
+   "dlmm_sol_pools": 1,
+   "best_pool": "BMjAaKH6QnfRN9ZwwH7a4ikownwXjXTKMsWrBT956CJE",
+   "best_pool_sol_side": 1.983,
+   "passes_50_sol": false
+  },
+  {
+   "mint": "4ikwYoNvoGEwtMbziUyYBTz1zRM6nmxspsfw9G7Bpump",
+   "symbol": "crypto",
+   "dlmm_sol_pools": 1,
+   "best_pool": "3aL2FyjoYWnaDRYhCxQWjoZKZHfceqQoTJDsJqaKqjB8",
+   "best_pool_sol_side": 0.463,
+   "passes_50_sol": false
+  }
+ ]
+}
