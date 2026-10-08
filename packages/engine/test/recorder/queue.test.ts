@@ -173,7 +173,8 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
     q.tick(ms(T0 + 60_000));
     const [c] = q.take(100, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
     assert.equal(c!.successfulPolls, 4);
-    assert.equal(c!.changedPolls, 2);
+    // The first poll of a watch has no previous hash, so it is not a change (ruling 18): only h1 → h2 is.
+    assert.equal(c!.changedPolls, 1);
   });
 
   it('the encoder writes a record when only the stream or the class changed, and nothing when all three match (ruling 16)', () => {
@@ -250,7 +251,8 @@ describe('poll counts (logic 3)', () => {
     const counts = q.take(100, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
     const by = (pool: string): unknown[] => counts.filter((p) => p.poolId === pool).map((p) => [p.minuteStartMs, p.successfulPolls, p.changedPolls, p.failedPolls]);
     assert.deepEqual(by('quiet'), [[T0, 0, 0, 0], [T0 + 60_000, 0, 0, 0], [T0 + 120_000, 0, 0, 0]]);
-    assert.deepEqual(by('busy'), [[T0, 2, 1, 1], [T0 + 60_000, 1, 1, 0], [T0 + 120_000, 0, 0, 0]]);
+    // The first poll of a watch is not a change (ruling 18).
+    assert.deepEqual(by('busy'), [[T0, 2, 0, 1], [T0 + 60_000, 1, 1, 0], [T0 + 120_000, 0, 0, 0]]);
     assert.equal(q.stats().latePolls, 1);
   });
 
@@ -271,7 +273,7 @@ describe('poll counts (logic 3)', () => {
     q.append(snap('a', 2, T0 + 125_000));
     q.tick(ms(T0 + 30 * 60_000));
     const counts = q.take(10_000, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
-    assert.deepEqual(counts, [{ poolId: 'a', minuteStartMs: T0, successfulPolls: 2, changedPolls: 2, failedPolls: 0, priorityClass: 'normal', skippedMinutes: 30 }]);
+    assert.deepEqual(counts, [{ poolId: 'a', minuteStartMs: T0, successfulPolls: 2, changedPolls: 1, failedPolls: 0, priorityClass: 'normal', skippedMinutes: 30 }]);
     assert.equal(q.stats().skippedPollMinutes, 30);
     // Within pollCatchUpMaxMinutes, minute by minute as before.
     q.append(snap('a', 3, T0 + 30 * 60_000 + 1));

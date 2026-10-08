@@ -54,11 +54,12 @@ describe('watched pools (ruling 1)', () => {
     let maxTick = 0;
     let pool = 0;
     let t: number = T0;
-    // Each minute 50 new pools appear, each polled once a second for 5 s, then never again; 2,000 minutes.
+    // Every 2 minutes 50 new pools appear, each polled once a second for 5 s, then never again: by the next wave the
+    // last ones have been idle for over 60 s (ruling 17). 4,000 minutes.
     while (pool < 100_000) {
       const fresh = Array.from({ length: 50 }, () => `pool${pool++}`);
       for (let s = 0; s < 5; s++) for (const p of fresh) q.append(snap(p, s, t + s * 1_000));
-      t += 60_000;
+      t += 120_000;
       const before = q.stats().recordsTotal.poll_counts.written + q.stats().droppedTotal.poll_counts + q.stats().queueDepth;
       q.tick(ms(t));
       const after = q.stats().recordsTotal.poll_counts.written + q.stats().droppedTotal.poll_counts + q.stats().queueDepth;
@@ -71,8 +72,8 @@ describe('watched pools (ruling 1)', () => {
     assert.ok(maxWatched <= cap, `watched ${maxWatched}`);
     assert.ok(st.acceptedHashes <= cap && st.encoderStates <= 2 * cap, `hashes ${st.acceptedHashes}, encoder ${st.encoderStates}`);
     assert.ok(maxTick <= cap * DEFAULT_CONFIG.pollCatchUpMaxMinutes, `one tick wrote ${maxTick}`);
-    // Every pool that left made way at the cap (no poll this minute) or went idle; none was refused, since each new
-    // wave arrives a minute after the last one polled (ruling 12).
+    // Every pool that left made way at the cap (idle by elapsed time) or went idle in tick(); none was refused, since
+    // each new wave arrives after the last one has been idle for over 60 s (ruling 17).
     assert.ok(st.capUnwatched > 0, 'the cap was reached and pools made way');
     assert.equal(st.capUnwatched + st.idleUnwatched, 100_000 - st.watchedPools);
     assert.equal(st.rejectedTotal.E_POOL_CAP, 0);
@@ -160,5 +161,79 @@ describe('the cap makes way (round 3, ruling 12)', () => {
     assert.equal(q.append(snap('pos', 1, T0 + 10 * 60_000 + 1, 'pool_snapshot_position', 'position')), 'queued');
     assert.equal(q.stats().watchedPools, DEFAULT_CONFIG.maxWatchedPools + 1);
     assert.equal(q.stats().rejectedTotal.E_POOL_CAP, 0);
+  });
+});
+
+describe('idle by elapsed time (round 4, rulings 17-20)', () => {
+  const pollCounts = (q: RecorderQueue): Array<Record<string, unknown>> =>
+    q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
+
+  it("the red team's repro: 30 pools at 1 Hz, 30 at 0.1 Hz, cap 60, a candidate at minute start + 1 s", () => {
+    const q = new RecorderQueue();
+    const counts: Array<Record<string, unknown>> = [];
+    let liveRefused = 0;
+    const start = T0 + 60_000;
+    // Three minutes of steady polling; states never change.
+    for (let sec = 0; sec < 180; sec++) {
+      const t = start + sec * 1_000;
+      for (let i = 0; i < 30; i++) if (typeof q.append(snap(`fast${i}`, 1, t)) === 'object') liveRefused++;
+      for (let i = 0; i < 30; i++) if ((sec + i) % 10 === 0 && typeof q.append(snap(`slow${i}`, 1, t)) === 'object') liveRefused++;
+      // After a warm-up minute (all 60 pools watched), a new candidate at minute start + 1 s, every minute.
+      if (sec >= 60 && sec % 60 === 1) q.append(snap(`cand${sec}`, 1, t));
+      q.tick(ms(t));
+      counts.push(...pollCounts(q));
+    }
+    q.tick(ms(start + 181_000));
+    counts.push(...pollCounts(q));
+    const st = q.stats();
+    assert.equal(st.capUnwatched, 0, 'no live pool was evicted');
+    assert.equal(liveRefused, 0, 'no live pool was refused');
+    // Each candidate finds no idle pool, so it alone is refused and counted.
+    assert.equal(st.watchedPools, 60);
+    assert.equal(st.rejectedTotal.E_POOL_CAP, 2);
+    const keys = counts.map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+    assert.equal(new Set(keys).size, keys.length, 'no (pool, minute) written twice');
+    assert.equal(counts.reduce((a, p) => a + (p.changedPolls as number), 0), 0, 'no false changedPolls');
+  });
+
+  it('a truly idle pool makes way, judged by its own interval; a position pool never does', () => {
+    const q = new RecorderQueue({ config: { maxWatchedPools: 3 } });
+    // a: 1 Hz, then silent for 61 s (idle: max(60 s, 3 x 1 s)). b: every 30 s, last 61 s ago (not idle: 3 x 30 s).
+    q.append(snap('a', 1, T0));
+    q.append(snap('a', 1, T0 + 1_000));
+    q.append(snap('b', 1, T0 - 29_000));
+    q.append(snap('b', 1, T0 + 1_000));
+    q.append(snap('p', 1, T0 + 1_000, 'pool_snapshot_position', 'position'));
+    assert.equal(q.append(snap('new1', 1, T0 + 62_000)), 'queued');
+    let st = q.stats();
+    assert.equal(st.capUnwatched, 1);
+    assert.deepEqual(q.append(snap('a', 2, T0 + 62_500)), { rejected: 'E_POOL_CAP' }, 'a was the one evicted');
+    // Five minutes later b and new1 are idle, the position pool is not: two new pools take b's and new1's places.
+    assert.equal(q.append(snap('new2', 1, T0 + 400_000)), 'queued');
+    assert.equal(q.append(snap('new3', 1, T0 + 400_001)), 'queued');
+    assert.deepEqual(q.append(snap('new4', 1, T0 + 400_002)), { rejected: 'E_POOL_CAP' });
+    st = q.stats();
+    assert.equal(st.capUnwatched, 3);
+    assert.equal(q.append(snap('p', 1, T0 + 400_003, 'pool_snapshot_position', 'position')), 'unchanged', 'p is still watched');
+  });
+
+  it('a failed poll of a position pool is counted at a full cap (ruling 19)', () => {
+    const q = new RecorderQueue({ config: { maxWatchedPools: 3 } });
+    for (const id of ['a', 'b', 'c']) q.append(snap(id, 1, T0 + 1_000));
+    assert.equal(q.notePollFailed('pos', 'position', ms(T0 + 2_000)), false, 'without the flag: refused');
+    assert.equal(q.notePollFailed('pos', 'position', ms(T0 + 2_000), true), true);
+    q.tick(ms(T0 + 60_000));
+    const pos = pollCounts(q).filter((p) => p.poolId === 'pos');
+    assert.deepEqual(pos.map((p) => p.failedPolls), [1]);
+  });
+
+  it('unwatched and watched again in the same minute: no (pool, minute) record twice (ruling 18)', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0 + 1_000));
+    q.unwatch('a', ms(T0 + 2_000));
+    q.append(snap('a', 1, T0 + 3_000));
+    q.tick(ms(T0 + 180_000));
+    const keys = pollCounts(q).filter((p) => p.poolId === 'a').map((p) => p.minuteStartMs);
+    assert.deepEqual(keys, [T0, T0 + 60_000, T0 + 120_000]);
   });
 });

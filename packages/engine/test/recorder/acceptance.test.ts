@@ -35,7 +35,8 @@ describe('A-M07-01 acceptance', () => {
       assert.equal(p.priorityClass, 'normal');
       changed += p.changedPolls as number;
     }
-    assert.equal(changed, 40);
+    // 40 states, so 39 changes between them: the first poll of a watch has no previous hash (ruling 18).
+    assert.equal(changed, 39);
     // Seq is dense per stream from 0.
     assert.deepEqual(snaps.map((r) => r.seq), Array.from({ length: 40 }, (_, i) => BigInt(i)));
     // And the keyframe plus deltas decode back to every state.
