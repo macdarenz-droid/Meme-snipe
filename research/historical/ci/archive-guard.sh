@@ -193,6 +193,9 @@ LOGREF = re.compile(r"\$\{?(?:qlog|slog|tlog)\b|(?<![\w$])(?:qlog|slog|tlog)\b|"
 # ... and no read command on $out itself (or a glob of its top level), with find -exec or
 # into xargs, or after a cd into it (on the same line, or anywhere after a top-level cd)
 READ = r"(?:cat|tac|nl|grep|egrep|fgrep|rg|sed|awk|head|tail|cp|rsync|od|xxd|strings|base64|zcat|zstdcat|diff|find)"
+# OF-2 ruling 70: whatever variable comes first, an argument with a logs path part
+# (/logs/, /logs at its end, or a leading logs/) makes a read command a log read
+LOGPART = re.compile(r"/logs(?:/|[\x22\x27]|\s|$)|(?:^|\s)[\x22\x27]?logs/")
 OUTARG = re.compile(r"(?:^|\s)\x22?" + OUTV + r"\x22?(?:/\.?|/[^\s/]*[*?[][^\s]*)?\x22?(?=\s|$)")
 CDOUT = re.compile(r"^(?:cd|pushd)\s+\x22?" + OUTV + r"\x22?/?\.?\x22?\s*$")
 def out_reads(line, state):
@@ -205,9 +208,11 @@ def out_reads(line, state):
         if CDOUT.match(head):
             cdl = True
             if prev not in ("(", "$(", "`"): state["cd"] = True
-        elif re.fullmatch(READ, cmd):
+        elif re.fullmatch(READ + "|tar|xargs", cmd):
             # find only lists names, unless it runs a command on them (-exec, xargs)
             if cmd == "find" and not (re.search(r"\s-(?:exec|execdir|ok|okdir|delete|fprint\w*)\b", head) or "xargs" in line): pass
+            elif LOGPART.search(head): return "a read command on a logs path"
+            elif cmd in ("tar", "xargs"): pass
             elif state.get("cd") or cdl: return "a read command after a cd into $out or $RUNNER_TEMP"
             elif OUTARG.search(head): return "a read command on $out or $RUNNER_TEMP itself"
         prev = sep

@@ -2585,6 +2585,21 @@ c30 accept '(cd "$out/units" && sha256sum -- "$epoch/$range"/*.zst)'
 c30 accept 'cp "$out"/cache/* "$again/cache/"'
 c30 accept 'find "$out" -name x'
 [[ -z "$bad" ]] && ok "OF-2 ruling 67: arming refuses a logs path after a braced or quoted \$out or \$RUNNER_TEMP, a cd into \$out then a read (same line or later), find -exec or xargs on \$out, and grep, cp or a top-level glob on \$out itself; cd into a subdirectory, find listing names and a glob below the top level are accepted" || no "OF-2 r10 out spellings:$bad"
+# ---- OF-2 round 10, ruling 70: a read command with a logs path part, whatever variable precedes it ----
+bad=""
+c30 refuse 'd="$out"; cat "$d/logs/run.log"'
+c30 refuse 'r="$RUNNER_TEMP"; tar -cf - "$r/work/data/logs" | base64'
+c30 refuse 'w="$RUNNER_TEMP/work"; grep curve "$w"/data/logs/run.log'
+c30 refuse 'ls "$d/logs" | xargs -I{} cat "$d/logs/{}"'
+c30 accept 'du -sh "$out/units"'
+c30 accept 'find units -mindepth 3 -name stats.json | wc -l'
+c30 accept 'ls units'
+c30 accept 'mkdir -p "$again/cache"'
+c30 accept 'cp "$out"/cache/* "$again/cache/"'
+c30 accept 'echo "logs kept in $slog" >> "$GITHUB_STEP_SUMMARY"'
+c30 accept '(cd "$out" && tar --exclude="*.tmp" --remove-files -cf - units) | split -b 1900m -d -a 2 - "$assets/units.tar.part"'
+[[ -z "$bad" ]] && ok "OF-2 ruling 70: a read command (cat, grep, tar, xargs, ...) with a logs path part is refused whatever variable comes first (an alias of \$out or \$RUNNER_TEMP); du, find -name | wc, ls units, mkdir, cp of the cache, an echo to the summary and tar of units stay accepted" || no "OF-2 r10 logs part:$bad"
+bad=""
 bad=""
 bad=""
 bad=""; gdreset
