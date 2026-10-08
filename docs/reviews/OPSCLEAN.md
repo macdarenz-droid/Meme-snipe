@@ -63,3 +63,19 @@ The unpaired-switch fix is correct: update-unpaired fails 2 of 5 on the old code
 15. **Red team m3.** Log a line when apply_host skips because the running release's installer has no `--update`; note it as accepted in DECISIONS.
 16. **Reviewer m1.** Write `holding` before `flock -u 9`.
 17. **Reviewer m3.** Skip the at-exit "Waiting on" line when the start-of-run check already logged it.
+
+## Round 4 (head `15e7c48c`): reviewer PASS (2 MINOR); red team 0 BLOCKER, 0 MAJOR, 1 MINOR (borderline) and 1 pre-existing note
+
+- Both accept the builder's deviation: realign_current acts only on a 40-hex release folder, so a hand-placed practice copy stays current and stays the rollback target; every kill point of the forward switch now ends on a release that ran or a held start.
+- Red team m1 (a regression from realign_current): a run killed inside rollback() between the `current` move and the `deployed` write now ends on the failed release with no rollback (realign moves `current` back to C; the probation file is already gone).
+- Red team note (pre-existing): with a due rollback held and the failed release's worker dead, a newer deploy can switch with the failed release as `prev`.
+- Reviewer m1: after a power loss between `mv` and the `deployed` write, the worker boots on C unheld and keeps running C until a later run switches under the hold. m2: whether a manual try-restart raises NRestarts (probation) is unverified.
+
+### Supervisor rulings for round 5 (8 Oct 2026, 4:31 PM)
+
+18. **Red team m1.** rollback() writes `deployed` (the target) before the `ln`/`mv`, and a rollback is resumable: `$STATE_DIR/rollback_due` (commit|prev|current|why) stays until the restart is done, and the next run's probation_check finishes it (apply_host of the target, restart, alert). Test: kill between the `mv` and the `deployed` write in rollback(), run again → `current` = `deployed` = A, and A's worker restarted.
+19. **Red team note.** The forward switch waits while `$STATE_DIR/probation` holds a due rollback, with the alert it already has. Test.
+20. **Reviewer m1.** When realign_current moves `current` while the worker is active, bring the running process to the deployed release under the hold rules: held_restart when no intent or dry run is open; otherwise keep a marker that unheld_start honours. Test: reboot-start on C after a killed switch → the next run holds a restart on the deployed release.
+21. **Reviewer m2.** If the ops e2e runs real systemd, assert that a manual try-restart does not raise NRestarts (or that probation tolerates it); otherwise record it as **VERIFY** on the host in the README's checks.
+
+This is meant to be the last round on the host logic: after it, the reviewer and red team check closure only, then the label goes on and the labelled run with e2e decides the merge.
