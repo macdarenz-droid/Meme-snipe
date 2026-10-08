@@ -113,7 +113,7 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
     assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` }), { ok: true, value: { from: 1, to: 1, applied: [] } });
     const raw = new DatabaseSync(':memory:');
     raw.exec(OUTBOX_DDL);
-    const cols = (d: DatabaseSync | Db, sql: string): unknown => (d instanceof DatabaseSync ? d.prepare(sql).all() : d.withTx((tx) => tx.all(sql)))
+    const cols = (d: DatabaseSync | Db, sql: string): unknown => (d instanceof DatabaseSync ? d.prepare(sql).all() : d.withSchemaTx((tx) => tx.all(sql)))
       .map((c) => { const r = c as Record<string, unknown>; return [r.name, r.type, Number(r.notnull), Number(r.pk)]; });
     assert.deepEqual(cols(raw, 'PRAGMA table_info(outbox)'), cols(db, 'PRAGMA table_info(outbox)'));
     raw.close();

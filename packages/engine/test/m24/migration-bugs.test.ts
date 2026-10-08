@@ -128,7 +128,7 @@ describe('M3 pattern (red team C): a clock that ran far ahead and came back lock
   it('outbox: published rows are pruned again within the hour after the clock comes back (a row stamped ahead keeps its 7 days)', () => {
     const clock = fakeClock(T0);
     const db = openDb({ create: true, path: fresh(), clock });
-    db.withTx((tx) => { for (const s of OUTBOX_DDL.split(';').map((x) => x.trim()).filter(Boolean)) tx.run(s); });
+    db.withSchemaTx((tx) => { for (const s of OUTBOX_DDL.split(';').map((x) => x.trim()).filter(Boolean)) tx.run(s); });
     const publishOne = (): void => {
       db.withTx((tx) => db.outbox.append(tx, 't', { a: 1 }));
       db.outbox.drain(() => {});

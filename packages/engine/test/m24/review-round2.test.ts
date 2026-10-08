@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
-import { DbOpenError, M24_LOG_CODES, openDb, type Db } from '../../src/m24/db.ts';
+import { DbOpenError, isDdl, M24_LOG_CODES, openDb, type Db } from '../../src/m24/db.ts';
 import { prepareDatabase } from '../../src/m24/migrate.ts';
 import { createRepos, metricRollupSink, M24_ROLLUP_LOG_CODES, ROLLUP_ROW_BYTES } from '../../src/m24/repos.ts';
 import { deleteExpired } from '../../src/m24/retention.ts';
@@ -192,7 +192,7 @@ describe('ruling 9: a damaged database or backup is named, not thrown raw or tru
   it('quick_check runs before the start backup: a damaged table page refuses the migration with E_DATABASE_CORRUPT and takes no backup', async () => {
     const path = fresh();
     const db0 = openDb({ create: true, path, clock: fakeClock(T0) });
-    db0.withTx((tx) => { tx.run('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'); for (let i = 0; i < 200; i++) tx.run('INSERT INTO t VALUES (?, ?)', i, 'x'.repeat(100)); });
+    db0.withSchemaTx((tx) => { tx.run('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'); for (let i = 0; i < 200; i++) tx.run('INSERT INTO t VALUES (?, ?)', i, 'x'.repeat(100)); });
     db0.close();                                                                          // checkpointed into the file
     const raw = new DatabaseSync(path, { readOnly: true });
     const root = (raw.prepare("SELECT rootpage FROM sqlite_schema WHERE name = 't'").get() as { rootpage: number }).rootpage;
@@ -251,11 +251,13 @@ describe('ruling 14: only the retention job writes retention_clock', () => {
     const db = await migrated();
     for (const sql of ['UPDATE retention_clock SET now_ms = 99999999999999', 'INSERT OR REPLACE INTO "retention_clock" VALUES (1, 5)',
       'DELETE FROM Retention_Clock', '/* x */ UPDATE [retention_clock] SET now_ms = 1', 'SELECT now_ms FROM retention_clock', 'DROP TABLE retention_clock']) {
-      assert.throws(() => db.withTx((tx) => tx.run(sql)), /retention job's alone/, sql);
+      assert.throws(() => db.withTx((tx) => tx.run(sql)), /retention job's alone|migration runner's alone/, sql);
     }
     const wall = Number(db.reader().get("SELECT unixepoch('now') * 1000 AS now")?.now);
     db.withTx((tx) => repos.fill.insert(tx, { ...sampleRow('fill', 1), createdAt: wall - DAY }));
-    db.withTx((tx) => tx.run('CREATE TRIGGER forge AFTER INSERT ON trade BEGIN UPDATE retention_clock SET now_ms = 99999999999999; END'));
+    const forge = 'CREATE TRIGGER forge AFTER INSERT ON trade BEGIN UPDATE retention_clock SET now_ms = 99999999999999; END';
+    assert.throws(() => db.withTx((tx) => tx.run(forge)), /migration runner's alone/);    // ruling 22: no DDL outside the runner
+    db.withSchemaTx((tx) => tx.run(forge));                                               // even if one got in through the runner
     db.withTx((tx) => repos.trade.insert(tx, sampleRow('trade', 1)));                     // the trigger forges a far-future clock
     assert.throws(() => db.withTx((tx) => tx.run('DELETE FROM fill')), /append_only/);    // the wall clock still says 1 day old
     assert.equal(repos.fill.find(db.reader()).length, 1);
@@ -328,5 +330,38 @@ describe('round 3 rulings 17-19', () => {
     await s.close();
     assert.deepEqual(readdirSync(logDir).sort(), ['engine-2026-10-07.ndjson.gz', 'engine-2026-10-08.ndjson']);
     assert.equal(gunzipSync(readFileSync(`${old}.gz`)).toString(), '{"kept":1}\n');
+  });
+});
+
+describe('round 4 ruling 22: only the migration runner changes the schema', () => {
+  it('withTx refuses CREATE, DROP, ALTER, PRAGMA and ATTACH, behind comments too; the append-only trigger still fires afterwards', async () => {
+    const db = await migrated();
+    db.withTx((tx) => repos.fill.insert(tx, sampleRow('fill', 1)));
+    for (const sql of ['DROP TRIGGER "fill_no_update"', '/* x */ drop trigger fill_no_delete', '-- c\n  DROP TABLE fill', 'ALTER TABLE fill RENAME TO f2',
+      'CREATE TRIGGER t2 AFTER INSERT ON fill BEGIN SELECT 1; END', 'CREATE VIEW v AS SELECT 1', 'PRAGMA writable_schema=ON', "ATTACH DATABASE ':memory:' AS x",
+      ';;  VACUUM', 'REINDEX']) {
+      assert.throws(() => db.withTx((tx) => tx.run(sql)), /migration runner's alone/, sql);
+    }
+    assert.throws(() => db.withTx((tx) => tx.run('UPDATE fill SET tip_lamports = 0')), /append_only/);
+    assert.equal(db.reader().get("SELECT count(*) AS n FROM sqlite_schema WHERE name = 'fill_no_update'")?.n, 1n);
+    assert.equal(isDdl('SELECT 1'), false);
+    assert.equal(isDdl('WITH x AS (SELECT 1) SELECT * FROM x'), false);
+    assert.equal(isDdl('/* open comment'), false);
+    db.close();
+  });
+
+  it('no source file but db.ts and migrate.ts calls withSchemaTx', () => {
+    const src = fileURLToPath(new URL('../../../', import.meta.url));
+    const found: string[] = [];
+    for (const pkg of readdirSync(src)) {
+      const dirPath = join(src, pkg, 'src');
+      if (!existsSync(dirPath)) continue;
+      for (const f of readdirSync(dirPath, { recursive: true, encoding: 'utf8' })) {
+        const rel = `${pkg}/src/${f}`;
+        if (!f.endsWith('.ts') || rel === 'engine/src/m24/db.ts' || rel === 'engine/src/m24/migrate.ts') continue;
+        if (/withSchemaTx/.test(readFileSync(join(dirPath, f), 'utf8'))) found.push(rel);
+      }
+    }
+    assert.deepEqual(found, []);
   });
 });

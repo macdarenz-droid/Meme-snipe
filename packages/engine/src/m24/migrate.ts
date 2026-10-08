@@ -142,7 +142,7 @@ export async function prepareDatabase(db: Db, opts: PrepareOptions): Promise<Res
   }
   let current: Migration = pending[0] as Migration;
   try {
-    db.withTx((tx) => {
+    db.withSchemaTx((tx) => {
       tx.run(SCHEMA_MIGRATIONS_STATEMENT);
       for (const m of pending) {
         current = m;
