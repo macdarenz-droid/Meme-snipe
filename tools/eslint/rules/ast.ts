@@ -1,5 +1,6 @@
 // Small AST helpers shared by the bot lint rules. Nodes come from ESLint (ESTree plus typescript-eslint nodes);
 // the casts below rely on the ESTree shapes: an Identifier has a name, a MemberExpression has an object and a property.
+import type { Scope } from 'eslint';
 
 /** The fields of an AST node the rules read. */
 export interface AstNode {
@@ -58,4 +59,27 @@ export function stringValue(n: AstNode): string | null {
 export function memberName(n: AstNode): string | null {
   const property = n.property as AstNode;
   return n.computed ? stringValue(property) : (property.name as string);
+}
+
+/** A node with the parent link ESLint sets on every AST node. */
+export interface LinkedNode extends AstNode { parent?: LinkedNode }
+
+/**
+ * Every value reference (not a type reference) to a global named in `names`, whether ESLint resolved it to a declared
+ * global (`Number`, `Intl`) or left it unresolved. A local variable of the same name is not a global and not returned.
+ */
+export function globalValueReferences(globalScope: Scope.Scope, names: ReadonlySet<string>): LinkedNode[] {
+  const refs = globalScope.through.filter((r) => names.has(r.identifier.name));
+  for (const name of names) {
+    const v = globalScope.set.get(name);
+    if (v !== undefined && v.defs.length === 0) refs.push(...v.references);
+  }
+  return refs.filter((r) => (r as { isValueReference?: boolean }).isValueReference !== false).map((r) => r.identifier as unknown as LinkedNode);
+}
+
+/** The outermost node of a global path that starts at `id`: `globalThis` in `globalThis.Intl.x` → `globalThis.Intl`. */
+export function globalPath(id: LinkedNode): LinkedNode {
+  let n = id;
+  while (n.parent?.type === 'MemberExpression' && n.parent.object === n && globalName(n.parent) !== null) n = n.parent;
+  return n;
 }

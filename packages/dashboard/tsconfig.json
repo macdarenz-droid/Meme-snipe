@@ -1,4 +1,8 @@
 {
   "extends": "../../tsconfig.bot.json",
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "compilerOptions": {
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
 }
