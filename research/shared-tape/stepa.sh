@@ -216,4 +216,4 @@ while read -r day ep from to; do
 done < "$plan"
 if [ -n "$decpid" ]; then wait "$decpid" || { log "the last decode failed"; exit 1; }; fi
 key_check || { log "KEY FOUND IN A LOG"; exit 1; }
-log "Step A read and decoded: $(wc -l < "$plan") units, credits $(used)"
+log "run ended: units stored or kept so far: $(cut -f2 "$work/stored-units.txt" 2>/dev/null | sort -u | wc -l) of $(wc -l < "$plan") planned; credits $(used)"
