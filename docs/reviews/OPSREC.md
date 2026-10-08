@@ -19,3 +19,11 @@ The old server holds no DATA_STORE_TOKEN; the watchdog's `/record` allow-list re
    - the exact paths of the ledger, saved state and journal for that release;
    - the tailnet copy method (`tailscale file cp` or scp over the tailnet), checked against the Tailscale docs, with what each machine needs.
 3. **Deliverable.** A short owner runbook (`ops/OLD-SERVER-COPY.md`) in a draft PR, reviewed and red-teamed before it goes to the owner. The owner deletes the old server only after the copy is verified on the new host. The new host's off-server backup stays an open owner wait.
+
+### #309 reviewer + red team `session_01PmY8SJe37nxiYu5WU7HpHs` (head `53827d83`): REVIEW PASS; red team 0 BLOCKER, 0 MAJOR, 1 MINOR
+
+`install.sh` rebuilds byte-identical; the tests fail before the fix and pass after. A broken upload while the recorder exists still alerts; the alerts clear only while the path is missing.
+
+### Supervisor ruling for round 2 (9 Oct 2026, about 12:23 AM)
+
+1. **MINOR, first-hour false alarm (`logic.sh:250`).** Fix it in this PR, because it is the same false-alarm class and fires the day the M1 recorder starts. Hold only "never reported" until the recorder folder is older than about 70 minutes (`stat -c %Y`; the timer is OnUnitInactiveSec=1h). The other three alerts are unchanged. Test: folder 10 minutes old, no status: no alert; folder 71 minutes old, no status: alert. Merge the base `e6cc8278` first (merge commit).
