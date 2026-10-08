@@ -331,9 +331,11 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/work/sealed
-          key: ${{ steps.pickprogress.outputs.key || format('{0}-{1}-k{2}-{3}', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, steps.cachekid.outputs.kid, github.run_id) }}
-      # A restored progress that cannot be opened (another key, a changed byte) fails the
-      # job here: nothing is read and the day never starts fresh (ruling 44a).
+          key: ${{ steps.pickprogress.outputs.key || format('{0}-{1}-k{2}-{3}-fresh', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, steps.cachekid.outputs.kid, github.run_id) }}
+      # With no picked progress the key ends -fresh, which no saved entry's key starts with
+      # (they go on -ATTEMPT), so the cache's prefix match restores nothing (OF-3 ruling 28).
+      # A restored progress that cannot be opened (another key, a changed byte, a logs
+      # entry) fails the job here: nothing is read and the day never starts fresh (ruling 44a).
       - name: Open the progress cache
         id: openprogress
         if: steps.published.outputs.complete != 'true' && steps.restore.outputs.cache-matched-key != ''
@@ -558,9 +560,12 @@ jobs:
       # OF-3 ruling 27: when the full progress save was skipped or failed, the day's reasons
       # (logs/: scanner, unitlog, trim, QA output) are still kept, sealed alone as a small
       # entry (PREFIXk<key id>-RUN-ATTEMPT-logs), which progress-pick never resumes from.
+      # OF-3 ruling 28: it is sealed as type logs, which open (progress only) refuses.
+      # OF-3 ruling 29: also whenever the job has failed, whatever the save outcome (a save
+      # over the cache limit "succeeds" with a warning and stores nothing).
       - name: Seal the logs alone
         id: seallogs
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && (steps.save.outcome != 'success' || steps.trim.outcome == 'failure')
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && (steps.save.outcome != 'success' || steps.trim.outcome == 'failure' || failure())
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
           DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
@@ -571,9 +576,9 @@ jobs:
           LD_LIBRARY_PATH: ""
         run: >-
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
-          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data/logs" "$RUNNER_TEMP/work/sealed-logs" "$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data/logs" "$RUNNER_TEMP/work/sealed-logs" "$PREFIX" logs
       - name: Save the logs alone
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && (steps.save.outcome != 'success' || steps.trim.outcome == 'failure') && steps.seallogs.outcome == 'success'
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && (steps.save.outcome != 'success' || steps.trim.outcome == 'failure' || failure()) && steps.seallogs.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/work/sealed-logs

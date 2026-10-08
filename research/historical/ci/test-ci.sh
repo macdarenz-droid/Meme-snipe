@@ -2761,8 +2761,8 @@ assert sv["with"]["path"] == "${{ runner.temp }}/work/sealed-logs" and sv["with"
 assert ids.index("seallogs") > ids.index("save"), ids
 PY
 lg="$T/lg"; rm -rf "$lg"; mkdir -p "$lg/data/logs" "$lg/data/units/1/2"; echo "run reason curve=5" > "$lg/data/logs/run.log"; echo unit > "$lg/data/units/1/2/a.zst"
-DATA_STORE_TOKEN=tlg bash "$here/cache-crypt.sh" seal "$lg/data/logs" "$lg/sealed-logs" data-scan-2026-07-22- >/dev/null 2>&1 && ! grep -rq "curve=5" "$lg/sealed-logs" &&
-  DATA_STORE_TOKEN=tlg bash "$here/cache-crypt.sh" open "$lg/sealed-logs" "$lg/o" data-scan-2026-07-22- >/dev/null 2>&1 && grep -q "curve=5" "$lg/o/run.log" && [[ ! -e "$lg/o/units" ]] || bad+=" logs-only"
+DATA_STORE_TOKEN=tlg bash "$here/cache-crypt.sh" seal "$lg/data/logs" "$lg/sealed-logs" data-scan-2026-07-22- logs >/dev/null 2>&1 && ! grep -rq "curve=5" "$lg/sealed-logs" &&
+  DATA_STORE_TOKEN=tlg bash "$here/cache-crypt.sh" open "$lg/sealed-logs" "$lg/o" data-scan-2026-07-22- logs >/dev/null 2>&1 && grep -q "curve=5" "$lg/o/run.log" && [[ ! -e "$lg/o/units" ]] || bad+=" logs-only"
 printf '{"actions_caches": [{"key": "data-scan-2026-07-22-k0123456789ab-5-1-logs", "size_in_bytes": 9, "created_at": "2026-10-05T03:00:00Z", "ref": "refs/heads/ccr-x"}, {"key": "data-scan-2026-07-22-k0123456789ab-4-1", "size_in_bytes": 5, "created_at": "2026-10-05T01:00:00Z", "ref": "refs/heads/ccr-x"}]}' > "$PP/caches.json"
 pp data-scan-2026-07-22- >/dev/null && grep -qx "key=data-scan-2026-07-22-k0123456789ab-4-1" "$PP/out" || bad+=" pick-ignores-logs"
 [[ -z "$bad" ]] && ok "OF-3 r8 ruling 27: when the full save is skipped or fails, the logs alone are sealed (no units, no plaintext) and saved as PREFIXk<id>-RUN-ATTEMPT-logs from work/sealed-logs; progress-pick never resumes from a -logs entry" || no "OF-3 r8 logs-only save:$bad"
@@ -2781,10 +2781,61 @@ for k in ("sealqa", "Save progress after QA"):
     assert "steps.trim.outcome" not in steps[ids.index(k)]["if"], k
 PY
 mkk2; rc=0; TRIM_FAIL_ON=3-4 td 2026-07-22 - || rc=$?
-rm -rf "$T/r25s" "$T/r25o"; DATA_STORE_TOKEN=t25 bash "$here/cache-crypt.sh" seal "$T/tk2/logs" "$T/r25s" data-scan-2026-07-22- >/dev/null 2>&1 &&
-  DATA_STORE_TOKEN=t25 bash "$here/cache-crypt.sh" open "$T/r25s" "$T/r25o" data-scan-2026-07-22- >/dev/null 2>&1 &&
+rm -rf "$T/r25s" "$T/r25o"; DATA_STORE_TOKEN=t25 bash "$here/cache-crypt.sh" seal "$T/tk2/logs" "$T/r25s" data-scan-2026-07-22- logs >/dev/null 2>&1 &&
+  DATA_STORE_TOKEN=t25 bash "$here/cache-crypt.sh" open "$T/r25s" "$T/r25o" data-scan-2026-07-22- logs >/dev/null 2>&1 &&
   [[ $rc != 0 && -f "$T/r25o/trim.log" && ! -e "$T/r25o/units" && ! -e "$T/r25o/units.k3" ]] || bad+=" logs-only:$rc"
 [[ -z "$bad" ]] && ok "OF-3 ruling 25: after a forced trim failure the logs alone are sealed (trim.log inside, no units or units.k3), by the logs steps that also run on a trim failure; the QA saves never run then" || no "OF-3 trim-failure logs:$bad"
+# ---- OF-3 round 9, rulings 28 and 29 ----
+bad=""; wf="$here/../../../.github/workflows/data-scan.yml"
+# 28. A logs entry is sealed as type logs; open (a resume, progress only) refuses it. With no
+# picked progress the restore key ends in a suffix no saved key can start with, so a re-run
+# whose only entry is a -logs one restores nothing and starts clean.
+c28="$T/c28"; rm -rf "$c28"; mkdir -p "$c28/data/logs"; echo "curve=5" > "$c28/data/logs/run.log"
+DATA_STORE_TOKEN=t28 bash "$here/cache-crypt.sh" seal "$c28/data/logs" "$c28/sealed" data-scan-2026-07-22- logs >/dev/null 2>&1 || bad+=" seal"
+rc=0; DATA_STORE_TOKEN=t28 bash "$here/cache-crypt.sh" open "$c28/sealed" "$c28/o" data-scan-2026-07-22- 2>/dev/null >/dev/null || rc=$?
+[[ $rc == 2 && ! -e "$c28/o" && -f "$c28/sealed/progress.enc" ]] || bad+=" logs-opened-as-progress:$rc"
+rc=0; DATA_STORE_TOKEN=t28 bash "$here/cache-crypt.sh" seal "$c28/data/logs" "$c28/s2" data-scan-2026-07-22- units >/dev/null 2>&1 || rc=$?; [[ $rc == 2 ]] || bad+=" bad-type:$rc"
+python3 - "$wf" <<'PY' || bad+=" restore-key"
+import re, sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+by = {(s.get("id") or s.get("name")): s for s in steps}
+def render(key, src="data-scan", day="2026-07-22", kid="0123456789ab", run="777", attempt="1", pick=""):
+    if pick: return pick
+    m = re.search(r"format\('([^']*)'", key); f = m.group(1)
+    return f.replace("{0}", src).replace("{1}", day).replace("{2}", kid).replace("{3}", run)
+def saved(key, **kw):
+    k = key.replace("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}", "data-scan")
+    return (k.replace("${{ matrix.day }}", "2026-07-22").replace("${{ steps.cachekid.outputs.kid }}", "0123456789ab")
+             .replace("${{ github.run_id }}", "777").replace("${{ github.run_attempt }}", "1"))
+r = by["restore"]["with"]; assert "restore-keys" not in r, r
+fallback = render(r["key"])
+entries = [saved(s["with"]["key"]) for s in steps if str(s.get("uses", "")).startswith("actions/cache/save") and "data-scan" in s["with"]["key"]]
+logs = [e for e in entries if e.endswith("-logs")]; assert logs == ["data-scan-2026-07-22-k0123456789ab-777-1-logs"], entries
+# the cache matches the key exactly or as a prefix of a saved key; with only the -logs entry, nothing
+assert not [e for e in logs if e == fallback or e.startswith(fallback)], (fallback, logs)
+assert not [e for e in entries if e.startswith(fallback)], (fallback, entries)
+assert '"$PREFIX" logs' in by["seallogs"]["run"] and '"$PREFIX" logs' not in by["seal"]["run"] and '"$PREFIX" logs' not in by["sealqa"]["run"], "types"
+PY
+# 29. The logs are sealed and saved alone whenever the job has failed, even when the full
+# save "succeeded" (over the cache limit it stores nothing and only warns); a clean run whose
+# save succeeded makes no logs entry.
+python3 - "$wf" <<'PY' || bad+=" failure-logs"
+import re, sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+by = {(s.get("id") or s.get("name")): s for s in steps}
+def ev(expr, failed, out):
+    e = expr.replace("&&", " and ").replace("||", " or ").replace("always()", "True").replace("failure()", str(failed))
+    e = re.sub(r"steps\.(\w+)\.(outcome|outputs\.\w+)", lambda m: repr(out.get(m.group(1) + "." + m.group(2), "")), e)
+    e = re.sub(r"inputs\.source", repr("archive"), e)
+    return eval(e)
+base = {"published.outcome": "success", "published.outputs.complete": "false", "save.outcome": "success", "trim.outcome": "success", "seallogs.outcome": "success"}
+for k in ("seallogs", "Save the logs alone"):
+    assert ev(by[k]["if"], True, base), (k, "failed job, save succeeded")
+    assert not ev(by[k]["if"], False, base), (k, "clean run")
+    assert ev(by[k]["if"], False, dict(base, **{"save.outcome": "skipped"})), (k, "save skipped")
+PY
+[[ -z "$bad" ]] && ok "OF-3 rulings 28 and 29: a logs entry is sealed as type logs and a resume (progress) refuses it; with no picked progress the restore key matches no saved entry, so a re-run with only a -logs entry restores nothing and starts clean; the logs are sealed and saved alone whenever the job failed, even after a save that \"succeeded\"" || no "OF-3 r9 logs entries:$bad"
+bad=""
 # ---- OF-2 round 9 (docs/reviews/OF2.md rulings 63-66) ----
 gdreset; bad=""; now=$(date -u +%s); touch "$GD/noguard-$NG"
 # 63. The log directories are named only as a write target, to mkdir or rm, in their assignment, or to the seal.

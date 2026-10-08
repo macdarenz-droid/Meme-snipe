@@ -188,8 +188,14 @@ re-arm. Whether `always()` steps still run after a job-level timeout is **VERIFY
 
 **A failed day's reasons are kept, privately** (OF-3 ruling 24): the scanner's output and the trim, unitlog,
 finalize and QA output go to `logs/` inside the day's progress directory, never to the public log, and are saved with
-the progress in the sealed cache (OF-2 ruling 44). After a failure they are read by opening that cache
-(`ci/cache-crypt.sh open`) with the store token; nothing about them is published.
+the progress in the sealed cache (OF-2 ruling 44). When the job fails, or the full save is skipped or fails, they are
+also sealed and saved alone as a `-logs` entry (OF-3 rulings 25, 27 and 29). That entry is sealed as type `logs`, which
+a resume (it opens type `progress` only) refuses, and with no picked progress the restore key ends `-fresh`, which no
+saved key starts with, so a re-run never restores it (OF-3 ruling 28). After a failure they are read by opening that
+cache (`ci/cache-crypt.sh open SEALED DEST PREFIX logs`) with the store token; nothing about them is published.
+In the CI scripts a line may name the log directories only to assign them under `$out` or `$RUNNER_TEMP`, mkdir or rm
+them, redirect output into them, mv `migrations.list` out of them, or echo them to the step summary, and `eval` is
+refused (OF-3 ruling 30, replacing OF-2 ruling 63's deny-list).
 
 **Arm checklist (the arming change, OF-2 rounds 3–4).** The supervisor puts each item to the owner, with a
 recommendation, before `ARCHIVE_ARM` is set:
