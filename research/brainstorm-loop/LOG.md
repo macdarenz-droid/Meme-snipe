@@ -18,6 +18,8 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 16:40 | G1 PREREG and A amendments committed (dcfc71e, 16:39:54); round 8 sent at about 16:41: F1 follower flow, P2 spot flow to Hyperliquid perps |
 | 2026-10-08 16:41–16:43 | Lead rounds 9–10: G1 frozen on its branch at 98790f8a (A amendments inserted); ranking H1-CGO, then F1 as a gate only, P2 parked; lead's W1 winner autopsy (do slow wallets' profits persist day to day?) |
 | 2026-10-08 16:46 | H1-CGO PREREG and F1 gate committed (86a1de8); round 11 sent: W1 agreed with five fixes (mark-to-market, observable latency class, funding clusters, shrunk ranking and forward day order, frozen rule extraction) |
+| 2026-10-08 16:46 | Lead round 12: H1-CGO and F1 gate frozen on its branch at 013205df; W1 fixes accepted; tape order G1, W1, A, H1-CGO, F1-gate, one shared tape worker on Step A |
+| 2026-10-08 16:48 | W1 PREREG committed (eab1f4a) and sent (round 13) |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
@@ -29,4 +31,4 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | H1-CGO | Holders' capital-gains overhang from the tape | Disposition-prone sellers | about 2–4% | PREREG `research/h1-cgo/PREREG.md`; waits on Step A, validation needs Step B |
 | F1 | Buy after a followed wallet's buy, sell into slower followers | Copy and alert followers | about 2–4% | Counts gate only (`research/f1-follower-flow/GATE.md`); owner ethics ruling before any return test |
 | P2 | PumpSwap non-arbitrage net flow predicting Hyperliquid perp moves | Slow perp traders | about 2–3% | Parked by the lead: too few events on 2–5 tape days; derivatives need the owner |
-| W1 | Winner autopsy: do slow wallets' profits persist day to day, and what are their rules? (lead) | n/a (finds the seat) | about 5% (partner) | Agreed with five fixes; the lead freezes it |
+| W1 | Winner autopsy: do slow wallets' profits persist day to day, and what are their rules? (lead) | n/a (finds the seat) | about 5% (partner) | PREREG `research/w1-winner-autopsy/PREREG.md` (eab1f4a); waits on Step A |
