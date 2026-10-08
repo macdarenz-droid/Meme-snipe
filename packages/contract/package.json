@@ -1,11 +1,16 @@
 {
   "name": "@bot/contract",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Dashboard view-model zod schemas (M28, B-M28-01).",
+  "description": "Dashboard view-model zod schemas VM-01..VM-21 and their fixtures (M28, B-M28-01). Frozen: see CHANGELOG.md and FREEZE.json.",
   "license": "UNLICENSED",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fixtures": "./src/fixtures.ts"
+  },
+  "dependencies": {
+    "@bot/types": "workspace:*",
+    "zod": "4.6.5"
   }
 }

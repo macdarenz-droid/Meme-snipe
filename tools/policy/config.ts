@@ -37,8 +37,8 @@ export const LOCK_REVIEW_HASH_HEX = 32;
  */
 export const LABEL_EVENT_ENV = 'PR_LABEL_ADDED';
 
-/** Workspace packages whose public surface is frozen (ARCH 18; AGENTS.md file ownership). */
-export const FROZEN_PACKAGES = ['packages/types'];
+/** Workspace packages whose public surface is frozen (ARCH 18; AGENTS.md file ownership; B-M28-01 for @bot/contract). */
+export const FROZEN_PACKAGES = ['packages/types', 'packages/contract'];
 
 /** The one ESLint configuration `pnpm lint` loads (`eslint --config`); every other eslint.config.* is refused. */
 export const ESLINT_CONFIG = 'eslint.config.mjs';
@@ -85,6 +85,30 @@ export const WEB3 = '@solana/web3.js';
 
 /** Built-ins workspace packages may not import: node:module's createRequire and loader hooks bypass the import check. */
 export const FORBIDDEN_IN_PACKAGES = ['node:module'];
+
+/**
+ * `node:sqlite` is M24's alone (B-M24-01: M24 owns the SQLite file; Z02 round 2 ruling 6): in workspace packages it may
+ * be imported only under these directories (M24's code and its tests).
+ */
+export const SQLITE = 'node:sqlite';
+export const SQLITE_ALLOWED_DIRS = ['packages/engine/src/m24/', 'packages/engine/test/m24/'];
+
+/**
+ * M24's schema transaction (Z02 round 6 ruling 29): only the migration runner and the database module import the file
+ * that holds it; the engine's tests reach it through their fixture helper.
+ */
+export const SCHEMA_TX_FILE = 'packages/engine/src/m24/schema-tx.ts';
+export const SCHEMA_TX_IMPORTERS = ['packages/engine/src/m24/db.ts', 'packages/engine/src/m24/migrate.ts'];
+export const SCHEMA_TX_TEST_DIR = 'packages/engine/test/';
+
+/**
+ * Package code never imports test code (Z02 rulings 30–32): a file under `packages/<name>/src/` or `apps/<name>/src/`
+ * that is not itself test code may not reach test code by import, dynamic import or re-export, so test-only helpers
+ * (a schema fixture) never ship. Test code is any path with a `test`, `tests` or `__tests__` directory, and any
+ * `*.test.*` or `*.spec.*` file.
+ */
+export const SRC_DIR_RE = /^(packages|apps)\/[^/]+\/src\//;
+export const TEST_DIR_RE = /(^|\/)(test|tests|__tests__)(\/|$)|\.(test|spec)\.[^/]*$/;
 
 /** Internal package scope: always a workspace link, never fetched from a registry. */
 export const INTERNAL_SCOPE = '@bot/';
@@ -146,10 +170,15 @@ export const NEW_PACKAGE_DIRS = ['apps/'];
 export const ZEROED_PACKAGE_PREFIXES = ['packages/backtest/', 'packages/core/', 'packages/ops/', 'packages/runner/', 'packages/worker/', 'apps/web/'];
 /**
  * Import findings that are safety checks (ruling 3.1): a package nobody declared, @solana/web3.js where it is banned,
- * node:module in a workspace package, a third-party runtime import in a zero-dependency package. They run on every new
+ * node:module in a workspace package, a third-party runtime import in a zero-dependency package, M24's schema
+ * transaction or test code reached from where it may not be (Z02 ruling 30). They run on every new
  * file and on the added lines of old Zeroed files. Every other import finding is a structure rule.
  */
-export const SAFETY_IMPORT_CODES = ['E_UNDECLARED_IMPORT', 'E_WEB3_BANNED', 'E_IMPORT_FORBIDDEN', 'E_THIRD_PARTY_RUNTIME'];
+export const SAFETY_IMPORT_CODES = [
+  'E_UNDECLARED_IMPORT', 'E_WEB3_BANNED', 'E_IMPORT_FORBIDDEN', 'E_THIRD_PARTY_RUNTIME',
+  // Z02 ruling 30: what may reach M24's schema transaction and test code holds for every file in the workspace.
+  'E_SCHEMA_TX_IMPORT', 'E_SRC_IMPORTS_TEST',
+];
 /** Zeroed's workflows (operations and data). ci.yml and the policy's own workflows are always checked. */
 export const ZEROED_WORKFLOWS = [
   'archive-check.yml', 'backtest-trial.yml', 'data-helius-pilot.yml', 'data-keep.yml', 'data-scan.yml',

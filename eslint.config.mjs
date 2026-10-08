@@ -40,6 +40,8 @@ export default [
       'bot/no-number-on-units': 'error',
       'bot/no-ambient-clock-or-random': 'error',
       'bot/no-shared-type-redefinition': 'error',
+      // B-M24-01 logic 3: no await inside a withTx callback (ARCH 7.1).
+      'bot/no-await-in-withtx': 'error',
       // Code built from strings loads modules the import check cannot see (C01 review finding R2).
       'no-eval': 'error',
       'no-new-func': 'error',

@@ -227,7 +227,7 @@ main() {
   done
   finalize_guard "$work"
   # OF-2 round 4, ruling 23: finalize and QA output go to $qlog, not the public log.
-  local qlog="$work/dataset-log"; mkdir -p "$qlog"
+  local qlog="${RUNNER_TEMP:?}/assemble-log"; mkdir -p "$qlog"
   zeroed-scan finalize -out "$work/data" -dataset "$work/dataset" -from "$from" -to "$to" \
     -part-mb 1900 -lead-in-days "$LEAD_IN_DAYS" -regimes "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../regimes.json" "${extra[@]}" > "$qlog/finalize.log" 2>&1 ||
     die "finalize failed; its output is in $qlog"

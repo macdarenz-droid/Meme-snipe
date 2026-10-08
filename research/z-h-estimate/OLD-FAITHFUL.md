@@ -201,10 +201,10 @@ recommendation, before `ARCHIVE_ARM` is set:
    "delete them, or wait for the window to close". The guard lists only runs created since the earlier of 35 days ago
    and `ARCHIVE_REARM_AT`, plus every queued, in-progress, waiting, requested or pending run (round 6, ruling 43:
    GitHub allows a re-run only within 30 days of the run, per GitHub Docs "Re-running workflows and jobs", **VERIFY**
-   the page and wording at arm time). A list that reaches its 500 cap inside that window fails closed (ruling 42);
-   before ruling 43 that would have happened about 62 days after the first archive check, whatever the window. A cap
-   trip goes to the owner, since deleting runs is hard to undo. The guard logs the runner's gh version and fails
-   closed if its `gh run list` has no `--created` or lacks one of those statuses.
+   the page and wording at arm time). The runs are read page by page from the runs API (round 7, ruling 49), so no
+   500-run cap applies (a capped list would have tripped about 62 days after the first archive check, or two months
+   after a re-arm); only an API error or more than 5,000 runs fails closed, and such a trip goes to the owner, since
+   deleting runs is hard to undo. The guard logs the runner's gh version.
 3. The repository's Actions log retention (ruling 28; the back-off annotations and the run history the guard reads
    must outlive the window it reads). Read through the API if the arming session can (read only,
    `repos/{owner}/{repo}/actions/permissions/artifact-and-log-retention`, **VERIFY** the endpoint and the permission it
@@ -219,8 +219,11 @@ recommendation, before `ARCHIVE_ARM` is set:
    cache saved or restored from any other path. Owner steps: (a) Settings → Actions → General → "Fork pull request
    workflows": require approval for all outside collaborators (defence in depth); (b) do not rotate
    `DATA_STORE_TOKEN` while the download runs: a progress sealed with the old token is refused, nothing is read, and
-   the day waits for a decision instead of starting fresh. The `data-rpc-*` Helius entries saved before this change
-   stay unsealed until they expire (7 days unused); they are not deleted by hand.
+   the day waits for a decision instead of starting fresh. The MAC binds the entry's source and day (ruling 50), and
+   the AES key reaches openssl only on a file descriptor (ruling 52). Helius assets are sealed the same way, and
+   data-keep refreshes only sealed entries (ruling 51), so the unsealed `data-rpc-*` entries saved before this change
+   (09-21's included) expire after 7 days unused. Arming holds while any unsealed `data-scan-*` or `data-rpc-*` entry
+   remains; whether to delete one or wait for it to expire is the owner's decision.
 
 **Reads, and the one allowed second read (DERIVED).**
 - Each day's unit plan carries two units of margin on each side (`scanner/main.go:310`, 3,600 s), about 1.9 units each

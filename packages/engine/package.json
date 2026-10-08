@@ -7,5 +7,8 @@
   "license": "UNLICENSED",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@bot/types": "workspace:*"
   }
 }

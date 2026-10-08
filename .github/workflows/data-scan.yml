@@ -334,13 +334,14 @@ jobs:
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
           DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
           BASH_ENV: ""
           LD_PRELOAD: ""
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT"
-          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" open "$RUNNER_TEMP/work/sealed" "$RUNNER_TEMP/work/data"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" open "$RUNNER_TEMP/work/sealed" "$RUNNER_TEMP/work/data" "$PREFIX"
       # expect_units: fail closed before any read when the picked progress holds fewer
       # finished units than the dispatcher expects (e.g. the fuller entry was evicted).
       - name: Record the restored progress
@@ -419,13 +420,14 @@ jobs:
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
           DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
           BASH_ENV: ""
           LD_PRELOAD: ""
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT"
-          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/sealed"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/sealed" "$PREFIX"
       - name: Log the progress entry size
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
         env:
@@ -506,13 +508,14 @@ jobs:
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
           DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
           BASH_ENV: ""
           LD_PRELOAD: ""
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT"
-          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/sealed"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/sealed" "$PREFIX"
       - name: Save progress after QA
         if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true' && steps.shrinkqa.outputs.ok == 'true' && steps.sealqa.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -581,12 +584,27 @@ jobs:
       # confirmed. So a helius day is never uploaded as an artifact or published as a
       # release; its packaged assets are kept only in the actions cache, under
       # data-rpc-assets-DAY-*, for a later Actions job (BT-2e) to restore.
-      - name: Keep a helius day's assets in the actions cache only (never published)
+      # OF-2 round 7, ruling 51: sealed like the progress, under its own prefix.
+      - name: Seal a helius day's assets
+        id: sealassets
         if: steps.published.outputs.complete != 'true' && inputs.source == 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: data-rpc-assets-${{ matrix.day }}-
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/assets" "$RUNNER_TEMP/work/sealed-assets" "$PREFIX"
+      - name: Keep a helius day's assets in the actions cache only (never published)
+        if: steps.published.outputs.complete != 'true' && inputs.source == 'helius' && steps.sealassets.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/work/assets
-          key: data-rpc-assets-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/work/sealed-assets
+          key: data-rpc-assets-${{ matrix.day }}-k${{ steps.cachekid.outputs.kid }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Note the upload start
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
         run: echo "T_UPLOAD=$(date +%s)" >> "$GITHUB_ENV"

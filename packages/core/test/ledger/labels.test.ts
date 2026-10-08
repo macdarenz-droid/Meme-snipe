@@ -1,6 +1,6 @@
 // The engine-facing ledger API cannot read labels, trials or gate results. Outcomes live in a separate
 // scoring file that the ledger code never opens, attaches or imports.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as engineApi from '../../src/ledger/index.ts';
@@ -121,6 +121,24 @@ describe('labels are out of the engine\'s reach', () => {
     put('packages/core/src/stats/index.ts', "import { x } from '../ledger/scoring/index.ts';\n");
     put('packages/core/src/engine/ok.ts', "import { openLedger } from '@meme-snipe/core/ledger';\nimport { y } from '../units/index.ts';\n");
     put('packages/core/src/units/index.ts', 'export const y = 1;\n');
+    put('packages/engine/src/m24/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");    // M24 owns its SQLite file
+    put('packages/engine/src/m25/boot.ts', "import { openDb } from '../m24/db.ts';\n");         // and is reached through it
+    expect(importViolations(root)).toEqual([]);
+    put('packages/signer/src/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");          // any other package: flagged
+    put('packages/engine/src/m09/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");      // and so is the rest of @bot/engine
+    const sqliteFound = importViolations(root);
+    expect(sqliteFound).toContain('packages/signer/src/db.ts (imports node:sqlite)');
+    expect(sqliteFound).toContain('packages/engine/src/m09/db.ts (imports node:sqlite)');
+    expect(sqliteFound.every((f) => f.startsWith('packages/signer/') || f.startsWith('packages/engine/src/m09/'))).toBe(true);
+    rmSync(join(root, 'packages/signer'), { recursive: true });
+    rmSync(join(root, 'packages/engine/src/m09'), { recursive: true });
+    put('packages/worker/src/old.ts', "import { openDb } from '../../engine/src/m24/db.ts';\n");   // a Zeroed file reaching M24 (ruling 20)
+    put('packages/core/src/units/via.ts', "export * from '../../../engine/src/m25/boot.ts';\n");      // or reaching it through @bot/engine
+    const reach = importViolations(root);
+    expect(reach).toContain('packages/worker/src/old.ts -> packages/engine/src/m24/db.ts (reaches packages/engine/src/m24)');
+    expect(reach).toContain('packages/core/src/units/via.ts -> packages/engine/src/m25/boot.ts -> packages/engine/src/m24/db.ts (reaches packages/engine/src/m24)');
+    rmSync(join(root, 'packages/worker/src/old.ts'));
+    rmSync(join(root, 'packages/core/src/units/via.ts'));
     expect(importViolations(root)).toEqual([]);
 
     const probes: Record<string, string> = {

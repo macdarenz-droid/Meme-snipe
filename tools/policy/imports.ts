@@ -35,7 +35,7 @@ import { isBuiltin } from 'node:module';
 import { extname, join, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@typescript-eslint/parser';
-import { DATA_DIRS, FORBIDDEN_IN_PACKAGES, INTERNAL_SCOPE, NO_THIRD_PARTY, SAFETY_IMPORT_CODES, TOOLS_DIR, WEB3, WEB3_BANNED_IN } from './config.ts';
+import { DATA_DIRS, FORBIDDEN_IN_PACKAGES, INTERNAL_SCOPE, NO_THIRD_PARTY, SAFETY_IMPORT_CODES, SCHEMA_TX_FILE, SCHEMA_TX_IMPORTERS, SCHEMA_TX_TEST_DIR, SQLITE, SRC_DIR_RE, SQLITE_ALLOWED_DIRS, TEST_DIR_RE, TOOLS_DIR, WEB3, WEB3_BANNED_IN } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import { DEPENDENCY_FIELDS, PRODUCTION_FIELDS, type Manifest, type PackageJson, type RepoSnapshot } from './repo.ts';
 import { safetyLinesOf, structureScopeOf, type SafetyLines, type Scope } from './scope.ts';
@@ -200,6 +200,23 @@ export function urlTarget(s: string, file: string): string | null {
 
 const trimSlash = (p: string): string => p.replace(/\/+$/, '');
 
+const MODULE_EXT = /\.(?:ts|mts|cts|tsx|js|mjs|cjs|jsx)$/;
+
+/**
+ * The rules on what a file may import by the imported file's repository path (Z02 rulings 29–32), whatever package
+ * or directory the importing file is in and whatever extension the specifier writes: only the listed files reach
+ * M24's schema transaction, and package code never reaches test code.
+ */
+function namedRuleFinding(file: string, target: string, where: string): Finding | null {
+  if (target.replace(MODULE_EXT, '') === SCHEMA_TX_FILE.replace(MODULE_EXT, '') && !SCHEMA_TX_IMPORTERS.includes(file) && !file.startsWith(SCHEMA_TX_TEST_DIR)) {
+    return finding('E_SCHEMA_TX_IMPORT', where, `${SCHEMA_TX_FILE} is the migration runner's (Z02 ruling 29); only ${SCHEMA_TX_IMPORTERS.join(' and ')} may import it`);
+  }
+  if (SRC_DIR_RE.test(file) && !TEST_DIR_RE.test(file) && TEST_DIR_RE.test(target)) {
+    return finding('E_SRC_IMPORTS_TEST', where, `${target} is test code, reached from package code (Z02 rulings 30–32); move what both need into src`);
+  }
+  return null;
+}
+
 /** The finding for one module reference, or null when it is allowed. */
 export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Finding | null {
   const where = `${file}:${ref.line}`;
@@ -213,10 +230,15 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
   if (s.startsWith('node:')) {
     if (!isBuiltin(s)) return finding('E_IMPORT_UNKNOWN', where, `"${s}" is not a Node built-in`);
     if (workspace && FORBIDDEN_IN_PACKAGES.includes(s)) return finding('E_IMPORT_FORBIDDEN', where, `"${s}" is not allowed in workspace packages (createRequire and loader hooks bypass this check)`);
+    if (workspace && s === SQLITE && !SQLITE_ALLOWED_DIRS.some((d) => file.startsWith(d))) {
+      return finding('E_SQLITE_OUTSIDE_M24', where, `"${s}" is M24's (B-M24-01); only ${SQLITE_ALLOWED_DIRS.join(' and ')} may import it`);
+    }
     return null;
   }
   if (s === '.' || s === '..' || s.startsWith('./') || s.startsWith('../')) {
     const target = posix.normalize(posix.join(posix.dirname(file), s));
+    const named = namedRuleFinding(file, target, where);
+    if (named !== null) return named;
     const inside = workspace ? target === manifest.dir || target.startsWith(`${manifest.dir}/`) : target !== '..' && !target.startsWith('../');
     if (!inside || target.split('/').includes('node_modules')) {
       return finding('E_IMPORT_PATH', where, `"${s}" leaves ${workspace ? manifest.dir : 'the repository'} or enters node_modules; import a declared package by name`);
@@ -234,6 +256,11 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
   }
   if (isBuiltin(s)) return finding('E_IMPORT_BUILTIN', where, `"${s}" is a Node built-in: import "node:${s}"`);
   const name = packageName(s);
+  if (name.startsWith(INTERNAL_SCOPE) && s.length > name.length) {
+    // `@bot/<n>` is `packages/<n>`: a subpath names a file there, which the named rules check like a relative path.
+    const named = namedRuleFinding(file, posix.normalize(`packages/${name.slice(INTERNAL_SCOPE.length)}${s.slice(name.length)}`), where);
+    if (named !== null) return named;
+  }
   if (workspace && WEB3_BANNED_IN.includes(manifest.json.name ?? '') && name === WEB3) {
     return finding('E_WEB3_BANNED', where, `${WEB3} is banned in ${String(manifest.json.name)} (B-M30-01)`);
   }

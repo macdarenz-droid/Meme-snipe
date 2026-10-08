@@ -206,6 +206,15 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `why-is-node-running` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `word-wrap` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `yocto-queue` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
+| `zod` | Runtime schema check of every dashboard view model in `@bot/contract` (B-M28-01; UI.md UI-F32), imported by the dashboard and the server; production dependency. 4.6.5, published 2026-09-13 (24 days old on 2026-10-07), no dependencies of its own, no install script (npm registry, read 2026-10-07) | MIT | supervisor (Z02 brief, 2026-10-08) |
+
+## Built-in modules instead of packages
+
+Decisions where a Node built-in replaces a third-party package. Each was checked on the pinned Node release (`.node-version`).
+
+| Need | Decision | Evidence |
+|---|---|---|
+| SQLite library (CA-33, B-M24-01 spike; VERIFY A-45) | Node's built-in `node:sqlite` on the pinned Node 22.23.3 (`docs/DECISIONS.md` row "Node: stay on Node 22", line 119; SPEC-B B-M24-01 cites VF-08, Node 24 ≥ 24.15.0: A-45 passed on 22.23.3 with no flags, so a spec note follows in Z0D-2). No package, no install script, no downloaded binary. Only `packages/engine/src/m24/` and its tests may import it (`tools/policy`, `E_SQLITE_OUTSIDE_M24`). | nodejs/node `v22.23.3` `doc/api/sqlite.md` (read 2026-10-07): `DatabaseSync` (v22.5.0), `database.isTransaction` (v22.16.0), `statement.setReadBigInts` (v22.5.0), `sqlite.backup()` (v22.16.0); module "Stability: 1.1 - Active development". `packages/engine/test/m24/sqlite-verify.test.ts` re-checks explicit transactions, WAL, a read-only reader during a write and the online backup on every CI run. Node 22 prints an `ExperimentalWarning` once per process. **Write latency on the 2 GB host: pending** (a server check, listed in `HANDOVER.md`): `node packages/engine/test/m24/write-latency.bench.ts <data dir>/bench.db 2000`; switch rule (D06): a 10-row transaction p99 above 20 ms for 24 h moves to the fallback binding. |
 
 ## Age exceptions
 

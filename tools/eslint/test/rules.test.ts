@@ -9,6 +9,7 @@ import tsParser from '@typescript-eslint/parser';
 import { RuleTester } from 'eslint';
 import plugin from '../plugin.ts';
 import noAmbientClockOrRandom from '../rules/no-ambient-clock-or-random.ts';
+import noAwaitInWithTx from '../rules/no-await-in-withtx.ts';
 import noNumberOnUnits from '../rules/no-number-on-units.ts';
 import noSharedTypeRedefinition, { exportedTypeNames } from '../rules/no-shared-type-redefinition.ts';
 
@@ -20,9 +21,9 @@ const tester = new RuleTester({ languageOptions: { parser: tsParser, ecmaVersion
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
 describe('plugin', () => {
-  it('exports the three rules under the bot namespace', () => {
+  it('exports the four rules under the bot namespace', () => {
     assert.equal(plugin.meta?.name, 'bot');
-    assert.deepEqual(Object.keys(plugin.rules ?? {}).sort(), ['no-ambient-clock-or-random', 'no-number-on-units', 'no-shared-type-redefinition']);
+    assert.deepEqual(Object.keys(plugin.rules ?? {}).sort(), ['no-ambient-clock-or-random', 'no-await-in-withtx', 'no-number-on-units', 'no-shared-type-redefinition']);
   });
 });
 
@@ -174,4 +175,27 @@ describe('exportedTypeNames', () => {
       assert.ok(names.has(n), n);
     }
   });
+});
+
+// B-M24-01 acceptance: a withTx containing an await fails lint.
+tester.run('no-await-in-withtx', noAwaitInWithTx, {
+  valid: [
+    'db.withTx((tx) => { tx.run(sql); })',
+    'withTx(function (tx) { return tx.get(sql); })',
+    'db.withTx(handler)',
+    'async function f() { await x; db.withTx((tx) => tx.run(sql)); }',
+    'db.withTx((tx) => { const later = async () => { await x; }; return later; })',
+    'other(async () => { await x; })',
+    '(async () => { await x; })()',
+    'db.other(async (tx) => { await tx; })',
+    'await x;',
+    'for await (const r of rows) use(r);',
+  ],
+  invalid: [
+    { code: 'db.withTx(async (tx) => { await send(tx); })', errors: [{ messageId: 'asyncCallback' }, { messageId: 'awaitInTx' }] },
+    { code: "db['withTx'](async function (tx) { for await (const r of rows) tx.run(r); })", errors: [{ messageId: 'asyncCallback' }, { messageId: 'awaitInTx' }] },
+    { code: 'withTx(async (tx) => tx.run(sql))', errors: [{ messageId: 'asyncCallback' }] },
+    { code: 'this.db.withTx(function* (tx) { yield tx; })', errors: [{ messageId: 'asyncCallback' }] },
+    { code: 'db.withTx((tx) => { if (a) { await b; } })', errors: [{ messageId: 'awaitInTx' }] },
+  ],
 });
