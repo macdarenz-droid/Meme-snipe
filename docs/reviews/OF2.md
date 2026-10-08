@@ -108,3 +108,12 @@ Round 3 items A, B and C are closed. No archive request is possible from current
 
 - test-ci 212/213/224 pass; 15 rows fail on the `3b67e97d` files. Labels match. Merge-forwards consistent. Arming refuses today: data-scan.yml still grants `contents: write` and uploads the day artifact.
 - m1 is the red team's MAJOR 1, covered by ruling 36. m2: the parser and the log retention stay VERIFY items on the arm checklist (rulings 28 and 33).
+
+## Round 5 (heads: of2-holds `89f99393`, archive-safe-b `8f6b7e34`, of3-scanner `d59ab431`)
+
+- Builder: rulings 36–42 done. test-ci 218/219/233; fail-before rows for 36–39, 41 and 42.
+- Readings, accepted (8 Oct 2026, 8:05 PM):
+  - The allow-list in 36 is empty: every zeroed-scan call writes to a file or is captured.
+  - Ruling 33 now means python3 with yaml only; yq is dropped because it keeps a repeated key.
+  - `actions: write` is allowed only for archive-check.yml at the top level and for the continue job in data-scan.yml.
+- Risk from 42: archive-check reaches 500 listed runs in about 62 days, and then the guard fails closed. The cap stays as it is: the 31 days in batches should finish well before then. If the cap does trip, it goes to the owner, because deleting runs is hard to undo. A filter on run creation date stays a VERIFY idea in OLD-FAITHFUL; it is not built now.
