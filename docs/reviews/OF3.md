@@ -63,8 +63,12 @@ Card OF-3, `research/z-h-estimate/OLD-FAITHFUL.md` §5. Builder: the data builde
 21. **m3.** Write a unit's k2 lines to a temp file, then append and sync; on resume, require the unit's k2 line count to equal its `.zst` count before deleting the K2 copy. Test with a torn line.
 22. **m4.** The read-done path checks the list's sha256 against every unit's `migration_list_sha256` before copying it. Test.
 
-## Round 3 (head `71ea6630`): red team PASS (1 MINOR); reviewer pending
+## Round 3 (head `71ea6630`): reviewer PASS; red team PASS (1 MINOR)
 
 Rulings 18, 20, 21 and 22 are closed. There is no path to a K2 or K3 day counted done with missing or duplicated units, or kept past its retention.
 
 23. **m1 (8 Oct 2026, 7:25 PM).** `ARCHIVE_PRIOR_LIST` and `ARCHIVE_PRIOR_SUMS` are declared once at job level in data-scan.yml, empty for now, so both the scan and the trim step see the same value. A test-ci assertion checks that no step sets them on its own.
+
+- Reviewer (7:37 PM): rulings 18–22 PASS. 227/0 on the head; 5 rows fail with the old files.
+- Reviewer MAJOR, out of this diff: ruling 7 is still open on the OF-4 row and blocks arming. The `continue` job (data-scan.yml:664) passes on its own `expect_units` input, which is empty by default, not on the day's saved unit count. After a resumable stop, a missing or short progress cache therefore restarts the day from unit 0.
+  - OF-4's acceptance: before dispatch, count the finished units in the saved progress and pass that count as `expect_units`; refuse to chain when the count is 0 or the save failed. Test: a chained run that restores nothing stops before any read.
