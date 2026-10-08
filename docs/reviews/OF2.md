@@ -183,3 +183,15 @@ The reviewer exercised the seal directly: a round trip, a wrong key, a flipped b
 ### Supervisor ruling 54 (8 Oct 2026, 11:58 PM; from the retro red team, `docs/reviews/SUPDOCS.md` ruling 3)
 
 54. **MINOR, day count.** 2026-07-23 to 08-21 is 30 days, not 31. In the DECISIONS A06 Old Faithful row and any comment, test name or doc that counts that range, write "30 days; 31 with the 07-22 lead-in". Do not change the allow-list itself.
+
+## Round 7 (heads: of2-holds `e67b2a2f`, archive-safe-b `28173341`, of3-scanner `8db8b0bf`)
+
+### Round 7 red team `session_01LQHpKvikNEWAw96tHRnZq3` (delta `4fc50e38..e67b2a2f`): 1 MAJOR, 3 MINOR
+
+MAJOR 1: the runs API returns at most 1,000 results for a search filtered by `created` or `status`, and `--paginate` stops without an error, so the 5,000 cap never trips. About 125 days after a re-arm, the oldest failures drop out and a stopped chain re-opens by itself. MINOR 2: a fork PR can save a `data-` cache on its merge ref, which halts arming (denial of service only). MINOR 3: leftover redirect bypasses (`printf -v`, `:=`, `ln -s` to stdout, a binary named in workflow `env:`). MINOR 4: the token and MAC key in the crypt processes' environment are unchanged and accepted. Sound: MAC binding, no unsealed path to a scan, key off argv.
+
+### Supervisor rulings for round 8 (9 Oct 2026, about 12:30 AM; sent together with the round 7 reviewer's findings)
+
+55. **MAJOR 1.** Fail closed when `.total_count` differs from the rows read. Also slice the window into `created` ranges that each stay under 1,000, so the 1,000 limit is never reached in normal use. VERIFY the 1,000 limit in the GitHub REST docs ("List workflow runs for a workflow") and cite it. Test: a stub with total_count 1,200 and 1,000 rows fails closed; sliced ranges read all 1,200.
+56. **MINOR 2.** `ag_caches_sealed` lists only `ref=refs/heads/<default branch>`; fork and PR caches are never restored by default-branch runs. Test: an unsealed key on a PR ref does not halt arming, and the same key on the default branch does.
+57. **MINOR 3.** Also refuse: `ln` that targets the log directories, `printf -v` and `:=` assignments to qlog, slog and tlog, and `zeroed-*` in workflow `env:` values. One test per form.
