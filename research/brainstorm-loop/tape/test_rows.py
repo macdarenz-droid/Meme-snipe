@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import h8 as H8  # noqa: E402
 import rebuy as RB  # noqa: E402
 import slicer as SL  # noqa: E402
+import migseat as MS  # noqa: E402
 import rows as R  # noqa: E402
 from tapeio import AMM_COLS, CURVE_COLS, SOL_NATIVE, WSOL, Tape  # noqa: E402
 
@@ -24,7 +25,7 @@ SUPPLY = 1e15
 class Unit:
     def __init__(self, lo=0, hi=9999):
         self.lo, self.hi = lo, hi
-        self.curve, self.amm, self.t, self.w, self.ev = [], [], [], [], []
+        self.curve, self.amm, self.t, self.w, self.ev, self.f = [], [], [], [], [], []
         self.n = 0
 
     def _base(self, slot, owner, signer=None):
@@ -83,6 +84,8 @@ class Unit:
                                       "to_owner", "amount"]).to_csv(
             os.path.join(p, "T.csv.zst"), **z)
         pd.DataFrame(self.w, columns=["slot", "from", "to"]).to_csv(os.path.join(p, "W.csv.zst"), **z)
+        pd.DataFrame(self.f, columns=["slot", "block_time", "signature", "venue", "pool_or_curve", "err_class"]).to_csv(
+            os.path.join(p, "F.csv.zst"), **z)
         pd.DataFrame({"slot": range(self.lo, self.hi + 1), "block_time": [T0 + s for s in range(self.lo, self.hi + 1)]}
                      ).to_csv(os.path.join(p, "B.csv.zst"), **z)
         pd.DataFrame(columns=["slot", "creator", "amount", "event"]).to_csv(os.path.join(p, "CF.csv.zst"), **z)
@@ -691,6 +694,121 @@ class SlicerControl(unittest.TestCase):
         self.assertEqual(c.iloc[0]["cont"], 0.5e9)               # A's later buy, after t' + 23 slots
         c = self._ctl(True)
         self.assertEqual(list(c["t"]), [T0 + 1200])              # A and B linked: C completes three
+
+
+def migseat_unit():
+    u = Unit(0, 5000)
+    u.create(10, "M")
+    u.event("CompleteEvent", 50, {"mint": "M"})                       # 40 s after create: gradual
+    u.w.append({"slot": 5, "from": "DEV", "to": "L"})
+    u.migrate(100, "M", "P")
+    for sl, o in ((100, "A"), (101, "B"), (101, "L")):
+        r = u.aswap(sl, o, "M", "P", sol=1e9)
+        r["jito_tip"], r["tx_fee"] = 1_000_000, 5_000
+    u.aswap(102, "DEV", "M", "P", buy=False, tokens=6e13)             # creator sells 6% of supply
+    u.aswap(120, "C", "M", "P", sol=3e9)
+    u.event("BoostBuyAndBurnEvent", 130, {"mint": "M", "pool": "P", "quote_amount_in_used": "2000000000",
+                                          "quote_amount_in_requested": "2000000000"})
+    for i in range(3):
+        u.f.append({"slot": 100 + i, "block_time": T0 + 100 + i, "signature": f"f{i}", "venue": "pumpswap",
+                    "pool_or_curve": "P", "err_class": "slippage"})
+    return u
+
+
+class MigSeat(unittest.TestCase):
+    def test_w_group_two_hops(self):
+        u = Unit()
+        u.w += [{"slot": 1, "from": "DEV", "to": "a"}, {"slot": 2, "from": "a", "to": "b"},
+                {"slot": 3, "from": "b", "to": "c"}, {"slot": 50, "from": "DEV", "to": "late"}]
+        tape, _, _ = load(u)
+        self.assertEqual(MS.w_group(tape, {"DEV"}, 10), {"DEV", "a", "b"})
+
+    def test_rows(self):
+        tape, s, _ = load(migseat_unit())
+        ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+        df, out = MS.mig_seat(tape, s, ctx)
+        self.assertEqual(out["by_speed"], {"gradual": 1})
+        g = out["gradual"]
+        self.assertEqual((g["G1"]["share_with_seat_buy"], g["G1"]["median_distinct_buyers"]), (1.0, 2.0))  # L linked
+        self.assertTrue(g["G1"]["passed"])
+        self.assertEqual(g["G2"]["median_toll_lamports"], 1_005_000)
+        self.assertEqual(g["G3"]["median_racers"], 3)
+        self.assertFalse(g["G4"]["passed"])                           # 6% of supply sold before s0 + 2 + 60 s
+        r = df.iloc[0]
+        self.assertEqual(r["payer_sol"], 5e9)                         # C's 3 SOL + BOOST's 2 SOL
+        self.assertAlmostEqual(r["payer_over_xstar"], 5e9 / (100e9 * (np.sqrt(1.035) - 1)))
+        self.assertTrue(g["G5"]["passed"])
+        self.assertEqual(g["G6"]["median_boost_used_over_requested"], 1.0)
+        self.assertFalse(g["G7"]["passed"])
+        self.assertAlmostEqual(g["kill"]["share_first_minute_in_s0_s0p1"], 2 / 5)
+        self.assertFalse(g["kill"]["closes"])
+        self.assertIsNone(out["G8_regime"]["passed"])                 # not checkable: no PREREG
+        self.assertFalse(out["prereg_gradual"])
+
+
+def mayhem_unit():
+    u = Unit(0, 5000)
+    u.create(10, "MM")
+    def rep(slot, old, new, real=10e9, sig=None):
+        u.event("UpdateMayhemVirtualParamsEvent", slot, {
+            "mint": "MM", "virtual_sol_reserves": str(int(old[0])), "virtual_token_reserves": str(int(old[1])),
+            "new_virtual_sol_reserves": str(int(new[0])), "new_virtual_token_reserves": str(int(new[1])),
+            "real_sol_reserves": str(int(real)), "real_token_reserves": "1"}, sig=sig)
+    rep(1000, (100e9, 1e15), (90e9, 1e15), sig="rp1")                # j = -10%
+    rep(1050, (90e9, 1e15), (97.2e9, 1e15))                          # +8% >= 5%: the bounce
+    rep(2000, (100e9, 1e15), (90e9, 1e15))                           # -10%, no bounce
+    r = u.cbuy(1000, "agent", "MM")
+    r["signature"], r["top_program"] = "rp1", MS.MAYHEM_PROGRAM       # this re-price sits in a mayhem-program tx
+    return u
+
+
+class MayhemSnap(unittest.TestCase):
+    def test_rows(self):
+        tape, s, _ = load(mayhem_unit())
+        dn, out = MS.mayhem_snap(tape, s, flat_hourly(200.0))
+        self.assertEqual(out["reprice_rows"], 3)
+        self.assertAlmostEqual(out["a"]["share_attributed"], 1 / 3)
+        self.assertFalse(out["a"]["passed"])
+        self.assertEqual(out["b"]["down_steps"], 2)
+        self.assertEqual(out["b"]["share_followed_by_up"], 0.5)
+        self.assertFalse(out["b"]["passed"])
+        self.assertEqual(out["c"]["median_seconds_to_up_step"], 50)
+        self.assertEqual((out["d"]["share"], out["d"]["passed"]), (1.0, True))   # 10 SOL >= 2 x $100 / $200
+        self.assertEqual(out["e"]["per_day"], {DAY: 2})
+        self.assertEqual(out["rule"]["share_vtoken_unchanged"], 1.0)
+        self.assertFalse(out["prereg_may_be_written"])
+
+    def test_prereg_may_be_written_when_a_to_e_pass(self):
+        # COUNT_ROWS_AMENDMENT_6: the PREREG may be written once rows (a)-(e) pass; the owner rules before bot use
+        u = Unit(0, 30000)
+        u.create(10, "MM")
+        for i in range(100):
+            for k, (old, new) in enumerate((((100e9, 1e15), (90e9, 1e15)), ((90e9, 1e15), (97.2e9, 1e15)))):
+                slot = 100 + 200 * i + 30 * k
+                u.event("UpdateMayhemVirtualParamsEvent", slot, {
+                    "mint": "MM", "virtual_sol_reserves": str(int(old[0])), "virtual_token_reserves": str(int(old[1])),
+                    "new_virtual_sol_reserves": str(int(new[0])), "new_virtual_token_reserves": str(int(new[1])),
+                    "real_sol_reserves": "10000000000", "real_token_reserves": "1"}, sig=f"r{i}_{k}")
+                r = u.cbuy(slot, "agent", "MM")
+                r["signature"], r["top_program"] = f"r{i}_{k}", MS.MAYHEM_PROGRAM
+        tape, s, _ = load(u)
+        _, out = MS.mayhem_snap(tape, s, flat_hourly(200.0, T0 - 7200, T0 + 40000))
+        self.assertEqual(out["e"]["per_day"], {DAY: 100})
+        self.assertTrue(out["prereg_may_be_written"])
+        self.assertIn("owner", out["before_any_bot_use"])
+
+
+class RunnerNewRows(unittest.TestCase):
+    def test_run_reports_amendments_4_to_6(self):
+        import run_step_a as RS
+        d = tempfile.mkdtemp()
+        out = os.path.join(d, "o")
+        summ = RS.run([migseat_unit().write(d)], out, n_boot=50)
+        for k in ("8_slicer_ride", "9_mig_seat", "10_mayhem_snap"):
+            self.assertIn(k, summ)
+        self.assertIn("G8_regime", summ["9_mig_seat"])
+        for f in ("slicer_events", "mig_seat", "mayhem_snap_down_steps"):
+            self.assertTrue(os.path.exists(os.path.join(out, f"stepa_{f}.csv")))
 
 
 class SolUsdDir(unittest.TestCase):

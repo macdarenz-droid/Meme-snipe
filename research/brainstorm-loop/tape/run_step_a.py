@@ -18,9 +18,11 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import h8 as H8  # noqa: E402
+import migseat as MS  # noqa: E402
 import payer as PM  # noqa: E402
 import rebuy as RB  # noqa: E402
 import rows as R  # noqa: E402
+import slicer as SL  # noqa: E402
 from tapeio import DEFAULT_PLAN, PlanError, Tape, check_plan, unit_info  # noqa: E402
 
 
@@ -166,6 +168,12 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
         need = "needs SOL/USD 1-minute closes (--sol-usd Binance kline CSVs)"
         h8_strata, h8_cap = {"status": need}, {"status": need}
         h8_ph = h8_gr = pd.DataFrame()
+    # COUNT_ROWS_AMENDMENT_4 (slicer ride), _5 (MIG-SEAT, MAYHEM-SNAP) and _6
+    gctx = ctx if hourly else H8.GateCtx(tape, s, hourly)
+    cmaps, _ = R.cluster_maps(tape)
+    sl_ev, sl_plc, sl_ctl, sl_s = SL.slicer_rows(tape, s, adj, fast, gctx, cmaps["hub_cap_50"])
+    ms_df, ms_s = MS.mig_seat(tape, s, gctx)
+    mh_df, mh_s = MS.mayhem_snap(tape, s, hourly)
     summary = {
         "units": [f"{d} {a}-{b}" for d, a, b in tape.ranges],
         "swaps": int(len(s)), "boost_rows_excluded": int(s["boost"].sum()),
@@ -174,14 +182,21 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
         "1_dev_zero": dz_s, "2_rebuy_anchor": rb_s, "3_seat_drift": sd_s, "4_age_gate": ag_s,
         "5_two_sided_clusters": two, "6_round_usd": ru_s, "sol_usd_files": sol_usd_files or [],
         "h8_stratum_rows_1_3": h8_strata, "7_h8_capacity": h8_cap,
+        "8_slicer_ride": sl_s, "9_mig_seat": ms_s, "10_mayhem_snap": mh_s,
     }
     summary["payer_mass_3_seat_drift"] = {k: v for k, v in seat_bar.items() if k != "events"}
     if decide:
         summary["plan"] = plan
         summary["decision"] = decision(dz_s, sd_s, rb_s, {"3_seat_drift": seat_bar})
+        summary["decision"].update({
+            "8_slicer_ride_counts_to_owner": sl_s["all_rows_pass"],          # never a PREREG before the ethics ruling
+            "9_mig_seat_prereg_gradual": ms_s["prereg_gradual"],
+            "10_mayhem_snap_prereg_may_be_written": mh_s["prereg_may_be_written"]})
     os.makedirs(out, exist_ok=True)
     for name, df in (("dev_zero", dz), ("rebuy_exits", rb), ("rebuy_points", rb_pts), ("rebuy_pairs", rb_pairs), ("seat_drift", sd), ("age_gate", ag),
-                     ("two_sided_labels", labels), ("round_usd", ru), ("h8_pool_hours", h8_ph), ("h8_graduates", h8_gr)):
+                     ("two_sided_labels", labels), ("round_usd", ru), ("h8_pool_hours", h8_ph), ("h8_graduates", h8_gr),
+                     ("slicer_events", sl_ev), ("slicer_low_b_placebo", sl_plc), ("slicer_controls", sl_ctl),
+                     ("mig_seat", ms_df), ("mayhem_snap_down_steps", mh_df)):
         df.to_csv(os.path.join(out, f"stepa_{name}.csv"), index=False)
     with open(os.path.join(out, "stepa_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1, default=str)

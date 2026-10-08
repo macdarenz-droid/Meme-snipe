@@ -70,3 +70,25 @@ Places where `PREREG.md` is silent or ambiguous. Each one has the reading the co
     - pool-hours are distinct (pool, UTC hour) with an H8-eligible point;
     - graduates are distinct pools.
 35. **Price input.** RESOLVED. `--solusd` defaults to `research/brainstorm-loop/sol-usd` (Binance SOLUSDT 1h, 09-02..09-11), and only that directory form is accepted. Its SHA256SUMS is pinned by `config.SOLUSD_SUMS_SHA256`, and validate refuses an input whose sha differs from `frozen["solusd_sha256"]`. The code checks each needed day's file against `SHA256SUMS`: the decision days, plus the day before the first one. A missing day or a mismatch is refused, and the sha256 of SHA256SUMS is recorded.
+
+## AMENDMENT_3 and H8_AMENDMENT_2 (the H8-tradable subset)
+36. **H17 from the tape.**
+    - The mint program and cashback flag come from the create row.
+    - The pool account size is the pool's last ExtendAccountEvent up to d. On the units read, every migration pool is extended from 270 to 301 bytes in its migration transaction. Without the event the size is unknown.
+    - Mint extensions are taken as supported when the create row is on the tape, because `tx/shape.ts` says pump creates carry only MetadataPointer and TokenMetadata. That is an assumption from the core's comment, not read per mint.
+    - Without a create row, H9, H12, H13 and H17 are unknown (the bot's `readCreate`). Coins created before the tape are never H8-tradable.
+37. **H13 needs funder reads the tape cannot give.** The bot links insiders through each wallet's first-ever funding transfer (`facts/funding.ts`), and a 2-day tape cannot prove a wallet's first funding. So H13 is unknown for every point, and the H8-tradable subset is EMPTY on the tape as built. CONSERVATIVE: missing evidence is never a pass.
+    - Consequence: AMENDMENT_3's ranking adds nothing, and no validation result can be "tradable as the bot stands". `validate` reports `unknown_share` so the owner sees that the cause is evidence, not the floor.
+    - Needs a ruling: supply funder reads (`holder_features(funders=...)` takes them), or accept a tape proxy.
+    - Creation buyers and first buyers are curve-buy owners (`user_token_owner`), where the bot keys on the curve `user`.
+38. **The universe's own exits.** AMENDMENT_3 asks for these as a secondary (U2: ATR stop, T_flat, partial at +1.5R, trail, flow, liquidity and deployer stops, `exits/rules.ts`), but they are NOT built. They need an entry stop and 1R, which come from a strategy's structure stop, and D1's rules do not define one. Building them would invent the stop. Needs a ruling on the stop. Secondary only: no judgement depends on it.
+39. **Readings in the gates.**
+    - H11's spike check applies in every universe, as `hard.ts` does; the chase check only in U2.
+    - U1 also needs a market cap of at least 1,470 SOL (ARCHITECTURE §3.2). Within D1's window only a decision at exactly migration + 24 h can be U1.
+    - H6: LP minted by DepositEvents minus LP burned by WithdrawEvents up to d. Migration LP is burned.
+    - Dust is checked on CreatePoolEvent `pool_quote_amount` (as `facts/producer.ts`).
+    - H12 and H13 use circulating = supply − pool base reserve. Tokens the book does not account for go to the worst place (GATE-1d), which gives unknown.
+40. **Ranking and stratum.**
+    - The $5 subset is throttled inside itself, one entry per pool per rolling hour. The bot's own daily limits (3 a day, 1 per mint a day) are not applied, because AMENDMENT_3 does not name them.
+    - `h8_first` never makes a rule qualify.
+    - The count row reports each size both on floor and gates ("tradable") and on the floor only. It also reports the canonical pools on the tape whose last row of the day charged a 0 creator fee.

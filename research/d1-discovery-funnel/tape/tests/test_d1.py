@@ -1092,6 +1092,8 @@ class BotGates(unittest.TestCase):
 
     def test_holder_gates_in_features(self):
         sim, amm, migs, mig_slot, lo, hi = S.standard()
+        amm = amm.copy()
+        amm["supply"] = 206_900_000_000_000      # every token started in the pool: the book accounts for all of them
         cr = [(lo, "c", S.MINT, 90, 90, S.CURVE, 0, C.SYSTEM_PROGRAM)]
         for creates, h12_known in (([], False), (cr, True)):
             tape = S.make_tape(amm, lo, hi, migs=migs, creates=creates)

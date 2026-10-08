@@ -40,7 +40,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
   - `validate` also refuses frozen rules made by other code.
 - **H8 stratum.** `--solusd` defaults to `research/brainstorm-loop/sol-usd`. Each needed day is checked against `SHA256SUMS`, and a missing day or a mismatch is refused. `validate` refuses frozen rules made before the H8 amendment (`run_d1.FROZEN_AMENDMENTS`).
 - `search` refuses dev runs and any day that is not a discovery day.
-- `search` and `validate` refuse while a frozen ruling in `run_d1.REQUIRED_RULINGS` is missing from `FROZEN_AMENDMENTS`: AMENDMENT_3 and H8_AMENDMENT_2 are frozen but not implemented yet (red team R2-9).
+- `search` and `validate` refuse while a frozen ruling in `run_d1.REQUIRED_RULINGS` is missing from `FROZEN_AMENDMENTS`: both are now implemented, so the guard (red team R2-9) is satisfied.
 - `validate` refuses unless `--confirm-validation-read` is passed, and refuses when its days overlap the discovery days.
 - `validate` refuses unless the run read exactly the Step B days and every unit of the registered Step B plan (`config.STEPB_PLAN_SHA256`), with no gap (red team R2-1).
 - `--dev-unknown-migration` exists only for shape checks on the few units cached now. It gives pools that migrated before the tape a pseudo migration. Its runs are marked `dev` and can never be searched or validated.
@@ -51,7 +51,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - **Future-marker test.** `test_planted_future_marker` plants extreme rows of every table one slot after a decision and requires every earlier decision's features to be unchanged. The test was mutation-checked: a one-slot leak in features, clusters or holders makes it fail.
 
 ## Tests
-`cd tape && python3 -m unittest -v` runs 44 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
+`cd tape && python3 -m unittest -v` runs 57 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
 - costs;
 - pool state;
 - universe and timing;
@@ -62,7 +62,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - outcomes;
 - the search (planted rule found, "nothing found", fold gap, edges from training only, throttle);
 - validation verdicts;
-- the amendments (rent by date band, binary and degenerate features, cost screen, H8 stratum and count row);
+- the amendments (rent by date band, binary and degenerate features, cost screen, H8 stratum and count row, AMENDMENT_3 ranking, H8_AMENDMENT_2 universe floors and bot gates);
 - BOOST flagging;
 - the guards (dev runs, partial days, overlapping days, plan sha, incomplete plan, input hashes, code sha).
 
@@ -86,6 +86,8 @@ Every review and amendment fix was mutation-checked: undoing it makes a test fai
 | §5 1,568 rules per hold, quintiles from training folds; binary and degenerate features (AMENDMENT_1 item 23) | `search.all_rules`, `search.edges_of`, `search.side_mask` |
 | §5 score, ≥ 30 trades a fold, net mean > 0 in every fold (AMENDMENT_1 item 24), advance ≤ 5, frozen edges | `search.run_search` |
 | Step A complete and inputs pinned (review fixes) | `stepa.plan_check`, `run_d1.search_guard`, `run_d1.validate_guard`, `run_d1.stage2` |
+| AMENDMENT_3: rank rules whose $5 H8-tradable subset holds in every fold first | `search.run_search` (`h8_first`, `h8_s5_*_f<j>`) |
+| H8_AMENDMENT_2: universe tag and floor, dust, H6, H9, H11, H12, H13, H17 as of d; tradable at $5 only; count row sizes to $10,000 and creator-fee-0 pools | `gates.universe_tag`, `gates.floor_for`, `gates.gate_frame`, `holders.gate_h12`, `holders.gate_h13`, `holders.insider_sets`, `h8.add_h8`, `h8.h8_counts`, `h8.pool_days`, `validate.h8_report` |
 | H8_AMENDMENT: H8-eligible stratum at $5/$20/$50 (search table, validation), "tradable as the bot stands", count row | `h8.add_h8`, `h8.price_asof`, `h8.h8_counts`, `search.run_search` (`h8_s*` columns), `validate.h8_report`, `outcomes._sized` |
 | BOOST and protocol swaps flagged and left out of flow (OPEN_QUESTIONS #21) | `load.load` (`boost`, `protocol`, `signature`), `pool_state.flow_rows` |
 | §6 99.5% pool-clustered bootstrap by day, ≥ 300 trades, positive each day, lift, verdicts | `validate.judge`, `validate.cluster_bootstrap`, `validate.rule_trades` |
