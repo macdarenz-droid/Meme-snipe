@@ -38,7 +38,7 @@ class Guards(unittest.TestCase):
         with open(p, "w") as f:
             for a, b in rows:
                 f.write(f"{day} 1033 {a} {b}\n")
-        return p, hashlib.sha256(open(p, "rb").read()).hexdigest()
+        return p, guard.sha_file(p)
 
     def test_real_plan_sha(self):
         self.assertEqual(guard.sha_file(guard.PLAN_PATH), guard.PLAN_SHA)
@@ -136,12 +136,12 @@ class PerDayMinimum(unittest.TestCase):
 
     def test_hc_c_and_cap_d_use_every_day(self):
         from g1lib.gate import cap_gate, hc_gate
-        t = self.trig([340, 120])            # filtered (half): 170 and 60 a day, average 115
+        t = self.trig([340, 80])             # filtered (half): 170 and 40 a day, average 105
         hc = hc_gate(t, {}, self.days)
-        self.assertEqual(hc["c_min_day"], 60)
+        self.assertEqual(hc["c_min_day"], 40)
         self.assertFalse(hc["c_pass"])
         cap = cap_gate(t, {}, True, self.days)
-        self.assertEqual(cap["d_min_day"], 60)
+        self.assertEqual(cap["d_min_day"], 40)
         self.assertFalse(cap["d_pass"])
         ok = self.trig([220, 220])
         self.assertTrue(hc_gate(ok, {}, self.days)["c_pass"])

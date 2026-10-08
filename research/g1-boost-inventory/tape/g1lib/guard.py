@@ -38,7 +38,9 @@ def load_plan(path: str = PLAN_PATH, sha: str = PLAN_SHA) -> Dict[str, List[tupl
     if got != sha:
         raise GuardError(f"plan {path} has sha256 {got}, expected {sha}")
     plan: Dict[str, List[tuple]] = {}
-    for line in open(path):
+    with open(path) as fh:
+        lines = fh.read().splitlines()
+    for line in lines:
         f = line.split()
         if len(f) != 4:
             continue
