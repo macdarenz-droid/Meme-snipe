@@ -237,3 +237,38 @@ describe('idle by elapsed time (round 4, rulings 17-20)', () => {
     assert.deepEqual(keys, [T0, T0 + 60_000, T0 + 120_000]);
   });
 });
+
+describe('ruling 21: the no-repeat rule covers unwatch() too', () => {
+  const pollCounts = (q: RecorderQueue): Array<Record<string, unknown>> =>
+    q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
+
+  it('a boundary eviction (+60.1 s, 1 s polls, cap 3) is refused', () => {
+    const q = new RecorderQueue({ config: { maxWatchedPools: 3 } });
+    // Three pools polled once a second from T0 to T0 + 59 s; a candidate at T0 + 60.1 s, just past the minute
+    // boundary. All three were polled 1.1 s ago, so none is idle, though none polled in the new minute.
+    for (let sec = 0; sec < 60; sec++) for (const id of ['a', 'b', 'c']) q.append(snap(id, 1, T0 + sec * 1_000));
+    assert.deepEqual(q.append(snap('cand', 1, T0 + 60_100)), { rejected: 'E_POOL_CAP' });
+    assert.equal(q.stats().capUnwatched, 0);
+  });
+
+  it('a position pool is never a victim, however long it is silent', () => {
+    const q = new RecorderQueue({ config: { maxWatchedPools: 1 } });
+    q.append(snap('pos', 1, T0, 'pool_snapshot_position', 'position'));
+    assert.deepEqual(q.append(snap('cand', 1, T0 + 3_600_000)), { rejected: 'E_POOL_CAP' });
+    assert.equal(q.stats().capUnwatched, 0);
+  });
+
+  it('no (pool, minute) record twice after an eviction, a re-admission and an unwatch in one minute', () => {
+    const q = new RecorderQueue({ config: { maxWatchedPools: 1 } });
+    q.append(snap('a', 1, T0 + 1_000));
+    // b takes a's place (a idle 70 s) in minute 1; a comes back in minute 1, taking b's place later in it; then unwatch.
+    q.append(snap('b', 1, T0 + 71_000));
+    q.append(snap('b', 1, T0 + 72_000));
+    q.append(snap('a', 1, T0 + 119_000, 'pool_snapshot_position', 'position'));
+    q.unwatch('a', ms(T0 + 119_500));
+    q.append(snap('a', 2, T0 + 119_800, 'pool_snapshot_position', 'position'));
+    q.tick(ms(T0 + 240_000));
+    const keys = pollCounts(q).map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+    assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
+  });
+});
