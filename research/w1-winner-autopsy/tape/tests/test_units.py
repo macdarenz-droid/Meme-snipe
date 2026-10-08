@@ -198,10 +198,10 @@ class Replay(unittest.TestCase):
                              "key": make_key([100, 110, 120, 100, 110], [0] * 5, [0] * 5),
                              "kind": [1] * 5, "s1": [10**14] * 5, "s2": [10**10, 2 * 10**10, 3 * 10**10, 10**10, 10**10],
                              "s3": [0] * 5, "s4": [0] * 5, "bps": [125, 0, 0, 0, 125]})
-        q = make_key([110, 120, 100], [replay.END_OF_SLOT] * 3, [255] * 3)
-        st = States().asof(rows, [1, 1, 2], q)
-        self.assertEqual([int(x) for x in st["bps"]], [125, 125, 125])
-        self.assertEqual([int(x) for x in st["s2"]], [2 * 10**10, 3 * 10**10, 10**10])   # reserves still move
+        q = make_key([110, 120], [replay.END_OF_SLOT] * 2, [255] * 2)
+        st = States().asof(rows, [1, 1], q)
+        self.assertEqual([int(x) for x in st["bps"]], [125, 125])
+        self.assertEqual([int(x) for x in st["s2"]], [2 * 10**10, 3 * 10**10])   # reserves still move
         h = States()
         h.advance(rows.iloc[:1])                                 # an earlier unit's last fee-paying state
         st = h.asof(rows.iloc[1:3].reset_index(drop=True), [1], make_key([120], [replay.END_OF_SLOT], [255]))
@@ -209,6 +209,23 @@ class Replay(unittest.TestCase):
         tok_free, _ = venue.buy_exact_in(("a", 10**14, 10**10, 0, 0), 4 * 10**8)
         tok, _ = venue.buy_exact_in(("a", 10**14, 10**10, 0, int(st["bps"][0])), 4 * 10**8)
         self.assertLess(tok, tok_free)
+
+    def test_no_fee_paying_row_yet_uses_the_dearest_rate_R2_11(self):
+        """R2-11: before the venue's first fee-paying row, a later row's rate is never used (look-ahead, and cheaper);
+        the quote pays the dearest rate (ledger.FALLBACK_BPS: PumpSwap's dearest tier; the curve's 95 + 30)."""
+        import json
+        from w1 import ledger, replay
+        from w1.ledger import States
+        from w1.load import make_key
+        rows = pd.DataFrame({"mint": [2, 2], "cls": [1, 1], "key": make_key([100, 110], [0, 0], [0, 0]),
+                             "kind": [1, 1], "s1": [10**14] * 2, "s2": [10**10] * 2, "s3": [0, 0], "s4": [0, 0],
+                             "bps": [0, 30]})
+        st = States().asof(rows, [2, 2], make_key([100, 110], [replay.END_OF_SLOT] * 2, [255] * 2))
+        self.assertEqual([int(x) for x in st["bps"]], [ledger.FALLBACK_BPS[1], 30])
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "..", "..", "..", "edge", "snapshot", "fee-configs.json")) as fh:
+            tiers = json.load(fh)["amm"]["fee_tiers"]
+        self.assertEqual(ledger.FALLBACK_BPS[1], max(sum(int(v) for v in t["fees"].values()) for t in tiers))
 
 
 if __name__ == "__main__":

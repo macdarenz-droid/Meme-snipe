@@ -67,6 +67,11 @@ CLOSE_SUCCESS_PPM = 900_000
 DUST_PPM = 50_000
 EXPECTED_FIXED_LAMPORTS_REPO = 414_009  # research/edge/costs.json fixedLamports (rounded)
 
+# Red team R2-11: before a pool's first fee-paying row, fills pay the dearest PumpSwap tier (lp, protocol, creator) of
+# research/edge/snapshot/fee-configs.json (125 bps, the market-cap-0 tier); no later row's rate is ever used. The
+# snapshot is from October: whether it is the dearest tier valid on each tape date is an open question (CODE_REDTEAM).
+FALLBACK_FEE_BPS = (2, 93, 30)
+
 # ---- W1 fast class (research/w1-winner-autopsy/PREREG.md §3, §5) -------------------------------------------------
 FAST_NEAR_EVENT_SLOTS = 2
 FAST_NEAR_EVENT_SHARE = 0.10

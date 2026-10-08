@@ -69,18 +69,25 @@ def mark(st, tokens):
     return v, ok
 
 
+# Red team R2-11: before a venue's first fee-paying row, quotes pay the dearest rate: PumpSwap's dearest tier in
+# research/edge/snapshot/fee-configs.json (2 + 93 + 30 = 125 bps), also above the curve's 95 + 30 and the flat 30.
+# The snapshot is from October; whether it is the dearest rate valid on each tape date is an open question.
+FALLBACK_BPS = {0: 125, 1: 125, 2: 125}
+
+
 def _paid_bps(rows):
     """Red team R2-8: BOOST slices and protocol swaps carry fee fields of 0 (they pay no venue fee), so they never set
     the fee rate a quote on that venue pays. Per (mint, class), a row with bps 0 takes the bps of the last earlier row
-    with bps > 0, or, before the first such row, of the next one. Reserves are untouched. No curve or PumpSwap trade
+    with bps > 0; before the first such row nothing is known yet, so FALLBACK_BPS (the dearest rate) applies, and no
+    later row is read (R2-11). Reserves are untouched. No curve or PumpSwap trade
     that pays fees has a total rate of 0, so bps 0 marks a fee-free row."""
     if len(rows) == 0:
         return rows
     r = rows.sort_values(["mint", "cls", "key"], kind="stable")
     b = r["bps"].where(r["bps"] > 0)
     g = b.groupby([r["mint"], r["cls"]])
-    filled = g.ffill()
-    filled = filled.fillna(filled.groupby([r["mint"], r["cls"]]).bfill()).fillna(0)
+    filled = g.ffill()          # as of the row: never a later row's rate (red team R2-11)
+    filled = filled.fillna(r["cls"].map(FALLBACK_BPS)).fillna(max(FALLBACK_BPS.values()))
     out = rows.copy()
     out.loc[r.index, "bps"] = filled.astype(np.int64).to_numpy()
     return out

@@ -71,18 +71,18 @@ class PoolBook:
 
 
 def _paid_fee_rates(r):
-    """Fee rates our fill pays on the state after row i (red team R2-2). BOOST slices and protocol swaps carry fee
-    fields of 0 (they pay no venue fee), so they never set the rate: row i uses the rates of the last fee-paying row at
-    or before it (a non-BOOST, non-protocol row with a non-zero total rate), or, before the pool's first such row, the
-    rates of its first one. A pool with no fee-paying row keeps its own fields."""
+    """Fee rates our fill pays on the state after row i (red team R2-2, R2-11). BOOST slices and protocol swaps carry
+    fee fields of 0 (they pay no venue fee), so they never set the rate: row i uses the rates of the last fee-paying
+    row at or before it (a non-BOOST, non-protocol row with a non-zero total rate). Before the pool's first such row,
+    nothing is known yet, so the dearest tier (config.FALLBACK_FEE_BPS) applies; a later row is never read."""
     lp, pr, cr = r["lp_bps"], r["protocol_bps"], r["creator_bps"]
     paid = ((lp + pr + cr) > 0) & (r["boost"] == 0) & (r["protocol"] == 0)
-    if not paid.any():
-        return lp, pr, cr
     n = len(paid)
-    last = np.maximum.accumulate(np.where(paid, np.arange(n), -1))
-    src = np.where(last >= 0, last, int(np.flatnonzero(paid)[0]))
-    return lp[src], pr[src], cr[src]
+    last = np.maximum.accumulate(np.where(paid, np.arange(n), -1)) if n else np.zeros(0, dtype=np.int64)
+    idx = np.maximum(last, 0)
+    fl, fp, fc = C.FALLBACK_FEE_BPS
+    known = last >= 0
+    return (np.where(known, lp[idx], fl), np.where(known, pr[idx], fp), np.where(known, cr[idx], fc))
 
 
 def flow_rows(r) -> np.ndarray:

@@ -387,13 +387,24 @@ class Outcomes(unittest.TestCase):
             self.assertEqual((st.lp_bps, st.protocol_bps, st.creator_bps), (20, 5, 95))
             f = buy_exact_quote_in(st, C.SPEND_LAMPORTS)
             self.assertGreater(f.fees, 0)
-        # a pool whose only rows so far are fee-free borrows the rates of its first fee-paying row
+
+    def test_no_fee_paying_row_yet_uses_the_dearest_tier_R2_11(self):
+        """R2-11: before a pool's first fee-paying row, no later row's rate may be used (look-ahead, and up to 5 bps
+        cheaper); the fill pays the dearest PumpSwap tier (config.FALLBACK_FEE_BPS, the snapshot's maximum)."""
+        import json
         sim2 = S.AmmSim(5, 6, base=206_900_000_000_000, vault=67_400_000_000, virt=17_600_000_000, fees=(0, 0, 0))
         sim2.trade(S.S0 + 10, "buy", 3 * 10**8, boost=1)
         sim2.fees = (20, 5, 95)
         sim2.trade(S.S0 + 40, "buy", 10**9, owner=101)
-        st = PoolBook(sim2.df()).state(5, 0)
-        self.assertEqual((st.lp_bps, st.protocol_bps, st.creator_bps), (20, 5, 95))
+        book = PoolBook(sim2.df())
+        st = book.state(5, 0)
+        self.assertEqual((st.lp_bps, st.protocol_bps, st.creator_bps), C.FALLBACK_FEE_BPS)
+        st1 = book.state(5, 1)
+        self.assertEqual((st1.lp_bps, st1.protocol_bps, st1.creator_bps), (20, 5, 95))
+        with open(os.path.join(REPO, "research", "edge", "snapshot", "fee-configs.json")) as fh:
+            tiers = json.load(fh)["amm"]["fee_tiers"]
+        top = max(sum(int(v) for v in t["fees"].values()) for t in tiers)
+        self.assertEqual(sum(C.FALLBACK_FEE_BPS), top)
 
     def test_refused_exit_is_a_total_loss_R2_3(self):
         """R2-3: an exit the pool cannot quote (no usable reserves in the worse state of the exit slot) is a total loss
