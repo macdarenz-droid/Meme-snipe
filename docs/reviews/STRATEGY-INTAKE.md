@@ -391,3 +391,15 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
 108. **A1.** While any `recost`, k or B-9 decision for a strategy is pending, the validator refuses any other change that touches that strategy's configKey (`E_DECISION_PENDING`, PROPOSED). Only A1 tightenings (they apply at once) and a cancel of the pending change are accepted. The SOL test, every what-if and every apply-time check use the last frozen configKey's model, never a pending value. ACs: a raise submitted while a group M k decision is pending is refused with `E_DECISION_PENDING`; an M change C after a pending B is compared with the frozen A.
 109. **a1.** Readers are derived by import and call-graph closure (a key belongs to every module that reaches its read site). A lint rule allows config reads only through typed literal accessors, so no computed key names exist. A key whose readers cannot be resolved statically takes P (admission). AC: a key read only through a shared helper called by M21 is derived P.
 110. **a2 and reviewer n1.** `scheduler` acts for the submitting actor and is attributed to it; `cli` is an operator or owner change; `sentinel`, `risk_engine` and `system` are system. AC: an A3 raise applied by `scheduler` registers its `whatif` trial against the submitting operator. The actor VERIFY is cleared (ARCH 5.0a, A-M13-07 step 5, B-M26-04 step 5).
+
+## Round 15 (head `664f75e2`): reviewer PASS (no findings); red team 0 BLOCKER, 1 MAJOR, 2 MINOR
+
+- B1: an A1 tightening accepted during a pending decision re-freezes the whole configKey, including the pending, unvalidated group M value.
+- b1: a cancel does not say what happens to the value or the trial; a late-registered trial makes cancel a free holdout read.
+- b2: a pending decision with no end blocks raises indefinitely.
+
+### Supervisor rulings for round 16 (8 Oct 2026, 3:36 PM)
+
+111. **B1.** During a pending decision, an A1 change applies but does not re-freeze. Its apply-time check runs against the last frozen model with the A1 value. The host stays mismatched (no new emissions, exits kept) until the decision resolves; the outcome then freezes the result with the A1 keys, or reverts the pending value and freezes the last frozen model plus the A1 keys. AC: with a pending M change B, an A1 MAXPOS lowering applies, the frozen configKey still holds A, and a later what-if uses A.
+112. **b1.** A cancel reverts the pending value to the last frozen value (the free exact return). The k, `recost` or B-9 trial is registered when the decision starts, before it reads any window, and a cancel keeps it. AC: a cancelled pending M change restores A, and its trial stays in the registry and the DSR count.
+113. **b2.** A pending decision older than 24 h raises the same alert chain as a mismatch (24 h, then daily, then a DECISIONS line within 2 days). That DECISIONS entry may only cancel the decision (ruling 112) or complete it, never apply the pending value.
