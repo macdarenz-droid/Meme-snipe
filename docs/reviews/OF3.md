@@ -31,3 +31,21 @@ Card OF-3, `research/z-h-estimate/OLD-FAITHFUL.md` §5. Builder: the data builde
 ### Supervisor ruling (8 Oct 2026, 4:04 PM)
 
 7. **K2 progress (OF-4 requirement).** A day whose saved progress cannot hold its units never restarts from zero: the continue job refuses the chained restart when the progress entry is missing or short of the day's finished units (the `expect_units` check already exists), the day counts as failed, and the chain holds for a decision. OF-4 decides whether K2 progress goes to private zeroed-data. Add this to the OF-4 row. Reviewer and red team for OF-3 start now on `4bfd4e01`, scoped to the OF-3 commits (`aa09d0b0..4bfd4e01`); OF-2 round 3 merges forward afterwards as a delta.
+
+## Round 1 review (head `4bfd4e01`, scope `aa09d0b0..4bfd4e01`): reviewer PASS (4 MINOR); red team 0 BLOCKER, 2 MAJOR, 6 MINOR
+
+- Reviewer: test-ci 201/0; 197/4 with the old files; every OF-3 row test present and failing on old code; nothing can send a request. m1: k2 hashes held only in memory while K2 units are deleted. m2: the first allow-listed day has no prior list. m3: "canonical-pool transaction" keeps trade instructions only; deposits and withdrawals are not kept. m4: a hosted runner may not have 55 GB free.
+- Red team: M1 a K3 day after the first reads the whole day at K2 and only then is refused at the trim (no prior list), and again on every re-dispatch. M2 a K3 day whose QA was resumable cannot finish without a second full read (restored K3 units are refused by scan-day and trim-day). m3 = reviewer m2. m4 K2 days write no list-D.txt; trim accepts any file as the prior list. m5 k2 hash lines are checked only for the sampled unit. m6 k2 lines follow the locale's glob order. m7 the K2 peak is checked once, before the read. m8 = reviewer m1, plus no trim time budget.
+
+### Supervisor rulings for round 2 (8 Oct 2026, 4:12 PM)
+
+8. **M1.** scan-day.sh refuses (exit 2), before the disk guard, the back-off and any scanner call, when the retention is K3, the day is not the first allow-listed day, and no verified prior list is present. Test: no scanner call on that path.
+9. **M2.** "Read done" also covers a restored day where every unit is K3, units.log is present, `unitlog -check` passes and `expect_units` is met: scan-day exits 0 with no request, trim-day does nothing, check-day runs. Anything else is refused. Test.
+10. **m2 / m3.** No code change. 07-22 is lead-in only (PREREG §6.4: entries count from 07-23), so its missing prior-day pools change no PM-01 count. State in the B10-PULL row that `data-day-2026-07-22-k3` lacks pools migrated on 07-21 from 19:00 UTC; the K2 release of 07-22 stays private and complete.
+11. **m4.** Write `list-D.txt` for K2 days too (OF-3). The prior list must be `list-<D-1>.txt` with a sha256 verified against the stored SHA256SUMS (OF-5's row).
+12. **m5.** `unitlog -check` requires exactly one k2 line per K2 file of each K3 unit, and the sha256 of every K3 file other than `raw_canonical.jsonl.zst` and `stats.json` must equal its k2 line.
+13. **m6.** Sort the k2 lines with `LC_ALL=C` by path.
+14. **m7.** Between units, stop the scan (exit 75) when free space falls below the largest unit so far plus the trim headroom; under ruling 7 that day then counts as failed rather than re-read.
+15. **m8 / reviewer m1.** Before deleting a unit's K2 copy, append its k2 lines to `units.log.partial` and fsync; the trim resumes from `units.k3` plus that file. Give the trim its own time budget, measured on batch 1 (**VERIFY**).
+16. **Reviewer m3.** Keep pool deposits and withdrawals, and any other reserve-changing pool instruction (PM-01 part 7 names `boost_buy_and_burn` and buybacks), as canonical-pool transactions in K2 and K3: PM-01 depends on depth. Fixture tests per discriminator. The scanner revision is not frozen before batch 1, so this is in time.
+17. **Reviewer m4.** Batch 1 records the runner's free disk on the volume that holds `$RUNNER_TEMP` (**VERIFY**), beside the sizes.
