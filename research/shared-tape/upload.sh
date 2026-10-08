@@ -20,7 +20,10 @@ url=$(git -C "$repo" remote get-url origin)
 retry() { local n=0; until "$@"; do n=$((n+1)); [ $n -gt 4 ] && return 1; sleep $((2**n)); done; }
 
 wt=$(mktemp -d)
-cleanup() { git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"; }
+cleanup() {
+  git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  git -C "$repo" branch -D "tape-new-$$" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 if retry git -C "$repo" fetch -q --depth 1 origin "$branch:refs/remotes/origin/$branch" 2>/dev/null; then
   git -C "$repo" worktree add -q --detach "$wt" "origin/$branch"
@@ -34,7 +37,7 @@ fi
 out="$wt/tape/$dest"
 [ ! -e "$out" ] || { echo "refused: tape/$dest already exists on $branch (never overwritten)" >&2; exit 2; }
 mkdir -p "$out"
-(cd "$src" && find . -type f ! -name '*.tmp' | sed 's#^\./##' | LC_ALL=C sort) > "$wt/.files"
+(cd "$src" && find . -name '*.tmp' -prune -o -type f -print | sed 's#^\./##' | LC_ALL=C sort) > "$wt/.files"
 while IFS= read -r f; do
   mkdir -p "$out/$(dirname "$f")"
   size=$(stat -c %s "$src/$f")

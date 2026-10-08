@@ -205,13 +205,23 @@ func (t *tee) admit(ctx context.Context) bool {
 		t.l.RateLog = append(t.l.RateLog, rateMark{RPS: t.l.RPS2, From: now.UTC().Format(time.RFC3339)})
 	}
 	t.mu.Unlock()
-	if d := time.Until(at); d > 0 {
-		select {
-		case <-time.After(d):
-		case <-ctx.Done():
+	for {
+		if d := time.Until(at); d > 0 {
+			select {
+			case <-time.After(d):
+			case <-ctx.Done():
+				return true
+			}
 		}
+		// A Retry-After that arrived while this request waited holds it too.
+		t.mu.Lock()
+		p := t.pauseUntil
+		t.mu.Unlock()
+		if !p.After(time.Now()) {
+			return true
+		}
+		at = p
 	}
-	return true
 }
 
 func (t *tee) closePhaseLocked(now time.Time) {
@@ -294,10 +304,6 @@ func (t *tee) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(k, t.scrub(v))
 		}
 	}
-	w.Header().Set("Content-Length", strconv.Itoa(len(wire)))
-	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(wire)
-
 	var decoded []byte
 	switch strings.ToLower(resp.Header.Get("Content-Encoding")) {
 	case "", "identity":
@@ -314,6 +320,7 @@ func (t *tee) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if v := resp.Header.Get("Retry-After"); v != "" {
 		ra, _ = strconv.Atoi(v)
 	}
+	// Booked and spooled before the answer goes back, so the ledger never trails rpcscan.
 	t.count(method, strconv.Itoa(resp.StatusCode), wire, decoded, ra)
 	if method == "getBlock" && resp.StatusCode == http.StatusOK && decoded != nil && len(req.Params) > 0 {
 		var slot uint64
@@ -321,6 +328,58 @@ func (t *tee) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			t.spoolBlock(slot, decoded)
 		}
 	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(wire)))
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(wire)
+}
+
+// selectionMethods are the calls phase0.sh makes itself to pick the unit; rpcscan's
+// counters do not include them.
+var selectionMethods = map[string]bool{"getBlocksWithLimit": true, "getBlockTime": true}
+
+// identity checks the tee's ledger against rpcscan's usage file: credits = attempts +
+// local refusals, requests = usable answers, response_bytes = decoded bytes, over the
+// methods rpcscan sent (the selection calls excluded).
+func identity(l *teeLedger, credits, requests, bytes int64) error {
+	var att, usable, dec int64
+	for m, c := range l.Methods {
+		if selectionMethods[m] {
+			continue
+		}
+		att += c.Attempts
+		usable += c.Usable
+		dec += c.BytesDecoded
+	}
+	if credits != att+l.LocalRefused || requests != usable || bytes != dec {
+		return fmt.Errorf("rpcscan credits %d requests %d bytes %d; tee attempts %d + refused %d, usable %d, bytes %d",
+			credits, requests, bytes, att, l.LocalRefused, usable, dec)
+	}
+	return nil
+}
+
+func runIdentity(args []string) int {
+	fs := flag.NewFlagSet("identity", flag.ExitOnError)
+	usage := fs.String("usage", "", "rpcscan's usage file")
+	ledger := fs.String("ledger", "", "the tee's ledger")
+	fs.Parse(args)
+	var u struct {
+		Credits       int64 `json:"credits"`
+		Requests      int64 `json:"requests"`
+		ResponseBytes int64 `json:"response_bytes"`
+	}
+	var l teeLedger
+	ub, err1 := os.ReadFile(*usage)
+	lb, err2 := os.ReadFile(*ledger)
+	if err := errors.Join(err1, err2, json.Unmarshal(ub, &u), json.Unmarshal(lb, &l)); err != nil {
+		log.Print(err)
+		return 1
+	}
+	if err := identity(&l, u.Credits, u.Requests, u.ResponseBytes); err != nil {
+		log.Print("identity failed: ", err)
+		return 1
+	}
+	fmt.Println("identity: true")
+	return 0
 }
 
 // rpcErrCode returns the JSON-RPC error code of a body, if it has one.

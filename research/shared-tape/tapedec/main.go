@@ -28,6 +28,21 @@ func main() {
 		os.Exit(runTee(os.Args[2:]))
 	case "decode":
 		os.Exit(runDecode(os.Args[2:]))
+	case "identity":
+		os.Exit(runIdentity(os.Args[2:]))
+	case "zcat": // a spooled or test file to stdout (tests and checks)
+		for _, f := range os.Args[2:] {
+			raw, err := os.ReadFile(f)
+			if err == nil {
+				raw, err = zstdDec.DecodeAll(raw, nil)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Stdout.Write(raw)
+		}
+		os.Exit(0)
 	}
 	fmt.Fprintln(os.Stderr, "usage: zeroed-tapedec tee|decode ...")
 	os.Exit(2)

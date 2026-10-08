@@ -210,9 +210,9 @@ func (c *decodeCounts) fail(msg string) {
 }
 
 var (
-	reFailed = regexp.MustCompile(`^Program (\S+) failed: (.*)$`)
-	reInvoke = regexp.MustCompile(`^Program (\S+) invoke \[(\d+)\]$`)
-	reDone   = regexp.MustCompile(`^Program (\S+) (success|failed)`)
+	reFailed = regexp.MustCompile(`^Program ([1-9A-HJ-NP-Za-km-z]{32,44}) failed: (.*)$`)
+	reInvoke = regexp.MustCompile(`^Program ([1-9A-HJ-NP-Za-km-z]{32,44}) invoke \[(\d+)\]$`)
+	reDone   = regexp.MustCompile(`^Program ([1-9A-HJ-NP-Za-km-z]{32,44}) (success|failed)`)
 	reCustom = regexp.MustCompile(`custom program error: 0x([0-9a-fA-F]+)`)
 )
 
@@ -506,26 +506,34 @@ func failedRow(sl, bt string, txIdx int, sig, signer string, tx *solana.Transact
 	cls := classify(errProgram, errLine, code, legs)
 
 	// The failing pump or PumpSwap instruction: the last one in the failing top-level
-	// instruction's group, else the transaction's first.
+	// instruction's group, else the transaction's first. Anchor's event self-CPIs are
+	// skipped, and a trade instruction is preferred over any other.
 	var pick *xIx
+	cands := make([]int, 0, len(ixs))
 	for k := range ixs {
 		x := &ixs[k]
-		if x.program != pumpProgram && x.program != ammProgram {
-			continue
+		if (x.program == pumpProgram || x.program == ammProgram) && !bytes.HasPrefix(x.data, eventIxTag) && isTradeIx(x.program, x.data) {
+			cands = append(cands, k)
 		}
+	}
+	if len(cands) == 0 {
+		for k := range ixs {
+			x := &ixs[k]
+			if (x.program == pumpProgram || x.program == ammProgram) && !bytes.HasPrefix(x.data, eventIxTag) {
+				cands = append(cands, k)
+			}
+		}
+	}
+	for _, k := range cands {
+		x := &ixs[k]
 		if errIx >= 0 && x.outer == errIx {
 			pick = x
 		} else if pick == nil && errIx < 0 {
 			pick = x
 		}
 	}
-	if pick == nil {
-		for k := range ixs {
-			if ixs[k].program == pumpProgram || ixs[k].program == ammProgram {
-				pick = &ixs[k]
-				break
-			}
-		}
+	if pick == nil && len(cands) > 0 {
+		pick = &ixs[cands[0]]
 	}
 	venue, pool, mint, name, side, amount, limit := "", "", "", "", "", "", ""
 	if pick != nil {

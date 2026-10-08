@@ -57,6 +57,10 @@ func TestEndToEndWithRpcscan(t *testing.T) {
 		w.Write(buf.Bytes())
 	})
 	r := newRig(t, up.URL+"/", 25, 1000)
+	// phase0.sh's own unit-selection calls go through the tee first; rpcscan never
+	// counts them, and the identity check must leave them out.
+	post(t, &http.Client{}, r.srv.URL, `{"jsonrpc":"2.0","id":1,"method":"getBlockTime","params":[452277009]}`, nil)
+	post(t, &http.Client{}, r.srv.URL, `{"jsonrpc":"2.0","id":1,"method":"getBlocksWithLimit","params":[452277009,1]}`, nil)
 	out := t.TempDir()
 	usage := filepath.Join(out, "usage.json")
 	cmd := exec.Command(bin, "rpc-unit", "-out", out, "-epoch", "1046", "-from-slot", "452277009", "-to-slot", "452277011",
@@ -76,10 +80,13 @@ func TestEndToEndWithRpcscan(t *testing.T) {
 	if err := json.Unmarshal(ub, &u); err != nil {
 		t.Fatal(err)
 	}
+	r.srv.Close() // every handler has finished
 	r.tee.writeLedger()
-	l := r.tee.l
-	if u.Credits != l.Attempts+l.LocalRefused || u.Requests != l.Usable || u.ResponseBytes != l.BytesDecoded || u.Requests != 2 {
-		t.Fatalf("counters differ: rpcscan %+v, tee attempts %d refused %d usable %d bytes %d", u, l.Attempts, l.LocalRefused, l.Usable, l.BytesDecoded)
+	if err := identity(&r.tee.l, u.Credits, u.Requests, u.ResponseBytes); err != nil || u.Requests != 2 {
+		t.Fatalf("identity: %v (requests %d)", err, u.Requests)
+	}
+	if identity(&r.tee.l, u.Credits+1, u.Requests, u.ResponseBytes) == nil {
+		t.Fatal("identity accepted a credit count off by one")
 	}
 	live := filepath.Join(out, "units", "1046", "452277009-452277011")
 	replay := t.TempDir()

@@ -62,3 +62,13 @@ func TestIDLCopiesMatchScanner(t *testing.T) {
 		}
 	}
 }
+
+// A program's own log line that says "failed" is not a failure line.
+func TestFailureLineIsAProgramLine(t *testing.T) {
+	if reFailed.MatchString("Program log: transfer failed: insufficient") {
+		t.Fatal("a log line matched as a failure line")
+	}
+	if !reFailed.MatchString("Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P failed: custom program error: 0x1772") {
+		t.Fatal("a failure line did not match")
+	}
+}
