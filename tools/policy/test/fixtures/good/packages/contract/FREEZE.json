@@ -1,0 +1,10 @@
+{
+  "package": "@bot/contract",
+  "version": "1.0.0",
+  "sha256": "6707971d3e87392b451ea8892b1c33e38e35c00277c0dabfd3f2697e9d119c1e",
+  "files": [
+    "package.json",
+    "src/index.ts"
+  ],
+  "typescript": "6.0.3"
+}
