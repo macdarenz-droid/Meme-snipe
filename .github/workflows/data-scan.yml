@@ -752,9 +752,11 @@ jobs:
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-volume.sh" "$DAY" "$RUNNER_TEMP/work/assets"
       # OF-4: the storage stop after every batch (a stored archive day). Above 0.5 TB it
       # writes the storage-stop marker in the private store and fails (exit 3), so nothing
-      # chains and the guard refuses every later dispatch.
+      # chains and the guard refuses every later dispatch. OF-5 ruling 5: it also runs when
+      # a later step (the volume hours) failed, and when the store step itself failed (it
+      # may have created the release), unless the run was cancelled.
       - name: Storage check after the batch
-        if: steps.published.outputs.complete != 'true' && steps.store.outcome == 'success' && inputs.source != 'helius'
+        if: "!cancelled() && steps.published.outputs.complete != 'true' && steps.store.outcome != 'skipped' && inputs.source != 'helius'"
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
           GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}

@@ -3084,7 +3084,24 @@ names = list(asm); assert names.index("Download the days from the private store"
 steps = jobs["scan"]["steps"]; names = [s.get("id") or s.get("name") for s in steps]
 assert "Store this day's volume hours" in names and names.index("store") < names.index("Store this day's volume hours") < names.index("Storage check after the batch"), names
 sc = steps[names.index("Storage check after the batch")]
-assert sc["if"] == "steps.published.outputs.complete != 'true' && steps.store.outcome == 'success' && inputs.source != 'helius'", sc
+# OF-5 ruling 5: the check runs whenever the day was stored, also when a later step failed.
+# GitHub adds success() to an if without a status function, so model that.
+def runs(cond, **v):
+    import re as _re
+    if not _re.search(r"\b(success|failure|always|cancelled)\(\)", cond): cond = "success() && " + cond
+    e = cond.replace("!cancelled()", str(not v["cancelled"])).replace("success()", str(not v["failed"] and not v["cancelled"]))
+    e = e.replace("failure()", str(v["failed"])).replace("always()", "True").replace("cancelled()", str(v["cancelled"]))
+    e = e.replace("steps.published.outputs.complete", repr(v["complete"])).replace("steps.store.outcome", repr(v["store"]))
+    e = e.replace("steps.store.outputs.readback", repr(v["readback"])).replace("inputs.source", repr(v["source"]))
+    e = e.replace("&&", " and ").replace("||", " or ")
+    return eval(e, {})
+base = dict(cancelled=False, failed=False, complete="", store="success", readback="true", source="archive")
+cases = [(dict(), True), (dict(failed=True), True), (dict(failed=True, store="failure", readback=""), True),
+         (dict(store="skipped", readback="", complete="true"), False), (dict(cancelled=True, failed=True), False),
+         (dict(source="helius", store="skipped", readback=""), False)]
+for c, want in cases:
+    got = runs(sc["if"], **{**base, **c})
+    assert got == want, ("storage check", c, got)
 head = open(sys.argv[1]).read().split("\nname:")[0]
 assert "contents: write for this" not in head and "private store" in head, "header"
 ac = yaml.safe_load(open(sys.argv[2]))
@@ -3094,7 +3111,7 @@ assert all(hold["env"].get(k) == "" for k in ("BASH_ENV", "LD_PRELOAD", "LD_AUDI
 PY
 # The guard's own private-storage check passes on this tree (it refused while anything was public).
 (cd "$here" && . ./archive-limits.conf && . ./archive-guard.sh && ag_summary=/dev/null && ag_private_storage) >/dev/null 2>&1 || bad+=" [ag_private_storage refuses]"
-[[ -z "$bad" ]] && ok "OF-4: no data-scan job has contents: write, the only artifact is resume-, no 'Publish this day' step; every store, skip, volume and storage-check step holds the store token only under env -i; the storage check follows each stored day; archive-check's Holds step runs under env -i; the guard's ag_private_storage passes on this tree" || no "OF-4 workflows:$bad"
+[[ -z "$bad" ]] && ok "OF-4: no data-scan job has contents: write, the only artifact is resume-, no 'Publish this day' step; every store, skip, volume and storage-check step holds the store token only under env -i; the storage check follows each stored day, also when a later step failed (OF-5 ruling 5), never after a cancel; archive-check's Holds step runs under env -i; the guard's ag_private_storage passes on this tree" || no "OF-4 workflows:$bad"
 bad=""
 # The storage stop after every batch, against a fake private store.
 cat > "$T/storegh" <<'EOF'
