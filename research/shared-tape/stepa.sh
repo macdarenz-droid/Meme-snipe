@@ -159,6 +159,7 @@ fi
 n=0 decpid= nread=0
 while read -r day ep from to; do
   (( max > 0 && nread >= max )) && { log "MAX_UNITS $max reached: stopping (resumable)"; break; }
+  [ -n "${ONLY_DAY:-}" ] && [ "$day" != "$ONLY_DAY" ] && continue
   n=$((n+1))
   unit="$out/units/$ep/$from-$to" rdir="$res/units/$ep/$from-$to" ud="$work/units/$from"
   released "$day" "$from" "$to" && continue
