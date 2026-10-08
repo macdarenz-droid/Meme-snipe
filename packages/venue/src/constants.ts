@@ -12,7 +12,8 @@
 //   than the 14-day adoption rule allows.
 // - U-A01: the pump pool-authority PDA is ["pool-authority", base_mint] under the pump program: the `pool_authority`
 //   account of `migrate` in the pinned idl/pump.json and docs/PUMP_SWAP_CREATOR_FEE_README.md, both at
-//   pump-fun/pump-public-docs commit cb188ce08b5069196eef1f3e4a0c43b70099793b.
+//   pump-fun/pump-public-docs commit cb188ce08b5069196eef1f3e4a0c43b70099793b. Card IDL-REPIN: these seeds and the four
+//   PDAs' seeds are unchanged at 8cda1fa30ea658b20909d8aedf002047119388d2 (test/constants.test.ts compares them).
 import { getProgramDerivedAddress, type Address } from '@solana/kit';
 import { decodePubkey } from '@bot/decoders';
 import type { Pubkey, Result } from '@bot/types';

@@ -65,6 +65,49 @@ describe('A-M01-01 constants registry', () => {
   });
 });
 
+describe('A-M01-01 seeds agree with the pinned IDLs (card IDL-REPIN: re-derived against pump-public-docs 8cda1fa)', () => {
+  type IdlSeed = { kind: string; value?: number[]; path?: string };
+  type IdlAccount = { name: string; pda?: { seeds: IdlSeed[]; program?: IdlSeed } };
+  const idlJson = (file: string): { address: string; instructions: Array<{ accounts: IdlAccount[] }> } =>
+    JSON.parse(readFileSync(`${VENDORED_IDL_DIR}${file}`, 'utf8')) as { address: string; instructions: Array<{ accounts: IdlAccount[] }> };
+  /** Every distinct (seeds, program) the IDL gives the account `name`, constant seeds as text or base58, others as `kind:path`. */
+  function idlSeeds(file: string, name: string): string[] {
+    const doc = idlJson(file);
+    const seen = new Set<string>();
+    for (const ix of doc.instructions) {
+      for (const a of ix.accounts) {
+        if (a.name !== name || a.pda === undefined) continue;
+        const seed = (x: IdlSeed): string => (x.kind !== 'const' ? `${x.kind}:${String(x.path)}`
+          : x.value?.length === 32 ? base58.encode(Uint8Array.from(x.value)) : Buffer.from(x.value ?? []).toString('utf8'));
+        const program = a.pda.program === undefined ? doc.address : a.pda.program.kind === 'const' ? seed(a.pda.program) : null;
+        if (program !== null) seen.add(JSON.stringify([a.pda.seeds.map(seed), program]));
+      }
+    }
+    return [...seen];
+  }
+  const asText = (seeds: ReadonlyArray<string | Uint8Array>): string[] => seeds.map((x) => (typeof x === 'string' ? x : base58.encode(x)));
+
+  it('the seeds and program of each PDA are the ones the pinned IDL gives that account, and no other', () => {
+    const where: Record<string, [string, string]> = {
+      pumpGlobal: ['pump.json', 'global'], pumpSwapGlobalConfig: ['pump_amm.json', 'global_config'],
+      feeConfigCurve: ['pump.json', 'fee_config'], feeConfigPumpSwap: ['pump_amm.json', 'fee_config'],
+    };
+    for (const p of PDAS) {
+      const [file, name] = where[p.name] as [string, string];
+      assert.deepEqual(idlSeeds(file, name), [JSON.stringify([asText(p.seeds()), p.program])], p.name);
+    }
+  });
+
+  it('the pool-authority seeds are ["pool-authority", <base mint>] under pump in both IDLs (U-A01)', () => {
+    for (const s of [...idlSeeds('pump.json', 'pool_authority'), ...idlSeeds('pump_amm.json', 'pool_authority')]) {
+      const [seeds, program] = JSON.parse(s) as [string[], string];
+      assert.equal(seeds[0], 'pool-authority');
+      assert.match(seeds[1] as string, /^account:(mint|base_mint|pool\.base_mint)$/);
+      assert.equal(program, PROGRAMS.pumpCurve);
+    }
+  });
+});
+
 describe('A-M01-01 pump pool-authority PDA (U-A01: ["pool-authority", base_mint] under pump)', () => {
   it('equals pool.creator for every recorded canonical pool (13 pools) [EX-08]', async () => {
     for (const set of POOLS) {
