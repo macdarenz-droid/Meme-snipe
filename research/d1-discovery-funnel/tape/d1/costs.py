@@ -1,7 +1,8 @@
 """PumpSwap quote math and fixed costs, integer-exact, ported from the repo.
 
 - `buy_exact_quote_in`, `sell`: packages/core/src/amm/pump-swap.ts (`poolBuyExactQuoteIn`, `poolSell`), v1 instructions.
-- `expected_fixed`: packages/backtest/src/research/edge-costs.ts (`expectedFixed`).
+- `expected_fixed`: packages/backtest/src/research/edge-costs.ts (`expectedFixed`), with the rent as a parameter
+  (AMENDMENT_1 item 11: `fixed_for` uses the rent of the account the mint needs).
 Fee rates come from the trade fields of the pool row whose state is used (PREREG §3: "fees from each trade's own
 fields"). Price uses effective reserves (vault + signed virtual_quote_reserves); a sell is capped by the real vault.
 """
@@ -86,8 +87,17 @@ def expected_failed_exits() -> float:
     return sum(f ** k for k in range(1, C.LADDER_MAX_ATTEMPTS + 1))
 
 
-def expected_fixed() -> float:
-    """Expected fixed lamports per filled round trip, exactly as edge-costs.ts `expectedFixed`."""
+def rent_for(token_program) -> int:
+    """AMENDMENT_1 item 11: rent of the account the mint needs."""
+    if token_program == C.TOKEN_2022_PROGRAM:
+        return C.RENT_TOKEN_2022_ATA
+    if token_program == C.SPL_TOKEN_PROGRAM:
+        return C.RENT_SPL_TOKEN_ATA
+    return C.RENT_UNKNOWN_PROGRAM
+
+
+def expected_fixed(rent: int = C.TOKEN_ACCOUNT_RENT) -> float:
+    """Expected fixed lamports per filled round trip, exactly as edge-costs.ts `expectedFixed`, for a given rent."""
     base = C.SIGNATURES_PER_TX * C.BASE_FEE_PER_SIGNATURE
     entry_landed = base + C.ENTRY_PRIORITY_FEE + C.TIP
     exit_fixed = base + C.LADDER_PRIORITY_FEES[0] + C.TIP
@@ -96,7 +106,11 @@ def expected_fixed() -> float:
     rent_back = close_success * (1 - dust)
     failed_close = (1 - close_success) * (1 - dust)
     return (entry_landed + exit_fixed + expected_failed_exits() * failed_exit
-            + (1 - rent_back) * C.TOKEN_ACCOUNT_RENT + failed_close * failed_exit)
+            + (1 - rent_back) * rent + failed_close * failed_exit)
 
 
-FIXED = expected_fixed()
+FIXED_EDGE_COSTS = expected_fixed()  # 414,009: the repo's value, reproduced to check the formula
+
+
+def fixed_for(token_program) -> float:
+    return expected_fixed(rent_for(token_program))

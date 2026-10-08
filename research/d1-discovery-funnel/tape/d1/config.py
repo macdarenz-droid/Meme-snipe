@@ -48,7 +48,14 @@ TIP = 5_000
 LADDER_PRIORITY_FEES = (20_000, 60_000, 150_000, 500_000)
 LADDER_MAX_ATTEMPTS = 5
 LAND_PPM_PUMPSWAP_CONSERVATIVE = 560_000
-TOKEN_ACCOUNT_RENT = 1_513_840
+TOKEN_ACCOUNT_RENT = 1_513_840        # edge-costs.ts value; kept only to reproduce its 414,009 (tests)
+# AMENDMENT_1 item 11: the rent of the token account the mint actually needs, with RENT-1's refund model.
+# rent-exempt minimum = (bytes + 128) * 6,960 lamports.
+TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+RENT_TOKEN_2022_ATA = 2_074_080       # 170-byte Token-2022 associated account with extensions
+RENT_SPL_TOKEN_ATA = 2_039_280        # 165-byte SPL Token account
+RENT_UNKNOWN_PROGRAM = RENT_TOKEN_2022_ATA  # token program not on the tape: the larger rent (CONSERVATIVE)
 CLOSE_SUCCESS_PPM = 900_000
 DUST_PPM = 50_000
 EXPECTED_FIXED_LAMPORTS_REPO = 414_009  # research/edge/costs.json fixedLamports (rounded)
@@ -91,6 +98,7 @@ FEATURES = (
     "effective_quote_sol", "real_vault_sol", "age_since_mig_min",
 )
 assert len(FEATURES) == 28
+BINARY_FEATURES = ("boost_finished",)   # AMENDMENT_1 item 23: top = 1, bottom = 0
 
 # ---- Search (PREREG §5) -----------------------------------------------------------------------------------------
 N_BLOCKS = 4

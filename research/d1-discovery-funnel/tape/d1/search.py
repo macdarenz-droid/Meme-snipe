@@ -10,8 +10,11 @@
   fold's training points, NaN left out); top = x >= q80, bottom = x <= q20; NaN is in neither.
 - Entries: at most one per pool per rolling hour (greedy, chronological), applied to each fold's held-out points.
 - Score: mean out-of-fold net return per trade (pooled over the four folds). A rule qualifies when every fold has at
-  least 30 trades, its fold means have the same sign in all four folds, and its score is not below the median
-  round-trip cost of the discovery trades.
+  least 30 trades and its out-of-fold mean NET return is above 0 in every fold (so the sign is the same in all four;
+  AMENDMENT_1 item 24: net already pays costs, so costs are not charged twice). The median round-trip cost is
+  reported only.
+- Binary features (config.BINARY_FEATURES): top = 1, bottom = 0. A feature whose training q20 equals its q80 gives no
+  rule in that fold (AMENDMENT_1 item 23).
 - Advance at most 5 rules (over both holds) by score; freeze their definitions and full-discovery quintile edges.
 """
 import itertools
@@ -47,8 +50,14 @@ def edges_of(x: np.ndarray) -> Tuple[float, float]:
     return (float(lo), float(hi))
 
 
-def side_mask(x: np.ndarray, edges: Tuple[float, float], side: str) -> np.ndarray:
+def side_mask(x: np.ndarray, edges: Tuple[float, float], side: str, binary: bool = False) -> np.ndarray:
+    """AMENDMENT_1 item 23: a binary feature's top is 1 and bottom is 0; a feature whose 20th and 80th percentiles are
+    equal (in the fold's training points) gives no rule; NaN is in neither extreme."""
+    if binary:
+        return (x == 1) if side == "top" else (x == 0)
     lo, hi = edges
+    if np.isnan(lo) or np.isnan(hi) or lo == hi:
+        return np.zeros(len(x), dtype=bool)
     with np.errstate(invalid="ignore"):
         if side == "top":
             return (x >= hi) & ~np.isnan(x)
@@ -93,7 +102,7 @@ def median_rt_cost(df: pd.DataFrame) -> float:
 
 def run_search(df: pd.DataFrame) -> Dict:
     """df: eligible discovery points with features, timing and outcomes. Returns the full table and the advanced rules."""
-    hurdle = median_rt_cost(df)
+    median_cost = median_rt_cost(df)  # reported only (AMENDMENT_1 item 24: costs are not charged twice)
     rules = all_rules()
     table = []
     for h in C.HOLDS_S:
@@ -108,7 +117,7 @@ def run_search(df: pd.DataFrame) -> Dict:
             for f in C.FEATURES:
                 e = edges_of(X[f][train])
                 for s in ("top", "bottom"):
-                    masks[(f, s)] = side_mask(X[f], e, s) & test
+                    masks[(f, s)] = side_mask(X[f], e, s, f in C.BINARY_FEATURES) & test
             for r in rules:
                 m = masks[(r[0][0], r[1][0])]
                 if len(r[0]) == 2:
@@ -123,7 +132,8 @@ def run_search(df: pd.DataFrame) -> Dict:
             score = sm.sum() / n.sum() if n.sum() else np.nan
             signs = np.sign(means)
             same = bool(np.all(n > 0) and np.all(signs == signs[0]) and signs[0] != 0)
-            ok = bool(np.all(n >= C.MIN_TRADES_PER_FOLD) and same and not np.isnan(score) and score >= hurdle)
+            # AMENDMENT_1 item 24: out-of-fold mean NET return above 0 in every fold, same sign in all four folds
+            ok = bool(np.all(n >= C.MIN_TRADES_PER_FOLD) and same and np.all(means > 0))
             table.append({"rule": rule_id(r), "hold_min": hm, "n_total": int(n.sum()),
                           **{f"n_f{j}": int(n[j]) for j in range(C.N_BLOCKS)},
                           **{f"mean_f{j}": float(means[j]) for j in range(C.N_BLOCKS)},
@@ -137,8 +147,9 @@ def run_search(df: pd.DataFrame) -> Dict:
         d = usable(df, hm)
         parts = [p.split(":") for p in row.rule.split(" & ")]
         frozen.append({"rule": row.rule, "hold_min": int(hm),
-                       "terms": [{"feature": f, "side": s, "edges_q20_q80": list(edges_of(d[f].to_numpy(dtype=float)))}
+                       "terms": [{"feature": f, "side": s, "binary": f in C.BINARY_FEATURES,
+                                  "edges_q20_q80": list(edges_of(d[f].to_numpy(dtype=float)))}
                                  for f, s in parts],
                        "discovery_score": float(row.score)})
-    return {"median_rt_cost": hurdle, "table": tab, "advanced": frozen,
+    return {"median_rt_cost": median_cost, "table": tab, "advanced": frozen,
             "outcome": "advance" if frozen else "nothing found"}

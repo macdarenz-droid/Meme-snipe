@@ -140,10 +140,26 @@ def amm_post_state(r) -> tuple:
     return pre, Pool(base, vault, eff - vault)
 
 
-def expected_fixed() -> float:
+TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+SPL_TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+# AMENDMENT_1 (rent): the rent of the token account the mint actually needs. Token-2022 with extensions (170 bytes):
+# 2,074,080 lamports, as ruled. Legacy SPL Token (165 bytes) on the same 6,960 lamports-a-byte basis: (165 + 128) x
+# 6,960 = 2,039,280. An unknown program is charged the larger, Token-2022 amount.
+RENT_BY_PROGRAM = {TOKEN_2022: 2_074_080, SPL_TOKEN: 2_039_280}
+RENT_DEFAULT = 2_074_080
+
+
+def token_account_rent(token_program: str) -> int:
+    return RENT_BY_PROGRAM.get(token_program, RENT_DEFAULT)
+
+
+def expected_fixed(rent: int = None) -> float:
     """edge-costs.ts expectedFixed(): entry landed + exit fixed + expected failed exits + rent not returned + a close
-    that fails without dust, lamports per filled round trip."""
-    f = FIXED
+    that fails without dust, lamports per filled round trip. `rent` replaces the repo's tokenAccountRent (AMENDMENT_1);
+    left out, the repo's value is used (only for the parity check with research/edge/costs.json)."""
+    f = dict(FIXED)
+    if rent is not None:
+        f["rent"] = rent
     entry = f["base_fee"] + f["entry_priority"] + f["tip"]
     exit_fixed = f["base_fee"] + f["ladder_first"] + f["tip"]
     failed_exit = f["base_fee"] + f["ladder_third"]

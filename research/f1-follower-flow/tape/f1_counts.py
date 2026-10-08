@@ -35,6 +35,7 @@ KILL_MIN_FOLLOWED = 20
 KILL_MIN_PERSIST_SHARE = 0.5
 KILL_MIN_LATE_SHARE = 0.5
 KILL_MIN_BUYS_PER_DAY = 15
+MIN_VALID_PAIRS = 8  # AMENDMENT_1 item 7: fewer valid (buy, placebo) pairs on a day = untestable
 # Not fixed by GATE.md (see OPEN_QUESTIONS.md): committed here.
 PLACEBO_SEED = 20261008
 BOOT_SEED = 20261009
@@ -272,38 +273,40 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
     return pd.DataFrame(rows, columns=cols)
 
 
-def leader_test(ev: pd.DataFrame, n_boot=BOOT_N, seed=BOOT_SEED, min_buys=None) -> pd.DataFrame:
-    """Per leader: mean follow - mean placebo follow, and the one-sided 99.5% lower bound from a
-    bootstrap over that leader's (buy, placebo) pairs. Followed = mean diff > 0 and lower bound > 0, and
-    the differences are not all equal (zero variance), and n >= min_buys when min_buys is given."""
+def leader_test(ev: pd.DataFrame, n_boot=BOOT_N, seed=BOOT_SEED, min_pairs=MIN_VALID_PAIRS) -> pd.DataFrame:
+    """Per leader: mean follow - mean placebo follow, and the one-sided 99.5% lower bound (0.5% percentile)
+    from a bootstrap over that leader's valid (buy, placebo) pairs that day.
+    AMENDMENT_1 item 7: with fewer than `min_pairs` valid pairs the leader is untestable, which counts as not
+    followed (day 1) or not persisting (day 2). Followed = testable, mean diff > 0 and lower bound > 0.
+    `zero_variance` is reported only; the amendment keeps the percentile bound as the rule."""
     ok = ev[ev["dropped"] == ""]
     rng = np.random.default_rng(seed)
     out = []
     for leader, g in sorted(ok.groupby("leader"), key=lambda x: x[0]):
         d = (g["follow"].astype(float) - g["placebo_follow"].astype(float)).values
         n = len(d)
-        idx = rng.integers(0, n, size=(n_boot, n))
-        means = d[idx].mean(axis=1)
-        lb = float(np.quantile(means, LOWER_Q))
-        zero_var = bool(np.all(d == d[0]))
-        enough = min_buys is None or n >= min_buys
-        out.append({"leader": leader, "n_buys": n, "mean_follow": float(g["follow"].mean()),
+        testable = n >= min_pairs
+        lb = None
+        if testable:
+            idx = rng.integers(0, n, size=(n_boot, n))
+            lb = float(np.quantile(d[idx].mean(axis=1), LOWER_Q))
+        out.append({"leader": leader, "n_buys": n, "testable": testable, "mean_follow": float(g["follow"].mean()),
                     "mean_placebo": float(g["placebo_follow"].mean()), "diff": float(d.mean()),
-                    "lb995": lb, "zero_variance": zero_var,
-                    "followed": bool(d.mean() > 0 and lb > 0 and not zero_var and enough)})
-    return pd.DataFrame(out, columns=["leader", "n_buys", "mean_follow", "mean_placebo", "diff", "lb995",
+                    "lb995": lb, "zero_variance": bool(np.all(d == d[0])),
+                    "followed": bool(testable and d.mean() > 0 and lb > 0)})
+    return pd.DataFrame(out, columns=["leader", "n_buys", "testable", "mean_follow", "mean_placebo", "diff", "lb995",
                                       "zero_variance", "followed"])
 
 
-def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2, min_buys=None):
+def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2):
     swaps, t, w, ranges = load_units(paths)
     sol_pairs, mint_pairs = build_links(t, w)
     cands = leader_candidates(swaps, day1)
     ev1 = event_table(swaps, cands, day1, ranges, sol_pairs, mint_pairs)
-    lt1 = leader_test(ev1, n_boot, min_buys=min_buys)
+    lt1 = leader_test(ev1, n_boot)
     followed = set(lt1.loc[lt1["followed"], "leader"])
     ev2 = event_table(swaps, followed, day2, ranges, sol_pairs, mint_pairs, candidates=cands)
-    lt2 = leader_test(ev2, n_boot, min_buys=min_buys)
+    lt2 = leader_test(ev2, n_boot)
     persistent = set(lt2.loc[lt2["followed"], "leader"])
     e2p = ev2[(ev2["dropped"] == "") & ev2["leader"].isin(persistent)]
     vol = int(e2p["follower_sol"].sum()) if len(e2p) else 0
@@ -311,14 +314,16 @@ def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2, min_buys=None):
     slots = {d: sum(b - a + 1 for dd, a, b in ranges if dd == d) for d in (day1, day2)}
     summary = {
         "units": [f"{d} {a}-{b}" for d, a, b in ranges],
-        "min_buys": min_buys,
+        "min_valid_pairs": MIN_VALID_PAIRS,
         "slots_loaded": slots,
         "swaps_kept": int(len(swaps)),
         "leader_candidates_day1": len(cands),
         "day1_candidate_buys": int(len(ev1)), "day1_buys_used": int((ev1["dropped"] == "").sum()),
         "day1_dropped": ev1["dropped"].value_counts().to_dict(),
+        "untestable_day1": int((~lt1["testable"]).sum()) if len(lt1) else 0,
         "followed_day1": len(followed),
         "day2_buys_of_followed": int(len(ev2)), "day2_buys_used": int((ev2["dropped"] == "").sum()),
+        "untestable_day2": int((~lt2["testable"]).sum()) if len(lt2) else 0,
         "persistent_day2": len(persistent),
         "persistent_share": (len(persistent) / len(followed)) if followed else None,
         "day2_persistent_leader_buys": int(len(e2p)),
@@ -345,19 +350,15 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--boot", type=int, default=BOOT_N)
     ap.add_argument("--decide", action="store_true", help="also apply the kill rules (only on complete Step A days)")
-    ap.add_argument("--min-buys", type=int, default=None,
-                    help="minimum used buys per leader; required with --decide (set by the lead, no default)")
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="committed Step A plan (checked with --decide)")
     a = ap.parse_args(argv)
     plan_sha = None
     if a.decide:
-        if a.min_buys is None:
-            ap.error("--decide needs --min-buys (the lead sets it)")
         try:
             plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
         except PlanError as e:
             ap.error(f"--decide refused: {e}")
-    summary, tables = run(a.unit, a.boot, min_buys=a.min_buys)
+    summary, tables = run(a.unit, a.boot)
     if a.decide:
         summary["plan"] = {"path": a.plan, "sha256": plan_sha}
         summary["decision"] = decide(summary)

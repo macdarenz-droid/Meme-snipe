@@ -11,7 +11,7 @@ import pandas as pd
 
 from . import tapeio
 from .constants import D_SLOTS, DEFAULT_KEY, HOLD_S, SECONDARY_HOLDS_S, SECONDARY_SIZES_USD, TRADE_USD, spend_of
-from .pumpswap import amm_post_state, buy_exact_quote_in, expected_fixed, load_tiers, sell
+from .pumpswap import amm_post_state, buy_exact_quote_in, expected_fixed, load_tiers, sell, token_account_rent
 
 BOOK_COLS = ["slot", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "pool", "side", "base_amount", "quote_amount",
              "quote_amount_lp_adjusted", "lp_fee", "pool_base_token_reserves", "pool_quote_token_reserves",
@@ -110,12 +110,12 @@ def run(decisions: pd.DataFrame, books: dict, tiers=None) -> pd.DataFrame:
     """Prices every eligible decision point that is in time for the hold: the registered $50 / 60 min trade, the
     secondary holds at $50 and the secondary sizes at 60 min (§10)."""
     tiers = tiers or load_tiers()
-    fixed = expected_fixed()
     plan = [(HOLD_S, TRADE_USD)] + [(h, TRADE_USD) for h in SECONDARY_HOLDS_S] + [(HOLD_S, s) for s in SECONDARY_SIZES_USD]
     out = []
     dec = decisions[decisions.eligible]
     for r in dec.itertuples(index=False):
         book = books.get(r.pool)
+        fixed = expected_fixed(token_account_rent(getattr(r, "token_program", "") or ""))  # AMENDMENT_1 rent
         for hold, usd in plan:
             if not getattr(r, f"in_time_{hold}"):
                 continue

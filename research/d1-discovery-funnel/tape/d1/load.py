@@ -341,7 +341,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
 
 def _code_events(name: str, frames: list, codec: Codec) -> pd.DataFrame:
     spec = {
-        "CreateEvent": ["mint", "creator", "user", "bonding_curve", "is_mayhem_mode", "quote_mint"],
+        "CreateEvent": ["mint", "creator", "user", "bonding_curve", "is_mayhem_mode", "quote_mint", "token_program"],
         "CompletePumpAmmMigrationEvent": ["mint", "pool", "bonding_curve", "quote_mint"],
         "CreatePoolEvent": ["pool", "base_mint", "quote_mint", "is_mayhem_mode"],
         "InitBoostEvent": ["pool", "mint"],
@@ -357,7 +357,7 @@ def _code_events(name: str, frames: list, codec: Codec) -> pd.DataFrame:
     for c in spec:
         if c in ("is_mayhem_mode", "boost_vault_remaining"):
             out[c] = _int(df[c])
-        elif c == "quote_mint":
+        elif c in ("quote_mint", "token_program"):
             out[c] = df[c].to_numpy()
         else:
             out[c] = codec.encode(df[c])

@@ -21,7 +21,8 @@ def rule_trades(df: pd.DataFrame, frozen: Dict) -> pd.DataFrame:
     d = usable(df, hm)
     m = np.ones(len(d), dtype=bool)
     for t in frozen["terms"]:
-        m &= side_mask(d[t["feature"]].to_numpy(dtype=float), tuple(t["edges_q20_q80"]), t["side"])
+        m &= side_mask(d[t["feature"]].to_numpy(dtype=float), tuple(t["edges_q20_q80"]), t["side"],
+                       bool(t.get("binary", t["feature"] in C.BINARY_FEATURES)))
     k = throttle(d.pool.to_numpy(), d.tau.to_numpy(), m)
     out = d[k].copy()
     out["ret"] = out[f"net_ret_{hm}"].astype(float)

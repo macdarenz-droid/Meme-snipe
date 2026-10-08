@@ -141,26 +141,63 @@ class Placebo(unittest.TestCase):
 
 class LeaderTest(unittest.TestCase):
     def test_followed_needs_positive_lower_bound(self):
-        ev = pd.DataFrame({"leader": ["A"] * 6 + ["B"] * 5 + ["C"] * 4, "dropped": [""] * 15,
-                           "follow": [3, 4, 3, 5, 3, 4] + [1] * 5 + [9, 0, 0, 0],
-                           "placebo_follow": [1] * 6 + [1] * 5 + [0] * 4})
+        ev = pd.DataFrame({"leader": ["A"] * 8 + ["B"] * 8 + ["C"] * 8, "dropped": [""] * 24,
+                           "follow": [3, 4, 3, 5, 3, 4, 3, 4] + [1] * 8 + [9, 0, 0, 0, 0, 0, 0, 0],
+                           "placebo_follow": [1] * 8 + [1] * 8 + [0] * 8})
         t = F.leader_test(ev, n_boot=2000).set_index("leader")
         self.assertTrue(t.at["A", "followed"])
         self.assertFalse(t.at["B", "followed"])    # no difference
         self.assertFalse(t.at["C", "followed"])    # one lucky buy: 0.5% bound is 0
-        self.assertAlmostEqual(t.at["C", "diff"], 2.25)
+        self.assertAlmostEqual(t.at["C", "diff"], 9 / 8)
 
-    def test_single_buy_leader_not_followed(self):
+    def test_fewer_than_8_valid_pairs_is_untestable(self):
         ev = pd.DataFrame({"leader": ["A"], "dropped": [""], "follow": [5], "placebo_follow": [0]})
-        self.assertFalse(F.leader_test(ev, n_boot=500).iloc[0]["followed"])
+        r = F.leader_test(ev, n_boot=500).iloc[0]
+        self.assertFalse(r["followed"])
+        self.assertFalse(r["testable"])
+        f = [3, 4, 3, 5, 3, 4, 3, 4]
+        ev = pd.DataFrame({"leader": ["A"] * 9, "dropped": [""] * 8 + ["no_placebo_in_reach"],
+                           "follow": f + [9], "placebo_follow": [1] * 8 + [0]})
+        self.assertTrue(F.leader_test(ev, n_boot=500).iloc[0]["followed"])            # 8 valid pairs
+        ev7 = ev.iloc[1:]                                                              # 7 valid pairs
+        r = F.leader_test(ev7, n_boot=500).iloc[0]
+        self.assertFalse(r["testable"])
+        self.assertFalse(r["followed"])
 
-    def test_zero_variance_and_min_buys(self):
-        ev = pd.DataFrame({"leader": ["Z"] * 5, "dropped": [""] * 5, "follow": [3] * 5, "placebo_follow": [1] * 5})
-        self.assertFalse(F.leader_test(ev, n_boot=500).iloc[0]["followed"])
-        ev = pd.DataFrame({"leader": ["A"] * 6, "dropped": [""] * 6, "follow": [3, 4, 3, 5, 3, 4],
-                           "placebo_follow": [1] * 6})
-        self.assertTrue(F.leader_test(ev, n_boot=500, min_buys=6).iloc[0]["followed"])
-        self.assertFalse(F.leader_test(ev, n_boot=500, min_buys=7).iloc[0]["followed"])
+    def test_constant_positive_diff_with_8_pairs_follows_per_amendment(self):
+        ev = pd.DataFrame({"leader": ["Z"] * 8, "dropped": [""] * 8, "follow": [3] * 8, "placebo_follow": [1] * 8})
+        r = F.leader_test(ev, n_boot=500).iloc[0]
+        self.assertTrue(r["zero_variance"])
+        self.assertTrue(r["followed"])
+
+    def test_untestable_on_day2_does_not_persist(self):
+        with tempfile.TemporaryDirectory() as root:
+            def rows(base, n):
+                out = []
+                for i in range(max(n, 10)):
+                    s0 = base + 3000 + i * 100
+                    if i < n:
+                        out.append(curve_row(s0, "L", f"m{i}"))
+                    else:
+                        out.append(curve_row(s0, "other", f"m{i}"))
+                    out.append(curve_row(s0 + 700, f"pl{i}", f"m{i}"))
+                    for k in range(3 + i % 2):
+                        out.append(curve_row(s0 + 30 + k, f"f{i}_{k}", f"m{i}", sol=1000))
+                return out
+            u1 = write_unit(root, F.DAY1, 1000, 9999, rows(1000, 10))
+            u2 = write_unit(root, F.DAY2, 20000, 29999, rows(20000, 7))
+            summ, _ = F.run([u1, u2], n_boot=300)
+            self.assertEqual(summ["followed_day1"], 1)
+            self.assertEqual(summ["untestable_day2"], 1)
+            self.assertEqual(summ["persistent_day2"], 0)
+            self.assertEqual(summ["persistent_share"], 0.0)
+
+    def test_protocol_1_rows_dropped(self):
+        rows = [curve_row(1, "A", "m", protocol="1"), curve_row(2, "B", "m")]
+        s = F.normalise_swaps(pd.DataFrame(rows), pd.DataFrame(columns=["slot", "tx_idx", "ev_idx", "signature",
+                              "user_token_owner", "base_mint", "side", "quote_amount", "quote_mint", "protocol"]),
+                              set(), F.DAY1)
+        self.assertEqual(list(s["owner"]), ["B"])
 
     def test_decide(self):
         base = {"followed_day1": 20, "persistent_share": 0.5, "late_share": 0.5, "day2_persistent_leader_buys": 15}
@@ -216,19 +253,15 @@ class Plan(unittest.TestCase):
         with self.assertRaises(F.PlanError):
             F.check_plan(self.full[2:], self.plan)
 
-    def test_cli_decide_needs_min_buys_and_full_plan(self):
+    def test_cli_decide_needs_full_plan(self):
         u = [write_unit(self.d, d, a, b, [curve_row(a + 1, "x", "m")]) for d, a, b in self.full]
         out = os.path.join(self.d, "o")
-        with self.assertRaises(SystemExit):                    # no --min-buys
-            F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--plan", self.plan])
         with self.assertRaises(SystemExit):                    # missing middle unit
-            F.main(sum([["--unit", x] for x in u[:1] + u[2:]], []) +
-                   ["--out", out, "--decide", "--min-buys", "5", "--plan", self.plan])
+            F.main(sum([["--unit", x] for x in u[:1] + u[2:]], []) + ["--out", out, "--decide", "--plan", self.plan])
         self.assertFalse(os.path.exists(out))
-        F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--min-buys", "5",
-                                                      "--plan", self.plan, "--boot", "50"])
+        F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--plan", self.plan, "--boot", "50"])
         s = json.load(open(os.path.join(out, "f1_summary.json")))
-        self.assertEqual(s["min_buys"], 5)
+        self.assertEqual(s["min_valid_pairs"], 8)
         self.assertEqual(len(s["plan"]["sha256"]), 64)
 
 

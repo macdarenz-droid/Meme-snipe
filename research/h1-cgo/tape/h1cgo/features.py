@@ -20,7 +20,7 @@ from .pumpswap import Pool, amm_post_state
 
 CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "mint", "is_buy", "sol_amount",
               "token_amount", "fee", "creator_fee", "user_token_owner", "owner_token_post", "protocol", "quote_mint"]
-AMM_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "pool", "base_mint", "quote_mint", "side",
+AMM_COLS = ["slot", "block_time", "tx_idx", "signature", "ev_idx", "outer_ix", "inner_ix", "pool", "base_mint", "quote_mint", "side",
             "base_amount", "quote_amount", "quote_amount_lp_adjusted", "lp_fee", "protocol_fee", "coin_creator_fee",
             "user_quote_amount", "pool_base_token_reserves", "pool_quote_token_reserves", "virtual_quote_reserves",
             "base_supply", "coin_creator", "user_token_owner", "owner_token_post", "canonical", "protocol",
@@ -74,8 +74,9 @@ def build_universe(creates: list, migrations: list, creation_days) -> tuple:
             why["kept"] += 1
             ms, mt, pool = mig[m]
             rows.append(dict(mint=m, create_slot=int(e["slot"]), create_time=int(e["block_time"]),
-                             bonding_curve=f.get("bonding_curve", ""), mig_slot=ms, mig_time=mt, pool=pool))
-    cols = ["mint", "create_slot", "create_time", "bonding_curve", "mig_slot", "mig_time", "pool"]
+                             bonding_curve=f.get("bonding_curve", ""), mig_slot=ms, mig_time=mt, pool=pool,
+                             token_program=f.get("token_program", "")))
+    cols = ["mint", "create_slot", "create_time", "bonding_curve", "mig_slot", "mig_time", "pool", "token_program"]
     return pd.DataFrame(rows, columns=cols), why
 
 
@@ -126,8 +127,8 @@ def decision_points(u: pd.DataFrame, clock: Clock, intervals) -> pd.DataFrame:
             if d is None:
                 continue
             rows.append(dict(mint=r.mint, pool=r.pool, hour=h, decision_slot=d, decision_day=utc_day(h),
-                             interval_end=iv[1]))
-    cols = ["mint", "pool", "hour", "decision_slot", "decision_day", "interval_end"]
+                             interval_end=iv[1], token_program=getattr(r, "token_program", "")))
+    cols = ["mint", "pool", "hour", "decision_slot", "decision_day", "interval_end", "token_program"]
     return pd.DataFrame(rows, columns=cols)
 
 
@@ -291,8 +292,17 @@ class MintStream:
         return out
 
 
-def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd.DataFrame, tcov: pd.DataFrame):
-    """One MintStream per universe coin, from the coin's rows only. Also returns pool checks (canonical, WSOL)."""
+def boost_keys(events: list) -> set:
+    """(signature, outer_ix, pool) of every BoostBuyAndBurnEvent. Decoder v3 flags these swaps protocol=1; older units
+    leave the flag 0 (and the owner empty), so the S row is matched to its event instead."""
+    return {(e["signature"], str(e["outer_ix"]), e["fields"].get("pool", "")) for e in events
+            if e.get("event") == "BoostBuyAndBurnEvent"}
+
+
+def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd.DataFrame, tcov: pd.DataFrame,
+                  boosts: set = frozenset()):
+    """One MintStream per universe coin, from the coin's rows only. A PumpSwap row is protocol flow when the tape flags
+    it (`protocol`) or when it matches a BoostBuyAndBurnEvent (`boosts`); protocol rows never enter the holders."""
     ev = {m: [] for m in u.mint}
     for r in curve.itertuples(index=False):
         if r.mint not in ev:
@@ -314,7 +324,8 @@ def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd
         buy = r["side"] == "buy"
         cost = int(r["quote_amount_lp_adjusted"]) + int(r["protocol_fee"]) + int(r["coin_creator_fee"]) if buy else 0
         ev[m].append((key, "amm", (r["user_token_owner"], buy, int(r["base_amount"]), cost,
-                                   r["protocol"] not in ("", "0"), r["owner_token_post"])))
+                                   r["protocol"] not in ("", "0")
+                                   or (r["signature"], r["outer_ix"], r["pool"]) in boosts, r["owner_token_post"])))
     for r in t.itertuples(index=False):
         if r.mint in ev:
             ev[r.mint].append((_key(r.slot, r.tx_idx, r.outer_ix, r.inner_ix, -1), "t",
@@ -359,9 +370,10 @@ def compute_features(dp: pd.DataFrame, streams: dict) -> pd.DataFrame:
 def load(units, creation_days, log=print):
     """Read the tables the features need, filtered to the universe. Returns a dict of frames and diagnostics."""
     units = sorted(units, key=lambda x: x.from_slot)
-    creates, migs, blocks, tcov = [], [], [], []
+    creates, migs, blocks, tcov, boosts = [], [], [], [], set()
     for un in units:
-        e = tapeio.read_events(un, {"CreateEvent", "CompletePumpAmmMigrationEvent"})
+        e = tapeio.read_events(un, {"CreateEvent", "CompletePumpAmmMigrationEvent", "BoostBuyAndBurnEvent"})
+        boosts |= boost_keys(e)
         creates += [x for x in e if x["event"] == "CreateEvent"]
         migs += [x for x in e if x["event"] == "CompletePumpAmmMigrationEvent"]
         blocks.append(tapeio.read_table(un, "B", ["slot", "block_time"]))
@@ -379,7 +391,7 @@ def load(units, creation_days, log=print):
         del c, a, x
         log(f"read {un.day} {un.from_slot}-{un.to_slot}")
     cat = lambda fs, cols: pd.concat(fs, ignore_index=True) if fs else pd.DataFrame(columns=cols)
-    return dict(universe=u, universe_counts=why, blocks=cat(blocks, ["slot", "block_time"]),
+    return dict(universe=u, universe_counts=why, boosts=boosts, blocks=cat(blocks, ["slot", "block_time"]),
                 tcov=cat(tcov, TCOV_COLS), curve=cat(curve, CURVE_COLS), amm=cat(amm, AMM_COLS), t=cat(tt, T_COLS))
 
 
@@ -393,9 +405,11 @@ def run(units, decision_days, creation_days=None, log=print) -> tuple:
     n_all = len(dp)
     dp = dp[dp.decision_day.isin(set(decision_days))]
     dp = schedule_windows(dp, clock)
-    streams = build_streams(data["universe"], data["curve"], data["amm"], data["t"], data["tcov"])
+    streams = build_streams(data["universe"], data["curve"], data["amm"], data["t"], data["tcov"], data["boosts"])
     feats = compute_features(dp, streams)
     diag = dict(units=[f"{x.day} {x.from_slot}-{x.to_slot}" for x in units], intervals=iv,
                 universe=data["universe_counts"], decision_points_any_day=n_all, decision_points=len(dp),
-                rows=dict(curve=len(data["curve"]), amm=len(data["amm"]), t=len(data["t"])))
+                rows=dict(curve=len(data["curve"]), amm=len(data["amm"]), t=len(data["t"])),
+                boost_events=len(data["boosts"]),
+                protocol_rows=int(sum(st.protocol_rows for st in streams.values())))
     return feats, data["universe"], diag
