@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/731dcb9b8c38608dc00f449a24246afe5317b526/ops/install.sh -o i && echo 'd2d6151002fefcbe7e5eb7b6845cd67ce3a66430183c1d584f2eb990f8dc91f7  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/c9b2d85dc398751f64d1f0c4487b849562a1e6ed/ops/install.sh -o i && echo 'd2d6151002fefcbe7e5eb7b6845cd67ce3a66430183c1d584f2eb990f8dc91f7  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -185,6 +185,21 @@ The owner approved it on 6 Oct ("Approve upload"; "Okay yes delete after upload"
 - **By hand:** `zeroed-record-upload` runs once now; `zeroed-record-upload --day YYYY-MM-DD` runs for one UTC day. Either way it runs in the same sandbox, after any run in progress.
 
 The token (`DATA_STORE_TOKEN`, deployed as `REPORTS_TOKEN`) already has **Contents: Read and write** on the data repository. That is what creating releases and uploading, reading and deleting their assets needs, so nothing changes for the owner.
+
+## Engine folders and market-data pull account (PATHS-FIX)
+
+The engine writes only inside what its unit allows under `ProtectSystem=strict` (`packages/engine/src/paths.ts`; a test checks it against `zeroed-worker.service`):
+- `/var/lib/zeroed` (`StateDirectory`, 0700): ledger `bot.db`, logs, recovery journal, first-start marker, disk reserve, provider usage.
+- `/var/lib/zeroed-md` (2750, group `zeroed-pull`) with `receipts/` (2770): market-data segments and pull receipts.
+- `/var/lib/zeroed-spool` (2730, group `zeroed-spool`): import bundles.
+
+The installer makes the last two folders itself, because systemd gives one unit only one `StateDirectoryMode` (systemd.exec). The worker reads through the groups `zeroed-pull` and `zeroed-spool`, never `botops`. Anything in `receipts/` that is not a valid receipt is deleted, with an alert (`packages/engine/src/m07/receipts.ts`).
+
+The pull account `zeroed-pull` has no shell. It is sftp only (`/etc/ssh/sshd_config.d/20-zeroed-pull.conf`) and chrooted to `/srv/zeroed_pull`, where `md` is `/var/lib/zeroed-md` bound read-only and `md/receipts` is bound read-write (`srv-zeroed_pull-*.mount`, mounted before SSH). Two things are needed before it can be used, and both are left for later:
+- **SSH:** it stays off unless the server was installed with `--ssh-key`.
+- **The operator's key:** none is installed. It goes in `/etc/zeroed/pull-keys/zeroed-pull`.
+
+systemd: Ubuntu 24.04.5 ships systemd 255 (255.4-1ubuntu8.17 where this was built). VERIFY on the server with `systemctl --version`; the ops end-to-end records the version it ran on in its summary.
 
 ## Host checks
 
