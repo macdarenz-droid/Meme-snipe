@@ -165,13 +165,13 @@ def main(argv=None):
             sys.exit(f"discovery closed H1-CGO ({frozen.get('verdict')}); nothing to score")
         if frozen.get("code") != tapeio.code_hash():
             sys.exit("score: the code differs from the code that froze the discovery result")
+        if frozen.get("sol_usd_sums_sha256") != H8.SOL_USD_SUMS_SHA256:
+            sys.exit("score: frozen.json's SOL/USD SHA256SUMS hash differs from the pinned one")
         meta = _verify_meta(o.out)
         if list(meta["decision_days"]) != list(VALIDATION_DAYS):
             sys.exit(f"score needs decision days exactly {VALIDATION_DAYS}; got {meta['decision_days']}")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
-        if frozen.get("sol_usd_sums_sha256") != H8.SOL_USD_SUMS_SHA256:
-            sys.exit("score: frozen.json's SOL/USD SHA256SUMS hash differs from the pinned one")
         try:
             sol = H8.load_committed(meta["decision_days"], o.sol_usd)
         except (ValueError, OSError) as e:
