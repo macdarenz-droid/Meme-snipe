@@ -87,6 +87,7 @@ ${fn('alert')}
 ${fn('alert_clear')}
 keys_stored() { return 1; }
 paired() { return 1; }
+worker_ready() { [ -s "$CRED_DIR/helius_api_key" ]; }
 commit_verdict() { cat >/dev/null; echo green; }
 e2e_commit() { echo "$2"; }
 `);

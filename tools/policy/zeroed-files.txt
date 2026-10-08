@@ -189,7 +189,6 @@ apps/web/src/styles.css
 apps/web/src/theme/contrast.ts
 apps/web/src/theme/theme.ts
 apps/web/src/theme/tokens.css
-apps/web/test/android-workflow.test.ts
 apps/web/test/app-compat.test.ts
 apps/web/test/app-home-worker.test.ts
 apps/web/test/app-home.test.ts
@@ -216,7 +215,6 @@ apps/web/test/money.test.ts
 apps/web/test/no-fixed-amounts.test.ts
 apps/web/test/not-running.test.ts
 apps/web/test/preview-strings.test.ts
-apps/web/test/publish-preview.test.ts
 apps/web/test/qr.test.ts
 apps/web/test/report-schema.test.ts
 apps/web/test/safe-area.test.ts

@@ -150,9 +150,9 @@ export const ZEROED_PACKAGE_PREFIXES = ['packages/backtest/', 'packages/core/', 
  * file and on the added lines of old Zeroed files. Every other import finding is a structure rule.
  */
 export const SAFETY_IMPORT_CODES = ['E_UNDECLARED_IMPORT', 'E_WEB3_BANNED', 'E_IMPORT_FORBIDDEN', 'E_THIRD_PARTY_RUNTIME'];
-/** Zeroed's workflows (operations, data and the app build). ci.yml and the policy's own workflows are always checked. */
+/** Zeroed's workflows (operations and data). ci.yml and the policy's own workflows are always checked. */
 export const ZEROED_WORKFLOWS = [
-  'android-preview.yml', 'archive-check.yml', 'backtest-trial.yml', 'data-helius-pilot.yml', 'data-keep.yml', 'data-scan.yml',
+  'archive-check.yml', 'backtest-trial.yml', 'data-helius-pilot.yml', 'data-keep.yml', 'data-scan.yml',
   'deploy.yml', 'dryrun-rehearsal.yml', 'dryrun-smoke.yml', 'gpa-probe.yml', 'ops-e2e.yml', 'owner-programs.yml',
   'secrets-check.yml', 'spa-calibration.yml',
 ].map((f) => `.github/workflows/${f}`);
