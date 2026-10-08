@@ -73,8 +73,12 @@ export const GITATTRIBUTES_REFUSED = [/^-diff$/, /^binary$/, /^diff=/, /^-text$/
 /** tsconfig*.json, eslint.config.* and .gitattributes at any depth. */
 export const GUARDED_PATTERNS = [/(^|\/)tsconfig[^/]*\.json$/, ESLINT_CONFIG_PATTERN, GITATTRIBUTES_PATTERN];
 
-/** Packages with no third-party package anywhere in their production dependency closure (ARCH 12.3, B-M30-01 logic 4). */
-export const NO_THIRD_PARTY = ['@bot/types', '@bot/signer'];
+/**
+ * Packages with no third-party package anywhere in their production dependency closure (ARCH 12.3, B-M30-01 logic 4),
+ * and `@bot/decoders`, whose codec core the signer imports (SPEC-A C-02: "M17/M30 dependency checks include this
+ * package"; A-M02-01).
+ */
+export const NO_THIRD_PARTY = ['@bot/types', '@bot/signer', '@bot/decoders'];
 
 /** The sentinel depends only on internal packages and these (ARCH 12.3, B-M30-01 logic 4). */
 export const SENTINEL = { name: '@bot/sentinel', allowedThirdParty: ['@solana/kit'] };

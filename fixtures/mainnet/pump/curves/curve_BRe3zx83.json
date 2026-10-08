@@ -1,0 +1,24 @@
+{
+  "schema": "snipe-solana.mainnet-fixture.v1",
+  "kind": "pump_bonding_curve",
+  "mint": "A5ZmchE1XKvdLEQmg7njFHfPTnNveVL7z6eHWZaapump",
+  "complete": false,
+  "found_via": "DexScreener search \"pump sol\" (dexId pumpfun) base mint; PDA [\"bonding-curve\", mint] read on chain",
+  "method": "getMultipleAccounts {encoding: base64, commitment: confirmed}",
+  "accounts": [
+    {
+      "role": "bonding_curve",
+      "pubkey": "BRe3zx835MLoS4hbTfiVkQPCaEeK4HTcSjR5hgDwhrNd",
+      "owner": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+      "lamports": 35461056590,
+      "executable": false,
+      "space": 151,
+      "data_base64": "F7f4N2DYrGCnLL4LQr8BAMWImj0PAAAAp5Srv7DAAADF3HZBCAAAAACAxqR+jQMAAFOItzRlpdva93tK+74E6N3Z2uDt9ulvzonsbwRaQkhlAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABOExEAAAAAANM3BwAAAAAAAAAAAAAAAAAAAA==",
+      "context_slot": 453968198,
+      "fetched_at": "2026-10-06T17:26:34.175Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "active bonding curve, complete=false (A-M02-02, A-M01-03)"
+    }
+  ]
+}
