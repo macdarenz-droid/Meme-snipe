@@ -124,7 +124,7 @@ AMM_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "p
             "lp_fee_basis_points", "protocol_fee_basis_points", "coin_creator_fee_basis_points", "coin_creator",
             "base_supply", "user_token_owner", "owner_token_pre", "owner_token_post", "canonical", "top_program", "signature", "protocol"]
 CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "mint", "is_buy", "sol_amount",
-              "token_amount", "fee", "creator_fee", "quote_mint", "quote_amount", "mayhem_mode", "user_token_owner",
+              "token_amount", "fee", "creator_fee", "quote_mint", "quote_amount", "mayhem_mode", "user", "user_token_owner",
               "owner_token_pre", "owner_token_post", "signature", "protocol"]
 T_COLS = ["slot", "block_time", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner", "amount"]
 W_COLS = ["slot", "block_time", "from", "to"]
@@ -283,7 +283,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
             "outer_ix": _int(c.outer_ix), "inner_ix": _int(c.inner_ix), "mint": mint_c, "is_buy": is_buy.astype(int),
             "sol_amount": _int(c.sol_amount, 0), "token_amount": _int(c.token_amount, 0), "fee": _int(c.fee, 0),
             "creator_fee": _int(c.creator_fee, 0), "sol_quote": sol_curve.astype(int),
-            "mayhem": _int(c.mayhem_mode), "owner": owner_c,
+            "mayhem": _int(c.mayhem_mode), "owner": owner_c, "user": codec.encode(c.user),
             "owner_pre": _int(c.owner_token_pre), "owner_post": _int(c.owner_token_post)}))
         del c
 

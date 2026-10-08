@@ -147,6 +147,8 @@ H11_CHASE_AFTER_S = 5 * 60         # gates.chaseCheckAfterMs (chaseMaxAboveMigra
 POOL_ACCOUNT_MIN_BYTES = 300       # tx/shape.ts POOL_ACCOUNT_MIN_BYTES
 H12_HARD_BPS, H12_SINGLE_BPS, H12_TOP10_BPS = 4_000, 1_000, 3_000
 H13_INSIDER_BPS, H13_DEV_CLUSTER_BPS = 1_500, 500
+# AMENDMENT_4 item 37: H13 on the tape is a proxy (no funder reads); every tradable result carries this label
+H13_PROXY_LABEL = "H8-tradable by tape proxy for H13"
 H13_INSIDER_SLOTS, H13_FIRST_BUYERS = 2, 20   # facts/producer.ts insiderSlots, firstBuyers
 
 # ---- Validation (PREREG §6; bootstrap size and seed as H1-CGO §8 / G1 §9) ---------------------------------------
