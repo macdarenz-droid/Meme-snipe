@@ -74,6 +74,8 @@ function readBounded(path: string, limit: number): Buffer | 'too_large' | null {
 export function sweepReceipts(dir: string, segmentOf: (bytes: Buffer) => string | null, caps: ReceiptCaps = RECEIPT_CAPS): ReceiptSweep {
   const out: ReceiptSweep = { kept: 0, keptBytes: 0, deleted: [], stuck: [], overCap: false, alert: false };
   const seen = new Set<string>();
+  // Ruling 29: reading every name at once is bounded: receipts/ is its own filesystem with 32,768 inodes
+  // (ops/host/files/usr/local/lib/zeroed/receipts-fs), so it can never hold more entries than that.
   for (const name of readdirSync(dir).sort()) {
     const path = join(dir, name);
     const got = readBounded(path, caps.maxFileBytes);
