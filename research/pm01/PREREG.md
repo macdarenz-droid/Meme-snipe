@@ -27,7 +27,7 @@ What is **not** known: PM-01's own rule (a 15 s breakout above the post-migratio
 - **Pushed before data.** This file is pushed and its commit is read back with `git ls-remote` before any PM-01 signal or return is computed. The PR's merge commit on the integration branch (`ccr-14987baf-i6lrsl`, ARCH §3.4) is the registered version; its sha is quoted in the `preRegister` record (A-M13-02) and in every run bundle.
 - **"First run"** = the first computation of any PM-01 signal, trade or return on any data. Signal counts produced by tests on synthetic fixtures are not a run. Pulling the B-10 days, checking them (QA, parity) and measuring their storage (pool counts, bytes) is not looking at them: no PM-01 signal, trade or return is computed on any pulled day before this file's merge sha is recorded (round 4 ruling 19).
 - **Amendments** are allowed only before the first run, each as a dated commit to this file, pushed and checked with `git ls-remote`, reviewed by a fresh reviewer who did not write it (A16). After the first run nothing here changes; any change is `pm01` version 2 under a new PREREG, tested only on days no earlier `pm01` run has seen.
-- Seeds (CHOICE; A-M10-01 RNG): bootstrap seed `1347235889` (the bytes "PM01" read as a big-endian integer); random-entry seed `1347235890`. Changing a seed is a new trial. Draw order is fixed (round 4 ruling 17): one RNG stream per purpose (bootstrap, random entries), each seeded once; trades are iterated by entry `(slot, tx_index, inner_ix_index)` ascending, and random-entry candidates of a trade by bar close time ascending, so the bootstrap and the random entries replay bit for bit.
+- Seeds (CHOICE; A-M10-01 RNG): bootstrap seed `1347235889` (the bytes "PM01" read as a big-endian integer); random-entry seed `1347235890`. Changing a seed is a new trial. Draw order is fixed (round 4 ruling 17): one RNG stream per purpose (bootstrap, random entries), each seeded once; trades are iterated by `(config id, entry slot, tx_index, inner_ix_index)` ascending (config id `A` before `B`; round 5 ruling 35), and random-entry candidates of a trade by bar close time ascending, so the bootstrap and the random entries replay bit for bit.
 
 ## 3. Universe: a pinned, reproducible list
 
@@ -127,7 +127,7 @@ Every trade is costed on three rows, each in lamports, with its parts shown apar
 | Impact | Exact constant-product round trip on the pre-trade pool state, both sides charged, sells sized to the real vault (ARCH §2.1; VF-05) |
 | Fixed | Base, priority and tip per leg; failed-attempt overhead; janitor close; rung-2 expectation; plus, in the conservative row, unrecovered rent and dust priors |
 | Stuck | Stuck term (`fFail³ × out`), strict and conservative rows, its own line |
-| Monthly | $59 a month (D04, Helius Developer counted until the owner rules, C-77) amortised per trade at the window's measured trade rate, converted to lamports at the window's recorded SOL/USD for each day (M23; SPEC-A A-M13-04 step 7; round 4 ruling 12), never at $150 |
+| Monthly | $59 a month (D04, Helius Developer counted until the owner rules, C-77) amortised per trade at the window's measured trade rate, converted to lamports at the window's recorded SOL/USD for each day (M23; SPEC-A A-M13-04 step 7; round 4 ruling 12), never at $150. The monthly USD figure is frozen for each window at the window's start and written in `docs/DECISIONS.md` with the window dates; a later ruling on it applies only to windows that start after it (round 5 ruling 27) |
 
 **Binding:** the conservative row plus the $59 monthly share decides every return-based gate (B-2, B-6, B-8, R-2, R-3, R-4, P-2, P-2b, P-3; SPEC-A A-M13-06 step 1). The lean and strict rows and the 414,009-lamport line are shown and decide nothing.
 
@@ -175,24 +175,38 @@ Plain reading: at $5, PM-01 needs an average gross gain of roughly 5% a trade pl
 ### 6.2 Forward windows (all self-recorded, in time order, disjoint)
 | Window | Starts | Ends | Use |
 |---|---|---|---|
-| `W_B` selection | 00:00Z of the latest of: 2026-10-21; the first UTC day after this PREREG is merged and `preRegister` is recorded; the first UTC day after any Phase 0 study week; the first UTC day whose M07 manifest passes coverage for PM-01's universe (§8.3) | After the first floor(0.8 × `d`) UTC days of `W_B`, `d` = `W_B`'s length in whole UTC days, fixed once `W_B` has ended | Run both configs; select one, once, after `W_B` ends (§7.2) |
+| `W_B` selection | 00:00Z of the latest of: 2026-10-21; the first UTC day after this PREREG is merged and `preRegister` is recorded; the first UTC day after any Phase 0 study week; the first UTC day whose M07 manifest passes coverage for PM-01's universe (§8.3) | After the first floor(0.8 × `d`) UTC days of `W_B`, `d` = `W_B`'s length in **calendar** UTC days, fixed once `W_B` has ended (round 5 ruling 24) | Run both configs; select one, once, after `W_B` ends (§7.2) |
 | `W_B` final 20% | After the selection part | `W_B` end | B-8's untouched part of `W_B` |
 | `W_R` | The UTC midnight at which `W_B` ends (no gap day) | When all hold: ≥ 14 days, ≥ `n_R` closed trades and the effective-size rule (§7.3) | Gate R: the untouched out-of-sample holdout (owner item 6) |
 | `W_P` | After `replay_passed` | ≥ 21 days and P-1's trade count | Paper dry run (§10) |
 
+- **Days** (round 5 ruling 24): split points and boundaries (the 80/20 split, B-4's halves, B-8's weeks) are set in calendar UTC days; every count (the 30 days, the 20-day effective-size rule) uses counted days only. A `low_coverage` day stays where it falls on the calendar, inside the selection part, the final 20% or a half, and adds no day and no trade to it.
 - `W_B` ends at the first UTC midnight at which it has ≥ 30 counted days, and ≥ 300 closed trades and the effective-size rule of §7.3 for **every** config in it (the count-only config of §6.4 included), after purge and embargo (round 4 ruling 2). `low_coverage` days (§8.3) are not counted days. B-5 is recomputed for its real length (ARCH §3.4 B-1). Trade **counts** may be read while `W_B` runs, to say when it will end; **no return** is computed on any `W_B` day until `W_B` has ended. The selection then runs once.
 - **No peeking in `W_R` and `W_P`** (round 4 ruling 3): no return is computed on any `W_R` or `W_P` day until that window has ended, and each window is evaluated once. Counts may be read to say when it will end.
 - **Embargo and purge** (ARCH §3.4 out-of-sample protocol): a trade whose holding period crosses a segment boundary (selection | final 20%, `W_B` | `W_R`) is dropped from both sides and counted. Entries in the first 300 min after a boundary are not taken. The longest hold is about 180 min (120-min time stop plus 60 min for the exit ladder); 300 min is the K3 horizon from migration (§3), kept because it is the stricter of the two.
-- **Regime breaks** (A12, A16; ruled, PM01-P4, §13): any venue upgrade or fee-config change inside a window that L-4 would flag is a hard boundary; trades crossing it are dropped and each side is reported. **Watched programs and accounts** (round 4 ruling 11): the pump bonding-curve program and its global config; the pump AMM (PumpSwap) program with its global config and fee config; and the fee program. A boundary comes **only** from L-4's automatic flag (the slot plus the changed program or config account hash), logged before any return of that window is computed; nobody may declare one afterwards (round 4 ruling 3). What happens next depends on its class:
+- **Regime breaks** (A12, A16; ruled, PM01-P4, §13): any venue upgrade or fee-config change inside a window that L-4 would flag is a hard boundary; trades crossing it are dropped and each side is reported. **Watched programs and accounts** (round 4 ruling 11; pinned, round 5 ruling 33): see the table below. L-4 hashes only the listed economic fields of each config account, plus each program's upgrade (its program-data account), so a change to an admin key or a bump does not end a window. A boundary comes **only** from L-4's automatic flag (the slot plus the changed program or config account hash), logged before any return of that window is computed; nobody may declare one afterwards (round 4 ruling 3). What happens next depends on its class:
 
   | Class | Kinds of change | Effect on the window | Known boundaries (`docs/research/venues.md` §2.7) |
   |---|---|---|---|
   | Economic | Any fee change; a change to the reserves or pricing maths; any change to migration or graduation parameters; a new mandatory account or an instruction that changes cost; a change in who is paid a fee; a `disable_flags` change; a rent-per-byte change | Ends the window it falls in; counts restart after it, with the 300-min embargo above. Inside `W_R` or `W_P` it also voids `W_B`'s selection (see below) | B1 (adds `virtual_quote_reserves`, which §4.1's price reads: reserves maths; "none seen" in 3–6 blocks is not proof), B2 (BOOST: liquidity held back and bought-and-burned), B3 (fee and creator-fee config), B4 (holder rewards: who is paid the creator fee) |
   | Decoder-only | Layout-only changes (event or account bytes added or moved, same economics) | Reported; the window continues | B5 (8-byte event tail; "economics unchanged" per UPG-1) |
 
+  | Program or account | Address | Economic fields hashed by L-4 | Source |
+  |---|---|---|---|
+  | pump (bonding curve) program | `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` | program upgrade | pinned IDL `research/historical/rpcscan/idl/pump.json` (sha256 `ffe966c4…`), `packages/core/test/chain/fixtures/idl-pinned.json` |
+  | pump `Global` | `4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf` | `initial_virtual_token_reserves`, `initial_virtual_sol_reserves`, `initial_real_token_reserves`, `token_total_supply`, `fee_basis_points`, `enable_migrate`, `pool_migration_fee`, `creator_fee_basis_points`, `fee_recipients`, `reserved_fee_recipient`, `reserved_fee_recipients`, `mayhem_mode_enabled`, `is_cashback_enabled`, `buyback_fee_recipients`, `buyback_basis_points`, `initial_virtual_quote_reserves`, `whitelisted_quote_mints`, `creator_fee_configurable`, `max_configurable_creator_fee_bps`, `is_holder_reward_enabled` | field names from the pinned `pump.json` type `Global`; address from `packages/core/src/chain/programs.ts` (`PUMP_GLOBAL`) |
+  | pump AMM (PumpSwap) program | `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA` | program upgrade | pinned IDL `research/historical/rpcscan/idl/pump_amm.json` (sha256 `20914338…`) |
+  | pump AMM `GlobalConfig` | `ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw` | `lp_fee_basis_points`, `protocol_fee_basis_points`, `disable_flags`, `protocol_fee_recipients`, `coin_creator_fee_basis_points`, `reserved_fee_recipient`, `reserved_fee_recipients`, `mayhem_mode_enabled`, `is_cashback_enabled`, `buyback_fee_recipients`, `buyback_basis_points`, `boost_enabled`, `creator_fee_configurable`, `max_configurable_creator_fee_bps` | field names from the pinned `pump_amm.json` type `GlobalConfig`; address from `programs.ts` (`PUMP_AMM_GLOBAL_CONFIG`) |
+  | fee program (`pump_fees`) | `pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ` | program upgrade | `idl-pinned.json` (sha256 `d87b5230…`) |
+  | pump `FeeConfig` (owned by the fee program) | `8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt` | `flat_fees`, `fee_tiers`, `stable_fee_tiers`, `exotic_flat_fees` | field names from the pinned IDLs' type `FeeConfig`; address from `programs.ts` (`PUMP_FEE_CONFIG`) |
+  | pump AMM `FeeConfig` (owned by the fee program) | `5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx` | as the row above | address from `programs.ts` (`PUMP_AMM_FEE_CONFIG`) |
+  | Rent sysvar | `SysvarRent111111111111111111111111111111111` | `lamports_per_byte_year`, `exemption_threshold` | **VERIFY**: not in the pinned IDLs; the address appears in `packages/worker/src/run/live-sim.ts`; field names from Solana's Rent sysvar, not checked against a pinned source |
+
+  **VERIFY items.** (1) The two config addresses come from `programs.ts`, not from the IDL files: the pinned IDLs give program IDs and field layouts only. Before the first run, each address is re-derived from its PDA seeds in the pinned IDL, and the result is recorded here. (2) No IDL field is named for the graduation threshold. Graduation follows from the bonding curve's reserves (`initial_real_token_reserves` above). If the pinned IDL shows another field that sets it, that field is added by amendment before the first run. (3) Rent sysvar fields, as in its row.
+
   A boundary not shown to be decoder-only within one day of it counts as economic. B5 stays decoder-only only while UPG-1's "economics unchanged" finding stands; if it is contradicted, B5 is economic. B1–B5 all lie before 2026-10-21, so none falls inside `W_B` or `W_R`; they show how a new boundary is classed.
 
-  **Economic boundary inside `W_R` or `W_P`** (supervisor, 8 Oct 9:30 AM; §13): that window ends and `W_B`'s selection is void, because it was made in the old regime. A new `W_B` selection runs on data after the boundary (after the embargo), then a new `W_R` and `W_P` follow in order. Limits (round 4 ruling 3): a voided `W_R` keeps its pre-boundary segment as a kill-only check (kill rule 2: with ≥ 100 closed trades and the conservative-row upper bound below 0, PM-01 stops); at most one restart is allowed, and a second boundary that would restart goes to the owner; each voided `W_R` is counted in the report and in the B-3 trial registry. Each config run in the new `W_B` counts as a new trial in the trial budget (B-3 DSR, B-5 MinBTL), so B-5 is checked against the total trial count. **A `W_B` rerun after a boundary may need more than 30 days** to pass B-5. Inside `W_B`, an economic boundary ends `W_B` and it restarts after the boundary; no return has been computed yet (§6.2), so no selection is voided.
+  **Economic boundary inside `W_R` or `W_P`** (supervisor, 8 Oct 9:30 AM; §13): that window ends and `W_B`'s selection is void, because it was made in the old regime. A new `W_B` selection runs on data after the boundary (after the embargo), then a new `W_R` and `W_P` follow in order. Limits (round 4 ruling 3): a voided `W_R` keeps its pre-boundary segment as a kill-only check (kill rule 2: with ≥ 100 closed trades and the upper bound below 0, PM-01 stops; the check uses the lean row without the monthly share and the §6.4 kill-side interval, the highest upper bound over block lengths and interval types, because a stop-only check uses the lean row, C-77; round 5 ruling 21); at most one restart is allowed, and a second boundary that would restart goes to the owner; each voided `W_R` is counted in the report and in the B-3 trial registry. Each config run in the new `W_B` counts as a new trial in the trial budget (B-3 DSR, B-5 MinBTL), so B-5 is checked against the total trial count. **A `W_B` rerun after a boundary may need more than 30 days** to pass B-5. Inside `W_B`, an economic boundary ends `W_B` and it restarts after the boundary; no return has been computed yet (§6.2), so no selection is voided.
 - **Dates today.** The recorder is not running yet (server paused), so no calendar date can be named. Each window's start and end are written to `docs/DECISIONS.md` on the day they are fixed by the rules above, and A-M13-05 refuses any overlap (`E_WINDOW_OVERLAP`).
 - **Calendar.** With `W_B` starting no earlier than 2026-10-21, `W_B` + `W_R` end no earlier than 2026-12-04, and later if trades come slowly. If PM-01's gates are still running on 31 Dec 2026, the OWNER PENDING clause of C-56 applies (ARCH D08).
 
@@ -201,13 +215,17 @@ B-10 replays the selected config transaction by transaction on the Old Faithful 
 
 ### 6.4 Kill-only screen on the B-10 days (owner, 8 Oct 2026, 9:28 AM; fixed before any B-10 day is looked at)
 
-The owner approved a one-time screen of PM-01's rules on the B-10 days that can stop PM-01 and can never pass it (owner's message, 8 Oct 2026, 9:28 AM, "Ok"; recorded in `docs/DECISIONS.md`, "PM-01 pre-registration", and in `CLAUDE.md` "PM-01 kill-only screen" on `claude/supervisor-docs`). Its rule is fixed here, before any of those days is read.
+The owner approved a one-time screen of PM-01's rules on the B-10 days that can stop PM-01 and can never pass it (owner's message, 8 Oct 2026, 9:28 AM, "Ok"; recorded in `docs/DECISIONS.md`, "PM-01 pre-registration"). Its rule is fixed here, before any of those days is read.
 
-- **Start condition** (round 4 ruling 7). The screen refuses to start until every §12 row marked "First run" is fixed and amended into this file, this file is merged, and the merge sha is read back. The run checks the hash of the frozen parameter set (in the `configKey`) against that merge.
+- **Start condition** (round 4 ruling 7; round 5 rulings 23 and 29). The screen refuses to start until all of these hold:
+  1. Card Z-H prep **P12** is done (fee-config history kept or fetched), so `fee_config_known` and `venue_enabled` can be computed.
+  2. Each §12 row the screen needs is fixed, as the "Fixed means" column of §12 says: PM01-P1 (the M08 change merged with its `affectsReturns` key), the exact stressed gap prior, the exact cost-row lamports, and A21's directional stress (`g`, `N`). The `honeypot_sim` and holder-state row is **not** required, because the screen uses assumed-pass for those inputs.
+  3. The frozen-parameter block (§12) has no `null` value, this file is merged with it, and the merge sha is read back.
+  4. The run recomputes the block's sha256 and the `configKey` from the merged file and refuses on any mismatch.
 - **Runs once** (round 4 ruling 17). The screen runs exactly once, on the days that are clean in the `B10-PULL` row when all 30 decision days are done or declared missing. It is never rerun and never extended to 2026-08-22..09-20.
 - **Data.** The B-10 days read from the Old Faithful archive (Triton) at 0 Helius credits and no new provider: 2026-07-22 to 2026-08-21, with 07-22 as lead-in only. Entries count only for decisions on 2026-07-23 to 2026-08-21 (UTC). The universe is §3's rules 1–3 applied to the pinned Old Faithful migration list, with each day's sha256 in the `B10-PULL` row (§3).
-- **Bars** (round 4 ruling 5). From the transaction-level replay, the pool state is sampled at 1 Hz as of block time: the sample for each second is the last state whose block time is ≤ that second. `observedAtMs` is taken from block time. Bar `high` and `close` come from those 1 Hz samples only, as M07 does live, never from states inside a second. A sample, and so a bar, is missing only where archive units or blocks are missing, never because no trade happened in it. Pools with missing bars are `start_missing` or `gap`, as in §8.3.
-- **Rules.** Configs A and B exactly as §4. The M10 fill model, at the frozen `fillModelVersion`, uses the engine's own order, position and risk code with `E_bt` = 20 SOL on the live-small profile. Size is $5 (33,333,333 lamports; PM01-P3), never scaled.
+- **Bars** (round 4 ruling 5). From the transaction-level replay, the pool state is sampled at 1 Hz as of block time: the sample for each second `s` is the last state, ordered by `(slot, tx_index, inner_ix_index)`, whose block time is ≤ `s` (round 5 ruling 32). A skipped leader slot is not a missing block. `observedAtMs` is taken from block time, which gives zero observation lag; that is favourable to PM-01, and the report says so. Bar `high` and `close` come from those 1 Hz samples only, as M07 does live, never from states inside a second. A sample, and so a bar, is missing only where archive units or blocks are missing, never because no trade happened in it. Pools with missing bars are `start_missing` or `gap`, as in §8.3.
+- **Rules.** Configs A and B exactly as §4. The M10 fill model, at the frozen `fillModelVersion`, uses the engine's own order, position and risk code with `E_bt` = 20 SOL on the live-small profile. Size is $5 (33,333,333 lamports; PM01-P3), never scaled. Each config runs isolated (§7.2).
 - **Inputs that history cannot supply, both directions** (round 4 ruling 4). `honeypot_sim` and holder state before the window are `replay_unavailable` and, with the replay-only key on, assumed to pass (C-78). This works both ways. It lets in trades the live bot would refuse, and those are plausibly worse (honeypots, concentrated holders who dump), which pushes the screen toward a kill. Other parts of the screen (the cost model below) push away from one. So the net direction is not known, and the kill rule below guards against the first effect.
 - **Fail-closed until P12** (round 4 ruling 19). `fee_config_known` and `venue_enabled` stay fail-closed in key-on runs until card Z-H prep P12 (fee-config history kept or fetched) is done (ARCH §3.4 B-10, C-78). Until then every screen entry fails closed, and the screen's result is `pending_data`. A key-on run cannot be registered as a trial (`registerTrial` returns `E_REPLAY_ASSUMED`), so the viewed-window ledger entry (§8.4) is its only record.
 - **Cost model.** The **lean** row of §5.3: venue fees on both sides, per trade and per side, at the **lower** of the rate read from chain for that trade on that day and the rate the current fee schedule would charge the same trade. The current schedule is the venue's fee config read from chain when the screen runs, and its account data hash is recorded in the report; impact by the exact constant-product round trip; base and priority fees per leg. There is no sandwich term, no stuck term, no rent or dust prior and no monthly share. On the same fills the lean row costs no more than the binding conservative row with the monthly share.
@@ -227,16 +245,17 @@ Mean net return per trade **in SOL**: (SOL received − SOL spent − every cost
 
 ### 7.2 Selection in `W_B`
 - The selection runs once, after `W_B` has ended (round 4 ruling 2). Each selectable config's mean (§7.1) on the selection part (§6.2); the higher one is selected; a tie selects Config A.
-- B-4 (N ≤ 3 trials): the config with the higher mean on the first half of `W_B` must also have the higher mean on the second half (ARCH §3.4). The halves are of the whole `W_B`, by whole UTC days (the first floor(`d`/2) days, then the rest).
+- B-4 (N ≤ 3 trials): the config with the higher mean on the first half of `W_B` must also have the higher mean on the second half (ARCH §3.4). The halves are of the whole `W_B`, by calendar UTC days (the first floor(`d`/2) days, then the rest; `low_coverage` days stay where they fall, §6.2).
 - **One selectable config** (a config dropped by §6.4; round 4 ruling 1): B-4 is recorded as `B-4_single_candidate` and replaced by a stricter check fixed now: the surviving config's §7.1 mean (conservative row) is above 0 in each half of `W_B`, halves as above. It is never vacuous. The dropped config runs count-only (§6.4), so B-3's DSR uses N = 2. Acceptance case for A-M13-06: M13 never calls `rankStability` with fewer than 2 configs.
 - The selected config's `configKey` is frozen at that point. `W_R` runs only that config.
+- **Isolated configs** (round 5 ruling 28): in every run (the screen, `W_B`, `W_R`, `W_P`), each config, the count-only one included, runs in its own engine instance with its own `E_bt` = 20 SOL and its own risk state (slots, exposure, loss counters). Nothing is shared. Acceptance test: config A's trade list is identical whether config B runs or not, and the same for B.
 
 ### 7.3 Tests (none loosened; the stricter of this file and the Blueprint holds)
 - **Interval (A14, C-65):** the more conservative (lower lower bound) of (a) the stationary bootstrap 95% CI of the mean, 10,000 resamples, mean block `b = max(1, round(n^(1/3)))`, the most conservative of `b/2`, `b` and `2b` (A-M13-03 step 1), and (b) a calendar-day cluster t-interval at 95%. DEFF (same-day design effect) is reported.
 - **Effective size** (round 4 ruling 9): B-1 and R-1 also need ≥ 20 distinct UTC days with ≥ 1 closed trade, and no single day holding more than 10% of the window's trades; otherwise the window keeps running. `n`/DEFF is reported.
 - **t-statistic** (round 4 ruling 8): B-6 uses the t from the calendar-day cluster standard error (the same clusters as the interval). The iid t is reported beside it and decides nothing.
 - **Drawdown bar** (round 4 ruling 14): at `E_bt` = 20 SOL, a drawdown limit in % of `E` is inert (20% is 4 SOL, about 120 full $5 losses). B-7 and R-5 therefore also need max drawdown ≤ 20 × the $5 notional (666,666,660 lamports); the % of `E` limits stay as well.
-- **Gate B on `W_B`:** B-1 ≥ 300 closed trades (and effective size); B-2 lower bound > 0; B-3 DSR ≥ 0.95 over every trial on overlapping data; B-4 as §7.2; B-5 trials ≤ MinBTL budget; B-6 cluster t ≥ 3.0; B-7 max drawdown ≤ 20% of `E_bt` and ≤ 20 × notional; B-8 positive mean in the final 20% and in every calendar week of `W_B` (weeks start Monday 00:00Z; CHOICE, the stricter reading: a partial week at either end of `W_B` is checked as it is, and a week with no closed trade is reported and not checked); B-9 10 identical replays; B-10 (§6.3). Beside B-2: the lower bound of (rule − matched random) > 0 (§9).
+- **Gate B on `W_B`:** B-1 ≥ 300 closed trades (and effective size); B-2 lower bound > 0; B-3 DSR ≥ 0.95 over every trial on overlapping data; B-4 as §7.2; B-5 trials ≤ MinBTL budget; B-6 cluster t ≥ 3.0; B-7 max drawdown ≤ 20% of `E_bt` and ≤ 20 × notional; B-8 positive mean in the final 20% and in every calendar week of `W_B` (weeks start Monday 00:00Z; a week is checked only when it holds ≥ 10 closed trades; an edge week with fewer is merged into the next week, or the previous one at `W_B`'s end; any other week with fewer than 10 is reported and not checked; round 5 ruling 35); B-9 10 identical replays; B-10 (§6.3). Beside B-2: the lower bound of (rule − matched random) > 0 (§9).
 - **Gate R on `W_R`:** R-1 ≥ 14 days, ≥ `n_R` = max(300, `n_80`) trades and effective size; R-2 lower bound > 0, and (rule − matched random) lower bound > 0; R-3 mean ≥ 50% of the `W_B` point estimate; R-4 point estimate > 0 with 2 × p95 latency and 2 × `p_sw`, and A21's directional stress; R-5 max drawdown ≤ 15% of `E_bt` and ≤ 20 × notional; R-6 crash-day report (ARCH §3.4: the replay of every `W_R` day on which SOL or the meme basket fell by more than the regime threshold, or with ≥ 2 simultaneous signals, is reviewed, and correlated loss on those days ≤ `MAXRISK_PF`).
 - **Power (owner item 6):** `n_80 = ⌈DEFF × ((1.960 + 0.842) / S_low)²⌉`, `S_low` the lower bound of the selected config's per-trade net Sharpe 95% interval on `W_B` (A-M13-06 step 4). It cannot be computed before `W_B`. For orientation only (DEFF = 1): `S_low` 0.05 → 3,141 trades; 0.10 → 786; 0.20 → 197 (DERIVED). If `S_low` ≤ 0, R-1 fails and the case goes to the owner; if `n_R` needs more than 90 days of `W_R` at `W_B`'s trade rate, it goes to the owner and nothing passes.
 - **≥ 300 out-of-sample trades** in `W_R`, whatever `n_80` says (R-1).
@@ -262,8 +281,9 @@ Every computation of a PM-01 signal or return on any day is logged in M13's view
 
 - For each PM-01 trade, 10 random entries in the **same pool** and the **same UTC hour**, drawn with the random-entry seed, from complete 15 s bar closes inside that pool's PM window where every entry-time filter of §4.2 passes (the size's `DEPTHPCT` and `k` included) but the breakout and depth-rising conditions are not required. Each random entry runs the same config's exits and costs.
 - C-65's third key, the 6 h MAD decile, cannot exist for a pool at most 120 min old, and C-65's overlap rule uses MR's lookback `L`. The PM reading (ruled, PM01-P2, §13): MAD of 15 s returns since migration (bar 0) to the candidate bar, deciles over all candidate bars of the same gate window (`W_B` or `W_R`; round 4 ruling 10); `L` = 60 s (the depth-rising look-back), so a candidate whose holding period overlaps `[signal − 60 s, signal]` is dropped.
-- Fewer than 10 candidates: all are used. None: the trade counts in §7 but not in the excess test; `n_b` (trades with at least one random entry) and `n_b`/`n` are reported. If `n_b` < 0.8 × `n`, the excess test fails closed (round 4 ruling 10).
+- Fewer than 10 candidates: all are used. None: the trade counts in §7 but not in the excess test; `n_b` (trades with at least one random entry) and `n_b`/`n` are reported. If `n_b` < 0.8 × `n`, the excess test fails closed (round 4 ruling 10): it is `pending_data`, never passes and never triggers a kill.
 - Excess per trade = trade net return − mean net return of its random entries, on the conservative row. It is computed twice: with random entries before the signal only, and with random entries after the signal only. Test: §7.3's interval on each; the gate uses the **lower** of the two lower bounds, which must be > 0, beside B-2 and R-2. A trade with no candidate on one side is left out of that side's excess.
+- **Side floors** (round 5 ruling 22): each side needs `n_side` ≥ 0.5 × `n` trades and ≥ 20 calendar-day clusters. Below that, the excess test is `pending_data`: it never passes and never triggers kill rule 1 or 2, and the owner is told the counts. A side computed with enough trades whose lower bound is ≤ 0 still fails the test, and that can kill.
 
 ## 10. Live dry run: what counts as consistent
 
@@ -271,6 +291,7 @@ PM-01 can reach paper at most (`enabled_modes` ⊆ {backtest, replay, paper}; A-
 
 In `W_P`, at the $5 gate size with `E_bt` = 20 SOL of paper equity on the live-small profile (round 4 ruling 15), so the ceilings are the same as in the gate runs:
 
+- **Capital requirement** (round 5 ruling 34; DERIVED, approximate): P-9 requires the fixed monthly cost to be ≤ 3% of `E` (ARCH §3.4). At $59 a month that implies a bankroll of at least about $1,967 (59 ÷ 0.03), about 13.1 SOL at the $150 illustration rate; the report converts it at the window's recorded SOL/USD. This is PM-01's capital requirement for live use, beside the $5 trade size, and is reported with `W_P`'s result. Raising any limit stays the owner's.
 - **Binding (Blueprint):** P-1 to P-6, P-9 and P-10, owner items 3 and 4 inside them. **Consistency with the backtest is P-3:** the paper mean is not below `W_R`'s 95% interval lower bound (§7.3's interval).
 - **Consistency flags** (CHOICE; decide no pass, but each one blocks promotion until the supervisor records an evidence-based explanation in `docs/DECISIONS.md`): (a) paper mean above `W_R`'s interval upper bound (a result better than the replay suggests a model or data fault, never luck to bank); (b) paper trades a day outside 0.5× to 2× of `W_R`'s rate; (c) the share of stop exits more than 15 percentage points from `W_R`'s share; (d) realised explicit cost above 1.25 × modelled over the window (LS-2's ratio).
 
@@ -278,21 +299,25 @@ In `W_P`, at the $5 gate size with `E_bt` = 20 SOL of paper equity on the live-s
 
 PM-01 stage → `failed` (absorbing; A-M13-05 step 3) when any of these happens. After that, PM-01 version 1 is never re-run on the same days, never traded and never shadowed; a revised rule enters only as a new version through the M09 slot, pre-registered and tested on days no PM-01 run has seen (D08).
 
-1. Gate B evaluated with sufficient data (B-1 met, ≥ 30 counted days) and any of B-2, B-3, B-5, B-6, B-7, B-8, B-4 (or its single-candidate substitute, §7.2) or the excess test fails (round 4 ruling 13).
-2. Gate R evaluated with sufficient data and any of R-2 to R-6 fails, or the excess test fails; or a voided `W_R`'s pre-boundary segment has ≥ 100 closed trades and its conservative-row upper bound is below 0 (§6.2).
+1. Gate B evaluated with sufficient data (B-1 met, ≥ 30 counted days) and any of B-2, B-3, B-5, B-6, B-7, B-8, B-4 (or its single-candidate substitute, §7.2) or the excess test fails (round 4 ruling 13). An excess test that is `pending_data` (§9 side floors or the 0.8 `n` rule) never triggers this rule (round 5 ruling 22).
+2. Gate R evaluated with sufficient data and any of R-2 to R-6 fails, or the excess test fails; or a voided `W_R`'s pre-boundary segment has ≥ 100 closed trades and its upper bound is below 0, on the lean row without the monthly share and the §6.4 kill-side interval (§6.2; round 5 ruling 21).
 3. R-1 power: `S_low` ≤ 0 on `W_B`. The Blueprint sends this to the owner; this file's recommendation is stop.
-4. `W_B` reaches 90 days with fewer than 300 closed trades (CHOICE, mirroring R-1's 90-day rule): B-1 cannot be met in a usable time; the case goes to the owner with the recommendation stop.
+4. B-1, including effective size (§7.3), not met by 90 counted days of `W_B` (round 5 ruling 31): B-1 cannot be met in a usable time; the case goes to the owner with the recommendation stop.
 5. Gate P fails P-2, P-2b, P-3 or P-4 with sufficient data.
 6. The C-56 end state: if PM-01 has not passed by 31 Dec 2026, the OWNER PENDING clause applies; no new PM work starts after that date.
 7. The kill-only screen on the B-10 days drops both configs (§6.4).
 
-Which failures can kill (round 4 ruling 13; supervisor, 8 Oct 2026): a failed **evidence** check (returns, risk, statistics) can kill; a failed **engineering, determinism or data-integrity** check never kills, and blocks the stage until a fix record and a re-run exist. B-9 (10 identical replays) and B-10 (crashes, illegal states, unreconciled intents) are engineering checks: they never kill. R-6 is an evidence check: by ARCH §3.4 it tests that correlated loss on crash days stays within `MAXRISK_PF`, a risk limit, so it stays in kill rule 2.
+Which failures can kill (round 4 ruling 13; supervisor, 8 Oct 2026): a failed **evidence** check (returns, risk, statistics) can kill; a failed **engineering, determinism or data-integrity** check never kills, and blocks the stage until a fix record and a re-run exist. "Engineering check" means exactly B-9 (10 identical replays), B-10 (crashes, illegal states, unreconciled intents) and the M07 coverage and QA checks (round 5 ruling 26); every other failed check is evidence. Engineering checks never kill.
+
+**Re-runs after a fix** (round 5 ruling 26): a re-run must reproduce every decision of the evaluated window except the trades the fix record names, each with its reason. If any return in a window already evaluated changes, that window is burned: the result counts as a new trial (B-3, B-5), and the gates run again only on unseen days. R-6 is an evidence check: by ARCH §3.4 it tests that correlated loss on crash days stays within `MAXRISK_PF`, a risk limit, so it stays in kill rule 2.
 
 An economic boundary inside `W_B`, `W_R` or `W_P` is not by itself a kill: it ends that window, and inside `W_R` or `W_P` it also voids `W_B`'s selection, under the limits of §6.2 (PM01-P4).
 
 A gate that is only `pending_data` never kills and never passes.
 
 ## 12. Numbers that need data or a ruling, fixed before the first run
+
+"Fixed" means for each row (round 5 ruling 23): the value is written into this file and into the frozen-parameter block below by an amendment, from the merged code or ticket named in the row, with that commit's sha; for PM01-P1, the M08 change is merged with its `affectsReturns` key.
 
 | # | Number | How it is fixed | Before |
 |---|---|---|---|
@@ -307,7 +332,85 @@ A gate that is only `pending_data` never kills and never passes.
 | — | `n_80`, DEFF, `S_low` | Computed on `W_B` by A-M13-06 | Start of `W_R` |
 | — | PM-01's trade rate | Counted while `W_B` runs (counts only, §6.2) | — |
 | — | Window dates | Fixed by §6.2's rules and written to DECISIONS on the day | Each window's start |
-| — | `honeypot_sim` and holder state in recorded `W_B` data | If the engine cannot supply them from M07 records, every entry fails closed; that is a defect to fix in the data path, never a check to skip ("Discipline, not paralysis") | First run |
+| — | `honeypot_sim` and holder state in recorded `W_B` data (not required for the screen, which uses assumed-pass) | If the engine cannot supply them from M07 records, every entry fails closed; that is a defect to fix in the data path, never a check to skip ("Discipline, not paralysis") | First run |
+
+### Frozen-parameter block (round 5 ruling 29)
+
+Every `affectsReturns` value for configs A and B: §4.6, the gate size and equity, the PM-01 `dump_flag` baseline, the random-entry rules, the seeds, the screen floor, the frozen fill, cost and feature versions, the §12 numbers, and the monthly figure at registration. Lamport values are strings (exact integers). `null` marks a value still to be fixed; the screen and every gate run refuse to start while any value is `null` (§6.4). Each window's frozen monthly figure is written in `docs/DECISIONS.md` at the window's start (§5.3).
+
+The hash is the sha256 of the bytes between the opening ```` ```json ```` line and the closing ```` ``` ```` line, exclusive, UTF-8 with LF line ends. At this commit it is `ae8e2a9a5d69c068d05eb21dcba2e81153b7f41d854b3e804a6cfb18174a95a2`. Each amendment recomputes and rewrites it. The run recomputes the hash and the `configKey` from the block in the merged file and refuses on any mismatch.
+
+```json
+{
+ "strategyId": "pm01",
+ "strategyVersion": "1.0.0",
+ "configs": {
+  "A": {
+   "stopBps": 800,
+   "trailArmBps": 800,
+   "trailBps": 800,
+   "targetBps": 1500,
+   "timeStopMs": 7200000,
+   "entryFromMs": 1200000,
+   "entryToMs": 7200000,
+   "minEffQuoteLamports": "85000000000",
+   "minRealRatioBps": 6000,
+   "depthRisingBars": 4,
+   "maxEntriesPerPool": 1,
+   "entrySlippageBps": 150,
+   "exitSlippageBps": 300,
+   "fixedCostCapBps": 200
+  },
+  "B": {
+   "stopBps": 1500,
+   "trailArmBps": 800,
+   "trailBps": 800,
+   "targetBps": 1500,
+   "timeStopMs": 7200000,
+   "entryFromMs": 1200000,
+   "entryToMs": 7200000,
+   "minEffQuoteLamports": "85000000000",
+   "minRealRatioBps": 6000,
+   "depthRisingBars": 4,
+   "maxEntriesPerPool": 1,
+   "entrySlippageBps": 150,
+   "exitSlippageBps": 300,
+   "fixedCostCapBps": 200
+  }
+ },
+ "gateSizeLamports": "33333333",
+ "eBtLamports": "20000000000",
+ "riskProfile": "live_small",
+ "dumpFlagPm01": {
+  "baselineFrom": "migration",
+  "baselineToBeforeNowMs": 1800000,
+  "minBaselineMs": 600000,
+  "minCoverageBps": 5000
+ },
+ "randomEntry": {
+  "perTrade": 10,
+  "madSince": "migration",
+  "lookbackMs": 60000
+ },
+ "seeds": {
+  "bootstrap": 1347235889,
+  "randomEntry": 1347235890
+ },
+ "screen": {
+  "minClosedTrades": 100
+ },
+ "fillModelVersion": null,
+ "costModelVersion": null,
+ "featuresVersion": null,
+ "stressedGapPriorBps": null,
+ "costRowLamports": null,
+ "a21DirectionalStress": {
+  "g": null,
+  "N": null
+ },
+ "monthlyUsdAtRegistration": 59
+}
+```
 
 ## 13. Rulings
 
@@ -352,3 +455,21 @@ Round 4 (9:40 AM), on the round 3 red team and review (rulings 1–20 of that fi
 26. **Monthly cost** at the recorded SOL/USD per day (§5.1, §5.3).
 27. **B-9 and B-10** never kill (§11).
 28. **Minors:** drawdown bar (§7.3); `W_P` at 20 SOL (§10); independent coverage list (§8.3); decision-day rule, `inner_ix_index`, sha256 in `B10-PULL` (§3); draw order (§2); screen runs once (§6.4); `recovered` line, B-8 weeks, denominator (§7.1, §7.3); owner citation and `dump_flag` fire rate (§6.4, §7.4); embargo reason, `W_R` start, lamport and SOL columns with sandwich and stuck apart, fail-closed until P12, pulling is not looking (§6.2, §5.3, §5.4, §6.4, §2).
+
+Round 5 (9:47 AM), on the round 4 delta review and red team round 2 (rulings 21–35 of that file):
+
+29. **Voided-`W_R` kill:** the lean row without the monthly share, and the §6.4 kill-side interval (§6.2, §11).
+30. **Benchmark sides:** `n_side` ≥ 0.5 `n` and ≥ 20 day clusters; below that `pending_data`, never pass, never kill, owner told (§9, §11).
+31. **Screen start:** P12 done; the required §12 rows and what "fixed" means; the honeypot and holder row excluded (§6.4, §12).
+32. **Days:** calendar days for split points and boundaries, counted days for counts; where `low_coverage` days fall (§6.2, §7.2).
+33. **Citation:** the `CLAUDE.md` clause dropped; the owner's "Ok" (9:28 AM) and the DECISIONS row cited (§6.4).
+34. **Re-runs:** every decision reproduced except named trades; a changed return burns the window; "engineering" is exactly B-9, B-10 and the M07 coverage and QA checks (§11).
+35. **Monthly figure** frozen per window at its start, in DECISIONS (§5.3).
+36. **Isolated configs:** one engine instance and risk state per config; the A-with-or-without-B test (§7.2).
+37. **Frozen-parameter block** with its sha256; the run recomputes and refuses on a mismatch (§12).
+38. **PM01-P2 row** in DECISIONS updated to "gate window, `W_B` or `W_R`".
+39. **Kill rule 4:** B-1 with effective size, by 90 counted days, goes to the owner (§11).
+40. **As-of tie-break,** skipped slots, zero observation lag (§6.4).
+41. **Pinned programs and config accounts,** economic fields only, VERIFY where not confirmed (§6.2).
+42. **P-9's implied bankroll** as the capital requirement (§10).
+43. **RNG key** with the config id; B-8 weeks need ≥ 10 trades (§2, §7.3).
