@@ -323,6 +323,16 @@ migration raw record. Today's retention already keeps every curve and canonical-
   plus the remaining allow-listed days × the largest K3 day stored so far must stay ≤ 0.5 TB; otherwise OF-4 writes the
   append-only `storage-stop` marker in `zeroed-data`, the chain stops and the owner is asked. For batches 1 and 2, the per-day figure is the
   **measured PM-01 subset of the K2 days** (round 4 item 40), since no K3 day exists yet.
+  **As built (OF-4):** `ci/storage-check.sh` runs after each stored day. It sums every release in `zeroed-data`, counts
+  the allow-listed days with no `data-day-D` or `data-day-D-k3` release, and takes the largest stored day as the per-day
+  figure, a K2 release (it carries `pm01-subset-DAY.txt`) counting as that measured subset. The cap is
+  `ARCHIVE_STORE_CAP_BYTES` (5 × 10^11 bytes; the decimal reading is the stricter one). Above it, the script writes the
+  published `storage-stop` release, never edits or deletes it, and exits 3, so the batch fails and nothing chains.
+  A store it cannot read, or no per-day figure, fails closed without a marker.
+- **K2 progress is not stored in `zeroed-data`** (OF-4, deciding OF-3 ruling 7). A K2 day's progress (about 45 GB)
+  does not fit the Actions cache. Putting partial K2 units in the private store would add a second store path for
+  unfinished data, with its own read-back and clean-up, for two measurement days. Instead, a K2 day that cannot finish
+  in one job holds the chain for a decision, as OF-3 ruling 7 already does.
 - The days may wait unused in the store until a strategy reaches gate B, and under A17 (C-56) they may never be used.
 - A future slot strategy that needs raw records for other
   pools reads those days again from the archive: 0 credits, only time, under the same batch rules, and only with the

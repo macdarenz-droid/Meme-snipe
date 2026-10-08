@@ -190,25 +190,10 @@ mkfx() {
   local dir=$1 kv k; shift
   rm -rf "$dir"; mkdir -p "$dir/research/historical/ci" "$dir/research/historical/scanner" "$dir/docs"
   cp "$here"/*.sh "$here/archive-limits.conf" "$dir/research/historical/ci/"
-  # OF-4/OF-5 stand-in: days stored in the private store, no day-DAY artifact (ruling 9
-  # refuses to arm otherwise); PUBLICSTORE keeps today's public storage.
+  # OF-4 landed: the real scripts store days in the private store and data-scan.yml has no
+  # day-DAY artifact and no contents: write, so both are copied as they are.
   mkdir -p "$dir/.github/workflows"
   cp "$here/../../../.github/workflows/data-scan.yml" "$dir/.github/workflows/data-scan.yml"
-  if [[ -z "${PUBLICSTORE:-}" ]]; then
-    for f in "$dir/research/historical/ci/"*.sh; do
-      case $f in */archive-guard.sh|*/test-ci.sh) continue ;; esac
-      sed -i 's/--repo "\$GITHUB_REPOSITORY"/--repo "$DATA_REPO"/g' "$f"
-    done
-    python3 - "$dir/.github/workflows/data-scan.yml" <<'PY'
-import re, sys
-p = sys.argv[1]; s = open(p).read()
-s = s.replace("contents: write", "contents: read")
-# drop the day-DAY upload step (OF-4 drops it)
-s = re.sub(r"      - uses: actions/upload-artifact@[^\n]*\n        if: [^\n]*\n        with:\n          name: day-\$\{\{ matrix.day \}\}\n(          [^\n]*\n)*", "", s)
-assert "name: day-${{ matrix.day }}" not in s
-open(p, "w").write(s)
-PY
-  fi
   sed 's/^var reqLimiter = newLimiter([0-9.]*)$/var reqLimiter = newLimiter(10)/' "$here/../scanner/archive.go" > "$dir/research/historical/scanner/archive.go"
   printf '| 2026-10-08 | B10-PULL id=b10pull-test-1 source=old-faithful scannerRev=r1 days=2026-07-22..2026-08-21 pinnedAt=2026-10-08T00:00:00Z | t | t |\n' > "$dir/docs/DECISIONS.md"
   for kv in ARCHIVE_ARM=b10pull-test-1 ARCHIVE_REARM_AT=2026-10-01T00:00:00Z ARCHIVE_RETENTION=K2 "$@"; do
@@ -1083,7 +1068,7 @@ ACFX=$T/fxr4/research/historical/ci ac env AC_STATUS=206
 [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$GD/dispatch.log" 2>/dev/null) == 1 ]] &&
   ok "OF-2 hold 3: the same 3 failures before a later ARCHIVE_REARM_AT → a request (and a dispatch)" || no "OF-2 re-armed: $(cat "$A/summary.md")"
 { dsrun 311 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
-  dsrun 314 "data-scan scan source=archive" success 410 390 "Archive guard=success,scan (2026-07-22)=success,Publish this day=success"
+  dsrun 314 "data-scan scan source=archive" success 410 390 "Archive guard=success,scan (2026-07-22)=success,Store this day=success"
   dsrun 312 "data-scan scan source=archive" failure 380 360 "scan (2026-07-23)=failure,continue=failure"
   dsrun 313 "data-scan scan source=archive" failure 320 300 "scan (2026-07-23)=failure,continue=failure"; } | dsjson
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
@@ -2010,7 +1995,7 @@ rm -f "$GD"/jobs-* "$GD"/attempt-* "$GD/ac.json"
   dsrun 352 "data-scan scan source=archive" failure 400 360 "scan (2026-07-22)=failure,continue=failure"
   ATTEMPT=2 dsrun 353 "data-scan scan source=archive" success 320 240; } | dsjson
 attemptfile 353 1 failure 300; jobsfile 353 "scan (2026-07-22)=failure,continue=failure"; mv "$GD/jobs-353.json" "$GD/jobs-353-1.json"
-attemptfile 353 2 success 240; jobsfile 353 "scan (2026-07-22)=success,Publish this day=success"; mv "$GD/jobs-353.json" "$GD/jobs-353-2.json"
+attemptfile 353 2 success 240; jobsfile 353 "scan (2026-07-22)=success,Store this day=success"; mv "$GD/jobs-353.json" "$GD/jobs-353-2.json"
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" || bad+=" rerun-batch:$(cat "$A/summary.md")"
 FXG=$T/fxr8/research/historical/ci guard full 2026-07-22; rc=$?
@@ -2041,7 +2026,7 @@ bad=""
 # 3. A no-op success (the day was already published: no Publish step) does not reset.
 { dsrun 371 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
   dsrun 372 "data-scan scan source=archive" failure 400 360 "scan (2026-07-22)=failure,continue=failure"
-  dsrun 373 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Publish this day=skipped"
+  dsrun 373 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Store this day=skipped"
   dsrun 374 "data-scan scan source=archive" failure 320 300 "scan (2026-07-22)=failure,continue=failure"; } | dsjson
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" &&
@@ -2087,14 +2072,26 @@ rm -rf "$GP"; guard attest 2026-07-22 "$GP"; read -r d r t id at < "$GP/2026-07-
 [[ -z "$bad" ]] && ok "OF-2 r2 ruling 8: the guard pass carries retention, run id and attempt; scan-day refuses a pass for another retention, run or attempt" || no "OF-2 r2 pass binding:$bad"
 bad=""; gdreset
 # 9. Not armed while days would still be stored in this public repository.
-for v in day vol art; do
-  mkfx "$T/fxpub$v"; c="$T/fxpub$v/research/historical/ci"
-  case $v in day) cp "$here/publish-day.sh" "$c/" ;; vol) cp "$here/publish-volume.sh" "$c/" ;; art) cp "$here/../../../.github/workflows/data-scan.yml" "$T/fxpub$v/.github/workflows/" ;; esac
+# (OF-4 made the real files private, so the public forms are rebuilt here as fixtures.)
+for v in day vol art write; do
+  mkfx "$T/fxpub$v"; c="$T/fxpub$v/research/historical/ci" w="$T/fxpub$v/.github/workflows/data-scan.yml"
+  case $v in
+    day) sed 's/--repo "\$DATA_REPO"/--repo "$GITHUB_REPOSITORY"/' "$here/publish-day.sh" > "$c/publish-day.sh" ;;
+    vol) sed 's/--repo "\$DATA_REPO"/--repo "$GITHUB_REPOSITORY"/' "$here/publish-volume.sh" > "$c/publish-volume.sh" ;;
+    art) python3 - "$w" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read(); i = s.index("      - name: Store this day\n")
+s = s[:i] + "      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n        with:\n          name: day-${{ matrix.day }}\n          path: ${{ runner.temp }}/work/assets\n" + s[i:]
+open(p, "w").write(s)
+PY
+    ;;
+    write) sed -i 's/      contents: read # OF-4: nothing is written to this repository; the day goes to the private store/      contents: write/' "$w"; grep -q '^      contents: write$' "$w" || bad+=" fixture-write" ;;
+  esac
   ACFX=$c ac env AC_STATUS=206
-  [[ ! -e "$A/curl.calls" ]] && grep -qE "held \(1\): the archive chain is not armed: .*(publish-day.sh|publish-volume.sh|contents: write|artifact other than)" "$A/summary.md" || bad+=" check-$v"
+  [[ ! -e "$A/curl.calls" ]] && grep -qE "held \(1\): the archive chain is not armed: .*(publish-day.sh|publish-volume.sh|contents: write|artifact other than|uploads an artifact)" "$A/summary.md" || bad+=" check-$v"
   rc=0; FXG=$c guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] || bad+=" plan-$v:$rc"
 done
-[[ -z "$bad" ]] && ok "OF-2 r2 ruling 9: armed, the chain still refuses (archive-check and a manual dispatch) while publish-day.sh (and its skip check) or publish-volume.sh release to this repository, or data-scan.yml uploads the day-DAY artifact: OF-4/OF-5 land first" || no "OF-2 r2 public storage:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 9: armed, the chain still refuses (archive-check and a manual dispatch) while publish-day.sh (and its skip check) or publish-volume.sh release to this repository, or data-scan.yml uploads the day-DAY artifact or grants contents: write" || no "OF-2 r2 public storage:$bad"
 bad=""; gdreset
 # 10. Retry-After: the probe records it; hold 2 and the guard wait for max(3 h, the end).
 rc=0; ac env AC_STATUS=429 AC_RA=30000 || rc=$?
@@ -2154,11 +2151,11 @@ gdreset; bad=""; now=$(date -u +%s)
 # 12 (a): S only from a default-branch run whose plan job's "Archive guard" step passed.
 { dsrun 601 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
   dsrun 602 "data-scan scan source=archive" failure 400 360 "scan (2026-07-22)=failure,continue=failure"
-  dsrun 603 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Publish this day=success"
+  dsrun 603 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Store this day=success"
   dsrun 604 "data-scan scan source=archive" failure 320 300 "scan (2026-07-22)=failure,continue=failure"; } | dsjson
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" || bad+=" s-without-guard"
-jobsfile 603 "Archive guard=success,scan (2026-07-22)=success,Publish this day=success"
+jobsfile 603 "Archive guard=success,scan (2026-07-22)=success,Store this day=success"
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
 [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" s-with-guard:$(cat "$A/summary.md")"
 [[ -z "$bad" ]] && ok "OF-2 r3 ruling 12 (a): a stored day counts as a success only when the run's plan job passed the Archive guard: without it 2 failures + that run + 1 failure stop the chain; with it the count resets" || no "OF-2 r3 success needs the guard:$bad"
@@ -2198,11 +2195,11 @@ byp 'echo '"'"'GH_REPO=o/r gh release create x --repo "$DATA_REPO"'"'"' >> "$c/p
 byp 'echo '"'"'gh release create x'"'"' >> "$c/publish-day.sh"' no-repo
 byp 'printf "#!/usr/bin/env bash\ngh release view x \\\\\n  --repo o/public\n" > "$c/new-pub.sh"' new-script-continued
 byp 'echo '"'"'gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name=x'"'"' >> "$c/publish-day.sh"' api-releases
-byp 'cp "$here/assemble.sh" "$c/assemble.sh"' assemble
+byp 'sed "s/--repo \"\\\$DATA_REPO\"/--repo \"\$GITHUB_REPOSITORY\"/" "$here/assemble.sh" > "$c/assemble.sh"' assemble-public
 byp 'sed -i "0,/name: resume-\\\${{ matrix.day }}/s//name: day2-\${{ matrix.day }}/" "$w"' renamed-artifact
 byp 'python3 -c "import sys; p=sys.argv[1]; s=open(p).read(); i=s.index(\"  volume:\"); j=s.index(\"permissions:\", i); open(p,\"w\").write(s[:j] + \"permissions:\\n      contents: write\\n    \" + s[j:])" "$w"' volume-write
 mkfx "$T/fxb"; ACFX=$T/fxb/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" control"
-[[ -z "$bad" ]] && ok "OF-2 r3 ruling 13: arming refuses on the capability: \${GITHUB_REPOSITORY}, -R, GH_REPO=, a release call with no --repo, a new script (continued line), a releases API path, assemble.sh as it is, a renamed upload artifact and contents: write in the volume job; the private-store fixture arms" || no "OF-2 r3 capability:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r3 ruling 13: arming refuses on the capability: \${GITHUB_REPOSITORY}, -R, GH_REPO=, a release call with no --repo, a new script (continued line), a releases API path, assemble.sh releasing to this repository, a renamed upload artifact and contents: write in the volume job; the private-store fixture arms" || no "OF-2 r3 capability:$bad"
 bad=""; gdreset
 # 14: the durable back-off record, a check-run annotation of each counted failure.
 acrun 621 failure 240 notserved | acjson
@@ -2556,7 +2553,7 @@ for s in steps:
 # the token reaches only clean guard, crypt and store steps, never scan, trim or QA
 for s in steps:
     if "DATA_STORE_TOKEN" in str(s.get("env", "")):
-        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh")), s
+        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh", "storage-check.sh")), s
 for k in ("scan", "qa"):
     assert "DATA_STORE_TOKEN" not in str(by[k]), k
 PY

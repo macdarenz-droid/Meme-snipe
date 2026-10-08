@@ -12,8 +12,9 @@
 # (rescan-DAY.sha256, list-DAY.txt, pm01-subset-DAY.txt). An existing release is never
 # edited: if its asset names equal this day's files it is accepted, otherwise the step
 # fails ("incomplete release, delete it to republish"). Then every asset is read back
-# (downloaded one at a time and checked against the local SHA256SUMS-DAY); any mismatch
-# fails the step, so the progress cache is kept (the delete step runs only after it).
+# (downloaded one at a time and checked against the release's own SHA256SUMS-DAY, which
+# must equal this run's when this run created it); any mismatch fails the step, so the
+# progress cache is kept (nothing deletes it before a read-back passed).
 # On success it writes readback=true to $GITHUB_OUTPUT.
 set -euo pipefail
 GH=${GH_BIN:-/usr/bin/gh}
@@ -102,20 +103,27 @@ case "$st" in
     echo "stored $tag in the private store (${#files[@]} files, $(du -cb "${files[@]}" | tail -1 | cut -f1) bytes)" | tee -a "$summary" ;;
   *) echo "$tag exists but is $st; delete it to republish (never edited here)" | tee -a "$summary"; exit 1 ;;
 esac
-# OF-4 read-back: every stored asset, one at a time (the disk holds one extra copy at
-# most), must hash to its line in the local SHA256SUMS-DAY, and the stored SHA256SUMS-DAY
-# must equal the local one. Any mismatch or failed download fails the step.
+# OF-4 read-back, against the release's own SHA256SUMS-DAY (a complete release from an
+# earlier run keeps its own QA files, which a rerun's differ from): that file is read
+# first, and when this run created the release it must equal the local one; then every
+# other stored asset, one at a time (the disk holds one extra copy at most), must hash
+# to its line in it. Any mismatch or failed download fails the step.
 rb=$(mktemp -d)
-for f in "${files[@]}"; do
+fail_rb() { rm -rf "$rb"; echo "read-back: $*; the progress cache is kept" | tee -a "$summary"; exit 1; }
+"$GH" release download "$tag" --repo "$DATA_REPO" --pattern "$sums" --dir "$rb" >/dev/null 2>&1 && [ -f "$rb/$sums" ] ||
+  fail_rb "$sums could not be downloaded from $tag"
+[ "$st" = complete ] || cmp -s "$rb/$sums" "$sums" || fail_rb "the stored $sums differs from this run's"
+mv "$rb/$sums" "$rb/.sums"
+names=$("$GH" release view "$tag" --repo "$DATA_REPO" --json assets --jq '.assets[].name' 2>/dev/null) || fail_rb "the assets of $tag cannot be listed"
+n=0
+while IFS= read -r f; do
+  [ -n "$f" ] && [ "$f" != "$sums" ] || continue
   "$GH" release download "$tag" --repo "$DATA_REPO" --pattern "$f" --dir "$rb" >/dev/null 2>&1 && [ -f "$rb/$f" ] ||
-    { rm -rf "$rb"; echo "read-back: $f could not be downloaded from $tag; the progress cache is kept" | tee -a "$summary"; exit 1; }
-  if [ "$f" = "$sums" ]; then cmp -s "$rb/$f" "$sums" || { rm -rf "$rb"; echo "read-back: the stored $sums differs; the progress cache is kept" | tee -a "$summary"; exit 1; }
-  else
-    want=$(awk -v f="$f" '$2 == f {print $1}' "$sums"); got=$(sha256sum "$rb/$f" | cut -d' ' -f1)
-    [ -n "$want" ] && [ "$want" = "$got" ] || { rm -rf "$rb"; echo "read-back: $f does not match $sums; the progress cache is kept" | tee -a "$summary"; exit 1; }
-  fi
-  rm -f "$rb/$f"
-done
+    fail_rb "$f could not be downloaded from $tag"
+  want=$(awk -v f="$f" '$2 == f {print $1}' "$rb/.sums"); got=$(sha256sum "$rb/$f" | cut -d' ' -f1)
+  [ -n "$want" ] && [ "$want" = "$got" ] || fail_rb "$f does not match $sums"
+  rm -f "$rb/$f"; n=$((n + 1))
+done <<< "$names"
 rm -rf "$rb"
-echo "read back $tag: ${#files[@]} files match $sums" | tee -a "$summary"
+echo "read back $tag: $n files match its $sums" | tee -a "$summary"
 echo "readback=true" >> "${GITHUB_OUTPUT:-/dev/null}"

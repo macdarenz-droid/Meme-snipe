@@ -111,7 +111,7 @@ ag_armed() {
 #   - every release call in research/historical/ci/*.sh (gh/"$GH" release ..., or a
 #     .../releases API path) names `--repo "$DATA_REPO"` or `repos/$DATA_REPO/`, and none
 #     names GITHUB_REPOSITORY, GH_REPO or -R.
-# OF-4 and OF-5 must land first.
+# OF-4 (nothing public) makes these pass on this tree; test-ci checks it.
 ag_private_storage() {
   local wf="$ag_here/../../../.github/workflows/data-scan.yml" f bad
   [[ -f "$wf" ]] || { ag_refuse "the archive chain is not armed: data-scan.yml cannot be read"; return 2; }
