@@ -330,9 +330,13 @@ migration raw record. Today's retention already keeps every curve and canonical-
   published `storage-stop` release, never edits or deletes it, and exits 3, so the batch fails and nothing chains.
   A store it cannot read, or no per-day figure, fails closed without a marker.
 - **As built (OF-5):** "read done" is read only from `zeroed-data`, failing closed when it cannot be read: the
-  queue and the guard (`ag_read_done`, tags `data-day-D` or `data-day-D-k3`) and the skip step (`publish-day.sh --check`,
-  a complete `data-day-D` or `data-day-D-k3` release). "B-10 done" is `archive-guard.sh b10-done`: the `-k3` release for
-  the first two allow-listed days, the plain one for the others; it is for the `B10-PULL` row and the evaluator only.
+  queue and the guard (`ag_read_done`) and the skip step (`publish-day.sh --check`) count a `data-day-D` or
+  `data-day-D-k3` release only when it carries its `readback-ok-D` marker (OF-5 ruling 1): stored after every other asset
+  was read back, naming the tag and the sha256 of the stored `SHA256SUMS-D`, and itself read back. A release without it
+  (its read-back never passed) stops the chain for review and is never read again automatically. "B-10 done" is
+  `archive-guard.sh b10-done`: a marked release whose recorded retention is B-10's (ruling 2: every unit line of
+  `units-D.log` K3 with the sha256 of `list-D.txt` from its `SHA256SUMS-D`), whatever the tag name; it is for the
+  `B10-PULL` row and the evaluator only.
   The scan job's clean `prior` step (`ci/prior-fetch.sh`) downloads `list-<D-1>.txt` and `SHA256SUMS-<D-1>` from D-1's
   release in the store and hands them to the scan and the trim; `archive-guard.sh prior` checks the sha256.
 - **K2 progress is not stored in `zeroed-data`** (OF-4, deciding OF-3 ruling 7). A K2 day's progress (about 45 GB)
