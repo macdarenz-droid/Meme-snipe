@@ -14,8 +14,9 @@ from .costs import FIXED_ROUND_TRIP, REPLAY_DELAY_SLOTS, REPLAY_SPEND
 from .ledger import States
 
 END_OF_SLOT = (1 << 16) - 1
-UNQUOTABLE = "entry refused by the venue (counted as -100%)"
-UNQUOTABLE_RET = -1.0
+UNQUOTABLE = "entry refused by the venue (no trade)"
+REFUSED_FLAG_SHARE = 0.10
+FLAG = "mostly not executable at our latency"
 UNPAID = "exit capped by the real vault (unpaid part -100%)"
 NO_STATE = "no state on the tape (dropped)"
 NO_BUY = "no buy on the test day"
@@ -64,8 +65,8 @@ def replay_trades(trades, units, vocab):
             reasons.append(NO_STATE)
             continue
         tok, _ = venue.buy_exact_in(a, REPLAY_SPEND)
-        if tok <= 0:   # the venue refuses the entry although its state is on the tape: economic, -100%
-            rets.append(UNQUOTABLE_RET)
+        if tok <= 0:   # AMENDMENT_5 Q33: a refused entry is no trade (no SOL spent); counted, never scored
+            rets.append(np.nan)
             reasons.append(UNQUOTABLE)
             continue
         proceeds, capped = venue.sell_detail(x, tok)
@@ -78,15 +79,17 @@ def replay_trades(trades, units, vocab):
 
 
 def shares(trades):
-    """AMENDMENT_3: the share of attempted trades dropped for a data gap, and the shares scored with an unpaid
-    exit or a refused entry (both inside the mean)."""
+    """Shares of attempted trades: dropped for a data gap (AMENDMENT_3), scored with an unpaid exit (inside the mean),
+    and refused at entry (AMENDMENT_5: no trade, outside the mean; above 10% the replay is flagged)."""
     att = trades[trades["replay_reason"] != NO_BUY]
     n = len(att)
     if n == 0:
         return {"attempted": 0}
     r = att["replay_reason"]
+    refused = float((r == UNQUOTABLE).mean())
     return {"attempted": int(n), "dropped_no_state_share": float((r == NO_STATE).mean()),
-            "unpaid_exit_share": float((r == UNPAID).mean()), "refused_entry_share": float((r == UNQUOTABLE).mean())}
+            "unpaid_exit_share": float((r == UNPAID).mean()), "refused_entry_share": refused,
+            "flag": FLAG if refused > REFUSED_FLAG_SHARE else None}
 
 
 def replay_mean(trades):

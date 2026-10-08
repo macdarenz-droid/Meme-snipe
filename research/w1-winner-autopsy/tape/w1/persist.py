@@ -69,6 +69,7 @@ def method_shares(counted):
     sig = counted["signer_method"].to_numpy(bool)
     tot = counted["pnl"].abs().sum()
     return {"positions_signer_method": float(sig.mean()) if len(sig) else None,
+            "positions_signer_refused_by_cap": float(counted["capped"].mean()) if len(sig) else None,
             "positions_venue_method": float((~sig).mean()) if len(sig) else None,
             "abs_pnl_signer_method": float(counted.loc[sig, "pnl"].abs().sum() / tot) if tot else None,
             "abs_pnl_venue_method": float(counted.loc[~sig, "pnl"].abs().sum() / tot) if tot else None}
@@ -78,7 +79,9 @@ def top_decile_means(test_pos):
     """AMENDMENT_2 Q2: the top decile's mean return under both cash methods."""
     t = test_pos[test_pos["decile"] == 10]
     return {"signer_where_owned": float(t["ret"].mean()) if len(t) else None,
+            "signer_where_owned_without_cap": float(t["ret_nc"].mean()) if len(t) else None,
             "venue_method": float(t["ret_alt"].mean()) if len(t) else None,
+            "positions_capped_share": float(t["capped"].mean()) if len(t) else None,
             "method_shares": method_shares(t)}
 
 

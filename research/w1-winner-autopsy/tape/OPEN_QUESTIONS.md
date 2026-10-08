@@ -8,10 +8,13 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
   - When the signer owns every swap of a transaction (all SOL-quoted, `tx_fee` present), the cash is the signer's SOL change less identified token-account rent, split evenly over the swaps. App fees paid by separate transfers are then counted.
   - Otherwise the venue method applies: event fees plus `tx_fee + jito_tip`.
   - Every position also keeps the venue-method cash (`*_alt`). The scored stages report the share of positions and of |P&L| under each method, and the top decile's mean return under both.
-  - **Q35 (reading, for the lead): identifying rent.** The candidate rents are 1,513,840 (Token-2022 pump account) and 2,039,280 (SPL ATA).
+  - **Q35: identifying rent.** *Confirmed (AMENDMENT_5), with rents by date.* The candidate rents are (128 + size) × lamports per byte in force at the slot, for 170 bytes (Token-2022) and 165 bytes (SPL):
+    - 6,960 before 2026-09-03: 2,074,080 / 2,039,280;
+    - 6,333 from 2026-09-03: 1,887,234 / 1,855,569;
+    - 5,080 from epoch 1033: 1,513,840 / 1,488,440.
     - Opening a mint (a buy from zero) adds back the smaller rent, only when the SOL spent beyond fees is at least that large.
     - Closing (a sell to zero) subtracts the candidate nearest to a visible refund. When app fees hide the refund, it subtracts the larger rent (conservative).
-    - The signer method is refused, and the venue method used, when the implied app fee is negative or above 5% of the SOL traded + 0.01 SOL. A persistent WSOL account, for example, would show such a change.
+    - The signer method is refused, and the venue method used, when the implied app fee is negative or above 5% of the SOL traded + 0.01 SOL. A persistent WSOL account, for example, would show such a change. See Q37.
   - Cashback is counted as paid. Rent is otherwise not counted.
 - **Q3. How are marks priced?** **Chosen:**
   - The fee rate is the sum of the rates the venue's last trade paid, with one ceil on the summed rate. Core rounds each part up, so this differs by a few lamports.
@@ -70,7 +73,7 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
   - Our own buy is not applied to the exit state.
   - An exit the real vault cannot (fully) pay scores what it pays, so the unpaid part is −100%.
   - A trade whose entry or exit slot was not read, or whose mint has no state on the tape, is dropped from the mean and the count. Its share is reported.
-  - **Q33 (reading, for the lead):** an entry the venue refuses although its state is on the tape (pool with no effective quote, curve past its cap) scores −100% (pessimistic), and its share is reported.
+  - **Q33** *Ruled (AMENDMENT_5).* An entry the venue refuses although its state is on the tape (pool with no effective quote, curve past its cap) is **no trade**: no SOL is spent, and it is not in the mean or the count. Its share is reported beside the mean. Above 10%, the replay is flagged "mostly not executable at our latency". The rule test does the same.
   - The units come from the ledger's manifest, never the cache.
 - **Q27. How is validation pooled?** Traders are ranked on 09-07 and tested on 09-08 and on 09-09, with identity as of 09-07 on both.
 
@@ -91,7 +94,7 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
 - **§9.4.** Committing the code, seeds and input hashes before the validation days are read is the supervisor's step. `ledger` writes the hashes to WORK/manifest.json.
 
 ## Added with the amendments and the review
-- **Q34. Flipper rows (AMENDMENT_4; reading, for the lead).**
+- **Q34. Flipper rows (AMENDMENT_4).** *Confirmed (AMENDMENT_5).*
   - A round trip runs from the owner's balance leaving zero to its return to zero. A token movement or a balance mismatch inside it breaks it.
   - Flipper: 5+ unbroken trips with a median hold of 30 s to 10 min. The class is computed per day, for persistence, and over the tape's days, for the census and flows.
   - Flows around each flipper trip are measured in SOL, not prices:
@@ -100,4 +103,12 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
     - other traders' net sell SOL after the exit, over the trip's own length (the reversal).
   - The census is buy SOL by fast, slow and flipper.
   - These rows change no ranking. Stage `flippers` runs under the same guards.
-- **Q36. Plans for Steps B and C.** `research/shared-tape/stepa-plan.txt` (sha256 fa99c878…) is the only frozen unit plan. Until the plans and hashes for 09-02..09-09 are registered in `guard.PLANS`, `validation`, `extract` and `ruletest` refuse to run.
+- **Q36. Plans for Steps B and C.** *Ruled (AMENDMENT_5).*
+  - Steps B and C run only from `research/shared-tape/stepb-plan.txt` and `stepc-plan.txt`.
+  - Each is checked against the sha256 in the committed `stepb-plan.sha256` / `stepc-plan.sha256`, the same way as Step A against its registered hash. A missing file or a hash mismatch refuses.
+  - W1 runs discovery only until a registered gate releases Step B: `validation`, `extract` and `ruletest` refuse while `guard.STEP_B_RELEASED` is False. Flipping it is a reviewed code change.
+  - `ruletest` also verifies the extract work it reads.
+- **Q37. The signer-method plausibility cap (for the design owner).**
+  - AMENDMENT_2 does not have the cap: an implied app fee below 0 or above 5% of the SOL traded + 0.01 SOL keeps the venue method.
+  - It is kept. Every row also carries the signer method without the cap (`*_nc`).
+  - The scored stages report the share of positions the cap moved, and the top decile's mean with the cap, without it, and under the venue method alone.

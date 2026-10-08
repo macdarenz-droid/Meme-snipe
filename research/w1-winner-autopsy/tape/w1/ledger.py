@@ -19,14 +19,15 @@ import pandas as pd
 
 from . import load
 from .addr import BUYBACK_AUTHORITY, MAYHEM_VAULT, on_curve
-from .costs import FIXED_PER_LEG, amendment_tx_cost, signer_cash
+from .costs import FIXED_PER_LEG, amendment_tx_cost, rent_candidates, signer_cash
 from .venue import sell_vec
 
 BIG_BUY = 1_000_000_000  # PREREG §5: a buy of at least 1 SOL
 PAIR_SHIFT = 32
 
 
-ACC_AGG = {"cash": "sum", "paid": "sum", "cash_alt": "sum", "paid_alt": "sum", "nsig": "sum", "xin": "sum",
+ACC_AGG = {"cash": "sum", "paid": "sum", "cash_alt": "sum", "paid_alt": "sum", "nsig": "sum", "cash_nc": "sum",
+           "paid_nc": "sum", "ncap": "sum", "xin": "sum",
            "nbuy": "sum", "nsell": "sum", "dirty": "any", "dstart": "any", "dother": "any", "buykey": "min",
            "closekey": "max", "lastkey": "max", "lastslot": "max", "n": "sum", "end_ver": "last"}
 ACC_COLS = list(ACC_AGG)
@@ -267,7 +268,8 @@ class Ledger:
         self.stats["cost_source"]["tx_fee"] += int((tracked & ~na).sum())
         sw["cost"] = cost
         sw["net_alt"] = sw["cash"].to_numpy() - cost          # venue method (AMENDMENT_2 Q2 "otherwise")
-        sw["net"], sw["sig"] = self._signer_method(sw)          # signer's SOL change where it owns every swap
+        # signer's SOL change where it owns every swap; *_nc: the same without the plausibility cap (OPEN_QUESTIONS Q37)
+        sw["net"], sw["sig"], sw["net_nc"], sw["sig_nc"] = self._signer_method(sw)
 
         self.stats["overflow_rows"] += int(sw["overflow"].sum())
         self.stats["excluded_rows"] += int((sw["sol"].to_numpy(bool) & (ex != "")).sum())
@@ -309,6 +311,9 @@ class Ledger:
                             "cash_alt": t["net_alt"].to_numpy(),
                             "paid_alt": np.where(isb, -t["net_alt"].to_numpy(), 0.0),
                             "nsig": t["sig"].to_numpy().astype(np.int32),
+                            "cash_nc": t["net_nc"].to_numpy(),
+                            "paid_nc": np.where(isb, -t["net_nc"].to_numpy(), 0.0),
+                            "ncap": (t["sig_nc"].to_numpy() & ~t["sig"].to_numpy()).astype(np.int32),
                             "xin": 0.0, "swap": True, "nbuy": isb.astype(np.int32), "nsell": (~isb).astype(np.int32),
                             "pre": t["pre"].to_numpy(), "post": t["post"].to_numpy(), "bad": False,
                             "buykey": np.where(isb, t["key"].to_numpy(), np.iinfo(np.int64).max)})
@@ -373,7 +378,7 @@ class Ledger:
                     self.pools.add(v.id(f["pool"]))
 
     def _movements(self, mv, unit_states):
-        cols = ["pair", "acct", "key", "bt", "txk", "slot", "delta", "cash", "paid", "cash_alt", "paid_alt", "nsig", "xin",
+        cols = ["pair", "acct", "key", "bt", "txk", "slot", "delta", "cash", "paid", "cash_alt", "paid_alt", "nsig", "cash_nc", "paid_nc", "ncap", "xin",
                 "swap", "nbuy", "nsell", "pre", "post", "bad", "buykey"]
         if mv is None or len(mv) == 0:
             return pd.DataFrame(columns=cols)
@@ -411,6 +416,9 @@ class Ledger:
         out["cash_alt"] = out["cash"]
         out["paid_alt"] = out["paid"]
         out["nsig"] = 0
+        out["cash_nc"] = out["cash"]
+        out["paid_nc"] = out["paid"]
+        out["ncap"] = 0
         out["swap"] = False
         out["nbuy"] = 0
         out["nsell"] = 0
@@ -425,7 +433,7 @@ class Ledger:
         net = sw["net_alt"].to_numpy(np.float64).copy()
         used = np.zeros(len(sw), bool)
         if len(sw) == 0:
-            return net, used
+            return net, used, net.copy(), used.copy()
         own = (sw["owner"].to_numpy() == sw["signer"].to_numpy()) & (sw["owner"].to_numpy() >= 0) \
             & sw["sol"].to_numpy(bool) & ~sw["overflow"].to_numpy(bool) & ~sw["tx_fee_na"].to_numpy(bool)
         f = pd.DataFrame({"txk": sw["txk"].to_numpy(), "own": own, "cash": sw["cash"].to_numpy(np.float64),
@@ -435,7 +443,7 @@ class Ledger:
         allown = g["own"].all()
         elig = allown[allown].index
         if len(elig) == 0:
-            return net, used
+            return net, used, net.copy(), used.copy()
         fe = f[f["txk"].isin(elig)]
         ge = fe.groupby("txk", sort=False)
         first = sw.loc[fe.index].groupby("txk", sort=False)[["spre", "spost", "tx_fee", "jito"]].first()
@@ -447,22 +455,31 @@ class Ledger:
         kc = m.groupby(level=0)["close"].sum().reindex(first.index)
         vsum = ge["cash"].sum().reindex(first.index)
         gross = ge["cash"].apply(lambda x: x.abs().sum()).reindex(first.index)
+        slots = (first.index.to_numpy(np.int64) >> (load.KEY_SLOT_SHIFT - load.KEY_TX_SHIFT))
+        rents = np.array([rent_candidates(self.prev_day, int(x)) for x in slots], np.float64).reshape(-1, 2)
         cash, created, returned, ok = signer_cash(first["spost"] - first["spre"], vsum, first["tx_fee"], first["jito"],
-                                                   ko, kc, gross)
+                                                   ko, kc, gross, rents[:, 0], rents[:, 1])
         st = self.stats["signer_method"]
         st["txs"] += int(len(first))
         st["accepted"] += int(ok.sum())
         st["rent_created"] += int((created[ok] > 0).sum())
         st["rent_returned"] += int((returned[ok] > 0).sum())
         n = ge.size().reindex(first.index).to_numpy()
-        per = pd.Series(np.where(ok, (vsum.to_numpy() - cash) / n, np.nan), index=first.index)
+        st["capped"] = st.get("capped", 0) + int((~ok).sum())
         rows = fe.index.to_numpy()
+        cash_rows = sw["cash"].to_numpy(np.float64)[rows]
+        net_nc, used_nc = net.copy(), used.copy()
+        all_tx = pd.Series((vsum.to_numpy() - cash) / n, index=first.index).reindex(fe["txk"]).to_numpy()
+        net_nc[rows] = cash_rows - all_tx
+        used_nc[rows] = True
+        per = pd.Series(np.where(ok, (vsum.to_numpy() - cash) / n, np.nan), index=first.index)
         extra = per.reindex(fe["txk"]).to_numpy()
         hit = ~np.isnan(extra)
-        net[rows[hit]] = sw["cash"].to_numpy(np.float64)[rows[hit]] - extra[hit]
+        net[rows[hit]] = cash_rows[hit] - extra[hit]
         used[rows[hit]] = True
         st["rows"] += int(hit.sum())
-        return net, used
+        st["rows_capped"] = st.get("rows_capped", 0) + int((~hit).sum())
+        return net, used, net_nc, used_nc
 
     def _apply(self, evs):
         """Balance checks per token account, summed per owner (AMENDMENT_2 Q22), and the per-pair unit aggregate."""
@@ -473,7 +490,8 @@ class Ledger:
             evs[c_] = evs[c_].astype(bool)
         g = evs.groupby(["pair", "txk"], sort=False)
         tx = g.agg(delta=("delta", "sum"), cash=("cash", "sum"), paid=("paid", "sum"), cash_alt=("cash_alt", "sum"),
-                   paid_alt=("paid_alt", "sum"), nsig=("nsig", "sum"), xin=("xin", "sum"),
+                   paid_alt=("paid_alt", "sum"), nsig=("nsig", "sum"), cash_nc=("cash_nc", "sum"),
+                   paid_nc=("paid_nc", "sum"), ncap=("ncap", "sum"), xin=("xin", "sum"),
                    swap=("swap", "any"), nbuy=("nbuy", "sum"), nsell=("nsell", "sum"), bad=("bad", "any"),
                    key=("key", "max"), slot=("slot", "max"), bt=("bt", "max"), buykey=("buykey", "min"),
                    mv=("swap", lambda x: bool((~x).any()))).reset_index()
@@ -522,7 +540,8 @@ class Ledger:
         tx["zsw"] = sw_ & (tx["post"].to_numpy() == 0)
         agg = tx.groupby("pair", sort=False).agg(
             cash=("cash", "sum"), paid=("paid", "sum"), cash_alt=("cash_alt", "sum"), paid_alt=("paid_alt", "sum"),
-            nsig=("nsig", "sum"), xin=("xin", "sum"), nbuy=("nbuy", "sum"),
+            nsig=("nsig", "sum"), cash_nc=("cash_nc", "sum"), paid_nc=("paid_nc", "sum"), ncap=("ncap", "sum"),
+            xin=("xin", "sum"), nbuy=("nbuy", "sum"),
             nsell=("nsell", "sum"), bad=("bad", "any"), mism=("mism", "any"), mstart=("mstart", "any"),
             mother=("mother", "any"), anyswap=("swap", "any"),
             end=("bal", "last"), lastzsw=("zsw", "last"), lastkey=("key", "max"), lastslot=("slot", "max"),
@@ -620,9 +639,9 @@ class Ledger:
         rows["start_bal"] = ds["bal"].reindex(idx).fillna(0).astype(np.int64)
         rows["start_mark"] = ds["mark"].reindex(idx).fillna(0.0)
         start_ok = ds["ok"].reindex(idx).fillna(True).astype(bool)
-        for c_ in ("cash", "paid", "cash_alt", "paid_alt", "xin"):
+        for c_ in ("cash", "paid", "cash_alt", "paid_alt", "cash_nc", "paid_nc", "xin"):
             rows[c_] = acc[c_].reindex(idx).fillna(0.0).astype(np.float64)
-        for c_ in ("nbuy", "nsell", "n", "nsig"):
+        for c_ in ("nbuy", "nsell", "n", "nsig", "ncap"):
             rows[c_] = acc[c_].reindex(idx).fillna(0).astype(np.int64)
         rows["buykey"] = acc["buykey"].reindex(idx).fillna(np.iinfo(np.int64).max).astype(np.int64)
         rows["closekey"] = acc["closekey"].reindex(idx).fillna(-1).astype(np.int64)

@@ -318,6 +318,7 @@ def cmd_ruletest(a):
     if not a.rule_work:
         guard.refuse("ruletest needs --rule-work (the extract work directory)")
     rm = _manifest(a.rule_work)
+    guard.verify(a.rule_work, "extract", rm, code_hashes())    # the extract work passes its own guards too
     rf = os.path.join(a.rule_work, "rule.json")
     if not os.path.exists(rf) or load.file_sha256(rf) != rm.get("rule_sha"):
         guard.refuse("rule.json is missing or does not match the hash `extract` recorded")

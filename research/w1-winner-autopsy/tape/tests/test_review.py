@@ -52,7 +52,9 @@ def row(v, d, owner, mint=M):
 class SignerMethodQ2(unittest.TestCase):
     def test_signer_change_counts_app_fees_and_identified_rent(self):
         S = address("signerS")
-        venue_in, fees, app, rent = 1_000_000_000, 12_500_000, 10_125_000, 1_513_840
+        small, large = costs.rent_candidates(A10, L1 + 10)                # AMENDMENT_5 Q35: rents by date
+        self.assertEqual((small, large), (1_855_569, 1_887_234))
+        venue_in, fees, app, rent = 1_000_000_000, 12_500_000, 10_125_000, small
         sell_out, app2 = 900_000_000, 9_000_000
 
         def b(u):
@@ -66,7 +68,7 @@ class SignerMethodQ2(unittest.TestCase):
         v, (d,), led = one_day([(A10, L1, H1, b)])
         r = row(v, d, S)
         buy_cash = -(venue_in + fees + 35_000 + app)
-        sell_cash = sell_out - 5_000 - app2 + rent - max(costs.RENT_CANDIDATES)
+        sell_cash = sell_out - 5_000 - app2 + rent - large
         self.assertAlmostEqual(r["cash"], buy_cash + sell_cash)
         self.assertAlmostEqual(r["cash_alt"], -(venue_in + fees + 35_000) + sell_out - 5_000)
         self.assertEqual(r["nsig"], 2)
@@ -181,10 +183,13 @@ class ReplayAmendment3(unittest.TestCase):
                               "open_at_end": [False], "day_hi": [H1]})
             return replay.replay_trades(t, units, v)
 
-    def test_refused_entry_counts_as_minus_100(self):
+    def test_refused_entry_is_no_trade(self):
         out = self.run_replay(0, -10**9, 0, L1 + 1, L1 + 9)
-        self.assertEqual(out["ret_replay"].iat[0], -1.0)
-        self.assertEqual(replay.shares(out)["refused_entry_share"], 1.0)
+        self.assertTrue(np.isnan(out["ret_replay"].iat[0]))             # AMENDMENT_5 Q33: not -100%
+        sh = replay.shares(out)
+        self.assertEqual(sh["refused_entry_share"], 1.0)
+        self.assertEqual(sh["flag"], replay.FLAG)                         # above 10%
+        self.assertIsNone(replay.replay_mean(out))
 
     def test_exit_the_vault_cannot_pay_scores_what_it_pays(self):
         # effective quote is mostly virtual: the real vault (1 SOL) cannot pay the gross proceeds
@@ -343,6 +348,7 @@ class Guards(unittest.TestCase):
     def test_extract_needs_hashed_validation(self):
         saved = guard.ROLES["extract"]
         guard.ROLES["extract"] = {"days": [A10, A11]}
+        guard.STEP_B_RELEASED = True
         try:
             with self.assertRaises(guard.Refused) as e:
                 guard.verify(self.work, "extract", self.m, run.code_hashes())
@@ -358,6 +364,7 @@ class Guards(unittest.TestCase):
                 guard.verify(self.work, "extract", m, run.code_hashes())
         finally:
             guard.ROLES["extract"] = saved
+            guard.STEP_B_RELEASED = False
 
     def test_registered_choices(self):
         with self.assertRaises(guard.Refused):
@@ -378,6 +385,71 @@ class Guards(unittest.TestCase):
         self.assertEqual([os.path.abspath(u.path) for u in us], [os.path.abspath(self.dirs[1])])
         with self.assertRaises(guard.Refused):
             guard.ledger_units(self.m, ["2026-09-09"])
+
+
+class Amendment5(unittest.TestCase):
+    def test_rents_follow_the_date(self):
+        self.assertEqual(costs.rent_candidates("2026-09-02", 445_000_000), (2_039_280, 2_074_080))
+        self.assertEqual(costs.rent_candidates("2026-09-03", 445_000_000), (1_855_569, 1_887_234))
+        self.assertEqual(costs.rent_candidates("2026-09-11", 1033 * 432_000), (1_488_440, 1_513_840))
+
+    def test_step_b_plan_from_registered_sha_file_and_release_gate(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan, shaf = os.path.join(d, "stepb-plan.txt"), os.path.join(d, "stepb-plan.sha256")
+            with open(plan, "w") as f:
+                f.write("2026-09-07 1029 444000000 444004499\n")
+            saved = dict(guard.PLANS)
+            try:
+                guard.PLANS["2026-09-07"] = (plan, shaf)
+                with self.assertRaises(guard.Refused):            # no sha256 file yet
+                    guard.plan_units("2026-09-07")
+                with open(shaf, "w") as f:
+                    f.write(load.file_sha256(plan) + "  stepb-plan.txt\n")
+                self.assertEqual(guard.plan_units("2026-09-07"), ["2026-09-07/444000000-444004499"])
+                with open(plan, "a") as f:
+                    f.write("2026-09-07 1029 444004500 444008999\n")
+                with self.assertRaises(guard.Refused):            # plan changed after its hash was committed
+                    guard.plan_units("2026-09-07")
+            finally:
+                guard.PLANS.clear()
+                guard.PLANS.update(saved)
+        self.assertFalse(guard.STEP_B_RELEASED)
+        for role in ("validation", "extract", "ruletest"):
+            with self.assertRaises(guard.Refused) as e:
+                guard.verify("/nonexistent", role, {}, {})
+            self.assertIn("discovery only", str(e.exception))
+
+    def test_cap_is_reported_not_hidden(self):
+        S = address("signerCap")
+
+        def b(u):
+            u.curve(L1 + 20, 2, 0, S, M, True, 10**9, Q, *ST, pre=0, post=Q, bps=(0, 0, 0), spre=10**10,
+                    spost=10**10 - 10**9 - 5_000 - 200_000_000)         # a 20% "app fee": above the cap
+        v, (d,), led = one_day([(A10, L1, H1, b)])
+        r = row(v, d, S)
+        self.assertEqual(r["ncap"], 1)
+        self.assertAlmostEqual(r["cash"], -(10**9 + 5_000))
+        # without the cap: the SOL change, with the opening's identifiable rent added back
+        self.assertAlmostEqual(r["cash_nc"], -(10**9 + 5_000 + 200_000_000) + costs.rent_candidates(A10, L1 + 20)[0])
+        self.assertEqual(led.stats["signer_method"]["capped"], 1)
+
+    def test_ruletest_verifies_the_extract_work(self):
+        calls = []
+
+        def fake_verify(work, role, m, code):
+            calls.append((work, role))
+            if role == "extract":
+                raise guard.Refused("refused: extract work")
+        saved_v, saved_s, saved_m = guard.verify, run._scored, run._manifest
+        guard.verify = fake_verify
+        run._scored = lambda a, role: ({}, guard.ROLES[role], [])
+        run._manifest = lambda w: {}
+        try:
+            with self.assertRaises(guard.Refused):
+                run.main(["ruletest", "--work", "/c", "--rule-work", "/ab", "--score"])
+        finally:
+            guard.verify, run._scored, run._manifest = saved_v, saved_s, saved_m
+        self.assertIn(("/ab", "extract"), calls)
 
 
 class MissingDayAndGaps(unittest.TestCase):

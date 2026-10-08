@@ -15,13 +15,21 @@ from . import load
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 STEP_A_PLAN = os.path.join(REPO, "research", "shared-tape", "stepa-plan.txt")
 STEP_A_SHA = "fa99c8788f845a7d9f4a5c967d7cce18c0a7f476082c1969fc35cf4f57f38fc7"
-# day -> (plan file, sha256). Step B (09-07..09-09) and Step C (09-02..09-06) have no frozen plan yet: a scored
-# stage that needs them refuses until their plan and hash are registered here.
-PLANS = {"2026-09-10": (STEP_A_PLAN, STEP_A_SHA), "2026-09-11": (STEP_A_PLAN, STEP_A_SHA)}
-
 STEP_A = ["2026-09-10", "2026-09-11"]
 STEP_B = ["2026-09-07", "2026-09-08", "2026-09-09"]
 STEP_C = ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06"]
+# AMENDMENT_5 Q36: Steps B and C run only from registered plans; the expected sha256 is the first word of the
+# committed <plan>.sha256 file beside each plan (Step A's is registered here).
+SHARED = os.path.join(REPO, "research", "shared-tape")
+STEP_B_PLAN, STEP_C_PLAN = os.path.join(SHARED, "stepb-plan.txt"), os.path.join(SHARED, "stepc-plan.txt")
+# day -> (plan file, sha256 or a ".sha256" file holding it)
+PLANS = {**{d: (STEP_A_PLAN, STEP_A_SHA) for d in STEP_A},
+         **{d: (STEP_B_PLAN, STEP_B_PLAN[:-4] + ".sha256") for d in STEP_B},
+         **{d: (STEP_C_PLAN, STEP_C_PLAN[:-4] + ".sha256") for d in STEP_C}}
+# AMENDMENT_5 Q36: W1 runs discovery only until a registered gate releases Step B. Flipping this is a reviewed code
+# change (the manifest's code hashes then differ from any earlier ledger, so stages re-verify).
+STEP_B_RELEASED = False
+NEEDS_RELEASE = ("validation", "extract", "ruletest")
 ROLES = {
     "gate": {"days": STEP_A},
     "discovery": {"days": STEP_A, "rank": "2026-09-10", "test": ["2026-09-11"]},
@@ -55,6 +63,14 @@ def plan_units(day):
     if day not in PLANS:
         refuse(f"no frozen unit plan is registered for {day}")
     path, sha = PLANS[day]
+    if sha.endswith(".sha256"):
+        if not os.path.exists(sha):
+            refuse(f"no registered sha256 file {sha} for the plan of {day}")
+        with open(sha) as f:
+            words = f.read().split()
+        sha = words[0] if words else ""
+        if len(sha) != 64:
+            refuse(f"{PLANS[day][1]} does not hold a sha256")
     if not os.path.exists(path) or load.file_sha256(path) != sha:
         refuse(f"plan {path} is missing or its sha256 is not {sha}")
     rows = []
@@ -76,6 +92,8 @@ def check_contiguous(unit_names):
 
 def verify(work, role, manifest, code_hashes, check_inputs=True):
     r = ROLES[role]
+    if role in NEEDS_RELEASE and not STEP_B_RELEASED:
+        refuse(f"{role}: W1 runs discovery only until a registered gate releases Step B (AMENDMENT_5 Q36)")
     if manifest.get("allow_gaps"):
         refuse("the ledger was built with --dev-allow-gaps")
     if manifest.get("stats", {}).get("gaps"):

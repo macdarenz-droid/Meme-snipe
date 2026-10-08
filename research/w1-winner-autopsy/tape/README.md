@@ -1,6 +1,6 @@
 # W1 tape scoring code
 
-This code implements the frozen design in `../PREREG.md` and `../AMENDMENT_1.md` to `../AMENDMENT_4.md` on the shared tape (`research/shared-tape/README.md`). `OPEN_QUESTIONS.md` lists every reading the design leaves open and the one the code takes.
+This code implements the frozen design in `../PREREG.md` and `../AMENDMENT_1.md` to `../AMENDMENT_5.md` on the shared tape (`research/shared-tape/README.md`). `OPEN_QUESTIONS.md` lists every reading the design leaves open and the one the code takes.
 
 It is Python 3 and uses pandas, numpy, scipy and zstandard.
 
@@ -33,7 +33,8 @@ Rules for the stages:
   - the hashes of the ledger day files and of every input;
   - that every day of the stage is present;
   - for `extract`, the hash of validation.pkl; for `ruletest`, the hash of rule.json.
-- Steps B and C have no frozen plan yet, so their stages refuse until one is registered (OPEN_QUESTIONS Q36).
+- Steps B and C run only from `research/shared-tape/stepb-plan.txt` and `stepc-plan.txt`, checked against their committed `.sha256` files.
+- Until a registered gate releases Step B (`guard.STEP_B_RELEASED`), only discovery runs, and `validation`, `extract` and `ruletest` refuse (OPEN_QUESTIONS Q36).
 - `ledger` refuses gaps and units that differ from a frozen plan. `--dev-allow-gaps` exists for development, and every scored stage refuses its output.
 - The replay and the rule test read the ledger's own units, never the cache.
 - The primary is scored only after Step A is complete and a reviewer has passed this code.
@@ -82,6 +83,7 @@ python3 -m unittest discover -s tests
 | AMENDMENT_3 Q29 cost on included rows only | `Ledger.process_unit` |
 | AMENDMENT_3 Q17 winners | `persist.winners` |
 | AMENDMENT_3 replay outcomes (unpaid exit −100%, no state dropped, shares) | `replay.replay_trades`, `replay.shares`, `venue.sell_detail`, `rules.replay_entry` |
+| AMENDMENT_5 refused entry = no trade (share, 10% flag); rents by date; Step B/C plans and release gate; no-cap report | `replay.replay_trades`, `replay.shares`, `rules.replay_entry`, `costs.rent_candidates`, `guard.plan_units`, `guard.verify`, `positions` (`ret_nc`), `persist.top_decile_means` |
 | AMENDMENT_4 flipper rows | `Ledger._trips`, `flippers.*`, `run.cmd_flippers` |
 | Review: guards, registered days, BOOST by transaction, missing days | `guard.verify`, `guard.check_args`, `guard.ledger_units`, `load.find_units`, `Ledger.process_unit` |
 | §9.1 as-of only, planted future marker | `tests/test_leak.py` |

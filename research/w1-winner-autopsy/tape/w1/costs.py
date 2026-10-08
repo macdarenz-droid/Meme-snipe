@@ -48,14 +48,32 @@ def amendment_tx_cost(signer_sol_pre: int, signer_sol_post: int, swaps_sol_net: 
     return -((signer_sol_post - signer_sol_pre) - swaps_sol_net - rent_change)
 
 
-# AMENDMENT_2 Q2: token-account rents that can be identified in a signer's SOL change (lamports): the Token-2022
-# pump account (packages/core/src/config/fills.ts tokenAccountRent) and the SPL associated token account (165 bytes).
-RENT_CANDIDATES = (1_513_840, 2_039_280)
+# AMENDMENT_2 Q2 / AMENDMENT_5 Q35: token-account rents that can be identified in a signer's SOL change:
+# (128 + size) x lamports per byte in force at the slot, for 170-byte (Token-2022) and 165-byte (SPL) accounts.
+ACCOUNT_SIZES = (170, 165)
+EPOCH_SLOTS = 432_000
+RENT_EPOCH_1033 = 1033
+
+
+def lamports_per_byte(day, slot):
+    if slot // EPOCH_SLOTS >= RENT_EPOCH_1033:
+        return 5_080
+    return 6_333 if day >= "2026-09-03" else 6_960
+
+
+def rent_candidates(day, slot):
+    """(smaller, larger) identifiable account rent at that day and slot."""
+    lpb = lamports_per_byte(day, slot)
+    r = sorted((128 + s) * lpb for s in ACCOUNT_SIZES)
+    return r[0], r[1]
+
+
+RENT_CANDIDATES = rent_candidates("2026-09-11", RENT_EPOCH_1033 * EPOCH_SLOTS)   # the latest (1,488,440, 1,513,840)
 APP_FEE_CAP_SHARE = 0.05      # plausibility: app fees above 5% of the SOL traded + 0.01 SOL mean the SOL change is
 APP_FEE_CAP_FIXED = 10_000_000  # not the trade's (e.g. a persistent WSOL account); the venue method is used then
 
 
-def signer_cash(d_signer, venue_sum, tx_fee, jito, k_open, k_close, gross):
+def signer_cash(d_signer, venue_sum, tx_fee, jito, k_open, k_close, gross, r_small=None, r_large=None):
     """AMENDMENT_2 Q2, vectorised per transaction whose signer owns every swap.
 
     d_signer: signer_sol_post - signer_sol_pre; venue_sum: the swaps' SOL by the venue method (+ received, - paid);
@@ -71,15 +89,16 @@ def signer_cash(d_signer, venue_sum, tx_fee, jito, k_open, k_close, gross):
     d, vs, tf, jt = (np.asarray(x, np.float64) for x in (d_signer, venue_sum, tx_fee, jito))
     ko, kc, gr = (np.asarray(x, np.float64) for x in (k_open, k_close, gross))
     r = d - vs
-    small = float(min(RENT_CANDIDATES))
+    n = len(r)
+    small = np.broadcast_to(np.asarray(min(RENT_CANDIDATES) if r_small is None else r_small, np.float64), (n,))
+    large = np.broadcast_to(np.asarray(max(RENT_CANDIDATES) if r_large is None else r_large, np.float64), (n,))
     v_o = -(r + tf + jt)
     created = np.where((ko > 0) & (v_o >= ko * small), ko * small, 0.0)
     v_c = r + tf + jt + created
     per = np.where(kc > 0, v_c / np.maximum(kc, 1), 0.0)
-    cand = np.array(RENT_CANDIDATES, np.float64)
-    nearest = cand[np.argmin(np.abs(per[:, None] - cand[None, :]), axis=1)] if len(per) else per
-    # a refund hidden under app fees cannot be seen: the largest candidate is assumed returned (conservative)
-    returned = np.where(kc > 0, np.where(v_c >= kc * small / 2, kc * nearest, kc * float(max(RENT_CANDIDATES))), 0.0)
+    nearest = np.where(np.abs(per - small) <= np.abs(per - large), small, large)
+    # a refund hidden under app fees cannot be seen: the larger candidate is assumed returned (conservative)
+    returned = np.where(kc > 0, np.where(v_c >= kc * small / 2, kc * nearest, kc * large), 0.0)
     cash = d + created - returned
     app = vs - tf - jt - cash
     accepted = (app >= -1) & (app <= APP_FEE_CAP_SHARE * gr + APP_FEE_CAP_FIXED)

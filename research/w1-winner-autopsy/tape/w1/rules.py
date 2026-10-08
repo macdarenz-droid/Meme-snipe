@@ -252,10 +252,13 @@ def extract(win_X, win_hold, ctl_X):
 
 
 # ---------------------------------------------------------------- rule test (untouched days; outcome stage)
+REFUSED = float("-inf")   # marker for a refused entry: not finite, so it is never in a mean
+
+
 def replay_entry(rows_states, mint, entry_slot, exit_slot, first_slot=None, last_slot=None):
     """$50 in at the end of entry_slot, all out at the end of exit_slot; return net of fixed costs. AMENDMENT_3: no
-    state on the tape (or a slot not read) -> nan (dropped, share reported); a refused entry -> -100%; an exit the vault
-    cannot pay scores what it pays."""
+    state on the tape (or a slot not read) -> nan (dropped, share reported); a refused entry -> REFUSED (no trade,
+    AMENDMENT_5); an exit the vault cannot pay scores what it pays."""
     from .replay import END_OF_SLOT, _tuple
     if first_slot is not None and not (first_slot <= entry_slot <= last_slot and first_slot <= exit_slot <= last_slot):
         return float("nan")
@@ -266,8 +269,8 @@ def replay_entry(rows_states, mint, entry_slot, exit_slot, first_slot=None, last
     if a is None or x is None:
         return float("nan")
     tok, _ = venue.buy_exact_in(a, REPLAY_SPEND)
-    if tok <= 0:
-        return -1.0
+    if tok <= 0:   # AMENDMENT_5 Q33: a refused entry is no trade
+        return REFUSED
     return (venue.sell(x, tok) - REPLAY_SPEND - FIXED_ROUND_TRIP) / REPLAY_SPEND
 
 
@@ -305,7 +308,9 @@ def pool_bootstrap(trades, b=10_000, seed=SEED):
 def rule_test_verdict(trades, required_days, b=10_000, seed=SEED):
     """§8 pass: 99.5% lower bound > 0 (pool-clustered bootstrap stratified by day, AMENDMENT_2 Q20), >= 300 trades,
     positive on each day, and the lift over the control > 0. Every required day must have rule trades."""
-    dropped = float((~np.isfinite(trades.loc[trades["arm"] == "rule", "ret"])).mean()) if len(trades) else None
+    rr = trades.loc[trades["arm"] == "rule", "ret"].to_numpy(np.float64)
+    dropped = float(np.isnan(rr).mean()) if len(rr) else None
+    refused = float((rr == REFUSED).mean()) if len(rr) else None
     r = trades[(trades["arm"] == "rule") & np.isfinite(trades["ret"])]
     c = trades[(trades["arm"] == "control") & np.isfinite(trades["ret"])]
     missing = sorted(set(required_days) - set(r["day"]))
@@ -318,7 +323,8 @@ def rule_test_verdict(trades, required_days, b=10_000, seed=SEED):
     ok = lo > 0 and len(x) >= 300 and bool((per_day > 0).all()) and liftc > 0
     return {"pass": bool(ok), "trades": int(len(x)), "mean": float(x.mean()), "lower99_5": lo,
             "per_day": {k: float(v) for k, v in per_day.items()}, "lift_over_control": liftc,
-            "refused_entry_share": float((x == -1.0).mean()), "dropped_no_state_share": dropped,
+            "refused_entry_share": refused, "dropped_no_state_share": dropped,
+            "flag": "mostly not executable at our latency" if refused is not None and refused > 0.10 else None,
             "days_without_trades": []}
 
 
