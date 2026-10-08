@@ -69,6 +69,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 23:55 | Lead: both perp PREREGs frozen (c898f8df); worker "Perp probes: CROWD-BREAK-SHORT and FUND-SPREAD (free data)" running |
 | 2026-10-09 00:52 | Lead: the code red team found 24 loopholes and fixed 21 (CODE_REDTEAM.md); design rulings asked: Q-R1-a, Q-R1-b, Q-R2-b, Design A Q1 and Q3–Q12 |
 | 2026-10-09 00:53 | Rulings committed: payer-mass bar defined per event (count rows amendment 7); DEV-ZERO fixed sequence; rent 6,333 from epoch 1028 (slot 444,096,000 = 2026-09-03 23:24:41 UTC, checked by public RPC); Design A amendment 2 (open questions, and the return test frozen) |
+| 2026-10-09 01:26 | Lead relayed an owner instruction (about 01:25): finish current work, then pause; no new sweep, PREREG or question until the owner resumes; answer the red team only on items already asked; tape downloads continue. Partner paused (nothing was in progress) |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
