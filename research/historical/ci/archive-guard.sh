@@ -164,7 +164,8 @@ ag_wf_marks='scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume
 # ruling 36: the allow-list is empty, fail closed).
 ag_calls_py='
 import re, sys
-CALL = re.compile(r"(?:^|[\s;&(!`])(zeroed-scan\s+[a-z]|node\s[^#]*qa/(?:check\.mjs|parity\.ts|volume\.ts))")
+CALL = re.compile(r"(?:^|[\s;&(!`/\x22\x27]|-c\s)(zeroed-scan[\x22\x27]?\s+[a-z]|node\s[^#]*qa/(?:check\.mjs|parity\.ts|volume\.ts))")
+PUBLIC = re.compile(r"GITHUB_STEP_SUMMARY|GITHUB_OUTPUT|GITHUB_ENV|/dev/std|/dev/fd|/proc/self/fd")
 F = r"\"\$[^\"]+\""
 OK = [re.compile(r"^[^|]*?>>?\s*" + F + r"\s+2>&1(?=\s|$|\)|;|&|\|)"),
       re.compile(r"^[^|]*?>>?\s*" + F + r"\s+2>>?\s*" + F),
@@ -175,9 +176,12 @@ def bad_lines(text):
         if line.lstrip().startswith("#"): continue
         for m in CALL.finditer(line):
             rest = line[m.start(1):]
-            if re.search(r"\$\(\s*(?:[\w./-]+\s+)*$", line[:m.start(1)]):
-                if CAP.search(rest): continue
-            elif any(o.search(rest) for o in OK): continue
+            if re.search(r"\$\(\s*(?:[\w./-]+\s+)*[\x22\x27]?[\w./$-]*$", line[:m.start(1)]):
+                c = CAP.search(rest)
+                if c and not PUBLIC.search(c.group(0)): continue
+            else:
+                o = next((o.search(rest) for o in OK if o.search(rest)), None)
+                if o and not PUBLIC.search(o.group(0)): continue
             yield n, line.strip()[:120]
 def join(text): return re.sub(r"\\\n", "", text)
 if __name__ == "__main__" and len(sys.argv) == 1:
@@ -190,8 +194,11 @@ if __name__ == "__main__" and len(sys.argv) == 1:
 # level only contents: read|none and actions: read|none, actions: write only where it is
 # needed (archive-check.yml dispatches data-scan; data-scan.yml's continue job dispatches
 # the chained run), every other scope absent or none, never a string (write-all,
-# read-all); upload-artifact only in data-scan.yml's scan job, named resume-*; and every
-# run: block passes ag_calls_py.
+# read-all); the actions/upload-* family only as data-scan.yml's resume-* artifact in the
+# scan job; a local action (uses: ./) only as a composite whose steps pass the same checks;
+# every run: block, and every script outside ci/ it calls, passes ag_calls_py; and an
+# archive-derived progress cache is saved or restored only as ${{ runner.temp }}/work/sealed
+# (rulings 44, 44a: cache-crypt.sh seals it; only its four sealed files go there).
 ag_permissions_py='
 import glob, os, yaml
 class L(yaml.SafeLoader): pass
@@ -216,6 +223,46 @@ def scopes(perm, name, job):
         if not ok: return "grants " + str(k) + ": " + v
     return None
 def fail(msg): print(msg); sys.exit(1)
+ROOT = os.path.normpath(os.path.join(sys.argv[1], "..", ".."))
+SH = re.compile(r"(?:\$GITHUB_WORKSPACE/|\$\{\{\s*github\.workspace\s*\}\}/|\./)?((?:[\w.-]+/)*[\w.-]+\.sh)\b")
+def check_steps(steps, name, j, depth=0):
+    for st in steps:
+        if not isinstance(st, dict): continue
+        uses = str(st.get("uses", "")).strip()
+        where = name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?")))
+        # ruling 46: the whole upload family; only the resume- marker in data-scan scan
+        if uses.startswith("actions/upload-"):
+            art = str((st.get("with") or {}).get("name", ""))
+            if not (uses.startswith("actions/upload-artifact@") and name == "data-scan.yml" and j == "scan" and art.startswith("resume-") and depth == 0):
+                fail(name + " job " + str(j) + " uploads an artifact (" + (art or uses) + ")")
+        # ruling 46: a local composite action is checked like the job; any other local action refuses
+        if uses.startswith("./"):
+            ad = os.path.normpath(os.path.join(ROOT, uses))
+            af = next((x for x in (os.path.join(ad, "action.yml"), os.path.join(ad, "action.yaml")) if os.path.isfile(x)), None)
+            if not af or depth > 3: fail(where + " uses " + uses + ", which cannot be checked")
+            try: act = yaml.load(open(af).read(), Loader=L)
+            except Exception: fail(af + " does not parse as YAML (or repeats a key)")
+            runs = (act or {}).get("runs") or {}
+            if runs.get("using") != "composite": fail(where + " uses " + uses + ", which is not a composite action")
+            check_steps(runs.get("steps") or [], name, j, depth + 1)
+        # rulings 44 and 44a: an archive-derived cache (data-scan-*, data-rpc-* progress)
+        # is saved and restored only as the sealed directory (cache-crypt.sh)
+        if uses.startswith("actions/cache"):
+            w = st.get("with") or {}
+            key = str(w.get("key", "")) + " " + str(w.get("restore-keys", ""))
+            if re.search(r"data-(scan|rpc)", key) and not re.search(r"data-scan-backoff-|data-rpc-assets-", key):
+                if str(w.get("path", "")).strip() != "${{ runner.temp }}/work/sealed":
+                    fail(where + " caches archive-derived progress unsealed (path " + str(w.get("path", "")).strip() + ")")
+        run = join(str(st.get("run", "")))
+        for n, l in bad_lines(run):
+            fail(where + " prints scanner or QA output to the job log: " + l)
+        # ruling 45: the scripts outside ci/ that a step calls are checked too
+        for m in SH.finditer(run):
+            rel = m.group(1)
+            f = os.path.normpath(os.path.join(ROOT, rel))
+            if "research/historical/ci/" in rel or not f.startswith(ROOT + os.sep) or not os.path.isfile(f): continue
+            for n, l in bad_lines(join(open(f).read())):
+                fail(rel + " line " + str(n) + " (called by " + where + ") prints scanner or QA output to the job log: " + l)
 for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.path.join(sys.argv[1], "*.yaml"))):
     text = open(f).read()
     if not MARK.search(text): continue
@@ -231,14 +278,8 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
         if not isinstance(job, dict): continue
         e = scopes(job.get("permissions"), name, j)
         if e: fail(name + " job " + str(j) + " " + e)
-        for st in job.get("steps") or []:
-            if not isinstance(st, dict): continue
-            if "actions/upload-artifact@" in str(st.get("uses", "")):
-                art = str((st.get("with") or {}).get("name", ""))
-                if not (name == "data-scan.yml" and j == "scan" and art.startswith("resume-")):
-                    fail(name + " job " + str(j) + " uploads an artifact (" + (art or "unnamed") + ")")
-            for n, l in bad_lines(join(str(st.get("run", "")))):
-                fail(name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))) + " prints scanner or QA output to the job log: " + l)
+        check_steps(job.get("steps") or [], name, j)
+
 '
 # ag_retention DAY# ag_retention DAY: the retention a fresh read of DAY uses, or nothing. Unset: only the
 # first allow-listed day (2026-07-22, K2, measurement day 1); K2: the first two days (the
@@ -339,15 +380,31 @@ ag_default_branch() {
   [[ "$b" =~ ^[A-Za-z0-9._/-]+$ && "$b" != null ]] || return 1
   echo "$b"
 }
+# ag_gh_ok (round 6, ruling 43): the gh on this runner can filter runs by creation date
+# and by every non-completed status (read from its own help, not a version guess); its
+# version goes to stderr. Fails closed otherwise.
+AG_STATUSES="queued in_progress waiting requested pending"
+ag_gh_ok() {
+  local help s
+  echo "run history: $("$ag_gh" --version 2>/dev/null | head -1)" >&2
+  help=$("$ag_gh" run list --help 2>&1) || return 1
+  grep -q -- '--created' <<< "$help" || return 1
+  for s in $AG_STATUSES; do grep -qE "[{|]$s[|}]" <<< "$help" || return 1; done
+}
 # ag_runs WORKFLOW: runs on every branch as TSV "id status conclusion createdAt
 # updatedAt attempt headBranch headSha title" (a missing value is "-": read splits on tabs
-# and would merge empty fields), newest first, plus the in-progress and queued runs listed
-# on their own (round 4, ruling 42), each run once. Fails on an API error, or when a list
-# reaches its 500 cap (fail closed: no run can hide past the list's end).
+# and would merge empty fields), newest first: those created since the earlier of
+# ARCHIVE_REARM_AT and 35 days ago (round 6, ruling 43: GitHub allows a re-run only within
+# 30 days, VERIFY, OLD-FAITHFUL.md §2), plus every non-completed run listed per status
+# (ruling 42), each run once. Fails on an API error, or when a list reaches its 500 cap
+# (fail closed: no run can hide past the list's end).
 ag_runs() {
-  local wf=$1 out st n all=""
-  for st in "" in_progress queued; do
-    out=$("$ag_gh" run list --repo "$ag_repo" --workflow "$wf" --limit 500 ${st:+--status "$st"} \
+  local wf=$1 out st n all="" from rearm
+  rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
+  from=$(( $(ag_now) - 35 * 86400 )); (( rearm < from )) && from=$rearm
+  for st in created $AG_STATUSES; do
+    if [[ "$st" == created ]]; then set -- --created ">=$(date -u -d "@$from" +%FT%TZ)"; else set -- --status "$st"; fi
+    out=$("$ag_gh" run list --repo "$ag_repo" --workflow "$wf" --limit 500 "$@" \
       --json databaseId,status,conclusion,createdAt,updatedAt,attempt,headBranch,headSha,displayTitle \
       --jq '.[] | [.databaseId, .status, (.conclusion // "-"), .createdAt, .updatedAt, .attempt, .headBranch, (.headSha // "-"), .displayTitle] | @tsv' 2>/dev/null) || return 1
     n=$(grep -c . <<< "$out")
@@ -356,18 +413,19 @@ ag_runs() {
   done
   awk -F'\t' 'NF && !seen[$1]++' <<< "$all"
 }
-# ag_sha_guarded SHA (round 4, ruling 21): "yes" when the commit SHA carries
+# ag_sha_guarded SHA (round 4, ruling 21): sets AG_G to "yes" when the commit SHA carries
 # research/historical/ci/archive-guard.sh, "no" when it does not (or SHA is not a commit
-# id: fail closed); fails when the answer cannot be read. Cached per SHA.
+# id: fail closed); fails when the answer cannot be read. Called in this shell, never in
+# $( ), so each SHA is asked once (round 6, ruling 47).
 declare -gA AG_SHA_GUARDED=()
 ag_sha_guarded() {
-  local err r
-  [[ "$1" =~ ^[0-9a-f]{40}$ ]] || { echo no; return 0; }
-  [[ -n "${AG_SHA_GUARDED[$1]:-}" ]] && { echo "${AG_SHA_GUARDED[$1]}"; return 0; }
-  err=$("$ag_gh" api "repos/$ag_repo/contents/research/historical/ci/archive-guard.sh?ref=$1" --jq '.sha' 2>&1 >/dev/null) && r=yes ||
-    { grep -q "HTTP 404" <<< "$err" || return 1; r=no; }
-  AG_SHA_GUARDED[$1]=$r
-  echo "$r"
+  local err
+  AG_G=no
+  [[ "$1" =~ ^[0-9a-f]{40}$ ]] || return 0
+  if [[ -n "${AG_SHA_GUARDED[$1]:-}" ]]; then AG_G=${AG_SHA_GUARDED[$1]}; return 0; fi
+  if err=$("$ag_gh" api "repos/$ag_repo/contents/research/historical/ci/archive-guard.sh?ref=$1" --jq '.sha' 2>&1 >/dev/null); then AG_G=yes
+  else grep -q "HTTP 404" <<< "$err" || return 1; AG_G=no; fi
+  AG_SHA_GUARDED[$1]=$AG_G
 }
 # ag_attempt ID K: "status<TAB>conclusion<TAB>updated_at" of attempt K of run ID.
 ag_attempt() {
@@ -443,6 +501,7 @@ ag_history() {
   rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
   AG_SINCE=$(( rearm < now - 86400 ? rearm : now - 86400 ))
   AG_BRANCH=$(ag_default_branch) || return 1
+  ag_gh_ok || { echo "the runner's gh cannot filter runs by creation date and every non-completed status" >&2; return 1; }
   AG_AC_RUNS=$(ag_runs archive-check.yml) || return 1
   AG_DS_RUNS=$(ag_runs data-scan.yml) || return 1
   AG_FAILS=0 AG_LAST_FAIL=0 AG_LANE_END=0 AG_LANE_RESUME="" AG_RESTARTS="" AG_FAIL_JOBS="" AG_FAIL_GROUPS="" AG_FOREIGN=0 AG_BUSY=0
@@ -455,7 +514,7 @@ ag_history() {
     # an old, unguarded one), or a re-run of a commit without the guard
     if (( up >= rearm )); then
       if [[ "$br" != "$AG_BRANCH" ]] || (( at > 1 )); then
-        g=$(ag_sha_guarded "$sha") || return 1
+        ag_sha_guarded "$sha" || return 1; g=$AG_G
         if [[ "$g" != yes ]]; then AG_FOREIGN=$(( AG_FOREIGN + 1 ))
         elif [[ "$br" != "$AG_BRANCH" ]]; then
           # Ruling 38: a guarded check from another branch counts only if its probe step ran
@@ -494,7 +553,7 @@ ag_history() {
     # commit lacks the guard, or a re-run of a commit without the guard, stops the chain
     # until a reviewed re-arm.
     if (( up >= rearm )) && { [[ "$br" != "$AG_BRANCH" ]] || (( at > 1 )); }; then
-      g=$(ag_sha_guarded "$sha") || return 1
+      ag_sha_guarded "$sha" || return 1; g=$AG_G
       if [[ "$g" != yes ]]; then AG_FOREIGN=$(( AG_FOREIGN + 1 ))
       elif [[ "$br" != "$AG_BRANCH" ]]; then
         for (( k = 1; k <= at; k++ )); do
@@ -554,7 +613,8 @@ ag_history() {
 # branch from a guarded commit (an unreadable commit is not one: fail closed).
 ag_volume_run() {
   [[ "$1" == "data-scan volume"* && "$2" == "$AG_BRANCH" ]] || return 1
-  [[ "$(ag_sha_guarded "$3" 2>/dev/null)" == yes ]]
+  ag_sha_guarded "$3" || return 1
+  [[ "$AG_G" == yes ]]
 }
 # ag_scan_failed_steps (stdin: ag_jobs lines): the names of the scan job's steps that
 # failed, joined by "|" ("" when none).
