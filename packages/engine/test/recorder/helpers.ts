@@ -22,3 +22,4 @@ export function rec(stream: StreamName, recvMs: number, payload: unknown = { n: 
 export function payloadOf(r: EncodedRecord): Record<string, unknown> {
   return JSON.parse(r.payloadJson) as Record<string, unknown>;
 }
+export const SEG = '2026-10-01T10';

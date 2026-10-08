@@ -1221,7 +1221,7 @@ const TERMINAL_INTENT: ReadonlySet<OrderState> = new Set(['rejected', 'filled', 
   10. `submitMaintenance`: one non-terminal maintenance intent per kind at a time (`E_IN_FLIGHT`); `sweep` refused while trading state is `halt_requested` (`E_HALTED`); janitor and `close_unsolicited` allowed in every state (they reduce risk); single attempt, no reservation (fees come from the float headroom), results booked by M23.
 - **Shared resources and concurrency:** Owner of order intents and attempts (ARCH 7.2). Reservations owned by M22 (called synchronously inside the same transaction where possible; M22's reservation row and ledger update commit together).
 - **Config:** none beyond M21/M22 limits.
-- **Edge cases and failure handling:** Crash in any state → recovered by B-M26-05 (ARCH 7.6). Unique-index violation on insert (race) → `E_PERTOKEN`.
+- **Edge cases and failure handling:** Crash in any state → recovered by B-M26-05 (ARCH 7.6). Unique-index violation on insert (race) → `E_PERTOKEN`. `Recorder.append` throws `E_QUEUE_FULL` for an `order_event` or `fill` record (A-M07-01 edge case 4) → treat it as a failed record: fail closed, block new entries, alert.
 - **Acceptance criteria:**
   1. Given a buy intent for mint X in `reconciling`, when another buy for X is submitted, then `E_PERTOKEN`.
   2. Given HALT with buys in `reserved` and `in_flight`, then the reserved one becomes `cancelled` with its reservation released and the in-flight one continues.

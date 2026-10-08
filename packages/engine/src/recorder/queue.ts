@@ -1,13 +1,15 @@
 // M07 recorder queue (A-M07-01). Producers call append(); it validates, serialises and queues the record and returns
-// at once; it never awaits I/O. One writer loop (A-M07-02) calls take() to drain the queue in append order, tick() once
-// a second or so for the per-minute poll counts, and drainGaps() for its segment manifests.
+// at once; it never awaits I/O. One writer loop (A-M07-02) calls take(max, segmentId) to drain the queue in append
+// order into the segment it is writing, tick() once a second or so for the per-minute poll counts, and drainGaps() for
+// its segment manifests.
 //
 // Bounds (the 6 Oct restart loop and V8 out-of-memory, docs/MIGRATION.md "Bugs left behind"): the queue holds at most
 // `queueMax` records and at most `queueMaxBytes` of serialised payload plus a fixed per-record allowance. When either
 // is reached, the lowest-priority stream (the end of STREAM_NAMES) loses its newest records first, the incoming one
 // included; order_event, fill, universe_manifest, coverage and venue_config are never dropped. Each stream that loses
-// records gets a `backpressure` gap and a warning. Every other structure is bounded too: gaps per stream, the per-pool
-// poll buckets and the encoder's per-hour state.
+// records gets a `backpressure` gap and a warning. Every other structure is bounded too: the watched pools (a cap, and
+// pools with no poll for a while are unwatched), the work of one tick, gaps per stream, the per-pool poll buckets and
+// the encoder's per-segment state.
 //
 // Sequence numbers are assigned when a record is taken for writing, not when it is appended, so the seq of each stream
 // is dense over the records that reach disk (A-M07-02's manifests count firstSeq..lastSeq): a record dropped in the
@@ -63,6 +65,12 @@ export interface PollCounts {
   changedPolls: number;
   failedPolls: number;
   priorityClass: string;
+  /**
+   * Present only after a pause longer than `pollCatchUpMaxMinutes`: the record then covers this many minutes from
+   * `minuteStartMs`, with the counts summed over them, and no per-minute detail. A replay treats those minutes as
+   * not observed minute by minute.
+   */
+  skippedMinutes?: number;
 }
 
 export interface RecorderQueueConfig {
@@ -77,6 +85,24 @@ export interface RecorderQueueConfig {
   queueMaxBytes: number;
   /** A drop this close (by recvMs) after a stream's last gap extends that gap instead of starting a new one. */
   gapMergeMs: number;
+  /**
+   * Pools watched for poll counts at once; past it a new pool's snapshots and polls are refused (`E_POOL_CAP`) and
+   * counted. Default 60: M05's `max_watched` of 30 (ARCH.md:1007) plus up to 30 eviction-tail pools (ARCH.md:1027).
+   * Range 1-10,000.
+   */
+  maxWatchedPools: number;
+  /**
+   * A watched pool with no poll for more than this many minutes is unwatched by tick(). Default 10: the slowest poll
+   * the design has is the eviction tail's 0.1 Hz, one poll every 10 s (ARCH.md:1027), so 10 minutes is 60 missed tail
+   * polls. Range 1-1,440.
+   */
+  idleUnwatchMinutes: number;
+  /**
+   * Minutes one tick writes per pool one by one; a longer pause is written as one record per pool with
+   * `skippedMinutes`. Default 10, so one tick writes at most maxWatchedPools x 10 = 600 records by default (1.2% of
+   * queue_max). Range 1-1,440.
+   */
+  pollCatchUpMaxMinutes: number;
 }
 
 export const DEFAULT_CONFIG: RecorderQueueConfig = {
@@ -84,18 +110,21 @@ export const DEFAULT_CONFIG: RecorderQueueConfig = {
   recordMaxBytes: 65_536,
   queueMaxBytes: 64 * 1024 * 1024,
   gapMergeMs: 1_000,
+  maxWatchedPools: 60,
+  idleUnwatchMinutes: 10,
+  pollCatchUpMaxMinutes: 10,
 };
 
-/** Bytes counted per queued record on top of its payload: the envelope object, its strings and the queue slot. */
+/** Bytes counted per queued record on top of its payload and source: the envelope object and the queue slot. */
 export const RECORD_OVERHEAD_BYTES = 256;
+/** Longest `source` accepted, in UTF-8 bytes; a longer one is refused with E_ENVELOPE. */
+export const SOURCE_MAX_BYTES = 256;
 /** Closed gaps kept per stream before the oldest two are merged (which only widens a gap, never hides one). */
 export const GAPS_MAX_PER_STREAM = 1_024;
 /** Poll minutes a pool may run ahead of its next unflushed minute before the poll counts as clock skew. */
 export const POLL_MINUTES_AHEAD_MAX = 1_440;
-/** Minutes one tick emits per pool at most; a longer pause skips the older minutes and counts them. */
-export const TICK_CATCH_UP_MAX = 1_440;
 
-export type RejectCode = 'E_STREAM' | 'E_ENVELOPE' | 'E_PAYLOAD' | 'E_TOO_LARGE';
+export type RejectCode = 'E_STREAM' | 'E_ENVELOPE' | 'E_PAYLOAD' | 'E_TOO_LARGE' | 'E_POOL_CAP';
 export type AppendResult = 'queued' | 'unchanged' | 'dropped' | { rejected: RejectCode };
 export type LogLevel = 'warning' | 'error' | 'critical';
 export type LogFn = (level: LogLevel, code: string, fields: Record<string, string | number>) => void;
@@ -122,7 +151,10 @@ export interface RecorderStats {
   redactedTotal: number;
   latePolls: number;
   skewedPolls: number;
+  /** Minutes written as part of a `skippedMinutes` record instead of one by one. */
   skippedPollMinutes: number;
+  /** Pools unwatched by tick() after idleUnwatchMinutes with no poll. */
+  idleUnwatched: number;
   watchedPools: number;
   acceptedHashes: number;
   encoderStates: number;
@@ -139,7 +171,8 @@ interface Item {
   json: string;
   bytes: number;
   poolId: string | null;
-  rawHash: string | null;
+  /** Stream, priority class and rawHash of a snapshot (what "changed" compares), else null. */
+  signature: string | null;
 }
 
 interface Bucket {
@@ -151,6 +184,8 @@ interface Bucket {
 interface WatchedPool {
   priorityClass: string;
   nextMinute: number;
+  /** The minute of the last poll (or of watch()), for idle unwatching. */
+  lastPollMinute: number;
   buckets: Map<number, Bucket>;
 }
 
@@ -172,7 +207,10 @@ export class RecorderQueue {
   private depth = 0;
   private bytes = 0;
 
-  /** Per pool, the rawHash of the newest snapshot accepted into the queue or written; drives change-only appends. */
+  /**
+   * Per pool, the stream, priority class and rawHash of the newest snapshot accepted into the queue or written;
+   * drives change-only appends. Held only for watched pools.
+   */
   private readonly lastAccepted = new Map<string, string>();
   private readonly watched = new Map<string, WatchedPool>();
 
@@ -193,6 +231,10 @@ export class RecorderQueue {
       throw new RecorderError('E_CONFIG', 'queueMaxBytes must hold at least one record of record_max_bytes');
     }
     if (!Number.isFinite(c.gapMergeMs) || c.gapMergeMs < 0) throw new RecorderError('E_CONFIG', 'gapMergeMs must be a finite number from 0');
+    const intIn = (v: number, lo: number, hi: number): boolean => Number.isInteger(v) && v >= lo && v <= hi;
+    if (!intIn(c.maxWatchedPools, 1, 10_000)) throw new RecorderError('E_CONFIG', 'maxWatchedPools must be an integer from 1 to 10,000');
+    if (!intIn(c.idleUnwatchMinutes, 1, 1_440)) throw new RecorderError('E_CONFIG', 'idleUnwatchMinutes must be an integer from 1 to 1,440');
+    if (!intIn(c.pollCatchUpMaxMinutes, 1, 1_440)) throw new RecorderError('E_CONFIG', 'pollCatchUpMaxMinutes must be an integer from 1 to 1,440');
     this.nextSeq = perStream(() => 0n);
     for (const [stream, seq] of Object.entries(opts.firstSeq ?? {})) {
       if (!isStreamName(stream) || typeof seq !== 'bigint' || seq < 0n) throw new RecorderError('E_CONFIG', 'firstSeq must map stream names to bigints from 0');
@@ -207,11 +249,12 @@ export class RecorderQueue {
       recordsTotal: perStream(() => ({ written: 0, notWritten: 0 })),
       droppedTotal: perStream(() => 0),
       gapSecondsTotal: perStream(() => 0),
-      rejectedTotal: { E_STREAM: 0, E_ENVELOPE: 0, E_PAYLOAD: 0, E_TOO_LARGE: 0 },
+      rejectedTotal: { E_STREAM: 0, E_ENVELOPE: 0, E_PAYLOAD: 0, E_TOO_LARGE: 0, E_POOL_CAP: 0 },
       redactedTotal: 0,
       latePolls: 0,
       skewedPolls: 0,
       skippedPollMinutes: 0,
+      idleUnwatched: 0,
       watchedPools: 0,
       acceptedHashes: 0,
       encoderStates: 0,
@@ -220,9 +263,10 @@ export class RecorderQueue {
   }
 
   /**
-   * Non-blocking. Returns what happened; callers may ignore it. Throws RecorderError E_QUEUE_FULL only for a record of
-   * a never-dropped stream when the queue already holds nothing but never-dropped records: such a record is refused
-   * loudly, never lost silently, and the queue never grows past its bound.
+   * Non-blocking. Callers may ignore the result; a thrown E_QUEUE_FULL must not be ignored. It is thrown only for a
+   * record of a never-dropped stream when the queue already holds nothing but never-dropped records: such a record is
+   * refused loudly, never lost silently, and the queue never grows past its bound. The caller treats it as a failed
+   * record: fail closed, block new entries, alert (B-M19-02).
    */
   append(e: AppendInput): AppendResult {
     const stream = e.stream;
@@ -233,6 +277,8 @@ export class RecorderQueue {
       || typeof e.source !== 'string') {
       return this.reject(stream, 'E_ENVELOPE', 'envelope field of the wrong type');
     }
+    const sourceBytes = Buffer.byteLength(e.source, 'utf8');
+    if (sourceBytes > SOURCE_MAX_BYTES) return this.reject(stream, 'E_ENVELOPE', 'source over 256 bytes');
     const snapshot = SNAPSHOT_STREAMS.has(stream);
     if (snapshot) {
       const why = snapshotShapeError(e.payload);
@@ -256,20 +302,24 @@ export class RecorderQueue {
     if (payloadBytes > this.cfg.recordMaxBytes) return this.reject(stream, 'E_TOO_LARGE', 'payload over recorder.record_max_bytes');
 
     let poolId: string | null = null;
-    let rawHash: string | null = null;
+    let signature: string | null = null;
     if (snapshot) {
       const p = e.payload as PoolSnapshotPayload;
       poolId = p.poolId;
-      rawHash = p.rawHash;
-      const unchanged = this.lastAccepted.get(poolId) === rawHash;
-      this.countPoll(poolId, p.priorityClass, e.recvMs, unchanged ? 'successful' : 'changed');
+      // A new stream or priority class with the same rawHash is a change too (review round 1, red team m3).
+      signature = `${stream}\u0000${p.priorityClass}\u0000${p.rawHash}`;
+      const unchanged = this.lastAccepted.get(poolId) === signature;
+      if (!this.countPoll(poolId, p.priorityClass, e.recvMs, unchanged ? 'successful' : 'changed')) {
+        return this.reject(stream, 'E_POOL_CAP', 'watched pool cap reached');
+      }
       if (unchanged) {
         this.s.recordsTotal[stream].notWritten++;
         return 'unchanged';
       }
     }
 
-    const item: Item = { stream, order: this.nextOrder++, recvMs: e.recvMs, slot: e.slot, commitment: e.commitment, source, json, bytes: payloadBytes + RECORD_OVERHEAD_BYTES, poolId, rawHash };
+    const bytes = payloadBytes + Buffer.byteLength(source, 'utf8') + RECORD_OVERHEAD_BYTES;
+    const item: Item = { stream, order: this.nextOrder++, recvMs: e.recvMs, slot: e.slot, commitment: e.commitment, source, json, bytes, poolId, signature };
     if (!this.makeRoom(item)) {
       this.onDrop(stream, e.recvMs);
       return 'dropped';
@@ -279,27 +329,38 @@ export class RecorderQueue {
     this.bytes += item.bytes;
     if (this.depth > this.s.peakDepth) this.s.peakDepth = this.depth;
     if (this.bytes > this.s.peakBytes) this.s.peakBytes = this.bytes;
-    if (poolId !== null && rawHash !== null) this.lastAccepted.set(poolId, rawHash);
+    if (poolId !== null && signature !== null) this.lastAccepted.set(poolId, signature);
     this.closeGap(stream);
     return 'queued';
   }
 
-  /** A poll of a watched pool that failed (A-M07-01 logic 3, `failedPolls`). */
-  notePollFailed(poolId: string, priorityClass: string, recvMs: UnixMs): void {
-    this.countPoll(poolId, priorityClass, recvMs, 'failed');
+  /**
+   * A poll of a watched pool that failed (A-M07-01 logic 3, `failedPolls`). False when the pool is new and the
+   * watched pool cap is reached (counted as E_POOL_CAP).
+   */
+  notePollFailed(poolId: string, priorityClass: string, recvMs: UnixMs): boolean {
+    if (this.countPoll(poolId, priorityClass, recvMs, 'failed')) return true;
+    this.reject('poll_counts', 'E_POOL_CAP', 'watched pool cap reached');
+    return false;
   }
 
   /**
    * Starts the per-minute poll counts for a pool from the minute of `nowMs`. A pool is also watched from its first
-   * snapshot or failed poll.
+   * snapshot or failed poll. False when the pool is new and the watched pool cap is reached (counted as E_POOL_CAP).
    */
-  watch(poolId: string, priorityClass: string, nowMs: UnixMs): void {
+  watch(poolId: string, priorityClass: string, nowMs: UnixMs): boolean {
     const w = this.watched.get(poolId);
     if (w !== undefined) {
       w.priorityClass = priorityClass;
-      return;
+      return true;
     }
-    this.watched.set(poolId, { priorityClass, nextMinute: Math.floor(nowMs / MINUTE_MS), buckets: new Map() });
+    if (this.watched.size >= this.cfg.maxWatchedPools) {
+      this.reject('poll_counts', 'E_POOL_CAP', 'watched pool cap reached');
+      return false;
+    }
+    const minute = Math.floor(nowMs / MINUTE_MS);
+    this.watched.set(poolId, { priorityClass, nextMinute: minute, lastPollMinute: minute, buckets: new Map() });
+    return true;
   }
 
   /**
@@ -309,18 +370,31 @@ export class RecorderQueue {
   unwatch(poolId: string, nowMs: UnixMs): void {
     const w = this.watched.get(poolId);
     if (w !== undefined) this.flushPool(poolId, w, Math.floor(nowMs / MINUTE_MS) + 1, nowMs);
-    this.watched.delete(poolId);
-    this.lastAccepted.delete(poolId);
+    this.forget(poolId);
   }
 
-  /** Emits one `poll_counts` record per watched pool for every whole minute before `nowMs` not yet emitted. */
+  /**
+   * Emits `poll_counts` for every whole minute before `nowMs` not yet emitted, for every watched pool, then unwatches
+   * pools with no poll for more than idleUnwatchMinutes. Work is bounded: at most pollCatchUpMaxMinutes records per
+   * pool, or one `skippedMinutes` record after a longer pause.
+   */
   tick(nowMs: UnixMs): void {
     const nowMinute = Math.floor(nowMs / MINUTE_MS);
-    for (const [poolId, w] of this.watched) this.flushPool(poolId, w, nowMinute, nowMs);
+    for (const [poolId, w] of this.watched) {
+      this.flushPool(poolId, w, nowMinute, nowMs);
+      if (nowMinute - w.lastPollMinute > this.cfg.idleUnwatchMinutes) {
+        this.forget(poolId);
+        this.s.idleUnwatched++;
+      }
+    }
   }
 
-  /** Takes up to `max` records in append order, with seq assigned and snapshots encoded. */
-  take(max: number): EncodedRecord[] {
+  /**
+   * Takes up to `max` records in append order for the segment `segmentId` (A-M07-02 names it), with seq assigned and
+   * snapshots encoded. When `segmentId` differs from the last call's, the first record of every pool is a keyframe.
+   */
+  take(max: number, segmentId: string): EncodedRecord[] {
+    if (typeof segmentId !== 'string' || segmentId === '') throw new RecorderError('E_CONFIG', 'take needs a segment id');
     const out: EncodedRecord[] = [];
     while (out.length < max && this.depth > 0) {
       let best: Fifo<Item> | null = null;
@@ -337,7 +411,7 @@ export class RecorderQueue {
       this.bytes -= item.bytes;
       let payloadJson = item.json;
       if (SNAPSHOT_STREAMS.has(item.stream)) {
-        const enc = this.encoder.encode(item.stream, item.recvMs, JSON.parse(item.json) as PoolSnapshotPayload);
+        const enc = this.encoder.encode(item.stream, segmentId, JSON.parse(item.json) as PoolSnapshotPayload);
         if (enc === null) {
           this.s.recordsTotal[item.stream].notWritten++;
           continue;
@@ -355,11 +429,6 @@ export class RecorderQueue {
   /** The seq the next written record of `stream` gets; A-M07-02 stores `lastSeq` in manifests from this. */
   peekNextSeq(stream: StreamName): bigint {
     return this.nextSeq[stream];
-  }
-
-  /** Forces a keyframe as the next record of every pool on every stream (segment rotation, A-M07-02). */
-  resetKeyframes(): void {
-    this.encoder.resetKeyframes();
   }
 
   /**
@@ -419,7 +488,7 @@ export class RecorderQueue {
       const gone = this.queues[victim].popBack() as Item;
       this.depth--;
       this.bytes -= gone.bytes;
-      if (gone.poolId !== null && this.lastAccepted.get(gone.poolId) === gone.rawHash) this.lastAccepted.delete(gone.poolId);
+      if (gone.poolId !== null && this.lastAccepted.get(gone.poolId) === gone.signature) this.lastAccepted.delete(gone.poolId);
       this.onDrop(victim, gone.recvMs);
     }
     return true;
@@ -466,14 +535,27 @@ export class RecorderQueue {
     if (list.length > GAPS_MAX_PER_STREAM) {
       const a = list.shift() as Gap;
       const b = list[0] as Gap;
-      list[0] = { fromMs: Math.min(a.fromMs, b.fromMs), toMs: Math.max(a.toMs, b.toMs), reason: 'backpressure' };
+      const merged: Gap = { fromMs: Math.min(a.fromMs, b.fromMs), toMs: Math.max(a.toMs, b.toMs), reason: 'backpressure' };
+      list[0] = merged;
+      // The total stays the sum of the gaps held and drained: the merged gap replaces the two it came from.
+      this.s.gapSecondsTotal[stream] += (merged.toMs - merged.fromMs - (a.toMs - a.fromMs) - (b.toMs - b.fromMs)) / 1000;
     }
   }
 
-  private countPoll(poolId: string, priorityClass: string, recvMs: number, kind: 'successful' | 'changed' | 'failed'): void {
+  /** Forgets a pool: unwatched, its accepted hash and its encoder state gone, so its next snapshot is written in full. */
+  private forget(poolId: string): void {
+    this.watched.delete(poolId);
+    this.lastAccepted.delete(poolId);
+    this.encoder.forget(poolId);
+  }
+
+  /** Counts one poll; false (nothing counted) when the pool is new and the watched pool cap is reached. */
+  private countPoll(poolId: string, priorityClass: string, recvMs: number, kind: 'successful' | 'changed' | 'failed'): boolean {
     let w = this.watched.get(poolId);
     if (w === undefined) {
-      w = { priorityClass, nextMinute: Math.floor(recvMs / MINUTE_MS), buckets: new Map() };
+      if (this.watched.size >= this.cfg.maxWatchedPools) return false;
+      const m = Math.floor(recvMs / MINUTE_MS);
+      w = { priorityClass, nextMinute: m, lastPollMinute: m, buckets: new Map() };
       this.watched.set(poolId, w);
     }
     w.priorityClass = priorityClass;
@@ -497,15 +579,38 @@ export class RecorderQueue {
       b.successful++;
       if (kind === 'changed') b.changed++;
     }
+    w.lastPollMinute = Math.max(w.lastPollMinute, minute);
+    return true;
   }
 
-  /** Emits the pool's minutes from nextMinute up to, not including, `untilMinute`. */
+  /**
+   * Emits the pool's minutes from nextMinute up to, not including, `untilMinute`: one record per minute, or one
+   * `skippedMinutes` record with summed counts when there are more than pollCatchUpMaxMinutes of them.
+   */
   private flushPool(poolId: string, w: WatchedPool, untilMinute: number, nowMs: number): void {
-    if (untilMinute - w.nextMinute > TICK_CATCH_UP_MAX) {
-      const skip = untilMinute - TICK_CATCH_UP_MAX;
-      for (const m of w.buckets.keys()) if (m < skip) w.buckets.delete(m);
-      this.s.skippedPollMinutes += skip - w.nextMinute;
-      w.nextMinute = skip;
+    const span = untilMinute - w.nextMinute;
+    if (span > this.cfg.pollCatchUpMaxMinutes) {
+      const sum: Bucket = { successful: 0, changed: 0, failed: 0 };
+      for (const [m, b] of w.buckets) {
+        if (m >= untilMinute) continue;
+        sum.successful += b.successful;
+        sum.changed += b.changed;
+        sum.failed += b.failed;
+        w.buckets.delete(m);
+      }
+      const payload: PollCounts = {
+        poolId,
+        minuteStartMs: w.nextMinute * MINUTE_MS,
+        successfulPolls: sum.successful,
+        changedPolls: sum.changed,
+        failedPolls: sum.failed,
+        priorityClass: w.priorityClass,
+        skippedMinutes: span,
+      };
+      this.s.skippedPollMinutes += span;
+      w.nextMinute = untilMinute;
+      this.append({ stream: 'poll_counts', recvMs: nowMs, slot: null, commitment: null, source: 'M07', payload });
+      return;
     }
     for (; w.nextMinute < untilMinute; w.nextMinute++) {
       const b = w.buckets.get(w.nextMinute);

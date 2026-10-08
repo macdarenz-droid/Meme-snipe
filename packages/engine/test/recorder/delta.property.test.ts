@@ -7,11 +7,17 @@ import { describe, it } from 'vitest';
 import fc from 'fast-check';
 import { canonicalJson, type UnixMs } from '@bot/types';
 import { RecorderQueue, SnapshotDecoder, SNAPSHOT_STREAMS, type EncodedSnapshot, type PoolSnapshotPayload, type StreamName } from '../../src/index.ts';
-import { T0 } from './helpers.ts';
+import { SEG, T0 } from './helpers.ts';
 
 const params = { seed: 20261007, numRuns: 300 };
 
-const fieldValue = fc.oneof(fc.string({ maxLength: 8 }), fc.integer(), fc.boolean(), fc.constant(null), fc.array(fc.integer(), { maxLength: 3 }), fc.dictionary(fc.string({ maxLength: 3 }), fc.integer(), { maxKeys: 2 }));
+// -0 and bigint (review round 1, red team m2): canonicalJson writes -0 as 0 and a bigint as its decimal string, so the
+// decoded state matches the appended one in canonical form, which is what the comparison below uses.
+const fieldValue = fc.oneof(
+  fc.string({ maxLength: 8 }), fc.integer(), fc.boolean(), fc.constant(null), fc.constant(-0), fc.constant(0),
+  fc.bigInt({ min: -(2n ** 70n), max: 2n ** 70n }), fc.array(fc.oneof(fc.integer(), fc.constant(-0), fc.bigInt()), { maxLength: 3 }),
+  fc.dictionary(fc.string({ maxLength: 3 }), fc.integer(), { maxKeys: 2 }),
+);
 const fieldKey = fc.oneof(fc.constantFrom('baseReserve', 'quoteReserve', 'lpSupply', '__proto__', 'hasOwnProperty', 'toString', ''), fc.string({ maxLength: 4 }));
 const fields = fc.dictionary(fieldKey, fieldValue, { maxKeys: 6 });
 const streams = [...SNAPSHOT_STREAMS] as StreamName[];
@@ -39,7 +45,7 @@ describe('snapshot keyframe and delta round trip', () => {
       const decoders = new Map<string, SnapshotDecoder>();
       let written = 0;
       const check = (n: number): void => {
-        for (const r of q.take(n)) {
+        for (const r of q.take(n, SEG)) {
           let d = decoders.get(r.stream);
           if (d === undefined) {
             d = new SnapshotDecoder();

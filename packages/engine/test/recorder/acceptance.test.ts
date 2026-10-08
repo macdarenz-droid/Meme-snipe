@@ -3,15 +3,19 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import { canonicalJson, type UnixMs } from '@bot/types';
 import { RecorderQueue, SnapshotDecoder, PROTECTED_STREAMS, STREAM_NAMES, type EncodedSnapshot, type StreamName } from '../../src/index.ts';
-import { T0, payloadOf, rec, snap } from './helpers.ts';
+import { SEG, T0, payloadOf, rec, snap } from './helpers.ts';
 
 describe('A-M07-01 acceptance', () => {
   it('3,600 polls in an hour with 40 state changes write 40 snapshot records (1 keyframe + 39 deltas) and 60 poll_counts', () => {
     const q = new RecorderQueue();
     // One poll a second; the state changes every 90 polls, so 40 distinct states (the first poll is the first state).
-    for (let i = 0; i < 3_600; i++) q.append(snap('poolA', Math.floor(i / 90), T0 + i * 1_000));
+    // The writer ticks once a second, as A-M07-02's loop does.
+    for (let i = 0; i < 3_600; i++) {
+      q.append(snap('poolA', Math.floor(i / 90), T0 + i * 1_000));
+      q.tick((T0 + i * 1_000) as UnixMs);
+    }
     q.tick((T0 + 3_600_000) as UnixMs);
-    const out = q.take(100_000);
+    const out = q.take(100_000, SEG);
     const snaps = out.filter((r) => r.stream === 'pool_snapshot');
     const counts = out.filter((r) => r.stream === 'poll_counts');
     assert.equal(snaps.length, 40);
@@ -53,11 +57,12 @@ describe('A-M07-01 acceptance', () => {
     const add = (stream: StreamName): void => {
       t++;
       i++;
-      q.append(stream.startsWith('pool_snapshot') ? snap(`p${i}`, i, t, stream) : rec(stream, t));
+      // 50 pools (under the default cap of 60), each append a new state.
+      q.append(stream.startsWith('pool_snapshot') ? snap(`p${i % 50}`, i, t, stream) : rec(stream, t));
       appended.set(stream, (appended.get(stream) ?? 0) + 1);
     };
     const takeSome = (n: number): void => {
-      for (const r of q.take(n)) written.set(r.stream, (written.get(r.stream) ?? 0) + 1);
+      for (const r of q.take(n, SEG)) written.set(r.stream, (written.get(r.stream) ?? 0) + 1);
     };
     // 20 rounds: 1,000 records in (10 on the never-dropped streams, 990 over the other nine), 100 taken out, so the
     // producers run at 10x the writer and the queue stays full from the second round on.

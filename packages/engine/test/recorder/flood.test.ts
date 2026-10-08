@@ -10,7 +10,7 @@ import { runInNewContext } from 'node:vm';
 import { describe, it } from 'vitest';
 import type { UnixMs } from '@bot/types';
 import { DEFAULT_CONFIG, GAPS_MAX_PER_STREAM, PROTECTED_STREAMS, RECORD_OVERHEAD_BYTES, RecorderQueue, STREAM_NAMES, type StreamName } from '../../src/index.ts';
-import { T0, rec, snap } from './helpers.ts';
+import { SEG, T0, rec, snap } from './helpers.ts';
 
 setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
@@ -53,7 +53,7 @@ describe('recorder flood at 10x the writer', () => {
         appended.set(stream, (appended.get(stream) ?? 0) + 1);
       }
       q.tick(t as UnixMs);
-      for (const r of q.take(TAKE_PER_ROUND)) written.set(r.stream, (written.get(r.stream) ?? 0) + 1);
+      for (const r of q.take(TAKE_PER_ROUND, SEG)) written.set(r.stream, (written.get(r.stream) ?? 0) + 1);
       const st = q.stats();
       assert.ok(st.queueDepth <= DEFAULT_CONFIG.queueMax, `round ${round}: depth ${st.queueDepth}`);
       if (round === 9) heapAfterWarmup = heapMb();
@@ -74,7 +74,7 @@ describe('recorder flood at 10x the writer', () => {
     assert.ok(heapPeak - heapAfterWarmup < queueMb, `heap grew ${(heapPeak - heapAfterWarmup).toFixed(1)} MB after warm-up`);
 
     // Nothing on a never-dropped stream is lost; every other loss is counted and has a gap.
-    for (const r of q.take(Number.MAX_SAFE_INTEGER)) written.set(r.stream, (written.get(r.stream) ?? 0) + 1);
+    for (const r of q.take(Number.MAX_SAFE_INTEGER, SEG)) written.set(r.stream, (written.get(r.stream) ?? 0) + 1);
     const gaps = q.drainGaps();
     for (const s of STREAM_NAMES) {
       if (s === 'poll_counts') continue;
