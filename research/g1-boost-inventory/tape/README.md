@@ -37,6 +37,8 @@ nice -n 19 python3 g1.py freeze --out out/A
 4. `outcome --allow-returns` and `score --role discovery` (§8 futility; the primary there is information only).
 5. Only if Step B is released for G1: `decide`, `outcome`, `score --role validation` on 09-07, 09-08, 09-09, with `--frozen` from step 3.
 
+Enforced in code (red team R2-6): `gate` records gate.json's sha in the manifest; `freeze` refuses without that gate.json from whole days and copies its passes into frozen.json; `score` refuses unless G1-0 passed; `score --role discovery` records score_discovery.json's sha; `score --role validation` refuses without that file beside `--frozen`, and an arm whose own gate failed or that discovery futility closed gets the verdict "closed: ..." (`score.closures`). G1-0 failing closes every arm (pending a ruling, see CODE_REDTEAM.md).
+
 The gate's per-day counts assume whole days: run it once every unit of a day is present (`decisions_summary.json` lists the units read).
 
 ## Blind rule

@@ -139,7 +139,8 @@ class Arms(unittest.TestCase):
         self.assertEqual(list(hc["mint"]), ["a"])            # R strictly below the frozen median
         self.assertEqual(list(cap["mint"]), ["a", "b"])      # Z at or below; theme-wave excluded
         self.assertEqual(len(s0), 1)
-        self.assertIn("secondary", judge(t, d, {"median_R": 0.5, "median_Z": 0.0}, "validation"))
+        open_arms = {"G1": "", "G1_HC": "", "G1_CAP": ""}     # R2-6: validation needs each arm's closure state
+        self.assertIn("secondary", judge(t, d, {"median_R": 0.5, "median_Z": 0.0}, "validation", closed=open_arms))
 
 
 if __name__ == "__main__":

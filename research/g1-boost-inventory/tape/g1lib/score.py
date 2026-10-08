@@ -42,7 +42,29 @@ def secondary(trades: pd.DataFrame) -> dict:
     return out
 
 
-def judge(trades: pd.DataFrame, decisions: pd.DataFrame, frozen: dict, role: str) -> dict:
+ARMS = ("G1", "G1_HC", "G1_CAP")
+
+
+def closures(frozen: dict, discovery: dict) -> dict:
+    """Red team R2-6 (README "Order of work", PREREG §6, §8, amendments 1-2 "Gate additions" and "Futility"): the
+    reason each arm is closed before validation, or "" if it may be judged. G1-0 killing closes every arm (no return is
+    read); an amendment arm also closes on its own gate failure; discovery futility closes an arm (its `closes` flag
+    already applies "closes with G1 unless its own one-sided 95% upper bound is above 0")."""
+    gp = frozen.get("gate_passes") or {}
+    out = {}
+    for arm in ARMS:
+        why = []
+        if gp.get("G1_0") is not True:
+            why.append("G1-0 did not pass")
+        if arm != "G1" and gp.get(arm) is not True:
+            why.append("its own gate did not pass")
+        if (discovery.get(arm) or {}).get("closes") is not False:
+            why.append("discovery futility" if (discovery.get(arm) or {}).get("closes") else "no discovery futility result")
+        out[arm] = "; ".join(why)
+    return out
+
+
+def judge(trades: pd.DataFrame, decisions: pd.DataFrame, frozen: dict, role: str, closed: dict = None) -> dict:
     g1, s0, hc, cap = arms(trades, decisions, frozen)
     if role == "discovery":
         # PREREG §8: the primary on discovery days is for information only; futility may only close
@@ -54,10 +76,15 @@ def judge(trades: pd.DataFrame, decisions: pd.DataFrame, frozen: dict, role: str
             out[k]["closes"] = out[k]["closes"] or (g1_closes and not (out[k]["upper_95_one_sided"] > 0))
         return out
     vd = guard.VALIDATION_DAYS
-    return {"G1": primary(g1, control=s0, required_days=vd),
-            "G1_HC": primary(hc, control=s0, lift_over={"G1": g1}, required_days=vd),
-            "G1_CAP": primary(cap, control=s0, lift_over={"G1": g1}, required_days=vd),
-            "secondary": secondary(trades)}
+    if closed is None:
+        raise guard.GuardError("validation needs each arm's gate and discovery futility result (R2-6)")
+    judged = {"G1": lambda: primary(g1, control=s0, required_days=vd),
+              "G1_HC": lambda: primary(hc, control=s0, lift_over={"G1": g1}, required_days=vd),
+              "G1_CAP": lambda: primary(cap, control=s0, lift_over={"G1": g1}, required_days=vd)}
+    out = {arm: ({"verdict": f"closed: {closed[arm]}"} if closed.get(arm, "?") else judged[arm]()) for arm in ARMS}
+    out["closed"] = closed
+    out["secondary"] = secondary(trades)
+    return out
 
 
 def freeze(decisions: pd.DataFrame) -> dict:

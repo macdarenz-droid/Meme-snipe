@@ -136,6 +136,8 @@ def cmd_gate(a):
     if man["dev_subset"]:
         res = strip_verdict(res)  # G1-0 is judged on complete days only (AMENDMENT_3, OQ-22)
     _json(os.path.join(a.out, "gate.json"), res)
+    man["gate_sha"] = guard.sha_file(os.path.join(a.out, "gate.json"))   # R2-6: freeze reads this exact gate
+    guard.write_manifest(a.out, man)
     log(f"wrote {a.out}/gate.json")
 
 
@@ -162,6 +164,16 @@ def cmd_freeze(a):
         raise guard.GuardError(f"freeze needs exactly the discovery days {guard.DISCOVERY_DAYS}, got {man['days']}")
     fr = freeze(_decisions(a))
     fr.update({k: man[k] for k in ("plan_sha", "inputs_digest", "code_hash", "decisions_sha", "units")})
+    # R2-6: the gate verdicts travel with the freeze, from the gate.json `gate` wrote on these whole days
+    gp = os.path.join(a.out, "gate.json")
+    if not os.path.exists(gp) or guard.sha_file(gp) != man.get("gate_sha"):
+        raise guard.GuardError("freeze needs the gate.json that `gate` recorded for these decisions")
+    with open(gp) as f:
+        g = json.load(f)
+    if g.get("dev_subset") or not g.get("complete_days"):
+        raise guard.GuardError("freeze needs a gate run on whole days")
+    fr["gate_passes"] = {k: (g.get(k) or {}).get("passes") is True for k in ("G1_0", "G1_HC", "G1_CAP")}
+    fr["gate_sha"] = man["gate_sha"]
     _json(os.path.join(a.out, "frozen.json"), fr)
     log(f"wrote {a.out}/frozen.json: {fr}")
 
@@ -210,9 +222,26 @@ def cmd_score(a):
     with open(a.frozen) as f:
         fr = json.load(f)
     guard.check_score(man, fr, a.role, t["day"].dropna().unique())
-    res = judge(t, d, fr, a.role)
-    _json(os.path.join(a.out, f"score_{a.role}.json"), res)
-    log(f"wrote {a.out}/score_{a.role}.json")
+    # R2-6: no return is read unless G1-0 passed; validation follows the discovery score made from the same freeze
+    if not isinstance(fr.get("gate_passes"), dict) or fr["gate_passes"].get("G1_0") is not True:
+        raise guard.GuardError("G1-0 did not pass (or frozen.json has no gate record): G1 closes with no return read")
+    closed = None
+    if a.role == "validation":
+        disc = os.path.dirname(os.path.abspath(a.frozen))
+        dm = guard.read_manifest(disc)
+        sp = os.path.join(disc, "score_discovery.json")
+        if not os.path.exists(sp) or guard.sha_file(sp) != dm.get("score_discovery_sha"):
+            raise guard.GuardError("validation needs score_discovery.json recorded beside the freeze (futility)")
+        with open(sp) as f:
+            from g1lib.score import closures
+            closed = closures(fr, json.load(f))
+    res = judge(t, d, fr, a.role, closed=closed)
+    out = os.path.join(a.out, f"score_{a.role}.json")
+    _json(out, res)
+    if a.role == "discovery":
+        man["score_discovery_sha"] = guard.sha_file(out)
+        guard.write_manifest(a.out, man)
+    log(f"wrote {out}")
 
 
 def main(argv=None):

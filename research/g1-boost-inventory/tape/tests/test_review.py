@@ -238,3 +238,85 @@ class G10PooledAndDays(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OrderOfWorkR2_6(unittest.TestCase):
+    """R2-6: validation scoring must follow the order of work. An arm whose own gate failed, or that discovery
+    futility closed, gets no validation verdict; G1-0 must have passed (on whole days) before any return is read;
+    validation needs the discovery score made from the same freeze."""
+
+    def _write(self, d, name, df):
+        p = os.path.join(d, name)
+        df.to_csv(p, index=False)
+        return guard.sha_file(p)
+
+    def setUp(self):
+        import g1 as G
+        self.G = G
+        self.root = tempfile.mkdtemp(prefix="g1o_")
+        self.addCleanup(shutil.rmtree, self.root)
+        self.disc, self.val = os.path.join(self.root, "A"), os.path.join(self.root, "B")
+        os.makedirs(self.disc)
+        os.makedirs(self.val)
+        code = guard.code_hash()
+        rng = np.random.default_rng(7)
+        rows = []
+        for d in guard.VALIDATION_DAYS:
+            for i in range(150):
+                for kind, mu in (("G1", 0.05), ("S0", 0.0)):
+                    rows.append({"kind": kind, "variant": "primary", "mint": f"{d}-{i}", "day": d, "filled": True,
+                                 "miss": "", "exit": "A", "ret": rng.normal(mu, 0.02)})
+        dec = pd.DataFrame([{"kind": "G1", "mint": r["mint"], "day": r["day"], "R": 0.1, "Z": -1.0, "cap_reason": "",
+                             "reason": "", "censored": False} for r in rows if r["kind"] == "G1"])
+        man = {"code_hash": code, "days": list(guard.VALIDATION_DAYS), "dev_subset": False,
+               "decisions_sha": self._write(self.val, "decisions.csv", dec),
+               "trades_sha": self._write(self.val, "trades.csv", pd.DataFrame(rows))}
+        guard.write_manifest(self.val, man)
+        self.frozen = {"code_hash": code, "days": list(guard.DISCOVERY_DAYS), "median_R": 0.5, "median_Z": 0.0,
+                       "gate_passes": {"G1_0": True, "G1_HC": False, "G1_CAP": True}}
+        self.fz = os.path.join(self.disc, "frozen.json")
+        with open(self.fz, "w") as f:
+            json.dump(self.frozen, f)
+        guard.write_manifest(self.disc, {"code_hash": code, "days": list(guard.DISCOVERY_DAYS), "dev_subset": False})
+
+    def score(self):
+        self.G.main(["score", "--out", self.val, "--role", "validation", "--frozen", self.fz, "--allow-scoring"])
+        with open(os.path.join(self.val, "score_validation.json")) as f:
+            return json.load(f)
+
+    def discovery_score(self, g1_closes=False, hc_ub=0.1, cap_ub=0.1):
+        res = {"G1": {"closes": g1_closes, "upper_95_one_sided": -0.1 if g1_closes else 0.1},
+               "G1_HC": {"closes": hc_ub < 0, "upper_95_one_sided": hc_ub},
+               "G1_CAP": {"closes": cap_ub < 0, "upper_95_one_sided": cap_ub}}
+        p = os.path.join(self.disc, "score_discovery.json")
+        with open(p, "w") as f:
+            json.dump(res, f)
+        man = guard.read_manifest(self.disc)
+        man["score_discovery_sha"] = guard.sha_file(p)
+        guard.write_manifest(self.disc, man)
+
+    def test_validation_needs_the_discovery_score(self):
+        with self.assertRaises(guard.GuardError):
+            self.score()
+
+    def test_failed_gate_or_futility_closes_the_arm(self):
+        self.discovery_score(cap_ub=-0.05)
+        r = self.score()
+        self.assertEqual(r["G1"]["verdict"], "pass")
+        self.assertTrue(r["G1_HC"]["verdict"].startswith("closed"))      # its own gate failed
+        self.assertTrue(r["G1_CAP"]["verdict"].startswith("closed"))     # discovery futility
+        self.discovery_score(g1_closes=True)
+        r = self.score()
+        self.assertTrue(r["G1"]["verdict"].startswith("closed"))
+        self.assertFalse(r["G1_CAP"]["verdict"].startswith("closed"))   # its own discovery bound is above 0
+
+    def test_freeze_without_a_passed_gate_record_refused(self):
+        with open(self.fz, "w") as f:
+            json.dump({k: v for k, v in self.frozen.items() if k != "gate_passes"}, f)
+        self.discovery_score()
+        with self.assertRaises(guard.GuardError):
+            self.score()
+        with open(self.fz, "w") as f:
+            json.dump({**self.frozen, "gate_passes": {"G1_0": False, "G1_HC": True, "G1_CAP": True}}, f)
+        with self.assertRaises(guard.GuardError):
+            self.score()
