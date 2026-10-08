@@ -81,9 +81,14 @@ First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). 
 
 Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` and under `/var/lib/zeroed-usage` (the provider usage ledger, stored as `zeroed-usage/` in the bundle) with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
-**Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
+**Off-server copy (free, no R2): on.** The owner approved it on 9 Oct ("Yes", about 12:54 AM; CLAUDE.md "Off-server backup"), because sending backups to Telegram sends data to a third party. `ops/host-config.json` says `"offsite_backup": true`. Each code update (`zeroed-update`) turns `zeroed-backup-offsite.timer` on while it says `true`, and off if it is ever set back to `false`. `zeroed-backup-offsite` sends nothing until the owner's backup code exists and Telegram is paired.
 
-Once on: run `zeroed-backup-code` once at the console. It shows a 6-word backup code one time; write it down. Only its public half (an age recipient, derived with the same scrypt step as the deploy code but a different salt) stays on the server. Every day at about 03:20 Melbourne time the newest backup is re-encrypted to that recipient alone, so nothing on the server, the host key included, can open the copy. It is then sent as a silent Telegram document to the paired chat (bots may send up to 50 MB).
+**Owner step, once, after the deploy that carries this switch:**
+1. On the server console (`linuxuser`, then `sudo -i`), run `zeroed-backup-code`.
+2. It shows 6 words one time. Write them down and keep them safe; without them no copy can be opened.
+3. Check: `zeroed-status` shows `Backups:   hourly here; daily copy to Telegram (none sent yet)`. The first copy arrives at the next 17:20 UTC (04:20 Melbourne in daylight time, 03:20 otherwise), up to 5 minutes later.
+
+How it works: only the code's public half (an age recipient, derived with the same scrypt step as the deploy code but a different salt) stays on the server. Every day at 17:20 UTC the newest backup is re-encrypted to that recipient alone, so nothing on the server, the host key included, can open the copy. It is then sent as a silent Telegram document to the paired chat (bots may send up to 50 MB).
 
 To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age | tar -x`.
 
