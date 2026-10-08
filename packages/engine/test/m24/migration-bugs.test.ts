@@ -24,7 +24,7 @@ const YEAR = 365 * 86_400_000;
 const T0 = Date.UTC(2026, 9, 7, 12, 0, 0);
 
 async function migrated(path: string): Promise<Db> {
-  const db = openDb({ path, clock: fakeClock() });
+  const db = openDb({ create: true, path, clock: fakeClock() });
   const r = await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` });
   assert.equal(r.ok, true);
   return db;
@@ -41,10 +41,10 @@ describe('R2-C2 (red team C): a 0-byte database never opens as a fresh one', () 
   it('openDb refuses an existing empty file, with or without a WAL beside it, and leaves it as it was', () => {
     const path = fresh();
     writeFileSync(path, '');                                           // truncated by a disk or operator fault
-    assert.throws(() => openDb({ path, clock: fakeClock() }), /exists and is empty/);
+    assert.throws(() => openDb({ create: true, path, clock: fakeClock() }), /exists and is empty/);
     assert.equal(statSync(path).size, 0);
     writeFileSync(`${path}-wal`, 'x');
-    assert.throws(() => openDb({ path, clock: fakeClock() }), /exists and is empty/);
+    assert.throws(() => openDb({ create: true, path, clock: fakeClock() }), /exists and is empty/);
     assert.equal(statSync(path).size, 0);
   });
 
@@ -53,7 +53,7 @@ describe('R2-C2 (red team C): a 0-byte database never opens as a fresh one', () 
     const db = await migrated(path);
     db.close();
     assert.ok(statSync(path).size > 0);
-    openDb({ path, clock: fakeClock() }).close();                     // and opens again
+    openDb({ create: true, path, clock: fakeClock() }).close();                     // and opens again
   });
 });
 
@@ -89,7 +89,7 @@ describe('RB-15 / R4-1 (red teams B and C): the first start latches nothing (sta
       const old = new DatabaseSync(path);
       old.exec(`PRAGMA journal_mode=WAL; ${ddl}`);
       old.close();
-      const db = openDb({ path, clock: fakeClock() });
+      const db = openDb({ create: true, path, clock: fakeClock() });
       const r = await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` });
       db.close();
       assert.equal(r.ok ? null : r.error.code, 'E_FOREIGN_DATABASE', ddl);
@@ -111,7 +111,7 @@ describe('C1 and RB-14 (red teams C and B): the M24 backup carries every piece o
     db.withTx((tx) => db.outbox.append(tx, 'state', { id: 'x' }));
     const copy = `${path}.restore`;
     await db.backupTo(copy);
-    const restored = openDb({ path: copy, clock: fakeClock() });
+    const restored = openDb({ create: true, path: copy, clock: fakeClock() });
     for (const name of [...tables, 'schema_migrations', 'outbox'] as const) {
       const all = (h: Db): unknown[] => h.reader().all(`SELECT * FROM "${name}" ORDER BY 1`).map((x) => ({ ...x }));
       assert.deepEqual(all(restored), all(db), name);
@@ -126,7 +126,7 @@ describe('C1 and RB-14 (red teams C and B): the M24 backup carries every piece o
 describe('M3 pattern (red team C): a clock that ran far ahead and came back locks nothing until that date', () => {
   it('outbox: published rows are pruned again within the hour after the clock comes back (a row stamped ahead keeps its 7 days)', () => {
     const clock = fakeClock(T0);
-    const db = openDb({ path: fresh(), clock });
+    const db = openDb({ create: true, path: fresh(), clock });
     db.withTx((tx) => { for (const s of OUTBOX_DDL.split(';').map((x) => x.trim()).filter(Boolean)) tx.run(s); });
     const publishOne = (): void => {
       db.withTx((tx) => db.outbox.append(tx, 't', { a: 1 }));
@@ -185,30 +185,30 @@ describe('M3 pattern (red team C): a clock that ran far ahead and came back lock
 describe('one writer (B-M24-01 logic 3, ARCH 4.5; LEDGER-1 writer lock): a second writer is refused', () => {
   it('a second openDb of the same file in this process is refused until the first closes', () => {
     const path = fresh();
-    const a = openDb({ path, clock: fakeClock() });
-    assert.throws(() => openDb({ path, clock: fakeClock() }), /already has a writer/);
+    const a = openDb({ create: true, path, clock: fakeClock() });
+    assert.throws(() => openDb({ create: true, path, clock: fakeClock() }), /already has a writer/);
     a.close();
-    openDb({ path, clock: fakeClock() }).close();
+    openDb({ create: true, path, clock: fakeClock() }).close();
     assert.equal(statSync(`${path}-writer.lock`).mode & 0o777, 0o600);
   });
 
   it('a writer in another process blocks this one; when that process is killed the lock is gone', async () => {
     const path = fresh();
-    openDb({ path, clock: fakeClock() }).close();
+    openDb({ create: true, path, clock: fakeClock() }).close();
     const child = spawn(process.execPath, ['--no-warnings', '--input-type=module', '-e',
       `import { openDb } from ${JSON.stringify(new URL('../../src/m24/db.ts', import.meta.url).href)};
-       globalThis.held = openDb({ path: ${JSON.stringify(path)}, clock: { kind: 'sim', nowMs: () => 0 } });
+       globalThis.held = openDb({ create: true, path: ${JSON.stringify(path)}, clock: { kind: 'sim', nowMs: () => 0 } });
        process.stdout.write('open\\n'); setInterval(() => {}, 1000);`], { stdio: ['ignore', 'pipe', 'inherit'] });
     let out = '';
     child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
     try {
       await waitFor(() => out.includes('open'), 20_000);
-      assert.throws(() => openDb({ path, clock: fakeClock() }), /already has a writer/);
+      assert.throws(() => openDb({ create: true, path, clock: fakeClock() }), /already has a writer/);
     } finally {
       child.kill('SIGKILL');
       await new Promise((resolve) => child.once('exit', resolve));
     }
-    openDb({ path, clock: fakeClock() }).close();
+    openDb({ create: true, path, clock: fakeClock() }).close();
   });
 });
 

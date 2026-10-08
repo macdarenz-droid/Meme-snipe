@@ -38,6 +38,10 @@ export const VM01Envelope = z.strictObject({
     if (heartbeat !== (e[f] !== undefined)) ctx.addIssue({ code: 'custom', path: [f], message: heartbeat ? 'required on a heartbeat' : 'only on a heartbeat' });
   }
   if (!heartbeat && e.ui_supported !== undefined) ctx.addIssue({ code: 'custom', path: ['ui_supported'], message: 'only on a heartbeat' });
+  // UI convention 9: every event carries the VM's current version; only `incompatible` reports a mismatch (Z02 ruling 5).
+  if (e.kind !== 'incompatible' && e.schema_version !== SCHEMA_VERSIONS[e.vm]) {
+    ctx.addIssue({ code: 'custom', path: ['schema_version'], message: `${e.vm} is at version ${SCHEMA_VERSIONS[e.vm]}` });
+  }
 });
 
 // ---- VM-02 Session and operator ----
@@ -695,3 +699,48 @@ export const VM_SCHEMAS = {
   'VM-13': VM13Health, 'VM-14': VM14Costs, 'VM-15': VM15Config, 'VM-16': VM16Alerts, 'VM-17': VM17Audit, 'VM-18': VM18Readiness,
   'VM-19': VM19CommandStatus, 'VM-20': VM20Digest, 'VM-21': VM21Runs,
 } as const satisfies Record<VmId, z.ZodType>;
+
+/** The entity pushed by `upsert` (and named by `key` in `remove`) for each collection VM. */
+export const VM_ENTITY_SCHEMAS = {
+  'VM-05': VM05Position, 'VM-06': VM06Trade, 'VM-07': VM07Signal, 'VM-16': VM16Alert, 'VM-17': VM17AuditEvent, 'VM-21': VM21Run,
+} as const satisfies Partial<Record<VmId, z.ZodType>>;
+
+const EmptyData = z.strictObject({});
+export type ParsedEnvelope = z.infer<typeof VM01Envelope>;
+export type EnvelopeResult = { ok: true; value: ParsedEnvelope } | { ok: false; issues: string[] };
+
+const issues = (e: z.ZodError, prefix: string): string[] => e.issues.map((i) => `${prefix}${i.path.map(String).join('.')}: ${i.message}`);
+
+/**
+ * Parses a VM-01 envelope and its `data` for its kind (Z02 round 2 ruling 5): `snapshot` and `replace` carry the VM's
+ * payload; `upsert` carries one entity of a collection VM with its `key`; `remove` carries only the `key`; `heartbeat`,
+ * `reset` and `incompatible` carry no data. A payload is never accepted unchecked.
+ */
+export function parseEnvelope(raw: unknown): EnvelopeResult {
+  const env = VM01Envelope.safeParse(raw);
+  if (!env.success) return { ok: false, issues: issues(env.error, '') };
+  const e = env.data;
+  const entity = (VM_ENTITY_SCHEMAS as Partial<Record<VmId, z.ZodType>>)[e.vm];
+  let data: z.ZodType;
+  switch (e.kind) {
+    case 'snapshot':
+    case 'replace':
+      if (e.vm === 'VM-01') return { ok: false, issues: ['vm: VM-01 has no payload of its own'] };
+      data = VM_SCHEMAS[e.vm];
+      break;
+    case 'upsert':
+    case 'remove':
+      if (entity === undefined) return { ok: false, issues: [`kind: ${e.kind} needs a collection VM, not ${e.vm}`] };
+      if (e.key === null || e.key === '') return { ok: false, issues: [`key: required on ${e.kind}`] };
+      data = e.kind === 'upsert' ? entity : EmptyData;
+      break;
+    case 'heartbeat':
+      if (e.vm !== 'VM-01') return { ok: false, issues: ['vm: a heartbeat is VM-01'] };
+      data = EmptyData;
+      break;
+    default:
+      data = EmptyData;
+  }
+  const d = data.safeParse(e.data);
+  return d.success ? { ok: true, value: e } : { ok: false, issues: issues(d.error, 'data.') };
+}

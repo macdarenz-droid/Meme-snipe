@@ -10,15 +10,18 @@
 // database (positions still managed, entries blocked) and raises a critical alert:
 // - E_MIGRATION_CHECKSUM: an applied migration's text differs from this build's (edge case: start refused for entries);
 // - E_SCHEMA_NEWER: the database has a migration this build does not know (a downgrade);
-// - E_BACKUP_FAILED: migrations are pending but the start backup failed, so none is applied;
+// - E_BACKUP_FAILED: migrations are pending but the start backup failed, or the copy fails its quick_check or has a
+//   different page count from the database (ruling 9), so none is applied;
 // - E_MIGRATION_FAILED: a migration statement failed and everything was rolled back;
+// - E_DATABASE_CORRUPT: quick_check fails, or SQLite reports the file damaged (round 2 ruling 9); nothing is applied;
 // - E_FOREIGN_DATABASE: the file holds tables but not this schema's migration record (an old Zeroed ledger or the
 //   host stand-in's database at `m24.db_path`): nothing is applied on top of it and it is left as it was (MIGRATION
 //   Rule 3, the old state is never reused; red team B RB-15).
 import { createHash } from 'node:crypto';
 import type { Clock, Result } from '@bot/types';
 import type { Logger } from '../m27/log.ts';
-import type { Db } from './db.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { isCorruptionError, type Db } from './db.ts';
 import { tableStatements } from './ddl.ts';
 import { M0001_INITIAL } from './migrations/0001_initial.ts';
 import { TABLES } from './schema.ts';
@@ -28,7 +31,7 @@ export interface Migration { readonly version: number; readonly name: string; re
 /** Every migration of this build, in order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [M0001_INITIAL];
 
-export type MigrateErrorCode = 'E_MIGRATION_CHECKSUM' | 'E_SCHEMA_NEWER' | 'E_BACKUP_FAILED' | 'E_MIGRATION_FAILED' | 'E_FOREIGN_DATABASE';
+export type MigrateErrorCode = 'E_MIGRATION_CHECKSUM' | 'E_SCHEMA_NEWER' | 'E_BACKUP_FAILED' | 'E_MIGRATION_FAILED' | 'E_FOREIGN_DATABASE' | 'E_DATABASE_CORRUPT';
 export interface MigrateError { code: MigrateErrorCode; message: string; version: number | null }
 export interface MigrateOk { from: number; to: number; applied: number[] }
 
@@ -83,6 +86,20 @@ export interface PrepareOptions {
   log?: Logger;
 }
 
+/** Trusts a start backup only when its copy passes quick_check and has the database's page count (ruling 9). */
+function checkBackup(db: Db, path: string): void {
+  const pages = Number(db.reader().get('PRAGMA page_count')?.page_count);
+  const copy = new DatabaseSync(path, { readOnly: true });
+  try {
+    const quick = (copy.prepare('PRAGMA quick_check').all() as Array<Record<string, string>>).map((r) => String(Object.values(r)[0]));
+    if (quick.length !== 1 || quick[0] !== 'ok') throw new Error(`the backup copy fails quick_check: ${quick.slice(0, 5).join('; ')}`);
+    const copied = Number((copy.prepare('PRAGMA page_count').get() as { page_count: number | bigint }).page_count);
+    if (copied !== pages) throw new Error(`the backup copy has ${copied} pages, the database ${pages}`);
+  } finally {
+    copy.close();
+  }
+}
+
 /** Start sequence of M24: verify applied migrations; when some are pending, back up, then apply them in one transaction. */
 export async function prepareDatabase(db: Db, opts: PrepareOptions): Promise<Result<MigrateOk, MigrateError>> {
   const list = opts.migrations ?? MIGRATIONS;
@@ -91,7 +108,15 @@ export async function prepareDatabase(db: Db, opts: PrepareOptions): Promise<Res
     opts.log?.event('critical', 'm24.migration_failed', { version, error_code: code, message });
     return { ok: false, error: { code, message, version } };
   };
-  const foreign = foreignDatabase(db);
+  let foreign: string | null;
+  try {
+    const quick = db.integrityCheck('quick');
+    if (!quick.ok) return fail('E_DATABASE_CORRUPT', `quick_check failed: ${quick.messages.slice(0, 5).join('; ')}`, null);
+    foreign = foreignDatabase(db);
+  } catch (e) {
+    if (isCorruptionError(e)) return fail('E_DATABASE_CORRUPT', `the database is damaged: ${(e as Error).message}`, null);
+    throw e;
+  }
   if (foreign !== null) return fail('E_FOREIGN_DATABASE', `the database is not this engine's (${foreign}); nothing applied`, null);
   const applied = appliedMigrations(db);
   for (const a of applied) {
@@ -104,6 +129,7 @@ export async function prepareDatabase(db: Db, opts: PrepareOptions): Promise<Res
   if (pending.length === 0) return { ok: true, value: { from, to: from, applied: [] } };
   try {
     await db.backupTo(opts.backupPath);
+    checkBackup(db, opts.backupPath);
   } catch (e) {
     const message = (e as Error).message;
     opts.log?.event('error', 'm24.start_backup_failed', { message });

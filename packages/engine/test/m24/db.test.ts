@@ -19,7 +19,7 @@ function setup(over: { path?: string; withOutbox?: boolean; observed?: boolean }
   const lines: string[] = [];
   const metrics = new MetricsRegistry({ clock, seriesCap: 100, ringBudgetBytes: 0, sink: { append() {} } });
   const log = createLogger({ clock, codes: mergeLogCodes(M27_LOG_CODES, M24_LOG_CODES), runId: 'R', mode: 'paper', sink: { write: (l) => { lines.push(l); return 'written'; } } });
-  const db = openDb({ path, clock, ...(over.observed === false ? {} : {
+  const db = openDb({ create: true, path, clock, ...(over.observed === false ? {} : {
     metrics: { writeLatencyMs: metrics.histogram('db_write_latency_ms', {}), outboxBacklog: metrics.gauge('outbox_backlog', {}) }, log,
   }) });
   if (over.withOutbox !== false) db.withTx((tx) => { for (const stmt of `${OUTBOX_DDL}\nCREATE TABLE state (id INTEGER PRIMARY KEY, v TEXT);`.split(';').map((x) => x.trim()).filter(Boolean)) tx.run(stmt); });
@@ -296,7 +296,7 @@ describe('integrity checks and online backup', () => {
     raw.exec("UPDATE sqlite_schema SET sql = 'CREATE INDEX state_v ON state(id)' WHERE name = 'state_v'");
     raw.close();
     assert.ok(root > 0);
-    const reopened = openDb({ path, clock: fakeClock() });
+    const reopened = openDb({ create: true, path, clock: fakeClock() });
     const r = reopened.integrityCheck('full');
     assert.equal(r.ok, false);
     assert.ok(r.messages.length >= 1 && r.messages[0] !== 'ok');

@@ -41,7 +41,7 @@ async function setup(files: { ceilings?: string | null; config?: string | null }
   if (files.config !== null) writeFileSync(configPath, files.config ?? JSON.stringify({ 'm24.db_path': '/var/lib/bot/bot.db', 'm27.series_cap': 2_000 }));
   const path = join(base, 'bot.db');
   const clock = fakeClock();
-  const db = openDb({ path, clock });
+  const db = openDb({ create: true, path, clock });
   assert.equal((await prepareDatabase(db, { clock, backupPath: `${path}.bak` })).ok, true);
   const lines: string[] = [];
   const log = createLogger({ clock, codes: mergeLogCodes(M27_LOG_CODES, M25_LOG_CODES), runId: 'R', mode: 'paper', sink: { write: (l) => { lines.push(l); return 'written'; } } });
@@ -92,8 +92,9 @@ describe('config bootstrap (B-M25-01 logic 4)', () => {
     rmSync(configPath);
     bootstrapConfig({ ...opts, log: undefined as never, versionInfo: undefined as never });
     db.withTx((tx) => repos.config_version.insert(tx, { configVersion: 'b'.repeat(64), versionNo: 2, json: '{"m24.removed":1}', appliedAt: Date.UTC(2026, 9, 8), appliedBy: '{}', createdAt: Date.UTC(2026, 9, 8) }));
-    const stale = bootstrapConfig(opts);
-    assert.deepEqual(stale.ok ? null : [stale.error.code, stale.error.reason, stale.error.errors], ['E_CONFIG_STORED_INVALID', 'config_invalid', [{ key: 'm24.removed', code: 'E_UNKNOWN_KEY' }]]);
+    const stale = bootstrapConfig(opts);                                      // ruling 3: exits_only, never refused
+    assert.deepEqual(stale.ok ? [stale.value.exitsOnly, stale.value.versionNo, stale.value.current()['m27.series_cap']] : stale.error, [true, 1, 2_000]);
+    assert.deepEqual(JSON.parse(lines.findLast((l) => l.includes('m25.stored_invalid')) as string).keys, 'm24.removed:E_UNKNOWN_KEY');
     db.close();
   });
 

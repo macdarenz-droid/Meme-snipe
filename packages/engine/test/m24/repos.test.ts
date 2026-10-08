@@ -17,7 +17,7 @@ const repos = createRepos();
 const MS = Date.UTC(2026, 9, 7);
 
 async function migrated(path = join(dir, `r${n++}.db`)): Promise<Db> {
-  const db = openDb({ path, clock: fakeClock() });
+  const db = openDb({ create: true, path, clock: fakeClock() });
   assert.equal((await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` })).ok, true);
   return db;
 }

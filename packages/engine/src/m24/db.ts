@@ -19,7 +19,8 @@
 // comments or empty statements) is refused before it runs, and every statement checks that the transaction is still
 // open before and after it runs, so nothing inside `withTx` can run outside the transaction (for example after a
 // caught RAISE(ROLLBACK)).
-import { chmodSync, existsSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, rmSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { backup, DatabaseSync, type StatementSync } from 'node:sqlite';
 import { canonicalJson, type Clock, type UnixMs } from '@bot/types';
 import type { Logger } from '../m27/log.ts';
@@ -65,6 +66,30 @@ export interface DbOptions {
   /** `db_write_latency_ms` and `outbox_backlog` (B-M27-01 registry handles). */
   metrics?: { writeLatencyMs: HistogramHandle; outboxBacklog: GaugeHandle };
   log?: Logger;
+  /**
+   * A missing database file is created only by an explicit init (Z02 round 2 ruling 2): `create: true` is `botctl init`;
+   * `initMarker` is a first-start marker file kept outside the database directory, removed once the database exists.
+   * Without either, a missing file refuses the start (E_DATABASE_MISSING, critical log).
+   */
+  create?: boolean;
+  initMarker?: string;
+}
+
+export type DbOpenCode = 'E_DATABASE_MISSING' | 'E_DATABASE_EMPTY' | 'E_DATABASE_CORRUPT' | 'E_WRITER_LOCKED' | 'E_NOT_WAL';
+
+/** A start-up refusal of `openDb`; the caller keeps the engine stopped and the critical log raises the alert. */
+export class DbOpenError extends Error {
+  readonly code: DbOpenCode;
+  constructor(code: DbOpenCode, message: string) {
+    super(message);
+    this.name = 'DbOpenError';
+    this.code = code;
+  }
+}
+
+/** SQLite's messages for a damaged file (SQLITE_CORRUPT, SQLITE_NOTADB). */
+export function isCorruptionError(e: unknown): boolean {
+  return /malformed|not a database|corrupt/i.test(e instanceof Error ? e.message : String(e));
 }
 
 /** Outbox table. Part of the first migration (B-M24-02), so the exact text is shared. */
@@ -85,6 +110,7 @@ const BUSY_TIMEOUT_MS = 5_000;
 
 export const M24_LOG_CODES = {
   'm24.outbox_replay': { fields: { rows: 'integer' } },
+  'm24.open_refused': { fields: { error_code: 'string', message: 'string' } },
 } as const;
 
 function isThenable(v: unknown): boolean {
@@ -178,29 +204,52 @@ function takeWriterLock(path: string): () => void {
 
 /** Opens the writer (and the readers for a file database) with the M24 PRAGMAs. */
 export function openDb(opts: DbOptions): Db {
+  const refuse = (code: DbOpenCode, message: string): DbOpenError => {
+    opts.log?.event('critical', 'm24.open_refused', { error_code: code, message });
+    return new DbOpenError(code, `m24: ${message}`);
+  };
   const memory = opts.path === ':memory:';
+  const file = !memory && opts.path !== '';
+  let fromMarker = false;
+  if (file && !existsSync(opts.path)) {
+    if (opts.initMarker !== undefined) {
+      const rel = relative(dirname(resolve(opts.path)), resolve(opts.initMarker));
+      if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) throw new TypeError('m24: the init marker must be outside the database directory');
+      fromMarker = existsSync(opts.initMarker);
+    }
+    if (opts.create !== true && !fromMarker) {
+      throw refuse('E_DATABASE_MISSING', `${opts.path} does not exist; a database is created only by botctl init or a first-start marker`);
+    }
+  }
   // An existing empty file is a lost or truncated database, never a first start: a new database has its WAL header
   // written below before any other step, so it is not empty afterwards (red team C R2-C2: a 0-byte ledger opened as a
   // fresh one and dropped an open position).
-  if (!memory && opts.path !== '' && existsSync(opts.path) && statSync(opts.path).size === 0) {
-    throw new Error(`m24: ${opts.path} exists and is empty; a lost or truncated database is never replaced by a fresh one`);
+  if (file && existsSync(opts.path) && statSync(opts.path).size === 0) {
+    throw refuse('E_DATABASE_EMPTY', `${opts.path} exists and is empty; a lost or truncated database is never replaced by a fresh one`);
   }
-  const release = memory || opts.path === '' ? () => {} : takeWriterLock(opts.path);
-  let writer: DatabaseSync;
+  let release: () => void;
   try {
-    writer = new DatabaseSync(opts.path, { enableForeignKeyConstraints: true, timeout: 0 });
+    release = file ? takeWriterLock(opts.path) : () => {};
   } catch (e) {
+    throw refuse('E_WRITER_LOCKED', (e as Error).message.replace(/^m24: /, ''));
+  }
+  let opened: DatabaseSync | undefined;
+  try {
+    opened = new DatabaseSync(opts.path, { enableForeignKeyConstraints: true, timeout: 0 });
+    const mode = (opened.prepare('PRAGMA journal_mode=WAL').get() as { journal_mode: string }).journal_mode;
+    if (!memory && mode !== 'wal') throw refuse('E_NOT_WAL', `journal_mode is ${mode}, not wal`);  // '' cannot use WAL
+    opened.exec('PRAGMA synchronous=FULL');
+    opened.exec('PRAGMA foreign_keys=ON');
+    opened.prepare('SELECT count(*) AS n FROM sqlite_schema').get();      // reads page 1: a torn header fails here
+  } catch (e) {
+    opened?.close();
     release();
+    if (e instanceof DbOpenError) throw e;
+    if (isCorruptionError(e)) throw refuse('E_DATABASE_CORRUPT', `${opts.path} is damaged: ${(e as Error).message}`);
     throw e;
   }
-  const mode = (writer.prepare('PRAGMA journal_mode=WAL').get() as { journal_mode: string }).journal_mode;
-  if (!memory && mode !== 'wal') {                    // an anonymous temporary database ('') cannot use WAL
-    writer.close();
-    release();
-    throw new Error(`m24: journal_mode is ${mode}, not wal`);
-  }
-  writer.exec('PRAGMA synchronous=FULL');
-  writer.exec('PRAGMA foreign_keys=ON');
+  const writer: DatabaseSync = opened;
+  if (fromMarker) rmSync(opts.initMarker as string, { force: true });      // the database exists now: the marker is spent
   if (!memory) restrictFiles(opts.path);
   const ws = new Statements(writer);
   const readerConns = memory ? [] : Array.from({ length: opts.readers ?? 2 },

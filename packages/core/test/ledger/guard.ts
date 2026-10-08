@@ -26,10 +26,6 @@ const sources = (root: string): string[] => {
     for (const pkg of readdirSync(base)) {
       const src = join(base, pkg, 'src');
       if (!existsSync(src)) continue;
-      // The Blueprint packages (@bot/*) are outside Zeroed's label isolation: B-M24-01 makes @bot/engine's M24 the
-      // owner of its own SQLite file, and tools/policy checks their imports.
-      const manifest = join(base, pkg, 'package.json');
-      if (existsSync(manifest) && String((JSON.parse(readFileSync(manifest, 'utf8')) as { name?: unknown }).name).startsWith('@bot/')) continue;
       for (const f of readdirSync(src, { recursive: true, encoding: 'utf8' })) {
         const full = join(src, f);
         if (SOURCE.test(f) && !f.includes('node_modules') && statSync(full).isFile()) out.push(full);
@@ -47,7 +43,10 @@ const asFile = (p: string): string | null => {
 export const importViolations = (root: string): string[] => {
   const core = join(root, 'packages/core/src');
   const ledgerEntry = join(core, 'ledger/index.ts');
-  const allowed = [join(core, 'ledger') + '/', join(core, 'stats') + '/'];
+  // @bot/engine's M24 owns its own SQLite file (B-M24-01); tools/policy (E_SQLITE_OUTSIDE_M24) keeps node:sqlite inside it
+  // (Z02 round 2 ruling 6). Its files are not scanned and a path that reaches them stops there, like the ledger entry.
+  const m24 = join(root, 'packages/engine/src/m24') + '/';
+  const allowed = [join(core, 'ledger') + '/', join(core, 'stats') + '/', m24];
   const forbidden = (file: string) => file.startsWith(join(core, 'ledger') + '/') && file !== ledgerEntry;
   const resolveSpec = (from: string, spec: string): string | null => {
     if (spec.startsWith('.')) return asFile(resolve(dirname(from), spec));
@@ -66,7 +65,7 @@ export const importViolations = (root: string): string[] => {
       seen.add(file);
       const chain = [...via, relative(root, file)].join(' -> ');
       if (forbidden(file)) { violations.push(`${chain} (outcome store or ledger internal)`); continue; }
-      if (file === ledgerEntry) continue; // the engine-facing entry is checked by its own tests
+      if (file === ledgerEntry || file.startsWith(m24)) continue; // the engine-facing entry is checked by its own tests
       const text = readFileSync(file, 'utf8');
       for (const [pattern, what] of UNTRACEABLE) if (pattern.test(text)) violations.push(`${chain} (${what})`);
       for (const m of text.matchAll(SPEC)) {

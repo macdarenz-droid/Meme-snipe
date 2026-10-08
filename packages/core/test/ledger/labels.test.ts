@@ -121,13 +121,17 @@ describe('labels are out of the engine\'s reach', () => {
     put('packages/core/src/stats/index.ts', "import { x } from '../ledger/scoring/index.ts';\n");
     put('packages/core/src/engine/ok.ts', "import { openLedger } from '@meme-snipe/core/ledger';\nimport { y } from '../units/index.ts';\n");
     put('packages/core/src/units/index.ts', 'export const y = 1;\n');
-    put('packages/engine/package.json', '{ "name": "@bot/engine" }\n');           // a Blueprint package: out of scope
-    put('packages/engine/src/m24/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");
+    put('packages/engine/src/m24/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");    // M24 owns its SQLite file
+    put('packages/engine/src/m25/boot.ts', "import { openDb } from '../m24/db.ts';\n");         // and is reached through it
     expect(importViolations(root)).toEqual([]);
-    put('packages/worker/package.json', '{ "name": "@meme-snipe/worker" }\n');    // a Zeroed package: still checked
-    put('packages/worker/src/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");
-    expect(importViolations(root)).toContain('packages/worker/src/db.ts (imports node:sqlite)');
-    rmSync(join(root, 'packages/worker'), { recursive: true });
+    put('packages/signer/src/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");          // any other package: flagged
+    put('packages/engine/src/m09/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");      // and so is the rest of @bot/engine
+    const sqliteFound = importViolations(root);
+    expect(sqliteFound).toContain('packages/signer/src/db.ts (imports node:sqlite)');
+    expect(sqliteFound).toContain('packages/engine/src/m09/db.ts (imports node:sqlite)');
+    expect(sqliteFound.every((f) => f.startsWith('packages/signer/') || f.startsWith('packages/engine/src/m09/'))).toBe(true);
+    rmSync(join(root, 'packages/signer'), { recursive: true });
+    rmSync(join(root, 'packages/engine/src/m09'), { recursive: true });
 
     const probes: Record<string, string> = {
       'sqlite.ts': "import { DatabaseSync } from 'node:sqlite';",

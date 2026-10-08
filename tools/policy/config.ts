@@ -86,6 +86,13 @@ export const WEB3 = '@solana/web3.js';
 /** Built-ins workspace packages may not import: node:module's createRequire and loader hooks bypass the import check. */
 export const FORBIDDEN_IN_PACKAGES = ['node:module'];
 
+/**
+ * `node:sqlite` is M24's alone (B-M24-01: M24 owns the SQLite file; Z02 round 2 ruling 6): in workspace packages it may
+ * be imported only under these directories (M24's code and its tests).
+ */
+export const SQLITE = 'node:sqlite';
+export const SQLITE_ALLOWED_DIRS = ['packages/engine/src/m24/', 'packages/engine/test/m24/'];
+
 /** Internal package scope: always a workspace link, never fetched from a registry. */
 export const INTERNAL_SCOPE = '@bot/';
 /**

@@ -14,7 +14,7 @@ function at(sorted: number[], q: number): number {
 /** Runs `n` transactions of 10 inserts each against a fresh database at `path`; returns the latency quantiles. */
 export function measureWriteLatency(path: string, n: number): LatencyResult {
   let tick = 0;
-  const db = openDb({ path, clock: { kind: 'sim', nowMs: () => tick++ } });
+  const db = openDb({ create: true, path, clock: { kind: 'sim', nowMs: () => tick++ } });
   db.withTx((tx) => tx.run('CREATE TABLE bench (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, c TEXT NOT NULL)'));
   const samples: number[] = [];
   let id = 0;

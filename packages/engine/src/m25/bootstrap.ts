@@ -5,7 +5,11 @@
 // a changed config file is then ignored and logged. Keys missing from a file or a stored version take their default.
 //
 // A refusal maps to the engine's `start_refused` reason (`ceilings_untrusted`, `ceilings_invalid`, `config_untrusted`,
-// `config_invalid`); an invalid stored version is B-M25-03's case (exits_only with the last valid version).
+// `config_invalid`). A stored version this build rejects never refuses the start (Z02 round 2 ruling 3): the engine
+// runs exits_only on the newest stored version this build accepts (if none, on the newest version with each rejected
+// key at its default), with a critical log. When this build adds keys, the stored version is written again with their
+// defaults as a new config_version row (system actor, versionNo + 1), so config_version always names the values in use
+// (ruling 4).
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { canonicalJson, type Actor, type Clock, type Config, type ConfigFieldSchema, type Result } from '@bot/types';
@@ -27,6 +31,8 @@ export const M25_LOG_CODES = {
   'm25.loaded': { fields: { config_version: 'string', version_no: 'integer' } },
   'm25.config_file_ignored': { fields: { file_sha256: 'string', config_version: 'string' } },
   'm25.start_refused': { fields: { reason: 'string', error_code: 'string', message: 'string' } },
+  'm25.stored_invalid': { fields: { version_no: 'integer', used_version_no: 'integer', keys: 'string' } },
+  'm25.defaults_added': { fields: { config_version: 'string', version_no: 'integer', from_version_no: 'integer', keys: 'string' } },
 } as const;
 
 export type RefusalReason = 'ceilings_untrusted' | 'ceilings_invalid' | 'config_untrusted' | 'config_invalid';
@@ -37,6 +43,8 @@ export interface ConfigService {
   current(): Readonly<Config>;
   ceilings(): Readonly<Ceilings>;
   readonly versionNo: number;
+  /** True when a stored version was rejected by this build: entries are blocked, exits continue (ruling 3). */
+  readonly exitsOnly: boolean;
 }
 
 export interface BootstrapOptions {
@@ -112,17 +120,56 @@ export function bootstrapConfig(opts: BootstrapOptions): Result<ConfigService, S
   const ceilings = parseCeilings(ceilingsText);
   if (!ceilings.ok) return refuse('ceilings_invalid', ceilings.error.code, ceilings.error.message);
 
-  const latest = opts.db.withTx((tx) => opts.repo.find(tx, {}, { orderBy: 'versionNo', desc: true, limit: 1 }))[0];
+  const versions = opts.db.withTx((tx) => opts.repo.find(tx, {}, { orderBy: 'versionNo', desc: true }));
+  const latest = versions[0];
   let active: { configVersion: string; versionNo: number; values: Record<string, unknown> };
+  let exitsOnly = false;
   if (latest !== undefined) {
-    const stored = resolveConfig(JSON.parse(latest.json), fields);
-    if (!stored.ok) return refuse('config_invalid', 'E_CONFIG_STORED_INVALID', `config_version ${latest.versionNo} does not match the schema`, stored.error.errors);
-    active = { configVersion: latest.configVersion, versionNo: latest.versionNo, values: stored.value };
+    const stored = resolveConfig(parseJson(latest.json), fields);
+    if (!stored.ok) {
+      // Ruling 3: never refuse; exits_only on the newest version this build accepts.
+      exitsOnly = true;
+      const valid = versions.slice(1).map((v) => ({ v, r: resolveConfig(parseJson(v.json), fields) })).find((x) => x.r.ok);
+      if (valid !== undefined && valid.r.ok) {
+        active = { configVersion: valid.v.configVersion, versionNo: valid.v.versionNo, values: valid.r.value };
+      } else {
+        const given = parseJson(latest.json);
+        const bad = new Set(stored.error.errors.map((e) => e.key));
+        const kept = typeof given === 'object' && given !== null && !Array.isArray(given)
+          ? Object.fromEntries(Object.entries(given as Record<string, unknown>).filter(([k]) => !bad.has(k) && fields.some((f) => f.key === k)))
+          : {};
+        const fallback = resolveConfig(kept, fields);
+        if (!fallback.ok) return refuse('config_invalid', 'E_CONFIG_STORED_INVALID', `config_version ${latest.versionNo} cannot be repaired with defaults`, fallback.error.errors);
+        active = { configVersion: latest.configVersion, versionNo: latest.versionNo, values: fallback.value };
+      }
+      opts.log?.event('critical', 'm25.stored_invalid', {
+        version_no: latest.versionNo, used_version_no: active.versionNo, keys: stored.error.errors.map((e) => `${e.key}:${e.code}`).join(','),
+      });
+    } else {
+      active = { configVersion: latest.configVersion, versionNo: latest.versionNo, values: stored.value };
+      const json = canonicalJson(stored.value);
+      if (json !== latest.json) {
+        // Ruling 4: this build added keys; store the values in use as a new version.
+        const prior = parseJson(latest.json) as Record<string, unknown>;
+        const added = Object.keys(stored.value).filter((k) => !Object.hasOwn(prior, k)).sort();
+        const configVersion = sha256(json);
+        const existing = versions.find((v) => v.configVersion === configVersion);
+        if (existing !== undefined) {
+          active = { configVersion, versionNo: existing.versionNo, values: stored.value };
+        } else {
+          const now = opts.clock.nowMs();
+          const versionNo = latest.versionNo + 1;
+          opts.db.withTx((tx) => opts.repo.insert(tx, { configVersion, versionNo, json, appliedAt: now, appliedBy: canonicalJson(SYSTEM_ACTOR), createdAt: now }));
+          active = { configVersion, versionNo, values: stored.value };
+        }
+        opts.log?.event('info', 'm25.defaults_added', { config_version: configVersion, version_no: active.versionNo, from_version_no: latest.versionNo, keys: added.join(',') });
+      }
+    }
     const fileText = tryRead(read, configPath);
     if (fileText !== null) {
       const fromFile = resolveConfig(parseJson(fileText), fields);
-      if (!fromFile.ok || sha256(canonicalJson(fromFile.value)) !== latest.configVersion) {
-        opts.log?.event('info', 'm25.config_file_ignored', { file_sha256: sha256(fileText), config_version: latest.configVersion });
+      if (!fromFile.ok || sha256(canonicalJson(fromFile.value)) !== active.configVersion) {
+        opts.log?.event('info', 'm25.config_file_ignored', { file_sha256: sha256(fileText), config_version: active.configVersion });
       }
     }
     opts.log?.event('info', 'm25.loaded', { config_version: active.configVersion, version_no: active.versionNo });
@@ -144,6 +191,6 @@ export function bootstrapConfig(opts: BootstrapOptions): Result<ConfigService, S
   const config = Object.freeze({ ...active.values, version: active.configVersion }) as Config;
   return {
     ok: true,
-    value: { schema: () => schema(), current: () => config, ceilings: () => ceilings.value, versionNo: active.versionNo },
+    value: { schema: () => schema(), current: () => config, ceilings: () => ceilings.value, versionNo: active.versionNo, exitsOnly },
   };
 }

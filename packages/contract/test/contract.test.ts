@@ -69,7 +69,7 @@ describe('ARCH section 19 changes (B-M28-01 logic 2-3)', () => {
       ['VM-01', 'VM-03', 'VM-04', 'VM-05', 'VM-06', 'VM-12', 'VM-13', 'VM-17', 'VM-18', 'VM-19']);
     assert.deepEqual(Object.values(SCHEMA_VERSIONS).filter((v) => v !== 1 && v !== 2), []);
     assert.equal(VM_IDS.at(-1), 'VM-21');
-    const env = { ...happy('VM-01'), vm: 'VM-21' };
+    const env = { ...happy('VM-01'), vm: 'VM-21', schema_version: SCHEMA_VERSIONS['VM-21'] };
     assert.ok(ok(VM01Envelope, env));
     assert.equal(ok(VM01Envelope, { ...env, vm: 'VM-22' }), false);
   });

@@ -8,7 +8,7 @@ import { openDb, OUTBOX_DDL, OutboxConsumer } from '../../src/m24/db.ts';
 const [dbPath, journalPath, totalText] = process.argv.slice(2) as [string, string, string];
 const total = Number(totalText);
 let tick = 0;
-const db = openDb({ path: dbPath, clock: { kind: 'sim', nowMs: () => tick++ } });
+const db = openDb({ create: true, path: dbPath, clock: { kind: 'sim', nowMs: () => tick++ } });
 const exists = db.withTx((tx) => tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name = 'state'")) !== undefined;
 if (!exists) {
   db.withTx((tx) => {

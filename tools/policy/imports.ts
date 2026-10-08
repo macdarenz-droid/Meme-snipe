@@ -35,7 +35,7 @@ import { isBuiltin } from 'node:module';
 import { extname, join, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@typescript-eslint/parser';
-import { DATA_DIRS, FORBIDDEN_IN_PACKAGES, INTERNAL_SCOPE, NO_THIRD_PARTY, SAFETY_IMPORT_CODES, TOOLS_DIR, WEB3, WEB3_BANNED_IN } from './config.ts';
+import { DATA_DIRS, FORBIDDEN_IN_PACKAGES, INTERNAL_SCOPE, NO_THIRD_PARTY, SAFETY_IMPORT_CODES, SQLITE, SQLITE_ALLOWED_DIRS, TOOLS_DIR, WEB3, WEB3_BANNED_IN } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import { DEPENDENCY_FIELDS, PRODUCTION_FIELDS, type Manifest, type PackageJson, type RepoSnapshot } from './repo.ts';
 import { safetyLinesOf, structureScopeOf, type SafetyLines, type Scope } from './scope.ts';
@@ -213,6 +213,9 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
   if (s.startsWith('node:')) {
     if (!isBuiltin(s)) return finding('E_IMPORT_UNKNOWN', where, `"${s}" is not a Node built-in`);
     if (workspace && FORBIDDEN_IN_PACKAGES.includes(s)) return finding('E_IMPORT_FORBIDDEN', where, `"${s}" is not allowed in workspace packages (createRequire and loader hooks bypass this check)`);
+    if (workspace && s === SQLITE && !SQLITE_ALLOWED_DIRS.some((d) => file.startsWith(d))) {
+      return finding('E_SQLITE_OUTSIDE_M24', where, `"${s}" is M24's (B-M24-01); only ${SQLITE_ALLOWED_DIRS.join(' and ')} may import it`);
+    }
     return null;
   }
   if (s === '.' || s === '..' || s.startsWith('./') || s.startsWith('../')) {

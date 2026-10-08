@@ -28,7 +28,7 @@ function fresh(): { db: Db; path: string; lines: string[]; log: ReturnType<typeo
   const lines: string[] = [];
   const clock = fakeClock();
   const log = createLogger({ clock, codes: mergeLogCodes(M27_LOG_CODES, M24_MIGRATION_LOG_CODES), runId: 'R', mode: 'paper', sink: { write: (l) => { lines.push(l); return 'written'; } } });
-  return { db: openDb({ path, clock }), path, lines, log };
+  return { db: openDb({ create: true, path, clock }), path, lines, log };
 }
 
 type Shape = Record<string, { columns: unknown[]; indexes: unknown[] }>;
