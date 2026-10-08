@@ -83,3 +83,12 @@ Rulings 19–23 applied, as the builder reports:
 
 24. **Builder MAJOR, rpc-usage.db not backed up.** Add `/var/lib/zeroed-usage` to zeroed-backup, as a consistent online copy (SQLite backup API or `.backup`, the same way as the other databases), counted in the backup budget. Test: a backup bundle contains rpc-usage.db, and a restore drill restores it.
 25. **Builder MINORs.** No code now; they are card notes. The sentinel user and unit (B-M30-02) must run with group `zeroed-sentinel`. M14 must create the db, -wal and -shm as 0660 under UMask=0077. Both lines go in the PR's DECISIONS row.
+
+### #311 round 2 red team (delta `c173f777..c4d5d6db`): 0 BLOCKER, 0 MAJOR, 2 MINOR
+
+The BLOCKER is closed: 0 of 10 plain-rename races and 0 deletions in 255k atomic-exchange sweeps. The receipts image cannot be filled, grown or escaped, and the receipts bind fails closed without it. The usage folder gives the worker no new group. The mount alerts are right.
+
+### Supervisor rulings (9 Oct 2026, about 1:51 AM)
+
+26. **MINOR 1.** Preallocate the receipts image (`fallocate -l 64M`, or `truncate` followed by `fallocate`) so a full host disk cannot leave it half-written, and count the 64 MiB in the disk budget. Test: the installed image has 64 MiB of allocated blocks.
+27. **MINOR 2.** No change now; it is a card note for B-M30-02 and M14, recorded in the PR's DECISIONS row. The sentinel opens `rpc-usage.db` and its -wal/-shm only after an lstat check (each must be a regular file, never a link), or with O_NOFOLLOW where the driver allows it. A root-owned 3770 folder stays a fallback, to be decided once SQLite's WAL deletion under a sticky folder is checked.
