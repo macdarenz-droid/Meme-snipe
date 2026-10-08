@@ -49,6 +49,8 @@ set -uo pipefail
 ag_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=archive-limits.conf
 . "$ag_here/archive-limits.conf"
+# shellcheck source=release-state.sh
+. "$ag_here/release-state.sh"
 ag_gh=${GH_BIN:-gh}
 ag_repo=${GH_REPO:-${GITHUB_REPOSITORY:-}}
 ag_summary=${GITHUB_STEP_SUMMARY:-/dev/null}
@@ -510,31 +512,39 @@ ag_caches_sealed() {
   [[ -z "$bad" ]] ||
     { ag_refuse "$(grep -c . <<< "$bad") Actions cache entries hold progress or assets unsealed ($(head -3 <<< "$bad" | tr '\n' ' ')); the owner decides whether to delete them or wait for them to expire"; return 2; }
 }
-# ag_marked (OF-5 ruling 1): the store's day releases as "TAG MARKED" lines (MARKED 1 when
-# the release carries its uploaded readback-ok-DAY asset, which publish-day.sh writes, and
-# reads back, only after every other asset was read back; 0 when it does not). Read from
-# the releases list (drafts never count). Fails when the store cannot be read.
-ag_marked() {
-  local rows
-  rows=$(ag_store api --paginate "repos/$DATA_REPO/releases?per_page=100" \
-    --jq '.[] | select(.draft == false) | select(.tag_name | startswith("data-day-")) | .tag_name as $t | "\($t) \([.assets[] | select(.state == "uploaded") | .name] | join(","))"' 2>/dev/null) || return 1
-  awk '$1 ~ /^data-day-[0-9]{4}-[0-9]{2}-[0-9]{2}(-k3)?$/ {
-    d = substr($1, 10, 10); m = 0; n = split($2, a, ",")
-    for (i = 1; i <= n; i++) if (a[i] == "readback-ok-" d) m = 1
-    print $1, m }' <<< "$rows" | LC_ALL=C sort -u
+# ag_day_tags: the store's data-day-D and data-day-D-k3 tags as "TAG DAY" lines. Fails
+# when the store cannot be read.
+ag_day_tags() {
+  local refs
+  refs=$(ag_store api --paginate "repos/$DATA_REPO/git/matching-refs/tags/data-day-" --jq '.[].ref' 2>/dev/null) || return 1
+  sed -n 's#^refs/tags/\(data-day-\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)\(-k3\)\{0,1\}\)$#\1 \2#p' <<< "$refs" | LC_ALL=C sort -u
 }
-# ag_read_done: the days with a data-day-D or data-day-D-k3 release in the store that
-# carries its readback-ok marker ("read done", OF-5 ruling 1), one a line. A day release
-# without the marker (its read-back never passed) stops the queue for review: it is never
-# counted and never read again automatically, so this refuses. Fails when the store cannot
-# be read.
+# ag_marked (OF-5 rulings 1 and 3): each day tag as "TAG STATE", STATE from release_state
+# (release-state.sh, the judgement publish-day.sh --check uses): done (complete, every
+# asset uploaded and named as its SHA256SUMS-D lists, and carrying its read-back
+# readback-ok-D marker), or anything else. Fails when the store cannot be read.
+ag_marked() {
+  local tags tag d st
+  tags=$(ag_day_tags) || return 1
+  while read -r tag d; do
+    [[ -n "$tag" ]] || continue
+    st=$(GH=ag_store release_state "$tag" "$d")
+    [[ "$st" != error* ]] || return 1
+    echo "$tag ${st%%:*}"
+  done <<< "$tags"
+}
+# ag_read_done: the days with a data-day-D or data-day-D-k3 release in the store that is
+# done ("read done", OF-5 rulings 1 and 3), one a line. Any other day release (not
+# complete, or without its readback-ok marker: its read-back never passed) stops the
+# queue for review: it is never counted and never read again automatically, so this
+# refuses. Fails when the store cannot be read.
 ag_read_done() {
   local rows bad
   rows=$(ag_marked) || return 1
-  bad=$(awk '$2 == 0 {print $1}' <<< "$rows")
+  bad=$(awk '$2 != "done" {print $1}' <<< "$rows")
   [[ -z "$bad" ]] ||
-    { ag_refuse "day release(s) $(tr '\n' ' ' <<< "$bad")in the private store carry no readback-ok marker (the read-back never passed); stopped for review, never read again automatically"; return 1; }
-  awk '$2 == 1 {print substr($1, 10, 10)}' <<< "$rows" | LC_ALL=C sort -u
+    { ag_refuse "day release(s) $(tr '\n' ' ' <<< "$bad")in the private store are not complete or carry no readback-ok marker (the read-back never passed); stopped for review, never read again automatically"; return 1; }
+  awk '$2 == "done" {print substr($1, 10, 10)}' <<< "$rows" | LC_ALL=C sort -u
 }
 
 # ag_b10_ok TAG DAY (OF-5 ruling 2): the marked release TAG holds DAY at the B-10
@@ -566,7 +576,7 @@ ag_b10_done() {
   while IFS= read -r d; do
     [[ -n "$d" ]] || continue
     for t in "data-day-$d-k3" "data-day-$d"; do
-      grep -qx "$t 1" <<< "$rows" || continue
+      grep -qx "$t done" <<< "$rows" || continue
       if ag_b10_ok "$t" "$d"; then echo "$d"; break; fi
     done
   done <<< "$days"
