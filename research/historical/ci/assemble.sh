@@ -295,7 +295,7 @@ store_main() {
   tag="data-$from-$to"
   ! gh release view "$tag" --repo "$DATA_REPO" >/dev/null 2>&1 ||
     die "release $tag already exists; a published dataset is never replaced"
-  first=$(day_list "$from" "$to" | head -1)
+  first=$(date -u -d "$from - $LEAD_IN_DAYS days" +%F)
   gh release create "$tag" --repo "$DATA_REPO" --prerelease --title "Historical dataset $from to $to" \
     --notes "Built by data-scan.yml at ${GITHUB_SHA:-unknown} from releases data-day-$first onwards (14 lead-in days) to the day before $to. Strict QA and decoder parity passed (qa-report.md, parity.json). Format: docs/research/historical-data.md."
   (cd "$work/release" && gh release upload "$tag" --repo "$DATA_REPO" -- *)
