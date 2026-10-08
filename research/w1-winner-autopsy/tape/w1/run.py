@@ -1,19 +1,21 @@
 """W1 entry point.
 
-  python3 -m w1.run ledger  --work DIR (--units U [U ...] | --cache C --days D [D ...])
-  python3 -m w1.run counts  --work DIR [--days D ...]                       development: counts and shapes only
-  python3 -m w1.run gate    --work DIR --days 2026-09-10 2026-09-11 --score  §6 gate W1-0 (reads P&L)
-  python3 -m w1.run discovery  --work DIR --rank 2026-09-10 --test 2026-09-11 --score
-  python3 -m w1.run validation --work DIR --rank 2026-09-07 --test 2026-09-08 2026-09-09 --score
-  python3 -m w1.run extract   --work DIR --rank 2026-09-07 --test 2026-09-08 2026-09-09 --days 2026-09-07 ... --score
-  python3 -m w1.run ruletest  --work DIR --rule RULE.json --days <untouched days> --score
+  python3 -m w1.run ledger  --work DIR (--units U [U ...] | --cache C --days D [D ...]) [--dev-allow-gaps]
+  python3 -m w1.run counts  --work DIR [--days D ...]          development: counts and shapes only
+  python3 -m w1.run gate       --work A_WORK --score            §6 gate W1-0 on 09-10 and 09-11
+  python3 -m w1.run discovery  --work A_WORK --score            §7 rank 09-10, test 09-11
+  python3 -m w1.run validation --work B_WORK --score            §7 rank 09-07, test 09-08 and 09-09
+  python3 -m w1.run extract    --work AB_WORK --score           §8 (ledger 09-07..09-11, after validation passed there)
+  python3 -m w1.run ruletest   --work C_WORK --rule-work AB_WORK --score   §8 rule test on Step C
+
+Days and rank/test choices are registered in guard.ROLES; --rank/--test/--days may be omitted, never changed.
+Every scored stage calls guard.verify first (plan, units, code and input hashes, every day present).
 
 `ledger` reads the tape and writes one ledger file per day (WORK/ledger-DAY.pkl) plus WORK/manifest.json (input and
 code sha256, seeds). Every stage that reads traders' P&L or a test statistic refuses to run without --score; the
 primary is scored only after Step A is complete and a reviewer has passed this code. Summaries name no address."""
 import argparse
 import glob
-import hashlib
 import json
 import os
 import pickle
@@ -21,7 +23,7 @@ import sys
 
 import numpy as np
 
-from . import classes, clusters, load, persist, positions, replay, rules
+from . import classes, clusters, guard, load, persist, positions, replay, rules
 from .ledger import Ledger
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,40 +55,73 @@ def _vocab(work):
         return pickle.load(f)
 
 
+def _manifest(work):
+    p = os.path.join(work, "manifest.json")
+    if not os.path.exists(p):
+        guard.refuse(f"no manifest in {work}")
+    with open(p) as f:
+        return json.load(f)
+
+
+def _write_manifest(work, m):
+    with open(os.path.join(work, "manifest.json"), "w") as f:
+        json.dump(m, f, indent=1, default=str)
+
+
 def cmd_ledger(a):
     units = load.parse_units(a.units) if a.units else load.find_units(a.cache, a.days)
     if not units:
         sys.exit("no units")
+    if not a.dev_allow_gaps:
+        # a day with a frozen plan must be read exactly as planned
+        for day in sorted({u.day for u in units}):
+            if day in guard.PLANS:
+                want = guard.plan_units(day)
+                got = [f"{u.day}/{u.lo}-{u.hi}" for u in units if u.day == day]
+                if sorted(got) != sorted(want):
+                    guard.refuse(f"{day}: units differ from the frozen plan ({len(got)} given, {len(want)} planned)")
     os.makedirs(a.work, exist_ok=True)
     vocab = load.Vocab()
     led = Ledger(vocab)
-    manifest = {"units": [f"{u.day}/{u.lo}-{u.hi}" for u in units], "inputs": load.input_hashes(units),
-                "code": code_hashes(), "seed": persist.SEED, "bootstrap": persist.B, "days": {}}
+    led.allow_gaps = bool(a.dev_allow_gaps)
+    manifest = {"units": [f"{u.day}/{u.lo}-{u.hi}" for u in units],
+                "unit_paths": {f"{u.day}/{u.lo}-{u.hi}": os.path.abspath(u.path) for u in units},
+                "input_paths": load.input_paths(units), "inputs": load.input_hashes(units),
+                "code": code_hashes(), "seed": persist.SEED, "bootstrap": persist.B, "days": {}, "ledger_sha": {},
+                "allow_gaps": bool(a.dev_allow_gaps)}
+    excluded = {}
+
+    def close_day():
+        d = led.finish_day()
+        f = os.path.join(a.work, f"ledger-{d['day']}.pkl")
+        _save(f, d)
+        manifest["ledger_sha"][d["day"]] = load.file_sha256(f)
+        manifest["days"][d["day"]] = _day_counts(d)
+        for k, v in d["excluded"].items():
+            excluded.setdefault(k, set()).update(v.tolist())
+
     cur = None
     for u in units:
         if cur is not None and u.day != cur:
-            d = led.finish_day()
-            _save(os.path.join(a.work, f"ledger-{d['day']}.pkl"), d)
-            manifest["days"][d["day"]] = _day_counts(d)
+            close_day()
         cur = u.day
         led.process_unit(u)
         print(f"unit {u.day} {u.lo}-{u.hi} done", file=sys.stderr)
-    d = led.finish_day()
-    _save(os.path.join(a.work, f"ledger-{d['day']}.pkl"), d)
-    manifest["days"][d["day"]] = _day_counts(d)
+    close_day()
     manifest["stats"] = {k: (v if k != "gaps" else [list(g) for g in v]) for k, v in led.stats.items()}
-    manifest["excluded_by_type"] = {k: int(len(v)) for k, v in d["excluded"].items()}
+    manifest["excluded_by_type"] = {k: len(v) for k, v in excluded.items()}   # over all days
     _save(os.path.join(a.work, "vocab.pkl"), vocab)
-    with open(os.path.join(a.work, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=1, default=str)
+    _write_manifest(a.work, manifest)
     print(json.dumps(manifest["days"], indent=1, default=str))
 
 
 def _day_counts(d):
     r = d["rows"]
-    return {"lo": int(d["lo"]), "hi": int(d["hi"]), "gaps": int(d["gaps"]), "owner_mint_rows": int(len(r)),
-            "dirty_rows": int(r["dirty"].sum()), "unresolved_rows": int(r["unresolved"].sum()),
+    return {"lo": int(d["lo"]), "hi": int(d["hi"]), "gaps": int(d["gaps"]), "first_day": bool(d.get("first_day")),
+            "owner_mint_rows": int(len(r)), "dirty_rows": int(r["dirty"].sum()),
+            "dirty_start_only_rows": int(r["dirty_start_only"].sum()), "unresolved_rows": int(r["unresolved"].sum()),
             "partial_rows": int(r["partial"].sum()), "no_state_marks": int(r["no_state"].sum()),
+            "rows_with_signer_method": int((r["nsig"] > 0).sum()),
             "owners": int(len(d["owners"])), "buys": int(len(d["buys"])), "big_buys": int(len(d["big"])),
             "transfers_between_tracked": int(len(d["xfers"])), "w_links": int(len(d["wedges"])),
             "t_links": int(len(d["tedges"])), "cg_events": int(len(d["cg"])),
@@ -110,32 +145,41 @@ def cmd_counts(a):
     print(json.dumps(out, indent=1, default=str))
 
 
-def _need_score(a):
+def _scored(a, role):
+    """--score, registered choices, then guard.verify. Returns (manifest, role spec, ledger days of the role)."""
     if not a.score:
         sys.exit("this stage reads traders' P&L or a test statistic: pass --score (only after Step A is complete "
                  "and a reviewer has passed the code)")
+    spec = guard.check_args(role, a.rank, a.test, a.days)
+    m = _manifest(a.work)
+    guard.verify(a.work, role, m, code_hashes())
+    days = _load_days(a.work, spec["days"])
+    got = sorted(d["day"] for d in days)
+    if got != sorted(spec["days"]):
+        guard.refuse(f"{role} needs every day of {spec['days']}, found {got}")
+    return m, spec, days
 
 
 def cmd_gate(a):
-    _need_score(a)
-    days = _load_days(a.work)
+    m, spec, days = _scored(a, "gate")
     res = []
-    for d in [x for x in days if x["day"] in a.days]:
+    for d in days:
         trader, info = clusters.build(days, d["day"])
         g = persist.gate(d, trader, counts_only=False)
         g["clusters"] = info
         g["hub_effect"] = clusters.hub_effect(days, d["day"])
         res.append(g)
-    print(json.dumps({"days": res, "verdict": persist.gate_verdict(res)}, indent=1, default=str))
+    print(json.dumps({"days": res, "verdict": persist.gate_verdict(res, spec["days"])}, indent=1, default=str))
 
 
-def _persistence(a, with_replay):
-    days = _load_days(a.work)
+def _persistence(a, role, with_replay):
+    m, spec, days = _scored(a, role)
     by = {d["day"]: d for d in days}
-    trader, info = clusters.build(days, a.rank)          # identity as of the ranking day only
-    ranked, rinfo = persist.rank(by[a.rank], trader)     # reads the ranking day only
+    rank_day, test_days = spec["rank"], spec["test"]
+    trader, info = clusters.build(days, rank_day)         # identity as of the ranking day only
+    ranked, rinfo = persist.rank(by[rank_day], trader)    # reads the ranking day only
     tests, reports = [], {}
-    for t in a.test:                                      # outcome stage
+    for t in test_days:                                    # outcome stage
         p, rep = persist.test_day_returns(by[t], trader, ranked)
         tests.append(p)
         reports[t] = rep
@@ -143,50 +187,52 @@ def _persistence(a, with_replay):
     tp = pd.concat(tests, ignore_index=True)
     gr = persist.groups(tp)
     boot = persist.bootstrap(gr)
-    out = {"rank_day": a.rank, "test_days": a.test, "clusters": info, "ranking": rinfo, "decile_report": reports}
+    out = {"rank_day": rank_day, "test_days": test_days, "clusters": info, "ranking": rinfo,
+           "decile_report": reports, "top_decile_by_cash_method": persist.top_decile_means(tp)}
     if not with_replay:
         out["discovery"] = persist.discovery_verdict(gr, boot)
-        return out, tp, ranked
+        return out, tp, ranked, m
     top = tp[tp["decile"] == 10]
-    units = load.find_units(a.cache, a.test) if a.cache else load.parse_units(a.units)
+    units = guard.ledger_units(m, test_days)               # the ledger's own units, never the cache
     rp = replay.replay_trades(top[["mint", "entry_slot", "exit_slot", "open_at_end", "day_hi"]], units, _vocab(a.work))
     rm = replay.replay_mean(rp)
     out["replay"] = {"trades": int(len(rp)), "replayed": int(np.isfinite(rp["ret_replay"]).sum()),
-                     "not_replayed": {k: int(v) for k, v in rp["replay_reason"].value_counts().items() if k}}
+                     "unquotable_share": replay.unquotable_share(rp),
+                     "reasons": {k: int(v) for k, v in rp["replay_reason"].value_counts().items() if k}}
     out["validation"] = persist.validation_verdict(gr, boot, rm)
-    return out, tp, ranked
+    return out, tp, ranked, m
 
 
 def cmd_discovery(a):
-    _need_score(a)
-    out, _, _ = _persistence(a, with_replay=False)
+    out, _, _, _ = _persistence(a, "discovery", with_replay=False)
     print(json.dumps(out, indent=1, default=str))
 
 
 def cmd_validation(a):
-    _need_score(a)
-    out, tp, ranked = _persistence(a, with_replay=True)
-    _save(os.path.join(a.work, "validation.pkl"), {"out": out, "test_positions": tp, "ranked": ranked})
+    out, tp, ranked, m = _persistence(a, "validation", with_replay=True)
+    f = os.path.join(a.work, "validation.pkl")
+    _save(f, {"out": out, "test_positions": tp, "ranked": ranked, "ledger_sha": m["ledger_sha"]})
+    m["validation_sha"] = load.file_sha256(f)
+    _write_manifest(a.work, m)
     print(json.dumps(out, indent=1, default=str))
 
 
 def cmd_extract(a):
-    """§8 extraction. Runs only after a validation pass recorded by `validation`."""
-    _need_score(a)
+    """§8 extraction. Runs only after a validation pass recorded (and hashed) by `validation` in the same work."""
+    m, spec, days = _scored(a, "extract")
     import pandas as pd
     with open(os.path.join(a.work, "validation.pkl"), "rb") as f:
         val = pickle.load(f)
     if not val["out"]["validation"]["pass"]:
         sys.exit("§8 runs only after a validation pass")
-    days = _load_days(a.work)
     vocab = _vocab(a.work)
-    trader, _ = clusters.build(days, a.rank)
+    trader, _ = clusters.build(days, spec["rank"])
     tp, ranked = val["test_positions"], val["ranked"]
     mid = tp[tp["decile"].isin([5, 6])]["ret"].mean()
     top = tp[tp["decile"] == 10].groupby("trader")["ret"].mean()
     winners = set(top[top > mid].index)                  # OPEN_QUESTIONS Q17
-    ent, holds = [], []
-    for d in [x for x in days if x["day"] in a.days]:
+    ent = []
+    for d in days:
         b = d["buys"]
         b = b[b["opening"]].copy()
         b["trader"] = clusters.assign(b["owner"].to_numpy(), trader)
@@ -199,49 +245,71 @@ def cmd_extract(a):
     w = ent[ent["trader"].isin(winners)]
     ctl = rules.matched_sample(w, ent[~ent["trader"].isin(winners)])
     allm = set(w["mint"].astype(int)) | set(ctl["mint"].astype(int))
-    units = load.find_units(a.cache, a.days)
-    led_info = _ledger_info(units, vocab)
-    excl = _excluder(days)
-    tapes = rules.tapes_for(units, vocab, allm, led_info, excl)
-    wX = rules.entry_features(w.reset_index(drop=True), tapes, led_info)
-    cX = rules.entry_features(ctl, tapes, led_info)
+    units = guard.ledger_units(m, spec["days"])
+    led = _event_ledger(units, vocab)
+    info = _info(led)
+    tapes = rules.tapes_for(units, vocab, allm, info, _excluder(led))
+    wX = rules.entry_features(w.reset_index(drop=True), tapes, info)
+    cX = rules.entry_features(ctl, tapes, info)
     rule = rules.extract(wX.to_numpy(), w["hold"].to_numpy(), cX.to_numpy())
     rule["winners"] = len(winners)
     rule["winner_entries"] = int(len(w))
     rule["matched_entries"] = int(len(ctl))
-    with open(os.path.join(a.work, "rule.json"), "w") as f:
+    rf = os.path.join(a.work, "rule.json")
+    with open(rf, "w") as f:
         json.dump(rule, f, indent=1, default=str)
+    m["rule_sha"] = load.file_sha256(rf)
+    _write_manifest(a.work, m)
     print(json.dumps({k: v for k, v in rule.items() if k != "tree"}, indent=1, default=str))
 
 
-def _ledger_info(units, vocab):
-    """Create, migration and BOOST facts for the units (the ledger's own event pass, without the P&L)."""
+def _event_ledger(units, vocab, swaps_too=True):
+    """Create, migration, BOOST facts and pools of the units (the ledger's own event pass, without the P&L)."""
     led = Ledger(vocab)
     for u in units:
         led._events(load.events(u))
+        if swaps_too:
+            sw = load.swaps(u, vocab)
+            led.pools |= set(sw.loc[sw["venue"] == 1, "pool"].tolist())
+    return led
+
+
+def _info(led):
     return {"create": led.create, "migr": led.migr, "boost_done": led.boost_done}
 
 
-def _excluder(days):
-    ex = set()
-    for d in days:
-        ex |= set(d["hub_excluded_nodes"].tolist())
-    return lambda o: o in ex
+def _excluder(led):
+    """§8 holder exclusion from the days being read: their pools, curves, BOOST authorities, fixed addresses and
+    off-curve addresses."""
+    cache = {}
+
+    def ex(o):
+        if o not in cache:
+            cache[o] = led._excluded([o])[0] != ""
+        return cache[o]
+    return ex
 
 
 def cmd_ruletest(a):
-    _need_score(a)
+    m, spec, days = _scored(a, "ruletest")
     import pandas as pd
-    with open(a.rule) as f:
+    if not a.rule_work:
+        guard.refuse("ruletest needs --rule-work (the extract work directory)")
+    rm = _manifest(a.rule_work)
+    rf = os.path.join(a.rule_work, "rule.json")
+    if not os.path.exists(rf) or load.file_sha256(rf) != rm.get("rule_sha"):
+        guard.refuse("rule.json is missing or does not match the hash `extract` recorded")
+    with open(rf) as f:
         rule = json.load(f)
     path = [tuple(p) for p in rule["path_idx"]]
     vocab = _vocab(a.work)
-    units = load.find_units(a.cache, a.days)
+    units = guard.ledger_units(m, spec["days"])
     led = Ledger(vocab)
     cands = []
     for u in units:
         sw = load.swaps(u, vocab)
         led._events(load.events(u))
+        led.pools |= set(sw.loc[sw["venue"] == 1, "pool"].tolist())
         s = sw[sw["sol"].astype(bool) & sw["is_buy"].astype(bool) & (sw["pre"] == 0) & (sw["owner"] >= 0)]
         cands.append(pd.DataFrame({"mint": s["mint"], "slot": s["slot"], "bt": s["bt"], "key": s["key"],
                                    "paid": -s["cash"], "day": u.day}))
@@ -249,14 +317,14 @@ def cmd_ruletest(a):
     if len(cands) == 0:
         print(json.dumps({"pass": False, "trades": 0, "reason": "no candidate entries"}))
         return
-    info = {"create": led.create, "migr": led.migr, "boost_done": led.boost_done}
-    tapes = rules.tapes_for(units, vocab, set(cands["mint"].astype(int)), info, _excluder(_load_days(a.work)))
+    info = _info(led)
+    tapes = rules.tapes_for(units, vocab, set(cands["mint"].astype(int)), info, _excluder(led))
     X = rules.entry_features(cands, tapes, info).to_numpy()
     fires = rules.rule_fires(cands, X, path, rule["hold_slots"])
     ctl = rules.control_entries(fires, cands)
     rows = replay.state_rows(units, vocab, set(fires["mint"]) | set(ctl["mint"]))
     trades = rules.rule_test_trades(fires, ctl, rows, rule["hold_slots"])
-    print(json.dumps(rules.rule_test_verdict(trades), indent=1, default=str))
+    print(json.dumps(rules.rule_test_verdict(trades, spec["days"]), indent=1, default=str))
 
 
 def main(argv=None):
@@ -268,7 +336,8 @@ def main(argv=None):
     p.add_argument("--days", nargs="*")
     p.add_argument("--rank")
     p.add_argument("--test", nargs="*")
-    p.add_argument("--rule")
+    p.add_argument("--rule-work")
+    p.add_argument("--dev-allow-gaps", action="store_true", help="development only; scored stages refuse it")
     p.add_argument("--score", action="store_true")
     a = p.parse_args(argv)
     {"ledger": cmd_ledger, "counts": cmd_counts, "gate": cmd_gate, "discovery": cmd_discovery,

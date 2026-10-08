@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -178,6 +179,8 @@ type decodeCounts struct {
 	PumpTruncated int64            `json:"pump_truncated_logs"`
 	Classes       map[string]int64 `json:"err_class"`
 	Transfers     int64            `json:"w_rows"`
+	UnknownIx     map[string]int64 `json:"unknown_ix,omitempty"` // program:discriminator (hex) -> instructions the IDLs do not know
+	UnknownIxTxs  int64            `json:"unknown_ix_txs"`       // transactions with at least one
 	DecodeErrors  int64            `json:"decode_errors"`
 	FirstErrors   []string         `json:"first_errors,omitempty"`
 }
@@ -192,6 +195,13 @@ func (c *decodeCounts) add(o decodeCounts) {
 	c.PumpTruncated += o.PumpTruncated
 	c.Transfers += o.Transfers
 	c.DecodeErrors += o.DecodeErrors
+	c.UnknownIxTxs += o.UnknownIxTxs
+	for k, v := range o.UnknownIx {
+		if c.UnknownIx == nil {
+			c.UnknownIx = map[string]int64{}
+		}
+		c.UnknownIx[k] += v
+	}
 	if c.Classes == nil {
 		c.Classes = map[string]int64{}
 	}
@@ -289,8 +299,24 @@ func blockExtrasOf(slot uint64, result []byte) (*blockExtras, error) {
 		errIx := txErrIx(m.Err)
 		pump := false
 		legs := 0
+		unknown := false
 		for k := range ixs {
 			ixs[k].program = key(int(binary.LittleEndian.Uint32(ixs[k].program[:4])))
+			if p := ixs[k].program; (p == pumpProgram || p == ammProgram) && !bytes.HasPrefix(ixs[k].data, eventIxTag) && lookupIx(p, ixs[k].data) == nil {
+				name := "pump"
+				if p == ammProgram {
+					name = "amm"
+				}
+				d := ixs[k].data
+				if len(d) > 8 {
+					d = d[:8]
+				}
+				if ex.counts.UnknownIx == nil {
+					ex.counts.UnknownIx = map[string]int64{}
+				}
+				ex.counts.UnknownIx[name+":"+hex.EncodeToString(d)]++
+				unknown = true
+			}
 			if ixs[k].program == pumpProgram || ixs[k].program == ammProgram {
 				if isTradeIx(ixs[k].program, ixs[k].data) {
 					legs++
@@ -299,6 +325,9 @@ func blockExtrasOf(slot uint64, result []byte) (*blockExtras, error) {
 					pump = true
 				}
 			}
+		}
+		if unknown {
+			ex.counts.UnknownIxTxs++
 		}
 		truncated := false
 		if m.LogMessages != nil {

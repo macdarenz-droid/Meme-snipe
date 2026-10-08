@@ -53,15 +53,18 @@ def parse_units(paths):
 
 
 def find_units(cache, days):
-    """Every cached unit of the given days."""
+    """Every cached unit of the given days. A requested day with no unit is an error, never skipped."""
     us = []
     for d in days:
         root = os.path.join(cache, d)
-        if not os.path.isdir(root):
-            continue
-        for name in os.listdir(root):
-            if re.fullmatch(r"\d+-\d+", name) and os.path.isdir(os.path.join(root, name, "research")):
-                us.append(os.path.join(root, name, "research"))
+        found = []
+        if os.path.isdir(root):
+            for name in os.listdir(root):
+                if re.fullmatch(r"\d+-\d+", name) and os.path.isdir(os.path.join(root, name, "research")):
+                    found.append(os.path.join(root, name, "research"))
+        if not found:
+            raise ValueError(f"no cached unit for {d} under {cache}")
+        us += found
     return parse_units(us)
 
 
@@ -73,16 +76,23 @@ def file_sha256(path):
     return h.hexdigest()
 
 
-def input_hashes(units, tables=("S_curve", "S_amm", "T", "T_coverage", "W", "E")):
-    """PREREG §9.4: the sha256 of every input file read."""
+TABLES = ("S_curve", "S_amm", "T", "T_coverage", "W", "E")
+
+
+def input_paths(units, tables=TABLES):
     out = {}
     for u in units:
         for t in tables:
             ext = ".jsonl.zst" if t == "E" else ".csv.zst"
             p = os.path.join(u.path, t + ext)
             if os.path.exists(p):
-                out[f"{u.day}/{u.lo}-{u.hi}/{t}{ext}"] = file_sha256(p)
+                out[f"{u.day}/{u.lo}-{u.hi}/{t}{ext}"] = os.path.abspath(p)
     return out
+
+
+def input_hashes(units, tables=TABLES):
+    """PREREG §9.4: the sha256 of every input file read."""
+    return {k: file_sha256(p) for k, p in input_paths(units, tables).items()}
 
 
 class Vocab:

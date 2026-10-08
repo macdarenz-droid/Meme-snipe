@@ -259,8 +259,8 @@ def replay_entry(rows_states, mint, entry_slot, exit_slot):
     se = h.asof(rows_states, [mint], load.make_key([entry_slot], END_OF_SLOT, 255))
     sx = h.asof(rows_states, [mint], load.make_key([exit_slot], END_OF_SLOT, 255))
     tok, _ = venue.buy_exact_in(_tuple(se, 0), REPLAY_SPEND)
-    if tok <= 0:
-        return float("nan")
+    if tok <= 0:   # unquotable: -100% (pessimistic; OPEN_QUESTIONS Q33)
+        return -1.0
     return (venue.sell(_tuple(sx, 0), tok) - REPLAY_SPEND - FIXED_ROUND_TRIP) / REPLAY_SPEND
 
 
@@ -275,22 +275,41 @@ def rule_test_trades(fires, controls, rows_states, hold_slots):
     return pd.DataFrame(out, columns=["arm", "day", "mint", "entry_slot", "ret"])
 
 
-def rule_test_verdict(trades, b=10_000, seed=SEED):
-    """§8 pass: 99.5% lower bound > 0 (bootstrap over trades, OPEN_QUESTIONS Q20), >= 300 trades, positive on each
-    day, and the lift over the control > 0."""
+def pool_bootstrap(trades, b=10_000, seed=SEED):
+    """AMENDMENT_2 Q20: pool-clustered bootstrap stratified by day. In each draw, every day resamples its pools
+    (mints) with replacement, as many as it has; the statistic is the pooled mean of the drawn trades."""
+    rng = np.random.default_rng(seed)
+    strata = []
+    for _, d in trades.groupby("day", sort=True):
+        g = d.groupby("mint")["ret"]
+        strata.append((g.sum().to_numpy(np.float64), g.size().to_numpy(np.float64)))
+    out = np.empty(b)
+    for i in range(b):
+        s_, n_ = 0.0, 0.0
+        for sums, cnts in strata:
+            k = rng.integers(0, len(sums), len(sums))
+            s_ += sums[k].sum()
+            n_ += cnts[k].sum()
+        out[i] = s_ / n_ if n_ else np.nan
+    return out
+
+
+def rule_test_verdict(trades, required_days, b=10_000, seed=SEED):
+    """§8 pass: 99.5% lower bound > 0 (pool-clustered bootstrap stratified by day, AMENDMENT_2 Q20), >= 300 trades,
+    positive on each day, and the lift over the control > 0. Every required day must have rule trades."""
     r = trades[(trades["arm"] == "rule") & np.isfinite(trades["ret"])]
     c = trades[(trades["arm"] == "control") & np.isfinite(trades["ret"])]
+    missing = sorted(set(required_days) - set(r["day"]))
     x = r["ret"].to_numpy()
-    if len(x) == 0:
-        return {"pass": False, "trades": 0}
-    rng = np.random.default_rng(seed)
-    boots = np.array([x[rng.integers(0, len(x), len(x))].mean() for _ in range(b)])
-    lo = float(np.percentile(boots, 0.25))
+    if len(x) == 0 or missing:
+        return {"pass": False, "trades": int(len(x)), "days_without_trades": missing}
+    lo = float(np.nanpercentile(pool_bootstrap(r, b, seed), 0.25))
     per_day = r.groupby("day")["ret"].mean()
     liftc = float(x.mean() - c["ret"].mean()) if len(c) else float("nan")
     ok = lo > 0 and len(x) >= 300 and bool((per_day > 0).all()) and liftc > 0
     return {"pass": bool(ok), "trades": int(len(x)), "mean": float(x.mean()), "lower99_5": lo,
-            "per_day": {k: float(v) for k, v in per_day.items()}, "lift_over_control": liftc}
+            "per_day": {k: float(v) for k, v in per_day.items()}, "lift_over_control": liftc,
+            "unquotable_share": float((x == -1.0).mean()), "days_without_trades": []}
 
 
 def rule_fires(cands, X, path_idx, hold_slots):

@@ -3,7 +3,8 @@ venue states after the trades it scores, and nothing in ranking or features call
 
 Entry: buy REPLAY_SPEND (fees included) at the venue state at the end of slot (first buy + 23). Exit: sell every token
 at the state at the end of slot (exit + 23); a position the trader still held at day end exits at the day-end state
-with no delay (OPEN_QUESTIONS Q16). Return = (proceeds - spend - expected fixed costs) / spend."""
+with no delay (OPEN_QUESTIONS Q16). Return = (proceeds - spend - expected fixed costs) / spend. A trade with no entry
+quote counts as -100% and its share is reported (OPEN_QUESTIONS Q33)."""
 import numpy as np
 import pandas as pd
 
@@ -12,6 +13,8 @@ from .costs import FIXED_ROUND_TRIP, REPLAY_DELAY_SLOTS, REPLAY_SPEND
 from .ledger import States
 
 END_OF_SLOT = (1 << 16) - 1
+UNQUOTABLE = "unquotable (counted as -100%)"
+UNQUOTABLE_RET = -1.0
 
 
 def _tuple(st, i):
@@ -52,9 +55,9 @@ def replay_trades(trades, units, vocab):
             continue
         a = _tuple(se, i)
         tok, _ = venue.buy_exact_in(a, REPLAY_SPEND)
-        if tok <= 0:
-            rets.append(np.nan)
-            reasons.append("no entry quote")
+        if tok <= 0:   # review item 5: an unquotable trade counts as -100% (pessimistic), never dropped
+            rets.append(UNQUOTABLE_RET)
+            reasons.append(UNQUOTABLE)
             continue
         proceeds = venue.sell(_tuple(sx, i), tok)
         rets.append((proceeds - REPLAY_SPEND - FIXED_ROUND_TRIP) / REPLAY_SPEND)
@@ -62,6 +65,11 @@ def replay_trades(trades, units, vocab):
     trades["ret_replay"] = rets
     trades["replay_reason"] = reasons
     return trades
+
+
+def unquotable_share(trades):
+    n = int((trades["replay_reason"] != "no buy on the test day").sum())
+    return float((trades["replay_reason"] == UNQUOTABLE).sum() / n) if n else None
 
 
 def replay_mean(trades):

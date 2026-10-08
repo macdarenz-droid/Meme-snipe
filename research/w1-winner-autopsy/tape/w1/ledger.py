@@ -220,7 +220,7 @@ class Ledger:
         self.partial |= partial
         self._events(ev)
         if len(sw) == 0:
-            sw = pd.DataFrame(columns=["key", "txk", "slot", "bt", "owner", "signer", "mint", "venue", "pool",
+            sw = pd.DataFrame(columns=["key", "txk", "slot", "bt", "owner", "acct", "signer", "mint", "venue", "pool",
                                        "canonical", "sol", "is_buy", "tokens", "cash", "tx_fee", "tx_fee_na", "jito",
                                        "pre", "post", "spre", "spost", "protocol", "boost", "s1", "s2", "s3", "s4",
                                        "bps", "n_tx", "overflow", "pre_na"])

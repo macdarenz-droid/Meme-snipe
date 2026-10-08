@@ -173,3 +173,13 @@ func TestBoostSwapsFlaggedProtocol(t *testing.T) {
 		t.Fatal("an ordinary swap is flagged")
 	}
 }
+
+// An instruction the IDLs do not know is not looked up as known (the unknown_ix counter).
+func TestUnknownDiscriminator(t *testing.T) {
+	if lookupIx(pumpProgram, []byte{1, 2, 3, 4, 5, 6, 7, 8}) != nil {
+		t.Fatal("an unknown discriminator resolved")
+	}
+	if ix := lookupIx(pumpProgram, []byte{102, 6, 61, 18, 1, 218, 235, 234}); ix == nil || ix.name != "buy" {
+		t.Fatal("buy did not resolve")
+	}
+}

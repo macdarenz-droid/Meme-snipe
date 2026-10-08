@@ -23,7 +23,7 @@ def synth_day(name, n_traders=40, n_pos=25, seed=0, extra=None):
                          "start_mark": 0.0, "end_mark": 0.0, "end_bal": 0, "start_bal": 0, "dirty": False, "nbuy": 1,
                          "nsell": 1, "buykey": make_key(10 + m, 1, 0), "closekey": make_key(20 + m, 1, 0)})
     r = pd.DataFrame(rows)
-    r["cash"] = r["cash"] - r["paid"] * 0  # pnl = cash
+    r["cash_alt"], r["paid_alt"], r["nsig"], r["dirty_start_only"] = r["cash"], r["paid"], 0, False
     buys = pd.DataFrame({"owner": r["owner"], "mint": r["mint"], "slot": 10 + r["mint"] - 1000,
                          "key": r["buykey"], "jito": False, "lag": 3.0})
     d = {"day": name, "hi": 10_000, "rows": r, "xfers": pd.DataFrame(columns=["frm", "to", "mint", "value", "key"]),

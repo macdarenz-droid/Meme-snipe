@@ -24,12 +24,21 @@ def gate(day, trader, counts_only=True):
     n_by_tr = c.groupby("trader").size()
     tr_cls = pd.Series(classes.class_of(n_by_tr.index.to_numpy(), cls), index=n_by_tr.index)
     slow20 = int(((n_by_tr >= RANK_MIN_POS) & (tr_cls == "slow")).sum())
-    out = {"day": day["day"], "positions": int(len(pos)), "counted": int(len(c)),
-           "dirty": int(pos["dirty"].sum()), "traders_with_positions": int(len(n_by_tr)),
+    # AMENDMENT_2 Q14: the same count had positions left out only for an unseen start been counted
+    cs = pos[pos["counted"] | pos["start_only"]]
+    n_cs = cs.groupby("trader").size()
+    cs_cls = pd.Series(classes.class_of(n_cs.index.to_numpy(), cls), index=n_cs.index)
+    slow20_seen = int(((n_cs >= RANK_MIN_POS) & (cs_cls == "slow")).sum())
+    out = {"day": day["day"], "first_day": bool(day.get("first_day", False)), "positions": int(len(pos)),
+           "counted": int(len(c)), "dirty": int(pos["dirty"].sum()), "start_only": int(pos["start_only"].sum()),
+           "traders_with_positions": int(len(n_by_tr)),
            "traders_by_class": {k: int(v) for k, v in tr_cls.value_counts().items()},
-           "slow_traders_20plus": slow20, "kill_threshold": GATE_MIN_SLOW}
+           "slow_traders_20plus": slow20, "slow_traders_20plus_if_starts_seen": slow20_seen,
+           "kill_threshold": GATE_MIN_SLOW,
+           "positions_signer_method": int(c["signer_method"].sum())}
     if counts_only:
         return out
+    out["method_shares"] = method_shares(c)
     tot = c["pnl"].sum()
     out["pnl_sol_by_class"] = {k: float(v) / 1e9 for k, v in c.groupby("cls")["pnl"].sum().items()}
     out["pnl_share_by_class"] = {k: (float(v) / tot if tot else None) for k, v in c.groupby("cls")["pnl"].sum().items()}
@@ -40,10 +49,37 @@ def gate(day, trader, counts_only=True):
     return out
 
 
-def gate_verdict(day_results):
-    """§6 kill: fewer than 200 slow traders with 20+ positions on a Step A day (any day; OPEN_QUESTIONS Q14)."""
+def gate_verdict(day_results, required_days=None):
+    """§6 kill: fewer than 200 slow traders with 20+ positions on either Step A day (AMENDMENT_2 Q14). A day below
+    only because positions carried in from before the tape have no seen start, on the tape's first day, is reported
+    as "untestable on the tape's first day", not as evidence about traders. Every required day must be present."""
+    got = [r["day"] for r in day_results]
+    if required_days is not None and sorted(got) != sorted(required_days):
+        raise ValueError(f"gate needs exactly the days {required_days}, got {got}")
     low = [r["day"] for r in day_results if r["slow_traders_20plus"] < GATE_MIN_SLOW]
-    return {"kill": bool(low), "days_below": low}
+    untestable = [r["day"] for r in day_results if r["slow_traders_20plus"] < GATE_MIN_SLOW and r.get("first_day")
+                  and r.get("slow_traders_20plus_if_starts_seen", 0) >= GATE_MIN_SLOW]
+    evidence = [d for d in low if d not in untestable]
+    verdict = "kill" if evidence else ("untestable on the tape's first day" if untestable else "pass")
+    return {"kill": bool(evidence), "verdict": verdict, "days_below": low, "untestable_first_day": untestable}
+
+
+def method_shares(counted):
+    """AMENDMENT_2 Q2: share of counted positions and of P&L (absolute) under each cash method."""
+    sig = counted["signer_method"].to_numpy(bool)
+    tot = counted["pnl"].abs().sum()
+    return {"positions_signer_method": float(sig.mean()) if len(sig) else None,
+            "positions_venue_method": float((~sig).mean()) if len(sig) else None,
+            "abs_pnl_signer_method": float(counted.loc[sig, "pnl"].abs().sum() / tot) if tot else None,
+            "abs_pnl_venue_method": float(counted.loc[~sig, "pnl"].abs().sum() / tot) if tot else None}
+
+
+def top_decile_means(test_pos):
+    """AMENDMENT_2 Q2: the top decile's mean return under both cash methods."""
+    t = test_pos[test_pos["decile"] == 10]
+    return {"signer_where_owned": float(t["ret"].mean()) if len(t) else None,
+            "venue_method": float(t["ret_alt"].mean()) if len(t) else None,
+            "method_shares": method_shares(t)}
 
 
 # ---------------------------------------------------------------- §7 ranking (ranking day only)

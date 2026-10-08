@@ -46,7 +46,7 @@ class Unit:
 
     def curve(self, slot, tx, ev, owner, mint, is_buy, sol, tokens, vsr, vtr, rsr, rtr, pre, post, signer=None,
               tx_fee=5000, jito=0, fee=0, creator_fee=0, cashback=0, bps=(95, 30, 0), quote=SYSTEM_PROGRAM,
-              spre=0, spost=0, protocol=0):
+              spre=0, spost=0, protocol=0, acct=""):
         self.c.append({"slot": slot, "block_time": self.bt(slot), "tx_idx": tx, "ev_idx": ev,
                        "signer": signer or owner, "tx_fee": tx_fee, "jito_tip": jito, "mint": mint,
                        "is_buy": int(is_buy), "sol_amount": sol, "token_amount": tokens, "user": signer or owner,
@@ -54,12 +54,13 @@ class Unit:
                        "real_token_reserves": rtr, "fee_basis_points": bps[0], "fee": fee,
                        "creator_fee_basis_points": bps[1], "creator_fee": creator_fee,
                        "cashback_fee_basis_points": bps[2], "cashback": cashback, "quote_mint": quote,
-                       "ix_name": "buy" if is_buy else "sell", "user_token_owner": owner, "owner_token_pre": pre,
+                       "ix_name": "buy" if is_buy else "sell", "user_token_account": acct, "user_token_owner": owner, "owner_token_pre": pre,
                        "owner_token_post": post, "signer_sol_pre": spre, "signer_sol_post": spost,
                        "protocol": protocol})
 
     def amm(self, slot, tx, ev, owner, mint, pool, side, base, user_quote, pre_base, pre_quote, virtual, pre, post,
-            signer=None, tx_fee=5000, jito=0, canonical=1, lp_adj=None, bps=(20, 5, 5, 0), quote=WSOL):
+            signer=None, tx_fee=5000, jito=0, canonical=1, lp_adj=None, bps=(20, 5, 5, 0), quote=WSOL, acct="",
+            spre=0, spost=0):
         lp_adj = user_quote if lp_adj is None else lp_adj
         self.a.append({"slot": slot, "block_time": self.bt(slot), "tx_idx": tx, "ev_idx": ev, "signer": signer or owner,
                        "tx_fee": tx_fee, "jito_tip": jito, "pool": pool, "base_mint": mint, "quote_mint": quote,
@@ -69,13 +70,14 @@ class Unit:
                        "coin_creator_fee_basis_points": bps[2], "cashback_fee_basis_points": bps[3],
                        "quote_amount_lp_adjusted": lp_adj, "user_quote_amount": user_quote,
                        "virtual_quote_reserves": virtual, "ix_name": "buy" if side == "buy" else "",
-                       "user_token_owner": owner, "owner_token_pre": pre, "owner_token_post": post,
-                       "signer_sol_pre": 0, "signer_sol_post": 0, "canonical": canonical, "protocol": 0})
+                       "user_token_account": acct, "user_token_owner": owner, "owner_token_pre": pre,
+                       "owner_token_post": post, "signer_sol_pre": spre, "signer_sol_post": spost,
+                       "canonical": canonical, "protocol": 0})
 
-    def transfer(self, slot, tx, mint, frm, to, amount, kind="transfer"):
+    def transfer(self, slot, tx, mint, frm, to, amount, kind="transfer", facct="", tacct=""):
         self.t.append({"slot": slot, "block_time": self.bt(slot), "tx_idx": tx, "outer_ix": 0, "inner_ix": "",
                        "mint": mint, "kind": kind, "from_owner": frm, "to_owner": to, "amount": amount,
-                       "from_account": "", "to_account": ""})
+                       "from_account": facct, "to_account": tacct})
 
     def sol(self, slot, frm, to, lamports=10**8):
         self.w.append({"slot": slot, "block_time": self.bt(slot), "tx_idx": 0, "outer_ix": 0, "inner_ix": "",

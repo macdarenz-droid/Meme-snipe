@@ -64,7 +64,8 @@ def signer_cash(d_signer, venue_sum, tx_fee, jito, k_open, k_close, gross):
 
     Rent is identified, never assumed: an opening is charged the smaller candidate rent only when the SOL change
     beyond tx_fee + tip is at least that large (so rent is never credited beyond what was spent); a closing is credited
-    the candidate nearest to the refund seen, only when a refund of at least half the smaller rent is seen. cash = SOL
+    the candidate nearest to the refund seen when a refund of at least half the smaller rent is seen, else the largest
+    candidate is assumed returned (a refund masked by app fees; conservative). cash = SOL
     change + rent created - rent returned. Not accepted (venue method used) when the implied app fee is negative or
     above the cap."""
     d, vs, tf, jt = (np.asarray(x, np.float64) for x in (d_signer, venue_sum, tx_fee, jito))
@@ -77,7 +78,8 @@ def signer_cash(d_signer, venue_sum, tx_fee, jito, k_open, k_close, gross):
     per = np.where(kc > 0, v_c / np.maximum(kc, 1), 0.0)
     cand = np.array(RENT_CANDIDATES, np.float64)
     nearest = cand[np.argmin(np.abs(per[:, None] - cand[None, :]), axis=1)] if len(per) else per
-    returned = np.where((kc > 0) & (v_c >= kc * small / 2), kc * nearest, 0.0)
+    # a refund hidden under app fees cannot be seen: the largest candidate is assumed returned (conservative)
+    returned = np.where(kc > 0, np.where(v_c >= kc * small / 2, kc * nearest, kc * float(max(RENT_CANDIDATES))), 0.0)
     cash = d + created - returned
     app = vs - tf - jt - cash
     accepted = (app >= -1) & (app <= APP_FEE_CAP_SHARE * gr + APP_FEE_CAP_FIXED)
