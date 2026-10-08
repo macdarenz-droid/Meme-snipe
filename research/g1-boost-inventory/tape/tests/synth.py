@@ -35,7 +35,7 @@ class Synth:
         vs, vt, rs, rt = self.state[mint]
         if buy:
             tokens = min(sol * vt // (vs + sol), rt)
-            sol = tokens * vs // (vt - tokens) + 1 if tokens < rt else sol
+            sol = tokens * vs // (vt - tokens) + 1
             vs, vt, rs, rt = vs + sol, vt - tokens, rs + sol, rt - tokens
         else:
             sol = tokens * vs // (vt + tokens)
