@@ -159,29 +159,36 @@ $ag_permissions_py" "$1"
 ag_wf_marks='scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-|archive-check\.sh|archive-guard\.sh'
 # ag_calls_py: python. As a script it reads a shell file on stdin (continued lines
 # joined) and prints the first zeroed-scan, finalize or QA call whose output is not kept
-# private: stdout to a file ("$...") with stderr to a file or 2>&1, or captured by
-# $( ... 2>&1 ) / $( ... 2>"$..." ). No subcommand may print to the log (OF-2 round 4,
-# ruling 36: the allow-list is empty, fail closed).
+# private: stdout to "$qlog/", "$slog/" or "$tlog/" with stderr there too or 2>&1, or
+# captured by $( ... 2>&1 ) / $( ... 2>"$qlog/..." ). No subcommand may print to the log
+# (OF-2 round 4, ruling 36: the allow-list is empty, fail closed). Round 7, ruling 53:
+# those log directories are assigned paths under $out or $RUNNER_TEMP, and a scanner
+# binary held in a variable or looked up (command -v, which) is refused.
 ag_calls_py='
 import re, sys
 CALL = re.compile(r"(?:^|[\s;&(!`/\x22\x27]|-c\s)(zeroed-scan[\x22\x27]?\s+[a-z]|node\s[^#]*qa/(?:check\.mjs|parity\.ts|volume\.ts))")
-PUBLIC = re.compile(r"GITHUB_STEP_SUMMARY|GITHUB_OUTPUT|GITHUB_ENV|/dev/std|/dev/fd|/proc/self/fd")
-F = r"\"\$[^\"]+\""
+# round 7, ruling 53: the only redirect targets are the private log directories
+F = r"\x22\$(?:qlog|slog|tlog)/[^\x22$]+\x22"
 OK = [re.compile(r"^[^|]*?>>?\s*" + F + r"\s+2>&1(?=\s|$|\)|;|&|\|)"),
       re.compile(r"^[^|]*?>>?\s*" + F + r"\s+2>>?\s*" + F),
       re.compile(r"^[^|]*?2>>?\s*" + F + r"\s+>>?\s*" + F)]
 CAP = re.compile(r"^[^)|]*2>(?:&1|>?\s*" + F + r")[^)|]*\)")
+# each log directory is assigned a path under $out or $RUNNER_TEMP
+ASSIGN = re.compile(r"(?:^|[\s;])(?:local\s+)?(qlog|slog|tlog)=(\S+)")
+UNDER = re.compile(r"^\x22(?:\$out|\$RUNNER_TEMP|\$\{RUNNER_TEMP:\?\})/")
+# a scanner binary held in a variable (or looked up) is refused
+VIA = re.compile(r"(?:^|[\s;])(?:local\s+|export\s+)?\w+=[\x22\x27]?[^\s$(#]*zeroed-(?:scan|rpcscan)|command\s+-v\s+zeroed-|which\s+zeroed-|type\s+-p\s+zeroed-")
 def bad_lines(text):
     for n, line in enumerate(text.split("\n"), 1):
         if line.lstrip().startswith("#"): continue
+        for m in ASSIGN.finditer(line):
+            if not UNDER.match(m.group(2)): yield n, "log directory " + m.group(1) + " not under $out or $RUNNER_TEMP: " + line.strip()[:100]
+        if VIA.search(line): yield n, "scanner binary through a variable: " + line.strip()[:100]
         for m in CALL.finditer(line):
             rest = line[m.start(1):]
             if re.search(r"\$\(\s*(?:[\w./-]+\s+)*[\x22\x27]?[\w./$-]*$", line[:m.start(1)]):
-                c = CAP.search(rest)
-                if c and not PUBLIC.search(c.group(0)): continue
-            else:
-                o = next((o.search(rest) for o in OK if o.search(rest)), None)
-                if o and not PUBLIC.search(o.group(0)): continue
+                if CAP.search(rest): continue
+            elif any(o.search(rest) for o in OK): continue
             yield n, line.strip()[:120]
 def join(text): return re.sub(r"\\\n", "", text)
 if __name__ == "__main__" and len(sys.argv) == 1:
@@ -250,8 +257,9 @@ def check_steps(steps, name, j, depth=0):
         if uses.startswith("actions/cache"):
             w = st.get("with") or {}
             key = str(w.get("key", "")) + " " + str(w.get("restore-keys", ""))
-            if re.search(r"data-(scan|rpc)", key) and not re.search(r"data-scan-backoff-|data-rpc-assets-", key):
-                if str(w.get("path", "")).strip() != "${{ runner.temp }}/work/sealed":
+            if re.search(r"data-(scan|rpc)", key) and not re.search(r"data-scan-backoff-", key):
+                want = "${{ runner.temp }}/work/sealed-assets" if "data-rpc-assets" in key else "${{ runner.temp }}/work/sealed"
+                if str(w.get("path", "")).strip() != want:
                     fail(where + " caches archive-derived progress unsealed (path " + str(w.get("path", "")).strip() + ")")
         run = join(str(st.get("run", "")))
         for n, l in bad_lines(run):
@@ -365,6 +373,18 @@ ag_store_ok() {
     { ag_refuse "the storage-stop marker is present in $DATA_REPO (storage projection above 0.5 TB); the owner is asked"; return 2; }
   return 0
 }
+# ag_caches_sealed (round 7, ruling 51): no Actions cache entry of this repository, on any
+# ref, holds archive-derived or Helius progress or assets unsealed (a data-scan-* or
+# data-rpc-* key without the -k<key id>- of cache-crypt.sh; the back-off state aside).
+# Deleting any that remain is the owner's decision. Fails closed when the list cannot be read.
+ag_caches_sealed() {
+  local keys bad
+  keys=$("$ag_gh" api --paginate "repos/$ag_repo/actions/caches?key=data-&per_page=100" --jq '.actions_caches[].key' 2>/dev/null) ||
+    { ag_refuse "the Actions cache list cannot be read (fail closed)"; return 2; }
+  bad=$(grep -E '^data-(scan|rpc)-' <<< "$keys" | grep -vE '^data-scan-backoff-' | grep -vE '^data-(scan|rpc|rpc-assets)-[0-9]{4}-[0-9]{2}-[0-9]{2}-k[0-9a-f]{12}-' || true)
+  [[ -z "$bad" ]] ||
+    { ag_refuse "$(grep -c . <<< "$bad") Actions cache entries hold progress or assets unsealed ($(head -3 <<< "$bad" | tr '\n' ' ')); the owner decides whether to delete them or wait for them to expire"; return 2; }
+}
 # ag_read_done: the days with a data-day-D or data-day-D-k3 tag in the store ("read
 # done", OF-5), one a line. Fails when the store cannot be read.
 ag_read_done() {
@@ -380,37 +400,27 @@ ag_default_branch() {
   [[ "$b" =~ ^[A-Za-z0-9._/-]+$ && "$b" != null ]] || return 1
   echo "$b"
 }
-# ag_gh_ok (round 6, ruling 43): the gh on this runner can filter runs by creation date
-# and by every non-completed status (read from its own help, not a version guess); its
-# version goes to stderr. Fails closed otherwise.
+# ag_runs WORKFLOW (round 7, ruling 49): runs on every branch as TSV "id status
+# conclusion createdAt updatedAt attempt headBranch headSha title" (a missing value is
+# "-": read splits on tabs and would merge empty fields): every run created since the
+# earlier of ARCHIVE_REARM_AT and 35 days ago (GitHub allows a re-run only within 30 days,
+# VERIFY, OLD-FAITHFUL.md §2), read page by page from the runs API with no cap, plus every
+# queued, in-progress, waiting, requested or pending run, each run once. Fails on an API
+# error, or above AG_RUNS_MAX (5,000) runs (fail closed).
 AG_STATUSES="queued in_progress waiting requested pending"
-ag_gh_ok() {
-  local help s
-  echo "run history: $("$ag_gh" --version 2>/dev/null | head -1)" >&2
-  help=$("$ag_gh" run list --help 2>&1) || return 1
-  grep -q -- '--created' <<< "$help" || return 1
-  for s in $AG_STATUSES; do grep -qE "[{|]$s[|}]" <<< "$help" || return 1; done
-}
-# ag_runs WORKFLOW: runs on every branch as TSV "id status conclusion createdAt
-# updatedAt attempt headBranch headSha title" (a missing value is "-": read splits on tabs
-# and would merge empty fields), newest first: those created since the earlier of
-# ARCHIVE_REARM_AT and 35 days ago (round 6, ruling 43: GitHub allows a re-run only within
-# 30 days, VERIFY, OLD-FAITHFUL.md §2), plus every non-completed run listed per status
-# (ruling 42), each run once. Fails on an API error, or when a list reaches its 500 cap
-# (fail closed: no run can hide past the list's end).
+AG_RUNS_MAX=5000
 ag_runs() {
-  local wf=$1 out st n all="" from rearm
+  local wf=$1 out q n all="" from rearm
   rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
   from=$(( $(ag_now) - 35 * 86400 )); (( rearm < from )) && from=$rearm
-  for st in created $AG_STATUSES; do
-    if [[ "$st" == created ]]; then set -- --created ">=$(date -u -d "@$from" +%FT%TZ)"; else set -- --status "$st"; fi
-    out=$("$ag_gh" run list --repo "$ag_repo" --workflow "$wf" --limit 500 "$@" \
-      --json databaseId,status,conclusion,createdAt,updatedAt,attempt,headBranch,headSha,displayTitle \
-      --jq '.[] | [.databaseId, .status, (.conclusion // "-"), .createdAt, .updatedAt, .attempt, .headBranch, (.headSha // "-"), .displayTitle] | @tsv' 2>/dev/null) || return 1
-    n=$(grep -c . <<< "$out")
-    (( n < 500 )) || return 1
+  for q in "created=>=$(date -u -d "@$from" +%FT%TZ)" $AG_STATUSES; do
+    [[ "$q" == created=* ]] || q="status=$q"
+    out=$("$ag_gh" api --paginate "repos/$ag_repo/actions/workflows/$wf/runs?$q&per_page=100" \
+      --jq '.workflow_runs[] | [.id, .status, (.conclusion // "-"), .created_at, .updated_at, .run_attempt, .head_branch, (.head_sha // "-"), .display_title] | @tsv' 2>/dev/null) || return 1
     all+="$out"$'\n'
   done
+  n=$(awk -F'\t' 'NF && !seen[$1]++' <<< "$all" | grep -c .)
+  (( n <= AG_RUNS_MAX )) || return 1
   awk -F'\t' 'NF && !seen[$1]++' <<< "$all"
 }
 # ag_sha_guarded SHA (round 4, ruling 21): sets AG_G to "yes" when the commit SHA carries
@@ -501,7 +511,7 @@ ag_history() {
   rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
   AG_SINCE=$(( rearm < now - 86400 ? rearm : now - 86400 ))
   AG_BRANCH=$(ag_default_branch) || return 1
-  ag_gh_ok || { echo "the runner's gh cannot filter runs by creation date and every non-completed status" >&2; return 1; }
+  echo "run history: $("$ag_gh" --version 2>/dev/null | head -1)" >&2
   AG_AC_RUNS=$(ag_runs archive-check.yml) || return 1
   AG_DS_RUNS=$(ag_runs data-scan.yml) || return 1
   AG_FAILS=0 AG_LAST_FAIL=0 AG_LANE_END=0 AG_LANE_RESUME="" AG_RESTARTS="" AG_FAIL_JOBS="" AG_FAIL_GROUPS="" AG_FOREIGN=0 AG_BUSY=0
@@ -678,6 +688,7 @@ ag_full() {
   ag_stop_ok || return 2
   ag_run_ok || return 2
   ag_store_ok || return 2
+  ag_caches_sealed || return 2
   ag_backoff_ok || return 2
   now=$(ag_now)
   # Ruling 16: another archive-lane run not completed counts as ending now.

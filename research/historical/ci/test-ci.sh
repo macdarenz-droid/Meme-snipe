@@ -4,6 +4,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d)
+export RUNNER_TEMP="$T/rt"; mkdir -p "$RUNNER_TEMP" # (assemble.sh and volume-day.sh keep their QA logs there, ruling 53)
 trap 'rm -rf "$T"' EXIT
 export T GITHUB_REPOSITORY=test/repo GITHUB_SHA=abc123 FAKE_AVAIL=999999999999999
 mkdir -p "$T/bin" "$T/rel"
@@ -277,6 +278,17 @@ case "$1 $2" in
         esac
         [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
         out "{\"content\": \"$(base64 -w0 "$f")\"}" ;;
+      # the runs API (round 7, ruling 49): created>=TIME or status=S, one page
+      repos/o/r/actions/workflows/*/runs*)
+        [[ -n "${GD_RUNS_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+        wf=${path#repos/o/r/actions/workflows/}; wf=${wf%%/*}; q=${path#*runs?}
+        cr=; st=; [[ "$q" == created=* ]] && { cr=${q#created=>=}; cr=${cr%%&*}; }; [[ "$q" == status=* ]] && { st=${q#status=}; st=${st%%&*}; }
+        if [[ "$wf" == archive-check.yml ]]; then f="$GD/ac.json"; else f="$GD/ds.json"; fi
+        if [[ -f "$f" ]]; then all=$(cat "$f"); elif [[ "$wf" == archive-check.yml ]]; then
+          all="[{\"databaseId\": 900, \"status\": \"in_progress\", \"conclusion\": null, \"createdAt\": \"$(date -u +%FT%TZ)\", \"updatedAt\": \"$(date -u +%FT%TZ)\", \"attempt\": 1, \"headBranch\": \"main\", \"displayTitle\": \"archive-check\"}]"
+        else all='[]'; fi
+        out "$(jq --arg cr "$cr" --arg st "$st" '{workflow_runs: [.[] | select(($cr == "" or .createdAt >= $cr) and ($st == "" or .status == $st))
+          | {id: .databaseId, status, conclusion, created_at: .createdAt, updated_at: .updatedAt, run_attempt: .attempt, head_branch: .headBranch, head_sha: .headSha, display_title: .displayTitle}]}' <<< "$all")" ;;
       repos/o/r/actions/runs/*/artifacts) out '{"artifacts": [{"name": "resume-2026-07-22"}]}' ;;
       repos/o/r/actions/runs/*/attempts/*/jobs*)
         x=${path#repos/o/r/actions/runs/}; id=${x%%/*}; k=${x#*/attempts/}; k=${k%%/*}
@@ -897,7 +909,7 @@ for set in "$H" "queued|data-scan scan source=helius" "$H;queued|data-scan scan 
   IFS=';' read -ra a <<< "$set"
   acruns "${a[@]}" "completed|data-scan scan source=archive"; ac env AC_STATUS=206
   [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$GD/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "served; dispatched data-scan for" "$A/summary.md" || bad+=" [$set]"
-  grep -q 'gh run list --repo o/r --workflow data-scan.yml --limit 500 --created >=[0-9TZ:-]* --json databaseId,status,conclusion,createdAt,updatedAt,attempt,headBranch,headSha,displayTitle' "$GD/gh.log" || bad+=" [list-call]"
+  grep -q 'gh api --paginate repos/o/r/actions/workflows/data-scan.yml/runs?created=>=[0-9TZ:-]*&per_page=100 --jq .workflow_runs' "$GD/gh.log" || bad+=" [list-call]"
 done
 acruns "$H"; ac env AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$GD/dispatch.log" ]] && grep -q "not served" "$A/summary.md" || bad+=" [429]"
@@ -1188,7 +1200,7 @@ assert [s.get("id") for s in key] == ["scan", "qa"], [s.get("name") for s in key
 for s in key:
     assert s["env"]["HELIUS_API_KEY"] == "${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}", s["env"]
 assert "rpc-day.sh" in steps[[s.get("id") for s in steps].index("scan")]["run"]
-caches = [s for s in steps if "actions/cache" in s.get("uses", "") and "work/sealed" in s["with"]["path"]]
+caches = [s for s in steps if "actions/cache" in s.get("uses", "") and s["with"]["path"] == "${{ runner.temp }}/work/sealed"]
 saves = [s for s in caches if "cache/save" in s["uses"]]
 assert saves and all(s["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-") for s in saves), saves
 res = next(s for s in caches if "cache/restore" in s["uses"])
@@ -1337,7 +1349,7 @@ for s in steps:
         assert "inputs.source != 'helius'" in cond, (s.get("name") or uses, cond)
 pub = [s for s in steps if 'publish-day.sh" "$DAY"' in s.get("run", "") or "publish-volume.sh" in s.get("run", "")]
 assert len(pub) == 2 and all("inputs.source != 'helius'" in s["if"] for s in pub), pub
-keep = [s for s in steps if "actions/cache/save" in s.get("uses", "") and "work/assets" in s["with"]["path"]]
+keep = [s for s in steps if "actions/cache/save" in s.get("uses", "") and s["with"]["path"] == "${{ runner.temp }}/work/sealed-assets"]
 assert len(keep) == 1 and keep[0]["with"]["key"].startswith("data-rpc-assets-${{ matrix.day }}-"), keep
 assert "inputs.source == 'helius'" in keep[0]["if"] and "steps.published.outputs.complete != 'true'" in keep[0]["if"], keep[0]["if"]
 names = [s.get("name") for s in steps]
@@ -1416,11 +1428,10 @@ dsave = ds["jobs"]["scan"]["steps"]
 asave = [s for s in dsave if "actions/cache/save" in s.get("uses", "") and str(s["with"]["key"]).startswith("data-rpc-assets-")]
 psave = [s for s in dsave if s.get("name") == "Save progress"]
 assert len(asave) == 1 and res["matrix.entry.kind == 'assets'"]["with"]["path"] == asave[0]["with"]["path"], asave
-# OF-2 round 6, ruling 44a: progress is now saved sealed under "-k<key id>-" names, which
-# keep-check.sh's progress pattern (data-rpc-DAY-RUN-ATTEMPT) never lists; data-keep keeps
-# only the older unsealed entries alive, at their own path.
-assert len(psave) == 1 and psave[0]["with"]["path"] == "${{ runner.temp }}/work/sealed", psave
-assert res["matrix.entry.kind == 'progress'"]["with"]["path"] == "${{ runner.temp }}/work/data", res
+# OF-2 rounds 6-7, rulings 44a and 51: progress and assets are saved sealed under
+# "-k<key id>-" names; data-keep restores only those, at the same sealed paths.
+assert asave[0]["with"]["path"] == "${{ runner.temp }}/work/sealed-assets" and "-k${{ steps.cachekid.outputs.kid }}-" in asave[0]["with"]["key"], asave
+assert len(psave) == 1 and psave[0]["with"]["path"] == "${{ runner.temp }}/work/sealed" == res["matrix.entry.kind == 'progress'"]["with"]["path"], psave
 assert psave[0]["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-k${{ steps.cachekid.outputs.kid }}-${{ github.run_id }}-${{ github.run_attempt }}"), psave
 for s in res.values():
     assert s["with"]["fail-on-cache-miss"] is True and s["with"]["key"] == "${{ matrix.entry.key }}", s
@@ -1464,57 +1475,56 @@ PY
 kc list >/dev/null && grep -qx "count=0" "$K/out" && grep -qx "entries=\[\]" "$K/out" && grep -q "0 entries" "$K/sum" &&
   ok "keep-check list: no entry gives count=0 (the keep job is skipped)" || no "keep-check list empty: $(cat "$K/out")"
 : > "$K/sum"; : > "$K/out"
-kcache "data-rpc-assets-2026-09-21-37185822426-1,4100000000,2026-10-05T01:00:00Z" "data-rpc-scan-2026-09-21-1-1,9,2026-10-05T01:00:00Z" "data-rpc-assets-2026-09-20-3-1,4000000000,2026-10-06T01:00:00Z" \
-  "data-rpc-assets-2026-09-19-7-1,3000000000,2026-10-06T01:00:00Z,refs/pull/5/merge" "data-rpc-assets-2026-09-18-8-1,3000000000,2026-10-06T01:00:00Z,refs/heads/other"
+KD=k0123456789ab
+kcache "data-rpc-assets-2026-09-21-$KD-37185822426-1,4100000000,2026-10-05T01:00:00Z" "data-rpc-scan-2026-09-21-1-1,9,2026-10-05T01:00:00Z" "data-rpc-assets-2026-09-20-$KD-3-1,4000000000,2026-10-06T01:00:00Z" \
+  "data-rpc-assets-2026-09-19-$KD-7-1,3000000000,2026-10-06T01:00:00Z,refs/pull/5/merge" "data-rpc-assets-2026-09-18-$KD-8-1,3000000000,2026-10-06T01:00:00Z,refs/heads/other" \
+  "data-rpc-assets-2026-09-17-9-1,3000000000,2026-10-06T01:00:00Z"
 echo '{"active_caches_size_in_bytes": 8200000000}' > "$K/usage.json"
 kc list > "$K/stdout" && grep -qx 'count=2' "$K/out" &&
-  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z","kind":"assets"},{"key":"data-rpc-assets-2026-09-21-37185822426-1","day":"2026-09-21","before":"2026-10-05T01:00:00Z","kind":"assets"}\]' "$K/out" &&
-  grep -q "| \`data-rpc-assets-2026-09-21-37185822426-1\` | assets | 4.10 GB |" "$K/sum" && grep -q "2 entries, 8.10 GB; all repository caches 8.20 GB of 10 GB" "$K/sum" &&
+  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-'$KD'-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z","kind":"assets"},{"key":"data-rpc-assets-2026-09-21-'$KD'-37185822426-1","day":"2026-09-21","before":"2026-10-05T01:00:00Z","kind":"assets"}\]' "$K/out" &&
+  grep -q "| \`data-rpc-assets-2026-09-21-$KD-37185822426-1\` | assets | 4.10 GB |" "$K/sum" && grep -q "2 entries, 8.10 GB; all repository caches 8.20 GB of 10 GB" "$K/sum" &&
   grep -q "Warning: repository caches above 7 GB" "$K/sum" && grep -q "::warning::" "$K/stdout" &&
-  ! grep -q "2026-09-19\|2026-09-18" "$K/out" "$K/sum" &&
-  ok "keep-check list: only data-rpc-assets-* entries of the default branch (a PR-ref or other-branch entry is dropped), with key, day and last access; sizes and total in the summary, a warning above 7 GB" || no "keep-check list: $(cat "$K/out" "$K/sum")"
+  ! grep -q "2026-09-19\|2026-09-18\|2026-09-17" "$K/out" "$K/sum" &&
+  ok "keep-check list: only sealed data-rpc-assets-DAY-k<KID>-* entries of the default branch (a PR-ref, other-branch or unsealed entry is left to expire), with key, day and last access; sizes and total in the summary, a warning above 7 GB" || no "keep-check list: $(cat "$K/out")"
 : > "$K/sum"; echo '{"active_caches_size_in_bytes": 7000000000}' > "$K/usage.json"
 kc list > "$K/stdout" && ! grep -q "Warning" "$K/sum" && ! grep -q "::warning::" "$K/stdout" && ok "keep-check list: no warning at 7 GB or less" || no "keep-check list no warning"
-kcache "data-rpc-assets-bad,1,2026-10-05T01:00:00Z"; kc list >/dev/null 2>&1 && no "keep-check list accepted a malformed key" || ok "keep-check list: a malformed data-rpc-assets key fails"
+: > "$K/out"; kcache "data-rpc-assets-bad,1,2026-10-05T01:00:00Z" "data-rpc-2026-09-21-5-1,1,2026-10-05T01:00:00Z"; kc list >/dev/null 2>&1 && grep -qx "count=0" "$K/out" && ok "keep-check list: a malformed or unsealed data-rpc key is never kept (OF-2 ruling 51)" || no "keep-check list kept an unsealed key"
 echo '{"active_caches_size_in_bytes": null}' > "$K/usage.json"; kcache; kc list >/dev/null 2>&1 && no "keep-check list accepted unreadable usage" || ok "keep-check list: an unreadable cache usage fails"
 echo '{"active_caches_size_in_bytes": 1}' > "$K/usage.json"; echo '{"default_branch": null}' > "$K/repo.json"
 kc list >/dev/null 2>&1 && no "keep-check list accepted an unreadable default branch" || ok "keep-check list: an unreadable default branch fails"
 echo '{"default_branch": "ccr-x"}' > "$K/repo.json"
+# verify / progress (ruling 51): a restored entry is a sealed one, checked without any token
 ka="$K/assets"; d=2026-09-21
-mkka() { rm -rf "$ka"; mkdir -p "$ka"; for f in units-$d.tar.part00 events-$d.tar qa-$d.md qa-$d.json parity-$d.json manifest-$d.json; do echo "secret-body-$f" > "$ka/$f"; done; (cd "$ka" && sha256sum units-* events-* qa-* parity-* manifest-* > SHA256SUMS-$d); }
+mkka() { rm -rf "$ka" "$K/plain"; mkdir -p "$K/plain"; echo "secret-body" > "$K/plain/units-$d.tar.part00"; DATA_STORE_TOKEN=tk bash "$here/cache-crypt.sh" seal "$K/plain" "$ka" "data-rpc-assets-$d-" >/dev/null 2>&1; }
 mkka; : > "$K/sum"
-o=$(kc verify $d "$ka" 2>&1) && grep -q "| $d | 6 files + SHA256SUMS-$d | intact |" "$K/sum" && [[ "$o" != *secret-body* ]] &&
-  ok "keep-check verify: an intact entry passes, printing names and counts only" || no "keep-check verify intact: $o"
+o=$(env -u DATA_STORE_TOKEN bash -c 'KG="$1" GH_BIN="$2" GITHUB_REPOSITORY=o/r GITHUB_STEP_SUMMARY="$3" bash "$4" verify "$5" "$6"' _ "$K" "$K/bin/gh" "$K/sum" "$here/keep-check.sh" $d "$ka" 2>&1) &&
+  grep -q "| $d | verify: sealed, [0-9]* bytes |" "$K/sum" && [[ "$o" != *secret-body* ]] && ok "keep-check verify: a sealed entry passes without a token, printing its size only" || no "keep-check verify intact: $o"
 bad=""
-mkka; echo x >> "$ka/qa-$d.md"; o=$(kc verify $d "$ka" 2>&1) && bad+=" tampered"; [[ "$o" == *secret-body* ]] && bad+=" printed"
 mkka; echo x > "$ka/extra.bin"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" extra"
-mkka; rm "$ka/parity-$d.json"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" missing"
-mkka; rm "$ka/manifest-$d.json"; (cd "$ka" && grep -v manifest SHA256SUMS-$d > s && mv s SHA256SUMS-$d); kc verify $d "$ka" >/dev/null 2>&1 && bad+=" no-manifest"
-mkka; rm "$ka/SHA256SUMS-$d"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" no-sums"
-mkka; sed -i "s/^\(.\{20\}\)[0-9a-f]*\(  qa-$d.md\)\$/\1\2/" "$ka/SHA256SUMS-$d"; grep -q "^.\{20\}  qa-$d.md\$" "$ka/SHA256SUMS-$d" || bad+=" garble-setup"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" garbled"
-[[ -z "$bad" ]] && ok "keep-check verify: a changed, extra or missing file, no manifest, no sums or a truncated hash line fails, without printing contents" || no "keep-check verify:$bad"
-# progress: the newest data-rpc-DAY-RUN-ATTEMPT per day (by created_at), never -qa copies
-# or other refs.
+mkka; rm "$ka/progress.mac"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" missing"
+mkka; : > "$ka/progress.enc"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" empty"
+rm -rf "$ka"; mkdir -p "$ka"; echo secret-body > "$ka/SHA256SUMS-$d"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" unsealed"
+[[ -z "$bad" ]] && ok "keep-check verify: an extra or missing file, an empty ciphertext or an unsealed entry fails" || no "keep-check verify:$bad"
 : > "$K/sum"; : > "$K/out"; echo '{"active_caches_size_in_bytes": 1000}' > "$K/usage.json"
-kcache "data-rpc-2026-09-21-37220726125-1,3400000000,2026-10-04T20:00:00Z,,2026-10-04T20:00:00Z" \
-  "data-rpc-2026-09-21-37240347289-1,3600000000,2026-10-05T01:18:00Z,,2026-10-05T01:18:00Z" \
-  "data-rpc-2026-09-21-37240347289-1-qa,3600000000,2026-10-05T01:30:00Z,,2026-10-05T01:30:00Z" \
-  "data-rpc-2026-09-21-37250000000-1,3700000000,2026-10-05T02:00:00Z,refs/pull/9/merge,2026-10-05T02:00:00Z" \
-  "data-rpc-2026-09-20-5-2,1000000000,2026-10-03T00:00:00Z,,2026-10-03T00:00:00Z" \
-  "data-rpc-assets-2026-09-20-3-1,4000000000,2026-10-06T01:00:00Z"
+kcache "data-rpc-2026-09-21-$KD-37220726125-1,3400000000,2026-10-04T20:00:00Z,,2026-10-04T20:00:00Z" \
+  "data-rpc-2026-09-21-$KD-37240347289-1,3600000000,2026-10-05T01:18:00Z,,2026-10-05T01:18:00Z" \
+  "data-rpc-2026-09-21-$KD-37240347289-1-qa,3600000000,2026-10-05T01:30:00Z,,2026-10-05T01:30:00Z" \
+  "data-rpc-2026-09-21-$KD-37250000000-1,3700000000,2026-10-05T02:00:00Z,refs/pull/9/merge,2026-10-05T02:00:00Z" \
+  "data-rpc-2026-09-21-37260000000-1,3800000000,2026-10-05T03:00:00Z,,2026-10-05T03:00:00Z" \
+  "data-rpc-2026-09-20-$KD-5-2,1000000000,2026-10-03T00:00:00Z,,2026-10-03T00:00:00Z" \
+  "data-rpc-assets-2026-09-20-$KD-3-1,4000000000,2026-10-06T01:00:00Z"
 kc list >/dev/null && grep -qx 'count=2' "$K/out" &&
-  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z","kind":"assets"},{"key":"data-rpc-2026-09-21-37240347289-1","day":"2026-09-21","before":"2026-10-05T01:18:00Z","kind":"progress"}\]' "$K/out" && ! grep -q "data-rpc-2026-09-20-5-2" "$K/out" "$K/sum" &&
-  grep -q "| \`data-rpc-2026-09-21-37240347289-1\` | progress | 3.60 GB |" "$K/sum" && ! grep -q -- "-qa\|37220726125\|37250000000" "$K/out" &&
-  ok "keep-check list: per unpackaged day the newest default-branch progress entry (data-rpc-DAY-RUN-ATTEMPT); a day with assets keeps only its assets; older runs, -qa copies and other refs are not kept" || no "keep-check list progress: $(cat "$K/out")"
-kp="$K/prog"; rm -rf "$kp"; mkdir -p "$kp/units/1039/1-2"; echo '{"blocks": 1}' > "$kp/units/1039/1-2/stats.json"; echo 270000 > "$kp/rpc-credits-used"
-: > "$K/sum"; o=$(kc progress 2026-09-21 "$kp" 2>&1) && grep -q "| 2026-09-21 | progress: 1 finished units, 270000 credits booked |" "$K/sum" && [[ "$o" != *blocks* ]] &&
-  ok "keep-check progress: a restored progress entry with finished units and booked credits passes, counts only" || no "keep-check progress: $o"
+  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-'$KD'-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z","kind":"assets"},{"key":"data-rpc-2026-09-21-'$KD'-37240347289-1","day":"2026-09-21","before":"2026-10-05T01:18:00Z","kind":"progress"}\]' "$K/out" &&
+  grep -q "| \`data-rpc-2026-09-21-$KD-37240347289-1\` | progress | 3.60 GB |" "$K/sum" && ! grep -q -- "-qa\|37220726125\|37250000000\|37260000000" "$K/out" &&
+  ok "keep-check list: per unpackaged day the newest sealed default-branch progress entry; a day with assets keeps only its assets; older runs, -qa copies, other refs and unsealed entries are not kept" || no "keep-check list progress: $(cat "$K/out")"
+kp="$K/prog"; rm -rf "$kp" "$K/pp"; mkdir -p "$K/pp/units/1039/1-2"; echo '{"blocks": 1}' > "$K/pp/units/1039/1-2/stats.json"
+DATA_STORE_TOKEN=tk bash "$here/cache-crypt.sh" seal "$K/pp" "$kp" data-rpc-2026-09-21- >/dev/null 2>&1
+: > "$K/sum"; o=$(kc progress 2026-09-21 "$kp" 2>&1) && grep -q "| 2026-09-21 | progress: sealed, [0-9]* bytes |" "$K/sum" && [[ "$o" != *blocks* ]] &&
+  ok "keep-check progress: a sealed progress entry passes without a token, its size only" || no "keep-check progress: $o"
 bad=""
-rm "$kp/units/1039/1-2/stats.json"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" no-units"
-echo '{}' > "$kp/units/1039/1-2/stats.json"; rm "$kp/rpc-credits-used"; : > "$K/sum"
-kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && grep -q "| 2026-09-21 | progress: 1 finished units, credits in the ledger |" "$K/sum" || bad+=" ledger-day"
-echo x > "$kp/rpc-credits-used"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" bad-credits"
-[[ -z "$bad" ]] && ok "keep-check progress: no finished unit or an unreadable rpc-credits-used fails; no credits file (a ledger-booked day) passes" || no "keep-check progress:$bad"
+rm "$kp/progress.kid"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" missing"
+rm -rf "$kp"; mkdir -p "$kp/units"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" unsealed"
+[[ -z "$bad" ]] && ok "keep-check progress: a missing sealed file or an unsealed progress fails" || no "keep-check progress:$bad"
 kcache "data-rpc-assets-2026-09-21-1-1,5,2026-10-07T03:00:00Z"
 kc touched data-rpc-assets-2026-09-21-1-1 2026-10-07T02:00:00Z >/dev/null && ok "keep-check touched: a later last_accessed_at proves the restore refreshed the entry" || no "keep-check touched later"
 rc=0; KEEP_WAIT=2 kc touched data-rpc-assets-2026-09-21-1-1 2026-10-07T03:00:00Z >/dev/null 2>&1 || rc=$?
@@ -2201,47 +2211,48 @@ vol main "$NG"; rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q 
 [[ -z "$bad" ]] && ok "OF-2 r4 ruling 41: a queued data-scan volume run is skipped as busy only on the default branch from a guarded commit; from another branch or an unguarded commit it holds the lane" || no "OF-2 r4 volume skip:$bad"
 bad=""; gdreset; touch "$GD/noguard-$NG"
 # 42. A run list at its 500 cap fails closed; in-progress and queued runs are listed on their own.
-guard full 2026-07-22 && grep -q -- "--workflow data-scan.yml --limit 500 --status in_progress" "$GD/gh.log" && grep -q -- "--workflow archive-check.yml --limit 500 --status queued" "$GD/gh.log" || bad+=" status-lists"
-python3 - "$GD/ds.json" "$(iso $(( now - 30 * 86400 )))" <<'PY'
+guard full 2026-07-22 && grep -q "workflows/data-scan.yml/runs?status=in_progress&" "$GD/gh.log" && grep -q "workflows/archive-check.yml/runs?status=queued&" "$GD/gh.log" || bad+=" status-lists"
+python3 - "$GD/ds.json" "$(iso $(( now - 3 * 86400 )))" <<'PY'
 import json, sys
-json.dump([{"databaseId": 1000 + i, "status": "completed", "conclusion": "success", "createdAt": sys.argv[2], "updatedAt": sys.argv[2], "attempt": 1, "headBranch": "main", "headSha": "a" * 40, "displayTitle": "data-scan volume"} for i in range(500)], open(sys.argv[1], "w"))
+json.dump([{"databaseId": 1000 + i, "status": "completed", "conclusion": "success", "createdAt": sys.argv[2], "updatedAt": sys.argv[2], "attempt": 1, "headBranch": "main", "headSha": "a" * 40, "displayTitle": "data-scan volume"} for i in range(5001)], open(sys.argv[1], "w"))
 PY
 rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" cap:$rc"
-[[ -z "$bad" ]] && ok "OF-2 r4 ruling 42: in-progress and queued runs are listed on their own (both workflows); 500 listed runs, even all older than the window, fail closed" || no "OF-2 r4 run list cap:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 42 (as amended by 49): in-progress and queued runs are listed on their own (both workflows); more than 5,000 runs in the window fail closed" || no "OF-2 r4 run list cap:$bad"
 bad=""; gdreset
 
 # ---- OF-2 round 6 (docs/reviews/OF2.md rulings 43-48, 44a) ----
 gdreset; bad=""; now=$(date -u +%s); touch "$GD/noguard-$NG"
-# 43. Only runs created in the re-run window are listed; the cap trips only inside it.
-r500() { python3 - "$GD/ds.json" "$(iso $(( now - $1 * 86400 )))" <<'PY'
+# 43, 49. Runs created since the earlier of 35 days ago and the re-arm are read page by
+# page from the runs API, with no cap below 5,000.
+rN() { python3 - "$GD/ds.json" "$(iso $(( now - $1 * 86400 )))" "$2" <<'PY'
 import json, sys
-json.dump([{"databaseId": 2000 + i, "status": "completed", "conclusion": "success", "createdAt": sys.argv[2], "updatedAt": sys.argv[2], "attempt": 1, "headBranch": "main", "headSha": "a" * 40, "displayTitle": "data-scan volume"} for i in range(500)], open(sys.argv[1], "w"))
+json.dump([{"databaseId": 2000 + i, "status": "completed", "conclusion": "success", "createdAt": sys.argv[2], "updatedAt": sys.argv[2], "attempt": 1, "headBranch": "main", "headSha": "a" * 40, "displayTitle": "data-scan volume"} for i in range(int(sys.argv[3]))], open(sys.argv[1], "w"))
 PY
 }
 mkfx "$T/fx43" ARCHIVE_REARM_AT="$(iso $(( now - 3 * 86400 )))"
-r500 40; FXG=$T/fx43/research/historical/ci guard full 2026-07-22 || bad+=" outside-window:$(tail -1 "$T/gout.txt")"
-grep -q -- "--created >=$(date -u -d "@$(( now - 35 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-35d"
-for st in queued in_progress waiting requested pending; do grep -q -- "--status $st" "$GD/gh.log" || bad+=" status-$st"; done
+rN 40 500; FXG=$T/fx43/research/historical/ci guard full 2026-07-22 || bad+=" outside-window:$(tail -1 "$T/gout.txt")"
+grep -q "workflows/data-scan.yml/runs?created=>=$(date -u -d "@$(( now - 35 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-35d"
+for st in queued in_progress waiting requested pending; do grep -q "runs?status=$st&per_page=100" "$GD/gh.log" || bad+=" status-$st"; done
 grep -q "^run history: gh version" "$T/gout.txt" || bad+=" version-logged"
-r500 10; rc=0; FXG=$T/fx43/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" inside-window:$rc"
-rm -f "$GD/ds.json"; rc=0; GD_OLD_GH=1 FXG=$T/fx43/research/historical/ci guard full 2026-07-22 || rc=$?
-[[ $rc == 2 ]] && grep -q "cannot filter runs by creation date" "$T/gout.txt" || bad+=" old-gh:$rc"
-mkfx "$T/fx43b" ARCHIVE_REARM_AT="$(iso $(( now - 50 * 86400 )))"; FXG=$T/fx43b/research/historical/ci guard full 2026-07-22 || true
-grep -q -- "--created >=$(date -u -d "@$(( now - 50 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-from-rearm"
-[[ -z "$bad" ]] && ok "OF-2 r6 ruling 43: runs are listed from the earlier of 35 days ago and ARCHIVE_REARM_AT, plus every queued, in-progress, waiting, requested or pending run; 500 runs outside that window pass, 500 inside fail closed; the gh version is logged, and a gh without --created fails closed" || no "OF-2 r6 run window:$bad"
+mkfx "$T/fx49" ARCHIVE_REARM_AT="$(iso $(( now - 70 * 86400 )))"
+rN 20 600; FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || bad+=" 600-after-70d:$(tail -1 "$T/gout.txt")"
+grep -q "runs?created=>=$(date -u -d "@$(( now - 70 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-from-rearm"
+rN 20 5001; rc=0; FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" over-5000:$rc"
+rN 20 10; rc=0; GD_RUNS_FAIL=1 FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" api-error:$rc"
+[[ -z "$bad" ]] && ok "OF-2 r6/r7 rulings 43, 49: runs are read page by page from the runs API, created since the earlier of 35 days ago and ARCHIVE_REARM_AT, plus every queued, in-progress, waiting, requested or pending run; 500 runs outside the window and 600 runs 70 days after a re-arm pass; more than 5,000 or an API error fail closed; the gh version is logged" || no "OF-2 r6 run window:$bad"
 bad=""; gdreset; touch "$GD/noguard-$NG"
 # 44, 44a. The progress cache is sealed: no plaintext saved, a wrong key or a changed byte refused with nothing read.
 CC="$here/cache-crypt.sh"; cr="$T/cc"; rm -rf "$cr"; mkdir -p "$cr/data/units/1046/1-2"; echo "curve=5 secret-unit-bytes" > "$cr/data/units/1046/1-2/a.zst"
-DATA_STORE_TOKEN=tokA bash "$CC" seal "$cr/data" "$cr/sealed" > /dev/null || bad+=" seal"
+DATA_STORE_TOKEN=tokA bash "$CC" seal "$cr/data" "$cr/sealed" data-scan-2026-07-22- > /dev/null || bad+=" seal"
 [[ "$(cd "$cr/sealed" && ls | tr '\n' ' ')" == "progress.enc progress.iv progress.kid progress.mac " ]] && ! grep -rq "secret-unit-bytes" "$cr/sealed" || bad+=" plaintext"
 DATA_STORE_TOKEN=tokA bash "$CC" check "$cr/sealed" || bad+=" check"
-cp -r "$cr/sealed" "$cr/s2"; rc=0; DATA_STORE_TOKEN=tokB bash "$CC" open "$cr/s2" "$cr/o2" 2> "$T/cc.err" || rc=$?
+cp -r "$cr/sealed" "$cr/s2"; rc=0; DATA_STORE_TOKEN=tokB bash "$CC" open "$cr/s2" "$cr/o2" data-scan-2026-07-22- 2> "$T/cc.err" || rc=$?
 [[ $rc == 2 && ! -e "$cr/o2" ]] && grep -q "sealed with another key" "$T/cc.err" || bad+=" wrong-key:$rc"
 cp -r "$cr/sealed" "$cr/s3"; printf 'X' | dd of="$cr/s3/progress.enc" bs=1 seek=5 conv=notrunc 2>/dev/null
-rc=0; DATA_STORE_TOKEN=tokA bash "$CC" open "$cr/s3" "$cr/o3" 2> "$T/cc.err" || rc=$?; [[ $rc == 2 && ! -e "$cr/o3" ]] && grep -q "fails its MAC" "$T/cc.err" || bad+=" tampered:$rc"
-cp -r "$cr/sealed" "$cr/s4"; echo x > "$cr/s4/plain.txt"; rc=0; DATA_STORE_TOKEN=tokA bash "$CC" open "$cr/s4" "$cr/o4" 2>/dev/null || rc=$?; [[ $rc == 2 ]] || bad+=" extra-file:$rc"
+rc=0; DATA_STORE_TOKEN=tokA bash "$CC" open "$cr/s3" "$cr/o3" data-scan-2026-07-22- 2> "$T/cc.err" || rc=$?; [[ $rc == 2 && ! -e "$cr/o3" ]] && grep -q "fails its MAC" "$T/cc.err" || bad+=" tampered:$rc"
+cp -r "$cr/sealed" "$cr/s4"; echo x > "$cr/s4/plain.txt"; rc=0; DATA_STORE_TOKEN=tokA bash "$CC" open "$cr/s4" "$cr/o4" data-scan-2026-07-22- 2>/dev/null || rc=$?; [[ $rc == 2 ]] || bad+=" extra-file:$rc"
 rc=0; DATA_STORE_TOKEN= bash "$CC" kid > /dev/null 2>&1 || rc=$?; [[ $rc == 2 ]] || bad+=" no-token:$rc"
-DATA_STORE_TOKEN=tokA bash "$CC" open "$cr/sealed" "$cr/o1" > /dev/null && cmp -s "$cr/data/units/1046/1-2/a.zst" "$cr/o1/units/1046/1-2/a.zst" && [[ ! -e "$cr/sealed" ]] || bad+=" round-trip"
+DATA_STORE_TOKEN=tokA bash "$CC" open "$cr/sealed" "$cr/o1" data-scan-2026-07-22- > /dev/null && cmp -s "$cr/data/units/1046/1-2/a.zst" "$cr/o1/units/1046/1-2/a.zst" && [[ ! -e "$cr/sealed" ]] || bad+=" round-trip"
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' || bad+=" workflow"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
@@ -2335,11 +2346,68 @@ o="$T/r24"; rm -rf "$o"; mkdir -p "$o"; rc=0; SCAN_FAIL_RC=3 scan "$o" || rc=$?
 [[ $rc != 0 ]] && grep -q "curve=5" "$o/logs/run.log" && ! grep -q "curve=5" "$T/out.txt" "$T/summary.md" || bad+=" scan-fail:$rc"
 rc=0; QA_FAIL_ON=check.mjs cd23 || rc=$?; [[ $rc != 0 && -f "$T/cd23/logs/qa/qa.log" ]] || bad+=" qa-fail:$rc"
 for d in "$o" "$T/cd23"; do
-  rm -rf "$T/r24s"; DATA_STORE_TOKEN=tok24 bash "$here/cache-crypt.sh" seal "$d" "$T/r24s" > /dev/null || bad+=" seal"
+  rm -rf "$T/r24s"; DATA_STORE_TOKEN=tok24 bash "$here/cache-crypt.sh" seal "$d" "$T/r24s" data-scan-2026-07-22- > /dev/null 2>&1 || bad+=" seal"
   ! grep -rqE "curve=5|QA-REPORT" "$T/r24s" || bad+=" plaintext"
-  rm -rf "$T/r24o"; DATA_STORE_TOKEN=tok24 bash "$here/cache-crypt.sh" open "$T/r24s" "$T/r24o" > /dev/null && grep -rqE "curve=5|QA-REPORT blocks=123" "$T/r24o/logs" || bad+=" readable"
+  rm -rf "$T/r24o"; DATA_STORE_TOKEN=tok24 bash "$here/cache-crypt.sh" open "$T/r24s" "$T/r24o" data-scan-2026-07-22- > /dev/null 2>&1 && grep -rqE "curve=5|QA-REPORT blocks=123" "$T/r24o/logs" || bad+=" readable"
 done
 [[ -z "$bad" ]] && ok "OF-3 ruling 24: a failed scan's and a failed QA's output stay in the day's progress (logs/), so the sealed cache carries them with no plaintext byte and they read back after opening" || no "OF-3 failed-day logs:$bad"
+
+# ---- OF-2 round 7 (docs/reviews/OF2.md rulings 49-53; 49 is with 43 above) ----
+gdreset; bad=""; now=$(date -u +%s); touch "$GD/noguard-$NG"
+# 50. The MAC binds the cache key prefix: day A's entry restored under day B's name is refused.
+c50="$T/c50"; rm -rf "$c50"; mkdir -p "$c50/a/units/1/2"; echo unit > "$c50/a/units/1/2/x.zst"
+DATA_STORE_TOKEN=t50 bash "$here/cache-crypt.sh" seal "$c50/a" "$c50/s" data-scan-2026-07-22- >/dev/null 2>&1 || bad+=" seal"
+rc=0; DATA_STORE_TOKEN=t50 bash "$here/cache-crypt.sh" open "$c50/s" "$c50/o" data-scan-2026-07-23- 2> "$T/c50.err" || rc=$?
+[[ $rc == 2 && ! -e "$c50/o" ]] && grep -q "sealed for another day or source" "$T/c50.err" || bad+=" other-day:$rc"
+rc=0; DATA_STORE_TOKEN=t50 bash "$here/cache-crypt.sh" open "$c50/s" "$c50/o" data-rpc-2026-07-22- 2>/dev/null || rc=$?; [[ $rc == 2 && ! -e "$c50/o" ]] || bad+=" other-source:$rc"
+DATA_STORE_TOKEN=t50 bash "$here/cache-crypt.sh" open "$c50/s" "$c50/o" data-scan-2026-07-22- >/dev/null 2>&1 && [[ -f "$c50/o/units/1/2/x.zst" ]] || bad+=" same-day"
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' || bad+=" workflow-prefix"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+by = {s.get("id"): s for s in steps}
+for k in ("openprogress", "seal", "sealqa"):
+    assert by[k]["env"]["PREFIX"] == by["pickprogress"]["env"]["PREFIX"] and by[k]["run"].rstrip().endswith('"$PREFIX"') and 'PREFIX="$PREFIX"' in by[k]["run"], k
+assert by["sealassets"]["env"]["PREFIX"] == "data-rpc-assets-${{ matrix.day }}-" and by["sealassets"]["run"].rstrip().endswith('"$PREFIX"'), by["sealassets"]
+PY
+[[ -z "$bad" ]] && ok "OF-2 r7 ruling 50: the MAC binds the cache key prefix: day 07-22's sealed progress opened as 07-23's, or as a Helius entry, is refused with nothing read; data-scan passes the same prefix to seal and open" || no "OF-2 r7 prefix binding:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 51. Helius assets are sealed too; arming refuses while an unsealed progress or assets entry remains.
+echo '{"actions_caches": [{"key": "data-rpc-assets-2026-09-21-37185822426-1", "ref": "refs/heads/main"}, {"key": "data-scan-backoff-1-1-2026-07-22", "ref": "refs/heads/main"}]}' > "$GD/caches.json"
+KEEPCACHE=1 ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "held (3): 1 Actions cache entries hold progress or assets unsealed (data-rpc-assets-2026-09-21-37185822426-1" "$A/summary.md" || bad+=" check-unsealed"
+rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the owner decides whether to delete them" "$T/gout.txt" || bad+=" plan-unsealed:$rc"
+echo '{"actions_caches": [{"key": "data-rpc-assets-2026-09-21-k0123456789ab-1-1", "ref": "refs/heads/main"}, {"key": "data-scan-2026-07-22-k0123456789ab-1-1", "ref": "refs/pull/3/merge"}, {"key": "data-scan-backoff-1-1-2026-07-22", "ref": "refs/heads/main"}]}' > "$GD/caches.json"
+KEEPCACHE=1 ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" sealed-ok:$(cat "$A/summary.md")"
+rc=0; GD_CACHE_FAIL=1 guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] || bad+=" unreadable:$rc"
+mkfx "$T/fx51"; python3 - "$T/fx51/.github/workflows/data-scan.yml" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read(); s = s.replace("path: ${{ runner.temp }}/work/sealed-assets", "path: ${{ runner.temp }}/work/assets", 1); open(p, "w").write(s)
+PY
+rm -f "$GD/caches.json"; ACFX=$T/fx51/research/historical/ci ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "caches archive-derived progress unsealed (path \${{ runner.temp }}/work/assets)" "$A/summary.md" || bad+=" arm-assets-path"
+[[ -z "$bad" ]] && ok "OF-2 r7 ruling 51: an unsealed data-rpc-assets entry (09-21's kind) holds archive-check and refuses a manual dispatch until the owner decides; sealed entries on any ref and the back-off state pass; an unreadable cache list fails closed; arming refuses Helius assets saved from an unsealed path" || no "OF-2 r7 sealed assets:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 52. The AES key never reaches an argument: openssl reads it on a file descriptor.
+! grep -qE -- 'openssl[^#]* -K |-K "\$' "$here/cache-crypt.sh" && grep -q -- '-pass fd:3' "$here/cache-crypt.sh" || bad+=" static"
+c52="$T/c52"; rm -rf "$c52"; mkdir -p "$c52/a"; head -c 3000000 /dev/urandom > "$c52/a/big"
+OB="$T/obin"; mkdir -p "$OB"; printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexec /usr/bin/openssl "$@"\n' "$T/openssl.args" > "$OB/openssl"; chmod +x "$OB/openssl"; : > "$T/openssl.args"
+ek=$(DATA_STORE_TOKEN=t52 python3 -c 'import hashlib, hmac, os; print(hmac.new(os.environ["DATA_STORE_TOKEN"].encode(), b"zeroed-archive-cache-v1 enc", hashlib.sha256).hexdigest())')
+PATH="$OB:$PATH" DATA_STORE_TOKEN=t52 bash "$here/cache-crypt.sh" seal "$c52/a" "$c52/s" data-scan-2026-07-22- 2> "$T/c52.err" > /dev/null &&
+  PATH="$OB:$PATH" DATA_STORE_TOKEN=t52 bash "$here/cache-crypt.sh" open "$c52/s" "$c52/o" data-scan-2026-07-22- 2>/dev/null >/dev/null && cmp -s "$c52/a/big" "$c52/o/big" || bad+=" round-trip"
+[[ -s "$T/openssl.args" ]] && ! grep -q "$ek" "$T/openssl.args" && grep -q "^cache-crypt: OpenSSL" "$T/c52.err" || bad+=" argv:$(cat "$T/openssl.args")"
+[[ -z "$bad" ]] && ok "OF-2 r7 ruling 52: the derived AES key never appears in openssl's arguments (read on fd 3); the openssl version is logged; a 3 MB entry round-trips" || no "OF-2 r7 key off argv:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 53. Redirect targets are the private log directories only, each assigned under $out or $RUNNER_TEMP; no scanner through a variable.
+for v in other-var qlog-elsewhere via-var via-lookup; do
+  mkfx "$T/fx53"; c="$T/fx53/research/historical/ci"
+  case $v in
+    other-var) echo 'zeroed-scan run -out "$out" > "$pubdir/run.log" 2>&1' >> "$c/scan-day.sh" ;;
+    qlog-elsewhere) sed -i 's|^qlog="\$out/logs/qa"|qlog="/srv/www/qa"|' "$c/check-day.sh"; grep -q '^qlog="/srv/www/qa"' "$c/check-day.sh" || bad+=" setup-qlog" ;;
+    via-var) printf 'zs=zeroed-scan\n"$zs" run -out "$out"\n' >> "$c/scan-day.sh" ;;
+    via-lookup) printf 'zs=$(command -v zeroed-scan)\n"$zs" run -out "$out"\n' >> "$c/scan-day.sh" ;;
+  esac
+  ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "prints scanner or QA output to the job log" "$A/summary.md" || bad+=" [$v]"
+done
+[[ -z "$bad" ]] && ok "OF-2 r7 ruling 53: arming refuses a scanner redirect to any directory but \$qlog, \$slog or \$tlog, a log directory assigned outside \$out or \$RUNNER_TEMP, and a scanner binary held in a variable or looked up with command -v" || no "OF-2 r7 redirect targets:$bad"
+bad=""; gdreset
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
