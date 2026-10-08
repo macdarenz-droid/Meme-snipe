@@ -137,7 +137,11 @@ class Market:
         §4 exit A): the last trade before the slot and the trades in it; the highest total rate. Returns (fees, source)."""
         rows = self.tape.pool_of(pool)
         if len(rows):
-            rows = rows[~rows["is_boost"].to_numpy()]
+            # BOOST slices and every other protocol row (buyback authority) pay no venue fee; nor does a row whose
+            # fee fields total 0. None of them sets our rate (red team R2-7).
+            tot0 = (rows["lp_fee_basis_points"].clip(lower=0) + rows["protocol_fee_basis_points"].clip(lower=0)
+                    + rows["coin_creator_fee_basis_points"].clip(lower=0))
+            rows = rows[~rows["is_protocol"].to_numpy() & (tot0.to_numpy() > 0)]
         sl = rows["slot"].to_numpy() if len(rows) else np.empty(0)
         a = np.searchsorted(sl, slot, "left")
         b = np.searchsorted(sl, slot, "right")

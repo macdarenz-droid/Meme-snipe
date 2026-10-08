@@ -236,3 +236,24 @@ class Pipeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProtocolRowFeesR2_7(unittest.TestCase):
+    def test_buyback_row_never_sets_the_exit_fee(self):
+        """R2-7: a buyback-authority swap (a protocol row) may carry fee fields of 0. As for BOOST slices, it must not
+        be the row our exit's fee rate comes from: the fee-paying neighbour's rates apply."""
+        from g1lib.market import Market
+        root = tempfile.mkdtemp(prefix="g1f_")
+        self.addCleanup(shutil.rmtree, root)
+        s = Synth()
+        s.create(S, 1, "A", "creatorA")
+        s.buy_to(S + 100, 1, "A", "o1", 80 * 10 ** 9)
+        s.complete(S + 300, 5, "A", "poolA")
+        s.pool_trade(S + 305, 1, "poolA", "A", "n1", "buy", quote=10 ** 9, bps=(2, 93, 30))
+        s.pool_trade(S + 310, 1, "poolA", "A", P.BUYBACK_AUTHORITY, "buy", quote=10 ** 9, bps=(0, 0, 0))
+        s.write(root, DAY, *U1)
+        units = find_units([root], plan={DAY: [U1]})
+        mkt = Market(load(units, links=False, log=quiet))
+        f, src = mkt.pool_fees(mkt.tape.names.get("poolA"), S + 320)
+        self.assertEqual((f.lp, f.protocol, f.creator), (2, 93, 30))
+        self.assertEqual(src, "trades")
