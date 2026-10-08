@@ -691,3 +691,47 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     expect(main).toContain('/usr/sbin/sshd -t || die "sshd refuses the SSH settings"');
   });
 });
+
+describe('PATHS-FIX ruling 24: the provider usage ledger is in every backup', () => {
+  // The real zeroed-backup and zeroed-restore-drill, with a stand-in `age` that copies (encryption is tested by the ops
+  // end-to-end with the real tool); sqlite3 and tar are the real ones.
+  const bin = mkdtempSync(join(tmpdir(), 'zeroed-bk-bin-'));
+  writeFileSync(join(bin, 'age'), '#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -R|-r|-i) shift 2 ;; -d) shift ;; *) in="$1"; shift ;; esac; done\nif [ -n "$out" ]; then cat "${in:-/dev/stdin}" > "$out"; else cat "${in:-/dev/stdin}"; fi\n');
+  chmodSync(join(bin, 'age'), 0o755);
+  const run = (script: string, args: string[], env: Record<string, string>) =>
+    spawnSync('bash', [join(root, script), ...args], { encoding: 'utf8', env: { PATH: `${bin}:${process.env['PATH'] ?? ''}`, ...env } });
+
+  it('a bundle holds zeroed-usage/rpc-usage.db and the restore drill restores and checks it', () => {
+    const t = mkdtempSync(join(tmpdir(), 'zeroed-bk-'));
+    const src = join(t, 'zeroed');
+    const usage = join(t, 'zeroed-usage');
+    const out = join(t, 'backups');
+    mkdirSync(src);
+    mkdirSync(usage);
+    const db = (p: string, table: string) => spawnSync('sqlite3', [p, `PRAGMA journal_mode=WAL; CREATE TABLE ${table}(x); INSERT INTO ${table} VALUES (1);`], { encoding: 'utf8' });
+    expect(db(join(src, 'bot.db'), 'ledger').status).toBe(0);
+    expect(db(join(usage, 'rpc-usage.db'), 'reservations').status).toBe(0);
+    writeFileSync(join(t, 'recipients'), 'age1test\n');
+    const env = { ZEROED_BACKUP_SRC: src, ZEROED_BACKUP_USAGE_SRC: usage, ZEROED_BACKUP_OUT: out, ZEROED_BACKUP_RECIPIENTS: join(t, 'recipients') };
+    const bk = run('ops/host/files/usr/local/sbin/zeroed-backup', [], env);
+    expect(bk.status, bk.stderr + bk.stdout).toBe(0);
+    expect(bk.stdout).toMatch(/: 2 file\(s\), 1 recipient\(s\)\.$/m);
+    const file = join(out, readdirSync(out)[0]!);
+    const listing = spawnSync('tar', ['-tf', file], { encoding: 'utf8' }).stdout.split('\n');
+    expect(listing).toContain('./zeroed-usage/rpc-usage.db');
+    expect(listing).toContain('./bot.db');
+    const drill = run('ops/host/files/usr/local/sbin/zeroed-restore-drill', [join(t, 'identity')], env);
+    expect(drill.status, drill.stdout).toBe(0);
+    expect(drill.stdout).toContain('zeroed-usage/rpc-usage.db reservations: 1 rows');
+    expect(drill.stdout).toMatch(/^PASS: .*, 2 file\(s\) restored/m);
+    // The drill compares against the live usage ledger: a different live schema fails it.
+    expect(spawnSync('sqlite3', [join(usage, 'rpc-usage.db'), 'CREATE TABLE extra(y);']).status).toBe(0);
+    const bad = run('ops/host/files/usr/local/sbin/zeroed-restore-drill', [join(t, 'identity')], env);
+    expect(bad.stdout).toContain('FAIL: zeroed-usage/rpc-usage.db tables differ from the live database');
+    rmSync(t, { recursive: true, force: true });
+  });
+
+  it('the backup unit may read the usage folder', () => {
+    expect(read('ops/host/files/etc/systemd/system/zeroed-backup.service')).toMatch(/^ReadWritePaths=\/var\/backups\/zeroed \/var\/lib\/zeroed \/var\/lib\/zeroed-usage$/m);
+  });
+});
