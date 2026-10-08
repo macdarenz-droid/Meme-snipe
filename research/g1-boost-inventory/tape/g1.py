@@ -108,7 +108,7 @@ def strip_verdict(res: dict) -> dict:
     def strip(x):
         if not isinstance(x, dict):
             return x
-        return {k: (None if (k == "passes" or k.endswith("_pass") or k.endswith("_passes") or k in ("kills", "days_ok"))
+        return {k: (None if (k == "passes" or k.endswith("_pass") or k.endswith("_passes") or k in ("kills", "days_ok", "kills_by_day"))
                     else strip(v)) for k, v in x.items()}
     out = strip(res)
     out["verdict"] = "none: partial days (dev subset)"

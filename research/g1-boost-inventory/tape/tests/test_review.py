@@ -158,12 +158,13 @@ class PerDayMinimum(unittest.TestCase):
 class PartialDays(unittest.TestCase):
     def test_no_verdict_anywhere(self):
         import g1
-        res = {"G1_0": {"passes": False, "kills": ["x"]},
+        res = {"G1_0": {"passes": False, "kills": ["x"], "kills_by_day": {"2026-09-10": ["x"]}},
                "G1_HC": {"c_pass": True, "c_count_gate": {"passes": True, "days_ok": {"2026-09-10": True}}},
                "G1_CAP": {"d_pass": True, "passes": True}}
         out = g1.strip_verdict(res)
         self.assertIsNone(out["G1_0"]["passes"])
         self.assertIsNone(out["G1_0"]["kills"])
+        self.assertIsNone(out["G1_0"]["kills_by_day"])
         self.assertIsNone(out["G1_HC"]["c_count_gate"]["passes"])
         self.assertIsNone(out["G1_HC"]["c_count_gate"]["days_ok"])
         self.assertIsNone(out["G1_CAP"]["passes"])
@@ -193,6 +194,46 @@ class BoostShareRule(unittest.TestCase):
         r = boost_rows(mkt, tape, 1, {"slot": m, "pool_c": pool})
         self.assertAlmostEqual(r["share_after_mD"], 0.1)          # the slice in slot m + D does not count
         self.assertEqual(r[f"unspent_at_m+{P.D}"], 600)
+
+
+
+class G10PooledAndDays(unittest.TestCase):
+    """Amendment 5: pooled statistics, and no single day may trigger a kill alone."""
+    days = ["2026-09-10", "2026-09-11"]
+
+    def events(self, catch=(150, 150), slots=((100, 150), (100, 50)), shares=((1.0, 30), (1.0, 30))):
+        rows = []
+        for day, n, (sl, nm) in zip(self.days, catch, slots):
+            for i in range(max(n, nm)):
+                rows.append({"day": day, "t0": 1000, "catchable": i < n, "m": 1000 + sl if i < nm else -1})
+        trig = pd.DataFrame(rows)
+        g = pd.DataFrame([{"day": day, "share_after_mD": sh} for day, (sh, k) in zip(self.days, shares) for _ in range(k)])
+        return trig, g, g
+
+    def test_pooled_pass(self):
+        from g1lib.gate import g1_0_kills
+        kills, by_day = g1_0_kills(*self.events(), self.days)
+        self.assertEqual(kills, [])
+
+    def test_one_day_alone_triggers_the_time_kill(self):
+        from g1lib.gate import g1_0_kills
+        # pooled median slots t0 -> m is 100 (200 of 250 migrating triggers), but 09-11 alone has median 5 <= D
+        kills, by_day = g1_0_kills(*self.events(slots=((100, 200), (5, 50))), self.days)
+        self.assertEqual(by_day["2026-09-11"], ["median slots t0 to m <= D"])
+        self.assertEqual(kills, ["2026-09-11: median slots t0 to m <= D"])
+
+    def test_one_day_alone_triggers_the_count_kill(self):
+        from g1lib.gate import g1_0_kills
+        kills, _ = g1_0_kills(*self.events(catch=(190, 30)), self.days)       # pooled 220 >= 200; 30 < 40
+        self.assertEqual(kills, ["2026-09-11: catchable triggers below 40% of 100 on this day"])
+        kills, _ = g1_0_kills(*self.events(catch=(150, 40)), self.days)       # pooled 190 < 200
+        self.assertEqual(kills, ["fewer than 100 catchable triggers a day (pooled)"])
+
+    def test_one_day_alone_triggers_the_share_kill(self):
+        from g1lib.gate import g1_0_kills
+        # pooled: 10 of 40 graduates below 25%; 09-11 alone: all 10 below
+        kills, _ = g1_0_kills(*self.events(shares=((1.0, 30), (0.0, 10))), self.days)
+        self.assertEqual(kills, ["2026-09-11: BOOST quote after m + D under 25% on most graduates"])
 
 
 if __name__ == "__main__":

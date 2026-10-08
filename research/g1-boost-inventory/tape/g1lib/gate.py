@@ -167,20 +167,46 @@ def g1_0(d: pd.DataFrame, grads: pd.DataFrame, mkt: Market, days) -> dict:
         if col in g:
             out["desc_median_" + col] = float(g[col].median())
     out["desc_boost_slippage_failures"] = int(g["boost_slippage_failures"].sum()) if "boost_slippage_failures" in g else 0
-    # kill rules
-    n_days = max(len(days), 1)
-    avg_catch = sum(out["catchable_per_day"].get(str(x), 0) for x in days) / n_days
-    out["avg_catchable_per_day"] = avg_catch
-    kills = []
-    if not math.isnan(out["b_median_slots_t0_to_m"]) and out["b_median_slots_t0_to_m"] <= P.D:
-        kills.append("median slots t0 to m <= D")
-    if boost_share_kills(out["c_fraction_below_25pct_all"], out["c_fraction_below_25pct_triggered"]):
-        kills.append("BOOST quote after m + D under 25% on most graduates")
-    if avg_catch < P.GATE_MIN_CATCHABLE_PER_DAY:
-        kills.append("fewer than 100 catchable triggers a day")
+    # kill rules (amendment 5): computed on the pooled Step A events, and no single day may trigger a kill alone
+    kills, by_day = g1_0_kills(trig, gc, gt, days)
+    out["catchable_count_gate"] = count_gate(out["catchable_per_day"], days, P.GATE_MIN_CATCHABLE_PER_DAY)
+    out["kills_by_day"] = by_day
     out["kills"] = kills
     out["passes"] = not kills
     return out, trig
+
+
+def _time_share_kills(trig: pd.DataFrame, gc: pd.DataFrame, gt: pd.DataFrame) -> list:
+    """The time and share kills of PREREG §6 on one set of events, at the full thresholds."""
+    kills = []
+    mig = trig[trig["m"] >= 0]
+    slots = (mig["m"] - mig["t0"]).to_numpy()
+    if len(slots) and float(np.median(slots)) <= P.D:
+        kills.append("median slots t0 to m <= D")
+    fa = float((gc["share_after_mD"].fillna(0.0) < P.GATE_BOOST_SHARE_AFTER).mean()) if len(gc) else math.nan
+    ft = float((gt["share_after_mD"].fillna(0.0) < P.GATE_BOOST_SHARE_AFTER).mean()) if len(gt) else math.nan
+    if boost_share_kills(fa, ft):
+        kills.append("BOOST quote after m + D under 25% on most graduates")
+    return kills
+
+
+def g1_0_kills(trig: pd.DataFrame, gc: pd.DataFrame, gt: pd.DataFrame, days):
+    """Amendment 5: G1-0's statistics on the pooled Step A events; G1-0 passes only if the pooled statistics pass
+    and no day alone triggers a kill: the catchable count needs at least 40% of the threshold on each day
+    (amendment 4's count gate), and the time and share rules must pass on each day's own events at full threshold."""
+    kills = _time_share_kills(trig, gc, gt)
+    per_day = {str(k): int(v) for k, v in trig.groupby("day")["catchable"].sum().items()}
+    cg = count_gate(per_day, days, P.GATE_MIN_CATCHABLE_PER_DAY)
+    if cg["pooled"] < cg["pooled_needed"]:
+        kills.append("fewer than 100 catchable triggers a day (pooled)")
+    by_day = {}
+    for day in days:
+        k = _time_share_kills(trig[trig["day"] == day], gc[gc["day"] == day], gt[gt["day"] == day])
+        if not cg["days_ok"].get(str(day), False):
+            k.append("catchable triggers below 40% of 100 on this day")
+        by_day[str(day)] = k
+        kills += [f"{day}: {x}" for x in k]
+    return kills, by_day
 
 
 def strata_rows(d: pd.DataFrame, grads: pd.DataFrame, flows: Dict[int, dict]) -> dict:
