@@ -429,9 +429,14 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
             w = g[(g["block_time"] <= t1) & ((g["slot"] > s0 + LANDING) if plus23 else (g["block_time"] >= t0))]
             w = w[w["is_buy"] & w["ftb"] & ~w["fake"] & ~w["excluded"]]
             before = g[g["block_time"] <= t0]
-            eq = eff_quote(before.iloc[-1]) if len(before) else np.nan
+            last = before.iloc[-1] if len(before) else None
+            eq = eff_quote(last) if last is not None else np.nan
             res[f"{name}_ftb_sol"] = float(w["sol"].sum())
             res[f"{name}_eff_quote"] = eq
+            # the same as-of state's base reserve and supply, for the tier in the payer-mass bar (AMENDMENT_7)
+            res[f"{name}_base"] = (last["pool_base_post"] if pd.notna(last["pool_base_post"]) else last["pool_base_pre"]) \
+                if last is not None else np.nan
+            res[f"{name}_supply"] = last["supply"] if last is not None else np.nan
             res[f"{name}_share"] = res[f"{name}_ftb_sol"] / eq if eq and eq > 0 else np.nan
         out.update(res)
         rows.append(out)
