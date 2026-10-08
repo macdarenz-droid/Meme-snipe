@@ -24,8 +24,9 @@ export type DecodedAccount =
 
 /**
  * `layoutExtended`: non-zero bytes after the part the pinned IDL describes (zero bytes are allocated capacity, not
- * data); callers alert (`m02.layout_extended`). `shortLegacy`: a BondingCurve written before its trailing fields were
- * added, read with those fields as 0 / false / Pubkey::default() [DA-15, DA-V01].
+ * data); callers alert (`m02.layout_extended`). `shortLegacy`: a BondingCurve, pump Global or PumpSwap Pool written
+ * before its trailing fields were added, read with those fields as 0 / false / Pubkey::default() [DA-15, DA-V01; card
+ * IDL-REPIN for Global and Pool].
  */
 export interface DecodeFlags { layoutExtended: boolean; shortLegacy: boolean }
 
@@ -146,16 +147,33 @@ function variant(def: IdlTypeDef, idl: PinnedIdl['name'], v: Record<string, unkn
 }
 
 const NO_FLAGS: Readonly<DecodeFlags> = Object.freeze({ layoutExtended: false, shortLegacy: false });
-const fieldEndsOf = new WeakMap<IdlTypeDef, readonly number[]>();
 
 /**
- * Body offsets at which each field of a struct of fixed-size fields (the BondingCurve) ends, measured once by reading
- * zero bytes; the last one is the full size. A legacy account ends on one of these boundaries.
+ * POLICY (card IDL-REPIN): the last field each padded type had at the previous pin cb188ce. pump-public-docs 8cda1fa
+ * appends fields to all three (BondingCurve: `creator_fee` to `post_complete_quote_in`; Global: `max_curve_depth`;
+ * Pool: `protocol_fees`, `creator_fees`) and says accounts written before are shorter and read the missing trailing
+ * fields as 0 (docs/PUMP_PROGRAM_README.md "Fields appended to `BondingCurve`", docs/PUMP_SWAP_README.md "Pools written
+ * before an appended field existed", docs/instructions/SWEEP_FEES.md "Account layout"; `extend_account` grows `Global`
+ * "to allow adding new fields to the existing account types"). From that field's end on, an account is padded when it
+ * ends on a field boundary, or when its bytes past the last boundary are all zero (allocated capacity under the
+ * previous pin, never data), so every account the previous pin decoded still decodes, with the new fields as 0.
+ * Shorter Global and Pool accounts stay `unknown`, as under the previous pin.
+ */
+const PADDED_FROM: Readonly<Record<string, string>> = {
+  'pump.BondingCurve': 'is_holder_reward', 'pump.Global': 'is_holder_reward_enabled', 'pump_amm.Pool': 'is_holder_reward',
+};
+const fieldEndsOf = new WeakMap<IdlTypeDef, readonly number[]>();
+/** Zero bytes read to measure a padded type's field ends: more than its full size (Global is 1,080 bytes at 8cda1fa). */
+const FIELD_ENDS_PROBE = 8_192;
+
+/**
+ * Body offsets at which each field of a struct of fixed-size fields (BondingCurve, Global, Pool) ends, measured once by
+ * reading zero bytes; the last one is the full size. A legacy account ends on one of these boundaries.
  */
 function fieldEnds(def: IdlTypeDef): readonly number[] {
   let ends = fieldEndsOf.get(def);
   if (ends === undefined) {
-    const r = new Reader(new Uint8Array(1024));
+    const r = new Reader(new Uint8Array(FIELD_ENDS_PROBE));
     ends = def.fields.map((f) => { f.read(r); return r.offset(); });
     fieldEndsOf.set(def, ends);
   }
@@ -170,15 +188,25 @@ function decodeAnchor(owner: Pubkey, data: Uint8Array, idl: PinnedIdl): { accoun
   if (def === undefined) return unknown;
   let body = data.subarray(8);
   let shortLegacy = false;
-  if (idl.name === 'pump' && def.name === 'BondingCurve') {
-    if (data.length < CURVE_MIN_LEN) return unknown;
-    // Short legacy curve: read as if the missing trailing fields were zero [DA-15, DA-V01]. A real legacy account ends
-    // on a field boundary of the pinned layout (49, 81, 82, 83, 115, 123 or 124 bytes); any other short length would
-    // build a field from real and zero bytes, so it is `unknown` (review C03-R1-4).
+  const isCurve = idl.name === 'pump' && def.name === 'BondingCurve';
+  const paddedFrom = PADDED_FROM[`${idl.name}.${def.name}`];
+  if (isCurve && data.length < CURVE_MIN_LEN) return unknown;
+  if (paddedFrom !== undefined) {
+    // Short legacy account: read as if the missing trailing fields were zero [DA-15, DA-V01]. Below the previous pin's
+    // end, a real legacy curve ends on a field boundary of the pinned layout (49, 81, 82, 83, 115, 123 or 124 bytes);
+    // any other short length would build a field from real and zero bytes, so it is `unknown` (review C03-R1-4).
     const ends = fieldEnds(def);
     const full = ends[ends.length - 1] as number;
+    const at = def.fields.findIndex((f) => f.name === paddedFrom);
+    if (at < 0) return unknown;                                   // the pinned layout lost the field: never guess
+    const floor = ends[at] as number;
     if (body.length < full) {
-      if (!ends.includes(body.length)) return unknown;
+      const below = body.length < floor;
+      if (below && !isCurve) return unknown;
+      if (!ends.includes(body.length)) {
+        const last = Math.max(...ends.filter((e) => e < body.length));
+        if (below || body.subarray(last).some((b) => b !== 0)) return unknown;
+      }
       shortLegacy = true;
       const padded = new Uint8Array(full);
       padded.set(body);
