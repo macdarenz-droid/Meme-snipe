@@ -980,7 +980,7 @@ d=2026-07-22; : > "$GD/published"; while [[ ! "$d" > 2026-08-21 ]]; do echo "$d"
 mkfx "$T/fxk3" ARCHIVE_RETENTION=K3
 ACFX=$T/fxk3/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" ]] && grep -q "every allow-listed day is read done; no request made" "$A/summary.md" &&
-  ok "OF-2: with all 31 allow-listed days read done nothing is sent: 09-21 (Helius), the holdout days and days before 07-22 are never queued" || no "archive-check queue empty: $(cat "$A/summary.md")"
+  ok "OF-2: with all 31 allow-listed days (30 days; 31 with the 07-22 lead-in) read done nothing is sent: 09-21 (Helius), the holdout days and days before 07-22 are never queued" || no "archive-check queue empty: $(cat "$A/summary.md")"
 rm -f "$GD/published"
 ac env AC_STATUS=206 AC_BYTES=65
 [[ ! -e "$GD/dispatch.log" ]] && grep -qx served=false "$A/output" && ok "archive-check: a 206 of more than 64 bytes is not served" || no "archive-check oversized 206"
@@ -1742,12 +1742,12 @@ rc=0; cont CHAIN=0 SOURCE=archive GD_RUNS_FAIL=1 || rc=$?; [[ $rc == 1 && ! -e "
 gdreset
 [[ -z "$bad" ]] && ok "OF-2: the continue job allows one resumable restart a day for the archive, counted per day from run history (a second exit 75 of 07-22 fails it whatever inputs.chain says; another day's restart does not count; an unreadable history stops); Helius chains are unchanged" || no "OF-2 continue:$bad"
 bad=""
-# The repository's values: 31 days, unarmed, retention unset, re-arm time valid.
+# The repository's values: 30 days; 31 with the 07-22 lead-in, unarmed, retention unset, re-arm time valid.
 ( . "$here/archive-limits.conf"; . "$here/archive-guard.sh"
   days=$(ag_days) && [[ $(wc -l <<< "$days") == 31 && $(head -1 <<< "$days") == 2026-07-22 && $(tail -1 <<< "$days") == 2026-08-21 ]] &&
   ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && -z "$ARCHIVE_ARM" && -z "$ARCHIVE_RETENTION" ]] &&
   ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ -z "$(ag_pinned_id)" ]] ) &&
-  ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (31 days, 09-21 stays in HELIUS_DAYS only), ARCHIVE_ARM and ARCHIVE_RETENTION empty, ARCHIVE_REARM_AT a valid UTC time, no B10-PULL row pinned yet" || no "OF-2 repository values"
+  ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only), ARCHIVE_ARM and ARCHIVE_RETENTION empty, ARCHIVE_REARM_AT a valid UTC time, no B10-PULL row pinned yet" || no "OF-2 repository values"
 
 # ---- OF-3: K3 reads take the pinned migration list; the K2 release keeps the rescan hashes and the per-unit log; the trim ----
 gdreset; bad=""
