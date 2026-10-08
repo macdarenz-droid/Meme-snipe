@@ -131,7 +131,15 @@ class TestMarketCap(unittest.TestCase):
         s.loc[1, "base_supply"] = 0.9e15  # live supply after burns: 369 SOL with it, 410 with 1e15 (both tier 30)
         s.loc[0, "base_supply"] = 0.97e15  # 417 with live supply (tier 30), 430 with 1e15 (tier 95)
         t = F.supply_rule_tally(s, tiers)
-        self.assertEqual(t, {"n": 2, "base_supply": 1, "fixed_1e15": 2})
+        # Agreement is measured only where live and fixed supply pick different tiers (row 0 only).
+        self.assertEqual(t, {"n": 2, "n_diff": 1, "base_supply": 0, "fixed_1e15": 1})
+        self.assertFalse(run_a.supply_verified(t))
+        s2 = pd.DataFrame([swap(1, "X", 430, cfee=30), swap(2, "X", 410, cfee=30)])
+        s2.loc[0, "base_supply"] = 0.97e15  # live 417 (tier 30) is right; fixed 430 (tier 95) is wrong
+        t2 = F.supply_rule_tally(s2, tiers)
+        self.assertEqual(t2, {"n": 2, "n_diff": 1, "base_supply": 1, "fixed_1e15": 0})
+        self.assertTrue(run_a.supply_verified(t2))
+        self.assertFalse(run_a.supply_verified({"n": 5, "n_diff": 0, "base_supply": 0, "fixed_1e15": 0}))
 
 
 class TestPipeline(unittest.TestCase):
@@ -338,6 +346,73 @@ class TestGates(unittest.TestCase):
         self.assertTrue(r["gate2_bunching"]["pass"])
         self.assertFalse(r["gate3_creator"]["pass"])
         self.assertEqual(r["decision"], "A closes: no return is read")
+
+
+class TestPlaceboInfinities(unittest.TestCase):
+    def test_minus_inf_placebo_cannot_inflate_gate2(self):
+        dn = np.ones((1, 21))
+        up = np.ones((1, 21))
+        up[0, 0] = np.exp(0.2)
+        up[0, 1:19] = np.exp(np.arange(18) - 8.5)  # finite placebo log ratios -8.5..8.5
+        up[0, 19:21] = 0.0  # time below the cutoff, none above: log ratio -inf, counted as +inf
+        self.assertAlmostEqual(G.gate2_stat(up, dn)[0], 0.2 - 1.0)
+
+
+def plan_file(root, rows):
+    p = os.path.join(root, "plan.txt")
+    with open(p, "w") as f:
+        f.write("".join(f"{d} 1033 {a} {b}\n" for d, a, b in rows))
+    return p
+
+
+class TestStepCompleteness(unittest.TestCase):
+    A = ["2026-09-10", "2026-09-11"]
+    B = ["2026-09-07", "2026-09-08", "2026-09-09"]
+    C = ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06"]
+
+    def test_step_map(self):
+        self.assertEqual(L.STEP_DAYS, {"A": tuple(self.A), "B": tuple(self.B), "C": tuple(self.C)})
+        self.assertEqual(L.steps_from_days(self.A), ("A",))
+        self.assertEqual(L.steps_from_days(["2026-09-11"]), ())
+        self.assertEqual(L.scoring_steps(self.A + self.B), ("A", "B"))
+        self.assertEqual(L.scoring_steps(self.A + self.B + self.C), ("A", "B", "C"))
+        for bad in (["2026-09-11"], self.A + self.C, self.A + ["2026-09-07"], self.B):
+            with self.assertRaises(L.IncompleteError):
+                L.scoring_steps(bad)
+
+    def test_days_fully_covered(self):
+        d = "2026-09-10"
+        u = [L.Unit("x", d, 0, 9, "v2"), L.Unit("y", d, 10, 19, "v2"), L.Unit("z", d, 20, 29, "v2")]
+        with tempfile.TemporaryDirectory() as r:
+            plan = L.read_plan(plan_file(r, [(d, 20, 29), (d, 0, 9), (d, 10, 19)]))
+            L.check_days_complete(u, [d], plan)
+            with self.assertRaises(L.IncompleteError):  # a planned unit is missing
+                L.check_days_complete(u[:2], [d], plan)
+            with self.assertRaises(L.IncompleteError):  # a unit not in the plan
+                L.check_days_complete(u + [L.Unit("w", d, 30, 39, "v2")], [d], plan)
+            with self.assertRaises(L.IncompleteError):  # the day is not in the plan
+                L.check_days_complete(u, [d, "2026-09-11"], plan)
+            gap = L.read_plan(plan_file(r, [(d, 0, 9), (d, 20, 29)]))
+            with self.assertRaises(L.IncompleteError):  # the planned units leave a slot gap
+                L.check_days_complete([u[0], u[2]], [d], gap)
+
+    def test_cli_refuses_partial_scoring(self):
+        with tempfile.TemporaryDirectory() as r:
+            unit = standard_tape(r)
+            plan = plan_file(r, [(DAY, 1000, 1999)])
+            base = [sys.executable, os.path.join(HERE, "run_a.py"), "--out", os.path.join(r, "o"),
+                    "--fee-config", fee_config(r), "--plan", plan, "--score-primary", "--confirm", run_a.CONFIRM]
+            runs = {
+                "units": ["--days", DAY, "--units", unit],
+                "max_units": ["--days", DAY, "--cache", r, "--max-units", "1"],
+                "step_incomplete": ["--days", DAY, "--cache", r],  # 09-10 alone is not Step A
+            }
+            for name, extra in runs.items():
+                rc = subprocess.run(base + extra, capture_output=True, text=True)
+                self.assertNotEqual(rc.returncode, 0, name)
+                self.assertFalse(os.path.exists(os.path.join(r, "o", "gates.json")), name)
+            ok = subprocess.run(base[:-3] + ["--days", DAY, "--units", unit], capture_output=True, text=True)
+            self.assertEqual(ok.returncode, 0, ok.stderr)  # check mode still accepts --units
 
 
 if __name__ == "__main__":
