@@ -114,6 +114,9 @@ The runner, on the research host too, refuses to register an `id@version` whose 
 **How a key gets its group** (round 14 ruling 105). The tag is derived from which modules read the key, through B-M25-01's static key-usage check (B-M25-01 today checks only that every key used in code exists in the schema; deriving the readers from it is a PROPOSED extension): read by the cost or fill model → M; read by M21 for admission → P (admission); read only for sizing → S. A key read by more than one takes the strictest path (admission, then M, then S). Readers are derived by the import and call-graph closure, so a key read through a shared helper counts against every module that calls the helper; a lint rule allows config reads only through typed literal accessors, and a key whose readers cannot be resolved statically takes P (admission) (round 15 ruling 109). CI fails when a hand tag disagrees with the derived one. A key that can flip a fill or a reject is never S: the entry and exit slippage caps are tagged P (admission).
 
 **Pending decisions** (round 15 ruling 108). While a `recost`, a k trial or a B-9 decision is pending for a strategy, the validator refuses any other change that touches its `configKey` (`E_DECISION_PENDING`, PROPOSED code, named by the ruling); only A1 tightenings and a cancel of the pending change are accepted. The SOL test, every what-if and every apply-time check use the last frozen `configKey`'s model, never a pending value.
+- An A1 change during a pending decision applies but does not re-freeze. Its apply-time check runs against the last frozen model with the A1 value. The host stays mismatched (no new emissions, exits kept) until the decision resolves. The outcome then freezes either the decided result with the A1 keys, or, if the pending value is reverted, the last frozen model plus the A1 keys (round 16 ruling 111).
+- A cancel reverts the pending value to the last frozen value, as a free exact return. The k, `recost` or B-9 trial is registered when the decision starts, before it reads any window, and a cancel keeps it (round 16 ruling 112).
+- A pending decision older than 24 h raises the mismatch alert chain (at 24 h, then daily, then a DECISIONS line within 2 days). That DECISIONS entry may only cancel or complete the decision, never apply the pending value (round 16 ruling 113).
 
 **Mixed diffs** (round 14 ruling 104). A diff that holds a group M key and any other key is refused (`E_MIXED_GROUP_M`, PROPOSED code, named by the ruling); the dashboard splits it into two submits, the group M part first.
 
@@ -371,6 +374,9 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | AC-90 | With a group M change B pending (frozen model A), a further group M change C is compared with A, never with B | Round 15 ruling 108 |
 | AC-91 | A key read only through a shared helper that M21 calls is derived as P (admission); a key read through a non-literal accessor fails lint, and one whose readers cannot be resolved takes P | Round 15 ruling 109 |
 | AC-92 | An A3 raise applied at `effective_at` by `scheduler` registers its `whatif` trial against the submitting operator; a `cli` change creates an `applycheck` trial; a `sentinel` tightening creates none | Round 15 ruling 110 |
+| AC-93 | With a group M change B pending (frozen model A), an A1 `MAXPOS` lowering applies; the frozen `configKey` still holds A, the host emits nothing new and keeps exits, and a later what-if uses A; when the decision resolves, the frozen key holds the outcome with the lowered `MAXPOS` | Round 16 ruling 111 |
+| AC-94 | A cancelled pending group M change restores A at no cost; its trial, registered when the decision started, stays in the registry and in the DSR count | Round 16 ruling 112 |
+| AC-95 | A decision pending for more than 24 h raises the alert at 24 h, then daily (fake clock); the DECISIONS path can cancel or complete it but never applies the pending value | Round 16 ruling 113 |
 
 ### Tests
 
@@ -452,6 +458,8 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | Validator unit with a fake pending decision: refusals, accepted A1 and cancel, comparison with the frozen model | AC-89, AC-90 |
 | Lint and CI fixtures: shared-helper reader; non-literal accessor; unresolved reader | AC-91 |
 | Validator unit with a fake registry: `scheduler`, `cli` and `sentinel` actors | AC-92 |
+| Validator and host unit with a fake pending decision: A1 during the decision; cancel; trial at start | AC-93, AC-94 |
+| Host unit with a fake clock: the pending-decision alert chain and the allowed DECISIONS outcomes | AC-95 |
 | Metrics: `signals_total{strategy}`, `proposal_dropped_total{reason}`, `strategy_onbar_ms{strategy}`; log `M09.strategy_disabled` | A-M09-01 observability |
 
 Every bug-fix test must fail before and pass after (AGENTS.md "Builders"). MIGRATION row A-M09-01 marks `core/src/engine/engine.ts:17-40` and `core/test/purity.test.ts` as adapt; under "No bugs migrate" its B1 and B5 probes are AC-27 and AC-28.
@@ -705,6 +713,14 @@ Reviewer at `4bf69714` (PASS, 1 optional MINOR) and red team round 14 at `4bf697
 108. A1: while a `recost`, k or B-9 decision is pending, other changes to the strategy's `configKey` are refused (`E_DECISION_PENDING`) except A1 tightenings and a cancel; checks use the last frozen model (section 3; AC-89, AC-90).
 109. a1: readers derived by import and call-graph closure; typed literal accessors only; unresolved readers take P (section 3; AC-91).
 110. a2 and reviewer n1: `scheduler` is attributed to the submitting actor; `cli` is an operator or owner change; `sentinel`, `risk_engine` and `system` are system. The actor names are checked against ARCH 5.0a, SPEC-A A-M13-07 step 5 and SPEC-B B-M26-04 step 5 (section 3; AC-92).
+
+### Round 16
+
+Reviewer at `664f75e2` (PASS) and red team round 15 at `664f75e2` (1 MAJOR, 2 MINOR); rulings 111–113 in the review log on `claude/supervisor-docs-2` @ `9393517c`:
+
+111. B1: an A1 change during a pending decision applies without re-freezing, is checked against the last frozen model, keeps the host mismatched, and is frozen with the outcome (section 3, "Pending decisions"; AC-93).
+112. b1: a cancel reverts to the last frozen value at no cost; the decision's trial is registered at its start and kept on cancel (AC-94).
+113. b2: a pending decision older than 24 h raises the alert chain; its DECISIONS entry may only cancel or complete it (AC-95).
 
 ## Open points
 
