@@ -53,3 +53,21 @@ test-ci re-run gives 186/0 at the head and 143/44 on the base. Go, lint and the 
 18. **m7.** Parse Retry-After strictly (delta-seconds or IMF-fixdate, RFC 9110). Present but unclean, or above 7 days: record a sentinel that holds the chain until a reviewed re-arm.
 19. **Reviewer m1.** Guard test-ci.sh:335 so a fail-before run completes.
 20. **Reviewer m4.** `--probe` runs `ag_local` itself before any request.
+
+## Round 3 (head `3b67e97d`): reviewer PASS (3 MINOR); red team 0 BLOCKER, 3 MAJOR, 5 MINOR
+
+- Round 2 items closed (both). Red team A: re-running an old default-branch run (data-scan #1–#8, archive-check #1–#14, old unguarded code) reads the archive, and the new history misses it (selected by createdAt, headBranch is the default). B: a guard refusal inside the scan job counts as a failure with no request made; AG_BUSY also counts `data-scan volume` runs and a queued manual dispatch, so a clean batch can be counted F. C: check-day prints the QA report (block and trade counts, account addresses, slots) to the public job log. m1 AG_FOREIGN also stops on runs that read nothing. m2 GitHub's per-job annotation limits can drop the back-off record. m4 the `contents: write` check is a literal match (quoted values, `write-all`, flow mappings, a removed block) and other workflows are not checked. m5 a trailing space in Retry-After triggers the hold.
+- Reviewer: m1 = red team m4; m2 annotation retention is not verified, and a deleted annotation reads as "none"; m3 an old branch's archive-check.yml can be dispatched by hand; test-ci.sh:714 has the unguarded awk.
+
+### Supervisor rulings for round 4 (8 Oct 2026, 4:50 PM)
+
+21. **A.** Select runs by `updatedAt` ≥ `AG_SINCE`, not `createdAt`. Any attempt > 1 of a run whose head SHA has no archive-guard.sh is foreign and stops the chain. At arm time, the arm checklist lists every old run whose re-run window is still open; deleting runs is hard to undo, so the supervisor puts "delete them or wait for the window to close" to the owner then.
+22. **B.** The classifier never counts a scan job whose failed step is "Archive guard before the scan" or "Archive guard before QA" (no request was made). guardqa skips AG_BUSY and the 60-min check. AG_BUSY and AG_LANE_END ignore titles starting "data-scan volume".
+23. **C.** QA output goes to the dataset directory (the private store), never to a log or step summary. Public logs and summaries in the archive path carry only pass or fail, unit counts and file sizes. A test-ci check that no archive-path step prints the report; ag_private_storage checks it.
+24. **m1.** AG_FOREIGN counts only runs where a `scan (...)` job started, or whose head SHA lacks archive-guard.sh.
+25. **m2.** Emit the back-off annotation first, in its own step. A counted probe failure with no annotation reads as `end=hold` (fail closed), not "none".
+26. **m4 / reviewer m1.** Parse permissions structurally (yq or python3's yaml, whichever the runner has: **VERIFY**). Arming requires an explicit top-level `permissions:` with `contents: read`, no `write-all`, and no job that grants `contents: write` (quoted, flow or block form). Every workflow is checked for scan-day.sh, zeroed-scan, archive-derived cache keys and release writes. test-ci cases for the four forms, a removed block and `write-all`.
+27. **m5.** Trim whitespace before the strict Retry-After parse.
+28. **Reviewer m2.** Read the repository's Actions log retention through the API if it is readable (read only); otherwise it becomes a one-line owner check on the arm checklist. Record the value in DECISIONS.
+29. **Reviewer m3.** unguarded-refs.sh also lists branches whose archive-check.yml lacks archive-guard.sh, and AG_FOREIGN counts completed archive-check runs from non-default branches since `ARCHIVE_REARM_AT`.
+30. **Reviewer note.** Guard test-ci.sh:714 the same way as :356.
