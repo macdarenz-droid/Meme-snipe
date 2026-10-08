@@ -403,3 +403,14 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
 111. **B1.** During a pending decision, an A1 change applies but does not re-freeze. Its apply-time check runs against the last frozen model with the A1 value. The host stays mismatched (no new emissions, exits kept) until the decision resolves; the outcome then freezes the result with the A1 keys, or reverts the pending value and freezes the last frozen model plus the A1 keys. AC: with a pending M change B, an A1 MAXPOS lowering applies, the frozen configKey still holds A, and a later what-if uses A.
 112. **b1.** A cancel reverts the pending value to the last frozen value (the free exact return). The k, `recost` or B-9 trial is registered when the decision starts, before it reads any window, and a cancel keeps it. AC: a cancelled pending M change restores A, and its trial stays in the registry and the DSR count.
 113. **b2.** A pending decision older than 24 h raises the same alert chain as a mismatch (24 h, then daily, then a DECISIONS line within 2 days). That DECISIONS entry may only cancel the decision (ruling 112) or complete it, never apply the pending value.
+
+## Round 16 (head `e57e9394`): reviewer PASS (no findings); red team 0 BLOCKER, 0 MAJOR, 2 MINOR
+
+- c1: the configuration frozen when a decision resolves (B with the A1 keys) is never checked as a whole; a conservative B at a lowered size can be net negative.
+- c2: with several A1 changes during one decision, each check sees only its own value.
+- Nothing at MAJOR remains. After these two, #293 merges on green CI.
+
+### Supervisor rulings for round 17 (8 Oct 2026, 3:38 PM)
+
+114. **c1.** When a decision resolves, re-run the A1 apply-time checks (size table, admission trade set) on the configuration about to be frozen, before emission resumes. If the CI lower bound is ≤ 0 or null, freeze it but raise `size_not_profitable` or `admission_not_profitable` ("No knowingly losing trades"). This is an `applycheck` trial (no k, no r). AC: B a conservative recost plus an A1 MAXPOS lowering during the decision; if B fails at the lowered size, the strategy resumes entry-blocked.
+115. **c2.** Each A1 check during a pending decision runs against the last frozen model with every A1 value applied since the decision started. AC: two A1 changes during one decision; the second check sees both.
