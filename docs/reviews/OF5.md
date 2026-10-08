@@ -13,3 +13,8 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-5 bullet. Builder: data builder `session_
 2. **Red team m2, required.** `ag_b10_done` judges B-10 done from the release's recorded retention (every `units-D.log` line K3 with the list sha256), not from the tag name. Test: 07-22 stored at K3 under the plain tag counts as B-10 done.
 - Reviewer (round 1, `5478dd5b`): PASS, 0 BLOCKER, 0 MAJOR, 1 MINOR. The card points are met; test-ci 272/0; the three new blocks fail on `93140d9d`; label matches.
 3. **Reviewer MINOR (9 Oct about 10:33 AM), folded into ruling 1.** `ag_read_done` and `ag_b10_done` count a tag without a complete release. Under ruling 1 all three predicates require `release_state` complete and the `readback-ok` marker. Test: a tagged release with one asset not uploaded is not done.
+
+## Round 2 (head `1af47fd6`, contains OF-4 `ab2c9b87`)
+
+- Builder: rulings 1–3 built; test-ci 275/0; the new tests fail on `5478dd5b`; label unchanged.
+4. **Builder's note, ruled (9 Oct about 10:55 AM), required.** `assemble.sh --download` reads `data-day-D` without the `readback-ok` check. It uses the shared `release-state.sh` and accepts only "done" releases (complete and marked); anything else stops for review. Test: a complete but unmarked day is refused before any download.
