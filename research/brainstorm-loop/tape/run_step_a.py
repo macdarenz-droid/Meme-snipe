@@ -117,24 +117,37 @@ def load_sol_usd_dir(days, folder=DEFAULT_SOL_USD_DIR, sums_sha256=SOL_USD_SUMS_
 # PAYER_MASS.md, defined per event by COUNT_ROWS_AMENDMENT_7 (payer.py). SEAT-DRIFT's bar is computed; DEV-ZERO's
 # and REBUY-ANCHOR's wait on the questions in CODE_REDTEAM.md (R1-17), and stay "not computed", which never earns.
 NOT_COMPUTED = {
-    "1_dev_zero": {"passed": None, "status": "not computed: which controls are 'matched' to a DEV-ZERO event is open "
-                                             "(CODE_REDTEAM.md R1-17)"},
-    "2_rebuy_anchor": {"passed": None, "status": "not computed: REBUY-ANCHOR's net rebuy flow is a share of Q "
-                                                 "(amendment 1), X* is in SOL; the unit is open (CODE_REDTEAM.md R1-17)"},
+    "1_dev_zero": {"passed": None, "status": "not computed"},
+    "2_rebuy_anchor": {"passed": None, "status": "not computed"},
     "3_seat_drift": {"passed": None, "status": "not computed"},
 }
+# AMENDMENT_8 leaves open over which set DEV-ZERO's Q terciles are cut (CODE_REDTEAM.md Q-R1-i). Until it is ruled, the
+# DEV-ZERO bar is computed and reported but no arm earns.
+DEV_ZERO_Q_TERCILE_RULED = False
+
+
+def _strip(v):
+    if isinstance(v, dict):
+        return {k: _strip(x) for k, x in v.items() if k != "events"}
+    return v
 
 
 def decision(dz_s, sd_s, rb_s, payer=None):
     """A row earns a PREREG only when its own thresholds pass and its payer-mass bar passed (None = not computed,
-    which never earns). `payer` maps "1_dev_zero", "2_rebuy_anchor", "3_seat_drift" to a bar result."""
+    which never earns). `payer` maps "1_dev_zero" ({"by_arm": {arm: bar}}), "2_rebuy_anchor" and "3_seat_drift" to a
+    bar result. DEV-ZERO's arms earn in the fixed order (AMENDMENT_7): an arm earns only if every earlier arm earned."""
     payer = {**NOT_COMPUTED, **(payer or {})}
     own = {"1_dev_zero_by_arm": R.dev_zero_decide(dz_s), "2_rebuy_anchor": RB.rebuy_decide(rb_s),
            "3_seat_drift": R.seat_drift_decide(sd_s)}
-    ok = {k: payer[k].get("passed") is True for k in NOT_COMPUTED}
-    return {"own_thresholds": own,
-            "payer_mass_bar": {k: {kk: vv for kk, vv in v.items() if kk != "events"} for k, v in payer.items()},
-            "1_dev_zero_prereg_by_arm": {k: bool(v and ok["1_dev_zero"]) for k, v in own["1_dev_zero_by_arm"].items()},
+    ok = {k: payer[k].get("passed") is True for k in ("2_rebuy_anchor", "3_seat_drift")}
+    by_arm = payer["1_dev_zero"].get("by_arm") or {}
+    dev, open_ = {}, True
+    for arm, v in own["1_dev_zero_by_arm"].items():
+        bar_ok = (by_arm.get(arm) or {}).get("passed") is True
+        dev[arm] = bool(open_ and v and bar_ok and DEV_ZERO_Q_TERCILE_RULED)
+        open_ = bool(open_ and v and bar_ok)
+    return {"own_thresholds": own, "payer_mass_bar": _strip(payer),
+            "1_dev_zero_prereg_by_arm": dev,
             "2_rebuy_anchor_prereg": bool(own["2_rebuy_anchor"] and ok["2_rebuy_anchor"]),
             "3_seat_drift_prereg": bool(own["3_seat_drift"] and ok["3_seat_drift"])}
 
@@ -152,7 +165,9 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
     dz, dz_s = R.dev_zero(tape, s, adj)
     rb, rb_pts, rb_pairs, rb_s = RB.rebuy_anchor(tape, s)
     sd, sd_s = R.seat_drift(tape, s, adj)
-    seat_bar = PM.seat_drift_bar(sd, sorted({d for d, _, _ in tape.ranges}))   # COUNT_ROWS_AMENDMENT_7
+    seat_bar = PM.seat_drift_bar(sd, sorted({d for d, _, _ in tape.ranges}))   # COUNT_ROWS_AMENDMENT_7, 8
+    dev_bar = {"passed": None, "status": "per arm (by_arm)",
+               "by_arm": PM.dev_zero_bar(dz, sorted({d for d, _, _ in tape.ranges}))}   # AMENDMENT_8
     ag, ag_s = R.age_gate(tape, s, fast)
     ru, ru_s = R.round_usd(tape, s, sol_usd, adj, n_boot=min(n_boot, 1000))
     # H8_AMENDMENT: rows 1-3 on the H8-eligible stratum at $5, $20, $50, and the H8 capacity count row
@@ -184,10 +199,11 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
         "h8_stratum_rows_1_3": h8_strata, "7_h8_capacity": h8_cap,
         "8_slicer_ride": sl_s, "9_mig_seat": ms_s, "10_mayhem_snap": mh_s,
     }
-    summary["payer_mass_3_seat_drift"] = {k: v for k, v in seat_bar.items() if k != "events"}
+    summary["payer_mass_3_seat_drift"] = _strip(seat_bar)
+    summary["payer_mass_1_dev_zero"] = _strip(dev_bar)
     if decide:
         summary["plan"] = plan
-        summary["decision"] = decision(dz_s, sd_s, rb_s, {"3_seat_drift": seat_bar})
+        summary["decision"] = decision(dz_s, sd_s, rb_s, {"3_seat_drift": seat_bar, "1_dev_zero": dev_bar})
         summary["decision"].update({
             "8_slicer_ride_counts_to_owner": sl_s["all_rows_pass"],          # never a PREREG before the ethics ruling
             "9_mig_seat_prereg_gradual": ms_s["prereg_gradual"],

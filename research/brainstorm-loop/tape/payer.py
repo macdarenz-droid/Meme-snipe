@@ -108,3 +108,42 @@ def seat_drift_bar(sd: pd.DataFrame, days) -> dict:
     out = share_bar(ev["excess_share"], ev["s_star"], ev["day"], days)
     out["events"] = ev
     return out
+
+
+def q_terciles(q: np.ndarray) -> np.ndarray:
+    """Tercile of each Q in its own set: cuts at the 1/3 and 2/3 quantiles (numpy linear); a value on a cut goes to the
+    lower bin (the count rows' rule, COUNT_ROWS_AMENDMENT_2)."""
+    q = np.asarray(q, float)
+    if len(q) < 3:
+        return np.zeros(len(q), int)
+    c1, c2 = np.quantile(q, [1 / 3, 2 / 3])
+    return np.where(q <= c1, 0, np.where(q <= c2, 1, 2))
+
+
+def dev_zero_bar(dz: pd.DataFrame, days) -> dict:
+    """DEV-ZERO (AMENDMENT_8 Q-R1-e), per arm. Matched controls: the arm's primary controls on the same UTC day and in the
+    same effective-quote tercile as of the event. The terciles are cut over the arm's used events and controls of that
+    day together (a reading the amendment leaves open: CODE_REDTEAM.md Q-R1-i). Excess share = net / Q (the row's
+    `net` is already a share of the effective quote just after the dev's sale) minus the matched controls' median.
+    An event with no matched control is left out of the bar and counted."""
+    cols = ["pool", "day", "excess_share", "Q", "c", "s_star"]
+    out = {}
+    for arm in ("le5", "zero", "le3"):
+        a = dz[(dz.get("arm") == arm) & (dz["dropped"] == "")] if len(dz) else dz
+        a = a[a["net"].notna() & a["eff_quote"].notna()] if len(a) else a
+        rows, missing = [], 0
+        for d, g in (a.groupby("day") if len(a) else []):
+            g = g.assign(qt=q_terciles(g["eff_quote"].to_numpy(float)))
+            for e in g[g["kind"] == "event"].itertuples(index=False):
+                ctl = g[(g["kind"] == "control") & (g["qt"] == e.qt)]
+                if not len(ctl):
+                    missing += 1
+                    continue
+                c = round_trip_cost(e.eff_quote, e.eff_quote, e.base, e.supply)
+                rows.append({"pool": e.pool, "day": d, "excess_share": float(e.net - ctl["net"].median()),
+                             "Q": float(e.eff_quote), "c": c, "s_star": s_star(c)})
+        ev = pd.DataFrame(rows, columns=cols)
+        r = share_bar(ev["excess_share"], ev["s_star"], ev["day"], days)
+        r.update(events=ev, events_without_matched_control=missing, reading_pending="Q-R1-i (Q tercile population)")
+        out[arm] = r
+    return out

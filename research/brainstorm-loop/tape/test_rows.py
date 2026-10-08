@@ -1239,5 +1239,56 @@ class PayerMass(unittest.TestCase):
             self.assertFalse(any(d["1_dev_zero_prereg_by_arm"].values()))
 
 
+class PayerMassAmendment8(unittest.TestCase):
+    """COUNT_ROWS_AMENDMENT_8: the bar for DEV-ZERO, REBUY-ANCHOR (CODE_REDTEAM.md R1-21, R1-22)."""
+
+    def test_dev_zero_bar_matched_controls_same_day_and_q_tercile(self):
+        import payer as PM
+        D2 = "2026-09-10"
+        rows = []
+        # one arm, day DAY: Q values 100, 200, 300 SOL for both events and controls -> terciles split them apart
+        for k, q in enumerate((100e9, 200e9, 300e9)):
+            rows.append({"arm": "le5", "kind": "event", "pool": f"E{k}", "day": DAY, "dropped": "", "net": 0.20,
+                         "eff_quote": q, "base": 1e15, "supply": 1e15})
+            rows.append({"arm": "le5", "kind": "control", "pool": f"C{k}", "day": DAY, "dropped": "",
+                         "net": 0.01 * (k + 1), "eff_quote": q, "base": 1e15, "supply": 1e15})
+        # an event on another day with no control that day: left out of the bar and counted
+        rows.append({"arm": "le5", "kind": "event", "pool": "E9", "day": D2, "dropped": "", "net": 0.5,
+                     "eff_quote": 100e9, "base": 1e15, "supply": 1e15})
+        r = PM.dev_zero_bar(pd.DataFrame(rows), [DAY, D2])["le5"]
+        ev = r["events"].set_index("pool")
+        for k in range(3):
+            self.assertAlmostEqual(ev.at[f"E{k}", "excess_share"], 0.20 - 0.01 * (k + 1))   # its own tercile's control
+        self.assertNotIn("E9", ev.index)
+        self.assertEqual(r["events_without_matched_control"], 1)
+        c = PM.round_trip_cost(100e9, 100e9, 1e15, 1e15)
+        self.assertAlmostEqual(ev.at["E0", "s_star"], np.sqrt(1 + c) - 1)
+        self.assertEqual(r["days"], 2)
+
+    def test_dev_zero_rows_carry_the_as_of_state(self):
+        tape, s, adj = load(dev_unit())
+        df, _ = R.dev_zero(tape, s, adj)
+        e = df[(df["arm"] == "le5") & (df["kind"] == "event")].iloc[0]
+        self.assertTrue(np.isfinite(e["base"]) and np.isfinite(e["supply"]))
+        row = s[(s["slot"] == e["slot"]) & (s["owner"] == e["dev"])].iloc[0]
+        self.assertEqual(e["base"], row["pool_base_post"])                # the state just after the dev's sale
+
+    def test_decision_needs_the_bar_and_the_tercile_ruling(self):
+        import run_step_a
+        from unittest import mock
+        own = {"le5": True, "zero": True, "le3": True}
+        with mock.patch.object(R, "dev_zero_decide", lambda s: own), \
+                mock.patch.object(R, "seat_drift_decide", lambda s: True), \
+                mock.patch.object(RB, "rebuy_decide", lambda s: True):
+            d = run_step_a.decision({}, {}, {}, {"1_dev_zero": {"by_arm": {"le5": {"passed": True},
+                                                                            "zero": {"passed": False},
+                                                                            "le3": {"passed": True}}},
+                                                  "2_rebuy_anchor": {"passed": True}})
+        self.assertTrue(d["2_rebuy_anchor_prereg"])
+        # fixed sequence: zero fails its bar, so le3 cannot earn either; le5 waits for the tercile ruling (Q-R1-i)
+        self.assertEqual(d["1_dev_zero_prereg_by_arm"], {"le5": run_step_a.DEV_ZERO_Q_TERCILE_RULED, "zero": False,
+                                                         "le3": False})
+
+
 if __name__ == "__main__":
     unittest.main()
