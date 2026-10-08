@@ -378,3 +378,16 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
 105. **z1 and reviewer n2.** The tag is derived from which modules read the key, using B-M25-01's static key-usage check (if B-M25-01 has none, add it, PROPOSED): read by the cost or fill model → M; read by M21 admission → P (admission); read only by sizing → S. A key read by more than one takes the strictest path (admission > M > S). CI fails when a hand tag disagrees with the derived one. A key that can flip a fill or reject outcome is never S; the slippage caps are named explicitly.
 106. **z2.** For a system-initiated tightening the apply-time check still runs and blocks as usual; only the `applycheck` trial is not registered. "System" means the M21 or M26 actor as SPEC-A names it (**VERIFY** the actor names), never an agent or operator session.
 107. **Reviewer n1.** :260 and :682 read "the recost or k-trial recomputation after a model change (group M or a model deploy)".
+
+## Round 14 (head `4bf69714`): reviewer PASS (1 optional MINOR); red team 0 BLOCKER, 1 MAJOR, 2 MINOR
+
+- A1: while a group M decision (recost, k trial, B-9) is pending, a second submit (the split-off raise) or a second M change is judged against the unvalidated model, so Z1 returns in two submits, and a chain A→B→C can skip k.
+- a1: derived tags miss shared helpers, computed values and dynamic access.
+- a2 and reviewer n1: actor types `scheduler`, `cli` and `sentinel` are not placed.
+- Verified by both: B-M25-01's static check only checks keys exist; ARCH 5.0a's Actor type includes `risk_engine` and `system`.
+
+### Supervisor rulings for round 15 (8 Oct 2026, 3:34 PM)
+
+108. **A1.** While any `recost`, k or B-9 decision for a strategy is pending, the validator refuses any other change that touches that strategy's configKey (`E_DECISION_PENDING`, PROPOSED). Only A1 tightenings (they apply at once) and a cancel of the pending change are accepted. The SOL test, every what-if and every apply-time check use the last frozen configKey's model, never a pending value. ACs: a raise submitted while a group M k decision is pending is refused with `E_DECISION_PENDING`; an M change C after a pending B is compared with the frozen A.
+109. **a1.** Readers are derived by import and call-graph closure (a key belongs to every module that reaches its read site). A lint rule allows config reads only through typed literal accessors, so no computed key names exist. A key whose readers cannot be resolved statically takes P (admission). AC: a key read only through a shared helper called by M21 is derived P.
+110. **a2 and reviewer n1.** `scheduler` acts for the submitting actor and is attributed to it; `cli` is an operator or owner change; `sentinel`, `risk_engine` and `system` are system. AC: an A3 raise applied by `scheduler` registers its `whatif` trial against the submitting operator. The actor VERIFY is cleared (ARCH 5.0a, A-M13-07 step 5, B-M26-04 step 5).
