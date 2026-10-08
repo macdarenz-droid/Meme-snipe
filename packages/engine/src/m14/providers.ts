@@ -58,6 +58,9 @@ export const PUBLIC_MAINNET_LIMITS: readonly DocumentedLimit[] = Object.freeze([
   { scope: 'bytes', count: 100_000_000, windowMs: 30_000, fact: 'LD-26' },
 ] as const);
 
+/** The least rate a nonzero allocation share may leave a process: one request a minute (Z03 ruling 24). */
+export const MIN_SHARED_RPS = 1 / 60;
+
 /** Owner rule (2026-10-06): configured rates stay at or below this share of every documented limit. */
 export const MAX_SHARE_OF_DOCUMENTED = 0.5;
 
@@ -132,10 +135,22 @@ function mapRates(c: ProviderConfig, f: (rps: number) => number): ProviderConfig
  * Checks the allocation (Z03 ruling m12) and returns this consumer's share of each provider, in basis points. Problems:
  * a share that is not an integer in 0..10,000, or shares of one provider that add up to more than 10,000.
  */
-function sharesOf(allocation: Allocation, labels: readonly string[], problems: ConfigProblem[]): Map<string, number> {
+function sharesOf(allocation: unknown, labels: readonly string[], problems: ConfigProblem[]): Map<string, number> {
   const out = new Map<string, number>();
+  // Z03 ruling 22: a malformed allocation is E_CONFIG, never a TypeError.
+  if (!isObject(allocation) || typeof allocation.consumer !== 'string' || allocation.consumer.length === 0 || !isObject(allocation.shares)) {
+    problems.push({ key: 'rpc.allocation', message: 'must be { consumer, shares: { <provider>: { <consumer>: bps } } }' });
+    return out;
+  }
+  const consumer = allocation.consumer;
+  const shares = allocation.shares;
   for (const label of labels) {
-    const byConsumer = Object.hasOwn(allocation.shares, label) ? allocation.shares[label] as Readonly<Record<string, number>> : {};
+    const entry: unknown = Object.hasOwn(shares, label) ? shares[label] : {};
+    if (!isObject(entry)) {
+      problems.push({ key: `rpc.allocation[${label}]`, message: 'must map each consumer to its share in basis points' });
+      continue;
+    }
+    const byConsumer = entry as Readonly<Record<string, number>>;
     let sum = 0;
     for (const [consumer, bps] of Object.entries(byConsumer)) {
       if (!Number.isSafeInteger(bps) || bps < 0 || bps > 10_000) {
@@ -144,7 +159,7 @@ function sharesOf(allocation: Allocation, labels: readonly string[], problems: C
       sum += bps;
     }
     if (sum > 10_000) problems.push({ key: `rpc.allocation[${label}]`, message: `allocation_exceeds_cap: the shares add up to ${sum} bps, above 10,000` });
-    out.set(label, Object.hasOwn(byConsumer, allocation.consumer) ? byConsumer[allocation.consumer] as number : 0);
+    out.set(label, Object.hasOwn(byConsumer, consumer) ? byConsumer[consumer] as number : 0);
   }
   return out;
 }
@@ -245,6 +260,18 @@ export function loadProviders(raw: unknown, secrets: SecretSource, opts: Registr
     return { ok: false, error: { code: 'E_CONFIG', problems: [{ key: 'rpc.allocation', message: 'the provider allocation is required (each process reads under its share of every budget; ARCH D04)' }] } };
   }
   const shares = sharesOf(opts.allocation, valid.value.map((c) => c.label), problems);
+  for (const c of valid.value) {
+    const share = shares.get(c.label) ?? 0;
+    // Z03 ruling 24: a share that is on gives at least one request a minute; 0 is the only way to turn a provider off.
+    if (share > 0 && (c.limits.rps * share) / 10_000 < MIN_SHARED_RPS) {
+      problems.push({ key: `rpc.allocation[${c.label}]`, message: `a share of ${share} bps gives ${(c.limits.rps * share) / 10_000} req/s, below one request a minute; use 0 to turn it off` });
+    }
+  }
+  // Z03 ruling 23 (ARCH D04: a primary and a backup): the engine starts only with two live read providers it has a share of.
+  if (opts.context === 'engine' && problems.length === 0) {
+    const live = valid.value.filter((c) => c.roles.includes('read') && c.allowInLivePaths && (shares.get(c.label) ?? 0) > 0);
+    if (live.length < 2) problems.push({ key: 'rpc.allocation', message: `the engine needs a share of at least two live read providers; it has ${live.length}` });
+  }
   if (problems.length > 0) return { ok: false, error: { code: 'E_CONFIG', problems } };
   const providers: ResolvedProvider[] = [];
   const disabled: ProviderRegistry['disabled'] = [];

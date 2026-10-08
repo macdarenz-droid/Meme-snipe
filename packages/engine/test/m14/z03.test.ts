@@ -339,3 +339,44 @@ describe('Z03 round 3, ruling 15: byte budgets are split across processes like r
     assert.ok(!none.ok && none.error.problems[0]?.key === 'rpc.allocation');
   });
 });
+
+describe('Z03 round 4: allocation checks (rulings 22, 23, 24)', () => {
+  const secrets = envSecrets({ RPC_SHYFT_URL: 'https://shyft.example/k', RPC_CHAINSTACK_URL: 'https://chainstack.example/k' });
+  const load = (allocation: unknown, context: 'engine' | 'research' = 'engine') =>
+    loadProviders(DEFAULT_PROVIDERS, secrets, { context, allocation: allocation as never }, new RecordingLogPort());
+  const keys = (r: ReturnType<typeof load>): string[] => (r.ok ? [] : r.error.problems.map((p) => p.key));
+
+  it('ruling 22: a malformed allocation is E_CONFIG, never a TypeError', () => {
+    for (const bad of [{ consumer: 'engine' }, { consumer: 'engine', shares: null }, { consumer: 'engine', shares: 7 }, { consumer: 'engine', shares: [] },
+      { consumer: 'engine', shares: 'x' }, { shares: {} }, null, 'engine', { consumer: 'engine', shares: { shyft: 5, chainstack: { engine: 10_000 } } }]) {
+      let r: ReturnType<typeof load> | undefined;
+      assert.doesNotThrow(() => { r = load(bad); }, JSON.stringify(bad));
+      assert.ok(r !== undefined && !r.ok && r.error.code === 'E_CONFIG', JSON.stringify(bad));
+    }
+    assert.deepEqual(keys(load({ consumer: 'engine', shares: [] })), ['rpc.allocation']);
+  });
+
+  it('ruling 23: the engine refuses to start with a share of fewer than two live read providers', () => {
+    const one = { consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { sentinel: 10_000 } } };
+    assert.deepEqual(keys(load(one)), ['rpc.allocation']);
+    const unknownConsumer = { consumer: 'nobody', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 10_000 } } };
+    assert.deepEqual(keys(load(unknownConsumer)), ['rpc.allocation']);
+    const proto = JSON.parse('{"consumer":"__proto__","shares":{"shyft":{"engine":10000},"chainstack":{"engine":10000}}}') as unknown;
+    assert.deepEqual(keys(load(proto)), ['rpc.allocation']);
+    const protoShare = JSON.parse('{"consumer":"engine","shares":{"__proto__":{"engine":10000},"shyft":{"engine":10000}}}') as unknown;
+    assert.deepEqual(keys(load(protoShare)), ['rpc.allocation']);           // __proto__ names no provider: one live reader
+    assert.ok(load({ consumer: 'engine', shares: { shyft: { engine: 5_000 }, chainstack: { engine: 5_000 } } }).ok);
+    // A research process may read one provider.
+    assert.ok(load({ consumer: 'research', shares: { shyft: { research: 10_000 } } }, 'research').ok);
+  });
+
+  it('ruling 24: a nonzero share below one request a minute is refused; 0 turns the provider off', () => {
+    // Chainstack runs at 0.5 req/s: 3 bps of it is 0.00015 req/s, about one request every 111 minutes.
+    const tiny = { consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 3, sentinel: 9_997 } } };
+    assert.deepEqual(keys(load(tiny)), ['rpc.allocation[chainstack]']);
+    // 334 bps of 0.5 req/s is 0.0167 req/s, just above one a minute.
+    assert.ok(load({ consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 334 } } }).ok);
+    const off = load({ consumer: 'research', shares: { shyft: { research: 10_000 }, chainstack: { research: 0 } } }, 'research');
+    assert.ok(off.ok && off.value.disabled.some((x) => x.label === 'chainstack' && x.reason === 'no_allocation'));
+  });
+});
