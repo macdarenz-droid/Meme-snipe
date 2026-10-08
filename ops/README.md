@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/b054b0551be0f4ec8aae05e64cee86813ba551cb/ops/install.sh -o i && echo 'ff67b4fcba5f586668c613d6a428ceeb98560f45de3248c9dabdcea4ed407693  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/fc02d6139a6402225390b8220de1ddbac235c5a3/ops/install.sh -o i && echo 'ab07d632fa2a6b635a49d130115333069a7a07e88a494d9f60cefe60dbcc7cfa  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -23,7 +23,7 @@ The console screen can be left at any time (Ctrl+C); setup carries on in the bac
 
 The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
 
-SHA-256 of `install.sh`: `ff67b4fcba5f586668c613d6a428ceeb98560f45de3248c9dabdcea4ed407693`
+SHA-256 of `install.sh`: `ab07d632fa2a6b635a49d130115333069a7a07e88a494d9f60cefe60dbcc7cfa`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -79,7 +79,7 @@ First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). 
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` and under `/var/lib/zeroed-usage` (the provider usage ledger, stored as `zeroed-usage/` in the bundle) with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
 **Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
 
@@ -185,6 +185,24 @@ The owner approved it on 6 Oct ("Approve upload"; "Okay yes delete after upload"
 - **By hand:** `zeroed-record-upload` runs once now; `zeroed-record-upload --day YYYY-MM-DD` runs for one UTC day. Either way it runs in the same sandbox, after any run in progress.
 
 The token (`DATA_STORE_TOKEN`, deployed as `REPORTS_TOKEN`) already has **Contents: Read and write** on the data repository. That is what creating releases and uploading, reading and deleting their assets needs, so nothing changes for the owner.
+
+## Engine folders and market-data pull account (PATHS-FIX)
+
+The engine writes only inside what its unit allows under `ProtectSystem=strict` (`packages/engine/src/paths.ts`; a test checks it against `zeroed-worker.service`):
+- `/var/lib/zeroed` (`StateDirectory`, 0700): ledger `bot.db`, logs, recovery journal, first-start marker, disk reserve, provider usage.
+- `/var/lib/zeroed-md` (2750, group `zeroed-pull`) with `receipts/` (2770): market-data segments and pull receipts.
+- `/var/lib/zeroed-spool` (2730, group `zeroed-spool`): import bundles.
+- `/var/lib/zeroed-usage` (2770, group `zeroed-sentinel`): the provider usage ledger, which the sentinel writes too.
+
+The installer makes the last two folders itself, because systemd gives one unit only one `StateDirectoryMode` (systemd.exec). The worker reads through the groups `zeroed-pull` and `zeroed-spool`, never `botops`. Anything in `receipts/` that is not a valid receipt is deleted, with an alert (`packages/engine/src/m07/receipts.ts`).
+
+The pull account `zeroed-pull` has no shell. It is sftp only (`/etc/ssh/sshd_config.d/20-zeroed-pull.conf`) and chrooted to `/srv/zeroed_pull`, where `md` is `/var/lib/zeroed-md` bound read-only and `md/receipts` is bound read-write (`srv-zeroed_pull-*.mount`, mounted before SSH). `receipts/` is its own 64 MiB filesystem with 32,768 inodes (`zeroed-receipts-fs.service`; image `/var/lib/zeroed-receipts/receipts.img`, root-only), so the pull account can never fill the server's disk; a full one refuses new receipts. `zeroed-check` alerts once while that filesystem or either bind is not mounted, with a CLEARED line after.
+
+Two things are needed before it can be used, and both are left for later:
+- **SSH:** it stays off unless the server was installed with `--ssh-key`.
+- **The operator's key:** none is installed. It goes in `/etc/zeroed/pull-keys/zeroed-pull`.
+
+systemd: Ubuntu 24.04.5 ships systemd 255 (255.4-1ubuntu8.17 where this was built). VERIFY on the server with `systemctl --version`; the ops end-to-end records the version it ran on in its summary.
 
 ## Host checks
 

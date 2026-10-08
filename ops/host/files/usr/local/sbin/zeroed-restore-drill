@@ -7,6 +7,7 @@ set -euo pipefail
 umask 077
 
 SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+USAGE_SRC="${ZEROED_BACKUP_USAGE_SRC:-/var/lib/zeroed-usage}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 identity="${1:?usage: zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]}"
 backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
@@ -28,8 +29,10 @@ while read -r _ rel; do
   for t in $tables; do
     printf '  %s %s: %s rows\n' "$rel" "$t" "$(sqlite3 "$work/$rel" "SELECT count(*) FROM \"$t\";")"
   done
-  if [ -f "$SRC/$rel" ]; then
-    live="$(sqlite3 -readonly "$SRC/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
+  # The usage ledger's files are stored under zeroed-usage/ (PATHS-FIX ruling 24).
+  case "$rel" in zeroed-usage/*) livef="$USAGE_SRC/${rel#zeroed-usage/}" ;; *) livef="$SRC/$rel" ;; esac
+  if [ -f "$livef" ]; then
+    live="$(sqlite3 -readonly "$livef" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
     [ "$live" = "$tables" ] || fail "$rel tables differ from the live database"
   fi
 done < "$work/MANIFEST.sha256"
