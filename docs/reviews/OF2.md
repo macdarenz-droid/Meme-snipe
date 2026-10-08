@@ -145,3 +145,8 @@ Round 4 repros are closed. From current code, no archive request is possible whi
 46. **m4, uploads.** Archive workflows refuse `uses: ./` composite actions unless their action.yml is checked the same way, and refuse the whole `actions/upload-*` family by prefix.
 47. **m5.** Compute `ag_sha_guarded` once per SHA in the parent shell, not in `$( )`. Test: one contents call per SHA.
 48. **m6.** Tags are checked as `refs/tags/NAME`, so a branch and a tag with the same name are both checked.
+44a. **Ruling 44 amended (8:18 PM; the red team's design notes).**
+    - The cache name carries a key id (a short hash of the derived key). A cache that cannot be decrypted makes the scan refuse with no read; it never starts the day fresh. A day is never read whole twice.
+    - The arm checklist adds an owner line: do not rotate `DATA_STORE_TOKEN` while the download runs.
+    - The token is used only in the `env -i` guard and crypt steps, never in the Scan or QA steps. Plaintext stays on the runner only. Save and restore paths hold only the encrypted files and their MAC, and the arm check asserts it.
+    - The `-qa` cache and any future `data-rpc-*` saves are encrypted the same way. Use authenticated encryption, or encrypt-then-MAC, so a tampered cache is refused.
