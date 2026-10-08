@@ -1,21 +1,22 @@
 # Disk budget: the 2 GB Vultr host
 
-Research, docs only. Base `ccr-14987baf-i6lrsl` @ `1e4df569` (Merge #301, Z02). Written 8 Oct 2026, about 11:55 PM Melbourne time.
+Research, docs only. Base `ccr-14987baf-i6lrsl` @ `1e4df569` (Merge #301, Z02). Round 1 written 8 Oct 2026, about 11:55 PM Melbourne time; round 2 applies the supervisor's rulings 1–6 in `docs/reviews/DISKBUDGET.md` (on `claude/supervisor-docs-3` @ `caa6cc6c`), 9 Oct 2026.
 No server was contacted. Every number is either cited from the repo, measured in this container (marked **measured**), derived from cited inputs (marked **derived**), or **UNVERIFIED** with a range. The first 48 h of Phase 0 recording must replace the estimates (ARCH M07, `docs/blueprint/ARCH.md:1076`).
 
 Owner rules this budget serves:
 - "Disk cycle" (`CLAUDE.md:79`): a day of trading can never fill the disk. The ledger, saved state and journal are never deleted.
-- "Recordings upload approved" and "Recording uploads are for study only" (`CLAUDE.md:78`, `CLAUDE.md:80`): a recording is deleted only after its uploaded copy is checked by sha256 read-back; uploads stop at production level, but the local auto-delete stays.
+- "Recordings upload approved" and "Recording uploads are for study only" (`CLAUDE.md:78`, `CLAUDE.md:80`): for the Zeroed recorder, a recording is deleted only after its uploaded copy is checked by sha256 read-back; uploads stop at production level, but the local auto-delete stays. For the Blueprint recorder (M07), deletion needs the signed `PullReceipt` (A-M07-03); a sha256 read-back is not a receipt (supervisor ruling 2).
 - "Carried from the Blueprint build" (`CLAUDE.md:108`).
 
 ## 1. Summary
 
-- **The biggest risk is the hourly backup, not the recorder.** `zeroed-backup` keeps 72 copies (`ops/host/files/usr/local/sbin/zeroed-backup:12`). Each copy is a plain tar of every SQLite file, encrypted with age and **not compressed** (`:31`). So the backups take about 72 × the ledger's size. The ledger's `metric_rollup_1m` table alone may grow to 4 GiB (`packages/engine/src/m27/config.ts:21`). At that size the backups would need about 300 GB. On the current keep rules the disk fills in **about 8–17 days at design rates, and about 2 days in the worst case** (derived; §4).
-- **Today the Blueprint ledger is not backed up.** M24's default database path is `/var/lib/bot/bot.db` (`packages/engine/src/m24/config.ts:9`). The M27 log folder is `/var/lib/bot/log` (`packages/engine/src/m27/config.ts:19`). The M07 recorder writes to `/data/md` (`docs/blueprint/SPEC-A.md` A-M07-02). The host backs up only `/var/lib/zeroed` (`zeroed-backup:9`). The worker unit runs with `ProtectSystem=strict` and `StateDirectory=zeroed` (`ops/host/files/etc/systemd/system/zeroed-worker.service:32,44`), so it cannot write to `/var/lib/bot` or `/data` at all. Once these paths are aligned, the 72× backup multiplier applies. Recommendation R1 must land **before** the paths are aligned.
+- **The biggest risk is the hourly backup, not the recorder.** `zeroed-backup` keeps 72 copies (`ops/host/files/usr/local/sbin/zeroed-backup:12`). Each copy is a plain tar of every SQLite file, encrypted with age and **not compressed** (`:31`). So the backups take about 72 × the ledger's size. The ledger's `metric_rollup_1m` table alone may grow to 4 GiB (`packages/engine/src/m27/config.ts:21`). At that size the backups would need about 300 GB. On the current keep rules the disk fills about **day 8–17 after start at design rates, and about day 2 in the worst case** (derived; §4).
+- **The Blueprint cannot write where its defaults point, and its ledger is not backed up** (confirmed by the round 1 review). Its write paths (§2.9) are under `/var/lib/bot`, `/data/md` and `/data/backups`. The worker unit has `StateDirectory=zeroed` and `ProtectSystem=strict` with no `ReadWritePaths` (`ops/host/files/etc/systemd/system/zeroed-worker.service:32,44`). The host backs up only `/var/lib/zeroed` (`zeroed-backup:9`). §2.9 gives card PATHS-FIX its path list. R1 must land before PATHS-FIX.
+- **Two backup owners exist on paper:** M24's own hourly backup (SPEC-B, `docs/blueprint/SPEC-B.md:2031`, keep 48, `/data/backups`) and the host's `zeroed-backup` (keep 72). This budget names `zeroed-backup` as the one owner (§2.6) and counts the backups once.
 - **Usable space: about 51 GB for the worker's user** (estimate; §3).
-- **Steady state on the current rules: it does not reach one.** The backup term outgrows the disk (§4).
-- **Steady state with the recommendations: about 15–27 GB in year 1** (derived; §5). That leaves about 24–36 GB free.
-- **Fill date if nothing is pruned: about day 7–10 after the Blueprint engine and recorder start at design rates, and about day 2–3 in the worst case.** Without the backups it is about day 50–107, or day 16 in the worst case. Nothing runs yet (`ops/host-config.json` has `"worker": "stub"`). Counted from today (8 Oct 2026), that is about 15–18 Oct at design rates and 10–11 Oct in the worst case. The real date counts from the start day, which is not set.
+- **Steady state on the current rules: none is reached.** The backup term outgrows the disk (§4).
+- **Steady state with the recommendations: about 23–42 GB at the end of year 1** (derived; §5), against about 51 GB. The worst case (every item at its worst at once) is about 73 GB, **over** the usable space. It depends mostly on the ledger's size times the 31-copy backup floor (ruling 3). A Phase 0 measurement of the ledger and of backup compression (R10) decides whether R3's split is enough.
+- **Fill date if nothing is pruned (days from the start of the Blueprint engine and recorder): about day 7–10 at design rates, about day 2 in the worst case.** Without the backups it is about day 44–94, or day 16 in the worst case. Nothing runs yet (`ops/host-config.json` has `"worker": "stub"`), and no start day is set.
 
 ## 2. Every grower
 
@@ -43,14 +44,14 @@ Units: GB = 10^9 bytes, GiB = 2^30 bytes. "Design rate" means the spec's rate. "
 ### 2.3 Blueprint recorder (M07; Z04 queue → A-M07-02 segments)
 
 - **Z04** (`claude/z04-recorder-queue` @ `9bd1ba4c`, not on base) is an in-memory bounded queue: 50,000 records and 64 MiB (`packages/engine/src/recorder/queue.ts:128-129` on that branch). It writes **nothing to disk** itself. The disk output comes from the A-M07-02 segment writer, which is not built yet (Z08, `docs/MIGRATION.md:785`).
-- Design rate (`docs/blueprint/ARCH.md:1076`, CB-26, DERIVED worst case): 30 pools × 1 Hz × about 600 B gives about 1.56 GB a day raw. About 20% is added for 2 Hz position pools and eviction tails, about 1.87 GB a day. zstd at an **assumed** 3–5× gives **0.31–0.52 GB a day** (the spec's own figure; ASSUMPTION). Change-only deltas should be smaller (A-M07-01 step 2).
+- Design rate (`docs/blueprint/ARCH.md:1076`, CB-26, DERIVED worst case): 30 pools × 1 Hz × about 600 B gives about 1.56 GB a day raw. zstd at an **assumed** 3–5× on that raw 1.56 GB basis gives **0.31–0.52 GB a day** (the spec's own figure; ASSUMPTION). With the spec's +20% for 2 Hz position pools and eviction tails (1.87 GB a day raw), the same ratio gives **0.37–0.62 GB a day** (derived). This budget uses the 1.87 GB basis. Change-only deltas should be smaller (A-M07-01 step 2).
 - `poll_counts`: 30 pools × 1,440 minutes a day × about 120 B is about 5 MB a day raw (derived; the 120 B is UNVERIFIED).
 - Keep rule (spec only; not built): segments stay 30 days on the host, then are deleted **only with a valid `PullReceipt`** (A-M07-03 step 2; `ARCH.md:1077,1078`). Above 80% disk, receipted segments are deleted oldest first. Above 95%, every stream stops except `universe_manifest` and `coverage`.
-- Per year: 113–190 GB at the design rate, so retention is mandatory.
+- Per year: 135–226 GB at the design rate (1.87 GB basis), so retention is mandatory.
 
 | | Per day | 30-day steady | Worst |
 |---|---|---|---|
-| Design (zstd 3–5×) | 0.31–0.52 GB | **9.3–15.6 GB** | — |
+| Design (zstd 3–5×, 1.87 GB raw basis) | 0.37–0.62 GB | **11.1–18.7 GB** | — |
 | No compression gain (gzip fallback poor, or every poll changes, UNVERIFIED) | up to 1.87 GB | 56 GB (over the disk) | the 80%/95% thresholds decide. Without receipts nothing is deleted and recording stops at 95%. |
 
 Note: the old Zeroed recorder measured 4.5–7 GB a day (`HANDOVER.md:1050`; `PROJECT_STATE.md:90`). That was a different design (frames of every candidate). It does not predict M07's rate, but it shows that a spec estimate can be 20–30× low (`HANDOVER.md:1050`, "the old 0.15–0.25 GB/day estimate was 20–30× low").
@@ -80,13 +81,24 @@ Retention per table: ARCH 15 (`docs/blueprint/ARCH.md:2675-2718`), implemented i
 
 **Ledger total, derived:** growth of about **35–75 MB a day** at design rates (rollups dominate), and about 0.6 GB a day in the worst case (all 5,000 series). Steady state in year 1: **about 6–8 GB** (4.3 GB rollups plus 1.5–3 GB of other tables plus overhead). If `m27.rollup_max_bytes` is raised to 16 GiB, the worst is about 20 GB. ARCH D06 names "database > 20 GB" as a switch trigger (`ARCH.md:1700`).
 
-### 2.6 Hourly backups
+### 2.6 Hourly backups (one owner: `zeroed-backup`)
+
+**Two owners exist on paper.** M24's spec has the engine back itself up hourly (`docs/blueprint/SPEC-B.md:2031`: online backup, `quick_check`, AEAD with a key from the secret store, `/data/backups/bot-YYYYMMDD-HH.db.enc`, keep 48). The host's `zeroed-backup` already does the same for every SQLite file under `/var/lib/zeroed` (keep 72). Run both, and the backups are counted twice.
+
+**Owner named: `zeroed-backup`** (supervisor ruling 4 asks for one, with the reason). Reasons:
+- It is built and in use, with a restore drill (`ops/host/files/usr/local/sbin/zeroed-restore-drill`).
+- It encrypts to the owner's key as well as the host key (`zeroed-backup:3-5`), so the owner can open a copy off the host.
+- It runs as root, outside the engine's user. A faulty or compromised engine cannot delete or rewrite its own backups.
+- It needs none of M24's open VERIFY items (AEAD in Node's built-in `crypto`, A-18; the key in the secret store).
+
+The cost: SPEC-B's start recovery opens "the newest backup that passes its check" (`SPEC-B.md:2032`). With `zeroed-backup` as the owner, the engine user cannot decrypt an age file encrypted to the host key. Either the recovery reads a copy that a root helper decrypts, or the operator restores. This is an open point for the B-M24 spec (§6). The M24 hourly step (SPEC-B step 1) is then not built, or is switched off on this host. Either way it is budgeted at 0.
 
 | Item | Rate | Keep rule | Steady | Worst |
 |---|---|---|---|---|
-| `/var/backups/zeroed/zeroed-*.tar.age` (`zeroed-backup`; `zeroed-backup.timer` `OnCalendar=hourly`) | 24 a day × the size of every `*.sqlite`/`*.db` under `/var/lib/zeroed`. tar + age, **no compression** (`zeroed-backup:31`) | the newest **72** (`ZEROED_BACKUP_KEEP`, `zeroed-backup:12,33`). ARCH says 48 (`ARCH.md:1077`, `:2718`). | **72 × ledger**: at a 6–8 GB ledger, **430–580 GB** | — |
+| `/var/backups/zeroed/zeroed-*.tar.age` (`zeroed-backup`; `zeroed-backup.timer` `OnCalendar=hourly`) | 24 a day × the size of every `*.sqlite`/`*.db` under `/var/lib/zeroed`. tar + age, **no compression** (`zeroed-backup:31`) | today: the newest **72** (`ZEROED_BACKUP_KEEP`, `zeroed-backup:12,33`). ARCH and SPEC-B say 48 (`ARCH.md:1077`, `:2718`; `SPEC-B.md:2031`). | **72 × ledger**: at a 6–8 GB ledger, **430–580 GB** | — |
 | Working copy | each run makes a full snapshot in a private `/tmp` (`zeroed-backup:18-23`, `PrivateTmp=yes`) on the root disk | removed at exit | 0 | **1 × ledger** at run time, on top of the above |
 | Off-site copy | daily over Telegram, only under 49 MB (`zeroed-backup-offsite:25`); `offsite_backup: false` | — | 0 local | — |
+| M24's own backups (`/data/backups`) | — | not built; budgeted at 0 (owner above) | 0 | 0 |
 
 At the ledger's design growth, 72 copies pass the free space when the ledger reaches about 0.4–0.5 GB. That happens around day 5–14 (derived, §4).
 
@@ -104,69 +116,112 @@ At the ledger's design growth, 72 copies pass the free space when the ledger rea
 - `/var/lib/zeroed-signer`: stand-in; small.
 - `/opt/zeroed/stub`, `/opt/zeroed/current*`: symlinks and two small files.
 
+### 2.9 Every Blueprint write path, and where it must go (for card PATHS-FIX)
+
+Supervisor ruling 4 and ruling 6. The unit can write only `/var/lib/zeroed` (`StateDirectory=zeroed`, `zeroed-worker.service:32`, under `ProtectSystem=strict`, `:44`, with no `ReadWritePaths`). The engine's paths:
+
+| Writer | Default today | Source | Proposed path | Backed up by `zeroed-backup`? | Budget row |
+|---|---|---|---|---|---|
+| M24 ledger | `/var/lib/bot/bot.db` | `packages/engine/src/m24/config.ts:9`; `SPEC-B.md:1971` | `/var/lib/zeroed/bot.db` | yes (matches `*.db`, `zeroed-backup:15`) | §2.5 |
+| M24 first-start marker | `/var/lib/bot-init/first-start` | `packages/engine/src/m24/db.ts:79` | `/var/lib/zeroed/init/first-start` | no (not SQLite) | bytes |
+| M24 recovery journal (`exits_only`) | `/var/lib/bot/recovery-<ts>.ndjson` | `SPEC-B.md:2032` | `/var/lib/zeroed/recovery/recovery-<ts>.ndjson` | no; never deleted (owner, "Disk cycle", journal) | small; only in `exits_only` |
+| M24 backups | `/data/backups/bot-YYYYMMDD-HH.db.enc` | `SPEC-B.md:2031`; `ARCH.md:2718` | none: `zeroed-backup` is the one owner (§2.6) | — | 0 |
+| M24 disk-guard reserve file (500 MB) | not named in the spec | `SPEC-B.md:2033` | `/var/lib/zeroed/reserve` | no | 0.5 GB, fixed |
+| M27 logs | `/var/lib/bot/log` | `packages/engine/src/m27/config.ts:19` | `/var/lib/zeroed/log` | no | §2.7 |
+| M07 segments, manifests, day index | `/data/md`, `/data/md/YYYY-MM-DD/HH/<stream>.ndjson.zst`, `/data/md/YYYY-MM-DD/index.json` | SPEC-A A-M07-02 (`SPEC-A.md:1305,1307,1310`) | `/var/lib/zeroed/md` | no (not SQLite; pulled by `md-pull`) | §2.3 |
+| M07 receipts | `/data/md/receipts/` | `SPEC-A.md:1340` | `/var/lib/zeroed/md/receipts/` | no | bytes |
+| M13 import spool | `/var/lib/bot/import-spool/` | `SPEC-B.md:2539` | `/var/lib/zeroed/import-spool/` (group `botops` write as specified) | no | UNVERIFIED, one bundle at a time |
+| M14 provider usage ledger | `/data/rpc-usage.db` | `SPEC-A.md:2513` | `/var/lib/zeroed/rpc-usage.db`, or a shared directory if the sentinel must write it (owner `bot`, group `sentinel`, mode 0660 as specified) | yes, if under `/var/lib/zeroed` | small |
+| Signer, sentinel | `/var/lib/signer/…`, `/var/lib/sentinel/…`, `/run/signer`, `/run/sentinel` | `SPEC-B.md:723,772,2012,1489,2440`; `ARCH.md:630,1628` | own units, own `StateDirectory`/`RuntimeDirectory` (the host already has `zeroed-signer`, `StateDirectory=zeroed-signer`) | out of scope for the engine unit; the signer's key material is never in the backup (`ARCH.md:2718`) | small |
+| Config (read-only) | `/etc/bot/*.json`, `/etc/bot/secrets.env`, `/opt/bot/idl` | `SPEC-B.md:331,2058,2584`; `SPEC-A.md:464` | read, not written; the host's `/etc/zeroed` | — | — |
+
+PATHS-FIX's test (ruling 6): every configured write path above that belongs to the engine unit resolves inside `/var/lib/zeroed` (or a `ReadWritePaths` entry the unit lists). The test fails on today's defaults (rows 1, 2, 3, 6, 7, 8, 9, 10). SPEC-A's `/data/md` and SPEC-B's paths change in the same PR, with the reason.
+
 ## 3. Usable space
 
 - Disk: 55 GB SSD (`docs/blueprint/ARCH.md:1711`). Whether Vultr's "55 GB" means 10^9 or 2^30 bytes is UNVERIFIED. 55 × 10^9 bytes is used here, the smaller of the two.
 - Filesystem: ext4 metadata (inode tables, journal) takes about 1.5–2%, so the filesystem size is about 54 GB (estimate; the installer's D07 note says it is "smaller than 55 GB, not measured", `ops/host/install-main.sh:57-58`; floor 40 GB by size, `:61`).
 - ext4 reserves 5% for root by default (UNVERIFIED on Vultr's image), so `bavail` for the worker's user is about **51 GB**. RECORD-BUDGET reads `bavail` (`recorder-budget.ts:81-84`), so its floor counts from this figure. `zeroed-backup` runs as root and may eat into the reserve.
-- Fixed items (§2.1–2.2): **about 4.5–5.8 GB**, which leaves **about 45–47 GB** for growers.
+- Fixed items: §2.1 sums to **4.0–6.3 GB** (worst 6.8 GB). §2.2's code today is **0.46–0.53 GB**. Together that is **4.5–6.8 GB** (worst 7.4 GB), which leaves **about 44–47 GB** for growers. The model in §4 uses these same figures.
 
 ## 4. Fill dates (derived model)
 
-Day 0 is the day the Blueprint engine (ledger, logs, backups of it) and the M07 recorder start on the host. Inputs per day:
+Day 0 is the day the Blueprint engine (ledger, logs, backups of it) and the M07 recorder start on the host. No start day is set, so dates are given only as days from start. Inputs per day:
 
-| Scenario | Recorder | Logs | Ledger growth | Releases + repo |
-|---|---|---|---|---|
-| Design low | 0.31 GB | 0.05 GB | 35 MB | 42 MB |
-| Design high | 0.52 GB | 0.256 GB | 75 MB | 58 MB |
-| Worst | 1.87 GB | 0.256 GB | 600 MB | 58 MB |
+| Scenario | Fixed at day 0 | Recorder (1.87 GB raw basis) | Logs | Ledger growth | Releases + repo |
+|---|---|---|---|---|---|
+| Design low | 4.46 GB | 0.37 GB | 0.05 GB | 35 MB | 42 MB |
+| Design high | 6.83 GB | 0.62 GB | 0.256 GB | 75 MB | 58 MB |
+| Worst | 7.35 GB | 1.87 GB | 0.256 GB | 600 MB | 58 MB |
 
 | Scenario | Nothing pruned, no backups | Nothing pruned, hourly backups never deleted (about 12 × r × d² GB) | **Current keep rules** (recorder 30 d, logs 14 d, backups 72, rollups ≤ 4 GiB, 5 releases) |
 |---|---|---|---|
-| Design low | day 107 | day 10 | day 17 |
-| Design high | day 50 | day 7 | day 8–9 |
+| Design low | day 94 | day 10 | day 17 |
+| Design high | day 44 | day 6–7 | day 8 |
 | Worst | day 16 | day 2 | day 2 |
 
-Model (hourly steps; a reviewer can rerun it from this line): `used = F + (R + G + rel + repo) × d + L(d) + backups(d)`, with `L(d) = r × d` and `backups = Σ L` over the kept copies.
+Model (hourly steps; a reviewer can rerun it from this line): `used = F + (R + G + rel + repo) × d + L(d) + backups(d)`, with `L(d) = r × d` and `backups = Σ L` over the kept copies; the disk is full when `used` reaches 51.3 GB. Under the current keep rules, the recorder stops growing at day 30, logs at day 14, and L at 6 GB.
 
 Before day 0 (today): the stand-in writes almost nothing, and only the fixed items count.
 
 ## 5. Recommendations
 
-Each item names the owner rule it serves, the exact change, and where. None of them deletes the ledger, saved state or journal ("Disk cycle", `CLAUDE.md:79`). Backups are copies, so removing old backup files does not touch the ledger.
+Each item names the owner rule or ruling it serves, the exact change, and where. None of them deletes the ledger, saved state or journal ("Disk cycle", `CLAUDE.md:79`). Backups are copies, so removing old backup files beyond the copy floor does not touch the ledger.
 
 | # | Change | Where | Effect |
 |---|---|---|---|
-| R1 | **Bound the backups by bytes and compress them.** Pipe through `zstd` before `age` (the installer must add the `zstd` package if the image lacks it, UNVERIFIED), add `ZEROED_BACKUP_MAX_BYTES` (proposed 6 GB), keep the newest 24 hourly plus one a day for 7 days within that budget, and alert when even the newest copy exceeds the budget. Change ARCH's "48 hourly" (`ARCH.md:1077`, `:2718`) to that budget. **This must land before R2.** | `ops/host/files/usr/local/sbin/zeroed-backup:12,31,33`; ARCH M07 "Disk" and §15 "Files" | Backups go from 72 × ledger to ≤ 6 GB |
-| R2 | **Align every Blueprint path under the worker's StateDirectory** so the unit can write them and the backup sees the ledger: `m24` database `/var/lib/zeroed/bot.db`, `m27.log_dir` `/var/lib/zeroed/log`, `recorder.data_dir` `/var/lib/zeroed/md`. Today the unit (`ProtectSystem=strict`) cannot write `/var/lib/bot` or `/data`, and the ledger would never be backed up. | `packages/engine/src/m24/config.ts:9`, `packages/engine/src/m27/config.ts:19`; SPEC-A A-M07-02 `recorder.data_dir`; ARCH §15 "Files" | Ledger backed up; writes allowed |
-| R3 | **Keep the metric rollups out of the hourly backup**, in their own file (for example `/var/lib/zeroed/metrics.db`) that `zeroed-backup` skips. They are observability, not money, and can be rebuilt. Lower `m27.rollup_max_bytes` from 4 GiB to **1 GiB** for this host, and record the deviation in `DECISIONS.md`. | `packages/engine/src/m27/config.ts:21` default; a skip list in `zeroed-backup:15`; ARCH §15 | Backed-up ledger stays about 1.5–3 GB in year 1, not 6–8 GB |
-| R4 | **Recorder: bytes, not percentages, and receipts from the approved upload.** Count an upload to zeroed-data whose sha256 read-back matches as a valid `PullReceipt` (owner, `CLAUDE.md:78`). Delete verified segments after **7 days** on the host, not 30. Use RECORD-BUDGET's figures: a cap of `recorder.max_bytes` 8 GiB, and a free floor of 3 GiB that deletes oldest first even without a receipt, with each loss logged (the owner's "auto delete", `HANDOVER.md:1054`). Keep 95% → stop streams as a last guard. 80% of 51 GB is 41 GB, too late once backups and logs are counted. | SPEC-A A-M07-03 step 2 and config; ARCH M07 "Disk" and "Failure modes" (`ARCH.md:1077-1078`) | Recorder ≤ 3.6 GB at design rate, ≤ 8.6 GB worst |
-| R5 | **Releases: one spare instead of three, and only runtime files.** `prunable_releases` keeps current, previous, the tag's commit and **1** newest other. `git archive` takes only what the host runs (proposed: `ops/`, `packages/`, root `package.json`, `pnpm-lock.yaml` and `tsconfig*`). The builder must check what `worker_entry` and `apply_host` read. `research/` and `docs/` (46 MB, 55% today) are left out. | `ops/host/files/usr/local/lib/zeroed/logic.sh:236` (`-gt 3` → `-gt 1`); `zeroed-update:381` (path list after `$commit`); `DECISIONS.md` HOST-CAPS | About 4 × 36 MB = 0.15 GB, growing far more slowly |
-| R6 | **Git clone: shallow.** `fetch --depth=1` for the tag and branch, plus `git gc --prune=now` after a switch. `verify-commit` needs only the commit object. The builder must check that no step reads history. | `zeroed-update:309` | Repo ≈ one tree, about 50 MB, flat |
-| R7 | **Logs: a hard daily cap for every level.** `m27.log_max_bytes_per_day` 256 → 128 MiB. Above twice that, warn lines are sampled with a dropped count (error and above always kept). Retention stays at 14 days (ARCH). | `packages/engine/src/m27/config.ts:15-16`; B-M27-01 | ≤ 1.9 GB |
+| R1 | **Backups: a copy floor first, then a byte budget.** Keep at least the newest 24 hourly copies and 7 daily copies (one per UTC day). The byte budget never cuts these (supervisor ruling 3). Above the floor, delete the oldest copies beyond the budget (proposed `ZEROED_BACKUP_MAX_BYTES`, 6 GB, for copies above the floor). When the floor alone exceeds the budget, raise an alert and shed the other growers (recorder cap down, then logs, R9), **never backups**. Pipe through `zstd` before `age` (the installer must add the `zstd` package if the image lacks it, UNVERIFIED). Compression is **not** counted in this budget until measured (R10). Change ARCH's and SPEC-B's "48 hourly" (`ARCH.md:1077`, `:2718`; `SPEC-B.md:2031`) to this rule. **This must land before PATHS-FIX (R2).** | `ops/host/files/usr/local/sbin/zeroed-backup:12,31,33`; ARCH M07 "Disk" and §15 "Files"; SPEC-B B-M24 backups | Backups = 31 × the backed-up file, bounded only by the size of that file (R3) |
+| R2 | **Card PATHS-FIX** (supervisor ruling 6): move every engine write path in §2.9 under `/var/lib/zeroed`. Change SPEC-A's `/data/md` and SPEC-B's paths in the same PR, with the reason. Add a test that every configured write path sits inside the unit's `StateDirectory` or `ReadWritePaths`; it fails on today's defaults. `zeroed-backup` is the one backup owner (§2.6); M24's `/data/backups` step is not built. | §2.9's "Source" column; `packages/engine/src/m24/config.ts:9`, `m24/db.ts:79`, `m27/config.ts:19`; SPEC-A A-M07-02/03; SPEC-B B-M24 | The engine can write; the ledger is backed up once |
+| R3 | **Keep the hourly backup small: back up the ledger, not the bulk tables.** The 31-copy floor makes every byte of the backed-up file count 31 times. Keep the money and control tables (orders, attempts, fills, positions, trades, cash flows, costs, audit, commands, config, limits, alerts, candidates, signals, wallet snapshots, equity) in `bot.db`. Move the bulk tables to their own files: `metric_rollup_1m` to `metrics.db`, not backed up; `bar_1m`, `screen_result` and `quarantine` to `market.db`, with one daily copy (keep 2), which is an open point because it sits below the ruling-3 floor (§6). `zeroed-backup` skips these by name. Losing `metrics.db` on a restore loses dashboard metric history only; whether it can be rebuilt is not claimed. Lower `m27.rollup_max_bytes` from 4 GiB to **1 GiB** for this host, and record the deviation in `DECISIONS.md`. This changes ARCH §15 and D06 (one file), so it needs a spec ruling. | `packages/engine/src/m24/schema.ts` (file per table); `m27/config.ts:21`; a skip list in `zeroed-backup:15`; ARCH §15, D06 | The hourly file stays about 0.2–0.5 GB in year 1 (estimate), not 6–8 GB |
+| R4 | **Recorder: bytes, receipts, fail closed** (supervisor ruling 2). Keep the Blueprint's signed `PullReceipt` (`ARCH.md:1078`; `SPEC-A.md:1340`): nothing is deleted without a verified receipt, and a sha256 read-back is not a receipt. Delete receipted segments after **7 days** on the host, not 30. Add a byte cap `recorder.max_bytes` (8 GiB) and the 3 GiB free floor of RECORD-BUDGET. At the cap or the floor with no receipted segment left to delete, raise an alert and **pause the recorder** (except `universe_manifest` and `coverage`, as at 95% today). Trading continues. Replace the 80%/95% percentages with these byte figures: 80% of 51 GB is 41 GB, too late once backups and logs are counted. Any receiptless deletion is an open point for an owner or spec decision, never a default (§6). | SPEC-A A-M07-03 step 2 and config; ARCH M07 "Disk" and "Failure modes" (`ARCH.md:1077-1078`) | Recorder ≤ 2.6–4.3 GB at design rate, ≤ 8.6 GB worst |
+| R5 | **Releases: one spare instead of three, and only runtime files.** `prunable_releases` keeps current, previous, the tag's commit and **1** newest other. `git archive` takes only what the host runs (proposed: `ops/`, `packages/`, root `package.json`, `pnpm-lock.yaml` and `tsconfig*`). The builder must check what `worker_entry` and `apply_host` read. `research/` and `docs/` are 45.7 MB today: 58% of the 79.0 MB apparent size, or 56% of the 82 MB on disk (measured). | `ops/host/files/usr/local/lib/zeroed/logic.sh:236` (`-gt 3` → `-gt 1`); `zeroed-update:381` (path list after `$commit`); `DECISIONS.md` HOST-CAPS | About 4 × 36 MB = 0.15 GB, growing far more slowly |
+| R6 | **Git clone: keep full history; at most a plain `git gc` after a switch** (supervisor ruling 1). No shallow fetch: `zeroed-update:325` (`merge-base --is-ancestor` against the branch) needs the branch's history, and that check is never loosened. A plain `git gc` only repacks reachable objects, so the check keeps working. The clone keeps growing at the repo's rate (+2–7 GB a year, UNVERIFIED), and this budget carries that. | `zeroed-update` after the switch | Repo packed; growth stays |
+| R7 | **Logs: a lower daily cap, and a spec change for warn floods.** `m27.log_max_bytes_per_day` 256 → 128 MiB (a default inside its configured range, `config.ts:15`). Sampling warn lines above twice the cap, with a dropped count (error and above always kept), **changes B-M27-01's rule that warn and above are always kept** (`config.ts:16`). It needs a spec change and a `DECISIONS.md` entry before any build. Retention stays at 14 days (ARCH). | `packages/engine/src/m27/config.ts:15-16`; B-M27-01; `docs/DECISIONS.md` | ≤ 1.9 GB if the spec change lands; warn floods are uncapped until then |
 | R8 | **Run retention.** A daily `deleteExpired` over `retentionTables()` must be scheduled. On base, nothing outside the tests calls it (checked by grep). | the M24/M27 owner card; `packages/engine/src/m24/retention.ts` | Ledger tables follow ARCH 15 |
-| R9 | **One host disk alert:** `zeroed-check` raises an alert when `/var/lib` free space is under 10 GB, and a critical alert under the 3 GiB floor. Its `/status` shows bytes for recorder, ledger, backups, logs and releases. | `ops/host/files/usr/local/sbin/zeroed-check` | Early warning, not a crash |
-| R10 | **Measure in Phase 0** (48 h): recorder bytes a day per stream, ledger growth a day per table, backup size compressed, log bytes a day. Replace this file's estimates with the measured numbers. | ARCH M07 "Budget"; MA-0b exit | Removes the UNVERIFIED rows |
+| R9 | **One host disk alert and the shed order:** `zeroed-check` raises an alert when `/var/lib` free space is under 10 GB, and a critical alert under the 3 GiB floor. Its `/status` shows bytes for recorder, ledger files, backups, logs and releases. At overflow the shed order is: recorder (pause, R4), then logs (debug and info off), then old releases beyond current and previous. Backups and the ledger are never shed (ruling 3; "Disk cycle"). | `ops/host/files/usr/local/sbin/zeroed-check` | Early warning, and a fixed order instead of a crash |
+| R10 | **Measure in Phase 0** (48 h): recorder bytes a day per stream, growth a day per ledger table, backup size with and without zstd, log bytes a day. Replace this file's estimates with the measured numbers, and decide R3's open point from them. | ARCH M07 "Budget"; MA-0b exit | Removes the UNVERIFIED rows |
 
-### Budget with R1–R9 (year 1, derived)
+### Budget with R1–R10 (end of year 1, derived)
 
 | Item | Steady | Worst |
 |---|---|---|
-| Fixed (OS, kernels, apt, Node, journald, Tailscale) | 4.0–5.8 GB | 6.3 GB |
-| Releases (4 × runtime-only) + shallow repo | 0.2 GB | 0.5 GB |
-| Recorder (7 days after verified upload; cap 8 GiB) | 2.2–3.6 GB | 8.6 GB |
-| Ledger without rollups | 1.5–3 GB | 4 GB |
-| Metric rollups (1 GiB cap) | 1.1 GB | 1.1 GB |
-| Backups (byte budget) | 2–6 GB | 6 GB |
+| Fixed (§2.1: OS, kernels, apt, Node, journald, Tailscale) | 4.0–6.3 GB | 6.8 GB |
+| Releases (4 × runtime-only) + git clone with history (R6) | 0.2–2.6 GB | 7.3 GB |
+| M24 disk-guard reserve file (`SPEC-B.md:2033`) | 0.5 GB | 0.5 GB |
+| Recorder (7 days after receipt; cap 8 GiB) | 2.6–4.3 GB | 8.6 GB |
+| `bot.db`, the hourly-backed ledger (R3) | 0.2–0.5 GB | 1 GB |
+| `market.db` (`bar_1m`, `screen_result`, `quarantine`) | 1.3–2.0 GB | 4 GB |
+| `metrics.db` (1 GiB cap) | 1.1 GB | 1.1 GB |
+| Backups of `bot.db`: floor 31 × file, compression not counted | 6.2–15.5 GB | 31 GB |
+| Backups of `market.db`: 2 daily (open point) | 2.6–4.0 GB | 8 GB |
 | Logs (128 MiB × 14) | 0.7–1.9 GB | 1.9 GB |
 | Free floor (RECORD-BUDGET) | 3.2 GB | 3.2 GB |
-| **Total** | **about 15–27 GB** | **about 32 GB** |
+| **Total** | **about 23–42 GB** | **about 73 GB** |
 
-Against about 51 GB usable, the worst case leaves about 19 GB free, and no single grower can fill the disk in a day: the largest daily writer, the recorder, is capped in bytes and checked every 60 s.
+Against about 51 GB usable: the steady range fits, with about 9–28 GB free. The worst case is about 22 GB over. It assumes every item at its worst at once, at the end of year 1, with no compression credit. 31 GB of the 73 comes from the backup floor on a 1 GB `bot.db`. Inside a day nothing can fill the disk: the recorder is capped in bytes and checked every 60 s, and the shed order (R9) handles the slower growers. Over months, the backup floor times the ledger's size is the limit. R10's measurement of the real `bot.db` size and zstd ratio decides whether R3 is enough, or whether the floor's daily copies need to move off the host (an owner or spec decision, §6).
 
 ## 6. Open points
 
 - Vultr's "55 GB" unit, the real `df` figures and the 5% reserve: one `df -B1 /var/lib` on the host settles all three. That is an owner console step, or it can be read from the installer's D07 log line.
 - M07's real compression ratio and change rate: Phase 0 (R10).
 - The aggregate series count of M27 at runtime.
-- Whether anything on the host needs repo history (R6) or `docs/`/`research/` (R5).
+- Whether anything on the host needs `docs/` or `research/` (R5).
+- **Receiptless deletion of recorder segments** (ruling 2): not a default. If the owner's approved upload to zeroed-data (`CLAUDE.md:78`) should count as a pull, that is an owner or spec decision on A-M07-03. Until then the recorder pauses at its cap.
+- **B-M24 start recovery with `zeroed-backup` as the owner** (§2.6): the engine user cannot decrypt the host's age files. Options are a root helper that decrypts the newest good copy read-only for the engine, or operator restore. This needs a spec ruling.
+- **R3's split and `market.db`'s backup** (2 daily copies, below ruling 3's floor): needs a ruling. The alternative is to keep `bar_1m` and `screen_result` in the hourly file, which adds about 1.3–2 GB × 31 to the backups.
+- **The backup floor at worst size**: if R10 measures `bot.db` above about 0.5 GB uncompressed, 31 copies pass 15 GB. Then either measured compression, or keeping the 7 daily copies off the host (as ARCH plans: "daily copies are pulled", `SPEC-B.md:2031`), is needed. This is an owner or spec decision.
+
+## 7. Round 2 changes (supervisor rulings, `docs/reviews/DISKBUDGET.md` @ `caa6cc6c`)
+
+1. R6: the shallow fetch is dropped. `zeroed-update:325` is kept as is; only a plain `git gc` stays.
+2. R4: the signed `PullReceipt` is kept. There is no receiptless deletion by default; at the cap the host alerts and pauses the recorder. Receiptless deletion is listed as an open point.
+3. R1: the copy floor (24 hourly + 7 daily) is never cut by the budget. At overflow the host alerts and sheds other growers (R9), never backups.
+4. R2: §2.9 lists every Blueprint write path. `zeroed-backup` is named as the one backup owner, with the reason (§2.6). Backups are budgeted once.
+5. MINORs:
+   - Round 1's "with recommendations" table summed to 24.8 GB at the top of its range, not 27. The table is recomputed in §5.
+   - The recorder now states its basis: the spec's 0.31–0.52 GB a day is on the raw 1.56 GB basis; the budget uses the 1.87 GB basis (0.37–0.62).
+   - The fixed items are aligned across §2.1, §3, §4 and §5.
+   - Fill dates are given only as days from start.
+   - R3's "can be rebuilt" claim is dropped.
+   - R7's warn sampling is marked as a spec change that needs a `DECISIONS.md` entry. R5 now says 56–58%.
+6. PATHS-FIX: the exact path list is in §2.9, and the test rule is in R2.
