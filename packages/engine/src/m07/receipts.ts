@@ -5,8 +5,18 @@
 // (SPEC-A A-M07-03: nothing is deleted without a verified PullReceipt), so the sweep fails closed.
 //
 // What makes a receipt valid (its canonical JSON and Ed25519 signature with the research key) is B-M30-03's format, so
-// the check is passed in. M07 (A-M07-03) runs the sweep before it reads receipts and logs its alert.
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, rmSync, unlinkSync } from 'node:fs';
+// the check is passed in: it returns the segment the receipt is for, or null. M07 (A-M07-03) runs the sweep before it
+// reads receipts and logs its alert.
+//
+// Ruling 19: nothing here ever recurses or follows a link in a folder the pull account writes. A file or a link is
+// removed with unlink (which removes the link, never its target); a folder only with rmdir, so only an empty one goes
+// and a full one is reported as stuck; anything else is stuck. A swap between the check and the delete makes the delete
+// fail (rmdir on a link or unlink on a folder), so it is reported, and nothing outside the folder is touched.
+//
+// Ruling 20: a receipt's file name is bound to its segment (`receiptFileName`), so there is at most one receipt per
+// segment; a valid receipt under any other name is a duplicate or a stray copy and is deleted.
+import { createHash } from 'node:crypto';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, rmdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface ReceiptCaps {
@@ -20,7 +30,10 @@ export interface ReceiptCaps {
 
 export const RECEIPT_CAPS: ReceiptCaps = { maxCount: 100_000, maxBytes: 64 * 1_024 * 1_024, maxFileBytes: 4 * 1_024 };
 
-export type ReceiptDrop = 'not_a_file' | 'too_large' | 'invalid';
+export type ReceiptDrop = 'not_a_file' | 'too_large' | 'invalid' | 'misnamed' | 'duplicate';
+
+/** The one file name a receipt for `segment` (its path under the market-data folder) may have. */
+export const receiptFileName = (segment: string): string => `${createHash('sha256').update(segment, 'utf8').digest('hex')}.receipt.json`;
 
 export interface ReceiptSweep {
   /** Valid receipts left in the folder. */
@@ -57,8 +70,9 @@ function readBounded(path: string, limit: number): Buffer | 'too_large' | null {
 }
 
 /** One pass over `dir`: deletes what is not a valid receipt and reports what the caller must alert on. */
-export function sweepReceipts(dir: string, isValid: (bytes: Buffer, name: string) => boolean, caps: ReceiptCaps = RECEIPT_CAPS): ReceiptSweep {
+export function sweepReceipts(dir: string, segmentOf: (bytes: Buffer) => string | null, caps: ReceiptCaps = RECEIPT_CAPS): ReceiptSweep {
   const out: ReceiptSweep = { kept: 0, keptBytes: 0, deleted: [], stuck: [], overCap: false, alert: false };
+  const seen = new Set<string>();
   for (const name of readdirSync(dir).sort()) {
     const path = join(dir, name);
     const got = readBounded(path, caps.maxFileBytes);
@@ -66,22 +80,27 @@ export function sweepReceipts(dir: string, isValid: (bytes: Buffer, name: string
     if (got === null) why = 'not_a_file';
     else if (got === 'too_large') why = 'too_large';
     else {
-      let ok = false;
+      let segment: string | null = null;
       try {
-        ok = isValid(got, name);
+        segment = segmentOf(got);
       } catch {
-        ok = false;
+        segment = null;
       }
-      if (ok) {
+      if (segment === null) why = 'invalid';
+      else if (name !== receiptFileName(segment)) why = 'misnamed';
+      else if (seen.has(segment)) why = 'duplicate';
+      else {
+        seen.add(segment);
         out.kept += 1;
         out.keptBytes += got.length;
         continue;
       }
-      why = 'invalid';
     }
     try {
-      if (lstatSync(path).isDirectory()) rmSync(path, { recursive: true });
-      else unlinkSync(path);
+      const st = lstatSync(path);
+      if (st.isFile() || st.isSymbolicLink()) unlinkSync(path);
+      else if (st.isDirectory()) rmdirSync(path);
+      else throw new Error('not a file, a link or a folder');
       out.deleted.push({ name, why });
     } catch (e) {
       out.stuck.push({ name, why, error: e instanceof Error ? e.message : String(e) });
