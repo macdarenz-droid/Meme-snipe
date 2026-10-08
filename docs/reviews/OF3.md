@@ -72,3 +72,7 @@ Rulings 18, 20, 21 and 22 are closed. There is no path to a K2 or K3 day counted
 - Reviewer (7:37 PM): rulings 18–22 PASS. 227/0 on the head; 5 rows fail with the old files.
 - Reviewer MAJOR, out of this diff: ruling 7 is still open on the OF-4 row and blocks arming. The `continue` job (data-scan.yml:664) passes on its own `expect_units` input, which is empty by default, not on the day's saved unit count. After a resumable stop, a missing or short progress cache therefore restarts the day from unit 0.
   - OF-4's acceptance: before dispatch, count the finished units in the saved progress and pass that count as `expect_units`; refuse to chain when the count is 0 or the save failed. Test: a chained run that restores nothing stops before any read.
+
+## Round 4 (head `09e04446`): red team PASS (0 findings); reviewer pending
+
+Ruling 23 is in, and OF-2 36–42 are merged forward along with of3's own redirects. test-ci passes 233/0. No scanner or trim output reaches a public log, every step sees the same ARCHIVE_PRIOR value, and the done logic is unchanged. Next comes the OF-2 round 6 merge-forward (43–48) as a delta.
