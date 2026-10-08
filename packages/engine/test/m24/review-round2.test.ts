@@ -392,3 +392,25 @@ describe('round 5 rulings 26 and 27: the schema door is not on Db, and SQLite\'s
     db.close();
   });
 });
+
+describe('round 5 ruling 28: one statement per call', () => {
+  it('a second statement is refused before anything runs; a trailing ; or comment, a ; in a string and a trigger body are fine', async () => {
+    const db = await migrated();
+    const ins = (i: number): string => {
+      const r = sampleRow('kv_state', i);
+      return `INSERT INTO kv_state (key, value_json, created_at, updated_at) VALUES ('${r.key}', '{}', ${T0}, ${T0})`;
+    };
+    for (const sql of [`${ins(1)}; ${ins(2)}`, `${ins(1)};;\n -- x\n ${ins(2)}`, `${ins(1)}; /* c */ ${ins(2)};`]) {
+      assert.throws(() => db.withTx((tx) => tx.run(sql)), /one SQL statement per call/, sql);
+      assert.throws(() => db.reader().all(`SELECT 1; ${ins(9)}`), /one SQL statement per call/);
+    }
+    assert.equal(repos.kv_state.find(db.reader()).length, 0);
+    db.withTx((tx) => tx.run(`${ins(3)};`));
+    db.withTx((tx) => tx.run(`${ins(4)}; -- done`));
+    db.withTx((tx) => tx.run(`${ins(5)} /* open comment`));
+    db.withTx((tx) => tx.run("INSERT INTO kv_state (key, value_json, created_at, updated_at) VALUES ('a;b', '{\"x\":\";\"}', ?, ?)", T0, T0));
+    assert.equal(repos.kv_state.find(db.reader()).length, 4);
+    schemaFixture(db, (tx) => tx.run('CREATE TRIGGER two AFTER INSERT ON kv_state BEGIN SELECT 1; SELECT 2; END'));
+    db.close();
+  });
+});

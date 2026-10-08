@@ -146,6 +146,11 @@ class Statements {
     if (st === undefined) {
       if (this.cache.size >= STATEMENT_CACHE) this.cache.clear();
       st = this.conn.prepare(sql);
+      // node:sqlite compiles only the first statement and drops the rest without an error (Z02 round 5 ruling 28):
+      // anything after SQLite's own end of that statement must be whitespace, `;` or comments.
+      const tail = sql.slice(st.sourceSQL.length);
+      const next = statementStart(tail);
+      if (next >= 0 && next < tail.length) throw new Error('m24: one SQL statement per call; the text holds a second statement');
       st.setReadBigInts(true);
       this.cache.set(sql, st);
     }
