@@ -62,3 +62,9 @@ Card OF-3, `research/z-h-estimate/OLD-FAITHFUL.md` §5. Builder: the data builde
 20. **m2 and reviewer m1.** A disk stop and a trim out of budget are not resumable: exit 1 with the reason, the day counts as failed, the chain holds (ruling 7). Tests.
 21. **m3.** Write a unit's k2 lines to a temp file, then append and sync; on resume, require the unit's k2 line count to equal its `.zst` count before deleting the K2 copy. Test with a torn line.
 22. **m4.** The read-done path checks the list's sha256 against every unit's `migration_list_sha256` before copying it. Test.
+
+## Round 3 (head `71ea6630`): red team PASS (1 MINOR); reviewer pending
+
+Rulings 18, 20, 21 and 22 are closed. There is no path to a K2 or K3 day counted done with missing or duplicated units, or kept past its retention.
+
+23. **m1 (8 Oct 2026, 7:25 PM).** `ARCHIVE_PRIOR_LIST` and `ARCHIVE_PRIOR_SUMS` are declared once at job level in data-scan.yml, empty for now, so both the scan and the trim step see the same value. A test-ci assertion checks that no step sets them on its own.
