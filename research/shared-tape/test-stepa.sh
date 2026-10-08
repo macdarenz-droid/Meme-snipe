@@ -73,6 +73,21 @@ grep -rq CANARY-stepa "$T/work" --include='*.log' --include='*.json' --include='
 before=$(wc -l < "$T/getblock.log"); rc=0; run MAX_UNITS=2 || rc=$?
 after=$(wc -l < "$T/getblock.log")
 [[ $rc == 0 && $(( after - before )) == 2 && $(awk '{print $2}' "$T/work/released.tsv" | sort -u | wc -l) == 5 ]] && ok "resume skips done units and reads the next two" || no "resume rc=$rc reads $((after-before))"
+# A unit read but never verified (killed before its identity check) is not decoded or
+# released on resume: the run stops for a decision.
+read -r _ ep nf nt < <(sed -n 6p "$T/work/plan.txt")
+mkdir -p "$T/work/day/units/$ep/$nf-$nt" "$T/work/units/$nf/spool"; echo '{"blocks":1}' > "$T/work/day/units/$ep/$nf-$nt/stats.json"
+rc=0; run || rc=$?
+[[ $rc == 1 ]] && grep -q "unit $nf: read but not verified" "$T/work/stepa.log" && ok "an unverified unit stops the run" || no "unverified rc=$rc"
+rm -rf "$T/work/day/units/$ep/$nf-$nt" "$T/work/units/$nf"
+# released() needs the three distinct assets, not three rows.
+eval "$(sed -n '/^released() {/,/^}/p' "$here/stepa.sh")"; work="$T/rr"; mkdir -p "$work"
+printf 'd\t1-2\tcore-1-2.tar\ts\t1\nd\t1-2\tresearch-1-2.tar\ts\t1\nd\t1-2\tcore-1-2.tar\ts\t1\nd\t1-2\tresearch-1-2.tar\ts\t1\n' > "$work/released.tsv"
+released d 1 2 && no "a half-released unit counted as released" || ok "a half-released unit is not counted as released"
+printf 'd\t1-2\trecords-1-2.tar\ts\t1\n' >> "$work/released.tsv"
+released d 1 2 && ok "all three assets: released" || no "released with three assets"
+# Credits are booked before a unit starts: a hard kill cannot lose them.
+grep -q 'book $(( tbase + tleft ))' "$here/stepa.sh" && ok "credits booked in advance" || no "advance booking"
 echo 999999 > "$T/work/stepa-credits-used"; rc=0; run || rc=$?
 [[ $rc == 3 ]] && ok "the Step A cap stops the run" || no "cap rc=$rc"
 echo "$pass passed, $fail failed"; [[ $fail == 0 ]]

@@ -43,6 +43,8 @@ for f in "$tmp"/*.tar; do
   if ! grep -qx "$name" <<<"$existing"; then
     n=0; until "$gh" release upload "$tag" -R "$repo" "$f" >/dev/null; do
       n=$((n+1)); [ $n -gt 4 ] && { echo "upload of $name failed" >&2; exit 1; }; sleep $((2**n))
+      # An upload that reported failure may have landed: then read it back instead.
+      "$gh" release view "$tag" -R "$repo" --json assets --jq '.assets[].name' | grep -qx "$name" && break
     done
   fi
   rm -f "$tmp/back/$name"

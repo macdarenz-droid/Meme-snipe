@@ -23,11 +23,13 @@ rps=${RPS:-25} conc=${RPC_CONC:-32} cap=${STEPA_CAP:-650000} every=${REPLAY_EVER
 upstream=${TAPE_UPSTREAM:-https://mainnet.helius-rpc.com/}
 mkdir -p "$work"
 log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$work/stepa.log" >&2; }
-[[ "$upstream" =~ ^https://[a-z0-9.-]+\.helius-rpc\.com/ || "${TAPE_TEST:-}" == 1 ]] || { log "refused: upstream must be https://*.helius-rpc.com/"; exit 2; }
+# TAPE_TEST=1 (test-stepa.sh) counts only with a loopback upstream.
+testing=; [[ "${TAPE_TEST:-}" == 1 && "$upstream" == http://127.0.0.1:* ]] && testing=1
+[[ "$upstream" =~ ^https://[a-z0-9.-]+\.helius-rpc\.com/ || -n "$testing" ]] || { log "refused: upstream must be https://*.helius-rpc.com/"; exit 2; }
 . "$root/research/historical/ci/archive-limits.conf"
 for d in "${days[@]}"; do [[ " $HELIUS_DAYS " == *" $d "* ]] || { log "refused: $d is not in HELIUS_DAYS"; exit 2; }; done
 [ -n "${HELIUS_API_KEY:-}" ] || { log "refused: HELIUS_API_KEY is not set"; exit 2; }
-[ "${TAPE_TEST:-}" == 1 ] || command -v gh >/dev/null || { log "refused: gh is not installed"; exit 2; }
+[ -n "$testing" ] || command -v gh >/dev/null || { log "refused: gh is not installed"; exit 2; }
 [ -z "$(git -C "$root" status --porcelain -- research/shared-tape research/historical)" ] || { log "refused: uncommitted changes under research/shared-tape or research/historical"; exit 2; }
 
 export GO_VERSION=${GO_VERSION:-$(sed -n 's/^ *GO_VERSION: *"\([0-9.]*\)".*/\1/p' "$root/.github/workflows/data-scan.yml" | head -1)}
@@ -40,15 +42,21 @@ log "Step A: rpcscan $rev; decoder $trev; rps $rps conc $conc cap $cap"
 
 out="$work/day"; res="$work/research"; mkdir -p "$out" "$res" "$work/units"
 credits="$work/stepa-credits-used"
-used() { cat "$credits" 2>/dev/null || echo 0; }
+used() { # fails closed: an unreadable count stops the run
+  local v; v=$(cat "$credits" 2>/dev/null || echo 0)
+  [[ "$v" =~ ^[0-9]+$ ]] || { log "credit count unreadable: stopping"; kill -TERM $$; exit 1; }
+  echo "$v"
+}
+book() { echo "$1" > "$credits.tmp" && mv "$credits.tmp" "$credits"; }
 key_check() { # fail closed if the key is in any log or record
   ! grep -rqF -f <(printf '%s\n' "$HELIUS_API_KEY") "$work"/*.log "$work"/units 2>/dev/null
 }
 
 # --- A tee for one unit or for planning calls -------------------------------------
-teepid= tee_url= tdir= tleft=
-start_tee() { # DIR CAP
+teepid= tee_url= tdir= tleft= tbase=
+start_tee() { # DIR CAP: the whole cap is booked first (a hard kill loses nothing), then corrected
   tdir=$1 tleft=$2; mkdir -p "$tdir"
+  tbase=$(used) || exit 1; book $(( tbase + tleft ))
   rm -f "$tdir/STOP" "$tdir/tee.addr" "$tdir/ledger.json"
   "$bin/zeroed-tapedec" tee -upstream "$upstream" -rps "$rps" -max-credits "$tleft" -spool "$tdir/spool" \
     -ledger "$tdir/ledger.json" -stop-file "$tdir/STOP" -addr-file "$tdir/tee.addr" 2>> "$work/tee.log" &
@@ -62,7 +70,7 @@ stop_tee() { # books the tee's attempts (the whole allowance if the ledger is un
   kill -INT "$teepid" 2>/dev/null; wait "$teepid" 2>/dev/null
   local a; a=$(jq -r '.attempts' "$tdir/ledger.json" 2>/dev/null || echo "")
   [[ "$a" =~ ^[0-9]+$ ]] || a=$tleft
-  echo $(( $(used) + a )) > "$credits"
+  book $(( tbase + a ))
   teepid=
 }
 trap 'stop_tee; wait' EXIT
@@ -110,6 +118,7 @@ if [ ! -s "$plan" ]; then
   for (( u = u11 - 4500; u >= u10; u -= 4500 )); do
     echo "2026-09-10 $(( u / 432000 )) $u $(( u + 4499 ))" >> "$plan.tmp"
   done
+  echo "$s12" > "$work/plan.s12"
   mv "$plan.tmp" "$plan"
   log "plan: $(wc -l < "$plan") units ($(grep -c 2026-09-11 "$plan") for 09-11, $(grep -c 2026-09-10 "$plan") for 09-10)"
 fi
@@ -124,11 +133,14 @@ decode_unit() { # DAY EP FROM TO UDIR: research tables, completeness, then delet
   cb=$(jq -r '.blocks' "$unit/stats.json"); db=$(jq -r '.blocks + .dropped_blocks' "$ud/decode-stats.json"); mv=$(jq -r '.manifest_verified' "$ud/decode-stats.json")
   [[ "$cb" == "$db" && "$cb" == "$mv" ]] || { log "unit $from: decode incomplete (core $cb, decoded $db, verified $mv)"; rm -rf "$rdir"; return 1; }
   cp "$ud/spool/MANIFEST.tsv" "$ud/getblock-manifest.tsv"
+  touch "$ud/decoded"
   rm -rf "$ud/spool"
   log "unit $from: decoded ($(jq -c '.rows' "$ud/decode-stats.json"))"
   release_unit "$day" "$ep" "$from" "$to"
 }
-released() { [ "$(awk -v u="$2-$3" '$2 == u' "$work/released.tsv" 2>/dev/null | wc -l)" -ge 3 ]; }
+released() { # all three assets of the unit read back
+  [ "$(awk -v u="$2-$3" '$2 == u {sub(/-.*/, "", $3); print $3}' "$work/released.tsv" 2>/dev/null | sort -u | wc -l)" -eq 3 ]
+}
 release_unit() { # DAY EP FROM TO: release assets, read back, then free the local copy
   local day=$1 ep=$2 from=$3 to=$4
   bash "$here/release.sh" "$work" "$day" "$ep" "$from" "$to" >> "$work/release.log" 2>&1 || { log "unit $from: release failed (kept locally)"; return 1; }
@@ -137,23 +149,34 @@ release_unit() { # DAY EP FROM TO: release assets, read back, then free the loca
   log "unit $from: released to tape-$day and read back; local copy removed"
 }
 
+s12=$(cat "$work/plan.s12") && [[ "$s12" =~ ^[0-9]+$ ]] || { log "plan.s12 missing: replan"; exit 1; }
+phase0=446017500 # Phase 0's unit (PHASE0.md): already read; never read again
+if [ -f "$out/units/1032/$phase0-$(( phase0 + 4499 ))/stats.json" ] && grep -q "Phase 0 done" "$work/phase0.log" 2>/dev/null; then
+  mkdir -p "$work/units/$phase0"; touch "$work/units/$phase0/decoded"
+fi
 n=0 decpid= nread=0
 while read -r day ep from to; do
   (( max > 0 && nread >= max )) && { log "MAX_UNITS $max reached: stopping (resumable)"; break; }
   n=$((n+1))
   unit="$out/units/$ep/$from-$to" rdir="$res/units/$ep/$from-$to" ud="$work/units/$from"
   released "$day" "$from" "$to" && continue
-  if [ -f "$unit/stats.json" ] && [ -f "$rdir/stats.json" ]; then
+  if [ "$from" == "$phase0" ] && [ ! -f "$unit/stats.json" ]; then
+    log "unit $from is Phase 0's (on zeroed-data branch tape): not read again"; continue
+  fi
+  if [ -f "$unit/stats.json" ] && [ -f "$rdir/stats.json" ] && [ -f "$ud/decoded" ]; then
     [ -z "$decpid" ] || { wait "$decpid" || exit 1; decpid=; }
     release_unit "$day" "$ep" "$from" "$to" || exit 1; continue
   fi
-  if [ -f "$unit/stats.json" ] && [ -d "$ud/spool" ]; then
-    [ -z "$decpid" ] || wait "$decpid"; decpid=; decode_unit "$day" "$ep" "$from" "$to" "$ud" || exit 1; continue
+  if [ -f "$unit/stats.json" ]; then
+    [ -f "$ud/verified" ] && [ -d "$ud/spool" ] || { log "unit $from: read but not verified (identity or replay unchecked): stopping for a decision"; exit 1; }
+    [ -z "$decpid" ] || { wait "$decpid" || exit 1; decpid=; }; decode_unit "$day" "$ep" "$from" "$to" "$ud" || exit 1; continue
   fi
   left=$(( cap - $(used) ))
   (( left > 6000 )) || { log "Step A credit cap: $(used) of $cap used; stopping (resumable after a cap change)"; exit 3; }
   free=$(df -B1 --output=avail "$work" | tail -1)
   (( free > 12 * 1024**3 )) || { log "free disk $free below 12 GiB: stopping resumably (upload and clear a finished day)"; exit 75; }
+  (( to < s12 )) || { log "unit $from-$to reaches 2026-09-12 (first slot $s12): refused"; exit 1; }
+  if [ -f "$ud/ledger.json" ]; then log "unit $from: an earlier attempt's ledger exists (its credits were booked in advance)"; fi
   rm -rf "$ud"; start_tee "$ud" 6000 || exit 1
   nread=$((nread+1))
   t0=$(date +%s)
@@ -175,6 +198,7 @@ while read -r day ep from to; do
       { log "unit $from: replay digest differs: stopping"; exit 1; }
     rm -rf "$ud/replay"; log "unit $from: replay digest equal"
   fi
+  touch "$ud/verified"
   # Decode in the background while the next unit is read (one decode at a time).
   if [ -n "$decpid" ]; then wait "$decpid" || { log "a decode failed: stopping"; exit 1; }; fi
   decode_unit "$day" "$ep" "$from" "$to" "$ud" & decpid=$!
