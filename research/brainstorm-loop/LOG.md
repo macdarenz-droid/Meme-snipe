@@ -9,6 +9,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 - Every confirmatory test from this loop is judged at a fixed 0.005 (99.5% intervals; agreed with the lead 2026-10-08). A pass counts only after it holds on data it never touched (forward tape, or the sealed window after 21 Oct).
 - Messages to the lead are at most 10 lines (owner rule "Lean manager context", 2026-10-08, CLAUDE.md on the lead's branch, verified): status, result in one line with key numbers, files and commit, what is needed next. Details go in repo files. Heavy reading runs in subagents with an explicit model (sonnet medium for mechanical work, opus for judgement).
 - Before telling the owner anything, check it at its source (owner, 2026-10-08 18:18: "Before u say something always fact check or verify"). A claim relayed from another session is checked in that session's own record first.
+- Before naming a new amendment file, list the existing names on the lead's branch (`git ls-tree origin/ccr-7fae2302-drz4co <dir>`), because the lead freezes files by path.
 - Tests run in visible Auto worker sessions with a fresh reviewer before scoring. The lead holds the credit ledger and starts every worker ("AGREED <id>, cap <credits>").
 
 ## Timeline (Melbourne)
