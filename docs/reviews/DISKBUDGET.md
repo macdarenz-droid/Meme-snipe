@@ -25,3 +25,14 @@ Review PASS with notes; rulings 1–6 applied. Red team 0 BLOCKER, 1 MAJOR, 3 MI
 8. **MINOR 1.** Add M24's pre-migration backup (`m24/migrate.ts:86,135-137`; SPEC-B:1992) as a row, kept out of the backup glob, budgeted at 1× ledger; the writer lock `<db>-writer.lock` (`m24/db.ts:225`) moves with the db.
 9. **MINOR 2.** The import spool (group `botops` write, SPEC-B:2539) and md-pull's read of `/md` get their own directories and modes (an extra StateDirectory or ReadWritePaths entry); PATHS-FIX builds them.
 10. **MINOR 3.** R3's split: add the cross-file atomicity point (SQLite WAL with ATTACH; cite the SQLite docs, or mark UNVERIFIED) to the R3 spec ruling, and label the market.db and metrics.db budget rows "if R3 is ruled".
+
+## Round 3 (head `10ea904a`): delta review + red team, same session
+
+Review PASS (rulings 7–10 applied; the SQLite ATTACH quote matches). Red team 0 BLOCKER, 2 MAJOR, 2 MINOR.
+
+### Supervisor rulings for round 4 (9 Oct 2026, about 12:20 AM)
+
+11. **MAJOR 1, one mode per unit.** Do not rely on per-entry StateDirectory modes (systemd.exec: one StateDirectoryMode per unit, folders owned by the unit's user; the builder checks it on the host's systemd version and records it). The installer creates the spool and md folders with explicit owner, group and mode, and the unit lists them in ReadWritePaths.
+12. **MAJOR 2, md readable by the pull group.** The md folder is 2750, setgid to the pull group. The recorder sets explicit modes (0750 folders, 0640 files); the unit's UMask=0077 stays.
+13. **MINOR 1, spool.** 2730, and name how the worker gets read access (the mode the operator copies with, a group, or an ACL).
+14. **MINOR 2, receipts.** State the sftp umask (`sftp-server -u`) or the worker's group membership, so receipts are readable. An unreadable receipt still fails closed.
