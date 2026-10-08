@@ -66,6 +66,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 23:51 | Coverage map done (2 agents): more than 100 ideas mapped. The idea search is close to complete; the testing is not. The best remaining empty region is perps at minutes to days (CROWD-BREAK-SHORT about 2–3%, FUND-SPREAD about 2%, FLUSH-PERP about 1.5%). Proposed stopping rule: W1 finds no persistent slow class, AND Step A fails G1-0 and D1, AND CROWD-BREAK-SHORT is killed. `COVERAGE_MAP.md` |
 | 2026-10-08 23:52 | Lead: AGREED CROWD-BREAK-SHORT and FUND-SPREAD (cap 0, one worker, free data); FLUSH-PERP dropped; no stopping rule to be proposed, as the owner said keep going |
 | 2026-10-08 23:54 | Both PREREG drafts committed and sent to the lead |
+| 2026-10-08 23:55 | Lead: both perp PREREGs frozen (c898f8df); worker "Perp probes: CROWD-BREAK-SHORT and FUND-SPREAD (free data)" running |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
