@@ -3,7 +3,7 @@ AMENDMENT_3). Each gate is 1 (pass), 0 (reject) or -1 (unknown: the tape lacks t
 never a pass, as in the bot, where it is an H16 reject).
 
 Sources (packages/core/src):
-- universe tag: U2 = 60-240 min after migration (config/research.ts s0.u2Window*), U1 = 24 h-14 days with market cap
+- universe tag: U2 = 60 <= age < 240 min after migration (config/research.ts s0.u2Window*), U1 = 24 h-14 days with market cap
   >= 1,470 SOL (docs/ARCHITECTURE.md §3.2); 4-24 h has no tag, so it is never tradable (H8_AMENDMENT_2 item 1).
 - H8 floor (gates/hard.ts liquidityFloor): max($15k, 1,000 x size); U1 at least $50k. Applied in h8.add_h8.
 - dust (hard.ts h8): the quote put in the pool at migration (CreatePoolEvent pool_quote_amount) >= 5 SOL.
@@ -35,7 +35,7 @@ GATES = ("gate_dust", "gate_h6", "gate_h9", "gate_h11_spike", "gate_h11_chase", 
 
 
 def universe_tag(age_s: float, mcap_sol: float) -> str:
-    if C.U2_FROM_S <= age_s <= C.U2_TO_S:
+    if C.U2_FROM_S <= age_s < C.U2_TO_S:   # the bot ends U2 at migration + 240 min (R2-16)
         return "U2"
     if C.U1_FROM_S <= age_s <= C.U1_TO_S and mcap_sol >= C.U1_MIN_MCAP_SOL:
         return "U1"

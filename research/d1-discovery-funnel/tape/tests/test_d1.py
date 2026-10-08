@@ -1022,7 +1022,8 @@ class BotGates(unittest.TestCase):
     def test_universe_and_floor(self):
         from d1.gates import floor_for, universe_tag
         self.assertEqual(universe_tag(3600, 10), "U2")
-        self.assertEqual(universe_tag(240 * 60, 10), "U2")
+        self.assertEqual(universe_tag(240 * 60 - 1, 10), "U2")
+        self.assertEqual(universe_tag(240 * 60, 10), "none")                # R2-16: the bot ends U2 at + 240 min
         self.assertEqual(universe_tag(240 * 60 + 1, 10**6), "none")
         self.assertEqual(universe_tag(86400, 1470), "U1")
         self.assertEqual(universe_tag(86400, 1469), "none")
