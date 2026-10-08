@@ -1,0 +1,17 @@
+{
+  "vm": "VM-01",
+  "schema_version": 1,
+  "seq": "1",
+  "kind": "heartbeat",
+  "key": null,
+  "emitted_at": "2026-10-06T14:02:11.123Z",
+  "as_of": "2026-10-06T14:02:11.123Z",
+  "clock": "wall",
+  "mode": "paper",
+  "run_id": "01K6Y3V2Q8ZQ4D5M7N9P1R3T5W",
+  "data": {},
+  "server_time": "2026-10-06T14:02:11.123Z",
+  "state_version": "42",
+  "topics": ["system", "positions"],
+  "ui_supported": { "VM-01": [1] }
+}

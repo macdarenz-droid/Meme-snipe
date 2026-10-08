@@ -50,6 +50,31 @@ describe('eslint.config.mjs: every source extension is linted (C01 red-team M2)'
   });
 });
 
+describe('eslint.config.mjs: dashboard money rule (UI-T01 acceptance 3)', () => {
+  it('parseFloat(x.net_pnl_lamports) in the dashboard fails lint with the money-rule message', async () => {
+    const [result] = await eslint.lintText('export const v = (x: { net_pnl_lamports: string }) => parseFloat(x.net_pnl_lamports);\n',
+      { filePath: join(root, 'packages/dashboard/src/a.ts') });
+    const money = (result?.messages ?? []).filter((m) => m.ruleId === 'bot/no-number-on-money');
+    assert.equal(money.length, 1);
+    assert.match(money[0]?.message ?? '', /^Money rule: parseFloat\(\) on "net_pnl_lamports"/);
+  });
+  it('the dashboard clock module may read the wall clock; other dashboard files may not', async () => {
+    assert.deepEqual(await rulesHit('packages/dashboard/src/lib/clock.ts', 'export const c = { nowMs: () => Date.now() };\n'), []);
+    assert.deepEqual(await rulesHit('packages/dashboard/src/lib/other.ts', 'export const c = { nowMs: () => Date.now() };\n'), [RULE]);
+  });
+});
+
+describe('eslint.config.mjs: dashboard number formatting (UI-T03 Definition of done)', () => {
+  const code = 'export const t = (n: number): string => n.toFixed(2) + n.toLocaleString();\n';
+  it('toFixed and toLocaleString fail lint in dashboard components', async () => {
+    assert.deepEqual(await rulesHit('packages/dashboard/src/components/a.ts', code), ['bot/no-number-formatting', 'bot/no-number-formatting']);
+  });
+  it('the money module may format numbers; a file of the same name elsewhere may not', async () => {
+    assert.deepEqual(await rulesHit('packages/dashboard/src/lib/money.ts', code), []);
+    assert.deepEqual(await rulesHit('packages/dashboard/src/other/money.ts', code), ['bot/no-number-formatting', 'bot/no-number-formatting']);
+  });
+});
+
 describe('eslint.config.mjs: code built from strings (C01 review R2)', () => {
   for (const [code, rule] of [
     ["export const v = eval('1');\n", 'no-eval'], ["export const v = globalThis.eval('1');\n", 'no-eval'],
