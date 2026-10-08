@@ -79,3 +79,18 @@ The unpaired-switch fix is correct: update-unpaired fails 2 of 5 on the old code
 21. **Reviewer m2.** If the ops e2e runs real systemd, assert that a manual try-restart does not raise NRestarts (or that probation tolerates it); otherwise record it as **VERIFY** on the host in the README's checks.
 
 This is meant to be the last round on the host logic: after it, the reviewer and red team check closure only, then the label goes on and the labelled run with e2e decides the merge.
+
+## Round 5 (head `66ff6e42`): reviewer PASS (1 MINOR); red team 0 MAJOR (1 borderline MINOR, 1 note)
+
+- Both: rulings 18–21 applied; every kill point in a rollback now ends on the target; the e2e asserts NRestarts unchanged after a planned restart.
+- Red team m1: realign_current's marker can overwrite an existing marker (C|A|A becomes C|releases/C|C after a killed switch to D and a reboot), losing A as the rollback target.
+- Red team note: a due rollback held by stale `open_intents` or `open_positions` files of a dead worker now also blocks every newer deploy until the owner clears it.
+- Reviewer m1: realign marks a held restart even when the worker still runs the deployed release (one extra held restart, harmless).
+
+### Supervisor rulings for round 6 (8 Oct 2026, 4:52 PM)
+
+22. **Red team m1.** realign_current writes its own marker only when no marker exists; otherwise unheld_start's rewrite branch handles it. Test: C|A|A, a killed switch to D, a reboot → the marker becomes C|A|A again and a failed hold of C rolls back to A.
+23. **Red team note.** Accepted and recorded in DECISIONS: the held alert names the stale file, and says the owner checks positions before clearing it. A dead worker manages nothing either way, and paper is treated as real money, so an agent never clears it.
+24. **Reviewer m1.** No change (harmless).
+
+After this push, a closure check by both; then the label and the labelled run with e2e decide the merge.
