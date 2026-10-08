@@ -166,6 +166,7 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
     rb, rb_pts, rb_pairs, rb_s = RB.rebuy_anchor(tape, s)
     sd, sd_s = R.seat_drift(tape, s, adj)
     seat_bar = PM.seat_drift_bar(sd, sorted({d for d, _, _ in tape.ranges}))   # COUNT_ROWS_AMENDMENT_7, 8
+    rb_bar = PM.rebuy_bar(rb_pts, sorted({d for d, _, _ in tape.ranges}))   # AMENDMENT_8
     dev_bar = {"passed": None, "status": "per arm (by_arm)",
                "by_arm": PM.dev_zero_bar(dz, sorted({d for d, _, _ in tape.ranges}))}   # AMENDMENT_8
     ag, ag_s = R.age_gate(tape, s, fast)
@@ -201,9 +202,11 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
     }
     summary["payer_mass_3_seat_drift"] = _strip(seat_bar)
     summary["payer_mass_1_dev_zero"] = _strip(dev_bar)
+    summary["payer_mass_2_rebuy_anchor"] = _strip(rb_bar)
     if decide:
         summary["plan"] = plan
-        summary["decision"] = decision(dz_s, sd_s, rb_s, {"3_seat_drift": seat_bar, "1_dev_zero": dev_bar})
+        summary["decision"] = decision(dz_s, sd_s, rb_s, {"3_seat_drift": seat_bar, "1_dev_zero": dev_bar,
+                                                          "2_rebuy_anchor": rb_bar})
         summary["decision"].update({
             "8_slicer_ride_counts_to_owner": sl_s["all_rows_pass"],          # never a PREREG before the ethics ruling
             "9_mig_seat_prereg_gradual": ms_s["prereg_gradual"],

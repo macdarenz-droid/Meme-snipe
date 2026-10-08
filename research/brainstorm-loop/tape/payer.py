@@ -147,3 +147,26 @@ def dev_zero_bar(dz: pd.DataFrame, days) -> dict:
         r.update(events=ev, events_without_matched_control=missing, reading_pending="Q-R1-i (Q tercile population)")
         out[arm] = r
     return out
+
+
+def rebuy_bar(pts: pd.DataFrame, days) -> dict:
+    """REBUY-ANCHOR (AMENDMENT_8 Q-R1-f): events are the top-quintile RB decision points (rebuy.materiality_sets); each
+    event's control is the median net-rebuy share of the median-band points (+/-10 percentile points of RB) of the same
+    day and drawdown tercile; excess share = the event's net rebuy share (already a share of its Q) minus that median.
+    Q is the point's effective quote, the tier from its as-of state (base = Q / mid). An event whose stratum has no
+    median-band point has an undefined excess, which never helps."""
+    import rebuy as RBm
+    cols = ["pool", "day", "t", "net_rebuy_share", "excess_share", "Q", "c", "s_star"]
+    top, mid = RBm.materiality_sets(pts) if len(pts) else (pts, pts)
+    med = mid.groupby("stratum")["net_rebuy_flow"].median() if len(mid) else pd.Series(dtype=float)
+    rows = []
+    for e in top.itertuples(index=False):
+        base = e.eff_quote / e.mid if e.mid and np.isfinite(e.mid) else np.nan
+        c = round_trip_cost(e.eff_quote, e.eff_quote, base, getattr(e, "supply", np.nan))
+        rows.append({"pool": e.pool, "day": e.day, "t": e.t, "net_rebuy_share": float(e.net_rebuy_flow),
+                     "excess_share": float(e.net_rebuy_flow - med.get(e.stratum, np.nan)), "Q": float(e.eff_quote),
+                     "c": c, "s_star": s_star(c)})
+    ev = pd.DataFrame(rows, columns=cols)
+    out = share_bar(ev["excess_share"], ev["s_star"], ev["day"], days)
+    out["events"] = ev
+    return out
