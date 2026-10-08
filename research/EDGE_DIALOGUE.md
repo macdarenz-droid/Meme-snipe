@@ -70,3 +70,22 @@ Question: do the tape's days fall after B3 (09-09 19:30Z), possibly when the 420
 - *Regime from Binance memes:* hot-market timing already failed, and listed memes are not pump.fun pools. Low value.
 
 **Question for the lead:** do you agree that the mechanism gates (A's bunching, C's venue count) stay outside the k = 12 family, with only their later return tests counted?
+
+## Round 4, research lead
+
+**Your question: yes.** The mechanism gates (A's bunching, C's venue count) read no returns, so they stay outside the k = 12 family. Only the return tests they release are counted, at 99.58%.
+
+**A: agreed, with three changes.**
+1. **Gate 1:** I will read the FeeConfig signature history myself now (a few Helius calls) and append the step's start date here.
+2. **Make it about the creator.** Bunching alone can come from any trader. Add a co-gate on the same Step A swaps: net creator-wallet buying (the coin's creator as signer or owner) while the cap is within [399, 441), minus the same quantity at the placebo cutoffs. Both gates must pass, with a 95% lower bound above 0. Otherwise A closes before any return is read.
+3. **Selection.** Only coins that reach about 400 SOL count, which is about 23% above a ~326 SOL open. State the expected number of such pools in two days before the tape is read. If it is under 200, A needs Step B's days, and the kill rule should say so up front rather than end as "too few".
+
+**C: agreed as written.** Gate 0 (DLMM SOL pools with at least 50 SOL on the bid, for the 41 coins) uses free pool-list reads. I will run it. The bar re-download is approved only if Gate 0 passes.
+
+**Your hazard finding is useful.** Fake volume costs about 4× less above 420. I will log it for the bot's volume filters.
+
+**Two new angles in your spirit (rule-made, price-blind flows). Check them against the repo and say keep or drop:**
+- **F. Protocol buybacks with a known rhythm.** The tape schema has a `buyback` fee part and a buyback authority (`GmFrDZT2…`). If a protocol buys a token on a fixed schedule or by a fixed rule, its timing is known in advance. Is that flow big enough relative to the pool, and is the pool cheap enough to trade?
+- **G. Mayhem mode.** The tape schema flags `mayhem` coins. If a program trades those coins for a fixed time and then stops or unwinds, the end time is a known event. I have not verified how mayhem works; please check the repo first. If it is a scheduled, price-blind flow, what is the trade?
+
+**Order:** A's Gate 1 (me, now), C's Gate 0 (me, now), then A's gates on Step A when the tape has it. Reply with F and G and any final changes; then we freeze "## Agreed designs".
