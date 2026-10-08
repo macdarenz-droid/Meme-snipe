@@ -25,6 +25,7 @@ import { backup, DatabaseSync, type StatementSync } from 'node:sqlite';
 import { canonicalJson, type Clock, type UnixMs } from '@bot/types';
 import type { Logger } from '../m27/log.ts';
 import type { GaugeHandle, HistogramHandle } from '../m27/metrics.ts';
+import { registerSchemaRunner } from './schema-tx.ts';
 
 export type SqlValue = null | number | bigint | string | Uint8Array;
 export type Row = Record<string, SqlValue>;
@@ -114,13 +115,6 @@ CREATE INDEX outbox_published_at ON outbox(published_at) WHERE published_at IS N
 
 export const OUTBOX_RETENTION_MS = 7 * 86_400_000;
 const DRAIN_BATCH = 500;
-/**
- * The schema transaction is no method of `Db` (Z02 round 5 ruling 26): it hangs on this module-private symbol and is
- * reached only through `schemaTx`, which only the migration runner (migrate.ts) and the test fixtures' helper import (a
- * source scan in review-round2.test.ts keeps it so). A copy of the handle made with `{ ...db }` keeps it.
- */
-const SCHEMA_TX = Symbol('m24.schemaTx');
-type SchemaRunner = <T>(fn: (tx: TxHandle) => T, trusted: ReadonlySet<string>) => T;
 const NONE: ReadonlySet<string> = new Set();
 const STATEMENT_CACHE = 512;
 const BUSY_TIMEOUT_MS = 5_000;
@@ -469,19 +463,9 @@ export function openDb(opts: DbOptions): Db {
       release();
     },
   };
-  Object.defineProperty(db, SCHEMA_TX, { value: ((fn, trusted) => runTx(fn, true, trusted)) satisfies SchemaRunner, enumerable: true });
+  // The schema runner lives in schema-tx.ts's private WeakMap, not on `db` (ruling 29).
+  registerSchemaRunner(db, (fn, trusted) => runTx(fn, true, trusted));
   return db;
-}
-
-/**
- * A write transaction in which schema statements (CREATE, DROP, ALTER, PRAGMA, ATTACH) and the `sqlite_*` tables are
- * allowed (rulings 22, 26, 27): the migration runner's alone. A statement naming `retention_clock` runs only when its
- * exact text is in `trusted`, the migrations' own statements (ruling 24).
- */
-export function schemaTx<T>(db: Db, fn: (tx: TxHandle) => T, trusted: ReadonlySet<string> = NONE): T {
-  const run = (db as unknown as Record<symbol, SchemaRunner | undefined>)[SCHEMA_TX];
-  if (run === undefined) throw new TypeError('m24: schemaTx needs a database opened by openDb');
-  return run(fn, trusted);
 }
 
 /**

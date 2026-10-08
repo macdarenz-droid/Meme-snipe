@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll } from 'vitest';
 import type { Clock, UnixMs } from '@bot/types';
-import { schemaTx, type Db, type TxHandle } from '../src/m24/db.ts';
+import type { Db, TxHandle } from '../src/m24/db.ts';
+import { schemaTx } from '../src/m24/schema-tx.ts';
 
 export interface FakeClock extends Clock { set(ms: number): void; advance(ms: number): void }
 
