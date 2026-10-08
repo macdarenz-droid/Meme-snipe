@@ -154,6 +154,9 @@ test('the context menu opens on right click and Escape closes it; tooltips open 
   await expect(page.getByRole('menu', { name: 'Row actions' })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
+  // C14: Escape returns focus to the trigger. Radix does that a moment after the menu leaves the DOM, so wait for it;
+  // otherwise that late focus move takes focus from the next control (the CI failure on 32b8e4ed).
+  await expect(page.getByText('Context menu target')).toBeFocused();
   await page.getByRole('button', { name: 'Tooltip' }).focus();
   await expect(page.getByRole('tooltip').filter({ hasText: 'Exact: 0.000000001 SOL' })).toBeVisible();
   done();
