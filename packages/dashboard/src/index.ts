@@ -1,2 +1,2 @@
-// Skeleton (card C01, B-M30-01). Later cards fill this package.
-export {};
+// @bot/dashboard: the operator dashboard SPA (docs/UI.md). The browser bundle is built by test/tooling/build.ts.
+export { start } from './main.ts';
