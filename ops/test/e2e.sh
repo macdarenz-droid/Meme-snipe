@@ -198,7 +198,9 @@ in_c "sshd -t && sshd -T -C user=zeroed-pull,host=h,addr=127.0.0.1" >"$LOGS/sshd
 for l in 'chrootdirectory /srv/zeroed_pull' 'forcecommand internal-sftp -u 0027' 'authorizedkeysfile /etc/zeroed/pull-keys/%u' 'allowtcpforwarding no' 'permittty no' 'passwordauthentication no'; do
   grep -qx "$l" "$LOGS/sshd-pull.txt" || fail "PATHS-FIX: pull account sshd setting missing: $l"
 done
-in_c "sshd -T -C user=root,host=h,addr=127.0.0.1" | grep -qx 'chrootdirectory none' || fail "PATHS-FIX: the pull account's Match block reaches other users"
+# Saved, then read: piped into grep -q under pipefail, sshd's output past the first match hits a closed pipe and fails.
+in_c "sshd -T -C user=root,host=h,addr=127.0.0.1" >"$LOGS/sshd-root.txt" || fail "PATHS-FIX: sshd refuses its settings for root"
+grep -qx 'chrootdirectory none' "$LOGS/sshd-root.txt" || fail "PATHS-FIX: the pull account's Match block reaches other users"
 in_c "! systemctl is-active ssh.service ssh.socket" >/dev/null || fail "PATHS-FIX: SSH must stay off on a default install"
 pass "PATHS-FIX: md 2750 and receipts 2770 (group zeroed-pull; receipts its own 64 MiB ext4 with 32,768 inodes), spool 2730 (group zeroed-spool), worker in both and not botops; pull account sftp-only and chrooted with md read-only and receipts writable; SSH still off; $(cat "$LOGS/systemd-version.txt")"
 
