@@ -3,7 +3,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import type { UnixMs } from '@bot/types';
-import { DEFAULT_CONFIG, GAPS_MAX_PER_STREAM, RECORD_OVERHEAD_BYTES, RecorderQueue, SOURCE_MAX_BYTES } from '../../src/index.ts';
+import { DEFAULT_CONFIG, FLUSHED_UNTIL_MAX, GAPS_MAX_PER_STREAM, RECORD_OVERHEAD_BYTES, RecorderQueue, SOURCE_MAX_BYTES } from '../../src/index.ts';
 import { SEG, T0, payloadOf, rec, snap } from './helpers.ts';
 
 const ms = (n: number): UnixMs => n as UnixMs;
@@ -297,5 +297,39 @@ describe('round 5 (rulings 22 and 23)', () => {
     // a made way, not pos.
     assert.equal(q.append(snap('pos', 1, T0 + 62_100, 'pool_snapshot_position', 'position')), 'unchanged');
     assert.equal(q.stats().capUnwatched, 1);
+  });
+});
+
+describe('round 5 (ruling 24): the forgotten pools map stays bounded without a tick', () => {
+  it('100,000 unwatches with no tick keep the map at or under its cap', () => {
+    const q = new RecorderQueue({ config: { maxWatchedPools: 10_000 } });
+    let peak = 0;
+    for (let i = 0; i < 100_000; i++) {
+      const t = T0 + i * 10;
+      q.append(snap(`u${i}`, 1, t));
+      q.unwatch(`u${i}`, ms(t));
+      peak = Math.max(peak, q.stats().flushedUntilHeld);
+    }
+    assert.ok(peak <= FLUSHED_UNTIL_MAX, `peak ${peak}`);
+    assert.equal(q.stats().watchedPools, 0);
+  });
+
+  it('a pool whose entry the cap dropped writes no minute twice when it comes back in the same minute', () => {
+    const q = new RecorderQueue();
+    const collected: Array<Record<string, unknown>> = [];
+    q.append(snap('p', 1, T0 + 1_000));
+    q.unwatch('p', ms(T0 + 2_000));
+    // Push p's entry out: more forgotten pools than the cap, all in minute 0, no tick.
+    for (let i = 0; i <= FLUSHED_UNTIL_MAX; i++) {
+      q.append(snap(`x${i}`, 1, T0 + 3_000));
+      q.unwatch(`x${i}`, ms(T0 + 3_000));
+      collected.push(...q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf));
+    }
+    assert.ok(q.stats().flushedUntilHeld <= FLUSHED_UNTIL_MAX);
+    q.append(snap('p', 1, T0 + 4_000));
+    q.tick(ms(T0 + 180_000));
+    collected.push(...q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf));
+    const p = collected.filter((c) => c.poolId === 'p').map((c) => c.minuteStartMs);
+    assert.equal(new Set(p).size, p.length, `p minutes ${p.join(', ')}`);
   });
 });

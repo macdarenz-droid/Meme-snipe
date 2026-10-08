@@ -129,6 +129,11 @@ export const RECORD_OVERHEAD_BYTES = 256;
 export const SOURCE_MAX_BYTES = 256;
 /** Closed gaps kept per stream before the oldest two are merged (which only widens a gap, never hides one). */
 export const GAPS_MAX_PER_STREAM = 1_024;
+/**
+ * Forgotten pools whose flushed-up-to minute is kept when no tick has covered it yet (ruling 24). Normally a handful a
+ * minute; the cap only matters if tick() stops while pools keep being unwatched.
+ */
+export const FLUSHED_UNTIL_MAX = 4_096;
 /** A pool is never idle at the cap sooner than this after its last poll (ruling 17). */
 export const IDLE_MIN_MS = 60_000;
 /** Poll minutes a pool may run ahead of its next unflushed minute before the poll counts as clock skew. */
@@ -169,6 +174,8 @@ export interface RecorderStats {
   capUnwatched: number;
   watchedPools: number;
   acceptedHashes: number;
+  /** Entries held in the forgotten pools' flushed-up-to map (bounded by FLUSHED_UNTIL_MAX). */
+  flushedUntilHeld: number;
   encoderStates: number;
   gapsHeld: number;
 }
@@ -239,6 +246,11 @@ export class RecorderQueue {
   /** Pools forgotten within the current minute: the minute their poll counts were written up to (ruling 18). */
   private readonly flushedUntil = new Map<string, number>();
   /**
+   * The highest flushed-up-to minute of any entry dropped from `flushedUntil` by its cap: a new watch never starts
+   * before it, so dropping an entry can make a poll count as late but never writes a (pool, minute) twice (ruling 24).
+   */
+  private flushedFloor: number | null = null;
+  /**
    * The minute of the latest tick(): every minute before it may already be written for some pool, so a new watch
    * never starts before it (ruling 22). Null before the first tick.
    */
@@ -289,6 +301,7 @@ export class RecorderQueue {
       capUnwatched: 0,
       watchedPools: 0,
       acceptedHashes: 0,
+      flushedUntilHeld: 0,
       encoderStates: 0,
       gapsHeld: 0,
     };
@@ -428,8 +441,34 @@ export class RecorderQueue {
         this.s.idleUnwatched++;
       }
     }
-    // A forgotten pool's flushed-up-to minute matters only until that minute has passed.
+    // A forgotten pool's flushed-up-to minute matters only until the last tick's minute covers it.
     for (const [poolId, m] of this.flushedUntil) if (m <= nowMinute) this.flushedUntil.delete(poolId);
+  }
+
+  /** The minute every new watch starts at or after, whatever its pool: the last tick's minute and the cap's floor. */
+  private coveredMinute(): number | null {
+    if (this.lastTickMinute === null) return this.flushedFloor;
+    if (this.flushedFloor === null) return this.lastTickMinute;
+    return Math.max(this.lastTickMinute, this.flushedFloor);
+  }
+
+  /**
+   * Keeps `flushedUntil` bounded without a tick (ruling 24). Entries are dropped from the oldest while the covered
+   * minute already covers them; past FLUSHED_UNTIL_MAX the oldest are dropped anyway, raising `flushedFloor` to their
+   * minute. Never judged by the minute of the call's own time: a poll appended late can carry an older recvMs, which
+   * is ruling 22's race.
+   */
+  private pruneFlushed(): void {
+    const covered = this.coveredMinute();
+    for (const [poolId, m] of this.flushedUntil) {
+      if (covered === null || m > covered) break;
+      this.flushedUntil.delete(poolId);
+    }
+    while (this.flushedUntil.size > FLUSHED_UNTIL_MAX) {
+      const [poolId, m] = this.flushedUntil.entries().next().value as [string, number];
+      this.flushedUntil.delete(poolId);
+      this.flushedFloor = this.flushedFloor === null ? m : Math.max(this.flushedFloor, m);
+    }
   }
 
   /**
@@ -499,6 +538,7 @@ export class RecorderQueue {
       queueBytes: this.bytes,
       watchedPools: this.watched.size,
       acceptedHashes: this.lastAccepted.size,
+      flushedUntilHeld: this.flushedUntil.size,
       encoderStates: this.encoder.size(),
       gapsHeld: gaps,
     });
@@ -592,7 +632,12 @@ export class RecorderQueue {
    */
   private forget(poolId: string): void {
     const w = this.watched.get(poolId);
-    if (w !== undefined) this.flushedUntil.set(poolId, w.nextMinute);
+    if (w !== undefined) {
+      // Re-inserted at the end, so the map's order stays oldest first for pruneFlushed().
+      this.flushedUntil.delete(poolId);
+      this.flushedUntil.set(poolId, w.nextMinute);
+      this.pruneFlushed();
+    }
     this.watched.delete(poolId);
     this.lastAccepted.delete(poolId);
     this.encoder.forget(poolId);
@@ -637,9 +682,11 @@ export class RecorderQueue {
     }
     const from = this.flushedUntil.get(poolId);
     this.flushedUntil.delete(poolId);
+    this.pruneFlushed();
+    const covered = this.coveredMinute();
     // Never before a minute already written for this pool, nor before the last tick's minute (a poll stamped earlier
     // but appended after that tick counts as late).
-    const nextMinute = Math.max(minute, from ?? minute, this.lastTickMinute ?? minute);
+    const nextMinute = Math.max(minute, from ?? minute, covered ?? minute);
     const w: WatchedPool = {
       priorityClass, nextMinute, seenMs: nowMs, lastPollMs: null, intervalMs: null,
       position: false, lastRawHash: null, buckets: new Map(),
