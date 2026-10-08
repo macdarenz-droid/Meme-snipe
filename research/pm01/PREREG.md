@@ -127,7 +127,7 @@ Every trade is costed on three rows, each in lamports, with its parts shown apar
 | Impact | Exact constant-product round trip on the pre-trade pool state, both sides charged, sells sized to the real vault (ARCH §2.1; VF-05) |
 | Fixed | Base, priority and tip per leg; failed-attempt overhead; janitor close; rung-2 expectation; plus, in the conservative row, unrecovered rent and dust priors |
 | Stuck | Stuck term (`fFail³ × out`), strict and conservative rows, its own line |
-| Monthly | $59 a month (D04, Helius Developer counted until the owner rules, C-77) amortised per trade at the window's measured trade rate, converted to lamports at the window's recorded SOL/USD for each day (M23; SPEC-A A-M13-04 step 7; R4-12), never at $150. The monthly USD figure is frozen for each window at the window's start and written in `docs/DECISIONS.md` with the window dates; a later ruling on it applies only to windows that start after it (R5-27). Each window's run bundle records the sha256 of that DECISIONS row at the window's start and refuses if the row changes. R-3 and P-3 compare two windows with the higher of the two windows' figures on both sides (R6-38) |
+| Monthly | $59 a month (D04, Helius Developer counted until the owner rules, C-77) amortised per trade at the window's measured trade rate, converted to lamports at the window's recorded SOL/USD for each day (M23; SPEC-A A-M13-04 step 7; R4-12), never at $150. The monthly USD figure is frozen for each window at the window's start and written in `docs/DECISIONS.md` with the window dates; a later ruling on it applies only to windows that start after it (R5-27). At the window's start the figure is copied into the run bundle (USD value, the DECISIONS commit sha, the row text); the run refuses only if the figure read at evaluation differs from the copy (R6-38, R7-52). R-3 and P-3 compare two windows with the higher of the two windows' figures on both sides (R6-38) |
 
 **Binding:** the conservative row plus the $59 monthly share decides every return-based gate (B-2, B-6, B-8, R-2, R-3, R-4, P-2, P-2b, P-3; SPEC-A A-M13-06 step 1). The lean and strict rows and the 414,009-lamport line are shown and decide nothing.
 
@@ -202,13 +202,22 @@ Plain reading: at $5, PM-01 needs an average gross gain of roughly 5% a trade pl
   | pump AMM `FeeConfig` (owned by the fee program) | `5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx` | as the row above | address from `programs.ts` (`PUMP_AMM_FEE_CONFIG`) |
   | Rent sysvar | `SysvarRent111111111111111111111111111111111` | `lamports_per_byte_year`, `exemption_threshold` (`burn_percent` excluded: it sets how much collected rent is burned rather than paid to validators, which changes nothing the bot pays or gets back; R6-44) | **VERIFY**: not in the pinned IDLs; the address appears in `packages/worker/src/run/live-sim.ts`. Source for the fields: the Solana SDK `Rent` struct (`solana_program::rent::Rent`) in the `solana-program` 1.18 release line; the exact patch version is pinned and recorded here when the check is done (R6-44) |
 
-  **Fields added in round 6** (R6-40): `fee_recipient` is hashed because it decides who is paid the protocol fee (a "who is paid a fee" change). `create_v2_enabled` is hashed because it decides whether new coins are created as Token-2022 mints (`docs/research/venues.md` F7), which changes the universe and the mint checks PM-01 runs. `whitelist_pda` (in both `Global` and `GlobalConfig`) is hashed as the stricter choice: the repo does not document what the whitelist controls, so a change to it is treated as economic unless the mechanical test below shows it is not.
+  **Fields added in round 6** (R6-40): `fee_recipient` is hashed because it decides who is paid the protocol fee (a "who is paid a fee" change). `create_v2_enabled` is hashed because it decides whether new coins are created as Token-2022 mints (`docs/research/venues.md` F7), which changes the universe and the mint checks PM-01 runs. `whitelist_pda` (in both `Global` and `GlobalConfig`) is hashed, and a change to it is always economic (R7-54): the repo does not document what the whitelist controls.
 
   **VERIFY items.** (1) The two config addresses come from `programs.ts`, not from the IDL files: the pinned IDLs give program IDs and field layouts only. Before the first run, each address is re-derived from its PDA seeds in the pinned IDL, and the result is recorded here. (2) No IDL field is named for the graduation threshold. Graduation follows from the bonding curve's reserves (`initial_real_token_reserves` above). If the pinned IDL shows another field that sets it, that field is added by amendment before the first run. (3) Rent sysvar fields, as in its row.
 
-  **Decoder-only test, mechanical** (R6-37a): for one day after an upgrade, every swap's output is recomputed with the pinned formula from the pre-upgrade fields. If every result matches the on-chain result exactly and no listed economic field changed, the upgrade is decoder-only; otherwise it is economic. Until the test has run on that full day, the boundary counts as economic.
+  **Decoder-only test, mechanical** (R6-37a, R7-47): an upgrade is decoder-only only if no listed economic field changed and all of these hold over the full UTC day after it, recomputed from the pre-upgrade fields:
+  1. every AMM swap's amounts match;
+  2. every migration event's pool seed amounts match the pinned formula from the `Global` fields;
+  3. every bonding-curve buy and sell matches;
+  4. every swap's fee transfers (recipient and amount, per leg) match the pre-upgrade split;
+  5. the swap instructions' required account list, and the rent paid per buy and per sell, are unchanged.
 
-  **Fee-only change** (R6-37b): an economic change where only fee fields changed (fee bps, fee tiers, flat fees) does not end the window. Every trade in the window, before and after the change, is costed at the higher of the old and new fee, and the window is reported split at the change. Every other economic change still ends the window. B5 stays decoder-only only while UPG-1's "economics unchanged" finding stands; if it is contradicted, B5 is economic. B1–B5 all lie before 2026-10-21, so none falls inside `W_B` or `W_R`; they show how a new boundary is classed.
+  "The pinned formula" is the on-chain integer arithmetic: the decoder's quote function with its golden tests, not the exact-rational spot price of §4.1. Any failure, or any instruction that cannot be decoded, makes the upgrade economic.
+
+  **Pending boundary** (R7-48): for one day after L-4's flag, while the test runs, the boundary is pending. The window's counts pause and no entry counts; nothing is voided. If the test clears it, the window continues and that day is reported. If not, the boundary is economic from its slot.
+
+  **Fee-only change** (R6-37b, R7-49): an economic change where only the numeric protocol and LP fee rates and tiers changed (`lp_fee_basis_points`, `protocol_fee_basis_points`, `fee_basis_points`, and the `FeeConfig` tiers and flat fees) does not end the window. Every trade in the window, before and after the change, is costed per trade and per side at the higher of the old and new fee; the random-entry benchmark is costed the same way; the window is reported split at the change. A change to creator or holder fees, to `fee_recipient` or any fee-recipient list, to `is_holder_reward_enabled` or to `creator_fee_configurable` ends the window, as does every other economic change. B5 stays decoder-only only while UPG-1's "economics unchanged" finding stands; if it is contradicted, B5 is economic. B1–B5 all lie before 2026-10-21, so none falls inside `W_B` or `W_R`; they show how a new boundary is classed.
 
   **Economic boundary inside `W_R` or `W_P`** (supervisor, 8 Oct 9:30 AM; §13): that window ends and `W_B`'s selection is void, because it was made in the old regime. A new `W_B` selection runs on data after the boundary (after the embargo), then a new `W_R` and `W_P` follow in order. Limits (R4-3): a voided `W_R` keeps its pre-boundary segment as a kill-only check (kill rule 2: with ≥ 100 closed trades and the upper bound below 0, PM-01 stops; the check uses the lean row without the monthly share and the §6.4 kill-side interval, the highest upper bound over block lengths and interval types, because a stop-only check uses the lean row, C-77; R5-21. R-3 and P-3 use the conservative row; the difference is on purpose: a check that can only stop uses the lean row, a check that can pass uses the binding row; R6-43); at most one restart is allowed, and a second boundary that would restart goes to the owner; each voided `W_R` is counted in the report and in the B-3 trial registry. Each config run in the new `W_B` counts as a new trial in the trial budget (B-3 DSR, B-5 MinBTL), so B-5 is checked against the total trial count. **A `W_B` rerun after a boundary may need more than 30 days** to pass B-5. Inside `W_B`, an economic boundary ends `W_B` and it restarts after the boundary; no return has been computed yet (§6.2), so no selection is voided.
 - **Dates today.** The recorder is not running yet (server paused), so no calendar date can be named. Each window's start and end are written to `docs/DECISIONS.md` on the day they are fixed by the rules above, and A-M13-05 refuses any overlap (`E_WINDOW_OVERLAP`).
@@ -307,14 +316,14 @@ PM-01 stage → `failed` (absorbing; A-M13-05 step 3) when any of these happens.
 1. Gate B evaluated with sufficient data (B-1 met, ≥ 30 counted days) and any of B-2, B-3, B-5, B-6, B-7, B-8, B-4 (or its single-candidate substitute, §7.2) or the excess test fails (R4-13). An excess test that is `pending_data` (§9 side floors or the 0.8 `n` rule) never triggers this rule (R5-22).
 2. Gate R evaluated with sufficient data and any of R-2 to R-6 fails, or the excess test fails; or a voided `W_R`'s pre-boundary segment has ≥ 100 closed trades and its upper bound is below 0, on the lean row without the monthly share and the §6.4 kill-side interval (§6.2; R5-21).
 3. R-1 power: `S_low` ≤ 0 on `W_B`. The Blueprint sends this to the owner; this file's recommendation is stop.
-4. B-1, including effective size (§7.3), not met by 90 counted days of `W_B`, counted from the first `W_B` start; the clock does not restart when `W_B` restarts (R5-31, R6-37): B-1 cannot be met in a usable time; the case goes to the owner with the recommendation stop.
+4. B-1, including effective size (§7.3), not met by 90 counted days, or by 120 calendar days from the first `W_B` start, whichever comes first; the clock does not restart when `W_B` restarts (R5-31, R6-37, R7-55): B-1 cannot be met in a usable time; the case goes to the owner with the recommendation stop.
 5. Gate P fails P-2, P-2b, P-3 or P-4 with sufficient data.
 6. The C-56 end state: if PM-01 has not passed by 31 Dec 2026, the OWNER PENDING clause applies; no new PM work starts after that date.
 7. The kill-only screen on the B-10 days drops both configs (§6.4).
 
 Which failures can kill (R4-13; supervisor, 8 Oct 2026): a failed **evidence** check (returns, risk, statistics) can kill; a failed **engineering, determinism or data-integrity** check never kills, and blocks the stage until a fix record and a re-run exist. "Engineering check" means exactly B-9 (10 identical replays), B-10 (crashes, illegal states, unreconciled intents) and the M07 coverage and QA checks (R5-26); every other failed check is evidence. Engineering checks never kill.
 
-**Re-runs after a fix** (R5-26): a re-run must reproduce every decision of the evaluated window except the trades the fix record names, each with its reason. If any return in a window already evaluated changes, that window is burned: the result counts as a new trial (B-3, B-5), and the gates run again only on unseen days. A recorded kill stands, unless the fix record shows that the bug changed the failing statistic; even then the retry counts as a new trial and goes to the owner first (R6-39). R-6 is an evidence check: by ARCH §3.4 it tests that correlated loss on crash days stays within `MAXRISK_PF`, a risk limit, so it stays in kill rule 2.
+**Re-runs after a fix** (R5-26): a re-run must reproduce every decision of the evaluated window except the trades the fix record names, each with its reason. If any return in a window already evaluated changes, that window is burned: the result counts as a new trial (B-3, B-5), and the gates run again only on unseen days. A recorded kill stands, unless the failing gate, recomputed on the same window with the fix, passes. Then the window is burned, and a retry on unseen days counts as a new trial and goes to the owner first (R6-39, R7-53). R-6 is an evidence check: by ARCH §3.4 it tests that correlated loss on crash days stays within `MAXRISK_PF`, a risk limit, so it stays in kill rule 2.
 
 An economic boundary inside `W_B`, `W_R` or `W_P` is not by itself a kill: it ends that window, and inside `W_R` or `W_P` it also voids `W_B`'s selection, under the limits of §6.2 (PM01-P4).
 
@@ -339,11 +348,15 @@ A gate that is only `pending_data` never kills and never passes.
 | — | Window dates | Fixed by §6.2's rules and written to DECISIONS on the day | Each window's start |
 | — | `honeypot_sim` and holder state in recorded `W_B` data (not required for the screen, which uses assumed-pass) | If the engine cannot supply them from M07 records, every entry fails closed; that is a defect to fix in the data path, never a check to skip ("Discipline, not paralysis") | First run |
 
-### Frozen-parameter block (R5-29, R6-36)
+### Frozen-parameter block (R5-29, R6-36, R7-46, R7-50, R7-51)
 
-Every `affectsReturns` value for configs A and B: §4.6, the gate size and equity, the PM-01 `dump_flag` baseline, the random-entry rules, the seeds, the screen floor, the frozen fill, cost and feature versions, the §12 numbers, and the monthly figure at registration. The `engine` sub-object holds the risk config (live-small limits, `MAXOPEN`, `PERTOKEN`, `DEPTHPCT`, `LOSSRUN`), the M06 thresholds, the features config (bar size and completeness, dump window, −4 × MAD, freshness, M08 bar keys), the exit ladder and the cost parameters, each as values or as the path and sha256 of the frozen file that holds them. The `gates` sub-object holds every decision threshold of §6–§11. The values written here are copied from this file and ARCH; the `null` ones are filled from the frozen code before the first run. Lamport values are strings (exact integers). `null` marks a value still to be fixed; the screen and every gate run refuse to start while any value is `null` (§6.4). Each window's frozen monthly figure is written in `docs/DECISIONS.md` at the window's start (§5.3).
+Every `affectsReturns` value for configs A and B: §4.6, the gate size and equity, the PM-01 `dump_flag` baseline, the random-entry rules, the seeds, the screen floor, the frozen fill, cost and feature versions, the §12 numbers, and the monthly figure at registration. The `engine` sub-object holds the risk config (live-small limits, `MAXOPEN`, `PERTOKEN`, `DEPTHPCT`, `LOSSRUN`), the M06 thresholds, the features config (bar size and completeness, dump window, −4 × MAD, freshness, M08 bar keys), the exit ladder and the cost parameters, each as values or as the path and sha256 of the frozen file that holds them. The `gates` sub-object holds every decision threshold of §6–§11. The values written here are copied from this file and ARCH (§8.1 and §8.2 limits, §8.4 `lp_withdrawable_max`, §3.4 P gates; R7-51); the `null` ones are filled from the frozen code before the first run. Lamport values are strings (exact integers). `null` marks a value still to be fixed; the screen and every gate run refuse to start while any value is `null` (§6.4). Each window's frozen monthly figure is written in `docs/DECISIONS.md` at the window's start (§5.3).
 
-The hash is the sha256 of the bytes between the opening ```` ```json ```` line and the closing ```` ``` ```` line, exclusive, UTF-8 with LF line ends. At this commit it is `6c2311c74790eafd2f851b138f9c38e4218ee9068c49b10a329a5e708f2b2337`. Each amendment recomputes and rewrites it. `configKey` = sha256 of the block bytes followed by, for each referenced file in the order it appears in the block, an LF and that file's sha256 in lowercase hex (R6-36). The run recomputes the hash and the `configKey` from the block in the merged file and the files, the engine's own `configKey` must equal it, and the run refuses on any mismatch. Acceptance case: changing any one listed value, in the block or in a referenced file, makes the run refuse.
+The hash is the sha256 of the bytes between the opening ```` ```json ```` line and the closing ```` ``` ```` line, exclusive, UTF-8 with LF line ends. At this commit it is `1054e84cfd9fca8410eb576e5d5391f7346ff1eae96ad1dd0adab01f0869fb36`. Each amendment recomputes and rewrites it. Two keys (R7-46; SPEC-A is not amended):
+- **`pm01FrozenKey`** = sha256 of the block bytes followed by, for each referenced file in the order it appears in the block, an LF and that file's recorded sha256 in lowercase hex (the R6-36 formula).
+- **`configKey`** is the engine's own A-M13-02 key, as SPEC-A step 2 defines it.
+
+The run refuses unless (1) `pm01FrozenKey` recomputes from the block in the merged file, and (2) the engine's `configKey` equals the `configKey` that A-M13-02 recomputes from the block's values. Files (R7-50): the run recomputes each referenced file's sha256 from disk and refuses if it differs from the sha256 recorded in the block; both keys use the recorded sha256. If a value appears both inline in the block and in a referenced file, the run refuses when they disagree. Acceptance case, for both keys: changing any one listed value, in the block or in a referenced file, makes the run refuse.
 
 ```json
 {
@@ -426,11 +439,23 @@ The hash is the sha256 of the bytes between the opening ```` ```json ```` line a
    "MAXPOS_capLamports": "66666667",
    "MAXEXP_bpsOfE": 200,
    "DEPTHPCT_bps": 50,
-   "PERTOKEN": null,
-   "LOSSRUN": null,
+   "PERTOKEN": 1,
+   "LOSSRUN": {
+    "losses": 5,
+    "pauseMs": 3600000
+   },
    "DAYLOSS_bpsOfE": 200,
    "limitTableFile": null,
-   "limitTableSha256": null
+   "limitTableSha256": null,
+   "perTokenDailyEntries": 3,
+   "WEEKLOSS_bpsOfE": 600,
+   "DDHALF": {
+    "drawdownBps": 1000,
+    "sizeMultiplier": 0.5,
+    "resetBelowBps": 500
+   },
+   "DDKILL_bpsOfE": 1500,
+   "FEEDAY_lamports": "2000000"
   },
   "m06Thresholds": {
    "minEffQuoteLamports": "85000000000",
@@ -439,7 +464,8 @@ The hash is the sha256 of the bytes between the opening ```` ```json ```` line a
    "top10HoldersBps": 3500,
    "singleHolderBps": 1000,
    "tableFile": null,
-   "tableSha256": null
+   "tableSha256": null,
+   "lpWithdrawableMaxBps": 500
   },
   "features": {
    "barMs": 15000,
@@ -494,7 +520,17 @@ The hash is the sha256 of the bytes between the opening ```` ```json ```` line a
    "maxRestarts": 1
   },
   "wP": {
-   "minDays": 21
+   "minDays": 21,
+   "P1MinTrades": 100,
+   "pGates": "ARCH §3.4 P-1 to P-10, as written there",
+   "consistencyFlags": {
+    "tradeRateRange": [
+     0.5,
+     2
+    ],
+    "stopShareMaxPp": 15,
+    "costRatioMax": 1.25
+   }
   },
   "thresholds": {
    "B2LowerBoundGt": 0,
@@ -507,7 +543,11 @@ The hash is the sha256 of the bytes between the opening ```` ```json ```` line a
    "powerZ": [
     1.96,
     0.842
-   ]
+   ],
+   "R4Stress": {
+    "latencyP95Multiple": 2,
+    "pSwMultiple": 2
+   }
   },
   "benchmark": {
    "perTrade": 10,
@@ -528,6 +568,10 @@ The hash is the sha256 of the bytes between the opening ```` ```json ```` line a
   "voidedWrKill": {
    "minClosedTrades": 100,
    "row": "lean_without_monthly"
+  },
+  "boundary": {
+   "decoderTestDays": 1,
+   "pendingDays": 1
   }
  }
 }
@@ -535,7 +579,7 @@ The hash is the sha256 of the bytes between the opening ```` ```json ```` line a
 
 ## 13. Rulings
 
-Supervisor rulings in `docs/reviews/PM01-PREREG.md` on `claude/supervisor-docs`, applied here before the first run. One numbering (R6-42): each ruling is cited by its round and its number in that file, for example R5-29. Times are Melbourne, 8 Oct 2026, as corrected in that file: round 1 at 9:26 AM, round 2 at 9:30 AM, round 3 at 9:32 AM, round 4 at 9:40 AM, round 5 at 9:47 AM and round 6 at 3:07 PM. The owner's "Ok" to the kill-only screen was at 9:28 AM.
+Supervisor rulings in `docs/reviews/PM01-PREREG.md` on `claude/supervisor-docs`, applied here before the first run. One numbering (R6-42): each ruling is cited by its round and its number in that file, for example R5-29. Times are Melbourne, 8 Oct 2026, as corrected in that file: round 1 at 9:26 AM, round 2 at 9:30 AM, round 3 at 9:32 AM, round 4 at 9:40 AM, round 5 at 9:47 AM, round 6 at 3:07 PM and round 7 at 3:13 PM. The owner's "Ok" to the kill-only screen was at 9:28 AM.
 
 **Round 1 (9:26 AM).** R1-1 PM01-P1 accepted, PM-01 only (§4.2). R1-2 PM01-P2 accepted (§9). R1-3 PM01-P3 accepted (§5.2). R1-4 PM01-P4 accepted (§6.2). R1-5 PM01-P5 accepted as the OF-3 proposal (§3). R1-6 the kill-only screen put to the owner; approved at 9:28 AM (§6.4).
 
@@ -548,3 +592,5 @@ Supervisor rulings in `docs/reviews/PM01-PREREG.md` on `claude/supervisor-docs`,
 **Round 5 (9:47 AM).** R5-21 voided-`W_R` kill on the lean row (§6.2, §11). R5-22 benchmark side floors (§9, §11). R5-23 screen start with P12 and the listed rows (§6.4, §12). R5-24 calendar and counted days (§6.2, §7.2). R5-25 citation (§6.4). R5-26 re-runs and "engineering" (§11). R5-27 monthly figure per window (§5.3). R5-28 isolated configs (§7.2). R5-29 frozen-parameter block (§12). R5-30 the PM01-P2 DECISIONS row. R5-31 kill rule 4 (§11). R5-32 as-of tie-break (§6.4). R5-33 pinned programs (§6.2). R5-34 P-9's bankroll (§10). R5-35 RNG key and B-8 weeks (§2, §7.3).
 
 **Round 6 (3:07 PM).** R6-36 `engine` and `gates` in the block; `configKey` over the block and file hashes; the change-one-value acceptance case (§12). R6-37 the mechanical decoder-only test, fee-only changes continue the window at the higher fee, kill rule 4's clock from the first `W_B` start (§6.2, §11). R6-38 the monthly row's sha256 per window; R-3 and P-3 at the higher figure (§5.3). R6-39 a recorded kill stands (§11). R6-40 `fee_recipient`, `create_v2_enabled`, `whitelist_pda` hashed (§6.2). R6-41 the pump_fees citation (§6.2). R6-42 one numbering (this section). R6-43 the row difference is on purpose (§6.2). R6-44 `burn_percent` excluded; the Rent source (§6.2). R6-45 VERIFY items as start-condition item 5 (§6.4).
+
+**Round 7 (3:13 PM).** R7-46 two keys, `pm01FrozenKey` and the engine's A-M13-02 `configKey`; the acceptance case on both (§12). R7-47 the decoder-only test over AMM swaps, migration seeds, curve trades, fee legs, accounts and rent, with on-chain integer arithmetic (§6.2). R7-48 a pending boundary pauses counts for one day, nothing voided (§6.2). R7-49 fee-only means the numeric protocol and LP rates and tiers only; the higher fee per trade and side, benchmark included (§6.2). R7-50 file sha256s recomputed from disk; inline and file must agree (§12). R7-51 the ARCH values and the added gate thresholds in the block (§12). R7-52 the monthly figure copied into the run bundle (§5.3). R7-53 a kill stands unless the failing gate, recomputed with the fix on the same window, passes (§11). R7-54 `whitelist_pda` always economic (§6.2). R7-55 kill rule 4 at 90 counted or 120 calendar days (§11).
