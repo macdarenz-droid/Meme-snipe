@@ -387,3 +387,19 @@ describe('round 6 (ruling 25): one wrong forward time cannot stop new pools\' pe
     assert.equal(q.stats().clockSteps, 1);
   });
 });
+
+describe('round 6 (ruling 26): polls moved late are never lost when the pool is forgotten', () => {
+  it("the reviewer's repro: all 3 polls are counted, no (pool, minute) twice", () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0 + 1_000));
+    q.unwatch('a', ms(T0 + 2_000));
+    q.append(snap('a', 1, T0 + 3_000));
+    q.append(snap('a', 1, T0 + 4_000));
+    q.unwatch('a', ms(T0 + 5_000));
+    q.tick(ms(T0 + 300_000));
+    const rows = q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
+    const keys = rows.map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+    assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
+    assert.equal(rows.reduce((a, p) => a + (p.successfulPolls as number), 0), 3);
+  });
+});

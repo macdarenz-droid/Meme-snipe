@@ -438,7 +438,7 @@ export class RecorderQueue {
   unwatch(poolId: string, nowMs: UnixMs): void {
     const w = this.watched.get(poolId);
     if (w !== undefined) this.flushPool(poolId, w, this.capMinute(Math.floor(nowMs / MINUTE_MS) + 1, 'unwatch'), nowMs);
-    this.forget(poolId);
+    this.forget(poolId, nowMs);
   }
 
   /**
@@ -454,7 +454,7 @@ export class RecorderQueue {
     for (const [poolId, w] of this.watched) {
       this.flushPool(poolId, w, nowMinute, nowMs);
       if (nowMinute - Math.floor(w.seenMs / MINUTE_MS) > this.cfg.idleUnwatchMinutes) {
-        this.forget(poolId);
+        this.forget(poolId, nowMs);
         this.s.idleUnwatched++;
       }
     }
@@ -664,11 +664,16 @@ export class RecorderQueue {
   /**
    * Forgets a pool: unwatched, its accepted hash and its encoder state gone, so its next snapshot is written in full.
    * The minute its counts were written up to is kept until that minute has passed, so a pool watched again in the
-   * same minute never writes a (pool, minute) record twice (ruling 18).
+   * same minute never writes a (pool, minute) record twice (ruling 18). Counts still held for minutes the caller's
+   * flush did not reach (polls moved late into a later minute) are written first, so every counted poll ends in
+   * exactly one (pool, minute) record (ruling 26).
    */
-  private forget(poolId: string): void {
+  private forget(poolId: string, nowMs: number): void {
     const w = this.watched.get(poolId);
     if (w !== undefined) {
+      let last = -Infinity;
+      for (const m of w.buckets.keys()) if (m > last) last = m;
+      if (last >= w.nextMinute) this.flushPool(poolId, w, last + 1, nowMs);
       // Re-inserted at the end, so the map's order stays oldest first for pruneFlushed().
       this.flushedUntil.delete(poolId);
       this.flushedUntil.set(poolId, w.nextMinute);
@@ -713,7 +718,7 @@ export class RecorderQueue {
       // Up to the current minute; the current minute too only if it holds counts (a late poll), and then the pool's
       // flushed-up-to minute keeps a new watch from writing it again.
       this.flushPool(victim, v, v.buckets.has(minute) ? minute + 1 : minute, nowMs);
-      this.forget(victim);
+      this.forget(victim, nowMs);
       this.s.capUnwatched++;
     }
     const from = this.flushedUntil.get(poolId);
