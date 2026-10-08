@@ -540,7 +540,7 @@ Reviewer at `79aba2c1` (PASS, 2 optional MINOR) and red team round 5 at `79aba2c
 
 Reviewer at `fdbaf99c` (PASS, 1 optional MINOR) and red team round 6 at `fdbaf99c` (0 BLOCKER, 3 MAJOR, 4 MINOR), rulings about 3:06 PM:
 
-69. S1: reserved re-run trials k; MinBTL on configurations + k; `preRegister` refuses a `W_B` too short; the fresh-window state (sections 2 and 3; AC-50). Its example (a 30-day `W_B` with 2 configurations and k = 2 accepted) is withdrawn (supervisor, 8 Oct 3:12 PM): k is a PREREG field (k ≥ 0) chosen to fit the ARCH 3.4 table (open point 8).
+69. S1: reserved re-run trials k; MinBTL on configurations + k; `preRegister` refuses a `W_B` too short; the fresh-window state (sections 2 and 3; AC-50). Its example (a 30-day `W_B` with 2 configurations and k = 2 accepted) is withdrawn (supervisor, 8 Oct 3:10 PM): k is a PREREG field (k ≥ 0) chosen to fit the ARCH 3.4 table (open point 8).
 70. S2: one "Re-run rule" for code deploys, admission changes and group S raises; P and LS never on simulated trades (section 3; AC-56).
 71. S3: "not more favourable" in SOL per trade and side (section 3; AC-54).
 72. s1: nothing public except the opaque id, the hashes and the export row (section 1).
@@ -576,4 +576,4 @@ Reviewer at `fdbaf99c` (PASS, 1 optional MINOR) and red team round 6 at `fdbaf99
    - B-M26-04 and A-M13-05: the restart drop with no cooldown for cause, which keeps any existing `cooldown_until`; the `W_LS` restart at `live_small`; the fresh-window state.
    - A-M13-02 step 4: MinBTL on configurations + k.
 7. **Where owner strategies live (owner, pending; round 5 ruling 54).** A private repository (the existing private `zeroed-data` or a new private strategies repository) with a server fetch path, or this whole repository becoming private. Until the owner answers, no owner-strategy work starts at all and nothing about one is pushed here (round 6 ruling 61).
-8. **k against the MinBTL table (resolved).** Ruling 69's example conflicted with ARCH 3.4 (N = 4 at 30 days, where the table allows N = 2 at Sharpe 2). The supervisor withdrew the example (8 Oct 3:12 PM): ARCH 3.4 wins, k is a PREREG field (k ≥ 0) chosen so that configurations + k fits the table for the planned `W_B`, and AC-50 follows the table.
+8. **k against the MinBTL table (resolved).** Ruling 69's example conflicted with ARCH 3.4 (N = 4 at 30 days, where the table allows N = 2 at Sharpe 2). The supervisor withdrew the example (8 Oct 3:10 PM): ARCH 3.4 wins, k is a PREREG field (k ≥ 0) chosen so that configurations + k fits the table for the planned `W_B`, and AC-50 follows the table.
