@@ -2,7 +2,9 @@
 # Scans one UTC chain day on a single polite lane (used by .github/workflows/data-scan.yml).
 #   scan-day.sh DAY OUT_DIR MAX_MBPS BUDGET   (BUDGET: minutes, or seconds as "Ns")
 # Limits come from archive-limits.conf (ARCHIVE-SAFE): MAX_MBPS above ARCHIVE_MAX_MBPS
-# is refused; ARCHIVE_PARALLEL x ARCHIVE_DL connections at most.
+# is refused; ARCHIVE_PARALLEL x ARCHIVE_DL connections at most. Before any request the
+# day must pass archive-guard.sh entry (OF-2): allow-listed, armed, a retention value,
+# and a fresh pass of the job's guard step (ARCHIVE_GUARD_DIR).
 # On any 429 (or 503 with Retry-After) the scanner stops (exit 75) and keeps every
 # finished unit. This script then persists a back-off of at least ARCHIVE_BACKOFF_S
 # (3 h; more if the scanner's Retry-After asks for more) in $OUT/archive-429.state and
@@ -69,6 +71,10 @@ rps_ok "$archive_go" ||
 # ARCHIVE-NODUP: a Helius day is never read from the archive.
 [[ " $HELIUS_DAYS " == *" $day "* ]] &&
   { echo "refused: $day is a Helius day (HELIUS_DAYS in archive-limits.conf); it is never read from the archive" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" >&2; exit 2; }
+# OF-2 (archive-guard.sh entry): the day is allow-listed, the chain is armed, the day has
+# a retention value, and the job's guard step passed it (store readable, no storage-stop
+# marker, the 3-failure stop not active). Otherwise nothing is read.
+cfg_ret=$("$(dirname "$0")/archive-guard.sh" entry "$day") || exit 2
 next=$(date -u -d "$day + 1 day" +%F)
 start=$(date +%s)
 case $budget in
@@ -114,6 +120,12 @@ if [ -n "${SCANNER_REVISION:-}" ]; then
     fi
   done
 fi
+# The retention passed to the scanner: the day's recorded one when units of it are
+# already kept (a unit read again never changes its day's retention), else the one
+# archive-limits.conf gives the day.
+ret=$("$(dirname "$0")/archive-guard.sh" recorded "$out") || exit 2
+ret=${ret:-$cfg_ret}
+echo "retention for $day: $ret" | tee -a "$summary"
 # A back-off persisted by an earlier run (restored from the cache) is slept out first.
 backoff 0
 while true; do
@@ -124,8 +136,13 @@ while true; do
   fi
   # Interrupted (SIGINT) at the budget's end; it finishes nothing new after that and
   # exits within 2 min, else it is killed (an unfinished unit is never renamed into place).
+  # OF-2 round 4, ruling 36: the scanner's output (plan and per-unit counts) goes to
+  # $slog inside the day's progress, never to the public log; the log keeps the exit code
+  # and the 429 log (429.log) only. OF-3 ruling 24: $out/logs is saved with the progress,
+  # sealed (cache-crypt.sh), so a failed day's reasons stay private and readable.
+  slog="$out/logs"; mkdir -p "$slog"
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
-    -sample 0.05 -max-mbps "$mbps" -on-429 stop
+    -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop >> "$slog/run.log" 2>&1
   rc=$?
   if [ $(( deadline - $(date +%s) )) -le 0 ] && [ $rc -ne 0 ] && [ $rc -ne 75 ]; then
     echo "time budget reached while scanning (scanner exit $rc); progress kept for the next run" | tee -a "$summary"
@@ -140,7 +157,7 @@ while true; do
     exit 0
   fi
   if [ $rc -ne 75 ]; then
-    echo "scanner failed with exit $rc" | tee -a "$summary"
+    echo "scanner failed with exit $rc (its output is kept in the private log next to the data, not in this log)" | tee -a "$summary"
     exit $rc
   fi
   hold_back "$out/archive-429.state" "$ARCHIVE_BACKOFF_S"

@@ -65,7 +65,7 @@ func main() {
 		workers := fs.Int("workers", 4, "block workers")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		prof := fs.String("cpuprofile", "", "write a CPU profile")
-		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 80")
+		maxMBps := fs.Float64("max-mbps", 40, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 40")
 		on429u := fs.String("on-429", "stop", "stop: end the run (exit code 75); pause: wait max(1 h, Retry-After) and retry")
 		state := fs.String("state", "", "directory holding 429.log and the persisted back-off (default: -out)")
 		fs.Parse(os.Args[2:])
@@ -113,7 +113,7 @@ func main() {
 		newestFirst := fs.Bool("newest-first", true, "scan the most recent units first")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		slots := fs.String("slots", "", "only units inside this slot range, FROM-TO (for tests)")
-		maxMBps := fs.Float64("max-mbps", 80, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 80")
+		maxMBps := fs.Float64("max-mbps", 40, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 40")
 		on429 := fs.String("on-429", "stop", "stop: end the run (exit code 75) so a scheduler can back off; pause: wait max(1 h, Retry-After) and retry")
 		fs.Parse(os.Args[2:])
 		if !validMBps(*maxMBps) || (*on429 != "stop" && *on429 != "pause") {

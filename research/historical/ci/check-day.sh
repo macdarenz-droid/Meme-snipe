@@ -4,7 +4,8 @@
 #   check-day.sh DAY OUT_DIR ASSET_DIR
 # Archive source: MAX_MBPS (default ARCHIVE_MAX_MBPS) caps the determinism rescan, like the
 # scan itself; above ARCHIVE_MAX_MBPS, or with the scanner's request cap above
-# ARCHIVE_MAX_RPS (archive-limits.conf), it exits 2 before anything else.
+# ARCHIVE_MAX_RPS (archive-limits.conf), or a day archive-guard.sh entry refuses (OF-2), it
+# exits 2 before anything else; the rescan runs with the retention the day's units record.
 set -euo pipefail
 day=$1 out=$2 assets=$3
 next=$(date -u -d "$day + 1 day" +%F)
@@ -22,15 +23,26 @@ if [ "${SOURCE:-archive}" != helius ]; then
   # ARCHIVE-NODUP: a Helius day is never read from the archive.
   [[ " $HELIUS_DAYS " == *" $day "* ]] &&
     { echo "refused: $day is a Helius day (HELIUS_DAYS in archive-limits.conf); it is never read from the archive" | tee -a "$summary"; exit 2; }
+  # OF-2: allow-listed, armed, a retention value, and a fresh pass of the job's guard
+  # step (store, storage-stop marker, 3-failure stop), before anything else.
+  "$here/archive-guard.sh" entry "$day" > /dev/null || exit 2
+  # The determinism rescan uses the day's recorded retention, never the current
+  # ARCHIVE_RETENTION.
+  rec=$("$here/archive-guard.sh" recorded "$out") || exit 2
+  [ -n "$rec" ] || { echo "refused: the units of $day record no retention" | tee -a "$summary"; exit 2; }
 fi
-# phase NAME CMD...: runs CMD and logs its duration to the summary (sizes the 45 min
-# QA-phase budget in data-scan.yml from real days).
+# phase NAME CMD...: runs CMD and logs pass or fail and its duration to the summary
+# (sizes the 45 min QA-phase budget in data-scan.yml from real days). OF-2 round 4,
+# ruling 23: the output of finalize and the QA tools (block and trade counts, accounts,
+# slots) goes to $qlog in the day's progress (sealed when saved), never to the
+# public job log or summary (archive-guard.sh ag_private_storage checks the redirects).
 phase() {
   local name=$1 t0 rc=0
   shift
   t0=$(date +%s)
   "$@" || rc=$?
-  echo "phase $name ($day): $(( $(date +%s) - t0 )) s" | tee -a "$summary"
+  if [ "$rc" -eq 0 ]; then echo "phase $name ($day): passed, $(( $(date +%s) - t0 )) s" | tee -a "$summary" >&2
+  else echo "phase $name ($day): failed (exit $rc), $(( $(date +%s) - t0 )) s; its output is kept in the private log next to the data" | tee -a "$summary" >&2; fi
   return $rc
 }
 # Disk: the units (about 6.4-8.5 GB a day) and the one-day dataset can live on different
@@ -40,14 +52,17 @@ phase() {
 units_bytes=$(du -sb "$out/units" | cut -f1)
 "$here/disk-guard.sh" "${DATASET_PARENT:-/tmp}" $(( units_bytes + 5000000000 )) "the one-day QA dataset"
 ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
+# OF-3 ruling 24: inside the day's progress ($out/logs/qa), so a failed QA's output is
+# saved with it, sealed (the "Save progress after QA" step), private and readable.
+qlog="$out/logs/qa"; rm -rf "$qlog"; mkdir -p "$qlog"
 # A single-day dataset without lead-in: universes are tokens created or graduated in
 # that day's units. The multi-day dataset (assemble.sh) uses the 14-day lead-in.
-phase finalize zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json"
-phase qa node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0
-phase parity node --no-warnings "$here/../qa/parity.ts" "$ds"
+phase finalize zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json" > "$qlog/finalize.log" 2>&1
+phase qa node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0 > "$qlog/qa.log" 2>&1
+phase parity node --no-warnings "$here/../qa/parity.ts" "$ds" > "$qlog/parity.log" 2>&1
 # Regime volume per hour (DATA-1c): exact cross-check against the units' kept rows,
 # then the plain CSV for release data-volume-DAY (ci/publish-volume.sh).
-phase volume node --no-warnings "$here/../qa/volume.ts" "$ds" "$out/units" "$day"
+phase volume node --no-warnings "$here/../qa/volume.ts" "$ds" "$out/units" "$day" > "$qlog/volume.log" 2>&1
 "$here/volume-asset.sh" "$ds" "$day" "$assets"
 cp "$ds/qa/report.md" "$assets/qa-$day.md"
 cp "$ds/qa/report.json" "$assets/qa-$day.json"
@@ -72,10 +87,10 @@ if [ "${SOURCE:-archive}" = helius ]; then
   used=$("$here/rpc-credits.sh" get "$out")
   [ $(( ${RPC_CREDIT_CAP:?} - used )) -gt 0 ] || { echo "credit cap spent before the determinism rescan" | tee -a "$summary"; exit 3; }
   phase determinism zeroed-rpcscan rpc-unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 \
-    -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" || rc=$?
+    -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" > "$qlog/determinism.log" 2>&1 || rc=$?
   "$here/rpc-credits.sh" add "$out" "$again/rpc-usage.json"
 else
-  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" || rc=$?
+  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -retention "$rec" -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" > "$qlog/determinism.log" 2>&1 || rc=$?
 fi
 if [ "$rc" -eq 75 ] && [ "${SOURCE:-archive}" = helius ]; then
   echo "RPC rate-limit back-off ran out during the determinism rescan: stopping resumably; the next run redoes QA" | tee -a "$summary"
@@ -97,4 +112,4 @@ for f in "$first"/*.zst; do
   if [ "$a" != "$b" ]; then echo "determinism check failed for $range/$(basename "$f")"; exit 1; fi
 done
 echo "determinism: unit $epoch/$range rescanned, every file identical" | tee -a "$summary"
-rm -rf "$ds" "$again"
+rm -rf "$ds" "$qlog" "$again"

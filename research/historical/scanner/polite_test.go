@@ -20,16 +20,16 @@ func resetPoliteness(t *testing.T, dir string) {
 }
 
 func TestMaxMbpsRange(t *testing.T) {
-	for _, v := range []float64{0, -1, 80.01, 81, 1000} {
+	for _, v := range []float64{0, -1, 40.01, 41, 80, 1000} {
 		if err := setupPoliteness(context.Background(), t.TempDir(), v, "stop"); !errors.Is(err, errRefused) {
 			t.Errorf("-max-mbps %v accepted", v)
 		}
 	}
-	if err := setupPoliteness(context.Background(), t.TempDir(), 80, "maybe"); !errors.Is(err, errRefused) {
+	if err := setupPoliteness(context.Background(), t.TempDir(), 40, "maybe"); !errors.Is(err, errRefused) {
 		t.Errorf("bad -on-429 accepted")
 	}
-	if err := setupPoliteness(context.Background(), t.TempDir(), 80, "stop"); err != nil || !stopOn429 {
-		t.Errorf("80 MB/s with stop refused: %v", err)
+	if err := setupPoliteness(context.Background(), t.TempDir(), 40, "stop"); err != nil || !stopOn429 {
+		t.Errorf("40 MB/s with stop refused: %v", err)
 	}
 }
 
@@ -86,7 +86,7 @@ func TestFirst429StopsAndPersistsBackoff(t *testing.T) {
 	// A new run sharing the state directory sleeps the back-off out first.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if err := setupPoliteness(ctx, dir, 80, "stop"); !errors.Is(err, context.DeadlineExceeded) {
+	if err := setupPoliteness(ctx, dir, 40, "stop"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("new run did not wait out the back-off: %v", err)
 	}
 }
@@ -112,5 +112,41 @@ func TestPauseModeWaitsAtLeastOneHour(t *testing.T) {
 	}
 	if d := time.Until(blockedUntil); d < time.Hour-time.Minute {
 		t.Fatalf("paused only %s", d)
+	}
+}
+
+// ARCHIVE-SAFE: a 503 without Retry-After stops the run like a 429 (no retry), and
+// the request cap is 10 per second.
+func TestPlain503And403StopLikeA429(t *testing.T) {
+	for _, code := range []int{http.StatusServiceUnavailable, http.StatusForbidden} {
+		for _, small := range []bool{false, true} {
+			dir := t.TempDir()
+			resetPoliteness(t, dir)
+			stopOn429 = true
+			var hits int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits++
+				w.WriteHeader(code)
+			}))
+			var err error
+			if small {
+				_, err = fetchSmall(srv.URL + "/x")
+			} else {
+				_, err = fetchRange(context.Background(), srv.URL+"/x.car", 0, 10)
+			}
+			srv.Close()
+			if !errors.Is(err, errStopped) || !stopped.Load() || hits != 1 {
+				t.Fatalf("status %d (small %v): err=%v stopped=%v hits=%d", code, small, err, stopped.Load(), hits)
+			}
+			if _, ok := readState(dir); !ok {
+				t.Fatalf("status %d (small %v): no back-off persisted", code, small)
+			}
+		}
+	}
+}
+
+func TestRequestCapIsTenPerSecond(t *testing.T) {
+	if reqLimiter.gap != 100*time.Millisecond {
+		t.Fatalf("request gap %s, want 100ms (10 per second)", reqLimiter.gap)
 	}
 }
