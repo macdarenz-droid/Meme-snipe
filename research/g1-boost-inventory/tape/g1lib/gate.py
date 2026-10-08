@@ -87,7 +87,7 @@ def cap_headroom(tape, pool: int, m: int) -> pd.DataFrame:
     price = eff / j["pool_base_token_reserves"].to_numpy().astype(float)
     with np.errstate(divide="ignore", invalid="ignore"):
         cap_price = j["quote_amount_in_requested"].to_numpy() / cap_base
-        head = np.where(cap_base > 0, cap_price / price, np.nan)
+        head = np.where(cap_base > 0, cap_price / price - 1, np.nan)
     return pd.DataFrame({"pool": tape.names.name(pool), "slice": np.arange(1, len(j) + 1),
                          "slots_after_m": j["slot"].to_numpy() - m, "headroom": head})
 
