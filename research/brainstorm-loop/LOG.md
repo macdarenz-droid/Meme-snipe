@@ -64,6 +64,8 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 23:24 | MAYHEM-SNAP question put to the owner |
 | 2026-10-08 23:29 | Owner on MAYHEM-SNAP: "Its hard to answer unless we test them. Only i approve where we have high chance of being profitable. Which is ourpose of this research. Where i can build the bots logic." Reading: test first; he approves bot use only on results. Count rows amendment 6 records it |
 | 2026-10-08 23:51 | Coverage map done (2 agents): more than 100 ideas mapped. The idea search is close to complete; the testing is not. The best remaining empty region is perps at minutes to days (CROWD-BREAK-SHORT about 2–3%, FUND-SPREAD about 2%, FLUSH-PERP about 1.5%). Proposed stopping rule: W1 finds no persistent slow class, AND Step A fails G1-0 and D1, AND CROWD-BREAK-SHORT is killed. `COVERAGE_MAP.md` |
+| 2026-10-08 23:52 | Lead: AGREED CROWD-BREAK-SHORT and FUND-SPREAD (cap 0, one worker, free data); FLUSH-PERP dropped; no stopping rule to be proposed, as the owner said keep going |
+| 2026-10-08 23:54 | Both PREREG drafts committed and sent to the lead |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
@@ -85,3 +87,5 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | SLICE-RIDE | Ride a wallet's unfinished slices in U1 pools | The slicer's later slices | about 0.2% | Count rows (`COUNT_ROWS_AMENDMENT_4.md`); owner: allowed ("Yes", 21:53; earlier "Sure", 21:52); PREREG only if counts pass |
 | DEV-ZERO, REBUY-ANCHOR, SEAT-DRIFT, AGE-GATE | Count rows only on Step A | various | 0.1–0.3% | `STEP_A_COUNT_ROWS.md`; a PREREG only if a row clears its threshold |
 | D1 | Discovery funnel: 28 tape features, at most 5 rules advance to validation | found by the data | about 2–4% | AGREED, frozen (lead, 19:28) |
+| CROWD-BREAK-SHORT | Short 1x a crowded-long meme perp on a 6-h breakdown (mirror of squeeze H1) | Crowded leveraged longs | about 2–3% | AGREED; PREREG `research/crowd-break-short/PREREG.md` |
+| FUND-SPREAD | Market-neutral pair across a Hyperliquid–Binance funding gap | Traders on the more crowded venue | about 2% | AGREED; PREREG `research/fund-spread/PREREG.md`; venue usable from Australia UNVERIFIED |

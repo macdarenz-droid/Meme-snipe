@@ -1,6 +1,6 @@
 # CROWD-BREAK-SHORT: crowded longs breaking down, shorted on the perp (pre-registration)
 
-Drafted 2026-10-09 (Melbourne) by the brainstorm partner. Agreed by the research lead ("AGREED CROWD-BREAK-SHORT, cap 0 credits, spawner lead"). Source: the coverage map's completeness critic (`research/brainstorm-loop/COVERAGE_MAP.md`, idea 1). Nothing here was computed on market data. The rules mirror `research/squeeze-probe/PREREG.md` (H1) with the sign reversed, and its H1-PERP block (`research/CONNECT_THE_DOTS.md` P1) for execution and costs. Changes after a reviewer signs it are logged as dated amendments. Chances are judgement.
+Drafted 2026-10-08 23:54 (Melbourne) by the brainstorm partner. Agreed by the research lead ("AGREED CROWD-BREAK-SHORT, cap 0 credits, spawner lead"). Source: the coverage map's completeness critic (`research/brainstorm-loop/COVERAGE_MAP.md`, idea 1). Nothing here was computed on market data. The rules mirror `research/squeeze-probe/PREREG.md` (H1) with the sign reversed, and its H1-PERP block (`research/CONNECT_THE_DOTS.md` P1) for execution and costs. Changes after a reviewer signs it are logged as dated amendments. Chances are judgement.
 
 ## 1. Question and prior
 - **Setup:** Hyperliquid funding is unusually HIGH (longs crowded and paying) and Binance open interest is unusually high. Then the coin breaks its 6-hour low against SOL.

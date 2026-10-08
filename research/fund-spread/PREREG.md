@@ -1,6 +1,6 @@
 # FUND-SPREAD: a cross-venue funding gap, traded market-neutral (pre-registration)
 
-Drafted 2026-10-09 (Melbourne) by the brainstorm partner. Agreed by the research lead ("AGREED FUND-SPREAD, cap 0 credits, spawner lead"). Source: `research/brainstorm-loop/COVERAGE_MAP.md`, idea 2. Nothing here was computed on market data. Chances are judgement.
+Drafted 2026-10-08 23:54 (Melbourne) by the brainstorm partner. Agreed by the research lead ("AGREED FUND-SPREAD, cap 0 credits, spawner lead"). Source: `research/brainstorm-loop/COVERAGE_MAP.md`, idea 2. Nothing here was computed on market data. Chances are judgement.
 
 ## 1. Question
 - When one venue's perp funding for a meme is persistently higher than another venue's for the same coin, does a pair beat staked SOL in SOL terms after all costs? The pair is short on the higher-funding venue and long on the lower one, 1x each, held up to 72 h.
