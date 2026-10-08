@@ -133,13 +133,11 @@ ag_private_storage() {
       grep -nE '(^|[^A-Za-z_])release[[:space:]]+(create|upload|view|download|list|delete|edit)|/releases' | grep -E 'GITHUB_REPOSITORY|GH_REPO|(^|[[:space:]])-R[[:space:]]' || true)
     [[ -z "$bad" ]] ||
       { ag_refuse "the archive chain is not armed: $(basename "$f") still has a release call that does not target the private store (OF-4/OF-5 first)"; return 2; }
-    # Round 4, ruling 23: finalize and the QA tools write their output to the dataset
-    # directory ("$qlog/NAME.log"), never to a public log or step summary.
-    bad=$(sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$f" |
-      grep -nE '(^|[[:space:]])(node[[:space:]].*qa/(check\.mjs|parity\.ts|volume\.ts)|zeroed-scan[[:space:]]+finalize([[:space:]]|$))' |
-      grep -vE '^[0-9]+:[[:space:]]*#' | grep -vE '> "\$qlog/[a-z-]+\.log" 2>&1([[:space:]]|$)' || true)
-    [[ -z "$bad" ]] ||
-      { ag_refuse "the archive chain is not armed: $(basename "$f") line $(head -1 <<< "$bad" | cut -d: -f1) prints finalize or QA output to the job log, not to \$qlog in the dataset directory"; return 2; }
+    # Round 4, rulings 23 and 36: finalize, the QA tools and every zeroed-scan call (plan
+    # and per-unit counts) write their output to a private log next to the data, never to
+    # the public job log or step summary (ag_calls_private).
+    bad=$(sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$f" | /usr/bin/env python3 -c "$ag_calls_py" 2>&1) ||
+      { ag_refuse "the archive chain is not armed: $(basename "$f") ${bad:-cannot be checked}; scanner and QA output goes to a private log, not the job log"; return 2; }
   done
 }
 # ag_permissions DIR (round 4, ruling 26): every workflow in DIR that runs scan-day.sh or
@@ -155,29 +153,50 @@ ag_private_storage() {
 ag_permissions() {
   if /usr/bin/env python3 -c 'import yaml' 2>/dev/null; then
     echo "permissions: parsed with python3 $(/usr/bin/env python3 -c 'import sys, yaml; print(sys.version.split()[0], "yaml", yaml.__version__)' 2>/dev/null)" >&2
-    /usr/bin/env python3 -c "$ag_permissions_py" "$1"
-  elif command -v yq > /dev/null 2>&1; then
-    local f n
-    echo "permissions: parsed with $(yq --version 2>&1 | head -1)" >&2
-    if printf 'a: 1\na: 2\n' | yq '.' > /dev/null 2>&1; then
-      echo "the runner's yq ($(yq --version 2>&1 | head -1)) does not refuse a repeated key"; return 1
-    fi
-    for f in "$1"/*.yml "$1"/*.yaml; do
-      [[ -f "$f" ]] && grep -qE "$ag_wf_marks" "$f" || continue
-      n=$(basename "$f")
-      yq -e '.' "$f" > /dev/null 2>&1 || { echo "$n does not parse as YAML"; return 1; }
-      [[ "$(yq -r '.permissions | type' "$f")" == '!!map' && "$(yq -r '.permissions.contents // "" | tostring' "$f" | tr -d '[:space:]')" == read ]] ||
-        { echo "$n has no explicit top-level permissions with contents: read"; return 1; }
-      [[ -z "$(yq -r '.jobs[] | select(.permissions == "write-all" or (.permissions | type) == "!!map" and (.permissions.contents | tostring) == "write") | "x"' "$f")" ]] ||
-        { echo "$n has a job granting write-all or contents: write"; return 1; }
-    done
+    /usr/bin/env python3 -c "$ag_calls_py
+$ag_permissions_py" "$1"
   else
-    echo "no YAML parser (python3 with yaml, or yq) to check the workflows' permissions"; return 1
+    echo "no YAML parser that refuses a repeated key (python3 with yaml) to check the workflows' permissions"; return 1
   fi
 }
-ag_wf_marks='scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-'
+ag_wf_marks='scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-|archive-check\.sh|archive-guard\.sh'
+# ag_calls_py: python. As a script it reads a shell file on stdin (continued lines
+# joined) and prints the first zeroed-scan, finalize or QA call whose output is not kept
+# private: stdout to a file ("$...") with stderr to a file or 2>&1, or captured by
+# $( ... 2>&1 ) / $( ... 2>"$..." ). No subcommand may print to the log (OF-2 round 4,
+# ruling 36: the allow-list is empty, fail closed).
+ag_calls_py='
+import re, sys
+CALL = re.compile(r"(?:^|[\s;&(!`])(zeroed-scan\s+[a-z]|node\s[^#]*qa/(?:check\.mjs|parity\.ts|volume\.ts))")
+F = r"\"\$[^\"]+\""
+OK = [re.compile(r"^[^|]*?>>?\s*" + F + r"\s+2>&1(?=\s|$|\)|;|&|\|)"),
+      re.compile(r"^[^|]*?>>?\s*" + F + r"\s+2>>?\s*" + F),
+      re.compile(r"^[^|]*?2>>?\s*" + F + r"\s+>>?\s*" + F)]
+CAP = re.compile(r"^[^)|]*2>(?:&1|>?\s*" + F + r")[^)|]*\)")
+def bad_lines(text):
+    for n, line in enumerate(text.split("\n"), 1):
+        if line.lstrip().startswith("#"): continue
+        for m in CALL.finditer(line):
+            rest = line[m.start(1):]
+            if re.search(r"\$\(\s*(?:[\w./-]+\s+)*$", line[:m.start(1)]):
+                if CAP.search(rest): continue
+            elif any(o.search(rest) for o in OK): continue
+            yield n, line.strip()[:120]
+def join(text): return re.sub(r"\\\n", "", text)
+if __name__ == "__main__" and len(sys.argv) == 1:
+    for n, l in bad_lines(join(sys.stdin.read())):
+        print("line " + str(n) + " prints scanner or QA output to the job log: " + l); sys.exit(1)
+'
+# ag_permissions_py (with ag_calls_py; argv[1] the workflows directory), rulings 26, 32
+# and 39: for every archive workflow (ag_wf_marks): parsed with a loader that refuses a
+# repeated key; an explicit top-level permissions mapping with contents: read; at any
+# level only contents: read|none and actions: read|none, actions: write only where it is
+# needed (archive-check.yml dispatches data-scan; data-scan.yml's continue job dispatches
+# the chained run), every other scope absent or none, never a string (write-all,
+# read-all); upload-artifact only in data-scan.yml's scan job, named resume-*; and every
+# run: block passes ag_calls_py.
 ag_permissions_py='
-import glob, os, re, sys, yaml
+import glob, os, yaml
 class L(yaml.SafeLoader): pass
 def mapping(loader, node, deep=False):
     keys = set()
@@ -187,25 +206,44 @@ def mapping(loader, node, deep=False):
         keys.add(key)
     return yaml.SafeLoader.construct_mapping(loader, node, deep)
 L.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
-mark = re.compile(r"scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-")
-def bad(perm):
-    if isinstance(perm, str) and perm.strip() == "write-all": return "write-all"
-    if isinstance(perm, dict) and str(perm.get("contents", "")).strip() == "write": return "contents: write"
+MARK = re.compile(r"scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-|archive-check\.sh|archive-guard\.sh")
+WRITE_OK = {("archive-check.yml", None), ("data-scan.yml", "continue")}
+def scopes(perm, name, job):
+    if perm is None: return None
+    if not isinstance(perm, dict): return "grants " + str(perm)
+    for k, v in perm.items():
+        v = str(v).strip()
+        if k == "contents": ok = v in ("read", "none")
+        elif k == "actions": ok = v in ("read", "none") or (v == "write" and (name, job) in WRITE_OK)
+        else: ok = v == "none"
+        if not ok: return "grants " + str(k) + ": " + v
     return None
+def fail(msg): print(msg); sys.exit(1)
 for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.path.join(sys.argv[1], "*.yaml"))):
     text = open(f).read()
-    if not mark.search(text): continue
+    if not MARK.search(text): continue
     name = os.path.basename(f)
     try: wf = yaml.load(text, Loader=L)
-    except Exception: print(name + " does not parse as YAML (or repeats a key)"); sys.exit(1)
+    except Exception: fail(name + " does not parse as YAML (or repeats a key)")
     top = wf.get("permissions") if isinstance(wf, dict) else None
     if not isinstance(top, dict) or str(top.get("contents", "")).strip() != "read":
-        print(name + " has no explicit top-level permissions with contents: read"); sys.exit(1)
+        fail(name + " has no explicit top-level permissions with contents: read")
+    e = scopes(top, name, None)
+    if e: fail(name + " " + e + " at the top level")
     for j, job in (wf.get("jobs") or {}).items():
-        b = bad(job.get("permissions")) if isinstance(job, dict) else None
-        if b: print(name + " job " + str(j) + " grants " + b); sys.exit(1)
+        if not isinstance(job, dict): continue
+        e = scopes(job.get("permissions"), name, j)
+        if e: fail(name + " job " + str(j) + " " + e)
+        for st in job.get("steps") or []:
+            if not isinstance(st, dict): continue
+            if "actions/upload-artifact@" in str(st.get("uses", "")):
+                art = str((st.get("with") or {}).get("name", ""))
+                if not (name == "data-scan.yml" and j == "scan" and art.startswith("resume-")):
+                    fail(name + " job " + str(j) + " uploads an artifact (" + (art or "unnamed") + ")")
+            for n, l in bad_lines(join(str(st.get("run", "")))):
+                fail(name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))) + " prints scanner or QA output to the job log: " + l)
 '
-# ag_retention DAY: the retention a fresh read of DAY uses, or nothing. Unset: only the
+# ag_retention DAY# ag_retention DAY: the retention a fresh read of DAY uses, or nothing. Unset: only the
 # first allow-listed day (2026-07-22, K2, measurement day 1); K2: the first two days (the
 # two measurement days); K3: every allow-listed day. Anything else: no day.
 ag_retention() {
@@ -321,19 +359,20 @@ ag_default_branch() {
 }
 # ag_runs WORKFLOW: runs on every branch as TSV "id status conclusion createdAt
 # updatedAt attempt headBranch headSha title" (a missing value is "-": read splits on tabs
-# and would merge empty fields), newest first. Fails on an API error, or when 500 runs do
-# not reach back to the window start (AG_SINCE), so no failure can hide past the list's end.
+# and would merge empty fields), newest first, plus the in-progress and queued runs listed
+# on their own (round 4, ruling 42), each run once. Fails on an API error, or when a list
+# reaches its 500 cap (fail closed: no run can hide past the list's end).
 ag_runs() {
-  local wf=$1 out n oldest
-  out=$("$ag_gh" run list --repo "$ag_repo" --workflow "$wf" --limit 500 \
-    --json databaseId,status,conclusion,createdAt,updatedAt,attempt,headBranch,headSha,displayTitle \
-    --jq '.[] | [.databaseId, .status, (.conclusion // "-"), .createdAt, .updatedAt, .attempt, .headBranch, (.headSha // "-"), .displayTitle] | @tsv' 2>/dev/null) || return 1
-  n=$(grep -c . <<< "$out")
-  if (( n >= 500 )); then
-    oldest=$(ag_ts "$(tail -1 <<< "$out" | cut -f4)") || return 1
-    (( oldest < AG_SINCE )) || return 1
-  fi
-  printf '%s\n' "$out"
+  local wf=$1 out st n all=""
+  for st in "" in_progress queued; do
+    out=$("$ag_gh" run list --repo "$ag_repo" --workflow "$wf" --limit 500 ${st:+--status "$st"} \
+      --json databaseId,status,conclusion,createdAt,updatedAt,attempt,headBranch,headSha,displayTitle \
+      --jq '.[] | [.databaseId, .status, (.conclusion // "-"), .createdAt, .updatedAt, .attempt, .headBranch, (.headSha // "-"), .displayTitle] | @tsv' 2>/dev/null) || return 1
+    n=$(grep -c . <<< "$out")
+    (( n < 500 )) || return 1
+    all+="$out"$'\n'
+  done
+  awk -F'\t' 'NF && !seen[$1]++' <<< "$all"
 }
 # ag_sha_guarded SHA (round 4, ruling 21): "yes" when the commit SHA carries
 # research/historical/ci/archive-guard.sh, "no" when it does not (or SHA is not a commit
@@ -409,10 +448,11 @@ ag_backoff_end() {
 #   AG_FOREIGN     runs since ARCHIVE_REARM_AT that may have read the archive unguarded:
 #                  a non-Helius data-scan run on another branch whose scan job started or
 #                  whose head SHA lacks archive-guard.sh; an archive check on another
-#                  branch; a re-run (attempt > 1) of either workflow whose head SHA lacks
+#                  branch whose head SHA lacks the guard or whose probe step ran; a re-run (attempt > 1) of either workflow whose head SHA lacks
 #                  archive-guard.sh
 #   AG_BUSY        other data-scan runs outside the Helius lane not completed, "data-scan
-#                  volume" runs aside (not GITHUB_RUN_ID)
+#                  volume" runs of a guarded commit on the default branch aside (not
+#                  GITHUB_RUN_ID)
 #   AG_DS_RUNS / AG_AC_RUNS / AG_BRANCH  the run lists and the default branch
 # Fails when anything cannot be read (fail closed).
 ag_history() {
@@ -432,8 +472,20 @@ ag_history() {
     # Rulings 21 and 29: an archive check from another branch (its archive-check.yml may be
     # an old, unguarded one), or a re-run of a commit without the guard
     if (( up >= rearm )); then
-      if [[ "$br" != "$AG_BRANCH" ]]; then AG_FOREIGN=$(( AG_FOREIGN + 1 ))
-      elif (( at > 1 )); then g=$(ag_sha_guarded "$sha") || return 1; [[ "$g" == yes ]] || AG_FOREIGN=$(( AG_FOREIGN + 1 )); fi
+      if [[ "$br" != "$AG_BRANCH" ]] || (( at > 1 )); then
+        g=$(ag_sha_guarded "$sha") || return 1
+        if [[ "$g" != yes ]]; then AG_FOREIGN=$(( AG_FOREIGN + 1 ))
+        elif [[ "$br" != "$AG_BRANCH" ]]; then
+          # Ruling 38: a guarded check from another branch counts only if its probe step ran
+          for (( k = 1; k <= at; k++ )); do
+            jobs=$(ag_jobs "$id" "$k") || return 1
+            if grep -qE $'^step\tArchive probe \\(a failure unless served\\)\t' <<< "$jobs" &&
+               ! grep -qE $'^step\tArchive probe \\(a failure unless served\\)\tskipped$' <<< "$jobs"; then
+              AG_FOREIGN=$(( AG_FOREIGN + 1 )); break
+            fi
+          done
+        fi
+      fi
     fi
     (( at == 1 )) && [[ "$co" == success ]] && continue # a single attempt that succeeded probed nothing or was served
     for (( k = 1; k <= at; k++ )); do
@@ -471,8 +523,9 @@ ag_history() {
         done
       fi
     fi
-    # Ruling 22: a volume run never reads the archive
-    if [[ "$ti" != "data-scan volume"* ]] && (( up > AG_LANE_END )); then AG_LANE_END=$up lane_id=$id; fi
+    # Rulings 22 and 41: a volume run never reads the archive, if it is a default-branch
+    # run of a guarded commit
+    if ! ag_volume_run "$ti" "$br" "$sha" && (( up > AG_LANE_END )); then AG_LANE_END=$up lane_id=$id; fi
     [[ "$ti" == "data-scan scan source=archive" ]] || continue
     for (( k = 1; k <= at; k++ )); do
       meta=$(ag_attempt "$id" "$k") || return 1
@@ -509,10 +562,17 @@ ag_history() {
   done <<< "$events"
   # Rulings 16 and 22: another run outside the Helius lane not completed (this run and
   # "data-scan volume" runs excluded)
-  while IFS=$'\t' read -r id st _ _ _ _ _ _ ti; do
-    [[ -n "$id" && "$st" != completed && "$ti" != "data-scan scan source=helius" && "$ti" != "data-scan volume"* && "$id" != "${GITHUB_RUN_ID:-}" ]] && AG_BUSY=$(( AG_BUSY + 1 ))
+  while IFS=$'\t' read -r id st _ _ _ _ br sha ti; do
+    [[ -n "$id" && "$st" != completed && "$ti" != "data-scan scan source=helius" && "$id" != "${GITHUB_RUN_ID:-}" ]] || continue
+    ag_volume_run "$ti" "$br" "$sha" || AG_BUSY=$(( AG_BUSY + 1 ))
   done <<< "$AG_DS_RUNS"
   return 0
+}
+# ag_volume_run TITLE BRANCH SHA (rulings 22, 41): a "data-scan volume" run on the default
+# branch from a guarded commit (an unreadable commit is not one: fail closed).
+ag_volume_run() {
+  [[ "$1" == "data-scan volume"* && "$2" == "$AG_BRANCH" ]] || return 1
+  [[ "$(ag_sha_guarded "$3" 2>/dev/null)" == yes ]]
 }
 # ag_scan_failed_steps (stdin: ag_jobs lines): the names of the scan job's steps that
 # failed, joined by "|" ("" when none).

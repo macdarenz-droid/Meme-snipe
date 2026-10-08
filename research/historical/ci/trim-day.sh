@@ -36,7 +36,9 @@ refuse() { echo "refused: $*" | tee -a "$summary" >&2; exit 2; }
 # shellcheck source=archive-guard.sh
 . "$here/archive-guard.sh"
 list="$out/list-$day.txt" log="$out/units.log" partial="$out/units.log.partial"
-mkdir -p "$assets"
+# OF-2 round 4, ruling 36: the scanner's output goes to $tlog next to the data.
+tlog="$out-log"
+mkdir -p "$assets" "$tlog"
 k2=() k3=()
 for u in "$out"/units/*/*; do
   [[ -d "$u" && "$u" != *.tmp && "$u" != *.del ]] || continue
@@ -48,7 +50,7 @@ done
 # A restored day already trimmed: nothing to do (ruling 9).
 if [ ${#k2[@]} -eq 0 ] && [ ${#k3[@]} -gt 0 ] && [ ! -e "$out/units.k3" ]; then
   [ -f "$log" ] && [ -f "$list" ] || refuse "$day's K3 units have no per-unit log or list"
-  zeroed-scan unitlog -out "$out" -check "$log" || refuse "$day's per-unit log does not match its K3 units"
+  zeroed-scan unitlog -out "$out" -check "$log" > "$tlog/unitlog.log" 2>&1 || refuse "$day's per-unit log does not match its K3 units"
   # Ruling 22: the list copied is the one every unit was trimmed with.
   lsha=$(sha256sum "$list" | cut -d' ' -f1)
   for u in "${k3[@]}"; do
@@ -70,7 +72,7 @@ if [ ! -f "$list" ] || [ ! -d "$out/units.k3" ]; then
     prior_args=(-prior "$prior")
   fi
   [ ${#k2[@]} -gt 0 ] || refuse "$out holds no K2 units to build the list from"
-  zeroed-scan migrations -day-start "$(date -u -d "$day" +%s)" "${prior_args[@]}" "$out" > "$list.tmp"
+  zeroed-scan migrations -day-start "$(date -u -d "$day" +%s)" "${prior_args[@]}" "$out" > "$list.tmp" 2>> "$tlog/migrations.log"
   [ -s "$list.tmp" ] || refuse "the day's pinned list is empty (no migration in the day or the window before it)"
   mv "$list.tmp" "$list"
 fi
@@ -99,7 +101,7 @@ for u in "${k2[@]}"; do
       exit 1
     fi
     rm -rf "$k3u.tmp"; mkdir -p "$out/units.k3/$epoch"
-    zeroed-scan trim -in "$u" -out "$k3u" -migration-list "$list"
+    zeroed-scan trim -in "$u" -out "$k3u" -migration-list "$list" >> "$tlog/trim.log" 2>&1
   fi
   # Ruling 21: the unit's k2 lines go to a temp file, then are appended and synced; the
   # K2 copy is deleted only when the partial log holds one line per .zst file of it.
@@ -123,11 +125,11 @@ rm -rf "$out"/units/*/*.del
 find "$out/units" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 if compgen -G "$out/units/*/*" > /dev/null; then refuse "$out/units still holds units after the trim"; fi
 rm -rf "$out/units" && mv "$out/units.k3" "$out/units"
-ulines=$(zeroed-scan unitlog -out "$out")
+ulines=$(zeroed-scan unitlog -out "$out" 2>> "$tlog/unitlog.log")
 while read -r l; do [[ "$l" == *" K3 $sha" ]] || refuse "unit line '$l' is not K3 with the pinned list $sha"; done <<< "$ulines"
 { printf '%s\n' "$ulines"; LC_ALL=C sort -k3,3 "$partial"; } > "$log.tmp"
 mv "$log.tmp" "$log"
-zeroed-scan unitlog -out "$out" -check "$log"
+zeroed-scan unitlog -out "$out" -check "$log" >> "$tlog/unitlog.log" 2>&1
 rm -f "$partial"
 cp "$log" "$assets/units-$day.log"
 echo "trim: $day trimmed to K3 (list sha256 $sha); K2 hashes in the per-unit log" | tee -a "$summary"

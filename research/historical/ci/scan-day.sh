@@ -129,7 +129,8 @@ if [ "$rec" = K3 ]; then
   # per-unit log is present and checks, and expect_units (if set) is met: no request,
   # trim-day.sh then does nothing and check-day.sh runs. Anything else is refused.
   units=$(find "$out/units" -mindepth 2 -maxdepth 2 -type d ! -name '*.tmp' 2>/dev/null | wc -l)
-  if [ -f "$out/units.log" ] && zeroed-scan unitlog -out "$out" -check "$out/units.log" &&
+  mkdir -p "$out-log"
+  if [ -f "$out/units.log" ] && zeroed-scan unitlog -out "$out" -check "$out/units.log" > "$out-log/unitlog.log" 2>&1 &&
      { [ -z "${EXPECT_UNITS:-}" ] || [ "$units" -ge "$EXPECT_UNITS" ]; }; then
     echo "day $day is already read and trimmed ($units K3 units, per-unit log checked); no request" | tee -a "$summary"
     exit 0
@@ -181,11 +182,15 @@ while true; do
   fi
   # Interrupted (SIGINT) at the budget's end; it finishes nothing new after that and
   # exits within 2 min, else it is killed (an unfinished unit is never renamed into place).
+  # OF-2 round 4, ruling 36: the scanner's output (plan and per-unit counts) goes to
+  # $slog next to the data, never to the public log; the log keeps the exit code and the
+  # 429 log (429.log) only.
+  slog="$out-log"; mkdir -p "$slog"
   rm -f "$out/disk-stop"
   disk_watch "$$" &
   wpid=$!
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
-    -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop
+    -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop >> "$slog/run.log" 2>&1
   rc=$?
   kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
   if [ -f "$out/disk-stop" ]; then
@@ -206,7 +211,7 @@ while true; do
     exit 0
   fi
   if [ $rc -ne 75 ]; then
-    echo "scanner failed with exit $rc" | tee -a "$summary"
+    echo "scanner failed with exit $rc (its output is in $slog/run.log, not in this log)" | tee -a "$summary"
     exit $rc
   fi
   hold_back "$out/archive-429.state" "$ARCHIVE_BACKOFF_S"
