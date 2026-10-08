@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/5b33f44f6fdf9beeebeedadafa683422cb6c3628/ops/install.sh -o i && echo 'd4d7ffa26a91f6324ea4e00cdc257f9ac4d3e7397a39cb0b06c1854d3a8602f4  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7bf8e57bb37fea7310c7e86f22337d1e27db8cf7/ops/install.sh -o i && echo '8bcee4926f1a53a6f1180eb361187367c8e7ca94beefa8cd08c3d2f739b02263  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -23,7 +23,7 @@ The console screen can be left at any time (Ctrl+C); setup carries on in the bac
 
 The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
 
-SHA-256 of `install.sh`: `d4d7ffa26a91f6324ea4e00cdc257f9ac4d3e7397a39cb0b06c1854d3a8602f4`
+SHA-256 of `install.sh`: `8bcee4926f1a53a6f1180eb361187367c8e7ca94beefa8cd08c3d2f739b02263`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -186,7 +186,7 @@ The owner approved it on 6 Oct ("Approve upload"; "Okay yes delete after upload"
 
   Anything else keeps it. Manifests, saved states, the journal, raw and delays files are never deleted. A running boot's files are uploaded but never deleted: the worker re-reads its own boot folder on every file it seals.
 - **Sandbox:** `zeroed-record-upload@.service` runs as `zeroed-worker` with no capability. That user already holds every credential it reads and owns the recorder. It is in the signer's group, so the signer's `/run/zeroed-signer` and `/var/lib/zeroed-signer` are made inaccessible to the unit. Of the worker's `/var/lib/zeroed` it sees only the recorder (read and delete) and `journal.jsonl` (read): an empty read-only `/var/lib/zeroed` with those two bound in, so the ledger and the rest of the worker's state are out of reach. Its only writable data paths are the recorder and its own `/var/lib/zeroed-record-upload` (state, lock, status, finished days), at `Nice=19`, idle I/O, `CPUQuota=25%` and `MemoryMax=96M`.
-- **Alerts:** `zeroed-check` raises them from the uploader's status file, once each with a CLEARED line: 3 failed runs in a row, recordings waiting longer than a day, files kept back, no report for 3 hours.
+- **Alerts:** `zeroed-check` raises them from the uploader's status file, once each with a CLEARED line: 3 failed runs in a row, recordings waiting longer than a day, files kept back, no report for 3 hours.  None is raised while `/var/lib/zeroed/recorder` does not exist (the upload unit is skipped then), and "never reported" waits 70 minutes from when `zeroed-check` first saw that folder (a stamp in its state folder, removed when the folder goes).
 - **By hand:** `zeroed-record-upload` runs once now; `zeroed-record-upload --day YYYY-MM-DD` runs for one UTC day. Either way it runs in the same sandbox, after any run in progress.
 
 The token (`DATA_STORE_TOKEN`, deployed as `REPORTS_TOKEN`) already has **Contents: Read and write** on the data repository. That is what creating releases and uploading, reading and deleting their assets needs, so nothing changes for the owner.
