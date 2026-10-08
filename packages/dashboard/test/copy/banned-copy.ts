@@ -81,9 +81,10 @@ const ASCII_L_OR_I: ReadonlySet<string> = new Set(['l', 'I', '|']);
  * (fullwidth and compatibility letters become plain ones), format characters and other default-ignorable code points
  * removed, look-alike letters (the table above, then every single-letter skeleton of Unicode's confusables.txt,
  * lookalikes.ts) mapped to Latin, apostrophe look-alikes to `'`, dashes to `-`, runs of white space to one space, and
- * marks dropped after NFD. `lOrI` is how an `l` or `I` look-alike reads, ASCII `l`, `I` and `|` included.
+ * marks dropped after NFD. `lOrI` is how an `l` or `I` look-alike reads; with `ascii` (the default), ASCII `l`, `I` and
+ * `|` read that way too, and without it they stay as written (round 6, ruling 29).
  */
-export function normaliseCopy(text: string, lOrI: 'l' | 'I' = 'l'): string {
+export function normaliseCopy(text: string, lOrI: 'l' | 'I' = 'l', ascii = true): string {
   // Format characters and every default-ignorable code point (combining grapheme joiner, Hangul fillers, variation
   // selectors, tag characters: Z05 round 3, ruling 14) are invisible, so a reader sees the text without them. Nonspacing
   // and enclosing marks are dropped after NFD (round 4, ruling 17; round 5, ruling 21), so an overlay such as s\u0337mart
@@ -97,7 +98,7 @@ export function normaliseCopy(text: string, lOrI: 'l' | 'I' = 'l'): string {
   const early = (t: string): string => [...t].map((c) => (/^[\x00-\x7f]+$/.test(c.normalize('NFKC')) ? c : one(c))).join('');
   const visible = text.replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '');
   const plain = early(visible).normalize('NFKC').replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '').normalize('NFD').replace(/[\p{Mn}\p{Me}]/gu, '');
-  return [...map(plain)].map((c) => (ASCII_L_OR_I.has(c) ? lOrI : c)).join('')
+  return [...map(plain)].map((c) => (ascii && ASCII_L_OR_I.has(c) ? lOrI : c)).join('')
     .replace(/(?<=[A-Za-z])\p{Mc}+(?=[A-Za-z])/gu, '')
     .normalize('NFKC')
     .replace(/\p{Pd}/gu, '-')
@@ -114,9 +115,11 @@ export function pairSkeleton(text: string): string {
 }
 const BANNED_PAIRS: ReadonlyArray<RegExp> = BANNED.map((b) => new RegExp(pairSkeleton(b.pattern.source), b.pattern.flags));
 
-/** The banned labels `text` hits, read both ways where a letter could be `l` or `I` (rounds 4 and 5, rulings 17 and 21). */
+/** The banned labels `text` hits, as written and read both ways where a letter could be `l` or `I` (rulings 17, 21, 29). */
 export function findBanned(text: string): string[] {
-  const readings = [normaliseCopy(text, 'l'), normaliseCopy(text, 'I')];
+  // As written (ASCII l, I and | kept, so "Intelligent" keeps its capital I and its small l: ruling 29), then with
+  // every l-like letter read as l, then as I. Look-alikes are read both ways in the as-written reading too.
+  const readings = [normaliseCopy(text, 'l', false), normaliseCopy(text, 'I', false), normaliseCopy(text, 'l'), normaliseCopy(text, 'I')];
   const pairs = readings.map(pairSkeleton);
   return BANNED.filter((b, i) => readings.some((r) => b.pattern.test(r)) || pairs.some((r) => (BANNED_PAIRS[i] as RegExp).test(r))).map((b) => b.label);
 }

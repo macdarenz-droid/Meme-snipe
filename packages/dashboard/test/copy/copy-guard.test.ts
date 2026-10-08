@@ -139,6 +139,8 @@ describe('dashboard copy guard', () => {
       // The other pairs and characters the ruling names.
       ['vvizard journey', 'journey'], ['cleep dive', 'deep dive'], ['A| picks', 'AI'],
       ['powered\u00A0\u2003by', 'powered by'],
+      // Words with both a capital I and a small l (round 6, ruling 29).
+      ['Intelligent entries', 'intelligent'], ['In plain words', 'in plain words'], ['Unlock Insights', 'insights'],
     ];
     for (const [text, label] of seeded) {
       const code = `const t = '${text}';`;

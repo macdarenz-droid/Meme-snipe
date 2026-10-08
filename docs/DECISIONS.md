@@ -3688,8 +3688,9 @@ Rulings in `docs/reviews/Z05.md` on `claude/supervisor-docs-2` at `d95eb80f`. Th
 - **HaltDialog owns the exemption** (ruling 23). Only `HaltDialog` is exempt from the fail-closed gates, and it fixes its title and its confirm (`onHalt`). The generic `Dialog` overrides any `halt` key it is given.
 - **HALT closes on a mode change** (ruling 24). UI.md's UI-T07 edge case closes the open dialog on a mode change, and it names no exception, so HALT closes too. UI.md now says the operator reopens HALT from the header (hold, `Enter` or `⇧H`), which is never blocked.
 
-## Z05 UI system, round 6 (2026-10-08, supervisor rulings 26–28)
+## Z05 UI system, round 6 (2026-10-08, supervisor rulings 26–29)
 
 - **`1` is not read as `I`** (ruling 26, narrowing ruling 21). The action classes A1, A2 and A3 (UI.md) are copy, so `A1` must stay honest. Only ASCII `l`, `I` and `|` are read both ways. The table demo keeps R1–R5.
 - **A pointer cancel anywhere ends the HOLD claim** (ruling 27). The window listener of ruling 22 also handles `pointercancel` for the same pointer, so a touch cancelled off the button never swallows a later click.
 - **No risk-reducing secondary** (ruling 28, replacing rulings 15's exemption and 19). Every secondary action is gated; "Halt and flatten all…" is A2. HaltDialog's `onHalt` is a branded `HaltCommand` that only `src/lib/halt-command.ts` makes.
+- **Text is also read as written** (ruling 29, fixing a weakening from ruling 21). Reading every ASCII `l` and `I` the same way missed words that hold both, like "Intelligent" and "In plain words". The guard now reads text as written as well as in the `l` and `I` readings. A false-positive check over dwyl's words_alpha.txt (370,105 words, sha256 `3ed0c946…`), each word lower-case, capitalised and upper-case, shows 174 hits. Against round 5 the only new ones are Intelligence, Intelligent and Intelligently, which are banned words. Against round 4 the extra hits are `Al`, `al` and `LIM`, read as AI and LLM; ruling 21 accepted those.
