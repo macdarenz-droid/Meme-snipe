@@ -51,6 +51,8 @@ case "$cmd" in
     mkdir "$dir"; echo "$tag" >> "$T/created.log"
     while (( $# )) && [[ "$1" != -- ]]; do shift; done
     (( $# )) && { shift; (( $# )) && cp -- "$@" "$dir/"; }
+    # OF-4 ruling 9: FAKE_GH_DROP=NAME loses that asset on create (an incomplete release)
+    [[ -n "${FAKE_GH_DROP:-}" ]] && rm -f "$dir/$FAKE_GH_DROP"
     true ;;
   upload)
     while (( $# )) && [[ "$1" != -- ]]; do shift; done; shift
@@ -124,7 +126,7 @@ run() { { bash "$here/assemble.sh" --download "$@" && env -u GH_TOKEN -u GITHUB_
 # ---- 1. full offline run: FROM 09-20, TO 09-22, lead-in 09-06 .. 09-19 ----
 reset_store
 if run 2026-09-20 2026-09-22 "$T/work"; then ok "assemble runs end to end"; else no "assemble runs end to end"; cat "$T/out.txt"; fi
-dl=$(sort "$T/downloads.log" | tr '\n' ' ')
+dl=$(grep '^data-day-' "$T/downloads.log" | sort | tr '\n' ' ')
 exp=$(for i in $(seq 1 16); do date -u -d "2026-09-05 + $i days" +data-day-%F; done | sort | tr '\n' ' ')
 [[ "$dl" == "$exp" ]] && ok "downloads exactly the 14 lead-in and 2 window days" || no "downloads: $dl"
 grep -q data-day-2026-09-05 "$T/downloads.log" && no "day before the lead-in was downloaded" || ok "no day before the lead-in is read"
@@ -3054,7 +3056,8 @@ bad=""
 # The storage stop after every batch, against a fake private store.
 cat > "$T/storegh" <<'EOF'
 #!/usr/bin/env bash
-# a fake private store: $T/store/<tag>/ files; .draft marks a draft; .bytes is the release's size
+# a fake private store: $T/store/<tag>/ files; .draft marks a draft; .bytes is the rest of the
+# release's size; .sizes holds "NAME BYTES" lines for named assets (they add to the total)
 set -euo pipefail
 S="$T/store"; mkdir -p "$S"
 case "$1" in
@@ -3066,8 +3069,9 @@ case "$1" in
       repos/test/data/releases\?*)
         for d in "$S"/*/; do [ -d "$d" ] || continue
           t=$(basename "$d"); dr=false; [ -e "$d/.draft" ] && dr=true; b=$(cat "$d/.bytes" 2>/dev/null || echo 0)
-          (cd "$d" && ls) | jq -R . | jq -s --arg t "$t" --argjson dr "$dr" --argjson b "$b" \
-            '{tag_name: $t, draft: $dr, assets: ([.[] | {name: ., size: 0}] + [{name: ".bulk", size: $b}])}'
+          sz=$( { cat "$d/.sizes" 2>/dev/null || true; } | jq -R 'split(" ") | {(.[0]): (.[1] | tonumber)}' | jq -s 'add // {}')
+          (cd "$d" && ls) | jq -R . | jq -s --arg t "$t" --argjson dr "$dr" --argjson b "$b" --argjson sz "$sz" \
+            '{tag_name: $t, draft: $dr, assets: ([.[] | {name: ., size: ($sz[.] // 0)}] + [{name: ".bulk", size: $b}])}'
         done | jq -s . | jq -r "$q" ;;
       repos/test/data/git/matching-refs/tags/storage-stop)
         if [ -d "$S/storage-stop" ] && [ ! -e "$S/storage-stop/.draft" ]; then echo '[{"ref":"refs/tags/storage-stop"}]'; else echo '[]'; fi | jq -r "$q" ;;
@@ -3085,7 +3089,12 @@ case "$1" in
 esac
 EOF
 chmod +x "$T/storegh"
-mkday() { mkdir -p "$T/store/$1"; echo "$2" > "$T/store/$1/.bytes"; [[ -z "${3:-}" ]] || echo "$3" > "$T/store/$1/pm01-subset-${1#data-day-}.txt"; }
+# mkday TAG BYTES [SUBSET [EVENTS]]: a day release of BYTES in all; a K2 one (SUBSET given) also
+# carries pm01-subset-DAY.txt and an events-DAY.tar of EVENTS bytes (default 1 GB) within BYTES
+mkday() { local d=${1#data-day-} ev=${4:-1000000000}; mkdir -p "$T/store/$1"
+  if [[ -z "${3:-}" ]]; then echo "$2" > "$T/store/$1/.bytes"; return; fi
+  echo "$3" > "$T/store/$1/pm01-subset-$d.txt"; : > "$T/store/$1/events-$d.tar"
+  echo "events-$d.tar $ev" > "$T/store/$1/.sizes"; echo $(( $2 - ev )) > "$T/store/$1/.bytes"; }
 sck() { : > "$T/sck.sum"; rc=0; GH_BIN="$T/storegh" GITHUB_STEP_SUMMARY="$T/sck.sum" bash "$here/storage-check.sh" > "$T/sck.out" 2>&1 || rc=$?; }
 # After batch 5: 31 days, 5 stored, 26 left. Stored 75 GB (two K2 days 40 + 35 with 5 GB subsets) + 3 x 15 GB
 # K3 days = 120 GB; + 26 x 15 GB = 510 GB (0.51 TB) -> the marker and exit 3.
@@ -3105,14 +3114,20 @@ sck; [[ $rc == 0 && ! -e "$T/store/storage-stop" ]] && grep -q "= 490000000000 b
 # A draft storage-stop does not count: the guard passes, and a stop still writes the published marker.
 mkdir -p "$T/store/storage-stop"; touch "$T/store/storage-stop/.draft"
 (DATA_REPO=test/data DATA_STORE_TOKEN=x GH_REPO=test/repo GH_BIN="$T/storegh"; . "$here/archive-guard.sh"; ag_summary=/dev/null; ag_store_ok) >/dev/null 2>&1 || bad+=" [a draft counted]"
-# After batch 1: the K2 day (45 GB) counts as its 5 GB PM-01 subset: 45 + 30 x 5 = 195 GB, not 45 + 30 x 45 = 1395 GB.
+# After batch 1: the K2 day (45 GB) counts as its 5 GB PM-01 subset + its 1 GB events: 45 + 30 x 6 = 225 GB, not 45 + 30 x 45 = 1395 GB.
 rm -rf "$T/store"; mkday data-day-2026-07-22 45000000000 5000000000
-sck; [[ $rc == 0 && ! -e "$T/store/storage-stop" ]] && grep -q "= 195000000000 bytes" "$T/sck.sum" && grep -q "measured PM-01 subset" "$T/sck.sum" || bad+=" [batch 1: $rc $(head -c 200 "$T/sck.out")]"
+sck; [[ $rc == 0 && ! -e "$T/store/storage-stop" ]] && grep -q "= 225000000000 bytes" "$T/sck.sum" && grep -q "measured PM-01 subset" "$T/sck.sum" || bad+=" [batch 1: $rc $(head -c 200 "$T/sck.out")]"
+# OF-4 ruling 6: everything stored for a day counts. After batch 1, the K2 day (45 GB with a 1 GB
+# events tar) and its 1 GB volume release: 46 GB stored + 30 x (14 GB subset + 1 GB events + 1 GB
+# volume) = 526 GB > 0.5 TB -> the marker (the subset alone would give 466 GB and pass).
+rm -rf "$T/store"; mkday data-day-2026-07-22 45000000000 14000000000; mkday data-volume-2026-07-22 1000000000
+sck; [[ $rc == 3 && -d "$T/store/storage-stop" ]] && grep -q "= 526000000000 bytes" "$T/sck.sum" || bad+=" [near cap: $rc $(head -c 300 "$T/sck.sum")]"
+rm -rf "$T/store"; mkday data-day-2026-07-22 45000000000 5000000000
 # Fail closed, no marker: an unreadable subset file, an empty store, an unreadable store.
 echo "n/a" > "$T/store/data-day-2026-07-22/pm01-subset-2026-07-22.txt"; sck; [[ $rc == 1 && ! -e "$T/store/storage-stop" ]] || bad+=" [bad subset: $rc]"
 rm -rf "$T/store"; mkdir -p "$T/store"; sck; [[ $rc == 1 ]] || bad+=" [empty: $rc]"
 rc=0; GH_BIN="$T/ghrec4" bash "$here/storage-check.sh" >/dev/null 2>&1 || rc=$?; [[ $rc == 1 ]] || bad+=" [unreadable: $rc]"
-[[ -z "$bad" ]] && ok "OF-4 storage stop: after batch 5, 120 GB stored + 26 x 15 GB = 0.51 TB writes the published storage-stop marker (once) and exits 3, and the guard then refuses; 0.49 TB passes; a draft marker does not count; after batch 1 the K2 day counts as its measured PM-01 subset (195 GB, not 1.395 TB); a bad subset, an empty or unreadable store fail closed without a marker" || no "OF-4 storage stop:$bad"
+[[ -z "$bad" ]] && ok "OF-4 storage stop: after batch 5, 120 GB stored + 26 x 15 GB = 0.51 TB writes the published storage-stop marker (once) and exits 3, and the guard then refuses; 0.49 TB passes; a draft marker does not count; after batch 1 the K2 day counts as its measured PM-01 subset plus its events and volume (225 GB, not 1.395 TB), and near the cap (526 GB with them, 466 GB without) it stops; a bad subset, an empty or unreadable store fail closed without a marker" || no "OF-4 storage stop:$bad"
 bad=""
 
 # ---- OF-4 ruling 1: the stored day's progress cache is deleted after the read-back, by the forget job alone ----
@@ -3267,6 +3282,71 @@ for k in ("scan", "trim"):
     assert e["ARCHIVE_PRIOR_LIST"] == "${{ steps.prior.outputs.list }}" and e["ARCHIVE_PRIOR_SUMS"] == "${{ steps.prior.outputs.sums }}", (k, e)
 PY
 [[ -z "$bad" ]] && ok "OF-5 prior list: the first allow-listed day gets none; day D gets list-<D-1>.txt and SHA256SUMS-<D-1> from data-day-<D-1> (else its -k3) in the store, which archive-guard.sh prior accepts; a missing release or file, or no store, fails closed with no output; the scan job fetches it in a clean step and hands the same outputs to the scan and the trim" || no "OF-5 prior list:$bad"
+# ---- OF-4 round 2 (rulings 7-10) ----
+bad=""
+# 7. One archive day per run: the plan refuses two before any request, and the forget marker
+# refuses a matrix of more than one job.
+python3 - "$wf/data-scan.yml" > "$T/plan7.py" <<'PY'
+import sys, yaml
+st = next(x for x in yaml.safe_load(open(sys.argv[1]))["jobs"]["plan"]["steps"] if x.get("id") == "days")
+r = st["run"]; i = r.index("\n", r.index("<<'EOF'")) + 1; print(r[i:r.rindex("EOF")])
+PY
+rc=0; MODE=scan DAYS=2026-07-22,2026-07-23 MAX_MBPS=40 SOURCE=archive MAX_CREDITS=0 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 python3 "$T/plan7.py" > "$T/plan7.out" 2>&1 || rc=$?
+[[ $rc != 0 ]] && grep -q "one UTC day per batch" "$T/plan7.out" && ! grep -q '^days=' "$T/plan7.out" || bad+=" [plan two days: $rc]"
+rc=0; MODE=scan DAYS=2026-07-22 MAX_MBPS=40 SOURCE=archive MAX_CREDITS=0 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 python3 "$T/plan7.py" > "$T/plan7.out" 2>&1 || rc=$?
+[[ $rc == 0 ]] && grep -qx 'archive_day=2026-07-22' "$T/plan7.out" || bad+=" [plan one day: $rc]"
+python3 - "$wf/data-scan.yml" <<'PY' || bad+=" [forget marker]"
+import sys, yaml
+st = next(x for x in yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"] if x.get("id") == "forgetmark")
+assert st["env"]["JOBS"] == "${{ strategy.job-total }}" and st["run"].lstrip().startswith('[[ "$JOBS" == 1 ]] ||'), st
+PY
+[[ -z "$bad" ]] && ok "OF-4 ruling 7: the plan refuses a two-day archive scan (no day list, so no request) and passes one day; the forget marker refuses a matrix of more than one job" || no "OF-4 one day:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 8. The guard refuses secrets.DATA_STORE_TOKEN in a run: line, toJSON(secrets), secrets[...] and secrets: inherit.
+for v in run tojson index inherit; do
+  mkfx "$T/fx8"; w="$T/fx8/.github/workflows/data-scan.yml"
+  python3 - "$w" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+a = "        run: research/historical/ci/assemble.sh \"$FROM\" \"$TO\" /mnt/work\n"
+assert s.count(a) == 1
+add = {"run": "        run: echo ${{ secrets.DATA_STORE_TOKEN }} >/dev/null; research/historical/ci/assemble.sh \"$FROM\" \"$TO\" /mnt/work\n",
+       "tojson": a + "      - name: all\n        env:\n          ALL: ${{ toJSON(secrets) }}\n        run: true\n",
+       "index": a + "      - name: one\n        env:\n          ONE: ${{ secrets['DATA_STORE_TOKEN'] }}\n        run: true\n",
+       "inherit": a.replace("        run:", "        run:") + "    secrets: inherit\n"}[v]
+open(p, "w").write(s.replace(a, add))
+PY
+  ACFX=$T/fx8/research/historical/ci ac env AC_STATUS=206
+  case $v in run) m="writes secrets.DATA_STORE_TOKEN into its run: line" ;; tojson) m="uses toJSON(secrets)" ;; index) m="uses secrets\[...\]" ;; inherit) m="uses secrets: inherit" ;; esac
+  [[ ! -e "$A/curl.calls" ]] && grep -q "$m" "$A/summary.md" || bad+=" [$v: $(grep -o 'refused[^|]*' "$A/summary.md" | head -1 | cut -c1-120)]"
+done
+[[ -z "$bad" ]] && ok "OF-4 ruling 8: arming refuses secrets.DATA_STORE_TOKEN written into a run: line, toJSON(secrets), secrets[...] and secrets: inherit in an archive workflow" || no "OF-4 secrets text:$bad"
+bad=""; gdreset
+# 9. After create, an incomplete release (an asset lost) fails before readback=true.
+export GH_BIN="$T/bin/gh"
+rm -rf "$T/rel/data-day-2026-09-30"; mkpd; : > "$T/ghout9"
+out=$(FAKE_GH_DROP=parity-2026-09-30.json GITHUB_OUTPUT="$T/ghout9" bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && bad+=" [passed]"
+[[ "$out" == *"after create"* && ! -s "$T/ghout9" ]] || bad+=" [msg: ${out:0:120}]"
+rm -rf "$T/rel/data-day-2026-09-30"; unset GH_BIN
+[[ -z "$bad" ]] && ok "OF-4 ruling 9: a release missing an asset right after create fails the store step before any read-back, with no readback=true" || no "OF-4 complete after create:$bad"
+bad=""
+# 10. assemble --store: one create call with exactly the SHA256SUMS set, then a read-back.
+reset_store; : > "$T/ghrepo.log"; run 2026-09-20 2026-09-22 "$T/work" || bad+=" [run: $(tail -2 "$T/out.txt")]"
+R="$T/rel/data-2026-09-20-2026-09-22"
+[[ $(grep -c "^create data-2026-09-20-2026-09-22 " "$T/ghrepo.log") == 1 ]] && ! grep -q "^upload data-2026-09-20-2026-09-22 " "$T/ghrepo.log" || bad+=" [calls]"
+[[ "$(cd "$R" && ls | LC_ALL=C sort | tr '\n' ' ')" == "$( (awk '{print $2}' "$R/SHA256SUMS"; echo SHA256SUMS) | LC_ALL=C sort | tr '\n' ' ')" ]] || bad+=" [set]"
+grep -q "files read back" "$T/out.txt" || bad+=" [no read-back line]"
+reset_store; { bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" && env -u GH_TOKEN -u GITHUB_TOKEN bash "$here/assemble.sh" 2026-09-20 2026-09-22 "$T/work"; } >/dev/null 2>&1
+echo extra > "$T/work/release/stray.txt"
+out=$(bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/work" 2>&1) || bad+=" [stray: ${out:0:100}]"
+[[ ! -e "$T/rel/data-2026-09-20-2026-09-22/stray.txt" ]] || bad+=" [stray uploaded]"
+rm -rf "$T/rel/data-2026-09-20-2026-09-22"
+out=$(FAKE_GH_CORRUPT=manifest.json bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/work" 2>&1) && bad+=" [corrupt passed]"
+[[ "$out" == *"read-back"* ]] || bad+=" [corrupt msg: ${out:0:100}]"
+rm -rf "$T/rel/data-2026-09-20-2026-09-22"
+out=$(FAKE_GH_DROP=manifest.json bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/work" 2>&1) && bad+=" [dropped passed]"
+[[ "$out" == *"differ from its SHA256SUMS set"* ]] || bad+=" [dropped msg: ${out:0:100}]"
+[[ -z "$bad" ]] && ok "OF-4 ruling 10: assemble --store creates the dataset release in one call with exactly the files SHA256SUMS lists (a stray file stays behind), and fails when a stored file differs or one is missing" || no "OF-4 assemble store:$bad"
 bad=""
 
 echo "$pass passed, $fail failed"

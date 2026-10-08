@@ -4,9 +4,11 @@
 # store (--repo "$DATA_REPO", GH_TOKEN the store token):
 #   stored  = the bytes of every release in the store (the K2 measurement releases, the
 #             volume releases and any dataset included; drafts too, they hold bytes);
-#   per day = the largest K3 day stored so far: a day release's own bytes, except that a
-#             K2 measurement release (it carries pm01-subset-DAY.txt) counts as its
-#             measured PM-01 subset, never its K2 size (batches 1 and 2 have no K3 day);
+#   per day = the largest day stored so far, counting everything stored for it (OF-4
+#             ruling 6): a K3 day's release plus its data-volume-DAY release; a K2
+#             measurement release (it carries pm01-subset-DAY.txt) counts as its measured
+#             PM-01 subset plus its events-DAY.tar and its volume release, never its K2
+#             size (batches 1 and 2 have no K3 day);
 #   left    = the allow-listed days (ARCHIVE_DAYS) with no data-day-D or data-day-D-k3
 #             release yet.
 # When stored + left x per day > ARCHIVE_STORE_CAP_BYTES (0.5 TB), it writes the
@@ -28,28 +30,40 @@ this_repo=${GITHUB_REPOSITORY:-}
 [[ "${DATA_REPO,,}" != "${this_repo,,}" ]] || { say "refused: DATA_REPO is this repository, not the private store"; exit 1; }
 cap=${ARCHIVE_STORE_CAP_BYTES:-}
 [[ "$cap" =~ ^[0-9]+$ ]] || { say "refused: ARCHIVE_STORE_CAP_BYTES is not set in archive-limits.conf"; exit 1; }
-# tag, draft, bytes, asset names
+# tag, draft, bytes, asset name:size pairs
 rels=$("$GH" api --paginate "repos/$DATA_REPO/releases?per_page=100" \
-  --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].size] | add // 0), ([.assets[].name] | join(","))] | @tsv' 2>/dev/null) ||
+  --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].size] | add // 0), ([.assets[] | "\(.name):\(.size)"] | join(","))] | @tsv' 2>/dev/null) ||
   { say "the private store's releases cannot be read: stopped (fail closed)"; exit 1; }
+# OF-4 ruling 6: a day's figure counts everything stored for it. A K3 day (data-day-D or
+# data-day-D-k3) is its release plus its data-volume-D release; a K2 measurement release
+# counts as its measured PM-01 subset plus its events-D.tar and its data-volume-D release.
 stored=0 perday=0 basis="" done_days=""
+declare -A vol=()
 while IFS=$'\t' read -r tag draft bytes names; do
   [ -n "$tag" ] || continue
   [[ "$bytes" =~ ^[0-9]+$ ]] || { say "release $tag reports no size: stopped (fail closed)"; exit 1; }
   stored=$(( stored + bytes ))
+  [[ "$tag" =~ ^data-volume-([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] && vol[${BASH_REMATCH[1]}]=$(( ${vol[${BASH_REMATCH[1]}]:-0} + bytes ))
+done <<< "$rels"
+while IFS=$'\t' read -r tag draft bytes names; do
   [[ "$tag" =~ ^data-day-([0-9]{4}-[0-9]{2}-[0-9]{2})(-k3)?$ ]] || continue
   [ "$draft" = false ] || continue
   d=${BASH_REMATCH[1]}
   done_days+="$d"$'\n'
-  if [[ ",$names," == *",pm01-subset-$d.txt,"* ]]; then
+  v=${vol[$d]:-0}
+  if [[ ",$names," == *",pm01-subset-$d.txt:"* ]]; then
     tmp=$(mktemp -d)
     "$GH" release download "$tag" --repo "$DATA_REPO" --pattern "pm01-subset-$d.txt" --dir "$tmp" >/dev/null 2>&1 ||
       { rm -rf "$tmp"; say "pm01-subset-$d.txt of $tag cannot be read: stopped (fail closed)"; exit 1; }
     n=$(tr -d '[:space:]' < "$tmp/pm01-subset-$d.txt"); rm -rf "$tmp"
     [[ "$n" =~ ^[0-9]+$ ]] || { say "pm01-subset-$d.txt of $tag is not a byte count: stopped (fail closed)"; exit 1; }
-    (( n > perday )) && { perday=$n; basis="$tag (K2: its measured PM-01 subset)"; }
+    ev=$(tr ',' '\n' <<< "$names" | awk -F: -v want="events-$d.tar" '$1 == want && !seen { print $2; seen = 1 }')
+    [[ "$ev" =~ ^[0-9]+$ ]] || { say "$tag has no events-$d.tar: stopped (fail closed)"; exit 1; }
+    f=$(( n + ev + v ))
+    (( f > perday )) && { perday=$f; basis="$tag (K2: its measured PM-01 subset $n + events $ev + volume $v)"; }
   else
-    (( bytes > perday )) && { perday=$bytes; basis="$tag"; }
+    f=$(( bytes + v ))
+    (( f > perday )) && { perday=$f; basis="$tag (with its volume release $v)"; }
   fi
 done <<< "$rels"
 days=$(ag_days) || { say "ARCHIVE_DAYS in archive-limits.conf is malformed: stopped"; exit 1; }

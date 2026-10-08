@@ -721,7 +721,11 @@ jobs:
         env:
           DAY: ${{ matrix.day }}
           KID: ${{ steps.cachekid.outputs.kid }}
+          JOBS: ${{ strategy.job-total }}
+        # OF-4 ruling 7: an archive run holds one day (the plan refuses more), so the job
+        # output names the run's only day; a matrix of more than one job sets no prefix.
         run: |
+          [[ "$JOBS" == 1 ]] || { echo "an archive run holds one day ($JOBS matrix jobs here): no cache clean-up"; exit 1; }
           [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$KID" =~ ^[0-9a-f]{12}$ ]] || { echo "bad day or key id"; exit 1; }
           echo "prefix=data-scan-$DAY-k$KID-" >> "$GITHUB_OUTPUT"
       - name: Log the store duration

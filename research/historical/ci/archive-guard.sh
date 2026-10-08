@@ -310,6 +310,8 @@ def check_steps(steps, name, j, depth=0):
         if not isinstance(st, dict): continue
         uses = str(st.get("uses", "")).strip()
         where = name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?")))
+        # OF-4 ruling 8: the store token is never written into a run: line
+        if re.search(r"secrets\s*\.\s*DATA_STORE_TOKEN", str(st.get("run", "")), re.I): fail(where + " writes secrets.DATA_STORE_TOKEN into its run: line (OF-4 ruling 8)")
         # OF-4 ruling 5: the store token only in a clean env -i step (shell without BASH_ENV
         # or ENV, the script under env -i with a fixed PATH, the loader variables emptied)
         env = st.get("env") or {}
@@ -357,6 +359,9 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
     text = open(f).read()
     if not MARK.search(text): continue
     name = os.path.basename(f)
+    # OF-4 ruling 8: no step reads the whole secrets context or forwards it
+    for rx, what in ((r"toJSON\(\s*secrets\s*\)", "toJSON(secrets)"), (r"secrets\s*\[", "secrets[...]"), (r"secrets\s*:\s*inherit", "secrets: inherit")):
+        if re.search(rx, text, re.I): fail(name + " uses " + what + " (OF-4 ruling 8)")
     try: wf = yaml.load(text, Loader=L)
     except Exception: fail(name + " does not parse as YAML (or repeats a key)")
     top = wf.get("permissions") if isinstance(wf, dict) else None

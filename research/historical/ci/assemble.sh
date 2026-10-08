@@ -296,10 +296,33 @@ store_main() {
   ! gh release view "$tag" --repo "$DATA_REPO" >/dev/null 2>&1 ||
     die "release $tag already exists; a published dataset is never replaced"
   first=$(date -u -d "$from - $LEAD_IN_DAYS days" +%F)
-  gh release create "$tag" --repo "$DATA_REPO" --prerelease --title "Historical dataset $from to $to" \
-    --notes "Built by data-scan.yml at ${GITHUB_SHA:-unknown} from releases data-day-$first onwards (14 lead-in days) to the day before $to. Strict QA and decoder parity passed (qa-report.md, parity.json). Format: docs/research/historical-data.md."
-  (cd "$work/release" && gh release upload "$tag" --repo "$DATA_REPO" -- *)
-  echo "assemble: stored $tag in the private store"
+  # OF-4 ruling 10: exactly the files SHA256SUMS lists (and SHA256SUMS), in one create call
+  local -a files
+  mapfile -t files < <(awk '{print $2}' "$work/release/SHA256SUMS")
+  (( ${#files[@]} > 0 )) || die "the built release's SHA256SUMS lists no file"
+  local f
+  for f in "${files[@]}"; do [[ "$f" =~ ^[A-Za-z0-9._-]+$ && -f "$work/release/$f" ]] || die "SHA256SUMS lists '$f', which is not a file of the built release"; done
+  (cd "$work/release" && gh release create "$tag" --repo "$DATA_REPO" --prerelease --title "Historical dataset $from to $to" \
+    --notes "Built by data-scan.yml at ${GITHUB_SHA:-unknown} from releases data-day-$first onwards (14 lead-in days) to the day before $to. Strict QA and decoder parity passed (qa-report.md, parity.json). Format: docs/research/historical-data.md." \
+    -- "${files[@]}" SHA256SUMS)
+  # read-back: the stored names equal the SHA256SUMS set, the stored SHA256SUMS equals the
+  # built one, and every stored file (one at a time) hashes to its line
+  local names want rb got
+  names=$(gh release view "$tag" --repo "$DATA_REPO" --json assets --jq '.assets[].name' | LC_ALL=C sort) || die "read-back: the assets of $tag cannot be listed"
+  want=$(printf '%s\n' "${files[@]}" SHA256SUMS | LC_ALL=C sort)
+  [[ "$names" == "$want" ]] || die "read-back: the assets of $tag differ from its SHA256SUMS set"
+  rb=$(mktemp -d)
+  gh release download "$tag" --repo "$DATA_REPO" --pattern SHA256SUMS --dir "$rb" >/dev/null 2>&1 && cmp -s "$rb/SHA256SUMS" "$work/release/SHA256SUMS" ||
+    { rm -rf "$rb"; die "read-back: the stored SHA256SUMS of $tag differs or cannot be read"; }
+  for f in "${files[@]}"; do
+    gh release download "$tag" --repo "$DATA_REPO" --pattern "$f" --dir "$rb" >/dev/null 2>&1 && [[ -f "$rb/$f" ]] ||
+      { rm -rf "$rb"; die "read-back: $f could not be downloaded from $tag"; }
+    got=$(sha256sum "$rb/$f" | cut -d' ' -f1)
+    grep -qxF "$got  $f" "$rb/SHA256SUMS" || { rm -rf "$rb"; die "read-back: $f in $tag does not match its SHA256SUMS"; }
+    rm -f "$rb/$f"
+  done
+  rm -rf "$rb"
+  echo "assemble: stored $tag in the private store; ${#files[@]} files read back"
 }
 
 # Sourcing the script (tests) only defines the functions.
