@@ -11,7 +11,7 @@ import pandas as pd
 
 from . import load, venue
 from .costs import FIXED_ROUND_TRIP, REPLAY_DELAY_SLOTS, REPLAY_SPEND
-from .ledger import States, choose_state
+from .ledger import States
 from .persist import SEED
 
 WINDOW_S = 600           # same 10-minute window
@@ -37,8 +37,10 @@ class MintTape:
         st = States.rows(sw)
         self.cls = st["cls"].to_numpy()
         self.st = st[["kind", "s1", "s2", "s3", "s4", "bps"]].to_numpy(np.int64)
-        self.cb = np.cumsum(self.is_buy)
-        self.cs = np.cumsum(~self.is_buy)
+        n = len(self.key)
+        # last[c][i]: index of the last row of class c among rows 0..i (-1 if none)
+        self.last = {c: np.maximum.accumulate(np.where(self.cls == c, np.arange(n), -1)) if n else np.zeros(0, int)
+                     for c in (0, 1, 2)}
         mv = mv.sort_values("key", kind="stable") if mv is not None and len(mv) else None
         self.mv = mv
         self.create, self.migr, self.boost_key, self.excluded = create, migr, boost_key, excluded
@@ -47,24 +49,16 @@ class MintTape:
         """Chosen venue state from the swaps before index i (curve while live, else canonical, else other pool)."""
         if i <= 0:
             return None
-        last = {}
-        for c in (0, 1, 2):
-            idx = np.nonzero(self.cls[:i] == c)[0]
-            if len(idx):
-                last[c] = self.st[idx[-1]]
-        mk = lambda c: pd.DataFrame([last[c]] if c in last else [[-1, 0, 0, 0, 0, 0]],
-                                    columns=["kind", "s1", "s2", "s3", "s4", "bps"])
-        ch = choose_state(mk(0), mk(1), mk(2))
-        k = int(ch["kind"][0])
-        if k == 0:
-            return ("c", int(ch["s1"][0]), int(ch["s2"][0]), int(ch["s3"][0]), int(ch["s4"][0]), int(ch["bps"][0]))
-        if k == 1:
-            return ("a", int(ch["s1"][0]), int(ch["s2"][0]), int(ch["s3"][0]), int(ch["bps"][0]))
+        rows = [self.last[c][i - 1] for c in (0, 1, 2)]
+        c, a, o = rows
+        if c >= 0 and self.st[c][4] > 0:
+            r = self.st[c]
+            return ("c", int(r[1]), int(r[2]), int(r[3]), int(r[4]), int(r[5]))
+        for j in (a, o):
+            if j >= 0:
+                r = self.st[j]
+                return ("a", int(r[1]), int(r[2]), int(r[3]), int(r[5]))
         return None
-
-    def _price_at_time(self, t):
-        j = int(np.searchsorted(self.bt, t, side="right"))
-        return venue.spot_price(self._state_before(j)) if j > 0 else float("nan")
 
     def features(self, key, bt, size_lamports, holders=None):
         """§8 features as of `key` (strictly earlier events only)."""
@@ -194,14 +188,18 @@ def fit_tree(X, y, max_depth=MAX_DEPTH, min_leaf_share=MIN_LEAF_SHARE):
             xs_s, ys_s = xs[order], y[idx][order]
             csum = np.cumsum(ys_s)
             n = len(xs_s)
-            for k in range(min_leaf, n - min_leaf + 1):
-                if xs_s[k - 1] == xs_s[k] if k < n else True:
-                    continue
-                nl, nr = k, n - k
-                pl, pr = csum[k - 1] / nl, (csum[-1] - csum[k - 1]) / nr
-                imp = 2 * pl * (1 - pl) * nl + 2 * pr * (1 - pr) * nr
-                if imp < base - 1e-12 and (best is None or imp < best[0] - 1e-12):
-                    best = (imp, f, (xs_s[k - 1] + xs_s[k]) / 2)
+            k = np.arange(min_leaf, n - min_leaf + 1)
+            if len(k) == 0:
+                continue
+            k = k[xs_s[k - 1] != xs_s[np.minimum(k, n - 1)]]
+            if len(k) == 0:
+                continue
+            nl, nr = k.astype(np.float64), (n - k).astype(np.float64)
+            pl, pr = csum[k - 1] / nl, (csum[-1] - csum[k - 1]) / nr
+            imp = 2 * pl * (1 - pl) * nl + 2 * pr * (1 - pr) * nr
+            j = int(np.argmin(imp))
+            if imp[j] < base - 1e-12 and (best is None or imp[j] < best[0] - 1e-12):
+                best = (float(imp[j]), f, (xs_s[k[j] - 1] + xs_s[k[j]]) / 2)
         if best is None:
             return node
         _, f, thr = best
@@ -291,6 +289,21 @@ def rule_test_verdict(trades, b=10_000, seed=SEED):
     ok = lo > 0 and len(x) >= 300 and bool((per_day > 0).all()) and liftc > 0
     return {"pass": bool(ok), "trades": int(len(x)), "mean": float(x.mean()), "lower99_5": lo,
             "per_day": {k: float(v) for k, v in per_day.items()}, "lift_over_control": liftc}
+
+
+def rule_fires(cands, X, path_idx, hold_slots):
+    """Rule firings on untouched days: candidate entries (opening buys; mint, slot, bt, key, day) whose as-of
+    features fall in the rule's leaf; at most one open rule position per mint (OPEN_QUESTIONS Q19)."""
+    hit = in_leaf(X, path_idx)
+    c = cands[hit].sort_values("key", kind="stable")
+    busy_until, keep = {}, []
+    span = REPLAY_DELAY_SLOTS + int(round(hold_slots))
+    for i, m, s in zip(c.index, c["mint"], c["slot"]):
+        if s <= busy_until.get(m, -1):
+            continue
+        busy_until[m] = s + span
+        keep.append(i)
+    return c.loc[keep, ["mint", "slot", "bt", "day"]].reset_index(drop=True)
 
 
 def control_entries(fires, candidates, seed=SEED):

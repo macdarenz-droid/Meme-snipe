@@ -250,9 +250,9 @@ class Features(unittest.TestCase):
 
 class Clusters(unittest.TestCase):
     def _tape(self, w, buys, creates=(), migs=()):
-        amm = S.AmmSim(1, 2, 10**14, 10**11).df() if False else S.AmmSim(1, 2, 10**14, 10**11)
-        amm.trade(S.S0 + 1, "buy", 10**9, owner=100)
-        return S.make_tape(amm.df(), S.S0, S.S0 + 200, w=w, buys=buys, creates=creates, migs=migs)
+        sim = S.AmmSim(1, 2, 10**14, 10**11)
+        sim.trade(S.S0 + 1, "buy", 10**9, owner=100)
+        return S.make_tape(sim.df(), S.S0, S.S0 + 200, w=w, buys=buys, creates=creates, migs=migs)
 
     def test_links_as_of_and_hubs(self):
         w = pd.DataFrame({"slot": [S.S0 + 10, S.S0 + 50] + [S.S0 + 20] * 51,
@@ -310,12 +310,8 @@ class HoldersTest(unittest.TestCase):
         # T: A sends a quarter of its original tokens to C at s+20 (cost moves proportionally)
         t = pd.DataFrame({"slot": [s + 20], "tx_idx": [99], "outer_ix": [0], "inner_ix": [-1], "mint": [S.MINT],
                           "pump_mint": [1], "kind": [0], "src": [100], "dst": [102], "amount": [b1 // 4]})
-        # D held 5e12 tokens from before the tape: its first trade shows owner_token_pre = 5e12
-        sim2_row = dict(amm.iloc[-1])
         tape = S.make_tape(amm, S.S0, S.S0 + 400, t=t,
                            migs=[(S.S0, "m", S.MINT, S.POOL, S.CURVE, C.SYSTEM_PROGRAM)])
-        tape.amm.loc[tape.amm.index[-1], "owner_pre"] = -1
-        extra = sim2_row.copy()
         book = PoolBook(tape.amm)
         el = pd.DataFrame({"pool": [S.POOL, S.POOL], "mint": [S.MINT, S.MINT], "d": [s + 25, s + 35],
                            "tau": [0, 1]}, index=[0, 1])
@@ -467,20 +463,25 @@ class Validation(unittest.TestCase):
         b2 = cluster_bootstrap(ret, pool, day, n_boot=500)
         self.assertTrue(np.array_equal(b1, b2))
 
-    def test_verdicts(self):
-        df = self._df(0.05)
-        df.loc[df.index[::2], "rv_15m"] = 0.1   # half the points are not in the rule -> the lift is defined
+    def _with_control(self, df):
+        df.loc[df.index[::2], "rv_15m"] = 0.1   # half the points are outside the rule and worse -> lift > 0
         df.loc[df.rv_15m < 0.5, "net_ret_60"] -= 0.1
+        return df
+
+    def test_verdicts(self):
+        df = self._with_control(self._df(0.05))
         r = judge(df, self._frozen(), C.VALIDATION_DAYS_STEP_B)
         self.assertEqual(r["verdict"], "pass")
         self.assertGreater(r["ci995"][0], 0)
         r = judge(self._df(0.05, n_pools=20), self._frozen(), C.VALIDATION_DAYS_STEP_B)
         self.assertEqual(r["verdict"], "unresolved")
-        df = self._df(0.05)
+        df = self._with_control(self._df(0.05))
         df.loc[df.day == C.VALIDATION_DAYS_STEP_B[1], "net_ret_60"] = -0.2
         r = judge(df, self._frozen(), C.VALIDATION_DAYS_STEP_B)
         self.assertEqual(r["verdict"], "not supported")
-        r = judge(self._df(0.05), self._frozen(), C.VALIDATION_DAYS_STEP_B + ("2026-09-06",))
+        self.assertLess(r["per_day_mean"][C.VALIDATION_DAYS_STEP_B[1]], 0)
+        df = self._with_control(self._df(0.05))
+        r = judge(df, self._frozen(), C.VALIDATION_DAYS_STEP_B + ("2026-09-06",))
         self.assertEqual(r["verdict"], "not supported")   # a validation day with no trade is not positive
 
 
