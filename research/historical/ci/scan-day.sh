@@ -107,25 +107,71 @@ backoff() {
   echo "$(date -u +%FT%TZ) archive back-off: waiting $(( (wait_s + 59) / 60 )) min, then resuming the same lane" | tee -a "$summary"
   sleep "$wait_s"
 }
-# Units restored from the cache that another scanner revision wrote are rescanned, so a
-# day never mixes revisions (finalize refuses that). SCANNER_REVISION is the revision
-# the workflow built into zeroed-scan; unset (local tests), nothing is dropped.
-if [ -n "${SCANNER_REVISION:-}" ]; then
-  for st in "$out"/units/*/*/stats.json; do
-    [ -f "$st" ] || continue
-    rev=$(sed -n 's/.*"scanner_revision": *"\([^"]*\)".*/\1/p' "$st" | head -1)
-    if [ "$rev" != "$SCANNER_REVISION" ]; then
-      echo "unit $(dirname "$st") was scanned by revision '$rev', not '$SCANNER_REVISION': rescanning it" | tee -a "$summary"
-      rm -rf "$(dirname "$st")"
-    fi
-  done
+# OF-3 (P2): the scanner revision is frozen for the batches. A unit restored from the
+# cache that another revision wrote is refused, never read again: exit 2 before any
+# request (a day never mixes revisions, and finalize refuses that too). The workflow
+# always sets SCANNER_REVISION (the revision built into zeroed-scan); it is required.
+[ -n "${SCANNER_REVISION:-}" ] || { echo "refused: SCANNER_REVISION is not set" | tee -a "$summary" >&2; exit 2; }
+for st in "$out"/units/*/*/stats.json; do
+  [ -f "$st" ] || continue
+  rev=$(sed -n 's/.*"scanner_revision": *"\([^"]*\)".*/\1/p' "$st" | head -1)
+  if [ "$rev" != "$SCANNER_REVISION" ]; then
+    echo "refused: unit $(dirname "$st") was scanned by revision '$rev', not '$SCANNER_REVISION'; a unit of another revision is never read again" | tee -a "$summary" >&2
+    exit 2
+  fi
+done
+# OF-3 ruling 2 (docs/reviews/OF3.md): every day is read at K2. A day whose retention is
+# K3 (cfg_ret) is trimmed to K3 by trim-day.sh after the whole day is read, before it is
+# stored; units already kept must be K2 (a trimmed day is never read again here).
+rec=$("$(dirname "$0")/archive-guard.sh" recorded "$out") || exit 2
+if [ "$rec" = K3 ]; then
+  # Ruling 9: a restored day already trimmed is read done when every unit is K3, its
+  # per-unit log is present and checks, and expect_units (if set) is met: no request,
+  # trim-day.sh then does nothing and check-day.sh runs. Anything else is refused.
+  units=$(find "$out/units" -mindepth 2 -maxdepth 2 -type d ! -name '*.tmp' 2>/dev/null | wc -l)
+  slog="$out/logs"; mkdir -p "$slog"
+  if [ -f "$out/units.log" ] && zeroed-scan unitlog -out "$out" -check "$out/units.log" > "$slog/unitlog.log" 2>&1 &&
+     { [ -z "${EXPECT_UNITS:-}" ] || [ "$units" -ge "$EXPECT_UNITS" ]; }; then
+    echo "day $day is already read and trimmed ($units K3 units, per-unit log checked); no request" | tee -a "$summary"
+    exit 0
+  fi
+  echo "refused: the units of $day record retention K3 but the day is not a complete trimmed day (per-unit log, check or expect_units); it is never read again here" | tee -a "$summary" >&2
+  exit 2
 fi
-# The retention passed to the scanner: the day's recorded one when units of it are
-# already kept (a unit read again never changes its day's retention), else the one
-# archive-limits.conf gives the day.
-ret=$("$(dirname "$0")/archive-guard.sh" recorded "$out") || exit 2
-ret=${ret:-$cfg_ret}
-echo "retention for $day: $ret" | tee -a "$summary"
+[ -z "$rec" ] || [ "$rec" = K2 ] ||
+  { echo "refused: the units of $day record retention $rec; a day is read at K2 and trimmed once" | tee -a "$summary" >&2; exit 2; }
+# Ruling 8 (and 11): every day but the first allow-listed one needs the day before's
+# verified list (a K3 day to be trimmed, a K2 day for its own list-D.txt); without it
+# nothing is read (before the disk guard, the back-off and any scanner call).
+if [ "$day" != "$(. "$(dirname "$0")/archive-guard.sh"; ag_first_day)" ]; then
+  "$(dirname "$0")/archive-guard.sh" prior "$day" "${ARCHIVE_PRIOR_LIST:-}" "${ARCHIVE_PRIOR_SUMS:-}" || exit 2
+fi
+ret=K2
+echo "retention for $day: read at K2, stored as $cfg_ret" | tee -a "$summary"
+# Ruling 3: the K2 day's peak must fit before any archive read (ARCHIVE_K2_PEAK_BYTES).
+"$(dirname "$0")/disk-guard.sh" "$out" "$ARCHIVE_K2_PEAK_BYTES" "a K2 day (units at the high estimate, then its trim and QA)" || exit 2
+# Ruling 14: while the day is read, between units, free space must stay above the
+# largest unit so far + ARCHIVE_TRIM_HEADROOM_BYTES; otherwise the scan is interrupted
+# (SIGINT: units are written whole) and the day fails with exit 1 (OF-3 ruling 20: not
+# resumable; the chain holds for a decision).
+# The scan runs in the foreground (SIGINT reaches it); the watch, in the background,
+# signals the scan's `timeout` the way the budget does.
+disk_watch() {
+  local parent=$1 pid big avail
+  while true; do
+    pid=$(pgrep -P "$parent" -x timeout | head -1)
+    if [ -n "$pid" ]; then
+      big=$(du -sb "$out"/units/*/* 2>/dev/null | grep -v '\.tmp$' | sort -n | tail -1 | cut -f1)
+      avail=$(df -B1 --output=avail "$out" | tail -1 | tr -d ' ')
+      if [ "$avail" -lt $(( ${big:-0} + ARCHIVE_TRIM_HEADROOM_BYTES )) ]; then
+        echo "$avail ${big:-0}" > "$out/disk-stop"
+        kill -INT "$pid" 2>/dev/null
+        return 0
+      fi
+    fi
+    read -rt "${ARCHIVE_DISK_POLL_S:-30}" _ <> <(:) || true
+  done
+}
 # A back-off persisted by an earlier run (restored from the cache) is slept out first.
 backoff 0
 while true; do
@@ -141,9 +187,18 @@ while true; do
   # and the 429 log (429.log) only. OF-3 ruling 24: $out/logs is saved with the progress,
   # sealed (cache-crypt.sh), so a failed day's reasons stay private and readable.
   slog="$out/logs"; mkdir -p "$slog"
+  rm -f "$out/disk-stop"
+  disk_watch "$$" &
+  wpid=$!
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
     -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop >> "$slog/run.log" 2>&1
   rc=$?
+  kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+  if [ -f "$out/disk-stop" ]; then
+    read -r avail big < "$out/disk-stop"; rm -f "$out/disk-stop"
+    echo "free disk fell to $avail bytes, below the largest unit ($big) + the trim headroom ($ARCHIVE_TRIM_HEADROOM_BYTES): the scan stopped between units; the day fails, not resumable (OF-3 rulings 14, 20)" | tee -a "$summary"
+    exit 1
+  fi
   if [ $(( deadline - $(date +%s) )) -le 0 ] && [ $rc -ne 0 ] && [ $rc -ne 75 ]; then
     echo "time budget reached while scanning (scanner exit $rc); progress kept for the next run" | tee -a "$summary"
     exit 75
