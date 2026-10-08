@@ -185,3 +185,49 @@ describe('Z03 round 3, ruling 14: the instructions trusted for a PumpSwap quote 
     assert.deepEqual([r.located.length, r.gaps], [0, ['non_sol_quote']]);
   });
 });
+
+describe('Z03 round 3 addendum, ruling 17: a curve whose quote is not native SOL yields no Lamports', () => {
+  it('a recorded curve with its quote_mint bytes patched is unknown and counted non_sol_quote', () => {
+    const counted: string[] = [];
+    const d = createDecoders(idls(), { tokenPrograms: TOKEN_PROGRAMS, wsolMint: WSOL, metrics: { counter: (name, l) => ({ inc: () => { if (name === 'decode_accounts_total') counted.push(`${l.kind}:${l.result}`); } }) } });
+    const curve = accountsOf('mainnet/pump/curves/curve_586AJyoo.json').find((a) => a.role === 'bonding_curve') as FixtureAccount;
+    const data = Buffer.from(bytes(curve));
+    const ok = d.decodeAccount(curve.owner, data);
+    assert.equal(ok.kind, 'pump_bonding_curve');
+    assert.equal(ok.kind === 'pump_bonding_curve' ? ok.quoteMint : 'x', null);
+    // BondingCurve body offset of quote_mint, read from the pinned layout field by field.
+    const pump = idls().find((i) => i.name === 'pump') as PinnedIdl;
+    const def = [...pump.accounts.values()].find((x) => x.name === 'BondingCurve');
+    assert.ok(def !== undefined);
+    const r = new Reader(data.subarray(8));
+    let at = -1;
+    for (const f of def.fields) { if (f.name === 'quote_mint') { at = 8 + r.offset(); break; } f.read(r); }
+    assert.ok(at > 0);
+    data.fill(9, at, at + 32);                                   // a quote mint other than Pubkey::default()
+    const patched = d.decodeAccount(curve.owner, data);
+    assert.equal(patched.kind, 'unknown');
+    assert.ok(!('virtualQuote' in patched) && !('realQuote' in patched));
+    assert.deepEqual(counted, ['pump_bonding_curve:ok', 'pump_bonding_curve:non_sol_quote']);
+  });
+});
+
+describe('Z03 round 3 addendum, ruling 18: a migration event with a non-SOL quote_mint is refused', () => {
+  it('CompletePumpAmmMigrationEvent with its quote_mint bytes patched gives no pump_migration and a non_sol_quote gap', () => {
+    const t = raw(fixture<TxRecord>('mainnet/tx/migration/tx_32tjvqFP.json'));
+    assert.ok(run(t).located.some((l) => l.event.kind === 'pump_migration'));
+    const pump = idls().find((i) => i.name === 'pump') as PinnedIdl;
+    const [disc, def] = [...pump.events.entries()].find(([, x]) => x.name === 'CompletePumpAmmMigrationEvent') as [string, PinnedIdl['events'] extends Map<string, infer V> ? V : never];
+    const ix = t.meta.innerInstructions.flatMap((g) => g.instructions)
+      .find((x) => Buffer.from(x.dataB64, 'base64').subarray(0, 16).toString('hex') === `${PREFIX}${disc}`) as InnerIx;
+    const data = Buffer.from(ix.dataB64, 'base64');
+    const r = new Reader(data.subarray(16));
+    let at = -1;
+    for (const f of def.fields) { if (f.name === 'quote_mint') { at = 16 + r.offset(); break; } f.read(r); }
+    assert.ok(at > 0);
+    data.fill(9, at, at + 32);
+    ix.dataB64 = data.toString('base64');
+    const out = run(t);
+    assert.ok(!out.located.some((l) => l.event.kind === 'pump_migration'));
+    assert.ok(out.gaps.includes('non_sol_quote'));
+  });
+});

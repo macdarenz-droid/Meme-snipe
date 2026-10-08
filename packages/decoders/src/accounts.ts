@@ -9,7 +9,7 @@ import type { IdlTypeDef, PinnedIdl } from './idl.ts';
 /** ARCH `DecodedAccount` with the C-03 variants; `pump_fee_config.raw` holds the stable and exotic tiers (logic 4). */
 export type DecodedAccount =
   | { kind: 'pump_bonding_curve'; virtualQuote: Lamports; virtualToken: BaseUnits; realQuote: Lamports; realToken: BaseUnits;
-      complete: boolean; quoteMint: Pubkey | null /* null: native SOL (Z03 m6) */; creator: Pubkey }
+      complete: boolean; quoteMint: null /* native SOL: a curve with another quote is unknown (Z03 m6, ruling 17) */; creator: Pubkey }
   | { kind: 'pumpswap_pool'; baseMint: Pubkey; quoteMint: Pubkey; creator: Pubkey; virtualQuoteReserves: bigint /* i128 */;
       baseVault: Pubkey; quoteVault: Pubkey; lpMint: Pubkey; lpSupply: bigint }
   | { kind: 'pump_fee_config'; tiers: Array<{ thresholdLamports: Lamports; lpBps: Bps; protocolBps: Bps; creatorBps: Bps }>;
@@ -111,14 +111,19 @@ const fees = (f: unknown): { lpBps: Bps; protocolBps: Bps; creatorBps: Bps } => 
 /** `Pubkey::default()`; as a curve's `quote_mint` it means native SOL [DA-V01] and becomes null (Z03 m6). */
 const DEFAULT_PUBKEY = base58.encode(new Uint8Array(32));
 
+/** Thrown for a curve whose quote is not native SOL (Z03 ruling 17); the account is `unknown`, counted `non_sol_quote`. */
+class NonSolQuote extends Error {}
+
 /** Maps a decoded Anchor struct to its variant; null for a type that has none (decoded as `unknown`). */
 function variant(def: IdlTypeDef, idl: PinnedIdl['name'], v: Record<string, unknown>): DecodedAccount | null {
   const key = `${idl}.${def.name}`;
   if (key === 'pump.BondingCurve') {
+    // Z03 ruling 17 (ruling 3 for accounts): the reserves are Lamports only on a SOL curve.
+    if (v.quote_mint !== DEFAULT_PUBKEY) throw new NonSolQuote();
     return {
       kind: 'pump_bonding_curve', virtualQuote: v.virtual_quote_reserves as bigint, virtualToken: v.virtual_token_reserves as bigint,
       realQuote: v.real_quote_reserves as bigint, realToken: v.real_token_reserves as bigint, complete: v.complete as boolean,
-      quoteMint: v.quote_mint === DEFAULT_PUBKEY ? null : v.quote_mint as Pubkey, creator: v.creator as Pubkey,
+      quoteMint: null, creator: v.creator as Pubkey,
     };
   }
   if (key === 'pump.Global') return { kind: 'pump_global', raw: v };
@@ -158,7 +163,7 @@ function fieldEnds(def: IdlTypeDef): readonly number[] {
 }
 
 /** Decodes an Anchor account of a pinned program (logic 1-4, 7). Anything that does not decode is `unknown`. */
-function decodeAnchor(owner: Pubkey, data: Uint8Array, idl: PinnedIdl): { account: DecodedAccount; flags: DecodeFlags } {
+function decodeAnchor(owner: Pubkey, data: Uint8Array, idl: PinnedIdl): { account: DecodedAccount; flags: DecodeFlags; nonSolQuote?: true } {
   const disc = data.length >= 8 ? toHex(data.subarray(0, 8)) : '';
   const unknown = { account: { kind: 'unknown', owner, discriminatorHex: disc } as DecodedAccount, flags: { ...NO_FLAGS } };
   const def = idl.accounts.get(disc);
@@ -187,8 +192,8 @@ function decodeAnchor(owner: Pubkey, data: Uint8Array, idl: PinnedIdl): { accoun
     if (account === null) return unknown;
     const layoutExtended = data.subarray(Math.min(8 + r.offset(), data.length)).some((b) => b !== 0);
     return { account, flags: { layoutExtended, shortLegacy } };
-  } catch {
-    return unknown;                                   // E_SHORT, E_BAD_VALUE: fail closed
+  } catch (e) {
+    return e instanceof NonSolQuote ? { ...unknown, nonSolQuote: true } : unknown;   // E_SHORT, E_BAD_VALUE: fail closed
   }
 }
 
@@ -198,13 +203,18 @@ export interface AccountDecoder {
 }
 
 export function createAccountDecoder(idls: readonly PinnedIdl[], tokenPrograms: TokenPrograms | undefined,
-  count?: (kind: DecodedAccount['kind'], result: 'ok' | 'unknown') => void): AccountDecoder {
+  count?: (kind: DecodedAccount['kind'], result: 'ok' | 'unknown' | 'non_sol_quote') => void): AccountDecoder {
   const byProgram = new Map(idls.map((i) => [i.program, i]));
   const withFlags = (owner: Pubkey, data: Uint8Array): { account: DecodedAccount; flags: DecodeFlags } => {
     const idl = byProgram.get(owner);
-    let out: { account: DecodedAccount; flags: DecodeFlags };
+    let out: { account: DecodedAccount; flags: DecodeFlags; nonSolQuote?: true };
     if (idl !== undefined) {
       out = decodeAnchor(owner, data, idl);
+      // Z03 ruling 17: counted as decode_accounts_total{kind="pump_bonding_curve",result="non_sol_quote"}.
+      if (out.nonSolQuote === true) {
+        count?.('pump_bonding_curve', 'non_sol_quote');
+        return { account: out.account, flags: out.flags };
+      }
     } else if (tokenPrograms !== undefined && (owner === tokenPrograms.splToken || owner === tokenPrograms.token2022)) {
       let account: DecodedAccount;
       try {

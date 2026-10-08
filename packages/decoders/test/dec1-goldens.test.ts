@@ -35,7 +35,7 @@ describe('DEC-1 mainnet goldens (Z03)', () => {
     const sha = (n: string): string => createHash('sha256').update(raw(n)).digest('hex');
     assert.equal(sha('accounts.json'), '9bd58ceb4fc5c5cd28cdef4b60f88b9f0320008b2c62a3ef24bef7504c7c1dab');
     assert.equal(sha('transactions.json'), 'bd6e07a18d97d38654963210d91f73be982995efb6c837c5d0b7cfed5ec7ef15');
-    assert.equal(sha('goldens.json'), '90adff0c299198d86c53435c409749f302370ecdf955218841be809eacb5be97');
+    assert.equal(sha('goldens.json'), 'c72e3b0abc0c04a317e0fb071154d494439e9c5d6bc5abc0c5a838e35c41ca89');
     assert.equal(GOLDENS.accounts.length, 29);
     assert.equal(GOLDENS.transactions.length, 22);
   });
