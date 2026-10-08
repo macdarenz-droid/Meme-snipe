@@ -440,7 +440,7 @@ class Search(unittest.TestCase):
         self.assertEqual(res["advanced"][0]["hold_min"], 60)
         q = res["table"][res["table"].qualifies]
         self.assertTrue((q[[f"n_f{j}" for j in range(4)]] >= 30).all().all())
-        self.assertTrue((q.score >= res["median_rt_cost"]).all())
+        self.assertTrue((q[[f"mean_f{j}" for j in range(4)]] > 0).all().all())
         res = run_search(synthetic_search_frame(planted=False))
         self.assertEqual(res["outcome"], "nothing found")
 
@@ -489,6 +489,207 @@ class Validation(unittest.TestCase):
         df = self._with_control(self._df(0.05))
         r = judge(df, self._frozen(), C.VALIDATION_DAYS_STEP_B + ("2026-09-06",))
         self.assertEqual(r["verdict"], "not supported")   # a validation day with no trade is not positive
+
+
+class Amendment1(unittest.TestCase):
+    def test_rent_item_11(self):
+        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM), 2_074_080)
+        self.assertEqual(rent_for(C.SPL_TOKEN_PROGRAM), 2_039_280)
+        self.assertEqual(rent_for(None), 2_074_080)
+        f = fixed_for(C.TOKEN_2022_PROGRAM)
+        # RENT-1's refund model applied to 2,074,080: (1 - 0.9 * 0.95) of it is lost
+        self.assertAlmostEqual(f - FIXED_EDGE_COSTS, (1 - 0.855) * (2_074_080 - 1_513_840), places=6)
+
+    def test_binary_and_degenerate_item_23(self):
+        x = np.array([1.0, 0.0, np.nan, 1.0])
+        self.assertEqual(side_mask(x, (1.0, 1.0), "top", binary=True).tolist(), [True, False, False, True])
+        self.assertEqual(side_mask(x, (1.0, 1.0), "bottom", binary=True).tolist(), [False, True, False, False])
+        y = np.array([2.0, 2.0, 3.0])
+        self.assertFalse(side_mask(y, (2.0, 2.0), "top").any())      # q20 == q80: no rule
+        self.assertFalse(side_mask(y, (2.0, 2.0), "bottom").any())
+        self.assertIn("boost_finished", C.BINARY_FEATURES)
+        # a binary feature that drives returns is found through value 1
+        df = synthetic_search_frame(planted=False)
+        rng = np.random.default_rng(5)
+        df["boost_finished"] = (rng.random(len(df)) < 0.3).astype(float)
+        df["cf_collections_1h"] = 0.0                              # degenerate everywhere -> never in a rule
+        df.loc[df.boost_finished == 1, "net_ret_15"] += 0.2
+        res = run_search(df)
+        self.assertIn("boost_finished:top", res["advanced"][0]["rule"])
+        t = res["table"]
+        self.assertTrue((t[t.rule.str.contains("cf_collections_1h")].n_total == 0).all())
+
+    def test_cost_screen_item_24(self):
+        # fold means about +0.01: above 0 but below the median round-trip cost (0.03) -> qualifies now
+        df = synthetic_search_frame(planted=False)
+        m = df.rv_15m > np.quantile(df.rv_15m, 0.8)
+        df.loc[m, "net_ret_60"] += 0.06
+        res = run_search(df)
+        r = res["table"].set_index(["rule", "hold_min"]).loc[("rv_15m:top", 60)]
+        self.assertLess(r.score, res["median_rt_cost"])
+        self.assertTrue(r.qualifies)
+        self.assertEqual(res["advanced"][0]["rule"], "rv_15m:top")
+
+
+def _write_unit(root, day, lo, hi, amm_rows, boost_sigs=(), extra_e=()):
+    import zstandard  # noqa: F401  (pandas zstd support)
+    from d1.load import AMM_COLS, CURVE_COLS, T_COLS
+    u = os.path.join(root, day, f"{lo}-{hi}", "research")
+    os.makedirs(u)
+    slots = np.arange(lo, hi + 1)
+    pd.DataFrame({"slot": slots, "block_time": S.bt_of(slots)}).to_csv(os.path.join(u, "B.csv.zst"), index=False, compression="zstd")
+    a = pd.DataFrame(amm_rows)
+    for c in AMM_COLS + ["signature", "protocol"]:
+        if c not in a.columns:
+            a[c] = ""
+    a.to_csv(os.path.join(u, "S_amm.csv.zst"), index=False, compression="zstd")
+    pd.DataFrame(columns=CURVE_COLS).to_csv(os.path.join(u, "S_curve.csv.zst"), index=False, compression="zstd")
+    pd.DataFrame(columns=T_COLS).to_csv(os.path.join(u, "T.csv.zst"), index=False, compression="zstd")
+    ev = [{"slot": lo, "event": "BoostBuyAndBurnEvent", "signature": sg, "fields": {"pool": "P", "mint": "M", "boost_vault_remaining": "0"}}
+          for sg in boost_sigs] + list(extra_e)
+    pd.DataFrame(ev or [{"slot": lo, "event": "Other", "signature": "x", "fields": {}}]).to_json(
+        os.path.join(u, "E.jsonl.zst"), orient="records", lines=True, compression="zstd")
+    return os.path.dirname(u)
+
+
+class BoostItem3(unittest.TestCase):
+    def test_load_flags_boost_by_signature_and_protocol(self):
+        import tempfile
+        from d1.load import load
+        root = tempfile.mkdtemp()
+        base = dict(block_time=int(S.bt_of(S.S0)), tx_idx=1, ev_idx=0, outer_ix=0, inner_ix="", pool="P", base_mint="M",
+                    quote_mint=C.WSOL, side="buy", base_amount=10, quote_amount=10**9, quote_amount_lp_adjusted=10**9,
+                    user_quote_amount=10**9, pool_base_token_reserves=10**12, pool_quote_token_reserves=10**11,
+                    virtual_quote_reserves=0, lp_fee_basis_points=20, protocol_fee_basis_points=5,
+                    coin_creator_fee_basis_points=95, coin_creator="CC", base_supply=10**15, owner_token_pre=0,
+                    owner_token_post=10, canonical=1, top_program=C.PUMPSWAP_PROGRAM)
+        rows = [dict(base, slot=S.S0, signature="sigBOOST", protocol=0, user_token_owner=""),
+                dict(base, slot=S.S0 + 1, signature="sigPROT", protocol=1, user_token_owner="X"),
+                dict(base, slot=S.S0 + 2, signature="sigUSER", protocol=0, user_token_owner="Y")]
+        mig = {"slot": S.S0, "event": "CompletePumpAmmMigrationEvent", "signature": "m",
+               "fields": {"pool": "P", "mint": "M", "bonding_curve": "BC", "quote_mint": C.SYSTEM_PROGRAM}}
+        ud = _write_unit(root, S.DAY, S.S0, S.S0 + 10, rows, boost_sigs=["sigBOOST"], extra_e=[mig])
+        t = load([ud], [S.DAY])
+        self.assertEqual(t.amm.boost.tolist(), [1, 0, 0])
+        self.assertEqual(t.amm.protocol.tolist(), [0, 1, 0])
+        self.assertEqual(t.amm.signature.tolist(), ["sigBOOST", "sigPROT", "sigUSER"])
+        self.assertEqual(len(t.buys), 1)                          # only the user's buy feeds the fast class
+        book = PoolBook(t.amm)
+        self.assertEqual(book.rows[t.codec.code("P")]["boost"].tolist(), [1, 0, 0])
+
+    def test_features_exclude_boost_and_protocol(self):
+        sim, amm, migs, mig_slot, lo, hi = S.standard()
+        tape0 = S.make_tape(amm.copy(), lo, hi, migs=migs)
+        book0, clock = PoolBook(tape0.amm), Clock(tape0)
+        pts = decision_points(tape0, book0, migrations(tape0, book0), clock)
+        p = pts[pts.eligible].iloc[2]
+        win = (amm.slot <= p.d) & (amm.block_time >= p.tau - 900) & (amm.side == 1)
+        k = amm.index[win][:2]
+        amm2 = amm.copy()
+        amm2.loc[k[0], "boost"] = 1
+        amm2.loc[k[1], "protocol"] = 1
+        t2 = S.make_tape(amm2, lo, hi, migs=migs)
+        b2 = PoolBook(t2.amm)
+        f0 = compute_features(tape0, book0, pts, clock).loc[p.name]
+        f2 = compute_features(t2, b2, pts, Clock(t2)).loc[p.name]
+        self.assertEqual(f2.buys_15m, f0.buys_15m - 2)
+        self.assertAlmostEqual(f2.net_sol_15m, f0.net_sol_15m - amm.loc[k, "quote_amount"].sum() / 1e9)
+        self.assertEqual(f2.ret_15m, f0.ret_15m)                  # prices still use every row
+
+
+class Guards(unittest.TestCase):
+    """Item 1, 2, 4: search and validate refuse dev runs, partial days, overlapping days and a plan sha mismatch."""
+
+    def setUp(self):
+        import tempfile
+        import run_d1
+        self.R = run_d1
+        self.dir = tempfile.mkdtemp()
+        self.plan = os.path.join(REPO, "research", "shared-tape", "stepa-plan.txt")
+
+    def _run(self, days, dev=False, complete=True, hashes=None, sha_ok=True, code=None, units2=None):
+        run = tempfile_dir = os.path.join(self.dir, f"r{len(os.listdir(self.dir))}")
+        os.makedirs(run)
+        h = hashes if hashes is not None else {"a": "1"}
+        code = code or self.R.code_hash()
+        m1 = {"days": list(days), "dev": dev, "code_sha256": code, "input_sha256": h, "unit_dirs": ["u1"],
+              "stepa_plan": {"plan_sha_ok": sha_ok, "complete": complete}}
+        m2 = {"days": list(days), "dev": dev, "code_sha256": code, "input_sha256": h, "unit_dirs": units2 or ["u1"]}
+        for n, m in (("stage1", m1), ("stage2", m2)):
+            with open(os.path.join(run, f"manifest_{n}.json"), "w") as fh:
+                json.dump(m, fh)
+        return tempfile_dir
+
+    def refuses(self, fn, *a, **k):
+        with self.assertRaises(SystemExit) as cm:
+            fn(*a, **k)
+        self.assertIn("refusing", str(cm.exception.code))
+
+    def test_search_guard(self):
+        ok = self._run(C.DISCOVERY_DAYS)
+        self.R.search_guard(ok, self.plan)                                   # a good run passes
+        self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS, dev=True), self.plan)
+        self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS[:1]), self.plan)          # partial days
+        self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS, complete=False), self.plan)
+        self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS, hashes="skipped"), self.plan)
+        self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS, sha_ok=False), self.plan)
+        self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS, units2=["u2"]), self.plan)
+        self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS, code="0" * 64), self.plan)
+        bad = os.path.join(self.dir, "plan.txt")
+        with open(self.plan) as src, open(bad, "w") as dst:
+            dst.write(src.read() + "\n")
+        self.refuses(self.R.search_guard, ok, bad)                           # plan sha mismatch
+        self.assertFalse(hasattr(self.R, "allow_partial_discovery"))
+
+    def test_validate_guard(self):
+        val = C.VALIDATION_DAYS_STEP_B
+        frozen = {"code_sha256": self.R.code_hash(), "discovery_days": list(C.DISCOVERY_DAYS)}
+        self.R.validate_guard(self._run(val), frozen, True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val), frozen, False, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val, dev=True), frozen, True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val + (C.DISCOVERY_DAYS[0],)), frozen, True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val), dict(frozen, code_sha256="0" * 64), True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val, hashes="skipped"), frozen, True, self.plan)
+        bad = os.path.join(self.dir, "plan2.txt")
+        with open(bad, "w") as fh:
+            fh.write("2026-09-11 1 2 3\n")
+        self.refuses(self.R.validate_guard, self._run(val), frozen, True, bad)
+
+    def test_stage1_no_hash_and_stage2_inputs(self):
+        self.refuses(self.R.main, ["stage1", "--units", "x", "--days", S.DAY, "--out", self.dir, "--no-hash"])
+        bad = os.path.join(self.dir, "plan3.txt")
+        with open(bad, "w") as fh:
+            fh.write("x\n")
+        self.refuses(self.R.main, ["stage1", "--units", "x", "--days", S.DAY, "--out", self.dir, "--plan", bad])
+        # stage 2 refuses when the unit files changed since stage 1
+        root = os.path.join(self.dir, "units")
+        ud = _write_unit(root, S.DAY, S.S0, S.S0 + 5, [])
+        run = os.path.join(self.dir, "s2")
+        os.makedirs(run)
+        with open(os.path.join(run, "manifest_stage1.json"), "w") as fh:
+            json.dump({"days": [S.DAY], "dev": False, "unit_dirs": [ud], "input_sha256": {"wrong": "0"}}, fh)
+        self.refuses(self.R.main, ["stage2", "--out", run])
+        with open(os.path.join(run, "manifest_stage1.json"), "w") as fh:
+            json.dump({"days": [S.DAY], "dev": False, "unit_dirs": [ud], "input_sha256": "skipped"}, fh)
+        self.refuses(self.R.main, ["stage2", "--out", run])
+
+    def test_plan_check(self):
+        from d1.load import Unit
+        from d1.stepa import plan_check, read_plan
+        rows = read_plan(self.plan)
+        units = [Unit(f"/x/{d}/{a}-{b}", d, a, b) for d, a, b in rows]
+        r = plan_check(units, C.DISCOVERY_DAYS, self.plan)
+        self.assertTrue(r["plan_sha_ok"])
+        self.assertTrue(r["complete"])
+        self.assertFalse(plan_check(units[1:], C.DISCOVERY_DAYS, self.plan)["complete"])        # one unit missing
+        mid = sorted(units, key=lambda u: u.from_slot)
+        holed = [u for u in mid if u is not mid[10]]
+        r = plan_check(holed, C.DISCOVERY_DAYS, self.plan)
+        self.assertFalse(r["complete"])
+        self.assertFalse(r["gap_free"])
+        extra = units + [Unit("/x/e", C.DISCOVERY_DAYS[0], 1, 2)]
+        self.assertFalse(plan_check(extra, C.DISCOVERY_DAYS, self.plan)["complete"])          # a unit not in the plan
+        self.assertFalse(plan_check(units, C.DISCOVERY_DAYS, self.plan, expected="0" * 64)["complete"])
 
 
 if __name__ == "__main__":

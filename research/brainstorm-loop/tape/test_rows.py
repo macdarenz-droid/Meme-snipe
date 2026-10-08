@@ -251,7 +251,8 @@ class SeatDrift(unittest.TestCase):
         self.assertEqual((d.at["PA", "N_m"], d.at["PB", "N_m"], d.at["PC", "N_m"]), (1, 1, 0))
         self.assertAlmostEqual(d.at["PA", "w1_share"], 10e9 / 100e9)
         self.assertAlmostEqual(d.at["PA", "w2_share"], 1e9 / 100e9)
-        self.assertEqual((summ["busy"], summ["lone"]), (2, 1))
+        self.assertEqual((summ["busy"], summ["lone"]), (1, 1))             # Q9: terciles of N_m per day
+        self.assertEqual((d.at["PC", "tercile"], d.at["PA", "tercile"], d.at["PB", "tercile"]), (0, 1, 2))
         tape, s, adj = load(self._unit(link=True))
         df, _ = R.seat_drift(tape, s, adj)
         self.assertEqual(df.set_index("pool").at["PA", "N_m"], 0)   # same creator cluster: not counted

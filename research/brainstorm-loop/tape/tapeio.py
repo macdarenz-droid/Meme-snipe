@@ -96,12 +96,14 @@ def _num(s):
 
 CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "signature", "signer", "user_token_owner", "mint", "is_buy",
               "sol_amount", "token_amount", "quote_mint", "protocol", "mayhem_mode", "creator",
-              "owner_token_pre", "owner_token_post", "signer_sol_pre", "signer_sol_post"]
+              "owner_token_pre", "owner_token_post", "signer_sol_pre", "signer_sol_post",
+              "fee", "creator_fee", "outer_ix", "inner_ix"]
 AMM_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "signature", "signer", "user_token_owner", "base_mint", "pool",
             "side", "quote_amount", "base_amount", "quote_mint", "protocol", "canonical", "coin_creator",
             "pool_base_token_reserves", "pool_quote_token_reserves", "chain_pool_base", "chain_pool_quote",
             "virtual_quote_reserves", "base_supply", "owner_token_pre", "owner_token_post",
-            "signer_sol_pre", "signer_sol_post"]
+            "signer_sol_pre", "signer_sol_post",
+            "quote_amount_lp_adjusted", "protocol_fee", "coin_creator_fee", "user_quote_amount", "outer_ix", "inner_ix"]
 
 
 def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str) -> pd.DataFrame:
@@ -117,7 +119,10 @@ def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str
         "owner_token_pre": curve["owner_token_pre"], "owner_token_post": curve["owner_token_post"],
         "signer_sol_pre": curve["signer_sol_pre"], "signer_sol_post": curve["signer_sol_post"],
         "pool_base_pre": pd.NA, "pool_quote_pre": pd.NA, "pool_base_post": pd.NA, "pool_quote_post": pd.NA,
-        "virtual_quote": pd.NA, "supply": pd.NA,
+        "virtual_quote": pd.NA, "supply": pd.NA, "outer_ix": curve["outer_ix"], "inner_ix": curve["inner_ix"],
+        # SOL paid with fees (buy) and SOL received after fees (sell), as H1-CGO's ledger counts them
+        "cost": _num(curve["sol_amount"]) + _num(curve["fee"]).fillna(0) + _num(curve["creator_fee"]).fillna(0),
+        "proceeds": _num(curve["sol_amount"]) - _num(curve["fee"]).fillna(0) - _num(curve["creator_fee"]).fillna(0),
     })
     a = pd.DataFrame({
         "venue": "amm", "slot": amm["slot"], "block_time": amm["block_time"], "tx_idx": amm["tx_idx"],
@@ -131,6 +136,10 @@ def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str
         "pool_base_pre": amm["pool_base_token_reserves"], "pool_quote_pre": amm["pool_quote_token_reserves"],
         "pool_base_post": amm["chain_pool_base"], "pool_quote_post": amm["chain_pool_quote"],
         "virtual_quote": amm["virtual_quote_reserves"], "supply": amm["base_supply"],
+        "outer_ix": amm["outer_ix"], "inner_ix": amm["inner_ix"],
+        "cost": _num(amm["quote_amount_lp_adjusted"]).fillna(_num(amm["quote_amount"]))
+        + _num(amm["protocol_fee"]).fillna(0) + _num(amm["coin_creator_fee"]).fillna(0),
+        "proceeds": _num(amm["user_quote_amount"]).fillna(_num(amm["quote_amount"])),
     })
     s = pd.concat([c, a], ignore_index=True)
     for col in ("slot", "block_time", "tx_idx", "ev_idx"):
@@ -138,7 +147,10 @@ def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str
     for col in ("quote", "base", "owner_token_pre", "owner_token_post", "signer_sol_pre", "signer_sol_post",
                 "pool_base_pre", "pool_quote_pre", "pool_base_post", "pool_quote_post", "virtual_quote", "supply"):
         s[col] = _num(s[col]).astype("float64")
+    for col in ("outer_ix", "inner_ix"):
+        s[col] = _num(s[col]).fillna(-1).astype(np.int64)
     s["sol_quoted"] = s["quote_mint"].isin(SOL_QUOTES)
+    s.loc[~s["sol_quoted"], ["cost", "proceeds"]] = np.nan
     s["sol"] = np.where(s["sol_quoted"], s["quote"], np.nan)
     s["canonical"] = _num(s["canonical"]).fillna(0).astype(int) == 1
     s["mayhem"] = _num(s["mayhem"])
@@ -163,8 +175,9 @@ class Tape:
             ev += e
             boost = {j["signature"] for j in e if j["event"] == "BoostBuyAndBurnEvent"}
             swaps.append(swaps_from(read_csv(p, "S_curve", CURVE_COLS), read_csv(p, "S_amm", AMM_COLS), boost, day))
-            tt = read_csv(p, "T", ["slot", "mint", "kind", "from_owner", "to_owner"])
-            t.append(tt[tt["kind"] == "transfer"])
+            tt = read_csv(p, "T", ["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner",
+                                   "amount"])
+            t.append(tt)
             ww = read_csv(p, "W", ["slot", "from", "to"]).rename(columns={"from": "from_owner", "to": "to_owner"})
             w.append(ww)
             cff = read_csv(p, "CF", ["slot", "creator", "amount", "event"])
@@ -176,7 +189,12 @@ class Tape:
         self.swaps = pd.concat(swaps, ignore_index=True).sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort")
         self.swaps = self.swaps.reset_index(drop=True)
         self.swaps["order"] = np.arange(len(self.swaps))
-        links = pd.concat([pd.concat(t, ignore_index=True)[["slot", "from_owner", "to_owner"]],
+        tall = pd.concat(t, ignore_index=True)
+        for col in ("slot", "tx_idx", "outer_ix", "inner_ix", "amount"):
+            tall[col] = _num(tall[col]).fillna(-1).astype(np.int64)
+        self.moves = tall          # T rows (transfer, mint, burn) for the cost ledger
+        tall = tall[tall["kind"] == "transfer"]
+        links = pd.concat([tall[["slot", "from_owner", "to_owner"]],
                            pd.concat(w, ignore_index=True)], ignore_index=True)
         links = links.dropna(subset=["from_owner", "to_owner"])
         links = links[links["from_owner"] != links["to_owner"]]
