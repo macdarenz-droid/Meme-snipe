@@ -238,6 +238,34 @@ describe('UI-T07 Dialog (C15)', () => {
     assert.equal(btn(plain.container, 'dialog__confirm').getAttribute('aria-disabled'), null);
   });
 
+  it('Z05 round 3 (ruling 15): the secondary action gets the confirm gate unless it is marked risk-reducing', () => {
+    const onSecondary = vi.fn();
+    const frame = (connection: ConnectionView, system: SystemStateView | null, riskReducing?: boolean, halt?: boolean): HTMLButtonElement => {
+      const r = mount(h(Dialog, {
+        open: true, inline: true, connection, system, title: 'Halt trading', description: 'D', ...(halt === true ? { halt: true } : {}),
+        secondary: { label: 'Halt and flatten all…', onClick: onSecondary, ...(riskReducing === undefined ? {} : { riskReducing }) },
+        confirm: { label: 'Halt now', onClick: () => undefined }, onClose: () => undefined,
+      }));
+      return btn(r.container, 'dialog__secondary');
+    };
+    for (const [connection, system] of [['reconnecting', PAPER], ['unknown', LIVE], ['disconnected', LIVE], ['connected', null]] as const) {
+      for (const halt of [false, true]) {
+        const b = frame(connection, system, undefined, halt);
+        assert.equal(b.getAttribute('aria-disabled'), 'true', `${connection} ${system?.mode ?? 'unknown'} halt=${halt}`);
+        click(b);
+      }
+      assert.equal(frame(connection, system, true, true).getAttribute('aria-disabled'), null, 'a risk-reducing secondary stays enabled');
+    }
+    assert.equal(onSecondary.mock.calls.length, 0);
+    assert.equal(frame('connected', PAPER).getAttribute('aria-disabled'), null, 'connected with a known mode: enabled');
+    function Stuck(props: { mode: Mode }): ReactElement {
+      return h(Dialog, { open: true, connection: 'connected', system: sys(props.mode), title: 'T', description: 'D', secondary: { label: 'More', onClick: onSecondary }, onClose: () => undefined });
+    }
+    const r = mount(h(Stuck, { mode: 'paper' }));
+    r.rerender(h(Stuck, { mode: 'live' }));
+    assert.equal(btn(dialogEl(r), 'dialog__secondary').getAttribute('aria-disabled'), 'true', 'in the render where the mode changed');
+  });
+
   it('Z05 round 2 (red team M3): a change to or from an unknown mode is a mode change', () => {
     const onClose = vi.fn();
     function M(props: { system: SystemStateView | null }): ReactElement {
@@ -680,6 +708,34 @@ describe('UI-T07 HoldButton (C03)', () => {
     fire(b, pointer('pointerout', { relatedTarget: document.body }));
     tick(HOLD_TO_CONFIRM_MS);
     assert.equal(onConfirm.mock.calls.length, 1, 'leaving the button is not a hold');
+  });
+
+  it('Z05 round 3 (ruling 13): a press cancelled by a move keeps its click: released on the button, it opens no dialog', () => {
+    const { b, onConfirm, onOpenDialog } = setup();
+    fire(b, pointer('pointerdown', { clientX: 100, clientY: 100 }));
+    tick(300);
+    fire(b, pointer('pointermove', { clientX: 100, clientY: 115 }));
+    assert.equal(b.dataset['state'], 'released-early');
+    fire(b, pointer('pointerup', { clientX: 100, clientY: 115 }));
+    fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    assert.equal(onOpenDialog.mock.calls.length, 0, 'the click of a scrolled press opens nothing');
+    tick(HOLD_TO_CONFIRM_MS);
+    assert.equal(onConfirm.mock.calls.length, 0);
+    click(b);
+    assert.equal(onOpenDialog.mock.calls.length, 1, 'the next activation still opens the dialog');
+    // The same for leaving the button, and the claim still expires 1 s after the pointer up.
+    tick(HOLD_REWIND_MS);
+    fire(b, pointer('pointerdown'));
+    fire(b, pointer('pointerout', { relatedTarget: document.body }));
+    fire(b, pointer('pointerup'));
+    fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    assert.equal(onOpenDialog.mock.calls.length, 1);
+    fire(b, pointer('pointerdown', { clientX: 0, clientY: 0 }));
+    fire(b, pointer('pointermove', { clientX: 0, clientY: 50 }));
+    fire(b, pointer('pointerup'));
+    tick(CLICK_AFTER_UP_MS);
+    click(b);
+    assert.equal(onOpenDialog.mock.calls.length, 2, 'no click came: the claim expired');
   });
 
   it('pressing twice without releasing starts one hold only', () => {

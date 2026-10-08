@@ -93,6 +93,25 @@ describe('dashboard copy guard', () => {
     for (const [code, label] of bypasses) assert.ok(scan(code).some((hit) => hit.startsWith(`${label}:`)), `${code} → ${scan(code).join(' | ')}`);
   });
 
+  it('Z05 round 3 (ruling 14): default-ignorable code points, small capitals and Cherokee look-alikes are caught', () => {
+    const seeded: ReadonlyArray<[string, string, string]> = [
+      ['combining grapheme joiner', "const t = 'Sm\u034Fart entries';", 'smart'],
+      ['Hangul filler', "const t = 'Unl\u3164ock trades';", 'unlock'],
+      ['variation selector', "const t = 'rob\uFE0Fust';", 'robust'],
+      ['tag character', "const t = 'Smar\u{E0074}t';", 'smart'],
+      ['Latin small capitals', "const t = '\u1D00\u026A picks';", 'AI (any case)'],
+      ['small capitals in a word', "const t = '\u0280\u1D0F\u0299\u1D1C\uA731\u1D1B';", 'robust'],
+      ['Cherokee capitals', "const t = '\u13AA\u13A5 picks';", 'AI (any case)'],
+      ['Cherokee in a word', "const t = '\u13DAmart';", 'smart'],
+    ];
+    for (const [form, code, label] of seeded) {
+      assert.ok(scan(code).some((hit) => hit.startsWith(`${label}:`)), `${form}: ${code} → ${scan(code).join(' | ')}`);
+    }
+    assert.equal(normaliseCopy('\u13AA'), 'A');
+    assert.equal(normaliseCopy('\u13AA'.toLowerCase()), 'a', 'the Cherokee small letter maps with its capital');
+    assert.equal(normaliseCopy('\u1D00\u026A'), 'ai');
+  });
+
   it('normaliseCopy reads text as a reader sees it, and leaves plain text alone', () => {
     assert.equal(normaliseCopy('\u0405m\u200Bart'), 'Smart');
     assert.equal(normaliseCopy('\uFF21\uFF29'), 'AI');

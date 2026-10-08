@@ -5,7 +5,7 @@ import { describe, it } from 'vitest';
 import * as lucide from 'lucide-react';
 import { STATE_ICONS } from '../src/components/icon.ts';
 import { isApplePlatform, keyLabel } from '../src/components/kbd.ts';
-import { amountValue, formatStored, parseAmountInput, unitScale, type AmountSpec } from '../src/lib/amount.ts';
+import { amountValue, formatStored, parseAmountInput, readBack, unitScale, type AmountSpec } from '../src/lib/amount.ts';
 import { chooseValue, filterOptions, moveActive, openingIndex, type ListOption } from '../src/lib/listbox.ts';
 import { MAX_TOASTS, TOAST_DURATION_MS, autoDismissMs, toastReducer, toastStack, type ToastItem } from '../src/lib/toasts.ts';
 
@@ -23,11 +23,29 @@ describe('UI-T04 AmountInput parsing', () => {
       assert.deepEqual(parseAmountInput(bad, SOL), { kind: 'invalid', message: 'Use a dot for decimals; no commas in SOL amounts' }, bad);
     }
   });
-  it('other units accept thousands separators only as real groups that do not start with 0', () => {
+  it('Z05 round 3 (ruling 16): a token amount refuses commas too', () => {
     const TOKEN: AmountSpec = { unit: 'token', decimals: 2 };
-    assert.deepEqual(parseAmountInput('1,000.5', TOKEN), { kind: 'valid', value: '100050' });
+    for (const bad of ['1,500', '1,000.5', '0,250']) {
+      assert.deepEqual(parseAmountInput(bad, TOKEN), { kind: 'invalid', message: 'Use a dot for decimals; no commas in token amounts' }, bad);
+    }
+    assert.deepEqual(parseAmountInput('1500', TOKEN), { kind: 'valid', value: '150000' });
+  });
+  it('bps and percent accept thousands separators only as real groups that do not start with 0', () => {
     assert.deepEqual(parseAmountInput(' 12,345,678 ', { unit: 'bps' }), { kind: 'valid', value: '12345678' });
-    for (const bad of ['0,250', '0,25', '1,00', '1,0000', ',5', '1,000,00']) assert.equal(parseAmountInput(bad, TOKEN).kind, 'invalid', bad);
+    assert.deepEqual(parseAmountInput('1,000.5', { unit: 'percent' }), { kind: 'valid', value: '100050' });
+    for (const bad of ['0,250', '0,25', '1,00', '1,0000', ',5', '1,000,00']) assert.equal(parseAmountInput(bad, { unit: 'bps' }).kind, 'invalid', bad);
+  });
+  it('Z05 round 3 (ruling 12): bps and percent read back from the bigint, every digit kept', () => {
+    const bps = parseAmountInput('99999999999999999', { unit: 'bps' });
+    assert.deepEqual(bps, { kind: 'valid', value: '99999999999999999' });
+    assert.equal(formatStored('99999999999999999', { unit: 'bps' }), '99,999,999,999,999,999 bps');
+    const pct = parseAmountInput('999999999999999.99', { unit: 'percent' });
+    assert.deepEqual(pct, { kind: 'valid', value: '99999999999999999' });
+    assert.equal(formatStored('99999999999999999', { unit: 'percent' }), '999,999,999,999,999.99%');
+    assert.equal(readBack(pct, { unit: 'percent' }), 'Reads as 999,999,999,999,999.99%');
+    assert.equal(formatStored('5', { unit: 'percent' }), '0.05%');
+    assert.equal(formatStored('35', { unit: 'bps' }), '35 bps');
+    assert.equal(formatStored('1200', { unit: 'bps' }), '1,200 bps');
   });
   it('accepts .5, 1. and leading zeros; refuses signs, exponents, letters and a lone dot', () => {
     assert.deepEqual(parseAmountInput('.5', SOL), { kind: 'valid', value: '500000000' });

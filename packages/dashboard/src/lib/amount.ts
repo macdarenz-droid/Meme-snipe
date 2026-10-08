@@ -1,9 +1,9 @@
 // AmountInput parsing (UI-T04, C08): user text to an exact integer string in the stored unit. SOL to lamports (at
 // most 9 decimals), token amounts to base units (at most the mint's decimals), bps as an integer, percent to bps (at
-// most 2 decimals). Never rounds: too many decimals is invalid. A SOL amount refuses commas outright (Z05 round 2, red
-// team M4: `0,250` must never read as 250 SOL, and `1,500` is as likely 1.5 as 1500); other units accept thousands
-// separators only as real groups that do not start with 0 (`1,000`). The UI is English-only (open question Q-09).
-import { formatBps, formatSol, formatTokenAmount } from './money.ts';
+// most 2 decimals). Never rounds: too many decimals is invalid. SOL and token amounts refuse commas outright (Z05 round
+// 2, red team M4: `0,250` must never read as 250 SOL, and `1,500` is as likely 1.5 as 1500; round 3, ruling 16); bps and
+// percent accept thousands separators only as real groups that do not start with 0 (`1,000`). The UI is English-only (open question Q-09).
+import { formatSol, formatTokenAmount, groupThousands } from './money.ts';
 
 export type AmountUnit = 'sol' | 'token' | 'bps' | 'percent';
 
@@ -42,7 +42,12 @@ export function formatStored(value: string, spec: AmountSpec): string {
   switch (spec.unit) {
     case 'sol': return trim(formatSol(value).exact);
     case 'token': return trim(formatTokenAmount(value, spec.decimals ?? 0).exact);
-    default: return formatBps(Number(BigInt(value)), { as: spec.unit === 'bps' ? 'bps' : 'pct' }).text;
+    // From the bigint, never through Number (Z05 round 3, ruling 12): a stored value past 2^53 keeps every digit.
+    case 'bps': return `${groupThousands(BigInt(value).toString())} bps`;
+    case 'percent': {
+      const v = BigInt(value);
+      return `${groupThousands((v / 100n).toString())}.${(v % 100n).toString().padStart(2, '0')}%`;
+    }
   }
 }
 
@@ -55,7 +60,9 @@ export function parseAmountInput(text: string, spec: AmountSpec): AmountResult {
   if (trimmed.startsWith('-')) return { kind: 'invalid', message: 'Enter an amount of zero or more' };
   let plain = trimmed;
   if (plain.includes(',')) {
+    // Z05 round 2 (M4) and round 3 (ruling 16): SOL and token amounts refuse commas outright.
     if (spec.unit === 'sol') return { kind: 'invalid', message: 'Use a dot for decimals; no commas in SOL amounts' };
+    if (spec.unit === 'token') return { kind: 'invalid', message: 'Use a dot for decimals; no commas in token amounts' };
     if (!/^[1-9]\d{0,2}(,\d{3})+(\.\d*)?$/.test(plain)) return { kind: 'invalid', message: 'Use a dot for decimals; commas only between thousands' };
     plain = plain.replace(/,/g, '');
   }

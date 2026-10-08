@@ -84,16 +84,25 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
     // If the browser sends no click after all, the mark expires, so it never swallows a later activation.
     upTimer.current = setTimeout(() => { upTimer.current = null; press.current = null; }, CLICK_AFTER_UP_MS);
   };
-  /** The press ended without a pointer up on the button (touch cancel, lost capture, left, moved): no click follows. */
+  /** The press ended without a pointer up on the button (touch cancel, lost capture): no click follows. */
   const abort = (): void => {
     rewindHold();
     if (press.current !== null && !press.current.up) press.current = null;
   };
-  /** A finger resting on HALT while the page scrolls is not a hold: a move over HOLD_MOVE_PX cancels it. */
+  /**
+   * A finger resting on HALT while the page scrolls is not a hold: a move over HOLD_MOVE_PX, or leaving the button,
+   * cancels it. The press keeps its claim on the click its pointer up brings, so releasing on the button opens nothing
+   * (Z05 round 3, ruling 13); the claim expires as after any pointer up.
+   */
+  const moveAway = (): void => {
+    const p = press.current;
+    if (p === null || p.up) return;
+    rewindHold();
+  };
   const move = (e: PointerEvent<HTMLButtonElement>): void => {
     const p = press.current;
     if (p === null || p.up || hold.current === null) return;
-    if ((e.clientX - p.x) ** 2 + (e.clientY - p.y) ** 2 > HOLD_MOVE_PX ** 2) abort();
+    if ((e.clientX - p.x) ** 2 + (e.clientY - p.y) ** 2 > HOLD_MOVE_PX ** 2) moveAway();
   };
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>): void => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -122,7 +131,7 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
       onPointerUp: up,
       onPointerCancel: abort,
       onLostPointerCapture: abort,
-      onPointerLeave: abort,
+      onPointerLeave: moveAway,
       onPointerMove: move,
       onKeyDown,
       onKeyUp: (e: KeyboardEvent<HTMLButtonElement>) => { if (e.key === ' ') e.preventDefault(); },

@@ -32,7 +32,17 @@ export type DialogStatus = 'open' | 'submitting' | 'error';
 export type CloseReason = 'cancel' | 'escape' | 'mode-changed';
 export type { ConnectionView };
 
-export interface DialogAction { label: ReactNode; onClick: () => void; variant?: ButtonVariant; disabledReason?: string }
+export interface DialogAction {
+  label: ReactNode;
+  onClick: () => void;
+  variant?: ButtonVariant;
+  disabledReason?: string;
+  /**
+   * A secondary action that only reduces risk (like HALT itself) is not gated by an unknown mode or connection. Every
+   * other secondary action gets the same gate as a money-affecting confirm (Z05 round 3, ruling 15).
+   */
+  riskReducing?: boolean;
+}
 
 export interface DialogProps {
   open: boolean;
@@ -172,6 +182,13 @@ export function Dialog(props: DialogProps): ReactElement {
   // In the frame between a mode change and the close, confirm is already disabled (Z05 round 2, red team m3).
   const modeMoved = !inline && phase !== 'closed' && mode !== openedMode.current;
   const confirmReason = modeMoved ? MODE_CHANGED_CONFIRM_TEXT : unknownReason ?? confirm?.disabledReason;
+  // The secondary action is gated like a money-affecting confirm, HALT's exemption included only when it is marked
+  // risk-reducing itself (HALT's "Halt and flatten all…" sells, so it is gated).
+  const secondary = props.secondary;
+  const secondaryGate = secondary?.riskReducing === true ? undefined
+    : moneyAffecting ? unknownStateReason(props.connection, mode)
+      : props.connection === 'disconnected' ? unknownStateReason('disconnected', mode) : undefined;
+  const secondaryReason = modeMoved && secondary?.riskReducing !== true ? MODE_CHANGED_CONFIRM_TEXT : secondaryGate ?? secondary?.disabledReason;
   const rendered = props.open || phase !== 'closed';
   return h(Fragment, null,
     notice === null ? null : h('p', { className: 'dialog-notice', role: 'alert' }, h(Icon, { icon: STATE_ICONS['warning'] as typeof TriangleAlert }), notice),
@@ -200,10 +217,10 @@ export function Dialog(props: DialogProps): ReactElement {
         variant: 'secondary', className: 'dialog__cancel', onClick: () => onClose('cancel'),
         ...(busy ? { disabledReason: 'Waiting for the server' } : {}),
       }, props.cancelLabel ?? 'Cancel'),
-      props.secondary === undefined ? null : h(Button, {
-        variant: props.secondary.variant ?? 'secondary', className: 'dialog__secondary', onClick: props.secondary.onClick,
-        ...(props.secondary.disabledReason === undefined ? {} : { disabledReason: props.secondary.disabledReason }),
-      }, props.secondary.label),
+      secondary === undefined ? null : h(Button, {
+        variant: secondary.variant ?? 'secondary', className: 'dialog__secondary', onClick: secondary.onClick,
+        ...(secondaryReason === undefined ? {} : { disabledReason: secondaryReason }),
+      }, secondary.label),
       confirm === undefined ? null : h(Button, {
         variant: confirm.variant ?? (props.halt === true ? 'danger' : live ? 'live-confirm' : 'primary'),
         className: 'dialog__confirm',

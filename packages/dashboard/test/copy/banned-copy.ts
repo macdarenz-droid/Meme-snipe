@@ -4,6 +4,8 @@
  * from either. copy-guard.test.ts checks that this list keeps every entry of the apps/web list and every phrase quoted
  * in CLAUDE.md's rule.
  */
+import { GENERATED_LOOKALIKE } from './lookalikes.ts';
+
 export interface Banned {
   label: string;
   pattern: RegExp;
@@ -69,13 +71,15 @@ const LOOKALIKE: Readonly<Record<string, string>> = {
 };
 
 /**
- * The text a reader sees, for matching (Z05 round 2, red team m1): NFKC (fullwidth and compatibility letters become
- * plain ones), format characters (zero-width spaces and joiners, soft hyphens, bidi controls) removed, and look-alike
- * letters mapped to Latin.
+ * The text a reader sees, for matching (Z05 round 2, red team m1; round 3, ruling 14): NFKC (fullwidth and
+ * compatibility letters become plain ones), format characters and other default-ignorable code points removed, and
+ * look-alike letters (the table above, and Cherokee letters and Latin small capitals from lookalikes.ts) mapped to Latin.
  */
 export function normaliseCopy(text: string): string {
-  const plain = text.normalize('NFKC').replace(/\p{Cf}/gu, '');
-  return [...plain].map((c) => LOOKALIKE[c] ?? c).join('').normalize('NFKC');
+  // Format characters and every default-ignorable code point (combining grapheme joiner, Hangul fillers, variation
+  // selectors, tag characters: Z05 round 3, ruling 14) are invisible, so a reader sees the text without them.
+  const plain = text.normalize('NFKC').replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '');
+  return [...plain].map((c) => LOOKALIKE[c] ?? GENERATED_LOOKALIKE[c] ?? c).join('').normalize('NFKC');
 }
 
 export function findBanned(text: string): string[] {
