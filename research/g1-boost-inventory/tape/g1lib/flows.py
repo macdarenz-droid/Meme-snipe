@@ -76,7 +76,7 @@ def migration_flows(ctx: FeatureContext, mkt: Market, mint: int, fast: Optional[
     pr = ctx.tape.pool_of(pool)
     w = pr[(pr["slot"] >= m) & (pr["slot"] <= m + P.D)]
     boost = w[w["is_boost"]] if len(w) else w
-    w = w[~w["is_boost"] & (w["protocol"] != 1)] if len(w) else w
+    w = w[~w["is_protocol"]] if len(w) else w
     cr = ctx.tape.curve_of(mint)
     cw = cr[cr["slot"] == m]
     sells = pd.concat([

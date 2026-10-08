@@ -103,8 +103,10 @@ def _header(path: str) -> List[str]:
         return r.readline().strip().split(",")
 
 
-def find_units(roots: List[str], days: Optional[List[str]] = None) -> List[Unit]:
-    """Unit directories from explicit unit paths or cache roots (CACHE, CACHE/<day>, CACHE/<day>/<unit>)."""
+def find_units(roots: List[str], days: Optional[List[str]] = None, plan="default", allow_subset: bool = False) -> List[Unit]:
+    """Unit directories from explicit unit paths or cache roots (CACHE, CACHE/<day>, CACHE/<day>/<unit>).
+    By default the units must equal the frozen Step A plan's rows for each day read (guard.check_units); a subset
+    is accepted only with allow_subset (development). `plan=None` skips the plan (synthetic tests only)."""
     out = []
     for r in roots:
         cands = [r] if os.path.exists(os.path.join(r, "stats.json")) or os.path.exists(os.path.join(r, "research", "stats.json")) \
@@ -118,6 +120,9 @@ def find_units(roots: List[str], days: Optional[List[str]] = None) -> List[Unit]
     for a, b in zip(units, units[1:]):
         if b.from_slot <= a.to_slot:
             raise ValueError(f"overlapping units {a.path} and {b.path}")
+    if plan is not None:
+        from . import guard
+        guard.check_units(units, guard.load_plan() if plan == "default" else plan, allow_subset=allow_subset)
     return units
 
 
@@ -292,6 +297,7 @@ def load(units: List[Unit], links: bool = True, log=print) -> Tape:
         a["pool"] = names.codes(a["pool"].to_numpy())
         a["base_mint"] = names.codes(a["base_mint"].to_numpy())
         a["signer"] = names.codes(a["signer"].to_numpy())
+        a["user_c"] = names.codes(a["user"].to_numpy())
         a = a.drop(columns=["user", "user_token_owner"])
         # compact buys of the coin (base side unless the pool's base is WSOL)
         wsol = names.code(P.WSOL)

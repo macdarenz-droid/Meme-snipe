@@ -3,7 +3,8 @@
 Curve trade reserves are after the trade; PumpSwap reserves are before the trade (PREREG §7 check 2; see
 checks.py). The state at the start of slot s is the state after the last row before s; at the end of s, after
 the last row in s. BOOST slices are the S_amm rows in a transaction that emitted a BoostBuyAndBurnEvent on that
-pool (the S_amm `protocol` flag is not set on them in the units checked; OPEN_QUESTIONS OQ-14)."""
+pool, in every schema version; the S_amm `protocol` column is never read (it is unset on BOOST rows before decoder
+v3). Protocol rows = BOOST slices plus rows whose signer or user is the buyback authority (the decoder's rule)."""
 from typing import Dict, Optional
 
 import numpy as np
@@ -49,10 +50,15 @@ class Market:
         bb = ev["BoostBuyAndBurnEvent"]
         keys = set(zip(bb.get("slot", []), bb.get("tx_idx", []), bb.get("pool_c", []))) if len(bb) else set()
         pr = tape.pool_rows
+        auth = tape.names.get(P.BUYBACK_AUTHORITY)
         if len(pr):
             pr["is_boost"] = [(s, t, p) in keys for s, t, p in zip(pr["slot"], pr["tx_idx"], pr["pool"])]
+            # the decoder's buyback-authority rule (tapedec decode.go: signer or user is the authority)
+            pr["is_buyback"] = ((pr["signer"] == auth) | (pr["user_c"] == auth)).to_numpy() if auth >= 0 else False
+            pr["is_protocol"] = pr["is_boost"] | pr["is_buyback"]
         else:
-            pr["is_boost"] = pd.Series(dtype=bool)
+            for c in ("is_boost", "is_buyback", "is_protocol"):
+                pr[c] = pd.Series(dtype=bool)
         self.mig: Dict[int, dict] = {}
         mg = ev["CompletePumpAmmMigrationEvent"]
         for r in mg.sort_values("slot").to_dict("records"):
