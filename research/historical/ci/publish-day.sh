@@ -100,7 +100,12 @@ case "$st" in
     "$GH" release create "$tag" --repo "$DATA_REPO" --prerelease --title "Historical data: $d" \
       --notes "Scanner units, strict QA report, decoder parity report, per-unit log and SHA256SUMS for UTC day $d, from .github/workflows/data-scan.yml at ${GITHUB_SHA:-unknown}. Format: docs/research/historical-data.md." \
       -- "${files[@]}"
-    echo "stored $tag in the private store (${#files[@]} files, $(du -cb "${files[@]}" | tail -1 | cut -f1) bytes)" | tee -a "$summary" ;;
+    echo "stored $tag in the private store (${#files[@]} files, $(du -cb "${files[@]}" | tail -1 | cut -f1) bytes)" | tee -a "$summary"
+    # OF-4 ruling 9: what was created must be complete (every asset uploaded, names equal
+    # to its SHA256SUMS set) before any read-back can pass.
+    st=$(release_state "$tag" "$d")
+    [ "$st" = complete ] || { echo "read-back: $tag is $st after create; the progress cache is kept" | tee -a "$summary"; exit 1; }
+    st=created ;;
   *) echo "$tag exists but is $st; delete it to republish (never edited here)" | tee -a "$summary"; exit 1 ;;
 esac
 # OF-4 read-back, against the release's own SHA256SUMS-DAY (a complete release from an
