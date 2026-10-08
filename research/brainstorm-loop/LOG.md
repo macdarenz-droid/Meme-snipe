@@ -15,7 +15,8 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 16:31 | Asked the lead for state, budget, data, cost model, top directions; proposed the protocol |
 | 2026-10-08 16:35 | Round 6 sent: Design A correction (effective reserves, BOOST confound), angle G1 (curve inventory into migration), angle H1-CGO (holders' cost basis), questions |
 | 2026-10-08 16:37 | Lead round 7: A amendments accepted; AGREED G1 (cap 0, tape only; discovery Step A 09-10/09-11, validation Step B 09-07..09-09); H1-CGO kept for later; short-probe S0 not significant (+0.26%/week, 95% −2.2 to +2.7) |
-| 2026-10-08 16:50 | G1 PREREG and A amendments committed (dcfc71e); round 8 sent: F1 follower flow, P2 spot flow to Hyperliquid perps |
+| 2026-10-08 16:40 | G1 PREREG and A amendments committed (dcfc71e, 16:39:54); round 8 sent at about 16:41: F1 follower flow, P2 spot flow to Hyperliquid perps |
+| 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
 ## Ideas from this loop
