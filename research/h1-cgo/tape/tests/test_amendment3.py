@@ -162,7 +162,8 @@ def val_feats(n_per_day=240):
                               decision_slot=np.arange(n_per_day), decision_day=d, eligible=True, in_time_3600=True,
                               hour=DAY0, cgo=np.where(np.arange(n_per_day) % 2 == 0, 2.0, 0.0),
                               d60=rng.uniform(0, 1, n_per_day),
-                              eff_quote=np.where(np.arange(n_per_day) % 4 == 0, 500 * 10**9, 100 * 10**9)))
+                              eff_quote=np.where(np.arange(n_per_day) % 4 == 0, 500 * 10**9, 100 * 10**9),
+                              quote_at_migration=85 * 10**9))
         fs.append(f)
     return pd.concat(fs, ignore_index=True)
 
@@ -225,6 +226,82 @@ class H8Stratum(unittest.TestCase):
         c = H8.count_rows(f, H8.SolUsd({DAY0: 100_000_000}, []))
         self.assertEqual(c["with_state_$50"]["2026-09-11"], dict(pool_hours=6, graduates=6))
         self.assertEqual(c["h1cgo_eligible_$5"]["2026-09-11"]["pool_hours"], 6)
+
+
+def write_sol_dir(folder, days, price="100.0", tamper=None, minute_price=None):
+    """Synthetic committed SOL/USD folder: 1h and 1m zips per day (us timestamps) and SHA256SUMS."""
+    import hashlib
+    import zipfile
+    os.makedirs(folder, exist_ok=True)
+    lines = []
+    for d in days:
+        t0 = int(pd.Timestamp(d, tz="UTC").timestamp())
+        for iv, step in (("1h", 3600), ("1m", 60)):
+            px = minute_price if (iv == "1m" and minute_price) else price
+            rows = "".join(f"{(t0 + k) * 10**6},1,1,1,{px},0,{(t0 + k + step) * 10**6 - 1},0,0,0,0,0\n"
+                           for k in range(0, 86400, step))
+            name = f"SOLUSDT-{iv}-{d}.zip"
+            with zipfile.ZipFile(os.path.join(folder, name), "w") as z:
+                z.writestr(name.replace(".zip", ".csv"), rows)
+            with open(os.path.join(folder, name), "rb") as f:
+                lines.append(f"{hashlib.sha256(f.read()).hexdigest()}  {name}\n")
+    open(os.path.join(folder, "SHA256SUMS"), "w").write("".join(lines))
+    if tamper:
+        with open(os.path.join(folder, tamper), "ab") as f:
+            f.write(b"\0")
+
+
+class Amendment4(unittest.TestCase):
+    def test_dust_at_migration(self):
+        s = H8.SolUsd({DAY0: 119_260_000}, [])
+        self.assertTrue(H8.eligible(10**12, DAY0, 5, s, 5 * 10**9))
+        self.assertFalse(H8.eligible(10**12, DAY0, 5, s, 5 * 10**9 - 1))  # dust at migration
+        self.assertFalse(H8.eligible(10**12, DAY0, 5, s, float("nan")))  # no migration pool quote seen
+        f = val_feats(8).assign(quote_at_migration=[4 * 10**9] * 12 + [85 * 10**9] * 12)
+        g = H8.flags(f, H8.SolUsd({DAY0: 100_000_000}, []))
+        self.assertFalse(g.h8_5.iloc[:12].any())
+        self.assertEqual(int(g.h8_5.iloc[12:].sum()), 3)  # only points are removed
+
+    def test_universe_reads_the_migration_pool_quote(self):
+        from h1cgo.features import build_universe
+        c = [dict(event="CreateEvent", program="pump", slot="1", block_time=str(DAY0),
+                  fields=dict(mint="a", bonding_curve="bc", quote_mint="11111111111111111111111111111111"))]
+        g = [dict(event="CompletePumpAmmMigrationEvent", slot="5", block_time=str(DAY0 + 1), fields=dict(mint="a", pool="pa"))]
+        p = [dict(event="CreatePoolEvent", fields=dict(pool="pa", quote_mint="So11111111111111111111111111111111111111112",
+                                                       pool_quote_amount="84990000000"))]
+        u, _ = build_universe(c, g, {"2026-09-11"}, p)
+        self.assertEqual(u.quote_at_migration.iloc[0], 84_990_000_000)
+        u2, _ = build_universe(c, g, {"2026-09-11"}, [])
+        self.assertTrue(np.isnan(u2.quote_at_migration.iloc[0]))
+
+    def test_committed_sol_usd_checks(self):
+        with tempfile.TemporaryDirectory() as t:
+            ok = os.path.join(t, "ok")
+            write_sol_dir(ok, ["2026-09-06", "2026-09-07"])
+            s = H8.load_committed(["2026-09-07"], ok)
+            self.assertEqual(s.at(int(pd.Timestamp("2026-09-07T05:30", tz="UTC").timestamp())), 100_000_000)
+            self.assertEqual(len(s.files), 4)
+            with self.assertRaisesRegex(ValueError, "missing for 2026-09-07"):
+                H8.load_committed(["2026-09-08"], ok)  # 09-08 absent (its day before is present)
+            with self.assertRaisesRegex(ValueError, "missing for 2026-09-05"):
+                H8.load_committed(["2026-09-06"], ok)  # the day before is needed for the 00:00 decision
+            bad = os.path.join(t, "bad")
+            write_sol_dir(bad, ["2026-09-06", "2026-09-07"], tamper="SOLUSDT-1m-2026-09-06.zip")
+            with self.assertRaisesRegex(ValueError, "does not match SHA256SUMS"):
+                H8.load_committed(["2026-09-07"], bad)
+            gone = os.path.join(t, "gone")
+            write_sol_dir(gone, ["2026-09-06", "2026-09-07"])
+            os.remove(os.path.join(gone, "SOLUSDT-1h-2026-09-07.zip"))
+            with self.assertRaisesRegex(ValueError, "listed in SHA256SUMS is missing"):
+                H8.load_committed(["2026-09-07"], gone)
+            odd = os.path.join(t, "odd")
+            write_sol_dir(odd, ["2026-09-06", "2026-09-07"], minute_price="101.0")
+            with self.assertRaisesRegex(ValueError, "differ"):
+                H8.load_committed(["2026-09-07"], odd)
+
+    def test_the_committed_folder_covers_both_stages(self):
+        self.assertGreater(len(H8.load_committed(list(VALIDATION_DAYS)).t), 0)
+        self.assertGreater(len(H8.load_committed(["2026-09-10", "2026-09-11"]).t), 0)
 
 
 class D60Arm(unittest.TestCase):
