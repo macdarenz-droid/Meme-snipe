@@ -34,10 +34,26 @@ def scrub(s):
     return s.replace(k, '<key>') if k else s
 
 def ledger():
+    """The credit ledger. A missing ledger starts at 0 only if no response has been cached yet; an empty or broken
+    ledger stops the run (a disk-full crash once left it empty, which would have reset the cap)."""
     try:
-        return json.load(open(LEDGER))
+        with open(LEDGER) as f:
+            return json.load(f)
     except FileNotFoundError:
+        if os.path.isdir(RAW) and os.listdir(RAW):
+            raise SystemExit('credit ledger missing but responses are cached: rebuild it before running')
         return {'calls': 0, 'credits': 0}
+    except ValueError:
+        raise SystemExit('credit ledger unreadable: rebuild it before running')
+
+def _write_json(path, obj):
+    """Write, flush and fsync to a temporary file, then replace: a failed write raises and never leaves an empty file."""
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(obj, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 def rpc(method, params, cap=None):
     """One JSON-RPC call, cached on disk by (method, params). Raises CapReached before exceeding `cap`."""
@@ -55,8 +71,7 @@ def rpc(method, params, cap=None):
                 raise CapReached(f"credit cap {cap} reached ({led['credits']} counted)")
             led['calls'] += 1
             led['credits'] += CREDITS_PER_CALL
-            json.dump(led, open(LEDGER + '.tmp', 'w'))
-            os.replace(LEDGER + '.tmp', LEDGER)
+            _write_json(LEDGER, led)
             w = _last[0] + MIN_GAP - time.time()
             if w > 0:
                 time.sleep(w)
@@ -75,8 +90,8 @@ def rpc(method, params, cap=None):
             raise RuntimeError(scrub(json.dumps(j['error']))[:300])
         res = j['result']
         if res is not None:
-            json.dump(res, open(path + '.tmp', 'w'))
-            os.replace(path + '.tmp', path)
+            _write_json(path + '.%d' % threading.get_ident(), res)
+            os.replace(path + '.%d' % threading.get_ident(), path)
         return res
     raise RuntimeError('rpc retries exhausted for ' + method)
 
@@ -111,7 +126,7 @@ def gtfa(address, filters, details='full', order='asc', limit=100, cap=None, max
             with _short_lock:
                 st['checked'] += 1
                 st['extra'] += 1 if data else 0
-                json.dump(st, open(p, 'w'))
+                _write_json(p, st)
         if not token or not data:
             return rows, True
         if len(data) < limit:
