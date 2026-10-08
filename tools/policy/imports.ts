@@ -35,7 +35,7 @@ import { isBuiltin } from 'node:module';
 import { extname, join, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@typescript-eslint/parser';
-import { DATA_DIRS, FORBIDDEN_IN_PACKAGES, INTERNAL_SCOPE, NO_THIRD_PARTY, SAFETY_IMPORT_CODES, SCHEMA_TX_FILE, SCHEMA_TX_IMPORTERS, SCHEMA_TX_TEST_DIR, SQLITE, SQLITE_ALLOWED_DIRS, TOOLS_DIR, WEB3, WEB3_BANNED_IN } from './config.ts';
+import { DATA_DIRS, FORBIDDEN_IN_PACKAGES, INTERNAL_SCOPE, NO_THIRD_PARTY, SAFETY_IMPORT_CODES, SCHEMA_TX_FILE, SCHEMA_TX_IMPORTERS, SCHEMA_TX_TEST_DIR, SQLITE, SRC_DIR_RE, SQLITE_ALLOWED_DIRS, TEST_DIR_RE, TOOLS_DIR, WEB3, WEB3_BANNED_IN } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import { DEPENDENCY_FIELDS, PRODUCTION_FIELDS, type Manifest, type PackageJson, type RepoSnapshot } from './repo.ts';
 import { safetyLinesOf, structureScopeOf, type SafetyLines, type Scope } from './scope.ts';
@@ -230,6 +230,9 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
       return finding('E_IMPORT_PATH', where, `"${s}": Node resolves it as a URL to ${loaded ?? 'no file path'}, but tsc and ESLint read ${read} `
         + '(paths from the repository root); write a plain relative path (no %, \\, ?, #, tab, newline or empty segment)');
     }
+    if (SRC_DIR_RE.test(file) && TEST_DIR_RE.test(target)) {
+      return finding('E_SRC_IMPORTS_TEST', where, `"${s}" reaches test code from package code (Z02 ruling 30); move what both need into src`);
+    }
     if ((target === SCHEMA_TX_FILE || target === SCHEMA_TX_FILE.replace(/\.ts$/, '')) && !SCHEMA_TX_IMPORTERS.includes(file) && !file.startsWith(SCHEMA_TX_TEST_DIR)) {
       return finding('E_SCHEMA_TX_IMPORT', where, `${SCHEMA_TX_FILE} is the migration runner's (Z02 ruling 29); only ${SCHEMA_TX_IMPORTERS.join(' and ')} may import it`);
     }
@@ -240,6 +243,9 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
   }
   if (isBuiltin(s)) return finding('E_IMPORT_BUILTIN', where, `"${s}" is a Node built-in: import "node:${s}"`);
   const name = packageName(s);
+  if (SRC_DIR_RE.test(file) && name.startsWith(INTERNAL_SCOPE) && s.slice(name.length).split('/')[1] === 'test') {
+    return finding('E_SRC_IMPORTS_TEST', where, `"${s}" reaches test code from package code (Z02 ruling 30); move what both need into src`);
+  }
   if (workspace && WEB3_BANNED_IN.includes(manifest.json.name ?? '') && name === WEB3) {
     return finding('E_WEB3_BANNED', where, `${WEB3} is banned in ${String(manifest.json.name)} (B-M30-01)`);
   }
