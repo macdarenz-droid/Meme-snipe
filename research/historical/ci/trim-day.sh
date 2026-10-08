@@ -1,71 +1,117 @@
 #!/usr/bin/env bash
-# OF-3 trim (research/z-h-estimate/OLD-FAITHFUL.md §3; docs/reviews/OF3.md rulings 2-5): a
-# day read at K2 is trimmed to K3 in place, before it is stored, with no archive or network
-# access (it calls no gh, curl or archive read; zeroed-scan reads local files).
-#   trim-day.sh DAY OUT PRIOR_LIST ASSET_DIR [--qa]
-# OUT holds the day's K2 units (units/EPOCH/FROM-TO). PRIOR_LIST is the day before's
-# pinned list (list-<D-1>.txt of its release), or "-" only for the first allow-listed day.
+# OF-3 trim (research/z-h-estimate/OLD-FAITHFUL.md §3; docs/reviews/OF3.md rulings 2-5,
+# 9, 11, 13, 15): a day read at K2 is trimmed to K3 in place, before it is stored, with no
+# archive or network access (it calls no gh, curl or archive read; zeroed-scan reads local
+# files).
+#   trim-day.sh DAY OUT PRIOR_LIST ASSET_DIR [--qa | --list-only]
+# OUT holds the day's K2 units (units/EPOCH/FROM-TO). PRIOR_LIST is the day before's pinned
+# list, list-<D-1>.txt, verified against that day's stored SHA256SUMS (ARCHIVE_PRIOR_SUMS);
+# "-" only for the first allow-listed day.
 #   1. The day's pinned list: PRIOR_LIST's windows that reach the day + the day's own
 #      migrations read from its K2 units, each from the migration to + 300 min (zeroed-scan
-#      migrations; PM-01 PREREG §3). Written to ASSET_DIR/list-DAY.txt (the next day's prior).
-#   2. Per unit, in order: its K2 file hashes go into the per-unit log ("k2 SHA256
-#      EPOCH/RANGE/FILE"), it is trimmed (zeroed-scan trim), and its K2 copy is deleted.
-#   3. The trimmed units replace the K2 ones; the per-unit log (OUT/units.log, unit lines
-#      "EPOCH/RANGE REVISION K3 LIST_SHA256" plus the k2 lines) is checked against them
-#      (zeroed-scan unitlog -check) and copied to ASSET_DIR/units-DAY.log.
+#      migrations; PM-01 PREREG §3), kept as OUT/list-DAY.txt and copied to the assets (the
+#      next day's prior). --list-only stops here (a day stored at K2).
+#   2. Per unit: it is trimmed into OUT/units.k3 (zeroed-scan trim); its K2 file hashes are
+#      appended to OUT/units.log.partial and fsynced; then its K2 copy is renamed to .del
+#      and deleted. A stopped
+#      trim resumes from units.k3, that file and the kept list. Between units it stops
+#      resumably (exit 75) once ARCHIVE_TRIM_BUDGET_S is spent.
+#   3. The trimmed units replace the K2 ones; the per-unit log (OUT/units.log: unit lines
+#      "EPOCH/RANGE REVISION K3 LIST_SHA256", then the k2 lines sorted by path with
+#      LC_ALL=C) is checked (zeroed-scan unitlog -check) and copied to the assets.
+#   A restored day that is already trimmed (every unit K3, units.log present and checked)
+#   is left as it is: its log and list go to the assets again.
 #   --qa (a stored K2 day trimmed into data-day-DAY-k3): finalize, strict QA, decoder
-#   parity and the volume check run on the trimmed units; its determinism rests on the K2
-#   release's rescan hashes plus the trim being deterministic (tested in the scanner).
-#   Without --qa (a batch), check-day.sh runs next: its rescan reads the unit at K2 and
-#   compares it with the logged K2 hashes.
+#   parity and the volume check run on the trimmed units. Without it (a batch),
+#   check-day.sh runs next: its rescan reads the unit at K2 and compares it with the k2 lines.
 set -euo pipefail
-[ $# -eq 4 ] || { [ $# -eq 5 ] && [ "$5" = --qa ]; } || { echo "usage: trim-day.sh DAY OUT PRIOR_LIST ASSET_DIR [--qa]" >&2; exit 2; }
-day=$1 out=$2 prior=$3 assets=$4 qa=${5:-}
+[ $# -eq 4 ] || { [ $# -eq 5 ] && { [ "$5" = --qa ] || [ "$5" = --list-only ]; }; } ||
+  { echo "usage: trim-day.sh DAY OUT PRIOR_LIST ASSET_DIR [--qa | --list-only]" >&2; exit 2; }
+day=$1 out=$2 prior=$3 assets=$4 mode=${5:-}
 here=$(cd "$(dirname "$0")" && pwd)
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 next=$(date -u -d "$day + 1 day" +%F)
 refuse() { echo "refused: $*" | tee -a "$summary" >&2; exit 2; }
 # shellcheck source=archive-guard.sh
 . "$here/archive-guard.sh"
-if [ "$prior" = - ]; then
-  [ "$day" = "$(ag_first_day)" ] || refuse "$day is not the first allow-listed day, so it needs the day before's pinned list"
-  prior_args=()
-else
-  [ -f "$prior" ] || refuse "no prior list $prior"
-  prior_args=(-prior "$prior")
-fi
-[ ! -e "$out/units.k3" ] || refuse "$out/units.k3 exists: an earlier trim did not finish"
-n=0
+list="$out/list-$day.txt" log="$out/units.log" partial="$out/units.log.partial"
+mkdir -p "$assets"
+k2=() k3=()
 for u in "$out"/units/*/*; do
-  [[ "$u" != *.tmp ]] || continue
+  [[ -d "$u" && "$u" != *.tmp && "$u" != *.del ]] || continue
   [ -f "$u/stats.json" ] || refuse "$u is not a finished unit"
-  grep -q '"retention": *"K2"' "$u/stats.json" || refuse "$u is not a K2 unit"
+  if grep -q '"retention": *"K2"' "$u/stats.json"; then k2+=("$u")
+  elif grep -q '"retention": *"K3"' "$u/stats.json"; then k3+=("$u")
+  else refuse "$u is neither a K2 nor a K3 unit"; fi
+done
+# A restored day already trimmed: nothing to do (ruling 9).
+if [ ${#k2[@]} -eq 0 ] && [ ${#k3[@]} -gt 0 ] && [ ! -e "$out/units.k3" ]; then
+  [ -f "$log" ] && [ -f "$list" ] || refuse "$day's K3 units have no per-unit log or list"
+  zeroed-scan unitlog -out "$out" -check "$log" || refuse "$day's per-unit log does not match its K3 units"
+  cp "$log" "$assets/units-$day.log"; cp "$list" "$assets/list-$day.txt"
+  echo "trim: $day is already trimmed (${#k3[@]} units); nothing to do" | tee -a "$summary"
+  exit 0
+fi
+[ ${#k3[@]} -eq 0 ] || refuse "$out mixes K2 and K3 units outside a trim"
+[ ${#k2[@]} -gt 0 ] || [ -d "$out/units.k3" ] || refuse "$out holds no finished units"
+# 1. The pinned list, built once and kept for a resumed trim.
+if [ ! -f "$list" ] || [ ! -d "$out/units.k3" ]; then
+  if [ "$prior" = - ]; then
+    [ "$day" = "$(ag_first_day)" ] || refuse "$day is not the first allow-listed day, so it needs the day before's pinned list"
+    prior_args=()
+  else
+    ag_prior_ok "$day" "$prior" "${ARCHIVE_PRIOR_SUMS:-}" || exit 2
+    prior_args=(-prior "$prior")
+  fi
+  [ ${#k2[@]} -gt 0 ] || refuse "$out holds no K2 units to build the list from"
+  zeroed-scan migrations -day-start "$(date -u -d "$day" +%s)" "${prior_args[@]}" "$out" > "$list.tmp"
+  [ -s "$list.tmp" ] || refuse "the day's pinned list is empty (no migration in the day or the window before it)"
+  mv "$list.tmp" "$list"
+fi
+cp "$list" "$assets/list-$day.txt"
+sha=$(sha256sum "$list" | cut -d' ' -f1)
+if [ "$mode" = --list-only ]; then
+  echo "list: $day's pinned list written (sha256 $sha); the day is stored at K2" | tee -a "$summary"
+  exit 0
+fi
+# 2. Per unit: trim, log the K2 hashes durably, delete the K2 copy.
+mkdir -p "$out/units.k3"
+touch "$partial"
+start=$(date +%s) n=0
+for u in "${k2[@]}"; do
+  epoch=$(basename "$(dirname "$u")") range=$(basename "$u")
+  k3u="$out/units.k3/$epoch/$range"
+  if [ ! -d "$k3u" ]; then
+    if [ $(( $(date +%s) - start )) -ge "$ARCHIVE_TRIM_BUDGET_S" ]; then
+      echo "trim: time budget ($ARCHIVE_TRIM_BUDGET_S s) spent after $n units; stopping resumably" | tee -a "$summary"
+      exit 75
+    fi
+    rm -rf "$k3u.tmp"; mkdir -p "$out/units.k3/$epoch"
+    zeroed-scan trim -in "$u" -out "$k3u" -migration-list "$list"
+  fi
+  if ! grep -q " $epoch/$range/[^/]*\$" "$partial"; then
+    lines=$( (cd "$out/units" && sha256sum -- "$epoch/$range"/*.zst) | sed 's/^\([0-9a-f]\{64\}\)  /k2 \1 /')
+    printf '%s\n' "$lines" >> "$partial"
+    sync "$partial"
+  fi
+  # renamed first, so a delete cut short leaves a .del copy (its k2 lines already on disk)
+  mv "$u" "$u.del" && rm -rf "$u.del"
   n=$((n + 1))
 done
-[ "$n" -gt 0 ] || refuse "$out holds no finished units"
-mkdir -p "$assets"
-list="$assets/list-$day.txt"
-zeroed-scan migrations -day-start "$(date -u -d "$day" +%s)" "${prior_args[@]}" "$out" > "$list"
-[ -s "$list" ] || refuse "the day's pinned list is empty (no migration in the day or the window before it)"
-sha=$(sha256sum "$list" | cut -d' ' -f1)
-log="$out/units.log"
-units=() k2=()
-for u in "$out"/units/*/*; do
-  [[ "$u" != *.tmp ]] || continue
-  epoch=$(basename "$(dirname "$u")") range=$(basename "$u")
-  rev=$(sed -n 's/.*"scanner_revision": *"\([^"]*\)".*/\1/p' "$u/stats.json" | head -1)
-  while read -r h f; do k2+=("k2 $h $f"); done < <(cd "$out/units" && sha256sum -- "$epoch/$range"/*.zst | LC_ALL=C sort -k2)
-  mkdir -p "$out/units.k3/$epoch"
-  zeroed-scan trim -in "$u" -out "$out/units.k3/$epoch/$range" -migration-list "$list"
-  rm -rf "$u"
-  units+=("$epoch/$range $rev K3 $sha")
-done
+# 3. The trimmed units replace the K2 ones; the per-unit log is checked.
+rm -rf "$out"/units/*/*.del
+find "$out/units" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+if compgen -G "$out/units/*/*" > /dev/null; then refuse "$out/units still holds units after the trim"; fi
 rm -rf "$out/units" && mv "$out/units.k3" "$out/units"
-{ printf '%s\n' "${units[@]}" | LC_ALL=C sort; printf '%s\n' "${k2[@]}"; } > "$log"
+ulines=$(zeroed-scan unitlog -out "$out")
+while read -r l; do [[ "$l" == *" K3 $sha" ]] || refuse "unit line '$l' is not K3 with the pinned list $sha"; done <<< "$ulines"
+{ printf '%s\n' "$ulines"; LC_ALL=C sort -k3,3 "$partial"; } > "$log.tmp"
+mv "$log.tmp" "$log"
 zeroed-scan unitlog -out "$out" -check "$log"
+rm -f "$partial"
 cp "$log" "$assets/units-$day.log"
-echo "trim: $n units of $day trimmed to K3 (list sha256 $sha); K2 hashes in the per-unit log" | tee -a "$summary"
-[ "$qa" = --qa ] || exit 0
+echo "trim: $day trimmed to K3 (list sha256 $sha); K2 hashes in the per-unit log" | tee -a "$summary"
+[ "$mode" = --qa ] || exit 0
 ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
 zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json"
 node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0

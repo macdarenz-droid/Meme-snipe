@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -186,13 +187,60 @@ func k3Keep(list map[string]k3Window, mints []string, blockTime int64) bool {
 	return false
 }
 
-// canonicalTxMints: the base mints of every PumpSwap trade instruction (top level or
-// inner) in a canonical pool (accounts: pool 0, base_mint 3, quote_mint 4), sorted.
+// poolReserveIx (OF-3 ruling 16): the PumpSwap instructions that change a pool's reserves,
+// by discriminator, read from the pinned IDL (idl/pump_amm.json): every instruction whose
+// pool_base_token_account or pool_quote_token_account is writable (today buy, sell,
+// buy_exact_quote_in, deposit, withdraw, boost_buy_and_burn, init_boost and create_pool).
+// Each must take pool at 0, base_mint at 3 and quote_mint at 4, or the scanner does not start.
+var poolReserveIx = func() map[[8]byte]string {
+	var idl struct {
+		Instructions []struct {
+			Name          string `json:"name"`
+			Discriminator []int  `json:"discriminator"`
+			Accounts      []struct {
+				Name     string `json:"name"`
+				Writable bool   `json:"writable"`
+			} `json:"accounts"`
+		} `json:"instructions"`
+	}
+	if err := json.Unmarshal(ammIDL, &idl); err != nil {
+		panic(err)
+	}
+	m := map[[8]byte]string{}
+	for _, ix := range idl.Instructions {
+		reserves := false
+		for _, a := range ix.Accounts {
+			if (a.Name == "pool_base_token_account" || a.Name == "pool_quote_token_account") && a.Writable {
+				reserves = true
+			}
+		}
+		if !reserves {
+			continue
+		}
+		if len(ix.Discriminator) != 8 || len(ix.Accounts) < 5 || ix.Accounts[0].Name != "pool" || ix.Accounts[3].Name != "base_mint" || ix.Accounts[4].Name != "quote_mint" {
+			panic("pump_amm " + ix.Name + ": a reserve-changing instruction without pool, base_mint, quote_mint at 0, 3, 4")
+		}
+		var d [8]byte
+		for i, v := range ix.Discriminator {
+			d[i] = byte(v)
+		}
+		m[d] = ix.Name
+	}
+	return m
+}()
+
+// canonicalTxMints: the base mints of every PumpSwap instruction that changes a canonical
+// pool's reserves (poolReserveIx; top level or inner), sorted.
 func canonicalTxMints(groups [][]ixRef, key func(int) [32]byte) []string {
 	set := map[string]bool{}
 	for _, g := range groups {
 		for _, ix := range g {
-			if ix.program != ammProgram || len(ix.data) < 8 || !isAmmTradeIx(ix.data[:8]) || len(ix.accts) < 5 {
+			if ix.program != ammProgram || len(ix.data) < 8 || len(ix.accts) < 5 {
+				continue
+			}
+			var d [8]byte
+			copy(d[:], ix.data[:8])
+			if _, ok := poolReserveIx[d]; !ok {
 				continue
 			}
 			pool := solana.PublicKey(key(ix.accts[0])).String()

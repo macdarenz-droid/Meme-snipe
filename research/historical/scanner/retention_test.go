@@ -61,8 +61,17 @@ func metaBytes(nKeys int, failed bool) []byte {
 	return b
 }
 
+// ammTxDisc: one PumpSwap instruction with discriminator disc in pool/base/quote.
+func ammTxDisc(t *testing.T, pool, base string, disc []byte, signer byte) ([]byte, int) {
+	return ammTxWith(t, pool, base, false, signer, disc)
+}
+
 // ammTx: one PumpSwap buy in pool/base/quote, global_config writable or not.
 func ammTx(t *testing.T, pool, base string, cfgWritable bool, signer byte) ([]byte, int) {
+	return ammTxWith(t, pool, base, cfgWritable, signer, ammTradeIx[0])
+}
+
+func ammTxWith(t *testing.T, pool, base string, cfgWritable bool, signer byte, disc []byte) ([]byte, int) {
 	t.Helper()
 	cfg := solana.PublicKeyFromBytes(func() []byte {
 		for k, n := range configAccounts {
@@ -80,7 +89,7 @@ func ammTx(t *testing.T, pool, base string, cfgWritable bool, signer byte) ([]by
 	user := solana.PublicKeyFromBytes(append(make([]byte, 31), 100+signer))
 	accts := solana.AccountMetaSlice{solana.Meta(mustPKpub(pool)).WRITE(), solana.Meta(user).WRITE(), cm,
 		solana.Meta(mustPKpub(base)), solana.Meta(mustPKpub(wsolMint))}
-	ix := solana.NewInstruction(solana.PublicKeyFromBytes(ammProgram[:]), accts, append(append([]byte{}, ammTradeIx[0]...), make([]byte, 16)...)) // PumpSwap buy
+	ix := solana.NewInstruction(solana.PublicKeyFromBytes(ammProgram[:]), accts, append(append([]byte{}, disc...), make([]byte, 16)...))
 	payer := solana.PublicKeyFromBytes(append(make([]byte, 31), signer))
 	tx, err := solana.NewTransaction([]solana.Instruction{ix}, solana.Hash{}, solana.TransactionPayer(payer))
 	if err != nil {
@@ -385,30 +394,139 @@ func TestTrimK2EqualsK3ScanAndIsDeterministic(t *testing.T) {
 	}
 }
 
+// trimmedDay writes K2 units at units/1046/{1-2,3-4} trimmed to K3 under out, and returns
+// the per-unit log (unit lines, then the k2 lines of every K2 file).
+func trimmedDay(t *testing.T, out, list string) []string {
+	t.Helper()
+	k2 := t.TempDir()
+	var k2lines []string
+	for _, u := range []string{"1-2", "3-4"} {
+		src := filepath.Join(k2, "units", "1046", u)
+		scanFixtureUnit(t, "K2", "", src)
+		files, _ := filepath.Glob(filepath.Join(src, "*.zst"))
+		for _, f := range files {
+			h, err := fileSha256(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			k2lines = append(k2lines, "k2 "+h+" 1046/"+u+"/"+filepath.Base(f))
+		}
+		os.MkdirAll(filepath.Join(out, "units", "1046"), 0o755)
+		if err := TrimUnit(src, filepath.Join(out, "units", "1046", u), list); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines, err := unitLog(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(lines, k2lines...)
+}
+
+func writeLog(t *testing.T, lines []string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "units.log")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // OF-3: a unit whose stats carry another list sha256 than the per-unit log is refused.
 func TestUnitLogRefusesAnotherListSha(t *testing.T) {
 	list, other := writeList(t, k3Mint+" 100 200"), writeList(t, k3Mint+" 100 201")
 	out := t.TempDir()
-	scanFixtureUnit(t, "K3", list, filepath.Join(out, "units", "1046", "1-2"))
-	scanFixtureUnit(t, "K3", list, filepath.Join(out, "units", "1046", "3-4"))
-	lines, err := unitLog(out)
-	if err != nil || len(lines) != 2 {
-		t.Fatalf("unit log %v %v", lines, err)
-	}
-	logp := filepath.Join(t.TempDir(), "units.log")
-	os.WriteFile(logp, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
-	if err := checkUnitLog(out, logp); err != nil {
+	lines := trimmedDay(t, out, list)
+	if err := checkUnitLog(out, writeLog(t, lines)); err != nil {
 		t.Fatalf("a matching log refused: %v", err)
 	}
 	_, otherSha, _ := loadMigrationList(other)
 	_, listSha, _ := loadMigrationList(list)
-	os.WriteFile(logp, []byte(strings.ReplaceAll(strings.Join(lines, "\n")+"\n", listSha, otherSha)), 0o644)
-	if err := checkUnitLog(out, logp); err == nil || !strings.Contains(err.Error(), "mismatch") {
+	if err := checkUnitLog(out, writeLog(t, strings.Split(strings.ReplaceAll(strings.Join(lines, "\n"), listSha, otherSha), "\n"))); err == nil || !strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("another list sha256 accepted: %v", err)
 	}
-	os.WriteFile(logp, []byte(lines[0]+"\n"), 0o644)
-	if err := checkUnitLog(out, logp); err == nil {
+	if err := checkUnitLog(out, writeLog(t, lines[1:])); err == nil {
 		t.Fatal("a unit missing from the log accepted")
+	}
+}
+
+// OF-3 ruling 12: exactly one k2 line per K2 file of each K3 unit, and every copied file
+// still has its K2 sha256.
+func TestUnitLogK2LinesAreExact(t *testing.T) {
+	list := writeList(t, k3Mint+" 100 200")
+	out := t.TempDir()
+	lines := trimmedDay(t, out, list)
+	var k2i []int
+	for i, l := range lines {
+		if strings.HasPrefix(l, "k2 ") {
+			k2i = append(k2i, i)
+		}
+	}
+	if len(k2i) != 24 {
+		t.Fatalf("%d k2 lines, want 12 files x 2 units", len(k2i))
+	}
+	drop := append(append([]string{}, lines[:k2i[0]]...), lines[k2i[0]+1:]...)
+	dup := append(append([]string{}, lines...), lines[k2i[0]])
+	var badSha []string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "k2 ") && strings.HasSuffix(l, "/1-2/blocks.csv.zst") {
+			l = "k2 " + strings.Repeat("0", 64) + " 1046/1-2/blocks.csv.zst"
+		}
+		badSha = append(badSha, l)
+	}
+	extra := append(append([]string{}, lines...), "k2 "+strings.Repeat("a", 64)+" 1046/9-9/blocks.csv.zst")
+	for name, l := range map[string][]string{"missing": drop, "duplicate": dup, "copied file differs": badSha, "unknown unit": extra} {
+		if err := checkUnitLog(out, writeLog(t, l)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if err := checkUnitLog(out, writeLog(t, lines)); err != nil {
+		t.Fatalf("the exact log refused: %v", err)
+	}
+	// a K2 unit carries no k2 lines
+	k2out := t.TempDir()
+	scanFixtureUnit(t, "K2", "", filepath.Join(k2out, "units", "1046", "1-2"))
+	ul, _ := unitLog(k2out)
+	if err := checkUnitLog(k2out, writeLog(t, append(ul, "k2 "+strings.Repeat("a", 64)+" 1046/1-2/blocks.csv.zst"))); err == nil {
+		t.Error("k2 lines on a K2 unit accepted")
+	}
+}
+
+// OF-3 ruling 16: every reserve-changing PumpSwap instruction in a canonical pool is kept
+// (K2), each by its discriminator; instructions that do not touch reserves are not.
+func TestCanonicalKeepsEveryReserveChangingInstruction(t *testing.T) {
+	want := map[string]bool{"buy": true, "sell": true, "buy_exact_quote_in": true, "deposit": true, "withdraw": true, "boost_buy_and_burn": true, "init_boost": true, "create_pool": true}
+	got := map[string]bool{}
+	for _, n := range poolReserveIx {
+		got[n] = true
+	}
+	for n := range want {
+		if !got[n] {
+			t.Errorf("%s is not kept", n)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("kept %v, want %v", got, want)
+	}
+	for d, n := range poolReserveIx {
+		withRetention(t, "K2", "", func() {
+			br, st := newResult()
+			tx, k := ammTxDisc(t, k3Pool, k3Mint, d[:], 1)
+			runTx(t, br, st, tx, k, false, 150, 0)
+			if len(br.rawCanon) != 1 {
+				t.Errorf("%s in a canonical pool: %d records", n, len(br.rawCanon))
+			}
+		})
+	}
+	for _, d := range [][]byte{{45, 61, 165, 151, 104, 0, 49, 189}, {210, 149, 128, 45, 188, 58, 78, 175}} { // admin_cto_pool, set_coin_creator
+		withRetention(t, "K2", "", func() {
+			br, st := newResult()
+			tx, k := ammTxDisc(t, k3Pool, k3Mint, d, 1)
+			runTx(t, br, st, tx, k, false, 150, 0)
+			if len(br.rawCanon) != 0 {
+				t.Errorf("discriminator %v (no reserve change) kept", d)
+			}
+		})
 	}
 }
 
@@ -481,18 +599,5 @@ func TestMigrationListMergesPriorDays(t *testing.T) {
 	want := []string{k3Mint + " 90000 108000", k3Mint2 + " 100000 118000"}
 	if err != nil || strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("merged list %v %v, want %v", got, err, want)
-	}
-}
-
-// The per-unit log's k2 lines (a trimmed unit's K2 file hashes) do not change the check.
-func TestUnitLogIgnoresK2HashLines(t *testing.T) {
-	list := writeList(t, k3Mint+" 100 200")
-	out := t.TempDir()
-	scanFixtureUnit(t, "K3", list, filepath.Join(out, "units", "1046", "1-2"))
-	lines, _ := unitLog(out)
-	logp := filepath.Join(t.TempDir(), "units.log")
-	os.WriteFile(logp, []byte(lines[0]+"\nk2 "+strings.Repeat("a", 64)+" 1046/1-2/raw.jsonl.zst\n"), 0o644)
-	if err := checkUnitLog(out, logp); err != nil {
-		t.Fatalf("k2 lines broke the check: %v", err)
 	}
 }

@@ -1269,17 +1269,37 @@ func unitLog(out string) ([]string, error) {
 }
 
 // checkUnitLog refuses when the units under out differ from the log in any line: a
-// unit missing or extra, or another revision, retention or migration list sha256.
+// unit missing or extra, or another revision, retention or migration list sha256. For a K3
+// unit (OF-3 ruling 12) the log holds exactly one "k2 SHA256 EPOCH/RANGE/FILE" line per
+// K2 file, the same files the K3 unit has, and every K3 file other than
+// raw_canonical.jsonl.zst and stats.json has the k2 line's sha256 (the trim copies it).
 func checkUnitLog(out, logPath string) error {
 	b, err := os.ReadFile(logPath)
 	if err != nil {
 		return err
 	}
 	var want []string
+	k2 := map[string]map[string]string{} // unit -> file -> sha256
 	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
-		if !strings.HasPrefix(l, "k2 ") { // a trimmed unit's K2 file hashes, kept with its line
+		if !strings.HasPrefix(l, "k2 ") {
 			want = append(want, l)
+			continue
 		}
+		f := strings.Split(l, " ")
+		if len(f) != 3 || len(f[1]) != 64 || strings.Count(f[2], "/") != 2 {
+			return fmt.Errorf("unit log: malformed k2 line %q", l)
+		}
+		unit, file := f[2][:strings.LastIndex(f[2], "/")], f[2][strings.LastIndex(f[2], "/")+1:]
+		if k2[unit] == nil {
+			k2[unit] = map[string]string{}
+		}
+		if _, dup := k2[unit][file]; dup {
+			return fmt.Errorf("unit log: two k2 lines for %s", f[2])
+		}
+		k2[unit][file] = f[1]
+	}
+	if err := checkK2Lines(out, k2); err != nil {
+		return err
 	}
 	have, err := unitLog(out)
 	if err != nil {
@@ -1371,4 +1391,76 @@ func migrationList(dirs []string, horizonS int64, prior string, dayStart int64) 
 	}
 	sort.Strings(lines)
 	return lines, nil
+}
+
+// checkK2Lines: each K3 unit under out has exactly its files' k2 lines, and every copied
+// file still has its K2 sha256; a unit that is not K3 has none.
+func checkK2Lines(out string, k2 map[string]map[string]string) error {
+	stats, err := filepath.Glob(filepath.Join(out, "units", "*", "*", "stats.json"))
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, p := range stats {
+		d := filepath.Dir(p)
+		if strings.HasSuffix(d, ".tmp") {
+			continue
+		}
+		unit := filepath.Base(filepath.Dir(d)) + "/" + filepath.Base(d)
+		seen[unit] = true
+		st, err := readStats(d)
+		if err != nil {
+			return err
+		}
+		lines := k2[unit]
+		if st.Retention != "K3" {
+			if len(lines) > 0 {
+				return fmt.Errorf("unit log: k2 lines for %s, a %s unit", unit, st.Retention)
+			}
+			continue
+		}
+		files, err := filepath.Glob(filepath.Join(d, "*.zst"))
+		if err != nil {
+			return err
+		}
+		if len(files) != len(lines) {
+			return fmt.Errorf("unit log: %s has %d files and %d k2 lines", unit, len(files), len(lines))
+		}
+		for _, f := range files {
+			name := filepath.Base(f)
+			want, ok := lines[name]
+			if !ok {
+				return fmt.Errorf("unit log: no k2 line for %s/%s", unit, name)
+			}
+			if name == "raw_canonical.jsonl.zst" {
+				continue
+			}
+			got, err := fileSha256(f)
+			if err != nil {
+				return err
+			}
+			if got != want {
+				return fmt.Errorf("unit log: %s/%s differs from its K2 copy", unit, name)
+			}
+		}
+	}
+	for unit := range k2 {
+		if !seen[unit] {
+			return fmt.Errorf("unit log: k2 lines for %s, which is not a unit", unit)
+		}
+	}
+	return nil
+}
+
+func fileSha256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

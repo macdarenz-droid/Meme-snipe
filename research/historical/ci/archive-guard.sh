@@ -13,6 +13,7 @@
 #   archive-guard.sh entry DAY        local, plus a fresh pass of the guard step
 #       (ag_attested); what scan-day.sh and check-day.sh run. Prints the retention.
 #   archive-guard.sh recorded OUT     the retention the units in OUT record (ag_recorded).
+#   archive-guard.sh prior DAY LIST SUMS  the day before's pinned list, verified (ag_prior_ok).
 #   archive-guard.sh full DAY         local, plus: run attempt 1 on the default branch;
 #       the private store (DATA_REPO, read with DATA_STORE_TOKEN) readable, private and
 #       without the storage-stop tag; the 3-failure stop not active; no back-off running
@@ -198,6 +199,20 @@ ag_recorded() {
   echo "$vals"
 }
 
+
+# ag_prior_ok DAY LIST SUMS (OF-3 rulings 8 and 11): the day before's pinned list is
+# list-<D-1>.txt, and its sha256 is the one SHA256SUMS of that day's stored release lists.
+ag_prior_ok() {
+  local prev name sum
+  prev=$(date -u -d "$1 - 1 day" +%F 2>/dev/null) || { ag_refuse "bad day '$1'"; return 2; }
+  name="list-$prev.txt"
+  [[ -n "${2:-}" && -f "$2" && "$(basename "$2")" == "$name" ]] ||
+    { ag_refuse "$1 needs the day before's pinned list $name (ARCHIVE_PRIOR_LIST)"; return 2; }
+  [[ -n "${3:-}" && -f "$3" ]] || { ag_refuse "$1 needs the stored SHA256SUMS of $prev to verify $name (ARCHIVE_PRIOR_SUMS)"; return 2; }
+  sum=$(sha256sum "$2" | cut -d' ' -f1)
+  grep -qxF "$sum  $name" "$3" ||
+    { ag_refuse "$name's sha256 is not the one the stored SHA256SUMS of $prev lists"; return 2; }
+}
 
 # ---- the private store (DATA_REPO, zeroed-data) ----
 ag_store() { GH_TOKEN="${DATA_STORE_TOKEN:-}" "$ag_gh" "$@"; }
@@ -450,6 +465,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
     local) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh local DAY" >&2; exit 2; }; ag_local "$2"; exit $? ;;
     entry) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh entry DAY" >&2; exit 2; }; ag_entry "$2"; exit $? ;;
+    prior) [[ $# -eq 4 ]] || { echo "usage: archive-guard.sh prior DAY LIST SUMS" >&2; exit 2; }; ag_prior_ok "$2" "$3" "$4"; exit $? ;;
     recorded) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh recorded OUT" >&2; exit 2; }; ag_recorded "$2"; exit $? ;;
     full) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh full DAY" >&2; exit 2; }; ag_full "$2"; exit $? ;;
     attest)

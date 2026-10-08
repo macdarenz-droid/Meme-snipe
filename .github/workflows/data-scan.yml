@@ -362,6 +362,7 @@ jobs:
           # Only a helius day gets the key; the archive scan never sees it.
           HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
           ARCHIVE_GUARD_DIR: ${{ runner.temp }}/archive-guard
+          EXPECT_UNITS: ${{ inputs.expect_units }}
         # source helius: rpc-day.sh exits 75 like a back-off (resumable) and 3 when the
         # day's credit cap is spent (not resumable: the chain stops).
         run: |
@@ -415,11 +416,16 @@ jobs:
           DAY: ${{ matrix.day }}
         run: |
           ret=$(research/historical/ci/archive-guard.sh local "$DAY")
+          rc=0
           if [ "$ret" = K3 ]; then
-            research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" - "$RUNNER_TEMP/work/assets"
+            research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" - "$RUNNER_TEMP/work/assets" || rc=$?
           else
-            echo "$DAY is stored at $ret: no trim" | tee -a "$GITHUB_STEP_SUMMARY"
+            # a day stored at K2 still writes its pinned list (the next day's prior)
+            research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" - "$RUNNER_TEMP/work/assets" --list-only || rc=$?
           fi
+          # the trim's own budget ran out (ARCHIVE_TRIM_BUDGET_S): resumable
+          if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
+          exit "$rc"
       - name: Archive guard before QA
         id: guardqa
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
@@ -474,12 +480,12 @@ jobs:
           key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
       # Chained only when this run's progress was saved; a failed save stops for review.
       - name: Mark the day resumable for the next chained run
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.trim.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
         env:
           DAY: ${{ matrix.day }}
         run: mkdir -p "$RUNNER_TEMP/resume" && echo "$DAY" > "$RUNNER_TEMP/resume/day"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.trim.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
         with:
           name: resume-${{ matrix.day }}
           path: ${{ runner.temp }}/resume

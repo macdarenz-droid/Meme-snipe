@@ -124,12 +124,52 @@ done
 # K3 (cfg_ret) is trimmed to K3 by trim-day.sh after the whole day is read, before it is
 # stored; units already kept must be K2 (a trimmed day is never read again here).
 rec=$("$(dirname "$0")/archive-guard.sh" recorded "$out") || exit 2
+if [ "$rec" = K3 ]; then
+  # Ruling 9: a restored day already trimmed is read done when every unit is K3, its
+  # per-unit log is present and checks, and expect_units (if set) is met: no request,
+  # trim-day.sh then does nothing and check-day.sh runs. Anything else is refused.
+  units=$(find "$out/units" -mindepth 2 -maxdepth 2 -type d ! -name '*.tmp' 2>/dev/null | wc -l)
+  if [ -f "$out/units.log" ] && zeroed-scan unitlog -out "$out" -check "$out/units.log" &&
+     { [ -z "${EXPECT_UNITS:-}" ] || [ "$units" -ge "$EXPECT_UNITS" ]; }; then
+    echo "day $day is already read and trimmed ($units K3 units, per-unit log checked); no request" | tee -a "$summary"
+    exit 0
+  fi
+  echo "refused: the units of $day record retention K3 but the day is not a complete trimmed day (per-unit log, check or expect_units); it is never read again here" | tee -a "$summary" >&2
+  exit 2
+fi
 [ -z "$rec" ] || [ "$rec" = K2 ] ||
   { echo "refused: the units of $day record retention $rec; a day is read at K2 and trimmed once" | tee -a "$summary" >&2; exit 2; }
+# Ruling 8 (and 11): every day but the first allow-listed one needs the day before's
+# verified list (a K3 day to be trimmed, a K2 day for its own list-D.txt); without it
+# nothing is read (before the disk guard, the back-off and any scanner call).
+if [ "$day" != "$(. "$(dirname "$0")/archive-guard.sh"; ag_first_day)" ]; then
+  "$(dirname "$0")/archive-guard.sh" prior "$day" "${ARCHIVE_PRIOR_LIST:-}" "${ARCHIVE_PRIOR_SUMS:-}" || exit 2
+fi
 ret=K2
 echo "retention for $day: read at K2, stored as $cfg_ret" | tee -a "$summary"
 # Ruling 3: the K2 day's peak must fit before any archive read (ARCHIVE_K2_PEAK_BYTES).
 "$(dirname "$0")/disk-guard.sh" "$out" "$ARCHIVE_K2_PEAK_BYTES" "a K2 day (units at the high estimate, then its trim and QA)" || exit 2
+# Ruling 14: while the day is read, between units, free space must stay above the
+# largest unit so far + ARCHIVE_TRIM_HEADROOM_BYTES; otherwise the scan is interrupted
+# (SIGINT: units are written whole) and the day stops with exit 75.
+# The scan runs in the foreground (SIGINT reaches it); the watch, in the background,
+# signals the scan's `timeout` the way the budget does.
+disk_watch() {
+  local parent=$1 pid big avail
+  while true; do
+    pid=$(pgrep -P "$parent" -x timeout | head -1)
+    if [ -n "$pid" ]; then
+      big=$(du -sb "$out"/units/*/* 2>/dev/null | grep -v '\.tmp$' | sort -n | tail -1 | cut -f1)
+      avail=$(df -B1 --output=avail "$out" | tail -1 | tr -d ' ')
+      if [ "$avail" -lt $(( ${big:-0} + ARCHIVE_TRIM_HEADROOM_BYTES )) ]; then
+        echo "$avail ${big:-0}" > "$out/disk-stop"
+        kill -INT "$pid" 2>/dev/null
+        return 0
+      fi
+    fi
+    read -rt "${ARCHIVE_DISK_POLL_S:-30}" _ <> <(:) || true
+  done
+}
 # A back-off persisted by an earlier run (restored from the cache) is slept out first.
 backoff 0
 while true; do
@@ -140,9 +180,18 @@ while true; do
   fi
   # Interrupted (SIGINT) at the budget's end; it finishes nothing new after that and
   # exits within 2 min, else it is killed (an unfinished unit is never renamed into place).
+  rm -f "$out/disk-stop"
+  disk_watch "$$" &
+  wpid=$!
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
     -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop
   rc=$?
+  kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+  if [ -f "$out/disk-stop" ]; then
+    read -r avail big < "$out/disk-stop"; rm -f "$out/disk-stop"
+    echo "free disk fell to $avail bytes, below the largest unit ($big) + the trim headroom ($ARCHIVE_TRIM_HEADROOM_BYTES): the scan stopped between units; progress kept (OF-3 ruling 14)" | tee -a "$summary"
+    exit 75
+  fi
   if [ $(( deadline - $(date +%s) )) -le 0 ] && [ $rc -ne 0 ] && [ $rc -ne 75 ]; then
     echo "time budget reached while scanning (scanner exit $rc); progress kept for the next run" | tee -a "$summary"
     exit 75
