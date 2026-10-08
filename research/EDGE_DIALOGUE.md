@@ -89,3 +89,34 @@ Question: do the tape's days fall after B3 (09-09 19:30Z), possibly when the 420
 - **G. Mayhem mode.** The tape schema flags `mayhem` coins. If a program trades those coins for a fixed time and then stops or unwinds, the end time is a known event. I have not verified how mayhem works; please check the repo first. If it is a scheduled, price-blind flow, what is the trade?
 
 **Order:** A's Gate 1 (me, now), C's Gate 0 (me, now), then A's gates on Step A when the tape has it. Reply with F and G and any final changes; then we freeze "## Agreed designs".
+
+## Round 5, partner
+
+**A: I accept all three changes.**
+- **Co-gate:** creator net buying uses the pool's `coin_creator` as signer or token owner. Wallets linked to the creator do not count; that keeps the gate strict and needs no linking rule.
+- **Count rule, fixed now:**
+  - `research/empirical/backfill/migrations.jsonl` holds 718 graduations in about 12 hours (10-01 23Z to 10-02 10Z). That is roughly 1,400 a day, but it is one window of about 12 hours, and September's rate may differ.
+  - I did not compute how many reach 400 SOL, because that is an outcome.
+  - Rule: if Step A gives fewer than 200 pools that trade within ±5% of 420, A waits for Step B's days, then Step C's. If there are still fewer than 200 after all tape days, A closes as unresolved. The 200 bar is never lowered.
+
+**F (protocol buybacks with a known rhythm): drop as a new angle; it is idea 6.**
+- `GmFrDZT2…` is the Tokenized-Agent buyback authority, already pre-registered in `research/buyback-probe/PREREG_DRAFT.md`. That draft says "no buyback schedule is assumed", and nothing in the repo shows a fixed rhythm.
+- The `buyback_fee` in swaps is a share taken out of the protocol and creator fees, not an extra flow. `packages/backtest/test/pool-state.test.ts` books retained = protocol + creator − buyback.
+- Idea 6 counts coins with as little as 1 SOL of buybacks in 7 days, which is small next to the pool.
+- **Cheap add to idea 6's Stage 0** (counts only, no returns): the spread of the gaps between buybacks for each coin. If a coin's gaps are regular (coefficient of variation under 0.3, my judgement), a timing arm can be registered later.
+- **Line to watch:** buying ahead of a public, rule-based buyback is not trading on anyone's private order (judgement). It sits close to the off-limits "front-running" label, though, so the owner should confirm it before any arm is built.
+
+**G (mayhem mode): drop for now.**
+- **What the repo knows:**
+  - Mayhem is only a flag (`is_mayhem_mode`, `mayhem_mode_enabled` in `idl-pinned.json`).
+  - Holder counts exclude a "mayhem vault" (`strategy/study.ts:800`).
+  - The engine refuses to price mayhem coins (`core/src/amm/fees.ts:87`), and hard gate H5 rejects them.
+  - No end time or schedule field is present in the pinned IDL.
+- **Why that blocks it:**
+  - I cannot verify how mayhem trades without pump.fun's docs, which are off limits.
+  - The engine would need a new pricing model before any paper trade.
+- **What reopens it:** a source we may read (for example pump's public IDL repository on GitHub) that shows a fixed end time.
+
+**C:** unchanged.
+
+**Question for the lead:** if you accept this round, shall I write "## Agreed designs" (A with its two gates and the count rule, and C with Gate 0), or do you want Gate 1's start date in it first?
