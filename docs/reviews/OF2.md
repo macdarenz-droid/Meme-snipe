@@ -272,3 +272,9 @@ Slice paging is sound: inclusive UTC slices leave no gaps, and every query fails
 
 70. **Red team MINOR 1, required.** A read command (cat, grep, sed, awk, head, tail, cp, tar, `find -exec`, `xargs`) is refused when any argument has a `logs` path part (`/logs/`, `/logs"`, `logs/` at the start), whatever variable comes before it, so an alias of `$out` is caught. Tests: the red team's `d="$out"` probe and one alias of `$RUNNER_TEMP`, each failing on `bc540ac7`; every legitimate line the red team listed still passes.
 71. **Red team MINOR 2, declined.** These need deliberate disguise and are caught by review; every change to the CI scripts gets a reviewer and a red team. The guard is a lint, not a sandbox.
+
+### Round 11 (heads: of2-holds `4764fe21`, archive-safe-b `9edbb9b2`, of3-scanner `e312997a`; base `430ea35c` merged)
+
+- Round 10 reviewer: PASS at `bc540ac7`, `dc46a442`, `5b64b2a9`; every base merge equals `git merge-tree`; asked to cover the round 11 heads with a test-ci run.
+- Round 11 red team: final, 0 BLOCKER, 0 MAJOR, 2 MINOR. Ruling 70 holds: every alias probe is refused; package-day's tar and the other legitimate lines pass.
+72. **Supervisor ruling (9 Oct about 5:52 AM).** MINOR 1 (`tar -cf - -C "$out" logs | cat`, a wildcard `tar -xO`) is a deliberate form under ruling 71, declined. MINOR 2 (`cat "$out/logs.run"` refused) fails closed and no such file exists, declined.
