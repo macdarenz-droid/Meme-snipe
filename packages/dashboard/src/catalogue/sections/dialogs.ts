@@ -1,7 +1,7 @@
 // Catalogue sections for UI-T07. "Dialogs" shows every state of C03, C15, C16, C17, C38 and C44 in paper and in live,
 // as in-place frames (many dialogs cannot be modal at once). "Open dialog" (standalone) is the working flow for the
 // browser tests: the HALT HoldButton, the HALT dialog, an A3 typed confirmation and a standard dialog, opened modally.
-// `?mode=` (paper, live_small, live, replay) and `?connection=disconnected` set the demo's VM-03 and stream state; a
+// `?mode=` (paper, live_small, live, replay, or unknown) and `?connection=` (disconnected, reconnecting, unknown) set the demo's VM-03 and stream state; a
 // `catalogue:set-mode` event with a mode in `detail` changes the mode while a dialog is open.
 import { createElement as h, Fragment, useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import type { Clock, Mode, UnixMs } from '@bot/types';
@@ -39,7 +39,7 @@ const HALT_TEXT = 'Stop new entries and cancel queued entries. Open positions (3
 function HaltDialog(props: { open: boolean; system: SystemStateView | null; connection?: ConnectionView; inline?: boolean; onClose: () => void; onConfirm: () => void }): ReactElement {
   return h(Dialog, {
     open: props.open, system: props.system, halt: true, title: 'Halt trading', description: HALT_TEXT,
-    ...(props.connection === undefined ? {} : { connection: props.connection }), ...(props.inline === true ? { inline: true } : {}),
+    connection: props.connection ?? 'connected', ...(props.inline === true ? { inline: true } : {}),
     secondary: { label: 'Halt and flatten all…', onClick: noop },
     confirm: { label: 'Halt now', onClick: props.onConfirm },
     onClose: props.onClose,
@@ -52,7 +52,7 @@ function LiveSwitchBody(): ReactElement {
 
 function TypedFrame(props: { system: SystemStateView; status: TypedConfirmStatus; phrase: string; stepUp?: StepUpStatus }): ReactElement {
   return h(TypedConfirmDialog, {
-    open: true, inline: true, system: props.system, actionClass: 'A3', requiredPhrase: 'LIVE-SMALL 0.25', actionName: 'the switch to LIVE-SMALL',
+    open: true, inline: true, connection: 'connected', system: props.system, actionClass: 'A3', requiredPhrase: 'LIVE-SMALL 0.25', actionName: 'the switch to LIVE-SMALL',
     title: 'Switch to LIVE-SMALL', description: 'Real funds, at most 0.25 SOL per trade and 2 open positions.', confirmLabel: 'Switch mode',
     phrase: props.phrase, status: props.status, onConfirm: noop, onClose: noop,
     ...(props.stepUp === undefined ? {} : { stepUp: props.stepUp }),
@@ -73,11 +73,13 @@ function ModeGallery(props: { label: string; system: SystemStateView }): ReactEl
   return h('div', { className: 'dialog-gallery', 'data-mode': s.mode },
     h('h3', { className: 'tokens__heading' }, `${props.label}: dialogs`),
     h('div', { className: 'dialog-gallery__grid' },
-      h(Frame, { title: 'Dialog, open' }, h(Dialog, { open: true, inline: true, system: s, title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
-      h(Frame, { title: 'Dialog, submitting' }, h(Dialog, { open: true, inline: true, system: s, status: 'submitting', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
-      h(Frame, { title: 'Dialog, error' }, h(Dialog, { open: true, inline: true, system: s, status: 'error', error: 'The request timed out. Nothing was retried.', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
+      h(Frame, { title: 'Dialog, open' }, h(Dialog, { open: true, inline: true, connection: 'connected', system: s, title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
+      h(Frame, { title: 'Dialog, submitting' }, h(Dialog, { open: true, inline: true, connection: 'connected', system: s, status: 'submitting', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
+      h(Frame, { title: 'Dialog, error' }, h(Dialog, { open: true, inline: true, connection: 'connected', system: s, status: 'error', error: 'The request timed out. Nothing was retried.', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
       h(Frame, { title: 'Dialog, disconnected' }, h(Dialog, { open: true, inline: true, system: s, connection: 'disconnected', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
-      h(Frame, { title: 'Standard dialog' }, h(Dialog, { open: true, inline: true, kind: 'standard', moneyAffecting: false, system: s, title: 'Column settings', description: 'Choose the columns this table shows.', confirm: { label: 'Save', onClick: noop }, onClose: noop })),
+      h(Frame, { title: 'Dialog, reconnecting' }, h(Dialog, { open: true, inline: true, system: s, connection: 'reconnecting', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
+      h(Frame, { title: 'Dialog, mode unknown' }, h(Dialog, { open: true, inline: true, system: null, connection: 'connected', title: 'Close position', description: 'Sell 1,234,567 BONK at market now.', confirm: { label: 'Close position', onClick: noop }, onClose: noop })),
+      h(Frame, { title: 'Standard dialog' }, h(Dialog, { open: true, inline: true, kind: 'standard', moneyAffecting: false, connection: 'connected', system: s, title: 'Column settings', description: 'Choose the columns this table shows.', confirm: { label: 'Save', onClick: noop }, onClose: noop })),
       h(Frame, { title: 'HALT dialog, disconnected (stays enabled)' }, h(HaltDialog, { open: true, inline: true, system: s, connection: 'disconnected', onClose: noop, onConfirm: noop }))),
     h('h3', { className: 'tokens__heading' }, `${props.label}: typed confirmation`),
     h('div', { className: 'dialog-gallery__grid' },
@@ -114,7 +116,9 @@ function Dialogs(): ReactElement {
 
 const KNOWN_MODES: readonly Mode[] = ['backtest', 'replay', 'paper', 'live_small', 'live'];
 
-function systemFor(mode: string | null): SystemStateView {
+/** The demo's VM-03 for `mode`: null (mode unknown) for "unknown", paper for anything else not a mode. */
+function systemFor(mode: string | null): SystemStateView | null {
+  if (mode === 'unknown') return null;
   const m = KNOWN_MODES.find((k) => k === mode) ?? 'paper';
   return { state_version: '200', mode: m, simulated: m !== 'live' && m !== 'live_small', trading_state: 'running' };
 }
@@ -125,7 +129,8 @@ type OpenDialog = 'halt' | 'typed' | 'standard' | null;
 function OpenDialogDemo(): ReactElement {
   const params = new URLSearchParams(location.search);
   const [system, setSystem] = useState(() => systemFor(params.get('mode')));
-  const connection: ConnectionView = params.get('connection') === 'disconnected' ? 'disconnected' : 'connected';
+  const asked = params.get('connection');
+  const connection: ConnectionView = asked === 'disconnected' || asked === 'reconnecting' || asked === 'unknown' ? asked : 'connected';
   const [open, setOpen] = useState<OpenDialog>(null);
   const [confirms, setConfirms] = useState(0);
   const [last, setLast] = useState('');

@@ -1,6 +1,7 @@
 // HoldButton (C03, UI-T07): the header's HALT control. Pressing and holding with a pointer for 1000 ms
-// (`--hold-to-confirm`) fills a progress ring and then calls onConfirm; releasing, cancelling (touch cancel) or losing
-// the pointer before that rewinds the ring over 160 ms and does nothing. Enter and Space never hold: they open the
+// (`--hold-to-confirm`) fills a progress ring and then calls onConfirm; releasing, cancelling (touch cancel), losing
+// the pointer, leaving the button or moving more than 10 px (a finger resting on HALT while the page scrolls) before
+// that rewinds the ring over 160 ms and does nothing. Enter and Space never hold: they open the
 // HALT dialog (onOpenDialog), and so does a click that no pointer press started (a screen reader's activation).
 // The server-side states (sending, acked, unconfirmed after 5 s, failed) come from the caller (UI-T13).
 import { createElement as h, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactElement } from 'react';
@@ -26,6 +27,11 @@ const STATUS_TEXT: Readonly<Record<Exclude<HoldServerStatus, 'idle'>, string>> =
   sending: 'Halting…', acked: 'Halted', unconfirmed: 'Halt not confirmed', failed: 'Halt failed',
 };
 
+/** A pointer that moves farther than this during a hold cancels it (a scroll, not a hold). */
+export const HOLD_MOVE_PX = 10;
+/** How long after a pointer up its click may arrive; a later click is a new activation. */
+export const CLICK_AFTER_UP_MS = 1000;
+
 /** The ring's circumference (r = 8 in a 20 px box), the stroke-dasharray the fill animates. */
 export const RING_LENGTH = 50.27;
 
@@ -34,7 +40,9 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
   const [phase, setPhase] = useState<'idle' | 'holding' | 'released-early'>('idle');
   const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rewind = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pointerPress = useRef(false);
+  /** The pointer press in progress or just released (its click follows); null when there is none. */
+  const press = useRef<{ x: number; y: number; up: boolean } | null>(null);
+  const upTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const status = props.status ?? 'idle';
   const state: HoldState = status === 'idle' ? props.preview ?? phase : status;
   const label = props.label ?? 'Halt';
@@ -42,11 +50,15 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
   useEffect(() => () => {
     if (hold.current !== null) clearTimeout(hold.current);
     if (rewind.current !== null) clearTimeout(rewind.current);
+    if (upTimer.current !== null) clearTimeout(upTimer.current);
   }, []);
 
   const start = (e: PointerEvent<HTMLButtonElement>): void => {
-    pointerPress.current = true;
+    // Checks first: only a primary-button press that starts a hold marks the next click as the pointer's own (Z05 round
+    // 2, reviewer m3: a refused press must not swallow a later screen-reader click).
     if (e.button !== 0 || status === 'sending' || hold.current !== null) return;
+    press.current = { x: e.clientX, y: e.clientY, up: false };
+    if (upTimer.current !== null) { clearTimeout(upTimer.current); upTimer.current = null; }
     e.currentTarget.setPointerCapture?.(e.pointerId);
     if (rewind.current !== null) { clearTimeout(rewind.current); rewind.current = null; }
     setPhase('holding');
@@ -56,12 +68,32 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
       props.onConfirm();
     }, HOLD_TO_CONFIRM_MS);
   };
-  const release = (): void => {
+  /** Stops a hold that has not completed: the ring rewinds and nothing is sent. */
+  const rewindHold = (): void => {
     if (hold.current === null) return;
     clearTimeout(hold.current);
     hold.current = null;
     setPhase('released-early');
     rewind.current = setTimeout(() => { rewind.current = null; setPhase('idle'); }, HOLD_REWIND_MS);
+  };
+  /** The pointer went up on the button: a click follows, which belongs to this press and opens nothing. */
+  const up = (): void => {
+    rewindHold();
+    if (press.current === null) return;
+    press.current.up = true;
+    // If the browser sends no click after all, the mark expires, so it never swallows a later activation.
+    upTimer.current = setTimeout(() => { upTimer.current = null; press.current = null; }, CLICK_AFTER_UP_MS);
+  };
+  /** The press ended without a pointer up on the button (touch cancel, lost capture, left, moved): no click follows. */
+  const abort = (): void => {
+    rewindHold();
+    if (press.current !== null && !press.current.up) press.current = null;
+  };
+  /** A finger resting on HALT while the page scrolls is not a hold: a move over HOLD_MOVE_PX cancels it. */
+  const move = (e: PointerEvent<HTMLButtonElement>): void => {
+    const p = press.current;
+    if (p === null || p.up || hold.current === null) return;
+    if ((e.clientX - p.x) ** 2 + (e.clientY - p.y) ** 2 > HOLD_MOVE_PX ** 2) abort();
   };
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>): void => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -70,7 +102,11 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
   };
   const onClick = (e: MouseEvent<HTMLButtonElement>): void => {
     e.preventDefault();
-    if (pointerPress.current) { pointerPress.current = false; return; }
+    if (press.current !== null) {
+      press.current = null;
+      if (upTimer.current !== null) { clearTimeout(upTimer.current); upTimer.current = null; }
+      return;
+    }
     props.onOpenDialog();
   };
 
@@ -83,9 +119,11 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
       'aria-describedby': `${id}-hint`,
       'aria-busy': status === 'sending' || undefined,
       onPointerDown: start,
-      onPointerUp: release,
-      onPointerCancel: release,
-      onLostPointerCapture: release,
+      onPointerUp: up,
+      onPointerCancel: abort,
+      onLostPointerCapture: abort,
+      onPointerLeave: abort,
+      onPointerMove: move,
       onKeyDown,
       onKeyUp: (e: KeyboardEvent<HTMLButtonElement>) => { if (e.key === ' ') e.preventDefault(); },
       onClick,

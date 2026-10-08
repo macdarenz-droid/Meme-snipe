@@ -2,8 +2,10 @@
 // so a wrong laptop clock cannot make stale data look fresh; for simulated data (clock "sim") the age is measured
 // against the simulation clock instead, while connection health always uses the wall clock. States: live (age up to
 // the "delayed after" threshold), delayed (up to the "stale after" threshold), stale (beyond it), disconnected and
-// paused. A negative age counts as 0; beyond CLOCK_SKEW_TOLERANCE_MS (the server clock ahead by more than the skew)
-// it is also reported as clock skew. A missing as_of is stale with the reason "no timestamp"; a malformed one (a
+// paused. A negative age within CLOCK_SKEW_TOLERANCE_MS counts as 0; beyond it (data ahead of the server clock by more
+// than the skew) the data is stale with the reason "clock skew" and the skew is reported (Z05 round 2, red team M1: a
+// future as_of must never read as live). Paused and disconnected keep the age state in `ageState`, so stale data stays
+// blocked while paused or disconnected (red team M2). A missing as_of is stale with the reason "no timestamp"; a malformed one (a
 // contract violation the schema check refuses upstream) is stale with the reason "invalid timestamp", never a throw
 // out of render.
 import { parseAt } from './money.ts';
@@ -75,9 +77,11 @@ export interface ClockReading {
 
 export interface Freshness {
   state: FreshnessState;
+  /** The state the data's age alone gives (live, delayed or stale), kept when the shown state is paused or disconnected. */
+  ageState: 'live' | 'delayed' | 'stale';
   /** Age in ms (0 or more), null when there is no timestamp or no simulation time. */
   ageMs: number | null;
-  /** Why the state is what it is, when not plain age (no timestamp, no simulation time). */
+  /** Why the state is what it is, when not plain age (no timestamp, invalid timestamp, no simulation time, clock skew). */
   reason?: string;
   /** How far the data is ahead of now, when that is more than CLOCK_SKEW_TOLERANCE_MS (clock-skew diagnostic). */
   skewMs?: number;
@@ -86,15 +90,16 @@ export interface Freshness {
 /** The freshness of `input` at `clock`. Disconnected beats paused, which beats the age. */
 export function freshness(input: FreshnessInput, clock: ClockReading): Freshness {
   const base = ((): Freshness => {
-    if (input.as_of === null) return { state: 'stale', ageMs: null, reason: 'no timestamp' };
+    if (input.as_of === null) return { state: 'stale', ageState: 'stale', ageMs: null, reason: 'no timestamp' };
     const asOf = atOrNull(input.as_of);
-    if (asOf === null) return { state: 'stale', ageMs: null, reason: 'invalid timestamp' };
+    if (asOf === null) return { state: 'stale', ageState: 'stale', ageMs: null, reason: 'invalid timestamp' };
     const now = input.clock === 'sim' ? (clock.simTime === undefined || clock.simTime === null ? null : atOrNull(clock.simTime)) : clock.nowMs + clock.offsetMs;
-    if (now === null) return { state: 'stale', ageMs: null, reason: 'no simulation time' };
+    if (now === null) return { state: 'stale', ageState: 'stale', ageMs: null, reason: 'no simulation time' };
     const raw = now - asOf;
     const ageMs = Math.max(0, raw);
-    const state: FreshnessState = ageMs <= input.delayed_ms ? 'live' : ageMs <= input.stale_ms ? 'delayed' : 'stale';
-    return -raw > CLOCK_SKEW_TOLERANCE_MS ? { state, ageMs, skewMs: -raw } : { state, ageMs };
+    if (-raw > CLOCK_SKEW_TOLERANCE_MS) return { state: 'stale', ageState: 'stale', ageMs, reason: 'clock skew', skewMs: -raw };
+    const state = ageMs <= input.delayed_ms ? 'live' : ageMs <= input.stale_ms ? 'delayed' : 'stale';
+    return { state, ageState: state, ageMs };
   })();
   if (input.disconnected === true) return { ...base, state: 'disconnected' };
   if (input.paused === true) return { ...base, state: 'paused' };
@@ -109,10 +114,14 @@ export function thresholdsFor(vm: string): Thresholds {
 }
 
 /**
- * Why a risk-increasing action is blocked by the data's freshness (UI-T05 acceptance 3): `<subject> is stale` when
- * stale, "Disconnected from bot" when the stream is down; undefined otherwise. Risk-reducing actions ignore this.
+ * Why a risk-increasing action is blocked by the data's freshness (UI-T05 acceptance 3); undefined when it is not.
+ * Risk-reducing actions ignore this. Blocks while the stream is down ("Disconnected from bot"), while the data is ahead
+ * of the server clock (clock skew), while updates are paused (always: paused data is not known to be current), and
+ * while the data's age is stale, whatever state is shown (Z05 round 2, red team M1 and M2).
  */
 export function blockedReason(f: Freshness, subject: string): string | undefined {
   if (f.state === 'disconnected') return 'Disconnected from bot';
-  return f.state === 'stale' ? `${subject} is stale` : undefined;
+  if (f.skewMs !== undefined) return `${subject} is ahead of the server clock`;
+  if (f.state === 'paused') return `${subject} updates are paused`;
+  return f.ageState === 'stale' ? `${subject} is stale` : undefined;
 }

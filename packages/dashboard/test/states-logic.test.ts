@@ -17,7 +17,7 @@ describe('UI-T05 freshness state machine', () => {
   it('VM-12: live up to 3 s, delayed up to 5 s, stale after (acceptance 3: 6 s is stale)', () => {
     const at = (ms: number): string => freshness(vm12(AS_OF), { nowMs: T + ms, offsetMs: 0 }).state;
     assert.deepEqual([0, 1000, 3000, 3001, 5000, 5001, 6000].map(at), ['live', 'live', 'live', 'delayed', 'delayed', 'stale', 'stale']);
-    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T + 6000, offsetMs: 0 }), { state: 'stale', ageMs: 6000 });
+    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T + 6000, offsetMs: 0 }), { state: 'stale', ageState: 'stale', ageMs: 6000 });
   });
 
   it('uses the server clock offset, so a wrong local clock cannot make stale data look fresh', () => {
@@ -25,28 +25,31 @@ describe('UI-T05 freshness state machine', () => {
     assert.equal(freshness(vm12(AS_OF), { nowMs: T + 60000, offsetMs: -59000 }).state, 'live');
   });
 
-  it('a negative age counts as 0 and reports the skew', () => {
-    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T - 2500, offsetMs: 0 }), { state: 'live', ageMs: 0, skewMs: 2500 });
+  it('Z05 round 2 (red team M1): data ahead of the server clock beyond the tolerance is stale, "clock skew", and reports the skew', () => {
+    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T - 2500, offsetMs: 0 }), { state: 'stale', ageState: 'stale', ageMs: 0, reason: 'clock skew', skewMs: 2500 });
+    // An as_of a day ahead never reads as live, however long it waits.
+    const ahead = vm12('2026-10-07T14:02:11.123Z');
+    for (const wait of [0, 60_000, 3_600_000]) assert.equal(freshness(ahead, { nowMs: T + wait, offsetMs: 0 }).state, 'stale');
   });
 
   it('a negative age within the skew tolerance (the offset estimate\'s error) counts as 0 and is not reported', () => {
     assert.equal(CLOCK_SKEW_TOLERANCE_MS, 1000);
-    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T - 40, offsetMs: 0 }), { state: 'live', ageMs: 0 });
-    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T, offsetMs: -1000 }), { state: 'live', ageMs: 0 });
-    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T - 1001, offsetMs: 0 }), { state: 'live', ageMs: 0, skewMs: 1001 });
+    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T - 40, offsetMs: 0 }), { state: 'live', ageState: 'live', ageMs: 0 });
+    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T, offsetMs: -1000 }), { state: 'live', ageState: 'live', ageMs: 0 });
+    assert.deepEqual(freshness(vm12(AS_OF), { nowMs: T - 1001, offsetMs: 0 }), { state: 'stale', ageState: 'stale', ageMs: 0, reason: 'clock skew', skewMs: 1001 });
   });
 
   it('a missing as_of is stale with the reason "no timestamp"', () => {
-    assert.deepEqual(freshness(vm12(null), { nowMs: T, offsetMs: 0 }), { state: 'stale', ageMs: null, reason: 'no timestamp' });
+    assert.deepEqual(freshness(vm12(null), { nowMs: T, offsetMs: 0 }), { state: 'stale', ageState: 'stale', ageMs: null, reason: 'no timestamp' });
   });
 
   it('a malformed as_of or sim_time is stale with a reason, never a throw (review m5)', () => {
     for (const bad of ['2026-10-07T14:02:11Z', '2026-02-30T00:00:00.000Z', '']) {
-      assert.deepEqual(freshness(vm12(bad), { nowMs: T, offsetMs: 0 }), { state: 'stale', ageMs: null, reason: 'invalid timestamp' }, bad);
+      assert.deepEqual(freshness(vm12(bad), { nowMs: T, offsetMs: 0 }), { state: 'stale', ageState: 'stale', ageMs: null, reason: 'invalid timestamp' }, bad);
     }
-    assert.deepEqual(freshness(vm12('2026-10-07T14:02:11Z', { disconnected: true }), { nowMs: T, offsetMs: 0 }), { state: 'disconnected', ageMs: null, reason: 'invalid timestamp' });
+    assert.deepEqual(freshness(vm12('2026-10-07T14:02:11Z', { disconnected: true }), { nowMs: T, offsetMs: 0 }), { state: 'disconnected', ageState: 'stale', ageMs: null, reason: 'invalid timestamp' });
     const sim = vm12(AS_OF, { clock: 'sim' });
-    assert.deepEqual(freshness(sim, { nowMs: T, offsetMs: 0, simTime: '2026-10-07T14:02:11Z' }), { state: 'stale', ageMs: null, reason: 'no simulation time' });
+    assert.deepEqual(freshness(sim, { nowMs: T, offsetMs: 0, simTime: '2026-10-07T14:02:11Z' }), { state: 'stale', ageState: 'stale', ageMs: null, reason: 'no simulation time' });
   });
 
   it('acceptance 4: simulated data ages against sim_clock.sim_time, not the wall clock', () => {
@@ -54,10 +57,10 @@ describe('UI-T05 freshness state machine', () => {
     assert.equal(replay.sim_clock.paused, true);
     const sim = vm12('2026-09-30T14:02:10.123Z', { clock: 'sim' });
     for (const wall of [T, T + 3_600_000]) {
-      assert.deepEqual(freshness(sim, { nowMs: wall, offsetMs: 0, simTime: replay.sim_clock.sim_time }), { state: 'live', ageMs: 1000 });
+      assert.deepEqual(freshness(sim, { nowMs: wall, offsetMs: 0, simTime: replay.sim_clock.sim_time }), { state: 'live', ageState: 'live', ageMs: 1000 });
     }
-    assert.deepEqual(freshness(sim, { nowMs: T, offsetMs: 0 }), { state: 'stale', ageMs: null, reason: 'no simulation time' });
-    assert.deepEqual(freshness(sim, { nowMs: T, offsetMs: 0, simTime: null }), { state: 'stale', ageMs: null, reason: 'no simulation time' });
+    assert.deepEqual(freshness(sim, { nowMs: T, offsetMs: 0 }), { state: 'stale', ageState: 'stale', ageMs: null, reason: 'no simulation time' });
+    assert.deepEqual(freshness(sim, { nowMs: T, offsetMs: 0, simTime: null }), { state: 'stale', ageState: 'stale', ageMs: null, reason: 'no simulation time' });
   });
 
   it('disconnected beats paused, which beats the age', () => {
@@ -65,6 +68,13 @@ describe('UI-T05 freshness state machine', () => {
     assert.equal(freshness(vm12(AS_OF, { paused: true }), clock).state, 'paused');
     assert.equal(freshness(vm12(AS_OF, { paused: true, disconnected: true }), clock).state, 'disconnected');
     assert.equal(freshness(vm12(AS_OF, { paused: false, disconnected: false }), clock).state, 'stale');
+  });
+
+  it('Z05 round 2 (red team M2): paused and disconnected keep the age state', () => {
+    const old = { nowMs: T + 60000, offsetMs: 0 };
+    assert.equal(freshness(vm12(AS_OF, { paused: true }), old).ageState, 'stale');
+    assert.equal(freshness(vm12(AS_OF, { disconnected: true }), old).ageState, 'stale');
+    assert.equal(freshness(vm12(AS_OF, { paused: true }), { nowMs: T + 1000, offsetMs: 0 }).ageState, 'live');
   });
 
   it('thresholds come from the DS table; every one is ordered expected <= delayed < stale', () => {
@@ -79,7 +89,19 @@ describe('UI-T05 freshness state machine', () => {
     assert.equal(at(4000), undefined);
     assert.equal(at(1000), undefined);
     assert.equal(at(1000, { disconnected: true }), 'Disconnected from bot');
-    assert.equal(at(1000, { paused: true }), undefined);
+  });
+
+  it('Z05 round 2 (red team M1, M2): clock skew, paused updates and stale data under paused or disconnected all block', () => {
+    const at = (ms: number, extra: Partial<FreshnessInput> = {}): string | undefined => blockedReason(freshness(vm12(AS_OF, extra), { nowMs: T + ms, offsetMs: 0 }), 'Risk status');
+    assert.equal(at(-2500), 'Risk status is ahead of the server clock');
+    assert.equal(at(-2500, { paused: true }), 'Risk status is ahead of the server clock');
+    assert.equal(at(-500), undefined, 'within the skew tolerance');
+    assert.equal(at(1000, { paused: true }), 'Risk status updates are paused', 'paused always blocks risk-increasing actions');
+    assert.equal(at(60000, { paused: true }), 'Risk status updates are paused');
+    assert.equal(at(60000, { disconnected: true }), 'Disconnected from bot');
+    // Paused while the age is stale is still blocked even if a caller ignores the paused rule: the age state decides.
+    const f = freshness(vm12(AS_OF, { paused: true }), { nowMs: T + 60000, offsetMs: 0 });
+    assert.equal(blockedReason({ ...f, state: 'live' }, 'Risk status'), 'Risk status is stale');
   });
 
   it('every VM-12 fixture yields a freshness state', () => {

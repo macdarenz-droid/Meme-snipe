@@ -5,7 +5,7 @@
 // and never rounded, and out-of-range or over-limit values show the bounds or the limit, with a link to the limit.
 import { createElement as h, useId, type ReactElement, type ReactNode } from 'react';
 import { CircleX, Search, TriangleAlert } from 'lucide-react';
-import { parseAmountInput, type AmountResult, type AmountSpec } from '../lib/amount.ts';
+import { parseAmountInput, readBack, type AmountResult, type AmountSpec } from '../lib/amount.ts';
 import { cx } from './cx.ts';
 import { Icon } from './icon.ts';
 
@@ -68,7 +68,10 @@ export interface AmountInputProps {
 
 export function AmountInput(props: AmountInputProps): ReactElement {
   const result = parseAmountInput(props.value, props.spec);
-  const message = result.kind === 'invalid' || result.kind === 'out-of-range' || result.kind === 'exceeds-limit' ? result.message : undefined;
+  const error = result.kind === 'invalid' || result.kind === 'out-of-range' || result.kind === 'exceeds-limit' ? result.message : undefined;
+  // The parsed value is always shown back (Z05 round 2, red team M4), with any error before it.
+  const back = readBack(result, props.spec);
+  const message = error === undefined ? back ?? undefined : back === null ? error : `${error}. ${back}`;
   const link = result.kind === 'exceeds-limit' && props.limitHref !== undefined
     ? h('a', { className: 'field__link', href: props.limitHref }, 'Risk limits') : null;
   return h(TextInput, {
@@ -77,7 +80,8 @@ export function AmountInput(props: AmountInputProps): ReactElement {
     unit: props.unit,
     inputMode: props.spec.unit === 'bps' ? 'numeric' : 'decimal',
     onChange: (text: string) => props.onChange?.(text, parseAmountInput(text, props.spec)),
-    ...(message === undefined ? {} : { message, tone: 'invalid' as const }),
+    ...(message === undefined ? {} : { message }),
+    ...(error === undefined ? {} : { tone: 'invalid' as const }),
     ...(props.dirty === undefined ? {} : { dirty: props.dirty }),
     ...(props.readOnly === undefined ? {} : { readOnly: props.readOnly }),
     extra: link,

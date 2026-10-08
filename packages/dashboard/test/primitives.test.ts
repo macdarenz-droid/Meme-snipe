@@ -207,16 +207,28 @@ describe('UI-T04 TextInput and AmountInput', () => {
 
   it('shows the range or the limit with its link; bps inputs are numeric; props are optional', () => {
     const r = mount(h(AmountInput, { label: 'Trade size', unit: 'SOL', spec: { unit: 'sol', limit: '250000000' }, value: '0.3', limitHref: '#risk', dirty: true, readOnly: false }));
-    assert.equal(r.container.querySelector('.field__message')?.textContent, 'Above the limit of 0.25 SOL');
+    assert.equal(r.container.querySelector('.field__message')?.textContent, 'Above the limit of 0.25 SOL. Reads as 0.3 SOL');
     assert.equal(r.container.querySelector('a')?.getAttribute('href'), '#risk');
     r.rerender(h(AmountInput, { label: 'Trade size', unit: 'SOL', spec: { unit: 'sol', limit: '250000000' }, value: '0.3' }));
     assert.equal(r.container.querySelector('a'), null);
     r.rerender(h(AmountInput, { label: 'Slippage', unit: 'bps', spec: { unit: 'bps', max: '1000' }, value: '1200' }));
-    assert.equal(r.container.querySelector('.field__message')?.textContent, 'Enter at most 1,000 bps');
+    assert.equal(r.container.querySelector('.field__message')?.textContent, 'Enter at most 1,000 bps. Reads as 1,200 bps');
     assert.equal((r.container.querySelector('input') as HTMLInputElement).inputMode, 'numeric');
     typeInto(r.container.querySelector('input') as HTMLInputElement, '5');
     r.rerender(h(AmountInput, { label: 'Size', unit: 'SOL', spec: { unit: 'sol' }, value: '' }));
     assert.equal(r.container.querySelector('.field__message'), null);
+  });
+
+  it('Z05 round 2 (red team M4): the parsed value is always shown back; 0,250 SOL is refused, not read as 250', () => {
+    const r = mount(h(AmountInput, { label: 'Size', unit: 'SOL', spec: { unit: 'sol' }, value: '0.25' }));
+    const msg = (): string | null | undefined => r.container.querySelector('.field__message')?.textContent;
+    assert.equal(msg(), 'Reads as 0.25 SOL');
+    assert.equal(r.container.querySelector('input')?.getAttribute('aria-invalid'), null);
+    for (const comma of ['0,250', '1,500']) {
+      r.rerender(h(AmountInput, { label: 'Size', unit: 'SOL', spec: { unit: 'sol' }, value: comma }));
+      assert.equal(msg(), 'Use a dot for decimals; no commas in SOL amounts', comma);
+      assert.equal(r.container.querySelector('input')?.getAttribute('aria-invalid'), 'true');
+    }
   });
 });
 

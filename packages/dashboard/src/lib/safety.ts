@@ -34,12 +34,30 @@ export const MODE_NAME: Readonly<Record<Mode, string>> = {
 export const DIALOG_TITLE_PREFIX: Readonly<Record<ModeTone, string>> = { offline: 'Replay:', paper: 'Paper:', live: 'LIVE:' };
 
 /** The notice shown when the mode changes while a dialog is open (UI-T07 edge case). */
-export function modeChangedText(mode: Mode): string {
-  return `Mode changed to ${MODE_NAME[mode]} — review again`;
+export function modeChangedText(mode: Mode | null): string {
+  return mode === null ? 'Mode unknown — review again' : `Mode changed to ${MODE_NAME[mode]} — review again`;
 }
 
 /** The text a non-HALT dialog shows, and its submit's reason, while the stream is disconnected (UI-T07 edge case). */
 export const DISCONNECTED_CONFIRM_TEXT = 'Disconnected · cannot confirm current state';
+
+/** The stream's state as a dialog sees it; `unknown` until the data client reports one. */
+export type ConnectionView = 'connected' | 'reconnecting' | 'disconnected' | 'unknown';
+
+/**
+ * Why a money-affecting confirm is disabled by what the dashboard cannot know (Z05 round 2, red team M3, reviewer m2):
+ * the connection is not `connected`, or the mode is unknown. Undefined when neither holds. It fails closed: anything
+ * but a known mode on a connected stream disables it. HALT is exempt (it reduces risk; UI.md HALT flow).
+ */
+export function unknownStateReason(connection: ConnectionView, mode: Mode | null): string | undefined {
+  if (connection === 'disconnected') return DISCONNECTED_CONFIRM_TEXT;
+  if (connection === 'reconnecting') return 'Reconnecting · cannot confirm current state';
+  if (connection === 'unknown') return 'Connection unknown · cannot confirm current state';
+  return mode === null ? 'Mode unknown · cannot confirm current state' : undefined;
+}
+
+/** The confirm's reason in the frame between a mode change and the dialog closing (Z05 round 2, red team m3). */
+export const MODE_CHANGED_CONFIRM_TEXT = 'The mode changed · review again';
 
 export type PhraseState = 'empty' | 'mismatch' | 'match';
 /** One character of the required phrase: typed and equal, equal but for case, different, or not typed yet. */

@@ -16,7 +16,8 @@ import { createElement as h, Fragment, useEffect, useId, useLayoutEffect, useRef
 import { CircleCheck, CircleX, TriangleAlert } from 'lucide-react';
 import type { Mode } from '@bot/types';
 import {
-  checkPhrase, DIALOG_EXIT_MS, DIALOG_TITLE_PREFIX, DISCONNECTED_CONFIRM_TEXT, modeChangedText, modeTone, type SystemStateView,
+  checkPhrase, DIALOG_EXIT_MS, DIALOG_TITLE_PREFIX, MODE_CHANGED_CONFIRM_TEXT, modeChangedText, modeTone, unknownStateReason,
+  type ConnectionView, type SystemStateView,
 } from '../lib/safety.ts';
 import { Button, type ButtonVariant } from './button.ts';
 import { Countdown, type CountdownProps } from './countdown.ts';
@@ -29,7 +30,7 @@ export type DialogKind = 'standard' | 'alert';
 /** C15 states while shown; `closing` is the exit fade after `open` turns false. */
 export type DialogStatus = 'open' | 'submitting' | 'error';
 export type CloseReason = 'cancel' | 'escape' | 'mode-changed';
-export type ConnectionView = 'connected' | 'disconnected';
+export type { ConnectionView };
 
 export interface DialogAction { label: ReactNode; onClick: () => void; variant?: ButtonVariant; disabledReason?: string }
 
@@ -44,7 +45,8 @@ export interface DialogProps {
   moneyAffecting?: boolean;
   /** VM-03; null while the mode is unknown. */
   system: SystemStateView | null;
-  connection?: ConnectionView;
+  /** The stream's state. Required: a money-affecting dialog fails closed unless it is `connected`. */
+  connection: ConnectionView;
   /** The HALT dialog: initial focus on the confirm action, and it stays enabled while disconnected. */
   halt?: boolean;
   confirm?: DialogAction;
@@ -84,12 +86,15 @@ export function Dialog(props: DialogProps): ReactElement {
   const [phase, setPhase] = useState<Phase>('closed');
   const [notice, setNotice] = useState<string | null>(null);
   const returnTo = useRef<HTMLElement | null>(null);
+  /** The mode when the dialog opened; null is a known "unknown". Read in render to disable confirm after a change. */
   const openedMode = useRef<Mode | null>(null);
   const moneyAffecting = props.moneyAffecting ?? true;
   const mode = props.system?.mode ?? null;
   const status = props.status ?? 'open';
   const busy = status === 'submitting';
-  const blocked = props.connection === 'disconnected' && props.halt !== true;
+  // Fail closed (Z05 round 2, red team M3): a money-affecting non-HALT confirm needs a connected stream and a known mode.
+  const unknownReason = moneyAffecting && props.halt !== true ? unknownStateReason(props.connection, mode)
+    : props.connection === 'disconnected' && props.halt !== true ? unknownStateReason('disconnected', mode) : undefined;
   const { onClose } = props;
 
   // Open: remember the control to return to and the mode, then show modally and focus the initial action.
@@ -129,7 +134,8 @@ export function Dialog(props: DialogProps): ReactElement {
 
   // A mode change while open closes the dialog with a notice (the operator must review the action in the new mode).
   useEffect(() => {
-    if (phase !== 'open' || !props.open || mode === null || openedMode.current === null || mode === openedMode.current) return;
+    // A change from or to an unknown mode is a mode change too (Z05 round 2, red team M3).
+    if (phase !== 'open' || !props.open || mode === openedMode.current) return;
     setNotice(modeChangedText(mode));
     onClose('mode-changed');
   }, [mode, phase, props.open, onClose]);
@@ -162,8 +168,10 @@ export function Dialog(props: DialogProps): ReactElement {
   const prefix = titlePrefix(mode, moneyAffecting);
   const live = moneyAffecting && mode !== null && modeTone(mode) === 'live';
   const confirm = props.confirm;
-  const confirmReason = blocked ? DISCONNECTED_CONFIRM_TEXT : confirm?.disabledReason;
   const inline = props.inline === true;
+  // In the frame between a mode change and the close, confirm is already disabled (Z05 round 2, red team m3).
+  const modeMoved = !inline && phase !== 'closed' && mode !== openedMode.current;
+  const confirmReason = modeMoved ? MODE_CHANGED_CONFIRM_TEXT : unknownReason ?? confirm?.disabledReason;
   const rendered = props.open || phase !== 'closed';
   return h(Fragment, null,
     notice === null ? null : h('p', { className: 'dialog-notice', role: 'alert' }, h(Icon, { icon: STATE_ICONS['warning'] as typeof TriangleAlert }), notice),
@@ -183,7 +191,7 @@ export function Dialog(props: DialogProps): ReactElement {
     h('h2', { id: `${id}-title`, className: 'dialog__title' },
       prefix === null ? null : h('span', { className: 'dialog__prefix' }, prefix), prefix === null ? null : ' ', props.title),
     h('div', { id: `${id}-desc`, className: 'dialog__description' }, props.description),
-    blocked ? h(Banner, { tone: 'disconnected', title: DISCONNECTED_CONFIRM_TEXT }) : null,
+    unknownReason === undefined ? null : h(Banner, { tone: 'disconnected', title: unknownReason }),
     props.children === undefined ? null : h('div', { className: 'dialog__body' }, props.children),
     status === 'error' && props.error !== undefined
       ? h('p', { className: 'dialog__error', role: 'alert' }, h(Icon, { icon: CircleX }), props.error) : null,

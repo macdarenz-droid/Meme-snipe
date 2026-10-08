@@ -28,14 +28,26 @@ export function countdownState(leftMs: number, outcome: CountdownProps['outcome'
   return leftMs > 0 ? 'running' : 'elapsed';
 }
 
+function atOrNull(iso: string): number | null {
+  try {
+    return parseAt(iso);
+  } catch {
+    return null;
+  }
+}
+
 export function Countdown(props: CountdownProps): ReactElement {
   const now = useNow(props.source.clock, 1000, `${props.effectiveAt} ${props.source.offsetMs ?? 0}`);
-  const left = remainingMs(parseAt(props.effectiveAt), now, props.source.offsetMs ?? 0);
+  // A malformed effective time (refused upstream by the schema check) shows as unknown, never a throw out of render,
+  // and never as time left. Cancel (A1, it reduces risk) stays offered while the change is still pending.
+  const at = atOrNull(props.effectiveAt);
+  const left = at === null ? 0 : remainingMs(at, now, props.source.offsetMs ?? 0);
   const state = countdownState(left, props.outcome);
-  const text = state === 'running' ? `${props.label} in ${formatCountdown(left)}`
+  const text = at === null && state === 'elapsed' ? `${props.label} at an unknown time · waiting for the server`
+    : state === 'running' ? `${props.label} in ${formatCountdown(left)}`
     : state === 'elapsed' ? `${props.label} due · waiting for the server`
       : state === 'cancelled' ? `${props.label} cancelled` : `${props.label} applied`;
   return h('div', { className: cx('countdown', `countdown--${state}`), 'data-state': state },
     h('span', { className: 'countdown__text', role: 'timer', 'aria-label': text }, text),
-    state === 'running' && props.onCancel !== undefined ? h(Button, { variant: 'secondary', size: 'sm', onClick: props.onCancel }, 'Cancel') : null);
+    (state === 'running' || (at === null && props.outcome === undefined)) && props.onCancel !== undefined ? h(Button, { variant: 'secondary', size: 'sm', onClick: props.onCancel }, 'Cancel') : null);
 }

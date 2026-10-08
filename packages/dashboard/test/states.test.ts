@@ -365,11 +365,12 @@ describe('UI-T05 FreshnessIndicator and ConnectionStatus', () => {
   });
 
   it('freshnessText for every state', () => {
-    assert.equal(freshnessText({ state: 'paused', ageMs: 1 }), 'Paused');
-    assert.equal(freshnessText({ state: 'disconnected', ageMs: 1 }), 'Disconnected');
-    assert.equal(freshnessText({ state: 'stale', ageMs: null, reason: 'no timestamp' }), 'Stale · no timestamp');
-    assert.equal(freshnessText({ state: 'stale', ageMs: null }), 'Stale · ');
-    assert.equal(freshnessText({ state: 'delayed', ageMs: 252000 }), 'Delayed · 4m 12s');
+    assert.equal(freshnessText({ state: 'paused', ageState: 'live', ageMs: 1 }), 'Paused');
+    assert.equal(freshnessText({ state: 'disconnected', ageState: 'live', ageMs: 1 }), 'Disconnected');
+    assert.equal(freshnessText({ state: 'stale', ageState: 'stale', ageMs: null, reason: 'no timestamp' }), 'Stale · no timestamp');
+    assert.equal(freshnessText({ state: 'stale', ageState: 'stale', ageMs: null }), 'Stale · ');
+    assert.equal(freshnessText({ state: 'delayed', ageState: 'delayed', ageMs: 252000 }), 'Delayed · 4m 12s');
+    assert.equal(freshnessText({ state: 'stale', ageState: 'stale', ageMs: 0, reason: 'clock skew', skewMs: 2500 }), 'Stale · clock skew');
   });
 
   it('acceptance 4: in replay, data freshness follows the paused simulation clock while ConnectionStatus counts down on the wall clock', () => {
@@ -391,6 +392,23 @@ describe('UI-T05 FreshnessIndicator and ConnectionStatus', () => {
     const r = mount(h('div', null, ...(['connected', 'disconnected', 'auth-expired', 'reconnecting'] as const).map((state) => h(ConnectionStatus, { key: state, state, clock: mockedClock }))));
     assert.deepEqual([...r.container.querySelectorAll('[role="status"]')].map((s) => s.textContent),
       ['Connection: Connected', 'Connection: Disconnected', 'Connection: Session expired', 'Connection: Reconnecting']);
+  });
+});
+
+describe('Z05 round 2 (red team m2): a malformed asOf', () => {
+  it('renders "as of an unknown time" in every state that shows it, never a throw', () => {
+    for (const bad of ['2026-10-07T14:02:11Z', 'not a time', '2026-02-30T00:00:00.000Z']) {
+      const views = [
+        h(StateView, { kind: 'stale', asOf: bad, age: '12s', lastGood: h('p', null, 'last good') }),
+        h(StateView, { kind: 'disconnected', attempt: 3, nextInS: 4, asOf: bad, lastGood: h('p', null, 'last good') }),
+        h(StateView, { kind: 'error', onRetry: () => undefined, asOf: bad, lastGood: h('p', null, 'last good') }),
+      ];
+      for (const v of views) {
+        const r = mount(v);
+        assert.match(r.container.textContent ?? '', /as of an unknown time/, bad);
+        assert.doesNotMatch(r.container.textContent ?? '', /UTC/, bad);
+      }
+    }
   });
 });
 

@@ -18,10 +18,16 @@ describe('UI-T04 AmountInput parsing', () => {
   it('edge: 10 decimals of SOL is invalid and never rounded', () => {
     assert.deepEqual(parseAmountInput('0.1234567891', SOL), { kind: 'invalid', message: 'SOL has at most 9 decimals' });
   });
-  it('edge: a pasted 1,000.5 is accepted as 1000.5; a comma decimal is refused', () => {
-    assert.deepEqual(parseAmountInput('1,000.5', SOL), { kind: 'valid', value: '1000500000000' });
-    assert.deepEqual(parseAmountInput(' 12,345,678 ', SOL), { kind: 'valid', value: '12345678000000000' });
-    for (const bad of ['0,25', '1,00', '1,0000', ',5', '1,000,00']) assert.equal(parseAmountInput(bad, SOL).kind, 'invalid', bad);
+  it('Z05 round 2 (red team M4): a SOL amount refuses commas outright: 0,250 and 1,500 never read as 250 or 1,500 SOL', () => {
+    for (const bad of ['0,250', '1,500', '1,000.5', ' 12,345,678 ', '0,25', '1,00', ',5']) {
+      assert.deepEqual(parseAmountInput(bad, SOL), { kind: 'invalid', message: 'Use a dot for decimals; no commas in SOL amounts' }, bad);
+    }
+  });
+  it('other units accept thousands separators only as real groups that do not start with 0', () => {
+    const TOKEN: AmountSpec = { unit: 'token', decimals: 2 };
+    assert.deepEqual(parseAmountInput('1,000.5', TOKEN), { kind: 'valid', value: '100050' });
+    assert.deepEqual(parseAmountInput(' 12,345,678 ', { unit: 'bps' }), { kind: 'valid', value: '12345678' });
+    for (const bad of ['0,250', '0,25', '1,00', '1,0000', ',5', '1,000,00']) assert.equal(parseAmountInput(bad, TOKEN).kind, 'invalid', bad);
   });
   it('accepts .5, 1. and leading zeros; refuses signs, exponents, letters and a lone dot', () => {
     assert.deepEqual(parseAmountInput('.5', SOL), { kind: 'valid', value: '500000000' });
@@ -56,7 +62,9 @@ describe('UI-T04 AmountInput parsing', () => {
     assert.equal(formatStored('250', { unit: 'percent' }), '2.50%');
     assert.deepEqual([unitScale(SOL), unitScale({ unit: 'token', decimals: 6 }), unitScale({ unit: 'bps' }), unitScale({ unit: 'percent' })], [9, 6, 0, 2]);
     assert.equal(amountValue({ kind: 'valid', value: '5' }), '5');
-    assert.equal(amountValue({ kind: 'exceeds-limit', value: '5', message: '' }), '5');
+    // Z05 round 2 (red team M4): out-of-range and over-limit values are never handed on.
+    assert.equal(amountValue({ kind: 'exceeds-limit', value: '5', message: '' }), null);
+    assert.equal(amountValue({ kind: 'out-of-range', value: '5', message: '' }), null);
     assert.equal(amountValue({ kind: 'empty' }), null);
     assert.equal(amountValue({ kind: 'invalid', message: '' }), null);
   });

@@ -170,7 +170,7 @@ function Primitives(): ReactElement {
     h(Row, { title: 'Amount inputs' },
       h(Amount, { label: 'Size', unit: 'SOL', spec: { unit: 'sol' }, initial: '0.25' }),
       h(Amount, { label: 'Size (10 decimals)', unit: 'SOL', spec: { unit: 'sol' }, initial: '0.1234567891' }),
-      h(Amount, { label: 'Pasted size', unit: 'SOL', spec: { unit: 'sol' }, initial: '1,000.5' }),
+      h(Amount, { label: 'Comma in SOL', unit: 'SOL', spec: { unit: 'sol' }, initial: '1,500' }),
       h(Amount, { label: 'Comma decimal', unit: 'SOL', spec: { unit: 'sol' }, initial: '0,25' }),
       h(Amount, { label: 'Per-trade size', unit: 'SOL', spec: { unit: 'sol', min: '10000000', max: '500000000' }, initial: '0.75' }),
       h(Amount, { label: 'Trade size', unit: 'SOL', spec: { unit: 'sol', limit: '250000000' }, initial: '0.3', limitHref: '#risk' }),

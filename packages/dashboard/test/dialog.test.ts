@@ -10,9 +10,9 @@ import { afterEach, beforeEach, describe, it, vi } from 'vitest';
 import { createElement as h, useState, type ReactElement } from 'react';
 import type { Clock, Mode, UnixMs } from '@bot/types';
 import { Countdown } from '../src/components/countdown.ts';
-import { Dialog, StepUpAuth, TypedConfirmDialog, type CloseReason, type DialogProps, type StepUpStatus, type TypedConfirmStatus } from '../src/components/dialog.ts';
+import { Dialog, StepUpAuth, TypedConfirmDialog, type CloseReason, type ConnectionView, type DialogProps, type StepUpStatus, type TypedConfirmStatus } from '../src/components/dialog.ts';
 import { DiffView } from '../src/components/diff-view.ts';
-import { HoldButton, type HoldServerStatus } from '../src/components/hold-button.ts';
+import { CLICK_AFTER_UP_MS, HoldButton, type HoldServerStatus } from '../src/components/hold-button.ts';
 import { DIALOG_EXIT_MS, HOLD_REWIND_MS, HOLD_TO_CONFIRM_MS, type SystemStateView } from '../src/lib/safety.ts';
 import { actSync, click, fire, key, render, typeInto, type Rendered } from './dom.ts';
 import { PACKAGE_DIR } from './tooling/build.ts';
@@ -41,7 +41,7 @@ function Harness(props: { system: SystemStateView | null; onClose?: (r: CloseRea
   const [open, setOpen] = useState(false);
   return h('div', null,
     h('button', { type: 'button', id: 'trigger', onClick: () => setOpen(true) }, 'Open'),
-    h(Dialog, {
+    h(Dialog, { connection: 'connected',
       open, system: props.system, title: 'Close position', description: 'Sell now.',
       confirm: { label: 'Close position', onClick: () => undefined },
       ...props.dialog,
@@ -149,19 +149,19 @@ describe('UI-T07 Dialog (C15)', () => {
     assert.match(btn(d, 'dialog__confirm').textContent ?? '', /real funds/);
     assert.ok(btn(d, 'dialog__confirm').classList.contains('btn--live-confirm'));
     for (const [mode, prefix] of [['live', 'LIVE:'], ['replay', 'Replay:'], ['backtest', 'Replay:']] as const) {
-      const other = mount(h(Dialog, { open: true, inline: true, system: sys(mode), title: 'T', description: 'D', onClose: () => undefined }));
+      const other = mount(h(Dialog, { connection: 'connected', open: true, inline: true, system: sys(mode), title: 'T', description: 'D', onClose: () => undefined }));
       assert.equal(other.container.querySelector('.dialog__title')?.textContent, `${prefix} T`);
     }
   });
 
   it('a dialog that does not affect money, or with the mode unknown, has no prefix and no live marks', () => {
-    const plain = mount(h(Dialog, { open: true, inline: true, kind: 'standard', moneyAffecting: false, system: LIVE, title: 'Columns', description: 'D', onClose: () => undefined }));
+    const plain = mount(h(Dialog, { connection: 'connected', open: true, inline: true, kind: 'standard', moneyAffecting: false, system: LIVE, title: 'Columns', description: 'D', onClose: () => undefined }));
     const d = plain.container.querySelector('dialog') as HTMLDialogElement;
     assert.equal(d.querySelector('.dialog__title')?.textContent, 'Columns');
     assert.equal(d.getAttribute('role'), 'dialog');
     assert.equal(d.getAttribute('aria-modal'), null, 'an in-place frame is not modal');
     assert.equal(d.classList.contains('dialog--live'), false);
-    const unknown = mount(h(Dialog, { open: true, inline: true, system: null, title: 'T', description: 'D', onClose: () => undefined }));
+    const unknown = mount(h(Dialog, { connection: 'connected', open: true, inline: true, system: null, title: 'T', description: 'D', onClose: () => undefined }));
     assert.equal(unknown.container.querySelector('.dialog__title')?.textContent, 'T');
     assert.equal(unknown.container.querySelector('dialog')?.dataset['mode'], 'unknown');
   });
@@ -211,9 +211,70 @@ describe('UI-T07 Dialog (C15)', () => {
     assert.equal(r.container.querySelector('.dialog__title')?.textContent, 'LIVE: Close position');
   });
 
+  it('Z05 round 2 (red team M3, reviewer m2): confirm fails closed while the connection is unknown or reconnecting, or the mode is unknown', () => {
+    const cases: ReadonlyArray<[ConnectionView, SystemStateView | null, string]> = [
+      ['unknown', PAPER, 'Connection unknown · cannot confirm current state'],
+      ['reconnecting', LIVE, 'Reconnecting · cannot confirm current state'],
+      ['disconnected', LIVE, 'Disconnected · cannot confirm current state'],
+      ['connected', null, 'Mode unknown · cannot confirm current state'],
+    ];
+    for (const [connection, system, reason] of cases) {
+      const onConfirm = vi.fn();
+      const r = mount(h(Dialog, { open: true, inline: true, connection, system, title: 'T', description: 'D', confirm: { label: 'Go', onClick: onConfirm }, onClose: () => undefined }));
+      const confirm = btn(r.container, 'dialog__confirm');
+      assert.equal(confirm.getAttribute('aria-disabled'), 'true', reason);
+      assert.equal(document.getElementById((confirm.getAttribute('aria-describedby') as string).split(' ')[0] as string)?.textContent, reason);
+      assert.equal(r.container.querySelector('.banner .banner__title')?.textContent, reason);
+      click(confirm);
+      assert.equal(onConfirm.mock.calls.length, 0, reason);
+    }
+    // HALT reduces risk: it stays enabled in every one of these states.
+    for (const [connection, system] of cases) {
+      const r = mount(h(Dialog, { open: true, inline: true, halt: true, connection, system, title: 'Halt', description: 'D', confirm: { label: 'Halt now', onClick: () => undefined }, onClose: () => undefined }));
+      assert.equal(btn(r.container, 'dialog__confirm').getAttribute('aria-disabled'), null, connection);
+    }
+    // A dialog that does not affect money is not blocked by an unknown mode or a reconnecting stream.
+    const plain = mount(h(Dialog, { open: true, inline: true, kind: 'standard', moneyAffecting: false, connection: 'reconnecting', system: null, title: 'Columns', description: 'D', confirm: { label: 'Save', onClick: () => undefined }, onClose: () => undefined }));
+    assert.equal(btn(plain.container, 'dialog__confirm').getAttribute('aria-disabled'), null);
+  });
+
+  it('Z05 round 2 (red team M3): a change to or from an unknown mode is a mode change', () => {
+    const onClose = vi.fn();
+    function M(props: { system: SystemStateView | null }): ReactElement {
+      return h(Harness, { system: props.system, onClose });
+    }
+    const r = mount(h(M, { system: PAPER }));
+    const trigger = r.container.querySelector('#trigger') as HTMLButtonElement;
+    click(trigger);
+    r.rerender(h(M, { system: null }));
+    assert.deepEqual(onClose.mock.calls, [['mode-changed']]);
+    assert.equal(r.container.querySelector('.dialog-notice')?.textContent, 'Mode unknown — review again');
+    tick(DIALOG_EXIT_MS);
+    click(trigger);
+    r.rerender(h(M, { system: LIVE }));
+    assert.deepEqual(onClose.mock.calls.at(-1), ['mode-changed']);
+    assert.equal(r.container.querySelector('.dialog-notice')?.textContent, 'Mode changed to LIVE-SMALL — review again');
+  });
+
+  it('Z05 round 2 (red team m3): in the render where the mode changed, confirm is already disabled', () => {
+    const onConfirm = vi.fn();
+    // A parent that ignores onClose keeps the dialog open: the render itself must still refuse the click.
+    function Stuck(props: { mode: Mode }): ReactElement {
+      return h(Dialog, { open: true, connection: 'connected', system: sys(props.mode), title: 'T', description: 'D', confirm: { label: 'Go', onClick: onConfirm }, onClose: () => undefined });
+    }
+    const r = mount(h(Stuck, { mode: 'paper' }));
+    assert.equal(btn(dialogEl(r), 'dialog__confirm').getAttribute('aria-disabled'), null);
+    r.rerender(h(Stuck, { mode: 'live' }));
+    const confirm = btn(dialogEl(r), 'dialog__confirm');
+    assert.equal(confirm.getAttribute('aria-disabled'), 'true');
+    assert.equal(document.getElementById((confirm.getAttribute('aria-describedby') as string).split(' ')[0] as string)?.textContent, 'The mode changed · review again');
+    click(confirm);
+    assert.equal(onConfirm.mock.calls.length, 0);
+  });
+
   it('shows the error state with its message and a secondary action', () => {
     const onSecondary = vi.fn();
-    const r = mount(h(Dialog, {
+    const r = mount(h(Dialog, { connection: 'connected',
       open: true, inline: true, system: PAPER, status: 'error', error: 'Timed out.', title: 'T', description: 'D', onClose: () => undefined,
       secondary: { label: 'Halt and flatten all…', onClick: onSecondary }, confirm: { label: 'Go', onClick: () => undefined },
     }));
@@ -222,7 +283,7 @@ describe('UI-T07 Dialog (C15)', () => {
     assert.equal(err.textContent, 'Timed out.');
     click(btn(r.container, 'dialog__secondary'));
     assert.equal(onSecondary.mock.calls.length, 1);
-    const blocked = mount(h(Dialog, {
+    const blocked = mount(h(Dialog, { connection: 'connected',
       open: true, inline: true, system: PAPER, title: 'T', description: 'D', onClose: () => undefined,
       secondary: { label: 'More', onClick: onSecondary, disabledReason: 'Not now' }, confirm: { label: 'Go', onClick: () => undefined, disabledReason: 'Wait' },
     }));
@@ -234,14 +295,14 @@ describe('UI-T07 Dialog (C15)', () => {
     const outside = document.createElement('button');
     document.body.append(outside);
     outside.focus();
-    mount(h(Dialog, { open: true, inline: true, system: PAPER, title: 'T', description: 'D', onClose: () => undefined }));
+    mount(h(Dialog, { connection: 'connected', open: true, inline: true, system: PAPER, title: 'T', description: 'D', onClose: () => undefined }));
     assertFocused(outside);
     outside.remove();
   });
 
   it('closing before the fade ends and reopening keeps the dialog open and the original trigger', () => {
     function Toggle(props: { open: boolean }): ReactElement {
-      return h(Dialog, { open: props.open, system: PAPER, title: 'T', description: 'D', onClose: () => undefined });
+      return h(Dialog, { connection: 'connected', open: props.open, system: PAPER, title: 'T', description: 'D', onClose: () => undefined });
     }
     const trigger = document.createElement('button');
     document.body.append(trigger);
@@ -262,7 +323,7 @@ describe('UI-T07 Dialog (C15)', () => {
 
 describe('UI-T07 TypedConfirmDialog (C16)', () => {
   function Typed(props: { status?: TypedConfirmStatus; stepUp?: StepUpStatus; onConfirm?: () => void; system?: SystemStateView; extra?: object }): ReactElement {
-    return h(TypedConfirmDialog, {
+    return h(TypedConfirmDialog, { connection: 'connected',
       open: true, system: props.system ?? LIVE, actionClass: 'A3', requiredPhrase: 'LIVE-SMALL 0.25', actionName: 'the switch to LIVE-SMALL',
       title: 'Switch to LIVE-SMALL', description: 'Real funds.', confirmLabel: 'Switch mode', onConfirm: props.onConfirm ?? (() => undefined),
       onClose: () => undefined, ...(props.status === undefined ? {} : { status: props.status }), ...(props.stepUp === undefined ? {} : { stepUp: props.stepUp }),
@@ -417,6 +478,17 @@ describe('UI-T07 Countdown (C44)', () => {
     assert.equal(text(), 'LIVE-SMALL due · waiting for the server');
   });
 
+  it('a malformed effective time shows as unknown, never a throw, and Cancel stays offered', () => {
+    nowMs = at('2026-10-06T14:02:29.123Z');
+    const onCancel = vi.fn();
+    const r = mount(h(Countdown, { label: 'LIVE-SMALL', effectiveAt: '2026-10-06T14:03:11Z', source: { clock }, onCancel }));
+    assert.equal(r.container.querySelector('.countdown__text')?.textContent, 'LIVE-SMALL at an unknown time · waiting for the server');
+    click(buttonByText(r.container, 'Cancel'));
+    assert.equal(onCancel.mock.calls.length, 1);
+    const done = mount(h(Countdown, { label: 'LIVE-SMALL', effectiveAt: 'x', source: { clock }, outcome: 'cancelled', onCancel }));
+    assert.equal(buttonByText(done.container, 'Cancel'), undefined);
+  });
+
   it('uses the server clock offset, and shows cancelled and applied', () => {
     nowMs = at('2026-10-06T14:02:29.123Z');
     const ahead = mount(h(Countdown, { label: 'RAISE MAXPOS 0.30', effectiveAt, source: { clock, offsetMs: 2000 } }));
@@ -543,6 +615,73 @@ describe('UI-T07 HoldButton (C03)', () => {
     assert.equal(onConfirm.mock.calls.length, 0);
   });
 
+  it('Z05 round 2 (reviewer m3): a refused press, a cancelled press or a lost capture never swallows the next screen-reader click', () => {
+    const at = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 });
+    const { b, onOpenDialog, onConfirm } = setup();
+    fire(b, pointer('pointerdown', { button: 2 }));
+    fire(b, at);
+    assert.equal(onOpenDialog.mock.calls.length, 1, 'a secondary-button press marks nothing');
+    fire(b, pointer('pointerdown'));
+    tick(300);
+    fire(b, pointer('pointercancel'));
+    fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 }));
+    assert.equal(onOpenDialog.mock.calls.length, 2, 'after a touch cancel');
+    tick(HOLD_REWIND_MS);
+    fire(b, pointer('pointerdown'));
+    fire(b, pointer('lostpointercapture'));
+    fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 }));
+    assert.equal(onOpenDialog.mock.calls.length, 3, 'after a lost capture with no pointer up');
+    const sending = setup('sending');
+    fire(sending.b, pointer('pointerdown'));
+    fire(sending.b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 }));
+    assert.equal(sending.onOpenDialog.mock.calls.length, 1, 'a press refused while sending marks nothing');
+    tick(HOLD_TO_CONFIRM_MS);
+    assert.equal(onConfirm.mock.calls.length, 0);
+  });
+
+  it('Z05 round 2: the click after a pointer up is the press\'s own; if it never comes, the mark expires', () => {
+    const { b, onOpenDialog } = setup();
+    fire(b, pointer('pointerdown'));
+    tick(200);
+    fire(b, pointer('pointerup'));
+    fire(b, pointer('lostpointercapture'));
+    fire(b, new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    assert.equal(onOpenDialog.mock.calls.length, 0, 'lost capture after the up keeps the mark for its click');
+    click(b);
+    assert.equal(onOpenDialog.mock.calls.length, 1, 'the next click is a new activation');
+    tick(HOLD_REWIND_MS);
+    fire(b, pointer('pointerdown'));
+    fire(b, pointer('pointerup'));
+    tick(CLICK_AFTER_UP_MS);
+    click(b);
+    assert.equal(onOpenDialog.mock.calls.length, 2, 'no click came after the up: the mark expired');
+  });
+
+  it('Z05 round 2 (red team m4): a move over 10 px or leaving the button cancels a hold; a small move does not', () => {
+    const { b, onConfirm } = setup();
+    fire(b, pointer('pointerdown', { clientX: 100, clientY: 100 }));
+    fire(b, pointer('pointermove', { clientX: 106, clientY: 108 }));
+    tick(HOLD_TO_CONFIRM_MS);
+    assert.equal(onConfirm.mock.calls.length, 1, 'a 10 px move is a hold');
+    fire(b, pointer('pointerup'));
+    click(b);
+    tick(HOLD_REWIND_MS);
+    fire(b, pointer('pointerdown', { clientX: 100, clientY: 100 }));
+    tick(400);
+    fire(b, pointer('pointermove', { clientX: 100, clientY: 111 }));
+    assert.equal(b.dataset['state'], 'released-early');
+    fire(b, pointer('pointermove', { clientX: 100, clientY: 140 }));
+    tick(HOLD_TO_CONFIRM_MS);
+    assert.equal(onConfirm.mock.calls.length, 1, 'a scroll is not a hold');
+    tick(HOLD_REWIND_MS);
+    fire(b, pointer('pointerdown'));
+    tick(400);
+    // React builds onPointerLeave from pointerout with a target outside the button.
+    fire(b, pointer('pointerout', { relatedTarget: document.body }));
+    tick(HOLD_TO_CONFIRM_MS);
+    assert.equal(onConfirm.mock.calls.length, 1, 'leaving the button is not a hold');
+  });
+
   it('pressing twice without releasing starts one hold only', () => {
     const { b, onConfirm } = setup();
     fire(b, pointer('pointerdown'));
@@ -595,14 +734,28 @@ describe('UI-T07 VM-03 fixtures (fixture first: INTEGRATION.md, UI-T07 depends o
     assert.ok(max.kill.halted_by.display.startsWith('\u202e'));
   });
 
+  it('Z05 round 2 (reviewer m1): every fixture carries every VM-03 field (UI.md VM-03 table)', () => {
+    const FIELDS = ['schema_version', 'state_version', 'mode', 'simulated', 'mode_since', 'run_id', 'trading_state', 'trading_state_changed_at',
+      'kill', 'signer', 'live_caps', 'scheduled_change', 'strategies', 'sim_clock', 'versions', 'trading_wallet_pubkey'].sort();
+    const KILL = ['halted_by', 'latch_set_by', 'latch_clear_requires', 'reason_code', 'reason_text', 'components'].sort();
+    for (const file of fixtures) {
+      const vm = JSON.parse(readFileSync(join(dir, file), 'utf8')) as Record<string, unknown> & { kill: Record<string, unknown>; signer: object; live_caps: object; versions: object };
+      assert.deepEqual(Object.keys(vm).sort(), FIELDS, file);
+      assert.deepEqual(Object.keys(vm.kill).sort(), KILL, file);
+      assert.deepEqual(Object.keys(vm.signer).sort(), ['exit_lease_holder', 'lock'], file);
+      assert.deepEqual(Object.keys(vm.live_caps).sort(), ['max_daily_loss_lamports', 'max_open_positions', 'max_trade_lamports'], file);
+      assert.deepEqual(Object.keys(vm.versions).sort(), ['bot', 'config'], file);
+    }
+  });
+
   for (const file of fixtures) {
     it(`${file}: the HALT and typed dialogs take the fixture's mode`, () => {
       const vm = JSON.parse(readFileSync(join(dir, file), 'utf8')) as SystemStateView;
       const system: SystemStateView = { state_version: vm.state_version, mode: vm.mode, simulated: vm.simulated, trading_state: vm.trading_state };
-      const halt = mount(h(Dialog, { open: true, inline: true, halt: true, system, title: 'Halt trading', description: 'D', confirm: { label: 'Halt now', onClick: () => undefined }, onClose: () => undefined }));
+      const halt = mount(h(Dialog, { connection: 'connected', open: true, inline: true, halt: true, system, title: 'Halt trading', description: 'D', confirm: { label: 'Halt now', onClick: () => undefined }, onClose: () => undefined }));
       assert.equal(halt.container.querySelector('.dialog__title')?.textContent, `${PREFIX[vm.mode]} Halt trading`);
       assert.equal(halt.container.querySelector('dialog')?.dataset['mode'], vm.mode);
-      const typed = mount(h(TypedConfirmDialog, {
+      const typed = mount(h(TypedConfirmDialog, { connection: 'connected',
         open: true, inline: true, system, actionClass: 'A2', requiredPhrase: 'RESUME', actionName: 'the resume', title: 'Resume trading', description: 'D',
         confirmLabel: 'Resume', onConfirm: () => undefined, onClose: () => undefined,
       }));

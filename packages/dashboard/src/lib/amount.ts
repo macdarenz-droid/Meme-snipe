@@ -1,7 +1,8 @@
 // AmountInput parsing (UI-T04, C08): user text to an exact integer string in the stored unit. SOL to lamports (at
 // most 9 decimals), token amounts to base units (at most the mint's decimals), bps as an integer, percent to bps (at
-// most 2 decimals). Never rounds: too many decimals is invalid. Thousands separators are accepted only as real groups
-// (`1,000.5`); the UI is English-only (open question Q-09), so a comma decimal (`0,25`) is invalid.
+// most 2 decimals). Never rounds: too many decimals is invalid. A SOL amount refuses commas outright (Z05 round 2, red
+// team M4: `0,250` must never read as 250 SOL, and `1,500` is as likely 1.5 as 1500); other units accept thousands
+// separators only as real groups that do not start with 0 (`1,000`). The UI is English-only (open question Q-09).
 import { formatBps, formatSol, formatTokenAmount } from './money.ts';
 
 export type AmountUnit = 'sol' | 'token' | 'bps' | 'percent';
@@ -54,7 +55,8 @@ export function parseAmountInput(text: string, spec: AmountSpec): AmountResult {
   if (trimmed.startsWith('-')) return { kind: 'invalid', message: 'Enter an amount of zero or more' };
   let plain = trimmed;
   if (plain.includes(',')) {
-    if (!/^\d{1,3}(,\d{3})+(\.\d*)?$/.test(plain)) return { kind: 'invalid', message: 'Use a dot for decimals; commas only between thousands' };
+    if (spec.unit === 'sol') return { kind: 'invalid', message: 'Use a dot for decimals; no commas in SOL amounts' };
+    if (!/^[1-9]\d{0,2}(,\d{3})+(\.\d*)?$/.test(plain)) return { kind: 'invalid', message: 'Use a dot for decimals; commas only between thousands' };
     plain = plain.replace(/,/g, '');
   }
   const m = /^(\d*)(?:\.(\d*))?$/.exec(plain);
@@ -79,8 +81,16 @@ export function parseAmountInput(text: string, spec: AmountSpec): AmountResult {
   return { kind: 'valid', value: v };
 }
 
-/** The stored value when the result has one. */
+/**
+ * The stored value only when the input is valid: an out-of-range or over-limit value is never handed on (Z05 round 2,
+ * red team M4), so a caller cannot submit it by reading the value and ignoring the kind.
+ */
 export function amountValue(result: AmountResult): string | null {
-  return result.kind === 'empty' || result.kind === 'invalid' ? null : result.value;
+  return result.kind === 'valid' ? result.value : null;
+}
+
+/** The parsed value read back in the field's unit (`Reads as 0.25 SOL`), so the operator sees what will be used. */
+export function readBack(result: AmountResult, spec: AmountSpec): string | null {
+  return result.kind === 'empty' || result.kind === 'invalid' ? null : `Reads as ${formatStored(result.value, spec)}`;
 }
 

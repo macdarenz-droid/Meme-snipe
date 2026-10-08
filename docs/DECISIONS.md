@@ -3644,3 +3644,14 @@ Rulings in `docs/reviews/Z01.md` on `claude/supervisor-docs` at `cc02e94a`.
 - **Less prose flagged** (red team RT5-03; ruling 7.3). `:` starts a value only after a key, at the start of a line or after a list dash, `{` or `,`, so `log('venue: <domain>')` is prose. `}` and `]` now end a value too, so a flow mapping `{host: <domain>}` is read. In shell files, an argument inside a quoted string that holds other words is prose (`echo "checking <domain> now"`). A quoted host on its own, an unquoted argument, and a `curl` header such as `-H "Host: <domain>"` (the curl form) still count. Every positive test from rounds 3–6 still passes.
 - **RT5-04 and R6-1** (rulings 7.4, 7.5). No change here: APK-REMOVE removes the Android release job after this PR, and R6-1 is accepted as intended.
 
+## Z05 UI system, round 2 (2026-10-08, supervisor rulings for the round 1 review and red team)
+
+Rulings in `docs/reviews/Z05.md` on `claude/supervisor-docs-2` at `d95eb80f`. The card's deviations from UI.md are written back under "Built in Z05" in `docs/blueprint/UI.md`.
+
+- **Clock skew and paused data** (red team M1, M2; rulings 1, 2). Data ahead of the server clock beyond the 1 s tolerance is stale ("clock skew"), never live. Paused and disconnected keep the age state. `blockedReason` blocks clock skew, paused updates, and stale data under paused or disconnected.
+- **Dialogs fail closed** (red team M3, m3, reviewer m2; rulings 3, 7). A money-affecting confirm needs a connected stream and a known mode, and stays disabled in the render where the mode changed. A change to or from an unknown mode is a mode change. HALT is exempt: it reduces risk (UI.md HALT flow).
+- **No commas in SOL amounts** (red team M4; ruling 4). `0,250` and `1,500` are refused, the parsed value is always shown back, and out-of-range or over-limit values are never handed on.
+- **Copy guard reads like a reader** (red team m1; ruling 5). NFKC, format characters removed, look-alike letters mapped to Latin, AI in any case, split strings, the built bundle and the rendered pages. The banned list only grows. One reviewed exact string is allowed in the bundle: React DOM's `seamless` attribute name.
+- **Malformed times and the hold gesture** (red team m2, m4, reviewer m3; rulings 6, 8). A malformed `asOf` shows "as of an unknown time", never a throw. A hold is cancelled on touch cancel, lost capture, leaving the button, or a move of more than 10 px. Only a press that starts a hold claims the next click, for at most 1 s.
+- **Production headers** (red team m5; ruling 9). Only the development and test server sends the CSP and security headers today. The production server must send the same headers, tested in the card that builds it.
+- **Fixtures and audit records** (reviewer m1, m4; rulings 10, 11). `replay-paused.json` carries every VM-03 field. UI.md U-04 records lucide-react 1.47.0, the audited version.

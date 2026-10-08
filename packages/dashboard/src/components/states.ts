@@ -143,7 +143,15 @@ export function loginHref(next: string): string {
   return `/login?next=${encodeURIComponent(safe)}`;
 }
 
-const asOfText = (iso: string | undefined): string => (iso === undefined ? 'as of an unknown time' : `as of ${formatTime(iso).text} UTC`);
+/** `as of 14:02:11 UTC`; a missing or malformed time (refused upstream by the schema check) never throws out of render. */
+export function asOfText(iso: string | undefined): string {
+  if (iso === undefined) return 'as of an unknown time';
+  try {
+    return `as of ${formatTime(iso).text} UTC`;
+  } catch {
+    return 'as of an unknown time';
+  }
+}
 
 function ActionButton(props: { action: StateAction | undefined }): ReactElement | null {
   return props.action === undefined ? null : h(Button, { onClick: props.action.onClick }, props.action.label);
@@ -258,7 +266,7 @@ export interface FreshnessIndicatorProps {
 /** The text of a freshness state: `Live · 2s`, `Stale · 6s`, `Stale · no timestamp`, `Paused`, `Disconnected`. */
 export function freshnessText(f: Freshness): string {
   if (f.state === 'paused' || f.state === 'disconnected') return FRESHNESS_LABEL[f.state];
-  if (f.ageMs === null) return `${FRESHNESS_LABEL[f.state]} · ${f.reason ?? ''}`;
+  if (f.ageMs === null || f.reason !== undefined) return `${FRESHNESS_LABEL[f.state]} · ${f.reason ?? ''}`;
   return `${FRESHNESS_LABEL[f.state]} · ${formatAgeMs(f.ageMs)}`;
 }
 

@@ -206,3 +206,31 @@ test('reflow at 360 px: dialogs and the gallery fit without horizontal scroll', 
   const box = await page.getByRole('alertdialog').boundingBox();
   expect(box?.width ?? 999).toBeLessThanOrEqual(360);
 });
+
+test('Z05 round 2: with the mode unknown or the stream reconnecting, a money confirm is disabled with its reason; HALT is not', async ({ page }) => {
+  for (const [query, reason] of [['mode=unknown', 'Mode unknown · cannot confirm current state'], ['mode=live_small&connection=reconnecting', 'Reconnecting · cannot confirm current state']] as const) {
+    await open(page, query);
+    await page.getByRole('button', { name: 'Close position' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog.locator('.banner').getByText(reason)).toBeVisible();
+    const confirm = dialog.getByRole('button', { name: /^Close position/ });
+    await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    await expect(confirm).toHaveAccessibleDescription(reason);
+    await confirm.click({ force: true });
+    await expect(out(page)).toHaveAttribute('data-confirms', '0');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await page.getByRole('button', { name: 'Halt', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Halt now' }).click();
+    await expect(out(page)).toHaveAttribute('data-last', 'halt-dialog');
+  }
+});
+
+test('Z05 round 2: a change to an unknown mode while open closes the dialog with "Mode unknown — review again"', async ({ page }) => {
+  await open(page, 'mode=paper');
+  await page.getByRole('button', { name: 'Close position' }).click();
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent('catalogue:set-mode', { detail: 'unknown' })));
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  await expect(page.getByRole('alert').filter({ hasText: 'Mode unknown — review again' })).toBeVisible();
+});
