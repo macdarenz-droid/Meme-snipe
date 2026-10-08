@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/57dac05e8471caf68905adfa1f936ccfb09268a4/ops/install.sh -o i && echo '7a4a8c73cf5e9b8dc77a71a99b70aa3f367f1934d76d00ede9e23d43bcfea0fc  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/c6f359ef14b102838db32faaae5fdd892f92320b/ops/install.sh -o i && echo '7a4a8c73cf5e9b8dc77a71a99b70aa3f367f1934d76d00ede9e23d43bcfea0fc  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
