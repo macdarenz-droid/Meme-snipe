@@ -3408,6 +3408,29 @@ PY
   [[ ! -e "$A/curl.calls" ]] && grep -q "$m" "$A/summary.md" || bad+=" [$v: $(grep -o 'refused[^|]*' "$A/summary.md" | head -1 | cut -c1-120)]"
 done
 [[ -z "$bad" ]] && ok "OF-4 ruling 8: arming refuses secrets.DATA_STORE_TOKEN written into a run: line, toJSON(secrets), secrets[...] and secrets: inherit in an archive workflow" || no "OF-4 secrets text:$bad"
+# ---- OF-4 ruling 13: the store-token secret name matches without regard to case ----
+bad=""; gdreset; touch "$GD/noguard-$NG"
+for v in step job top mixed; do
+  mkfx "$T/fx13"; w="$T/fx13/.github/workflows/data-scan.yml"
+  python3 - "$w" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+if v in ("step", "mixed"):
+    a = "          ALLOW_REVISIONS: ${{ inputs.allow_revisions }}\n"
+    assert s.count(a) == 1; s = s.replace(a, a + "          GH_TOKEN: ${{ secrets.data_store_token }}\n")
+    if v == "mixed": s = s.replace("GH_TOKEN: ${{ secrets.data_store_token }}", "GH_TOKEN: ${{ secrets.Data_Store_Token }}")
+elif v == "job":
+    i = s.index("\n  assemble:"); j = s.index("\n    runs-on:", i)
+    s = s[:j] + "\n    env:\n      TOK: ${{ secrets.data_store_token }}" + s[j:]
+else:
+    a = "\nenv:\n"; assert s.count(a) == 1; s = s.replace(a, a + "  TOK: ${{ secrets.Data_Store_Token }}\n")
+open(p, "w").write(s)
+PY
+  ACFX=$T/fx13/research/historical/ci ac env AC_STATUS=206
+  [[ ! -e "$A/curl.calls" ]] && grep -q "holds the store token" "$A/summary.md" || bad+=" [$v: $(grep -o 'refused[^|]*' "$A/summary.md" | head -1 | cut -c1-120)]"
+done
+[[ -z "$bad" ]] && ok "OF-4 ruling 13: arming refuses secrets.data_store_token (any case) in a step that is not clean, in a job env and in the top-level env" || no "OF-4 token case:$bad"
+bad=""
 bad=""; gdreset
 # 9. After create, an incomplete release (an asset lost) fails before readback=true.
 export GH_BIN="$T/bin/gh"
