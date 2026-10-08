@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +71,74 @@ func TestFailureLineIsAProgramLine(t *testing.T) {
 	}
 	if !reFailed.MatchString("Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P failed: custom program error: 0x1772") {
 		t.Fatal("a failure line did not match")
+	}
+}
+
+// S rows carry the plan's top_program and cu_price (tx_fee, cu and jito_tip are the
+// scanner's own columns).
+func TestSRowsCarryTopProgramAndCUPrice(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "u")
+	if _, err := decodeUnit("../../historical/rpcscan/testdata/rpc", 0, 1<<62, "", out, false, 2); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(out, fAmm))
+	b, err := zstdDec.DecodeAll(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	head := strings.Split(lines[0], ",")
+	ti, ci := -1, -1
+	for i, h := range head {
+		switch h {
+		case "top_program":
+			ti = i
+		case "cu_price":
+			ci = i
+		}
+	}
+	for _, need := range []string{"tx_fee", "cu", "jito_tip"} {
+		if !strings.Contains(lines[0], ","+need+",") {
+			t.Fatalf("no %s column", need)
+		}
+	}
+	if ti < 0 || ci < 0 {
+		t.Fatalf("columns missing: %s", lines[0])
+	}
+	top, price := 0, 0
+	for _, l := range lines[1:] {
+		f := strings.Split(l, ",")
+		if len(f) != len(head) {
+			continue // a quoted field; the counts below need only most rows
+		}
+		if f[ti] != "" {
+			top++
+		}
+		if f[ci] != "" {
+			price++
+		}
+	}
+	if top < 100 || price < 50 {
+		t.Fatalf("top_program filled %d, cu_price filled %d of %d", top, price, len(lines)-1)
+	}
+	if dropEvents["CollectCreatorFeeEvent"] || dropEvents["CollectCoinCreatorFeeEvent"] {
+		t.Fatal("creator-fee events are still dropped")
+	}
+}
+
+// Creator-fee events become CF rows with the creator and the amount in lamports.
+func TestCreatorFeeRow(t *testing.T) {
+	l := `{"slot":5,"block_time":9,"tx_idx":2,"ev_idx":1,"outer_ix":3,"inner_ix":0,"signature":"sig","signer":"s","program":"amm",` +
+		`"event":"CollectCoinCreatorFeeEvent","fields":{"coin_creator":"C","coin_creator_fee":"12345","coin_creator_vault_ata":"V","coin_creator_token_account":"A"}}`
+	r, ok := creatorFeeRow(l)
+	if !ok || r[10] != "C" || r[11] != "12345" || r[13] != "V" || r[14] != "A" || r[0] != "5" {
+		t.Fatalf("row %v", r)
+	}
+	l = `{"slot":5,"event":"CollectCreatorFeeEvent","fields":{"creator":"P","creator_fee":"7","quote_mint":"Q"}}`
+	if r, ok = creatorFeeRow(l); !ok || r[10] != "P" || r[11] != "7" || r[12] != "Q" {
+		t.Fatalf("row %v", r)
+	}
+	if _, ok = creatorFeeRow(`{"event":"TradeEvent"}`); ok {
+		t.Fatal("a trade became a CF row")
 	}
 }

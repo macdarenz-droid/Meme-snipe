@@ -35,7 +35,43 @@ const (
 	fBlocks    = "B.csv.zst"
 	fEvents    = "E.jsonl.zst" // every other pump and PumpSwap event: C (creates) and G (migrations, pool creations) by event name
 	fHourly    = "H.csv.zst"
+	fCreator   = "CF.csv.zst" // creator-fee collections (the scanner drops these events)
 )
+
+// creatorFeeCols: CollectCreatorFeeEvent (pump; quote_mint) and CollectCoinCreatorFeeEvent
+// (PumpSwap; the vault and destination token accounts). Neither event names a mint or a
+// pool: a creator's vault holds the fees of all their coins.
+var creatorFeeCols = []string{"slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "signature", "signer",
+	"program", "event", "creator", "amount_lamports", "quote_mint", "creator_vault_ata", "creator_token_account"}
+
+var creatorFeeEvents = map[string]bool{"CollectCreatorFeeEvent": true, "CollectCoinCreatorFeeEvent": true}
+
+func creatorFeeRow(l string) ([]string, bool) {
+	var e struct {
+		Slot      uint64            `json:"slot"`
+		BlockTime int64             `json:"block_time"`
+		TxIdx     int               `json:"tx_idx"`
+		EvIdx     int               `json:"ev_idx"`
+		OuterIx   int               `json:"outer_ix"`
+		InnerIx   int               `json:"inner_ix"`
+		Signature string            `json:"signature"`
+		Signer    string            `json:"signer"`
+		Program   string            `json:"program"`
+		Event     string            `json:"event"`
+		Fields    map[string]string `json:"fields"`
+	}
+	if json.Unmarshal([]byte(l), &e) != nil || !creatorFeeEvents[e.Event] {
+		return nil, false
+	}
+	f := e.Fields
+	creator, amount := f["creator"], f["creator_fee"]
+	if e.Event == "CollectCoinCreatorFeeEvent" {
+		creator, amount = f["coin_creator"], f["coin_creator_fee"]
+	}
+	return []string{strconv.FormatUint(e.Slot, 10), strconv.FormatInt(e.BlockTime, 10), strconv.Itoa(e.TxIdx), strconv.Itoa(e.EvIdx),
+		strconv.Itoa(e.OuterIx), strconv.Itoa(e.InnerIx), e.Signature, e.Signer, e.Program, e.Event, creator, amount,
+		f["quote_mint"], f["coin_creator_vault_ata"], f["coin_creator_token_account"]}, true
+}
 
 type decodeStats struct {
 	Day           string           `json:"day"`
@@ -195,6 +231,9 @@ func decodeUnit(spool string, from, to uint64, day string, outDir string, useMan
 		return nil, err
 	}
 	sampleRate = 1 // every mint's rows kept (research tables are private and complete)
+	for name := range creatorFeeEvents {
+		delete(dropEvents, name) // kept for CF (the scanner's own units still drop them)
+	}
 	st := &UnitStats{Schema: schemaVersion, FromSlot: from, ToSlot: to, EventCounts: map[string]int{}, UnknownEvents: map[string]int{},
 		NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, FirstSeen: map[string]uint64{},
 		ScannerRevision: scannerRevision, SampleRate: sampleRate}
@@ -207,7 +246,7 @@ func decodeUnit(spool string, from, to uint64, day string, outDir string, useMan
 	cols := map[string][]string{
 		fCurve: append(append([]string{}, curveCols...), sAddCols...), fAmm: append(append([]string{}, ammCols...), sAddCols...),
 		fFailed: tapeFailedCols, fTransfers: transferCols, fMoves: movementCols, fCoverage: movementCoverageCols,
-		fDelegs: delegationCols, fBlocks: blockCols, fEvents: nil, fHourly: aggCols}
+		fDelegs: delegationCols, fBlocks: blockCols, fEvents: nil, fHourly: aggCols, fCreator: creatorFeeCols}
 	outs := map[string]*csvOut{}
 	for name, c := range cols {
 		o, err := newCSV(filepath.Join(tmp, name), c)
@@ -273,7 +312,7 @@ func decodeUnit(spool string, from, to uint64, day string, outDir string, useMan
 		write(fBlocks, r.blockRow)
 		for _, row := range r.curve {
 			b := ex.sAdd[atoi(row[2])]
-			write(fCurve, append(append([]string{}, row...), sAdd(b, row[len(curveCols)-1], row[8], "", protocolFlag(row[5], row[colIndex(curveCols, "user")], row[colIndex(curveCols, "ix_name")]))...))
+			write(fCurve, append(append([]string{}, row...), sAdd(b, row[len(curveCols)-1], row[8], "", protocolFlag(row[5], row[colIndex(curveCols, "user")], row[colIndex(curveCols, "ix_name")]), row[colIndex(curveCols, "outer_ix")])...))
 		}
 		for _, row := range r.amm {
 			b := ex.sAdd[atoi(row[2])]
@@ -281,7 +320,7 @@ func decodeUnit(spool string, from, to uint64, day string, outDir string, useMan
 			if isCanonicalPool(row[8], row[9], row[10]) {
 				canon = "1"
 			}
-			write(fAmm, append(append([]string{}, row...), sAdd(b, row[len(ammCols)-1], row[9], canon, protocolFlag(row[5], row[colIndex(ammCols, "user")], row[colIndex(ammCols, "ix_name")]))...))
+			write(fAmm, append(append([]string{}, row...), sAdd(b, row[len(ammCols)-1], row[9], canon, protocolFlag(row[5], row[colIndex(ammCols, "user")], row[colIndex(ammCols, "ix_name")]), row[colIndex(ammCols, "outer_ix")])...))
 		}
 		for _, row := range ex.failed {
 			write(fFailed, row)
@@ -303,6 +342,9 @@ func decodeUnit(spool string, from, to uint64, day string, outDir string, useMan
 			}
 			if json.Unmarshal([]byte(l), &e) == nil {
 				ds.EventNames[e.Event]++
+			}
+			if row, ok := creatorFeeRow(l); ok {
+				write(fCreator, row)
 			}
 		}
 	}

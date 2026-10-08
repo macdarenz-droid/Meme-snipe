@@ -30,8 +30,9 @@ The tee, the research decoder and the uploader for research/SHARED_TAPE_PLAN.md.
 ## Research tables per unit (`research/units/EPOCH/FROM-TO/`)
 | File | Table | Rows |
 |---|---|---|
-| `S_curve.csv.zst`, `S_amm.csv.zst` | S | Every bonding-curve trade and every PumpSwap trade, all coins: the scanner's columns plus `owner_token_pre/post` (the trade owner's raw balance of the mint, summed over their accounts, 0 if none), `signer_sol_pre/post` (lamports), `canonical` (PumpSwap) and `protocol` (boost_buy_and_burn, or the buyback authority `GmFrDZT2…` as signer or user) |
-| `F.csv.zst` | F | Every failed transaction in which a pump or PumpSwap instruction ran (an inner instruction, or a top-level one at or before the failing index) |
+| `S_curve.csv.zst`, `S_amm.csv.zst` | S | Every bonding-curve trade and every PumpSwap trade, all coins: the scanner's columns (with `tx_fee`, `cu`, `jito_tip`) plus `owner_token_pre/post` (the trade owner's raw balance of the mint, summed over their accounts, 0 if none), `signer_sol_pre/post` (lamports), `canonical` (PumpSwap), `protocol` (boost_buy_and_burn, or the buyback authority `GmFrDZT2…` as signer or user), `top_program` (the program of the trade's top-level instruction) and `cu_price` (SetComputeUnitPrice, micro-lamports per CU; empty if none) |
+| `CF.csv.zst` | CF | Creator-fee collections (`CollectCreatorFeeEvent`, `CollectCoinCreatorFeeEvent`; the scanner's own units drop them): creator, amount in lamports, quote mint or vault and token accounts. Neither event names a mint or pool |
+| `F.csv.zst` | F | (with `cu_price`) Every failed transaction in which a pump or PumpSwap instruction ran (an inner instruction, or a top-level one at or before the failing index) |
 | `W.csv.zst` | W | System-program transfers (instruction 2) of at least 0.05 SOL with no pump or PumpSwap instruction above them on the call stack, in successful transactions |
 | `T.csv.zst`, `T_coverage.csv.zst` | T | The scanner's movements, as today |
 | `D.csv.zst` | D | The scanner's delegations, as today |
@@ -61,3 +62,11 @@ O (other-venue coverage per `pump` coin and hour) is derived from T after a day 
   - Decoder counts on the 3 testdata blocks equal the plan's recount: 2,951 transactions, 226 failed, 154 calling pump or PumpSwap, 12 of those failed, 5 slippage failures, 3 truncated logs. Counts only, because the blocks are in the sealed window.
   - End to end with the unchanged rpcscan: counters equal, the replay digest equal, and a stopped tee gives exit 75.
 - `bash test-upload.sh`: a local stand-in for zeroed-data.
+
+## Schema versions
+- v1 (no `top_program` or `cu_price` on S, no CF, no `cu_price` on F): the units stored before 2026-10-08 07:30Z. Their raw input is gone, and their slots are never read again (ARCHIVE-NODUP):
+  - 2026-09-11 446017500-446021999 (Phase 0)
+  - 2026-09-11 446278500-446282999
+  - 2026-09-11 446283000-446287499
+  - 2026-09-11 446287500-446287813
+- v2: every later unit.

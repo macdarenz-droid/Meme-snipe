@@ -30,12 +30,13 @@ const minTransferLamports = 50_000_000 // W: at least 0.05 SOL
 
 var tapeFailedCols = []string{"slot", "block_time", "tx_idx", "signature", "signer", "venue", "pool_or_curve", "mint",
 	"ix_name", "side", "amount_arg", "limit_arg", "err_ix", "err_code", "err_program", "err_source_path", "err_class",
-	"err_line", "meta_err", "n_swap_legs", "top_program", "tx_fee", "cu", "jito_tip"}
+	"err_line", "meta_err", "n_swap_legs", "top_program", "tx_fee", "cu", "jito_tip", "cu_price"}
 
 var transferCols = []string{"slot", "block_time", "tx_idx", "outer_ix", "inner_ix", "from", "to", "lamports", "signer", "signature"}
 
 // sAddCols are appended to the scanner's curve and AMM trade columns.
-var sAddCols = []string{"owner_token_pre", "owner_token_post", "signer_sol_pre", "signer_sol_post", "canonical", "protocol"}
+var sAddCols = []string{"owner_token_pre", "owner_token_post", "signer_sol_pre", "signer_sol_post", "canonical", "protocol",
+	"top_program", "cu_price"}
 
 // Error classes (err_class). Per-program code tables: a code not listed for its
 // program is "state" (a program's own refusal); Anchor's framework codes (below 6000)
@@ -158,11 +159,13 @@ type blockExtras struct {
 }
 
 type txBalances struct {
-	pre, post  map[string]uint64 // owner|mint -> raw amount (summed over the owner's accounts)
-	overflow   bool
-	signerPre  string
-	signerPost string
-	signer     string
+	pre, post   map[string]uint64 // owner|mint -> raw amount (summed over the owner's accounts)
+	overflow    bool
+	signerPre   string
+	signerPost  string
+	signer      string
+	topPrograms []string // program of each top-level instruction
+	cuPrice     string   // SetComputeUnitPrice, micro-lamports per CU ("" if none)
 }
 
 type decodeCounts struct {
@@ -309,6 +312,7 @@ func blockExtrasOf(slot uint64, result []byte) (*blockExtras, error) {
 		if truncated {
 			ex.counts.Truncated++
 		}
+		cuPrice := computeUnitPrice(ixs)
 		var sig, signer string
 		if len(tx.Signatures) > 0 {
 			sig = tx.Signatures[0].String()
@@ -322,10 +326,16 @@ func blockExtrasOf(slot uint64, result []byte) (*blockExtras, error) {
 			if failed {
 				ex.counts.PumpFailed++
 				row, cls := failedRow(sl, bt, i, sig, signer, &tx, m, ixs, key, keys, legs, truncated)
+				row = append(row, cuPrice)
 				ex.counts.Classes[cls]++
 				ex.failed = append(ex.failed, row)
 			} else {
-				ex.sAdd[i] = balancesOf(m, signer)
+				b := balancesOf(m, signer)
+				b.cuPrice = cuPrice
+				for _, ix := range tx.Message.Instructions {
+					b.topPrograms = append(b.topPrograms, solana.PublicKey(key(int(ix.ProgramIDIndex))).String())
+				}
+				ex.sAdd[i] = b
 			}
 		}
 		if !failed {
@@ -457,11 +467,15 @@ func balancesOf(m *rpcMetaJSON, signer string) *txBalances {
 // before and after the transaction (raw units, summed over the owner's accounts; 0
 // when the owner held no account of it), the signer's lamports before and after, and
 // the flags.
-func sAdd(b *txBalances, owner, mint, canonical, protocol string) []string {
-	out := []string{"", "", "", "", canonical, protocol}
+func sAdd(b *txBalances, owner, mint, canonical, protocol, outerIx string) []string {
+	out := []string{"", "", "", "", canonical, protocol, "", ""}
 	if b == nil {
 		return out
 	}
+	if o, err := strconv.Atoi(outerIx); err == nil && o >= 0 && o < len(b.topPrograms) {
+		out[6] = b.topPrograms[o]
+	}
+	out[7] = b.cuPrice
 	if owner != "" && mint != "" && !b.overflow {
 		out[0] = strconv.FormatUint(b.pre[owner+"|"+mint], 10)
 		out[1] = strconv.FormatUint(b.post[owner+"|"+mint], 10)
@@ -594,6 +608,17 @@ func failedRow(sl, bt string, txIdx int, sig, signer string, tx *solana.Transact
 	return []string{sl, bt, strconv.Itoa(txIdx), sig, signer, venue, pool, mint, name, side, amount, limit,
 		errIxS, code, errProgram, path, cls, errLine, compact.String(), strconv.Itoa(legs), top,
 		strconv.FormatUint(m.Fee, 10), cu, tip}, cls
+}
+
+// computeUnitPrice is the transaction's SetComputeUnitPrice (compute-budget
+// instruction 3, u64 micro-lamports per CU) from a top-level instruction; "" if none.
+func computeUnitPrice(ixs []xIx) string {
+	for _, x := range ixs {
+		if x.inner < 0 && x.program == computeBudgetProgram && len(x.data) >= 9 && x.data[0] == 3 {
+			return strconv.FormatUint(binary.LittleEndian.Uint64(x.data[1:9]), 10)
+		}
+	}
+	return ""
 }
 
 // txErrIx is the failing instruction's index from {"InstructionError":[index, detail]},
