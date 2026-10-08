@@ -1674,12 +1674,12 @@ echo "$attr_list_line" > "$T/k3list.txt"; k3sha=$(sha256sum "$T/k3list.txt" | cu
 o="$T/of3s"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; echo '{"scanner_revision": "r1", "retention": "K3"}' > "$o/units/1046/1-2/stats.json"
 rc=0; SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "record retention K3; a day is read at K2 and trimmed once" "$T/out.txt" || bad+=" trimmed-day:$rc"
-. "$here/archive-limits.conf"
-o="$T/of3d"; rm -rf "$o"; mkdir -p "$o"; rc=0; FAKE_AVAIL=$(( ARCHIVE_K2_PEAK_BYTES - 1 )) SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
+peak=$(. "$here/archive-limits.conf"; echo "${ARCHIVE_K2_PEAK_BYTES:-0}")
+o="$T/of3d"; rm -rf "$o"; mkdir -p "$o"; rc=0; FAKE_AVAIL=$(( peak - 1 )) SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "a K2 day" "$T/out.txt" || bad+=" disk-short:$rc"
-rc=0; FAKE_AVAIL=$ARCHIVE_K2_PEAK_BYTES SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
+rc=0; FAKE_AVAIL=$peak SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
 [[ $rc == 0 && $(calls) == "scan " ]] || bad+=" disk-exact:$rc"
-(( ARCHIVE_K2_PEAK_BYTES == 55000000000 )) || bad+=" peak-value"
+(( peak == 55000000000 )) || bad+=" peak-value"
 [[ -z "$bad" ]] && ok "OF-3 rulings 2-3: a K3 day is read at K2 (no list at scan time); units already trimmed to K3 are refused (never read again); one byte short of ARCHIVE_K2_PEAK_BYTES (55 GB) is refused before any scanner call, exactly that much scans" || no "OF-3 read at K2:$bad"
 bad=""
 # check-day on a trimmed (K3) day: the rescan reads the unit at K2 and must equal the K2
