@@ -805,6 +805,22 @@ class RedTeamR1(unittest.TestCase):
         self.assertEqual(x["events_used"], 1)
         self.assertEqual(x["events_per_day"], {DAY: 1})
 
+    def _decide_plan(self):
+        d = tempfile.mkdtemp()
+        u = Unit().write(d)
+        plan = os.path.join(d, "plan.txt")
+        with open(plan, "w") as fh:
+            fh.write(f"{DAY} 1 0 9999\n")
+        return d, u, plan
+
+    def test_decide_uses_the_registered_resample_count(self):
+        # R1-4: --decide with another --boot re-draws the bounds (A1 Q1 fixes 10,000 resamples)
+        import run_step_a
+        d, u, plan = self._decide_plan()
+        with self.assertRaises(SystemExit):
+            run_step_a.main(["--unit", u, "--out", os.path.join(d, "o"), "--decide", "--plan", plan, "--boot", "50"])
+        self.assertFalse(os.path.exists(os.path.join(d, "o")))
+
 
 if __name__ == "__main__":
     unittest.main()

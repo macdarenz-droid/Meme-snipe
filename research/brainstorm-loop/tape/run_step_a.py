@@ -111,6 +111,9 @@ def load_sol_usd_dir(days, folder=DEFAULT_SOL_USD_DIR, sums_sha256=SOL_USD_SUMS_
     return px, shas, minutes
 
 
+REGISTERED_BOOT = 10_000   # COUNT_ROWS_AMENDMENT_1 Q1; run() overwrites R.BOOT_N, so this stays apart
+
+
 def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_usd_files=None, minutes=None):
     R.BOOT_N = n_boot
     tape = Tape(units)
@@ -164,12 +167,14 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--sol-usd", default=DEFAULT_SOL_USD_DIR,
                     help="folder of Binance SOLUSDT-1m-<day>.zip files with SHA256SUMS (default: the committed one)")
-    ap.add_argument("--boot", type=int, default=R.BOOT_N)
+    ap.add_argument("--boot", type=int, default=REGISTERED_BOOT)
     ap.add_argument("--decide", action="store_true")
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="committed Step A plan (checked with --decide)")
     a = ap.parse_args(argv)
     plan_sha = None
     if a.decide:
+        if a.boot != REGISTERED_BOOT:   # COUNT_ROWS_AMENDMENT_1 Q1: 10,000 resamples (red team R1-4)
+            ap.error(f"--decide uses the registered {REGISTERED_BOOT} resamples; --boot {a.boot} is refused")
         try:
             plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
         except PlanError as e:
