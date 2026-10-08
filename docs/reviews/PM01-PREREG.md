@@ -203,7 +203,7 @@ All 19 round 1 findings are closed.
 50. **Files (r1).** The run recomputes each referenced file's sha256 from disk and refuses if it differs from the sha recorded in the block; the keys use the recorded sha. If a value appears both inline and in a file, the run refuses when they disagree.
 51. **Values (V-m1, V-m2, V-m3, r2).**
     - Fill the ARCH values now: PERTOKEN 1, per-token daily entries 3, LOSSRUN 5 losses then a 60-min pause, WEEKLOSS 6%, DDHALF 10% (×0.5), DDKILL 15%, FEEDAY 2,000,000 lamports, and lp_withdrawable_max 5%.
-    - Add to : the R-4 stresses (2 × p95 latency, 2 × p_sw), the consistency flags (0.5×–2× trade rate, 15 pp stop share, 1.25× cost), the one-day decoder test, P-1's ≥ 100 trades, and the P-gate thresholds by reference to ARCH.
+    - Add to `gates`: the R-4 stresses (2 × p95 latency, 2 × p_sw), the consistency flags (0.5×–2× trade rate, 15 pp stop share, 1.25× cost), the one-day decoder test, P-1's ≥ 100 trades, and the P-gate thresholds by reference to ARCH.
 52. **Monthly figure (r5).** At the window's start, the figure (USD value, DECISIONS commit sha, row text) is copied into the run bundle. The run refuses only if the figure read at evaluation differs from the copy.
 53. **Kill versus retry (r6).** The kill stands unless the failing gate, recomputed on the same window with the fix, passes. Then the window is burned, and the retry on unseen days counts as a new trial and goes to the owner first.
 54. **whitelist_pda (r7).** Drop the "unless": a change to it is always economic.
