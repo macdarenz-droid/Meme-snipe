@@ -109,11 +109,12 @@ The runner, on the research host too, refuses to register an `id@version` whose 
 - At stage `failed` or `archived` the host emits nothing in any mode, and the validator refuses every mode. The move to `failed` removes every mode from `enabled_modes` as an audited A1 action (actor `system`; B-M26-04 carries it out).
 - A violation that belongs to one strategy (a staging mismatch, `failed` or `archived`, the agent stop, a missing PREREG) disables only that strategy, at start as at run time, with a critical alert and the audited A1 removal; its open positions keep their exits. The other strategies keep running.
 
-**Changes after freezing** (round 3 ruling 26; round 4 rulings 43 and 49; round 5 rulings 52, 53, 56 and 59). Every `affectsReturns` key in the B-M25-01 schema carries a group tag; a CI test fails any key without one, and until it is tagged the key counts as group P. `configKey` has two groups:
+**Changes after freezing** (round 3 ruling 26; round 4 rulings 43 and 49; round 5 rulings 52, 53, 56 and 59). Every `affectsReturns` key in the B-M25-01 schema carries a group tag; a CI test fails any key without one, and until it is tagged the key counts as group P. `configKey` has three groups (group M added by round 13 ruling 101):
 - **Group P, which changes which trades happen.** Two kinds:
   - *Proposal keys:* `runtimeDepsHash()`, the plugin, the universe and the registered configuration. When a config change of this kind alters the `configKey` of a strategy in paper or live, a B-9 replay on its `W_B` data decides: the proposals are byte-identical and the change is A1 → re-freeze by an audited A1 action, and the stage stands; the proposals differ and the change is A1 → drop one stage and restart that window; the change is A2 or A3 → back to `research`. Only these keys can send a strategy back to `research` (round 6 ruling 64). A code deploy of `runtimeDepsHash()` follows "Code deploys" below.
   - *Admission keys:* exit ladder, cooldown, entry rate, regime, dump window, maximum open positions and the per-token rule. They are compared on trades, not proposals: the recorded proposals are replayed through M21 with the old and the new setting (round 6 ruling 64). An A1 tightening applies at once and is re-frozen; if the new trade set's CI lower bound is ≤ 0 on `W_B` and `W_R`, or the CI is null (fewer than 30 trades; round 9 ruling 85), entries are blocked with `admission_not_profitable` (PROPOSED code, named by the ruling) until it is reverted; otherwise the stage stands (round 8 ruling 77). An A3 raise, or a neutral (A2) change, is a what-if check ("Raises" below).
-- **Group S, which changes only a trade's size or cost, never which trades happen:** sizing, caps, and the cost and fill model.
+- **Group M, the cost- and fill-model inputs** (PROPOSED: a change to B-M25-01, which sets the tag, enforced by the CI tag test; round 13 ruling 101): the assumed priority fee, slippage coefficients, the sandwich probability and the fixed-cost line. Their changes never take the limit paths below, whatever `riskDirectionOnIncrease` says. They follow the value rule of "Code deploys", with the four-window SOL test: not more favourable → a `recost` (no k, no r; demotion through B-M26-04 if a gate fails); more favourable → a trial inside k, or the fresh-window state at k = 0; a flipped fill or reject → the "Re-run rule". The operator sees A2; the server picks the path from the SOL test, never from the class.
+- **Group S, which changes only a trade's size, never which trades happen:** sizing and caps.
   - An A1 change always applies, with its own re-freeze in the same `apply_config` at the same class, so a live strategy never goes dark waiting for a second action. The same apply checks the size table at the new size; if the CI lower bound there is ≤ 0, or the CI is null (fewer than 30 trades; round 9 ruling 85), the strategy stays enabled but entries are blocked with reason `size_not_profitable` (PROPOSED code, named by the ruling) until the size is raised back or the gate passes; exits are kept and a critical alert goes out (round 6 ruling 62).
   - A raise (A3), or a neutral (A2) change, is a what-if check ("Raises" below).
 
@@ -121,7 +122,7 @@ The runner, on the research host too, refuses to register an `id@version` whose 
 
 A neutral (A2) change to a group S or admission key is handled as a raise: a what-if on `W_B` and `W_R` plus the size table, one `whatif` trial and one use of r; it is refused on a fail and never demotes, and a pass moves the evidence-backed setting. An exact return to the evidence-backed setting stays free (round 12 ruling 96).
 
-Every apply-time check that reads `W_R` (an intermediate value, or an A1 change) is a listed trial of kind `applycheck` (PROPOSED kind, named by the ruling). It uses no k and no r, appears in the gate report, and counts in the DSR trial count. The `W_R` check stays (round 12 ruling 97).
+Every apply-time check that reads `W_R` (an intermediate value, or an A1 change) is a listed trial of kind `applycheck` (PROPOSED kind, named by the ruling). It uses no k and no r, appears in the gate report, and counts in the DSR trial count. The `W_R` check stays (round 12 ruling 97). Only operator or owner changes create `applycheck` trials; system-initiated tightenings (breakers, demotions) create none. The DSR counts trials by distinct `configKey` evaluated, so the same value checked twice counts once (round 13 ruling 102).
 
 **Code deploys** (round 5 ruling 53; round 6 rulings 63, 65 and 67; round 7 ruling 71). A deploy that changes `configKey` (new runtime dependencies, or new cost- or fill-model code):
 - B-9 is byte-identical and the filled-trade set and the rejection set (with reasons) are identical under both models (round 8 ruling 78), so only values change (round 10 ruling 89; round 11 ruling 92):
@@ -347,10 +348,14 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | AC-75 | A conservative model that turns P-2's CI lower bound negative on the same `W_P` trades demotes the strategy through a fake B-M26-04 to `replay_passed`, with no k used | Round 11 ruling 92 |
 | AC-76 | The evidence-backed setting is the whole configuration. Setup: an admission key is tightened by an A1 change, then a `MAXPOS` raise passes, which freezes the whole configuration with the tightened key. A later return of that admission key to its old (pre-tightening) value is not free: it is a raise | Round 11 ruling 94; round 12 ruling 100 |
 | AC-77 | An A2 change to the exit ladder, or to the regime enum, on a live strategy registers one `whatif` trial and uses one r; at r = 0 it is refused; a pass moves the evidence-backed setting | Round 12 ruling 96 |
-| AC-78 | An intermediate value and an A1 change each register one `applycheck` trial (fake registry), with no k and no r used, listed in the gate report and counted in the DSR trial count | Round 12 ruling 97 |
+| AC-78 | An intermediate value and an A1 change each register one `applycheck` trial when the check reads `W_R` (fake registry), with no k and no r used, listed in the gate report and counted in the DSR trial count | Round 12 ruling 97; round 13 ruling 103 |
 | AC-79 | A value-only model that is not more favourable on `W_B`, `W_R` and `W_P` but more favourable on one `W_LS` trade is handled as more favourable: a trial inside k | Round 12 ruling 98 |
 | AC-80 | A refill block that starts before a `recost` re-freeze, or before an A2 change, does not count | Round 12 ruling 99 |
 | AC-81 | An intermediate admission value whose trade set has a CI lower bound ≤ 0 on `W_B` and `W_R` raises `admission_not_profitable` where there was no block | Round 12 ruling 100 |
+| AC-82 | Lowering an assumed priority fee in config (group M) is more favourable: it registers a trial inside k (or enters the fresh-window state at k = 0), and is never an A1 re-freeze | Round 13 ruling 101 |
+| AC-83 | Raising the assumed priority fee at r = 0 is a `recost`, not refused; a gate that fails on the recomputation demotes through a fake B-M26-04 | Round 13 ruling 101 |
+| AC-84 | A system-initiated tightening (a breaker or a demotion) registers no `applycheck` trial; checking the same value twice counts once in the DSR trial count | Round 13 ruling 102 |
+| AC-85 | CI fails a cost- or fill-model input key that is not tagged M | Round 13 ruling 101 |
 
 ### Tests
 
@@ -424,6 +429,9 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | Unit: "not more favourable" across all four windows | AC-79 |
 | Host unit with a fake clock: refill block boundaries | AC-80 |
 | Validator unit with a fake M21 replay: intermediate admission value | AC-81 |
+| Validator and host unit with a fake registry: group M fee lowered and raised | AC-82, AC-83 |
+| Validator unit with a fake registry: system-initiated tightening; repeated check | AC-84 |
+| CI fixture: untagged group M key | AC-85 |
 | Metrics: `signals_total{strategy}`, `proposal_dropped_total{reason}`, `strategy_onbar_ms{strategy}`; log `M09.strategy_disabled` | A-M09-01 observability |
 
 Every bug-fix test must fail before and pass after (AGENTS.md "Builders"). MIGRATION row A-M09-01 marks `core/src/engine/engine.ts:17-40` and `core/test/purity.test.ts` as adapt; under "No bugs migrate" its B1 and B5 probes are AC-27 and AC-28.
@@ -653,6 +661,14 @@ Reviewer at `ed4cb0d3` (PASS, 2 optional MINOR) and red team round 11 at `ed4cb0
 99. x3: a refill block starts after the last change to `configKey` (section 3; AC-80).
 100. Reviewer n1 and n2: AC-76 states its setup; AC-81 covers an intermediate admission value that raises `admission_not_profitable`.
 
+### Round 13
+
+Reviewer at `23905ddd` (PASS, 1 optional MINOR) and red team round 12 at `23905ddd` (1 MAJOR, 1 MINOR); rulings 101–103 in the review log on `claude/supervisor-docs-2` @ `0ed7572a`:
+
+101. Y1: cost- and fill-model config inputs form group M (PROPOSED, a B-M25-01 change); their changes follow the "Code deploys" value rule, never the limit paths; the server picks the path from the SOL test (section 3; AC-82, AC-83, AC-85; open point 6).
+102. y1: only operator or owner changes create `applycheck` trials; the DSR counts distinct `configKey`s (section 3; AC-84).
+103. Reviewer n1: AC-78 says "when the check reads `W_R`".
+
 ## Open points
 
 1. **Owner's evidence and the windows.** Gate B uses only days recorded after the PREREG (C-26). The owner's research data may serve a CS-1 kill-only screen, never a pass. This is a confirmed reading; no change is proposed.
@@ -673,7 +689,7 @@ Reviewer at `ed4cb0d3` (PASS, 2 optional MINOR) and red team round 11 at `ed4cb0
    - B-M26-04: the audited A1 removal at `failed`, at the agent stop and on a strategy-scoped start violation; step 8 keyed by `(id, version)`; every live stage drop as a demotion; readiness checks for the PLUGIN-SANDBOX attestation.
    - B-M26-02: readiness of the A3 enable (the attestation and the stage of the named version).
    - ARCH 15 `strategy` table: the `origin` column.
-   - B-M25-01: the group tag on every `affectsReturns` key.
+   - B-M25-01: the group tag (P, S or M) on every `affectsReturns` key; group M for the cost- and fill-model inputs.
    - B-M26-03: the A3 enable bound to `id@version` and re-validated at `effective_at`.
    - VM-03 (UI.md): `version` in `strategies[]`.
    - B-M21-02 and B-M25-02: the `size_not_profitable` entry block after a group S A1 lowering; the M21 replay that compares admission keys on trades.
