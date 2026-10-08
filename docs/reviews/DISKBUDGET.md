@@ -119,3 +119,7 @@ Rulings 19–28 are applied. The changed tests fail on `c173f777` (22 failures) 
 33. **MINORs 2 and 3, card notes in the DECISIONS row; not reachable today, because no sentinel exists.**
     - B-M30-02: zeroed-backup copies `/var/lib/zeroed-usage` either as zeroed-worker (`setpriv --reuid`) or after an lstat regular-file check of the db, -wal and -shm.
     - M14: the engine also lstat-checks `rpc-usage.db`, -wal and -shm before opening, or uses the NOFOLLOW open flag.
+
+### #311 CI (9 Oct 2026, about 2:25 AM)
+
+On `f313ff1e` and `d9511e13`, e2e is red: after "install" passes, `FAIL PATHS-FIX: receipts/ is not its own filesystem` (check run 113385546237). Sent to the builder to root-cause. It is not a flake; the check is not weakened, and any change of route comes to the supervisor first. #311 does not merge until e2e is green.
