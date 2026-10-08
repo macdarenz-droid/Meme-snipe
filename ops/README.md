@@ -2,7 +2,7 @@
 
 How the server is installed, gets its keys, pairs with Telegram, updates and is backed up (ARCHITECTURE.md §12, OPS-1a to OPS-1e). Nobody copies a key by hand. The only things typed by hand are a 6-word code and a 6-digit code.
 
-Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 LTS x64**. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026.
+Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports about 1.9 GiB, not measured) / 55 GB SSD, image **Ubuntu 24.04 LTS x64** (`docs/blueprint/ARCH.md` D07). The older 1 GB server `zeroed` is not used for the bot. Ubuntu 24.04 gets standard security updates until 2029; Debian 12 left regular security support in June 2026.
 
 ## Setup (about 3 minutes)
 
@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/cbd0cdb4c408dbb025c4134b27e638d43f2b2598/ops/install.sh -o i && echo '1f09405ca23a0b5e28bbc717491cb871fdc46820428c0cb8a0858995dcbe6627  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/3e768f465579d942f65273f52e4e4045ffd83555/ops/install.sh -o i && echo 'f811469b54c955146c0ba92df473781b0611a64c894bc7f1c15d87efd0667910  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,12 +19,13 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/cbd0cdb4
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `1f09405ca23a0b5e28bbc717491cb871fdc46820428c0cb8a0858995dcbe6627`
+SHA-256 of `install.sh`: `f811469b54c955146c0ba92df473781b0611a64c894bc7f1c15d87efd0667910`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
 ## What the installer does
 
+- Checks the host first (D07): a server with under 1.5 GiB of RAM (`MemTotal` in `/proc/meminfo`; a 1 GB server has about 0.96 GiB) or whose filesystem for `/var/lib` is under 40 GB by size (a 25 GB server has about 23 GB; the 55 GB disk's filesystem is smaller than 55 GB, not measured) is refused before anything changes, with the reason. `--update` only warns, so a running server keeps its updates. No option skips the check.
 - Installs `age`, `git`, `jq`, `nftables`, `sqlite3` and `unattended-upgrades` from Ubuntu, and Node 22.23.3 from nodejs.org (checked against its pinned SHA-256).
 - Creates the `zeroed-worker` and `zeroed-signer` users and their systemd units with the §12.1 hardening. The signer has no network at all; the worker may only use HTTPS and DNS.
 - Turns on unattended security updates (no automatic reboot).
@@ -65,12 +66,12 @@ Run `zeroed-new-deploy-code` on the console and put the new 6 words in `DEPLOY_C
 Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987baf-i6lrsl` that GitHub signed, which is a pull-request merge (`ops/deploy/tag.sh`). Every 5 minutes the server (`zeroed-update`) switches to it only when all of these hold:
 - the commit carries GitHub's merge signature (fingerprint `968479A1AFF927E37D1A566BB5690EEEBB952194`, pinned at install);
 - it is on the branch;
-- GitHub Actions' `check` passed on it, and every other GitHub Actions run on it finished green (public API; runs from other apps do not count, and none at all means wait);
+- GitHub Actions' `check` passed on it, and every other GitHub Actions run on it finished green (public API; runs from other apps do not count, and none at all means wait). The Deploy job's own run (`zeroed-deploy`) and the daily advisory report (`zeroed-advisories`, `.github/workflows/audit-schedule.yml`) never count, whatever their state: the report runs on the default branch's newest commit, so it must not hold that commit back (Z01 ruling 3.4);
 - `e2e` passed on the newest commit at or before it that changed the ops end-to-end paths (`ops/`, `packages/ops/`, the Deploy and ops e2e workflows), since a merge that leaves ops alone runs no e2e of its own;
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
 - the worker reports no open intent (`/var/lib/zeroed/open_intents`).
 
-First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). The trial runs beside the running worker as transient units, under the worker unit's own sandbox and environment file. It has a scratch state directory as its only writable path, its own loopback ports (127.0.0.1:8797 and 8798), and memory capped at 280M. Its `--reconcile` must exit 0. It must then answer its health route in paper mode within 90 seconds, and still be running and answering 30 seconds later. If it does not (a file that does not strip or load, a missing file, a refused config, a worker that dies), nothing changes: current stays, the running worker keeps running, and one Telegram alert says why. It is tried again every 5 minutes. After the switch, the new worker must answer within 60 seconds and then run 30 seconds without a restart. If it does not, the server goes back to the release it ran: current, the deployed record, its host files and its worker. That commit is not tried again (a newer deploy is), and one alert says why. Then it runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. Only when that succeeds does it switch and restart the worker. The update is all or nothing: it keeps each host file it changes (the Node link included) and notes each unit it stops. If any step fails, it puts every file back, removes new ones, reloads systemd, restarts what was running and re-applies the old firewall. An update cut off half-way is rolled back by the next one first. Packages apt added stay installed. A failure keeps the running release and worker as they are, alerts once, and is tried again every 5 minutes under the same gates. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
+First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). The trial runs beside the running worker as transient units, under the worker unit's own sandbox and environment file. It has a scratch state directory as its only writable path, its own loopback ports (127.0.0.1:8797 and 8798), and memory capped at 280M (set for the 1 GB server and kept on the 2 GB one while only the stand-in runs; the Blueprint recorder, Z10, sizes its own unit from measurement). Its `--reconcile` must exit 0. It must then answer its health route in paper mode within 90 seconds, and still be running and answering 30 seconds later. If it does not (a file that does not strip or load, a missing file, a refused config, a worker that dies), nothing changes: current stays, the running worker keeps running, and one Telegram alert says why. It is tried again every 5 minutes. After the switch, the new worker must answer within 60 seconds and then run 30 seconds without a restart. If it does not, the server goes back to the release it ran: current, the deployed record, its host files and its worker. That commit is not tried again (a newer deploy is), and one alert says why. Then it runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. Only when that succeeds does it switch and restart the worker. The update is all or nothing: it keeps each host file it changes (the Node link included) and notes each unit it stops. If any step fails, it puts every file back, removes new ones, reloads systemd, restarts what was running and re-applies the old firewall. An update cut off half-way is rolled back by the next one first. Packages apt added stay installed. A failure keeps the running release and worker as they are, alerts once, and is tried again every 5 minutes under the same gates. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
 
 ## Backups
 
@@ -234,7 +235,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 ## Test it
 
 `bash ops/test/e2e.sh` runs on a fresh Ubuntu 24.04 systemd container with test values only:
-- the README line, the install, and a wrong code;
+- the README line, the D07 preflight (a 1 GB server and a 25.6 GB disk refused before any change, an update on one only warned), the install, and a wrong code;
 - the handoff, a replay, and Telegram pairing;
 - hardening, rotation, the code-update gates, backup and restore, and restart drills;
 - the dry-run update gate, `install.sh --update` through `zeroed-update` (with SSH kept open or closed), the worker wrapper and the worker API's evidence list;

@@ -1,0 +1,11 @@
+{
+  "name": "@bot/exitpath",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Direct exit adapters and expiry proof shared by engine and sentinel (B-M16 subset, B-M18-04).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

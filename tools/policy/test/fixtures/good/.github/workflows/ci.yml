@@ -1,0 +1,30 @@
+name: ci
+on: [pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number && format('pr-{0}{1}', github.event.pull_request.number, (github.event.action == 'labeled' || github.event.action == 'unlabeled') && format('-{0}-{1}-{2}', github.event.action, github.event.label.name, github.run_id) || '') || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@0000000000000000000000000000000000000001 # fixture
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0000000000000000000000000000000000000003 # fixture
+      - run: pnpm install --frozen-lockfile
+      - run: node tools/policy/bin/installed.ts
+      - env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_LABEL_ADDED: ${{ github.event.action == 'labeled' && github.event.label.name || '' }}
+        run: node tools/policy/bin/drift.ts
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - shell: bash
+        run: pnpm test 2>&1 | tee test-output.log
+      - run: node tools/policy/bin/secrets.ts test-output.log
+      - env:
+          POLICY_EVENT: ${{ github.event_name }}
+        run: node tools/policy/bin/audit.ts
+      - run: node tools/policy/bin/age.ts

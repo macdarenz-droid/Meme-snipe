@@ -3,15 +3,20 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.0",
-  "engines": { "node": ">=22.18" },
+  "engines": {
+    "node": ">=22.18.0 <23"
+  },
   "scripts": {
-    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "eslint --config eslint.config.mjs --max-warnings=0 . && node tools/policy/bin/check.ts",
+    "typecheck": "pnpm -r --if-present typecheck && tsc -p tsconfig.json && tsc -p tools/tsconfig.json",
     "test": "vitest run",
     "check": "pnpm typecheck && pnpm test",
     "ledger:replay": "node --no-warnings packages/core/scripts/ledger-replay.ts"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "eslint": "10.11.0",
+    "fast-check": "4.10.2",
     "typescript": "7.0.2",
     "vitest": "5.0.3"
   }

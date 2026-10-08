@@ -9,7 +9,7 @@ WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RU
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
-SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
+SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
@@ -178,19 +178,25 @@ ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
 
 # ---------- Deploy gate (OPS-GATE): what "green" means, shared by the server (zeroed-update) and the Deploy
 # workflow (ops/deploy/tag.sh), so the two always agree. ----------
-# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does.
+# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does, and neither does the
+# scheduled advisory report (zeroed-advisories, .github/workflows/audit-schedule.yml): it runs daily on the newest
+# commit of the default branch, so a failed, cancelled or still-running report would otherwise hold back a commit
+# that nothing in its own diff broke (Z01 supervisor ruling 3.4). tools/policy refuses that job name in any other
+# workflow (E_AUDIT_JOB_NAME), so no other run can borrow it.
 DEPLOY_CHECK_APP=github-actions
 DEPLOY_SELF_JOB=zeroed-deploy
+DEPLOY_AUDIT_JOB=zeroed-advisories
 # The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
 E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
 
 # commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
 # "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every
-# other GitHub Actions run finished and none failed. A run from another app, or an all-skipped set, never makes
+# other GitHub Actions run finished and none failed (the Deploy job and the advisory report aside). A run from
+# another app, or an all-skipped set, never makes
 # it green; a listing GitHub cut short (more runs than returned) is "none".
 commit_verdict() {
-  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" '
-    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self)] as $r
+  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" --arg audit "$DEPLOY_AUDIT_JOB" '
+    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self and .name != $audit)] as $r
     | ([$r[] | select(.name == $name)] | sort_by(.completed_at // .started_at // "") | last) as $n
     | if (.total_count // 0) > ((.check_runs // []) | length) then "none: more check runs than GitHub listed"
       elif any($r[]; .status != "completed") then "pending: \([$r[] | select(.status != "completed") | .name] | unique | join(", ")) still running"

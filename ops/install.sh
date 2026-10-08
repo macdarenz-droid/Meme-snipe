@@ -49,6 +49,36 @@ if [ -n "$SSH_KEY" ]; then
   [[ "$SSH_KEY" =~ ^(ssh-ed25519|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com)\ [A-Za-z0-9+/=]+(\ [^[:cntrl:]]*)?$ ]] || die "--ssh-key must be one public key line (ssh-ed25519 or ecdsa)"
 fi
 
+# D07 preflight (docs/blueprint/ARCH.md D07 and M07): the bot's host is a 2 GB server, which the OS reports as
+# about 1.9 GiB (not measured), with a disk of at least 50 GB. Both are read from the host itself (/proc/meminfo,
+# and df on the filesystem that holds /var/lib); no option or variable changes them. The RAM floor is 1.5 GiB: it
+# refuses the 1 GB server (about 0.96 GiB) by a wide margin, no Vultr plan sits between 1 GB and 2 GB, and the
+# 2 GB server's exact MemTotal is not measured (a crash-dump reservation could lower it). The filesystem floor is
+# 40 GB by size (docs/DECISIONS.md): it refuses the 25 GB server (about 23 GB) widely, while the 55 GB disk's
+# filesystem, smaller than the disk and not measured, keeps a margin. Size, so a host holding data passes a re-run. A full install refuses a host below either, before it changes
+# anything; an update only warns, so zeroed-update never rolls a running server back over it.
+D07_MEM_MIN_KB=1572864   # 1.5 GiB in kB
+D07_DISK_MIN_KB=39062500 # 40 GB (40 × 10^9 bytes) in kB
+d07_shortfalls() { # MemTotal kB, size kB of the filesystem holding /var/lib: one line per shortfall
+  if ! [[ "$1" =~ ^[0-9]{1,12}$ ]]; then echo "its RAM could not be read from /proc/meminfo"
+  elif [ "$1" -lt "$D07_MEM_MIN_KB" ]; then
+    awk -v k="$1" 'BEGIN { printf "it has %.2f GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported)\n", k / 1048576 }'
+  fi
+  if ! [[ "$2" =~ ^[0-9]{1,15}$ ]]; then echo "the size of the disk that holds /var/lib could not be read"
+  elif [ "$2" -lt "$D07_DISK_MIN_KB" ]; then
+    awk -v k="$2" 'BEGIN { printf "the disk that holds /var/lib is %.1f GB; the bot needs at least 40 GB\n", k * 1024 / 1e9 }'
+  fi
+}
+d07_short="$(d07_shortfalls "$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo 2>/dev/null || true)" \
+  "$(df -P -k /var/lib 2>/dev/null | awk 'NR == 2 { print $2 }' || true)")"
+if [ -n "$d07_short" ]; then
+  if [ "$UPDATE" = 1 ]; then
+    while IFS= read -r line; do printf 'Warning: this server is below the bot'\''s host minimum (D07): %s.\n' "$line" >&2; done <<< "$d07_short"
+  else
+    die "this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): ${d07_short//$'\n'/; }. Use the 2 GB Vultr server (vc2-1c-2gb, 55 GB SSD)."
+  fi
+fi
+
 # An update is all or nothing. Before it changes a host path it keeps the old file (*.zeroed-old) or notes
 # that the path is new, and before it stops a unit it notes whether that unit was enabled and running, all in
 # a journal on disk. If any later step fails (Node, the firewall, the signing key, a package, a unit), the
@@ -1287,7 +1317,7 @@ WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RU
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
-SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
+SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
@@ -1456,19 +1486,25 @@ ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
 
 # ---------- Deploy gate (OPS-GATE): what "green" means, shared by the server (zeroed-update) and the Deploy
 # workflow (ops/deploy/tag.sh), so the two always agree. ----------
-# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does.
+# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does, and neither does the
+# scheduled advisory report (zeroed-advisories, .github/workflows/audit-schedule.yml): it runs daily on the newest
+# commit of the default branch, so a failed, cancelled or still-running report would otherwise hold back a commit
+# that nothing in its own diff broke (Z01 supervisor ruling 3.4). tools/policy refuses that job name in any other
+# workflow (E_AUDIT_JOB_NAME), so no other run can borrow it.
 DEPLOY_CHECK_APP=github-actions
 DEPLOY_SELF_JOB=zeroed-deploy
+DEPLOY_AUDIT_JOB=zeroed-advisories
 # The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
 E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
 
 # commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
 # "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every
-# other GitHub Actions run finished and none failed. A run from another app, or an all-skipped set, never makes
+# other GitHub Actions run finished and none failed (the Deploy job and the advisory report aside). A run from
+# another app, or an all-skipped set, never makes
 # it green; a listing GitHub cut short (more runs than returned) is "none".
 commit_verdict() {
-  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" '
-    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self)] as $r
+  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" --arg audit "$DEPLOY_AUDIT_JOB" '
+    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self and .name != $audit)] as $r
     | ([$r[] | select(.name == $name)] | sort_by(.completed_at // .started_at // "") | last) as $n
     | if (.total_count // 0) > ((.check_runs // []) | length) then "none: more check runs than GitHub listed"
       elif any($r[]; .status != "completed") then "pending: \([$r[] | select(.status != "completed") | .name] | unique | join(", ")) still running"

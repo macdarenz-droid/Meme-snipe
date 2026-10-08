@@ -1,0 +1,11 @@
+{
+  "name": "@bot/research",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Off-host research tooling (M10-M13).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

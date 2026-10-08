@@ -1,0 +1,25 @@
+name: guard
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+permissions:
+  contents: read
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@0000000000000000000000000000000000000001 # fixture
+        with:
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@0000000000000000000000000000000000000001 # fixture
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@0000000000000000000000000000000000000002 # fixture
+        with:
+          node-version-file: base/.node-version
+      - working-directory: pr
+        run: node ../base/tools/policy/bin/drift.ts

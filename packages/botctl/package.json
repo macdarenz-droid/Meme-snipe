@@ -1,0 +1,11 @@
+{
+  "name": "@bot/botctl",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Operator CLI (M29, B-M29-04).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

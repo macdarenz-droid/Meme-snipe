@@ -1,0 +1,42 @@
+{
+ "day": "2026-08-26",
+ "note": "run stopped by a ConnectionResetError on the 4th pool (no retry); pools 1-2 hit the 120-page safety cap, so their counts cover only the last covered_h hours of the day",
+ "pools": [
+  {
+   "pool": "Fex8CSkNXfaxAPRqQARKGchYAMVfwDg28sfmBXXGkNGX",
+   "symbol": "KET",
+   "eligible_days": 62,
+   "ok": 75847,
+   "failed": 44153,
+   "pages": 120,
+   "earliest_seen": 1787715959,
+   "covered_h": 20.23,
+   "truncated": true,
+   "ok_per_day_if_uniform": 89966
+  },
+  {
+   "pool": "FnzKY6x7entQ1eR3D225dQyT7ybfka4PskBMQhb8L3CC",
+   "symbol": "ANSEM",
+   "eligible_days": 62,
+   "ok": 91573,
+   "failed": 28421,
+   "pages": 120,
+   "earliest_seen": 1787779113,
+   "covered_h": 2.69,
+   "truncated": true,
+   "ok_per_day_if_uniform": 816755
+  },
+  {
+   "pool": "2DVbU5h8JCd37gaXAJUZ4t77HsjJW22LLduTZk7GSa43",
+   "symbol": "MANIFEST",
+   "eligible_days": 62,
+   "ok": 39914,
+   "failed": 16825,
+   "pages": 57,
+   "earliest_seen": 1787702447,
+   "covered_h": 23.99,
+   "truncated": false,
+   "ok_per_day_if_uniform": 39936
+  }
+ ]
+}

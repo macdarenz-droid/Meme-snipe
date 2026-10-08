@@ -1,0 +1,1109 @@
+{
+ "anchor_0921": {
+  "day": "2026-09-21",
+  "slots": 323486,
+  "slot_ms": 267.1,
+  "units": 79,
+  "produced_frac": 1.0
+ },
+ "retry_overhead_point": 0.0763,
+ "retry_overhead_upper": 0.25,
+ "grid_calls": 283,
+ "days": [
+  {
+   "day": "2026-07-19",
+   "slots": 205597,
+   "slot_ms": 420.2,
+   "units": 50,
+   "produced_frac": 0.998,
+   "credits_point": 246570,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-07-20",
+   "slots": 202978,
+   "slot_ms": 425.7,
+   "units": 50,
+   "produced_frac": 1.0,
+   "credits_point": 247064,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-07-21",
+   "slots": 205451,
+   "slot_ms": 420.5,
+   "units": 50,
+   "produced_frac": 0.999,
+   "credits_point": 246817,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-07-22",
+   "slots": 205577,
+   "slot_ms": 420.3,
+   "units": 51,
+   "produced_frac": 0.999,
+   "credits_point": 251657,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-07-23",
+   "slots": 206070,
+   "slot_ms": 419.3,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-07-24",
+   "slots": 205867,
+   "slot_ms": 419.7,
+   "units": 50,
+   "produced_frac": 0.9998,
+   "credits_point": 247015,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-07-25",
+   "slots": 205802,
+   "slot_ms": 419.8,
+   "units": 50,
+   "produced_frac": 0.9998,
+   "credits_point": 247015,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-07-26",
+   "slots": 205661,
+   "slot_ms": 420.1,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-07-27",
+   "slots": 205202,
+   "slot_ms": 421.0,
+   "units": 51,
+   "produced_frac": 0.998,
+   "credits_point": 251405,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-07-28",
+   "slots": 204581,
+   "slot_ms": 422.3,
+   "units": 50,
+   "produced_frac": 0.9985,
+   "credits_point": 246694,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-07-29",
+   "slots": 204248,
+   "slot_ms": 423.0,
+   "units": 50,
+   "produced_frac": 0.999,
+   "credits_point": 246817,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-07-30",
+   "slots": 204832,
+   "slot_ms": 421.8,
+   "units": 50,
+   "produced_frac": 0.99,
+   "credits_point": 244594,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-07-31",
+   "slots": 204810,
+   "slot_ms": 421.9,
+   "units": 50,
+   "produced_frac": 0.9948,
+   "credits_point": 245780,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-01",
+   "slots": 204561,
+   "slot_ms": 422.4,
+   "units": 50,
+   "produced_frac": 0.999,
+   "credits_point": 246817,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-02",
+   "slots": 204791,
+   "slot_ms": 421.9,
+   "units": 50,
+   "produced_frac": 0.998,
+   "credits_point": 246570,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-03",
+   "slots": 204407,
+   "slot_ms": 422.7,
+   "units": 50,
+   "produced_frac": 0.996,
+   "credits_point": 246076,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-04",
+   "slots": 204106,
+   "slot_ms": 423.3,
+   "units": 50,
+   "produced_frac": 1.0,
+   "credits_point": 247064,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-05",
+   "slots": 204365,
+   "slot_ms": 422.8,
+   "units": 51,
+   "produced_frac": 0.996,
+   "credits_point": 250901,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-06",
+   "slots": 204362,
+   "slot_ms": 422.8,
+   "units": 50,
+   "produced_frac": 0.9998,
+   "credits_point": 247015,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-07",
+   "slots": 204831,
+   "slot_ms": 421.8,
+   "units": 50,
+   "produced_frac": 1.0,
+   "credits_point": 247064,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-08",
+   "slots": 204394,
+   "slot_ms": 422.7,
+   "units": 50,
+   "produced_frac": 0.998,
+   "credits_point": 246570,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-09",
+   "slots": 204523,
+   "slot_ms": 422.4,
+   "units": 50,
+   "produced_frac": 1.0,
+   "credits_point": 247064,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-10",
+   "slots": 204504,
+   "slot_ms": 422.5,
+   "units": 50,
+   "produced_frac": 1.0,
+   "credits_point": 247064,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-11",
+   "slots": 205045,
+   "slot_ms": 421.4,
+   "units": 50,
+   "produced_frac": 0.998,
+   "credits_point": 246570,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-12",
+   "slots": 205835,
+   "slot_ms": 419.8,
+   "units": 50,
+   "produced_frac": 0.998,
+   "credits_point": 246570,
+   "credits_upper": 286939
+  },
+  {
+   "day": "2026-08-13",
+   "slots": 207098,
+   "slot_ms": 417.2,
+   "units": 51,
+   "produced_frac": 0.997,
+   "credits_point": 251153,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-14",
+   "slots": 207890,
+   "slot_ms": 415.6,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-15",
+   "slots": 207781,
+   "slot_ms": 415.8,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-16",
+   "slots": 207847,
+   "slot_ms": 415.7,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-17",
+   "slots": 208159,
+   "slot_ms": 415.1,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-18",
+   "slots": 207881,
+   "slot_ms": 415.6,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-19",
+   "slots": 207516,
+   "slot_ms": 416.4,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-20",
+   "slots": 207885,
+   "slot_ms": 415.6,
+   "units": 51,
+   "produced_frac": 1.0,
+   "credits_point": 251908,
+   "credits_upper": 292565
+  },
+  {
+   "day": "2026-08-21",
+   "slots": 226734,
+   "slot_ms": 381.1,
+   "units": 55,
+   "produced_frac": 1.0,
+   "credits_point": 271286,
+   "credits_upper": 315070
+  },
+  {
+   "day": "2026-08-22",
+   "slots": 235481,
+   "slot_ms": 366.9,
+   "units": 57,
+   "produced_frac": 1.0,
+   "credits_point": 280975,
+   "credits_upper": 326322
+  },
+  {
+   "day": "2026-08-23",
+   "slots": 236231,
+   "slot_ms": 365.7,
+   "units": 58,
+   "produced_frac": 0.999,
+   "credits_point": 285533,
+   "credits_upper": 331949
+  },
+  {
+   "day": "2026-08-24",
+   "slots": 236408,
+   "slot_ms": 365.5,
+   "units": 57,
+   "produced_frac": 1.0,
+   "credits_point": 280975,
+   "credits_upper": 326322
+  },
+  {
+   "day": "2026-08-25",
+   "slots": 236246,
+   "slot_ms": 365.7,
+   "units": 58,
+   "produced_frac": 1.0,
+   "credits_point": 285819,
+   "credits_upper": 331949
+  },
+  {
+   "day": "2026-08-26",
+   "slots": 236408,
+   "slot_ms": 365.5,
+   "units": 58,
+   "produced_frac": 1.0,
+   "credits_point": 285819,
+   "credits_upper": 331949
+  },
+  {
+   "day": "2026-08-27",
+   "slots": 236129,
+   "slot_ms": 365.9,
+   "units": 58,
+   "produced_frac": 1.0,
+   "credits_point": 285819,
+   "credits_upper": 331949
+  },
+  {
+   "day": "2026-08-28",
+   "slots": 248541,
+   "slot_ms": 347.6,
+   "units": 61,
+   "produced_frac": 0.998,
+   "credits_point": 299752,
+   "credits_upper": 348828
+  },
+  {
+   "day": "2026-08-29",
+   "slots": 272538,
+   "slot_ms": 317.0,
+   "units": 66,
+   "produced_frac": 1.0,
+   "credits_point": 324574,
+   "credits_upper": 376959
+  },
+  {
+   "day": "2026-08-30",
+   "slots": 272470,
+   "slot_ms": 317.1,
+   "units": 67,
+   "produced_frac": 1.0,
+   "credits_point": 329419,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-08-31",
+   "slots": 272155,
+   "slot_ms": 317.5,
+   "units": 66,
+   "produced_frac": 1.0,
+   "credits_point": 324574,
+   "credits_upper": 376959
+  },
+  {
+   "day": "2026-09-01",
+   "slots": 272133,
+   "slot_ms": 317.5,
+   "units": 67,
+   "produced_frac": 1.0,
+   "credits_point": 329419,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-02",
+   "slots": 274239,
+   "slot_ms": 315.1,
+   "units": 67,
+   "produced_frac": 1.0,
+   "credits_point": 329419,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-03",
+   "slots": 274234,
+   "slot_ms": 315.1,
+   "units": 67,
+   "produced_frac": 0.994,
+   "credits_point": 327443,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-04",
+   "slots": 273967,
+   "slot_ms": 315.4,
+   "units": 67,
+   "produced_frac": 0.993,
+   "credits_point": 327113,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-05",
+   "slots": 274198,
+   "slot_ms": 315.1,
+   "units": 67,
+   "produced_frac": 0.9998,
+   "credits_point": 329353,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-06",
+   "slots": 272817,
+   "slot_ms": 316.7,
+   "units": 67,
+   "produced_frac": 0.9993,
+   "credits_point": 329188,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-07",
+   "slots": 272670,
+   "slot_ms": 316.9,
+   "units": 67,
+   "produced_frac": 0.9998,
+   "credits_point": 329353,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-08",
+   "slots": 272851,
+   "slot_ms": 316.7,
+   "units": 67,
+   "produced_frac": 0.998,
+   "credits_point": 328760,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-09",
+   "slots": 272601,
+   "slot_ms": 316.9,
+   "units": 67,
+   "produced_frac": 1.0,
+   "credits_point": 329419,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-10",
+   "slots": 273299,
+   "slot_ms": 316.1,
+   "units": 67,
+   "produced_frac": 1.0,
+   "credits_point": 329419,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-11",
+   "slots": 272678,
+   "slot_ms": 316.9,
+   "units": 67,
+   "produced_frac": 1.0,
+   "credits_point": 329419,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-12",
+   "slots": 272799,
+   "slot_ms": 316.7,
+   "units": 67,
+   "produced_frac": 0.996,
+   "credits_point": 328101,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-13",
+   "slots": 273683,
+   "slot_ms": 315.7,
+   "units": 67,
+   "produced_frac": 1.0,
+   "credits_point": 329419,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-14",
+   "slots": 273534,
+   "slot_ms": 315.9,
+   "units": 67,
+   "produced_frac": 0.9993,
+   "credits_point": 329188,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-15",
+   "slots": 273095,
+   "slot_ms": 316.4,
+   "units": 67,
+   "produced_frac": 0.999,
+   "credits_point": 329089,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-16",
+   "slots": 272509,
+   "slot_ms": 317.1,
+   "units": 67,
+   "produced_frac": 0.999,
+   "credits_point": 329089,
+   "credits_upper": 382585
+  },
+  {
+   "day": "2026-09-17",
+   "slots": 273078,
+   "slot_ms": 316.4,
+   "units": 66,
+   "produced_frac": 0.9993,
+   "credits_point": 324347,
+   "credits_upper": 376959
+  },
+  {
+   "day": "2026-09-18",
+   "slots": 312460,
+   "slot_ms": 276.5,
+   "units": 76,
+   "produced_frac": 1.0,
+   "credits_point": 373018,
+   "credits_upper": 433221
+  },
+  {
+   "day": "2026-09-19",
+   "slots": 324138,
+   "slot_ms": 266.6,
+   "units": 79,
+   "produced_frac": 1.0,
+   "credits_point": 387552,
+   "credits_upper": 450100
+  },
+  {
+   "day": "2026-09-20",
+   "slots": 323883,
+   "slot_ms": 266.8,
+   "units": 79,
+   "produced_frac": 1.0,
+   "credits_point": 387552,
+   "credits_upper": 450100
+  },
+  {
+   "day": "2026-09-21",
+   "slots": 323486,
+   "slot_ms": 267.1,
+   "units": 79,
+   "produced_frac": 1.0,
+   "credits_point": 387552,
+   "credits_upper": 450100
+  }
+ ],
+ "windows_30d_leadin2": [
+  {
+   "start": "2026-07-23",
+   "end": "2026-08-21",
+   "lead_in_days": 2,
+   "credits_point": 7982750,
+   "credits_upper": 9283317,
+   "max_day_upper": 315070,
+   "units": 1650,
+   "blocks": 7415247
+  },
+  {
+   "start": "2026-07-24",
+   "end": "2026-08-22",
+   "lead_in_days": 2,
+   "credits_point": 8016908,
+   "credits_upper": 9322700,
+   "max_day_upper": 326322,
+   "units": 1657,
+   "blocks": 7446977
+  },
+  {
+   "start": "2026-07-25",
+   "end": "2026-08-23",
+   "lead_in_days": 2,
+   "credits_point": 8050784,
+   "credits_upper": 9362084,
+   "max_day_upper": 331949,
+   "units": 1664,
+   "blocks": 7478445
+  },
+  {
+   "start": "2026-07-26",
+   "end": "2026-08-24",
+   "lead_in_days": 2,
+   "credits_point": 8079851,
+   "credits_upper": 9395841,
+   "max_day_upper": 331949,
+   "units": 1670,
+   "blocks": 7505445
+  },
+  {
+   "start": "2026-07-27",
+   "end": "2026-08-25",
+   "lead_in_days": 2,
+   "credits_point": 8118655,
+   "credits_upper": 9440851,
+   "max_day_upper": 331949,
+   "units": 1678,
+   "blocks": 7541491
+  },
+  {
+   "start": "2026-07-28",
+   "end": "2026-08-26",
+   "lead_in_days": 2,
+   "credits_point": 8157459,
+   "credits_upper": 9485861,
+   "max_day_upper": 331949,
+   "units": 1686,
+   "blocks": 7577537
+  },
+  {
+   "start": "2026-07-29",
+   "end": "2026-08-27",
+   "lead_in_days": 2,
+   "credits_point": 8191370,
+   "credits_upper": 9525245,
+   "max_day_upper": 331949,
+   "units": 1693,
+   "blocks": 7609037
+  },
+  {
+   "start": "2026-07-30",
+   "end": "2026-08-28",
+   "lead_in_days": 2,
+   "credits_point": 8239717,
+   "credits_upper": 9581508,
+   "max_day_upper": 348828,
+   "units": 1703,
+   "blocks": 7653947
+  },
+  {
+   "start": "2026-07-31",
+   "end": "2026-08-29",
+   "lead_in_days": 2,
+   "credits_point": 8317597,
+   "credits_upper": 9671528,
+   "max_day_upper": 376959,
+   "units": 1719,
+   "blocks": 7726291
+  },
+  {
+   "start": "2026-08-01",
+   "end": "2026-08-30",
+   "lead_in_days": 2,
+   "credits_point": 8400199,
+   "credits_upper": 9767174,
+   "max_day_upper": 382585,
+   "units": 1736,
+   "blocks": 7803021
+  },
+  {
+   "start": "2026-08-02",
+   "end": "2026-08-31",
+   "lead_in_days": 2,
+   "credits_point": 8480179,
+   "credits_upper": 9857194,
+   "max_day_upper": 382585,
+   "units": 1752,
+   "blocks": 7877316
+  },
+  {
+   "start": "2026-08-03",
+   "end": "2026-09-01",
+   "lead_in_days": 2,
+   "credits_point": 8563818,
+   "credits_upper": 9952840,
+   "max_day_upper": 382585,
+   "units": 1769,
+   "blocks": 7955009
+  },
+  {
+   "start": "2026-08-04",
+   "end": "2026-09-02",
+   "lead_in_days": 2,
+   "credits_point": 8646420,
+   "credits_upper": 10048486,
+   "max_day_upper": 382585,
+   "units": 1786,
+   "blocks": 8031739
+  },
+  {
+   "start": "2026-08-05",
+   "end": "2026-09-03",
+   "lead_in_days": 2,
+   "credits_point": 8727293,
+   "credits_upper": 10144132,
+   "max_day_upper": 382585,
+   "units": 1803,
+   "blocks": 8106862
+  },
+  {
+   "start": "2026-08-06",
+   "end": "2026-09-04",
+   "lead_in_days": 2,
+   "credits_point": 8808330,
+   "credits_upper": 10239778,
+   "max_day_upper": 382585,
+   "units": 1820,
+   "blocks": 8182138
+  },
+  {
+   "start": "2026-08-07",
+   "end": "2026-09-05",
+   "lead_in_days": 2,
+   "credits_point": 8890619,
+   "credits_upper": 10335424,
+   "max_day_upper": 382585,
+   "units": 1837,
+   "blocks": 8258576
+  },
+  {
+   "start": "2026-08-08",
+   "end": "2026-09-06",
+   "lead_in_days": 2,
+   "credits_point": 8968906,
+   "credits_upper": 10425444,
+   "max_day_upper": 382585,
+   "units": 1853,
+   "blocks": 8331298
+  },
+  {
+   "start": "2026-08-09",
+   "end": "2026-09-07",
+   "lead_in_days": 2,
+   "credits_point": 9051244,
+   "credits_upper": 10521090,
+   "max_day_upper": 382585,
+   "units": 1870,
+   "blocks": 8407783
+  },
+  {
+   "start": "2026-08-10",
+   "end": "2026-09-08",
+   "lead_in_days": 2,
+   "credits_point": 9132940,
+   "credits_upper": 10616736,
+   "max_day_upper": 382585,
+   "units": 1887,
+   "blocks": 8483671
+  },
+  {
+   "start": "2026-08-11",
+   "end": "2026-09-09",
+   "lead_in_days": 2,
+   "credits_point": 9215789,
+   "credits_upper": 10712382,
+   "max_day_upper": 382585,
+   "units": 1904,
+   "blocks": 8560630
+  },
+  {
+   "start": "2026-08-12",
+   "end": "2026-09-10",
+   "lead_in_days": 2,
+   "credits_point": 9298144,
+   "credits_upper": 10808028,
+   "max_day_upper": 382585,
+   "units": 1921,
+   "blocks": 8637130
+  },
+  {
+   "start": "2026-08-13",
+   "end": "2026-09-11",
+   "lead_in_days": 2,
+   "credits_point": 9380499,
+   "credits_upper": 10903674,
+   "max_day_upper": 382585,
+   "units": 1938,
+   "blocks": 8713630
+  },
+  {
+   "start": "2026-08-14",
+   "end": "2026-09-12",
+   "lead_in_days": 2,
+   "credits_point": 9462030,
+   "credits_upper": 10999320,
+   "max_day_upper": 382585,
+   "units": 1955,
+   "blocks": 8789365
+  },
+  {
+   "start": "2026-08-15",
+   "end": "2026-09-13",
+   "lead_in_days": 2,
+   "credits_point": 9544879,
+   "credits_upper": 11094966,
+   "max_day_upper": 382585,
+   "units": 1972,
+   "blocks": 8866324
+  },
+  {
+   "start": "2026-08-16",
+   "end": "2026-09-14",
+   "lead_in_days": 2,
+   "credits_point": 9622914,
+   "credits_upper": 11184986,
+   "max_day_upper": 382585,
+   "units": 1988,
+   "blocks": 8938812
+  },
+  {
+   "start": "2026-08-17",
+   "end": "2026-09-15",
+   "lead_in_days": 2,
+   "credits_point": 9700095,
+   "credits_upper": 11275006,
+   "max_day_upper": 382585,
+   "units": 2004,
+   "blocks": 9010506
+  },
+  {
+   "start": "2026-08-18",
+   "end": "2026-09-16",
+   "lead_in_days": 2,
+   "credits_point": 9777276,
+   "credits_upper": 11365026,
+   "max_day_upper": 382585,
+   "units": 2020,
+   "blocks": 9082200
+  },
+  {
+   "start": "2026-08-19",
+   "end": "2026-09-17",
+   "lead_in_days": 2,
+   "credits_point": 9849715,
+   "credits_upper": 11449420,
+   "max_day_upper": 382585,
+   "units": 2035,
+   "blocks": 9149489
+  },
+  {
+   "start": "2026-08-20",
+   "end": "2026-09-18",
+   "lead_in_days": 2,
+   "credits_point": 9970825,
+   "credits_upper": 11590076,
+   "max_day_upper": 433221,
+   "units": 2060,
+   "blocks": 9261989
+  },
+  {
+   "start": "2026-08-21",
+   "end": "2026-09-19",
+   "lead_in_days": 2,
+   "credits_point": 10106469,
+   "credits_upper": 11747611,
+   "max_day_upper": 450100,
+   "units": 2088,
+   "blocks": 9387989
+  },
+  {
+   "start": "2026-08-22",
+   "end": "2026-09-20",
+   "lead_in_days": 2,
+   "credits_point": 10242113,
+   "credits_upper": 11905146,
+   "max_day_upper": 450100,
+   "units": 2116,
+   "blocks": 9513989
+  },
+  {
+   "start": "2026-08-23",
+   "end": "2026-09-21",
+   "lead_in_days": 2,
+   "credits_point": 10377757,
+   "credits_upper": 12062681,
+   "max_day_upper": 450100,
+   "units": 2144,
+   "blocks": 9639989
+  }
+ ],
+ "cheapest": {
+  "start": "2026-07-23",
+  "end": "2026-08-21",
+  "lead_in_days": 2,
+  "credits_point": 7982750,
+  "credits_upper": 9283317,
+  "max_day_upper": 315070,
+  "units": 1650,
+  "blocks": 7415247
+ },
+ "latest": {
+  "start": "2026-08-23",
+  "end": "2026-09-21",
+  "lead_in_days": 2,
+  "credits_point": 10377757,
+  "credits_upper": 12062681,
+  "max_day_upper": 450100,
+  "units": 2144,
+  "blocks": 9639989
+ },
+ "sixty_days_0724_0921_leadin2": {
+  "start": "2026-07-24",
+  "end": "2026-09-21",
+  "lead_in_days": 2,
+  "credits_point": 17842404,
+  "credits_upper": 20743989,
+  "max_day_upper": 450100,
+  "units": 3687,
+  "blocks": 16573965
+ },
+ "cheapest_leadin1": {
+  "start": "2026-07-23",
+  "end": "2026-08-21",
+  "lead_in_days": 1,
+  "credits_point": 7735933,
+  "credits_upper": 8996378,
+  "max_day_upper": 315070,
+  "units": 1599,
+  "blocks": 7185977
+ },
+ "regimes": [
+  {
+   "regime": "400 ms target (to 08-20)",
+   "days": 29,
+   "mean_slot_ms": 420.1,
+   "units_per_day": [
+    50,
+    51
+   ],
+   "credits_point_per_day": 248724,
+   "credits_upper_per_day_max": 292565,
+   "min_produced_frac": 0.99
+  },
+  {
+   "regime": "350 ms (08-21 to 08-27)",
+   "days": 7,
+   "mean_slot_ms": 368.0,
+   "units_per_day": [
+    55,
+    57,
+    58
+   ],
+   "credits_point_per_day": 282318,
+   "credits_upper_per_day_max": 331949,
+   "min_produced_frac": 0.999
+  },
+  {
+   "regime": "300 ms (08-28 to 09-17)",
+   "days": 21,
+   "mean_slot_ms": 317.9,
+   "units_per_day": [
+    61,
+    66,
+    67
+   ],
+   "credits_point_per_day": 326946,
+   "credits_upper_per_day_max": 382585,
+   "min_produced_frac": 0.993
+  },
+  {
+   "regime": "250 ms (09-18 on)",
+   "days": 4,
+   "mean_slot_ms": 269.2,
+   "units_per_day": [
+    76,
+    79
+   ],
+   "credits_point_per_day": 383918,
+   "credits_upper_per_day_max": 450100,
+   "min_produced_frac": 1.0
+  }
+ ],
+ "mixed_26old_4new": {
+  "days": 32,
+  "credits_point": 8598359,
+  "credits_upper": 9997850,
+  "blocks": 7987091
+ },
+ "newest_4_with_leadin": {
+  "days": 5,
+  "credits_point": 1860021,
+  "credits_upper": 2160480,
+  "blocks": 1727789
+ },
+ "spend_rules": {
+  "extras_inside_U": {
+   "P12_fee_and_global_config_history": 1000,
+   "MR_pool_age_and_mint_lookups": 25000,
+   "admin_usage_reads": 100
+  },
+  "P10_own_allocation": 432000,
+  "estimate_shown_to_owner": 7762033,
+  "row_cap": 9022478,
+  "total_exposure_incl_P10": 9454478,
+  "S_max_for_start_U_ge_1_1x_estimate": 961763,
+  "S_max_for_full_row_cap": 477522,
+  "effective_blocks_per_s_needed_14d": 5.94,
+  "raw_blocks_per_s_needed_14d": 7.15,
+  "p10_pass_effective_blocks_per_s": 8
+ },
+ "effective_rate": {
+  "assumptions_min": {
+   "setup": 15,
+   "save": 10,
+   "chain_gap": 5,
+   "qa_per_day": 45,
+   "rpc_day_budget": 300,
+   "job_timeout": 355
+  },
+  "effective_needed_14d": 5.94,
+  "raw_needed_14d": 7.15,
+  "by_raw_rate": {
+   "5": {
+    "days": 19.86,
+    "jobs": 93,
+    "effective_blocks_per_s": 4.19,
+    "p10_effective_blocks_per_s": 4.43
+   },
+   "7": {
+    "days": 14.28,
+    "jobs": 63,
+    "effective_blocks_per_s": 5.82,
+    "p10_effective_blocks_per_s": 6.25
+   },
+   "8": {
+    "days": 12.76,
+    "jobs": 62,
+    "effective_blocks_per_s": 6.52,
+    "p10_effective_blocks_per_s": 7.16
+   },
+   "9": {
+    "days": 11.59,
+    "jobs": 62,
+    "effective_blocks_per_s": 7.18,
+    "p10_effective_blocks_per_s": 8.07
+   },
+   "10": {
+    "days": 10.66,
+    "jobs": 62,
+    "effective_blocks_per_s": 7.8,
+    "p10_effective_blocks_per_s": 8.98
+   },
+   "12": {
+    "days": 9.26,
+    "jobs": 62,
+    "effective_blocks_per_s": 8.98,
+    "p10_effective_blocks_per_s": 10.8
+   },
+   "15": {
+    "days": 7.16,
+    "jobs": 31,
+    "effective_blocks_per_s": 11.62,
+    "p10_effective_blocks_per_s": 13.52
+   },
+   "25": {
+    "days": 4.94,
+    "jobs": 31,
+    "effective_blocks_per_s": 16.83,
+    "p10_effective_blocks_per_s": 22.61
+   }
+  },
+  "p10": {
+   "rpc_rps": 12,
+   "rpc_conc": 8,
+   "credit_cap": 432000,
+   "max_effective_at_setting": 10.8
+  }
+ }
+}
