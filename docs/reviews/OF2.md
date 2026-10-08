@@ -246,7 +246,7 @@ Slice paging is sound: inclusive UTC slices leave no gaps, and every query fails
 
 ### Supervisor rulings for round 9 (9 Oct, about 3:40 AM; sent together with the round 8 reviewer's findings)
 
-63. **MINOR 2.** Refuse any command argument or input redirect that names `$qlog`, `$slog`, `$tlog`, or a `*/logs/` path under `$out` or `$RUNNER_TEMP`, unless it is a write target of the allowed calls. One test per form above.
+63. **MINOR 2.** Refuse any command argument or input redirect that names `$qlog`, `$slog`, `$tlog`, or a `*/logs/` path under `$out` or `$RUNNER_TEMP`, unless it is a write target of the allowed calls. One test per form above. **Replaced by OF-3 ruling 30** (an allow-list instead of a deny-list, and `eval` refused).
 64. **MINOR 1.** Run the status queries before the slices. Test the order.
 65. **Pin scope.** Arming also refuses archive-workflow jobs that use `container:` or `services:`, or that call a reusable workflow. Test it.
 - Round 8 reviewer: PASS, final, at `8aa5c131`; safe-b `4ca9d41a` is consistent. m1: `OLD-FAITHFUL.md:379` and `test-ci.sh:2216` still say "500 cap".

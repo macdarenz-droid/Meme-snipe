@@ -102,3 +102,22 @@ MAJOR: the same gap as the red team's m1. "Save progress" (`data-scan.yml:444`) 
 ### Round 6 reviewer (head `024399cb`): PASS, final
 
 The builder's reading of ruling 25 is right. After a trim failure, `$out` holds a half-trimmed day, so only the logs are sealed. The pre-trim "Save progress" entry stays as the intact K2 record, and progress-pick never resumes from a `-logs` key. MINOR: rulings 25–27 were not on the base or on `supervisor-docs-2`. They are in this log on `claude/supervisor-docs-3`, which goes to the base in the next supervisor docs PR.
+
+### Round 6 red team (head `024399cb`): final, 0 BLOCKER, 0 MAJOR, 3 MINOR
+
+Trim-failure logs are kept, half-trimmed units are never sealed, and progress-pick never picks a `-logs` key. MINORs:
+- m1: the restore step's prefix match can restore a `-logs` entry on a re-run, and open accepts it because it has the same prefix and a valid MAC.
+- m2: actions/cache/save succeeds with a warning when an entry is over 10 GB, so on a K2 day seallogs does not run and the logs are lost.
+- m3: the redirect guard still lets reads through (cp to /dev/stdout, sed, awk, grep, `while read <`, `cp -s`, eval, cd, aliasing).
+
+### Supervisor rulings for round 9 (9 Oct, about 3:46 AM; sent together with OF-2 63–66)
+
+28. **m1.** The MAC binds the entry type (`progress` or `logs`). Open refuses anything but `progress` when resuming, and the fallback restore key gets a suffix no entry can have. Test: a re-run with only a `-logs` entry starts clean and restores nothing.
+29. **m2.** Seal and save the logs alone whenever the job has failed (`failure()`), whatever the save outcome. Test: a save that "succeeds" with nothing stored still keeps the logs.
+30. **m3, replaces the deny-list in OF-2 ruling 63.** Use an allow-list. A line that mentions qlog, slog or tlog may only:
+    - assign it to a path under `$out` or `$RUNNER_TEMP`;
+    - mkdir or rm it;
+    - redirect a command's output into it;
+    - mv `migrations.list` out of it;
+    - name it in an echo to the summary.
+    Everything else is refused, and `eval` is refused in the CI scripts. One test for each form the red team listed.
