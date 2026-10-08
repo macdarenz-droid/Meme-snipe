@@ -414,3 +414,11 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
 
 114. **c1.** When a decision resolves, re-run the A1 apply-time checks (size table, admission trade set) on the configuration about to be frozen, before emission resumes. If the CI lower bound is ≤ 0 or null, freeze it but raise `size_not_profitable` or `admission_not_profitable` ("No knowingly losing trades"). This is an `applycheck` trial (no k, no r). AC: B a conservative recost plus an A1 MAXPOS lowering during the decision; if B fails at the lowered size, the strategy resumes entry-blocked.
 115. **c2.** Each A1 check during a pending decision runs against the last frozen model with every A1 value applied since the decision started. AC: two A1 changes during one decision; the second check sees both.
+
+## Round 17 (head `a6b33d16`): reviewer PASS (no findings); red team 0 BLOCKER, 0 MAJOR, 1 MINOR
+
+- d1: state the way out of a block raised at resolution: the evidence-backed setting is re-confirmed by the decision that freezes a new model, so the free exact return clears the block.
+
+### Supervisor ruling (8 Oct 2026, 3:40 PM)
+
+116. **Done.** No MAJOR remains after 17 rounds. #293 merges on green CI at `a6b33d16`. d1 is carried into card Z-STRAT's acceptance (one clause and one AC: after a B resolution with an entry block, the free return to the evidence-backed MAXPOS clears the block), so no further CI cycle is spent on a one-line clarification.

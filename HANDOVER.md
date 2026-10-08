@@ -135,6 +135,13 @@
 - **8 Oct 3:12 PM: docs branches.** Every push to `claude/supervisor-docs` restarts #298's CI (one concurrency group). The log now goes to `claude/supervisor-docs-2` until #298 merges at `d2ba7204` (reviewer PASS at `f0220a00`; the delta to `d2ba7204` is one review-log commit, records only). After the merge, `claude/supervisor-docs-2` merges the base and becomes the next docs PR.
   - #293: round 7 reviewer PASS at `5be4b143`; red team 2 MAJOR (T1 what-if vs re-validation; T2 fill sets); round 8 rulings 77–81 sent.
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
+- **8 Oct 3:40 PM:**
+  - **#293 STRATEGY-INTAKE done reviewing**: round 17 head `a6b33d16`, reviewer PASS, red team 0 MAJOR (1 MINOR, d1, carried into Z-STRAT's acceptance, ruling 116). Merge on green CI (run 37728478823 queued).
+  - #294 PM-01: round 12 rulings 81–88 sent (part 6 replaced by role mapping; part 7 on normalised ratios with KS + 10% median; fallback coverage; blob-sha check; start item 8 choice to the owner if no forward source).
+  - #295 OPS-CLEAN: round 3 rulings 8–12 sent (marker before the switch; lock timeout logged; held start in the same run; `holding` marker blocks restarts during the hold).
+  - #301 Z02 red team: 7 MAJOR, 3 MINOR (missing ledger opens empty; invalid stored config refuses start instead of exits_only; config version unchanged when a build adds a key; contract envelope unchecked; guard skips all @bot/*; metric_rollup_1m disk growth; log loss on clock steps). Waiting for the reviewer before ruling.
+  - #300 Z04 red team: 4 MAJOR, 4 MINOR (unbounded watched pools; long-gap catch-up stall; source not byte-counted; keyframe chain tied to recvMs hour, not the segment). Waiting for the reviewer.
+  - OF-2 round 2 pushes seen on `claude/of2-holds` (`9231952c`) and `claude/archive-safe-b` (`e5914e0c`).
 - **8 Oct 3:33 PM:**
   - **#300 Z04** ready (head `8d18027a`, 7,346 tests, label `deps-reviewed:2923e9b440472556ad4e48d9e1f4b978`). Reviewer `session_01DyzMPdLwhExKfZU6jxjZ2P`, red team `session_01NMmTk3S5Ztm8mcuCQ2nD4f`. Ruling: keep the `E_QUEUE_FULL` throw; B-M19-01 treats it as a failed record that blocks new entries (fail closed).
   - **#301 Z02** ready (head `ff140bce`, 7,544 tests, label `deps-reviewed:d33f2cbaa4d5b9d82ba7a054ee0aad10`). Reviewer `session_01SrirRVi47enLdpHRtJFee7`, red team `session_01VSjjTjEsn1LfDCts9AqEm4`. Answers sent: zod cell dated 2026-10-08; contract sign-offs after review; guard.ts change only as a scope fix; Node 22.23.3 pin stays (VF-08 note to Z0D-2); write latency is a later server check. Follow-up: metric_rollup_1m keeps per-pool series 1 year (about 9.1 GB a year, builder's estimate) against the 55 GB disk.
