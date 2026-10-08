@@ -493,3 +493,83 @@ describe('round 7 (ruling 31): the queue\'s own poll_counts never move maxRecvMi
     assert.deepEqual(freshMinutes(q), want);
   });
 });
+
+describe('round 8 (rulings 33-36)', () => {
+  it("the red team's repro: one pool's 20 ms boundary latency excludes nothing (ruling 33)", () => {
+    const q = new RecorderQueue();
+    const gaps: Array<{ fromMs: number; toMs: number; reason: string; poolId?: string }> = [];
+    const rows: Array<Record<string, unknown>> = [];
+    // 30 pools at 1 Hz for 120 minutes; each minute one p0 poll stamped 20 ms before the minute, appended after the
+    // tick that wrote that minute.
+    for (let sec = 0; sec < 7_200; sec++) {
+      const t = T0 + sec * 1_000;
+      for (let i = 0; i < 30; i++) q.append(snap(`p${i}`, 1, t));
+      q.tick(ms(t));
+      if (sec % 60 === 0 && sec > 0) q.append(snap('p0', 1, t - 20));
+      if (sec % 600 === 0) {
+        gaps.push(...(q.drainGaps().poll_counts ?? []));
+        rows.push(...q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf));
+      }
+    }
+    gaps.push(...(q.drainGaps().poll_counts ?? []));
+    rows.push(...q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf));
+    assert.deepEqual(gaps, [], 'no gap on poll_counts');
+    assert.equal(q.stats().movedPolls, 0);
+    // The moved polls are noted in p0's records instead: one per minute, from the minute before.
+    const p0 = rows.filter((r) => r.poolId === 'p0' && r.latePolls !== undefined);
+    assert.ok(p0.length >= 100, `${p0.length} p0 records with latePolls`);
+    assert.ok(p0.every((r) => r.latePolls === 1 && r.lateFromMinuteStartMs === (r.minuteStartMs as number) - 60_000));
+    assert.ok(rows.filter((r) => r.poolId !== 'p0').every((r) => r.latePolls === undefined));
+  });
+
+  it('a clock_step gap names its pool', () => {
+    const q = new RecorderQueue();
+    for (let sec = 0; sec < 300; sec++) {
+      q.append(snap('a', 1, T0 + sec * 1_000));
+      q.append(snap('b', 1, T0 + sec * 1_000));
+      q.tick(ms(T0 + sec * 1_000));
+    }
+    // a's poll stamped 3 minutes back: moved more than one minute.
+    q.append(snap('a', 1, T0 + 120_000));
+    const gaps = q.drainGaps().poll_counts ?? [];
+    assert.ok(gaps.length > 0 && gaps.every((g) => g.reason === 'clock_step' && g.poolId === 'a'), JSON.stringify(gaps));
+    assert.equal(q.stats().movedPolls, 1);
+  });
+
+  it('1 Hz polls plus 600 discovery records at +1 day are one clock-step episode, not 600 (ruling 34)', () => {
+    const logs: string[] = [];
+    const q = new RecorderQueue({ log: (l, c) => logs.push(`${l}:${c}`) });
+    for (let sec = 0; sec < 600; sec++) {
+      const t = T0 + sec * 1_000;
+      q.append(snap('a', 1, t));
+      q.append(rec('discovery', t + 86_400_000));
+      q.tick(ms(t));
+    }
+    assert.equal(q.stats().clockSteps, 1);
+    assert.equal(logs.filter((l) => l === 'warning:M07.clock_step').length, 1);
+    assert.equal(q.stats().maxRecvMinute, T0 / 60_000 + 9);
+  });
+
+  it('600 alternating good and bad ticks are one episode, and a +1 day record right after a bad tick is not taken (ruling 35)', () => {
+    const q = new RecorderQueue();
+    for (let i = 0; i < 600; i++) {
+      const t = T0 + i * 1_000;
+      q.append(snap('a', 1, t));
+      q.tick(ms(i % 2 === 0 ? t : t + 86_400_000));
+    }
+    assert.equal(q.stats().clockSteps, 1);
+    // The last tick (i = 599) was a bad one.
+    const before = q.stats().maxRecvMinute;
+    q.append(rec('discovery', T0 + 599_000 + 86_400_000));
+    assert.equal(q.stats().maxRecvMinute, before);
+  });
+
+  it('a record rejected 2 minutes ahead (inside the step window) does not move maxRecvMinute (ruling 36)', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0 + 1_000));
+    assert.deepEqual(q.append(rec('decision', T0 + 120_000, new Map())), { rejected: 'E_PAYLOAD' });
+    assert.deepEqual(q.append(rec('decision', T0 + 120_000, { s: 'y'.repeat(70_000) })), { rejected: 'E_TOO_LARGE' });
+    assert.deepEqual(q.append({ ...rec('decision', T0 + 120_000), source: 's'.repeat(300) }), { rejected: 'E_ENVELOPE' });
+    assert.equal(q.stats().maxRecvMinute, T0 / 60_000);
+  });
+});

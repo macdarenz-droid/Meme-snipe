@@ -55,11 +55,13 @@ export interface Gap {
   fromMs: UnixMs;
   toMs: UnixMs;
   /**
-   * `backpressure`: records dropped (any stream). On `poll_counts` only: `clock_step`, minutes whose polls were moved
-   * to another minute by a clock step, and the minutes they were moved into; `late`, the same for a poll appended
-   * after its minute was written (rulings 28-30). A-M07-03 excludes every gap's minutes from coverage.
+   * `backpressure`: records dropped (any stream). On `poll_counts` only, `clock_step`: one pool's minutes whose polls
+   * were moved more than one minute (a clock step, or a poll that late), and the minutes they were moved into (rulings
+   * 28 and 33). A-M07-03 excludes a gap's minutes from coverage, for `poolId` only when it is set.
    */
-  reason: 'backpressure' | 'clock_step' | 'late';
+  reason: 'backpressure' | 'clock_step';
+  /** Set on poll_counts clock_step gaps: the one pool whose minutes the gap covers (ruling 33). */
+  poolId?: string;
 }
 
 /** One per watched pool per minute (A-M07-01 logic 3). */
@@ -76,6 +78,12 @@ export interface PollCounts {
    * not observed minute by minute.
    */
   skippedMinutes?: number;
+  /**
+   * Present only when some of the counts were stamped in the minute before `minuteStartMs` and arrived after it was
+   * written (ruling 33): how many, and that minute. A move of one minute gets no gap; a longer one gets a clock_step gap.
+   */
+  latePolls?: number;
+  lateFromMinuteStartMs?: UnixMs;
 }
 
 export interface RecorderQueueConfig {
@@ -189,6 +197,8 @@ export interface RecorderStats {
   clockSteps: number;
   /** Outage episodes (ruling 29): no producer record for more than outageMinutes while the tick clock is steady. */
   outages: number;
+  /** Polls counted more than one minute from their own minute; each marks at most two pool-minutes with a gap. */
+  movedPolls: number;
   /** The newest minute of an accepted producer recvMs, or null before the first. */
   maxRecvMinute: number | null;
   /** Idle pools that made way for a new pool at the cap. */
@@ -219,6 +229,8 @@ interface Bucket {
   successful: number;
   changed: number;
   failed: number;
+  /** Polls counted here that were stamped in the minute before (moved by one minute, ruling 33). */
+  late: number;
 }
 
 interface WatchedPool {
@@ -298,8 +310,12 @@ export class RecorderQueue {
   private emitting = false;
   /** The minute of the latest tick's own time, uncapped: the writer's clock (ruling 27). Null before the first tick. */
   private lastTickRawMinute: number | null = null;
+  /** True while that tick moved at most CLOCK_STEP_MINUTES from the one before it (ruling 35). */
+  private tickSteady = false;
   /** Open episodes, so each is counted and logged once (ruling 29). */
   private readonly episode = { tickAhead: false, recvAhead: false, recvBehind: false, outage: false };
+  /** maxRecvMinute when each episode last saw a skewed time: it closes CLOCK_STEP_MINUTES after that (ruling 34). */
+  private readonly episodeLast = { tickAhead: 0, recvAhead: 0, recvBehind: 0 };
   /** clock_step and late gaps on poll_counts, by minute (rulings 28 and 30). */
   private pollGaps: Gap[] = [];
 
@@ -349,6 +365,7 @@ export class RecorderQueue {
       capUnwatched: 0,
       clockSteps: 0,
       outages: 0,
+      movedPolls: 0,
       maxRecvMinute: null,
       watchedPools: 0,
       acceptedHashes: 0,
@@ -419,7 +436,7 @@ export class RecorderQueue {
       // this watch (ruling 18).
       const changed = w.lastRawHash !== null && w.lastRawHash !== p.rawHash;
       w.lastRawHash = p.rawHash;
-      this.countPoll(w, p.priorityClass, e.recvMs, clock, changed ? 'changed' : 'successful', position);
+      this.countPoll(poolId, w, p.priorityClass, e.recvMs, clock, changed ? 'changed' : 'successful', position);
       if (unchanged) {
         this.s.recordsTotal[stream].notWritten++;
         return 'unchanged';
@@ -456,7 +473,7 @@ export class RecorderQueue {
       return false;
     }
     this.commitRecv(clock, recvMs);
-    this.countPoll(w, priorityClass, recvMs, clock, 'failed', position);
+    this.countPoll(poolId, w, priorityClass, recvMs, clock, 'failed', position);
     return true;
   }
 
@@ -480,7 +497,7 @@ export class RecorderQueue {
    */
   unwatch(poolId: string, nowMs: UnixMs): void {
     const raw = Math.floor(nowMs / MINUTE_MS);
-    const ref = maxOf(this.maxRecvMinute, this.lastTickRawMinute);
+    const ref = maxOf(this.maxRecvMinute, this.tickSteady ? this.lastTickRawMinute : null);
     if (ref !== null && raw - ref > CLOCK_STEP_MINUTES) this.openEpisode('tickAhead', { direction: 'forward', from: 'unwatch', minutes: raw - ref });
     const w = this.watched.get(poolId);
     if (w !== undefined) this.flushPool(poolId, w, this.capMinute(raw + 1), nowMs);
@@ -496,11 +513,12 @@ export class RecorderQueue {
     const raw = Math.floor(nowMs / MINUTE_MS);
     const prevRaw = this.lastTickRawMinute;
     this.lastTickRawMinute = raw;
+    this.tickSteady = prevRaw !== null && Math.abs(raw - prevRaw) <= CLOCK_STEP_MINUTES;
     // A tick before any record has nothing to write and must not set the tick minute from an unchecked clock.
     if (this.maxRecvMinute === null) return;
     const ahead = raw - this.maxRecvMinute;
     if (ahead <= CLOCK_STEP_MINUTES) {
-      this.episode.tickAhead = false;
+      this.closeIfQuiet('tickAhead');
     } else if (prevRaw === null || raw - prevRaw > CLOCK_STEP_MINUTES) {
       // The tick clock itself jumped: a clock step.
       this.openEpisode('tickAhead', { direction: 'forward', from: 'tick', minutes: ahead });
@@ -524,15 +542,16 @@ export class RecorderQueue {
   }
 
   /**
-   * Judges a producer time against the newest accepted minute and the tick clock (rulings 27 and 28), without
-   * changing anything. `ahead`: more than CLOCK_STEP_MINUTES past max(maxRecvMinute, the latest tick's own minute,
-   * lastTickMinute); the poll is counted in that base minute (`effMs`) and maxRecvMinute does not move. `behind`: more
-   * than CLOCK_STEP_MINUTES before lastTickMinute. The latest tick's own minute is in the base so that the feed's
-   * first record after a real outage (the tick clock moved on steadily) is taken.
+   * Judges a producer time against the newest accepted minute and the tick clock (rulings 27, 28 and 35), without
+   * changing anything. `ahead`: more than CLOCK_STEP_MINUTES past max(maxRecvMinute, lastTickMinute, and the latest
+   * tick's own minute while ticks move steadily); the poll is counted in that base minute (`effMs`) and maxRecvMinute
+   * does not move. `behind`: more than CLOCK_STEP_MINUTES before lastTickMinute. A steady tick clock is in the base so
+   * that the feed's first record after a real outage is taken; a tick that jumped is not, so one bad tick cannot let
+   * a bad record through.
    */
   private classify(recvMs: number): Clocked {
     const m = Math.floor(recvMs / MINUTE_MS);
-    const base = maxOf(maxOf(this.maxRecvMinute, this.lastTickRawMinute), this.lastTickMinute);
+    const base = maxOf(maxOf(this.maxRecvMinute, this.tickSteady ? this.lastTickRawMinute : null), this.lastTickMinute);
     if (base !== null && m > base + CLOCK_STEP_MINUTES) return { status: 'ahead', effMs: (base + 1) * MINUTE_MS - 1 };
     if (this.lastTickMinute !== null && m < this.lastTickMinute - CLOCK_STEP_MINUTES) return { status: 'behind', effMs: recvMs };
     return { status: 'ok', effMs: recvMs };
@@ -544,23 +563,32 @@ export class RecorderQueue {
       this.openEpisode('recvAhead', { direction: 'forward', from: 'recv', minutes: Math.floor(recvMs / MINUTE_MS) - Math.floor(c.effMs / MINUTE_MS) });
       return;
     }
-    this.episode.recvAhead = false;
     if (c.status === 'behind') {
       this.openEpisode('recvBehind', { direction: 'backward', from: 'recv', minutes: (this.lastTickMinute ?? 0) - Math.floor(recvMs / MINUTE_MS) });
       return;
     }
-    this.episode.recvBehind = false;
     this.episode.outage = false;
     const m = Math.floor(recvMs / MINUTE_MS);
     if (this.maxRecvMinute === null || m > this.maxRecvMinute) this.maxRecvMinute = m;
+    this.closeIfQuiet('recvAhead');
+    this.closeIfQuiet('recvBehind');
   }
 
-  /** Counts and logs a clock-step episode once, at its start (ruling 29). */
+  /**
+   * Counts and logs a clock-step episode once, at its start (ruling 29); every skewed time keeps it open, so a
+   * steady skewed source or alternating bad ticks stay one episode (rulings 34 and 35).
+   */
   private openEpisode(kind: 'tickAhead' | 'recvAhead' | 'recvBehind', fields: Record<string, string | number>): void {
+    this.episodeLast[kind] = this.maxRecvMinute ?? 0;
     if (this.episode[kind]) return;
     this.episode[kind] = true;
     this.s.clockSteps++;
     this.log('warning', 'M07.clock_step', fields);
+  }
+
+  /** Closes an episode once CLOCK_STEP_MINUTES of received data have passed with no skewed time from its source. */
+  private closeIfQuiet(kind: 'tickAhead' | 'recvAhead' | 'recvBehind'): void {
+    if (this.episode[kind] && (this.maxRecvMinute ?? 0) - this.episodeLast[kind] > CLOCK_STEP_MINUTES) this.episode[kind] = false;
   }
 
   /** A flush or tick minute, never past maxRecvMinute + 1 (ruling 25). */
@@ -569,24 +597,28 @@ export class RecorderQueue {
   }
 
   /**
-   * Marks one minute of poll_counts with a gap: a minute whose polls were moved, or that received moved polls.
-   * Merged with an overlapping or adjacent gap of the same reason; the list is capped like the backpressure gaps.
+   * Marks one pool's minute of poll_counts with a clock_step gap (ruling 33): a minute whose polls were moved more
+   * than one minute, or that received them. Merged with an overlapping or adjacent gap of the same pool; the list is
+   * capped like the backpressure gaps (the oldest two merge, which only widens a gap).
    */
-  private addPollGap(minute: number, reason: 'clock_step' | 'late'): void {
+  private addPollGap(poolId: string, minute: number): void {
     const fromMs = minute * MINUTE_MS;
     const toMs = fromMs + MINUTE_MS - 1;
     for (let i = this.pollGaps.length - 1; i >= Math.max(0, this.pollGaps.length - 8); i--) {
       const g = this.pollGaps[i] as Gap;
-      if (g.reason === reason && fromMs <= g.toMs + 1 && toMs >= g.fromMs - 1) {
-        this.pollGaps[i] = { fromMs: Math.min(g.fromMs, fromMs), toMs: Math.max(g.toMs, toMs), reason };
+      if (g.poolId === poolId && fromMs <= g.toMs + 1 && toMs >= g.fromMs - 1) {
+        this.pollGaps[i] = { fromMs: Math.min(g.fromMs, fromMs), toMs: Math.max(g.toMs, toMs), reason: 'clock_step', poolId };
         return;
       }
     }
-    this.pollGaps.push({ fromMs, toMs, reason });
+    this.pollGaps.push({ fromMs, toMs, reason: 'clock_step', poolId });
     if (this.pollGaps.length > GAPS_MAX_PER_STREAM) {
       const a = this.pollGaps.shift() as Gap;
       const b = this.pollGaps[0] as Gap;
-      this.pollGaps[0] = { fromMs: Math.min(a.fromMs, b.fromMs), toMs: Math.max(a.toMs, b.toMs), reason: a.reason };
+      const merged: Gap = { fromMs: Math.min(a.fromMs, b.fromMs), toMs: Math.max(a.toMs, b.toMs), reason: 'clock_step' };
+      // Two pools' gaps merged cover every pool, which only widens the exclusion.
+      if (a.poolId !== undefined && a.poolId === b.poolId) merged.poolId = a.poolId;
+      this.pollGaps[0] = merged;
     }
   }
 
@@ -855,7 +887,7 @@ export class RecorderQueue {
    * a forward clock step, in the minute it can still go to; both minutes then get a gap on poll_counts (`clock_step`
    * when the time was a clock step either way, else `late`), so every moved poll is explained (rulings 28 and 30).
    */
-  private countPoll(w: WatchedPool, priorityClass: string, recvMs: number, clock: Clocked, kind: 'successful' | 'changed' | 'failed', position: boolean): void {
+  private countPoll(poolId: string, w: WatchedPool, priorityClass: string, recvMs: number, clock: Clocked, kind: 'successful' | 'changed' | 'failed', position: boolean): void {
     w.priorityClass = priorityClass;
     // A failed poll can set the position mark but never clears it (ruling 23).
     w.position = kind === 'failed' ? w.position || position : position;
@@ -871,16 +903,20 @@ export class RecorderQueue {
       minute = w.nextMinute;
       this.s.latePolls++;
     }
-    if (minute !== own) {
-      const reason = clock.status === 'ok' ? 'late' : 'clock_step';
-      this.addPollGap(own, reason);
-      this.addPollGap(minute, reason);
+    // A move of one minute (ordinary latency at a minute boundary) is noted in the receiving record; a longer one
+    // marks both of the pool's minutes with a clock_step gap (ruling 33).
+    const oneMinute = minute !== own && Math.abs(minute - own) <= 1;
+    if (minute !== own && !oneMinute) {
+      this.s.movedPolls++;
+      this.addPollGap(poolId, own);
+      this.addPollGap(poolId, minute);
     }
     let b = w.buckets.get(minute);
     if (b === undefined) {
-      b = { successful: 0, changed: 0, failed: 0 };
+      b = { successful: 0, changed: 0, failed: 0, late: 0 };
       w.buckets.set(minute, b);
     }
+    if (oneMinute) b.late++;
     if (kind === 'failed') {
       b.failed++;
     } else {
@@ -906,7 +942,9 @@ export class RecorderQueue {
   private flushPool(poolId: string, w: WatchedPool, untilMinute: number, nowMs: number): void {
     const span = untilMinute - w.nextMinute;
     if (span > this.cfg.pollCatchUpMaxMinutes) {
-      const sum: Bucket = { successful: 0, changed: 0, failed: 0 };
+      const sum: Bucket = { successful: 0, changed: 0, failed: 0, late: 0 };
+      // Only polls moved into the span's first minute came from outside it.
+      const firstLate = w.buckets.get(w.nextMinute)?.late ?? 0;
       for (const [m, b] of w.buckets) {
         if (m >= untilMinute) continue;
         sum.successful += b.successful;
@@ -923,6 +961,10 @@ export class RecorderQueue {
         priorityClass: w.priorityClass,
         skippedMinutes: span,
       };
+      if (firstLate > 0) {
+        payload.latePolls = firstLate;
+        payload.lateFromMinuteStartMs = ((w.nextMinute - 1) * MINUTE_MS) as UnixMs;
+      }
       this.s.skippedPollMinutes += span;
       w.nextMinute = untilMinute;
       this.emit(payload, nowMs);
@@ -939,6 +981,10 @@ export class RecorderQueue {
         failedPolls: b?.failed ?? 0,
         priorityClass: w.priorityClass,
       };
+      if (b !== undefined && b.late > 0) {
+        payload.latePolls = b.late;
+        payload.lateFromMinuteStartMs = ((w.nextMinute - 1) * MINUTE_MS) as UnixMs;
+      }
       this.emit(payload, nowMs);
     }
   }
