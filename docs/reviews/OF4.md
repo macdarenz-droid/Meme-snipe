@@ -13,3 +13,16 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-4 bullet, plus the OF2.md ruling 73 notes
 
 - Builder report: test-ci 264/0; the 6 new OF-4 test blocks and the ruling 2 checks fail on base `3aaee37e`; label `deps-reviewed:3ed65ac45ab38a0221bcc3a85892c2ed`. Rulings 1–4 built.
 5. **Builder's flag, ruled (9 Oct about 8:10 AM).** Split the assemble step: the store-token download runs alone in an `env -i` clean step; assemble then runs with no token. Least privilege, the same shape as every other store step. Test: the guard refuses a store token in any step that is not an `env -i` store step. Then the reviewer and red team start.
+
+- Reviewer (round 1, `83a396cb`): PASS, 0 BLOCKER, 0 MAJOR, 3 MINOR. Every card point and rulings 1–5 met; test-ci 265/0; label matches. The base fails broadly before (its guard refuses every archive path), so the per-block fail-before rests on the builder's run.
+- Red team (round 1): PASS, 0 BLOCKER, 0 MAJOR, 4 MINOR, plus one note outside the diff.
+
+### Supervisor rulings for round 2 (9 Oct about 8:58 AM)
+
+6. **Reviewer MINOR 1, required.** The storage check counts everything stored for a day: for a K3 day the trimmed units plus `events-DAY.tar` and the `data-volume-DAY` release; a K2-based projection adds the same parts on top of the pm01-subset figure. The cap is a safety stop, so it must not undercount. Test with a K2 day near the cap.
+7. **Reviewer MINOR 2 and red team m1, required.** The archive lane is one UTC day per batch (MIGRATION Card Z-H). The plan job refuses more than one archive day per run, so the forget output always covers the run's only day. Test: a two-day archive dispatch is refused before any request.
+8. **Reviewer MINOR 3, required.** The guard also scans `run:` lines: `secrets.DATA_STORE_TOKEN` written into a `run:` line, `toJSON(secrets)`, `secrets[...]` and `secrets: inherit` are refused in archive workflows. One test each.
+9. **Red team m2, required.** After `release create`, read-back requires the release's asset names to equal the SHA256SUMS set (`release_state` complete) before `readback=true`.
+10. **Red team m3, required.** The assemble store step creates the release with its files in one call, uploads only the files SHA256SUMS lists, and reads them back as publish-day does.
+11. **Red team m4, recorded.** A DECISIONS row: within one job, the tokenless and clean-shell split limits mistakes, not a compromised earlier step (shared workspace, runner sudo). Accepted as a known limit for the archive lane.
+12. **Red team note outside the diff (deploy.yml "Set up the daily summary" holds `DATA_STORE_TOKEN` in a step that is not clean).** Not this card. Recorded as an identified hardening item (REPORTS-TOKEN: a separate reports token or a clean step) for after the owner's resume.
