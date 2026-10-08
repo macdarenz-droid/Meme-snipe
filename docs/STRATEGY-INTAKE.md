@@ -111,7 +111,9 @@ The runner, on the research host too, refuses to register an `id@version` whose 
 
 **Changes after freezing** (round 3 ruling 26; round 4 rulings 43 and 49; round 5 rulings 52, 53, 56 and 59). Every `affectsReturns` key in the B-M25-01 schema carries a group tag; a CI test fails any key without one, and until it is tagged the key counts as group P. `configKey` has three groups (group M added by round 13 ruling 101).
 
-**How a key gets its group** (round 14 ruling 105). The tag is derived from which modules read the key, through B-M25-01's static key-usage check (B-M25-01 today checks only that every key used in code exists in the schema; deriving the readers from it is a PROPOSED extension): read by the cost or fill model → M; read by M21 for admission → P (admission); read only for sizing → S. A key read by more than one takes the strictest path (admission, then M, then S). CI fails when a hand tag disagrees with the derived one. A key that can flip a fill or a reject is never S: the entry and exit slippage caps are tagged P (admission).
+**How a key gets its group** (round 14 ruling 105). The tag is derived from which modules read the key, through B-M25-01's static key-usage check (B-M25-01 today checks only that every key used in code exists in the schema; deriving the readers from it is a PROPOSED extension): read by the cost or fill model → M; read by M21 for admission → P (admission); read only for sizing → S. A key read by more than one takes the strictest path (admission, then M, then S). Readers are derived by the import and call-graph closure, so a key read through a shared helper counts against every module that calls the helper; a lint rule allows config reads only through typed literal accessors, and a key whose readers cannot be resolved statically takes P (admission) (round 15 ruling 109). CI fails when a hand tag disagrees with the derived one. A key that can flip a fill or a reject is never S: the entry and exit slippage caps are tagged P (admission).
+
+**Pending decisions** (round 15 ruling 108). While a `recost`, a k trial or a B-9 decision is pending for a strategy, the validator refuses any other change that touches its `configKey` (`E_DECISION_PENDING`, PROPOSED code, named by the ruling); only A1 tightenings and a cancel of the pending change are accepted. The SOL test, every what-if and every apply-time check use the last frozen `configKey`'s model, never a pending value.
 
 **Mixed diffs** (round 14 ruling 104). A diff that holds a group M key and any other key is refused (`E_MIXED_GROUP_M`, PROPOSED code, named by the ruling); the dashboard splits it into two submits, the group M part first.
 
@@ -128,7 +130,7 @@ The groups:
 
 A neutral (A2) change to a group S or admission key is handled as a raise: a what-if on `W_B` and `W_R` plus the size table, one `whatif` trial and one use of r; it is refused on a fail and never demotes, and a pass moves the evidence-backed setting. An exact return to the evidence-backed setting stays free (round 12 ruling 96).
 
-Every apply-time check that reads `W_R` (an intermediate value, or an A1 change) is a listed trial of kind `applycheck` (PROPOSED kind, named by the ruling). It uses no k and no r, appears in the gate report, and counts in the DSR trial count. The `W_R` check stays (round 12 ruling 97). Only operator or owner changes create `applycheck` trials; system-initiated tightenings (breakers, demotions) create none, but their apply-time check still runs and blocks as usual (round 14 ruling 106). "System-initiated" means an `Actor` of type `risk_engine` or `system` (ARCH 5.0a; SPEC-A A-M13-07 step 5 and SPEC-B B-M26-04 step 5 name `risk_engine` for demotions), never an agent or operator session. The DSR counts trials by distinct `configKey` evaluated, so the same value checked twice counts once (round 13 ruling 102).
+Every apply-time check that reads `W_R` (an intermediate value, or an A1 change) is a listed trial of kind `applycheck` (PROPOSED kind, named by the ruling). It uses no k and no r, appears in the gate report, and counts in the DSR trial count. The `W_R` check stays (round 12 ruling 97). Only operator or owner changes create `applycheck` trials; system-initiated tightenings (breakers, demotions) create none, but their apply-time check still runs and blocks as usual (round 14 ruling 106). "System-initiated" means an `Actor` of type `sentinel`, `risk_engine` or `system` (ARCH 5.0a; SPEC-A A-M13-07 step 5 and SPEC-B B-M26-04 step 5 name `risk_engine` for demotions), never an agent or operator session. A change applied by `scheduler` is attributed to the actor who submitted it, and a `cli` change is an operator or owner change (round 15 ruling 110). The DSR counts trials by distinct `configKey` evaluated, so the same value checked twice counts once (round 13 ruling 102).
 
 **Code deploys** (round 5 ruling 53; round 6 rulings 63, 65 and 67; round 7 ruling 71). A deploy that changes `configKey` (new runtime dependencies, or new cost- or fill-model code):
 - B-9 is byte-identical and the filled-trade set and the rejection set (with reasons) are identical under both models (round 8 ruling 78), so only values change (round 10 ruling 89; round 11 ruling 92):
@@ -365,6 +367,10 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | AC-86 | One diff with `MAXPOS` (A1) and the assumed priority fee (group M) is refused with `E_MIXED_GROUP_M`; submitted as two diffs, group M first, both apply by their own paths | Round 14 ruling 104 |
 | AC-87 | A key read by both the cost model and M21's admission path is derived as P (admission) | Round 14 ruling 105 |
 | AC-88 | A breaker tightening by an `Actor` of type `risk_engine` runs the apply-time check and blocks when the lower bound is ≤ 0, but registers no `applycheck` trial; the same change by an operator registers one | Round 14 ruling 106 |
+| AC-89 | A raise submitted while a group M k decision is pending is refused with `E_DECISION_PENDING`; an A1 tightening and a cancel of the pending change are accepted | Round 15 ruling 108 |
+| AC-90 | With a group M change B pending (frozen model A), a further group M change C is compared with A, never with B | Round 15 ruling 108 |
+| AC-91 | A key read only through a shared helper that M21 calls is derived as P (admission); a key read through a non-literal accessor fails lint, and one whose readers cannot be resolved takes P | Round 15 ruling 109 |
+| AC-92 | An A3 raise applied at `effective_at` by `scheduler` registers its `whatif` trial against the submitting operator; a `cli` change creates an `applycheck` trial; a `sentinel` tightening creates none | Round 15 ruling 110 |
 
 ### Tests
 
@@ -443,6 +449,9 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | CI fixture: hand tags disagreeing with derived tags | AC-85, AC-87 |
 | Validator unit: mixed diff with a group M key | AC-86 |
 | Validator unit with a fake registry: `risk_engine` and operator actors | AC-88 |
+| Validator unit with a fake pending decision: refusals, accepted A1 and cancel, comparison with the frozen model | AC-89, AC-90 |
+| Lint and CI fixtures: shared-helper reader; non-literal accessor; unresolved reader | AC-91 |
+| Validator unit with a fake registry: `scheduler`, `cli` and `sentinel` actors | AC-92 |
 | Metrics: `signals_total{strategy}`, `proposal_dropped_total{reason}`, `strategy_onbar_ms{strategy}`; log `M09.strategy_disabled` | A-M09-01 observability |
 
 Every bug-fix test must fail before and pass after (AGENTS.md "Builders"). MIGRATION row A-M09-01 marks `core/src/engine/engine.ts:17-40` and `core/test/purity.test.ts` as adapt; under "No bugs migrate" its B1 and B5 probes are AC-27 and AC-28.
@@ -689,6 +698,14 @@ Reviewer at `f342b664` (PASS, 2 optional MINOR) and red team round 13 at `f342b6
 106. z2: a system-initiated tightening still runs and blocks on the apply-time check; only its `applycheck` trial is skipped. "System" means an `Actor` of type `risk_engine` or `system`, checked against ARCH 5.0a, SPEC-A A-M13-07 and SPEC-B B-M26-04 (section 3; AC-88).
 107. Reviewer n1: the Dependencies row and open point 6 read "the `recost` or k-trial recomputation after a model change (group M or a model deploy)".
 
+### Round 15
+
+Reviewer at `4bf69714` (PASS, 1 optional MINOR) and red team round 14 at `4bf69714` (1 MAJOR, 2 MINOR); rulings 108–110 in the review log on `claude/supervisor-docs-2` @ `cce2a9fe`:
+
+108. A1: while a `recost`, k or B-9 decision is pending, other changes to the strategy's `configKey` are refused (`E_DECISION_PENDING`) except A1 tightenings and a cancel; checks use the last frozen model (section 3; AC-89, AC-90).
+109. a1: readers derived by import and call-graph closure; typed literal accessors only; unresolved readers take P (section 3; AC-91).
+110. a2 and reviewer n1: `scheduler` is attributed to the submitting actor; `cli` is an operator or owner change; `sentinel`, `risk_engine` and `system` are system. The actor names are checked against ARCH 5.0a, SPEC-A A-M13-07 step 5 and SPEC-B B-M26-04 step 5 (section 3; AC-92).
+
 ## Open points
 
 1. **Owner's evidence and the windows.** Gate B uses only days recorded after the PREREG (C-26). The owner's research data may serve a CS-1 kill-only screen, never a pass. This is a confirmed reading; no change is proposed.
@@ -710,7 +727,8 @@ Reviewer at `f342b664` (PASS, 2 optional MINOR) and red team round 13 at `f342b6
    - B-M26-02: readiness of the A3 enable (the attestation and the stage of the named version).
    - ARCH 15 `strategy` table: the `origin` column.
    - B-M25-01: the group tag (P, S or M) on every `affectsReturns` key, derived from the key's readers by an extended static key-usage check; group M for the cost- and fill-model inputs.
-   - B-M25-02: `E_MIXED_GROUP_M` for a diff that mixes a group M key with any other key.
+   - B-M25-02: `E_MIXED_GROUP_M` for a diff that mixes a group M key with any other key; `E_DECISION_PENDING` while a decision is pending.
+   - B-M30-01: the lint rule allowing config reads only through typed literal accessors.
    - B-M26-03: the A3 enable bound to `id@version` and re-validated at `effective_at`.
    - VM-03 (UI.md): `version` in `strategies[]`.
    - B-M21-02 and B-M25-02: the `size_not_profitable` entry block after a group S A1 lowering; the M21 replay that compares admission keys on trades.
