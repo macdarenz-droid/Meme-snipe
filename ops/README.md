@@ -86,7 +86,7 @@ Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with 
 **Owner step, once, after the deploy that carries this switch:**
 1. On the server console (`linuxuser`, then `sudo -i`), run `zeroed-backup-code`.
 2. It shows 6 words one time. Write them down and keep them safe; without them no copy can be opened.
-3. Check: `zeroed-status` shows `Backups:   hourly here; daily copy to Telegram (none sent yet)`. The first copy arrives in your Telegram chat the next day at 17:20 UTC (04:20 Melbourne in daylight time, 03:20 otherwise).
+3. Check: `zeroed-status` shows `Backups:   hourly here; daily copy to Telegram (none sent yet)`. The first copy arrives at the next 17:20 UTC (04:20 Melbourne in daylight time, 03:20 otherwise), up to 5 minutes later.
 
 How it works: only the code's public half (an age recipient, derived with the same scrypt step as the deploy code but a different salt) stays on the server. Every day at 17:20 UTC the newest backup is re-encrypted to that recipient alone, so nothing on the server, the host key included, can open the copy. It is then sent as a silent Telegram document to the paired chat (bots may send up to 50 MB).
 
