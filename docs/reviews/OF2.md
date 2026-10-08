@@ -150,3 +150,13 @@ Round 4 repros are closed. From current code, no archive request is possible whi
     - The arm checklist adds an owner line: do not rotate `DATA_STORE_TOKEN` while the download runs.
     - The token is used only in the `env -i` guard and crypt steps, never in the Scan or QA steps. Plaintext stays on the runner only. Save and restore paths hold only the encrypted files and their MAC, and the arm check asserts it.
     - The `-qa` cache and any future `data-rpc-*` saves are encrypted the same way. Use authenticated encryption, or encrypt-then-MAC, so a tampered cache is refused.
+
+## Round 6 (heads: of2-holds `4fc50e38`, archive-safe-b `40cef3a1`, of3-scanner `b4e62fdd`)
+
+- Builder: rulings 43–48 and 44a are done. test-ci passes 225/226/240, and 15 rows fail on `89f99393`.
+- Readings accepted (8 Oct 2026, 9:38 PM):
+  - The run list starts at the earlier of now − 35 days and `ARCHIVE_REARM_AT`.
+  - gh's support is read from `gh run list --help`, and the version is logged.
+  - The cache seal is AES-256-CTR, then HMAC-SHA256 (encrypt-then-MAC). Both keys come from HMAC(`DATA_STORE_TOKEN`, labels). The key id is in the entry name. A wrong key, a changed byte or an extra file is refused, and the day does not start again.
+- Accepted risk, with a DECISIONS row: the AES key reaches openssl as a command-line argument. Only processes on the same short-lived runner can see it, and those are the job's own steps.
+- Follow-up on the OF-4 row, not this PR: keep-check.sh / data-keep do not refresh sealed `data-rpc` progress entries yet. Helius is not in use (its headroom stays unused), so nothing breaks now.
