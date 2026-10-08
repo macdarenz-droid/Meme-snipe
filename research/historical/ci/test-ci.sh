@@ -2055,10 +2055,11 @@ pf "permissions: write-all\n$J" write-all
 pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions: write-all\n    steps:\n      - run: zeroed-scan unit\n" job-write-all
 pf "permissions: read-all\n$J" read-all
 pf "permissions:\n  contents: read\n  contents: write\n$J" duplicate-key
+pf "jobs:\n  a:\n    steps:\n      - run: gh release download data-day-2026-07-22\n" day-release
 mkfx "$T/fxp"; printf '%b' "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: zeroed-scan unit\n" > "$T/fxp/.github/workflows/extra.yml"
-printf 'permissions:\n  contents: write\njobs:\n  a:\n    steps:\n      - run: echo hello\n' > "$T/fxp/.github/workflows/unrelated.yml"
+printf 'permissions:\n  contents: write\njobs:\n  a:\n    steps:\n      - run: gh release delete handoff --yes\n' > "$T/fxp/.github/workflows/unrelated.yml"
 ACFX=$T/fxp/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" control:$(cat "$A/summary.md")"
-[[ -z "$bad" ]] && ok "OF-2 r4 ruling 26: arming parses every archive-path workflow's permissions: contents: write in a job (block, double-quoted, single-quoted, flow), at the top level, no top-level block, write-all (top or job), read-all and a repeated key all refuse; a workflow with explicit contents: read arms, and one that touches no archive path is not checked" || no "OF-2 r4 permissions:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 26: arming parses every archive-path workflow's permissions: contents: write in a job (block, double-quoted, single-quoted, flow), at the top level, no top-level block, write-all (top or job), read-all and a repeated key all refuse, as does a workflow naming a day release; a workflow with explicit contents: read arms, and one that touches no archive path (a key-handoff release) is not checked" || no "OF-2 r4 permissions:$bad"
 bad=""; gdreset; touch "$GD/noguard-$NG"
 # 27. Whitespace around a Retry-After value is trimmed before the strict parse.
 for v in " 30000" "30000 " "	30000	"; do

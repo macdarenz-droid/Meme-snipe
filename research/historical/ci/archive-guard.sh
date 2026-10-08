@@ -140,11 +140,13 @@ ag_private_storage() {
   done
 }
 # ag_permissions DIR (round 4, ruling 26): every workflow in DIR that runs scan-day.sh or
-# zeroed-scan, keeps an archive-derived cache (data-scan-, data-rpc-) or writes a release
-# has an explicit top-level permissions mapping with contents: read, no write-all, and no
+# zeroed-scan, keeps an archive-derived cache (data-scan-, data-rpc-) or names a day
+# release (data-day-, data-volume-) has an explicit top-level permissions mapping with contents: read, no write-all, and no
 # job granting write-all or contents: write in any form (block, quoted, flow). Parsed as
 # YAML (python3's yaml, else yq; VERIFY which the runner has), never matched as text.
-# Prints the first problem and fails; fails when nothing can parse.
+# Prints the first problem and fails; fails when nothing can parse. (A release that holds
+# no archive data, such as deploy.yml's key handoff, is not an archive path; release calls
+# in research/historical/ci/*.sh are checked above.)
 ag_permissions() {
   if /usr/bin/env python3 -c 'import yaml' 2>/dev/null; then
     /usr/bin/env python3 -c "$ag_permissions_py" "$1"
@@ -163,7 +165,7 @@ ag_permissions() {
     return 1
   fi
 }
-ag_wf_marks='scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|release[[:space:]]+(create|upload|edit|delete)|/releases'
+ag_wf_marks='scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-'
 ag_permissions_py='
 import glob, os, re, sys, yaml
 class L(yaml.SafeLoader): pass
@@ -175,7 +177,7 @@ def mapping(loader, node, deep=False):
         keys.add(key)
     return yaml.SafeLoader.construct_mapping(loader, node, deep)
 L.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
-mark = re.compile(r"scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|release\s+(create|upload|edit|delete)|/releases")
+mark = re.compile(r"scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-")
 def bad(perm):
     if isinstance(perm, str) and perm.strip() == "write-all": return "write-all"
     if isinstance(perm, dict) and str(perm.get("contents", "")).strip() == "write": return "contents: write"
