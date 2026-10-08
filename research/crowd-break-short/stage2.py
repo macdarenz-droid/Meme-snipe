@@ -7,10 +7,12 @@ Trade: short 1x the coin's Binance USD-M perp at the first 1-minute open at or a
 T + 120 s), exit at the first 1-minute open at or after entry + 6 h; if the perp has no bar within 1 h of that time
 (delisted), it is marked at its last close before it. Return in SOL: (1 - r_meme + f - c) / (1 + r_SOL) - 1, with
 1 - r_meme floored at 0 (a 1x short loses at most its collateral), r_SOL from the SOLUSDT perp at the same minutes,
-and f = Hyperliquid funding rows stamped in [entry, exit), each weighted by the coin's 1-minute close at the row's
-minute over the entry price (short receives positive rates). Costs c: base 0.60%, 2x 1.20%, low 0.40% (coin leg 0.30%
+and f = Hyperliquid funding of the hourly grid slots whose settlement hour lies in [entry, exit), each weighted by
+the coin's 1-minute close at that minute over the entry price (short receives positive rates), minus the SOL-perp
+long's Hyperliquid funding over the same slots (H1-PERP: funding on both legs; added after review). Costs c: base 0.60%, 2x 1.20%, low 0.40% (coin leg 0.30%
 plus SOL-leg fees 0.10%). Liquidation line: a 1-minute high >= 1.714x entry in [entry, exit) -> gross -1 - c.
-Executable: the coin and SOLUSDT both have a 1-minute bar at the entry minute found within 1 h of the target.
+Executable: the coin and SOLUSDT both have a 1-minute bar at the entry minute found within 1 h of the target, and
+entry + 6 h + 60 s is at or before the wall (late entries are counted). All needed month files must exist.
 Controls: C1 walks the frozen ranked list, accepting the first 10 executable (entry state only); an event needs at
 least 3 to enter the lift set (as in the squeeze PREREG). C2: the first 5 executable of the frozen random draws.
 """
@@ -18,7 +20,7 @@ import hashlib, json, math, os, sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from stage1 import BN, HOLD, WALL, funding
+from stage1 import BN, H0, HOLD, WALL, funding
 
 LIQ = 2 / (1 + 1 / (2 * 3))
 COST = {'base': 0.006, 'x2': 0.012, 'low': 0.004}
@@ -111,6 +113,8 @@ class Engine:
         te, pe = self.px.first_at(self.sym(coin), t)
         if te is None:
             return None, 'no coin 1m bar within 1 h'
+        if te + HOLD + 60 > WALL:
+            return None, 'exit after the wall'
         ps = self.px.at('SOLUSDT', te)
         if ps is None:
             return None, 'no SOLUSDT 1m bar at entry'
@@ -123,8 +127,9 @@ class Engine:
                 self.fund[coin] = (np.zeros(0), np.zeros(0))
             else:
                 rate, tm, cut = f
-                ok = ~np.isnan(tm)
-                self.fund[coin] = (tm[ok], rate[ok])
+                ok = ~np.isnan(rate)
+                slot = H0 + np.arange(len(rate)) * 3600.0             # settlement hour of the grid slot
+                self.fund[coin] = (slot[ok], rate[ok])
         return self.fund[coin]
 
     def trade(self, coin, T, delay=7):
@@ -149,8 +154,17 @@ class Engine:
             c = self.px.rows(sym, m, m + 60)
             w = c[0, 4] / pe if len(c) else 1.0
             f += r * w
+        tms, rts = self.hl_rows('SOL')                                    # the SOL-perp long pays its funding
+        sel_s = (tms >= te) & (tms < tx)
+        f_sol = 0.0
+        for t, r in zip(tms[sel_s], rts[sel_s]):
+            m = int(t // 60 * 60)
+            c = self.px.rows('SOLUSDT', m, m + 60)
+            f_sol += r * (c[0, 4] / ps if len(c) else 1.0)
+        f -= f_sol
         r_meme = px_ / pe - 1; r_sol = sx / ps - 1
-        out = {'entry_t': te, 'exit_t': int(tq_), 'r_meme': r_meme, 'r_sol': r_sol, 'f': f, 'f_rows': int(sel.sum()),
+        out = {'entry_t': te, 'exit_t': int(tq_), 'r_meme': r_meme, 'r_sol': r_sol, 'f': f, 'f_sol': f_sol,
+               'f_rows': int(sel.sum()), 'f_sol_rows': int(sel_s.sum()), 'entry_lag': te - (-(-(T + delay) // 60) * 60),
                'liq': bool(hi >= LIQ * pe), 'marked': marked}
         for k, c in COST.items():
             out['n_' + k] = (max(1 - r_meme, 0.0) + f - c) / (1 + r_sol) - 1
@@ -181,6 +195,9 @@ def score(d, out):
     if g['verdict'] != 'PASS':
         print('gate closed; nothing scored'); return
     st = json.load(open(os.path.join(out, 'stage1.json')))
+    need = json.load(open(os.path.join(out, 'needs.json')))
+    miss = [f'{k}_{m}' for k, ms in need.items() for m in ms if not os.path.exists(os.path.join(d, 'bn1m', f'{k}_{m}.csv'))]
+    assert not miss, f'missing 1m month files: {miss[:5]} ({len(miss)})'
     E = Engine(d)
     rows, nonexec, trades = [], [], {}
     for e in st['events']:
@@ -218,7 +235,8 @@ def score(d, out):
     res = {'events_frozen': len(st['events']), 'executable': len(rows), 'nonexec': len(nonexec),
            'lift_events': len(lift), 'lift_days': len({r['day'] for r in lift}),
            'coins': len({r['coin'] for r in lift}), 'marked': sum(r['marked'] for r in rows),
-           'liq_events': sum(r['liq'] for r in lift), 'f_rows_short': sum(r['f_rows'] < 5 for r in lift)}
+           'liq_events': sum(r['liq'] for r in lift), 'f_rows_short': sum(r['f_rows'] < 5 for r in lift),
+           'late_entries': sum(r['entry_lag'] > 0 for r in rows)}
     if rows:
         res['mean_n_all_exec'] = float(np.mean([r['n_base'] for r in rows]))
     if lift:
