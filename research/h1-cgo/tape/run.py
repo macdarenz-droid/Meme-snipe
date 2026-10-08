@@ -158,13 +158,13 @@ def main(argv=None):
             sys.exit(f"discovery closed H1-CGO ({frozen.get('verdict')}); nothing to score")
         if frozen.get("code") != tapeio.code_hash():
             sys.exit("score: the code differs from the code that froze the discovery result")
+        if not o.sol_usd:
+            sys.exit("score needs --sol-usd (H8_AMENDMENT: the H8-eligible stratum)")
         meta = _verify_meta(o.out)
         if list(meta["decision_days"]) != list(VALIDATION_DAYS):
             sys.exit(f"score needs decision days exactly {VALIDATION_DAYS}; got {meta['decision_days']}")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
-        if not o.sol_usd:
-            sys.exit("score needs --sol-usd (H8_AMENDMENT: the H8-eligible stratum)")
         p = stats.primary(f, out, frozen, meta["decision_days"])
         p["h8_stratum"] = stats.h8_stratum(f, out, frozen, meta["decision_days"], H8.SolUsd.from_klines(o.sol_usd))
         p["d60_arm"] = stats.d60_arm(f, out, frozen, meta["decision_days"], p)

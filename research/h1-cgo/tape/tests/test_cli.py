@@ -97,6 +97,23 @@ class CLI(unittest.TestCase):
         self.assertEqual(meta["boost_events"], 1)
         self.assertGreater(meta["protocol_rows"], 0)  # the synthetic rows share the event's (signature, outer_ix, pool)
 
+    def test_amendment3_stage_outputs(self):
+        self.features(self.units)
+        k = os.path.join(self.tmp.name, "k.csv")
+        pd.DataFrame([[(t_of(0) + h * 3600) * 1000, "1", "1", "1", "100", "0", (t_of(0) + (h + 1) * 3600) * 1000 - 1]
+                      for h in range(40)]).to_csv(k, header=False, index=False)
+        R.main(["gate0", "--out", self.out, "--sol-usd", k])
+        g = read_json(os.path.join(self.out, "gate0.json"))
+        self.assertIn("with_state_$5", g["h8_count_rows"])
+        self.assertEqual(g["h8_count_rows"]["sol_usd_files"][0]["path"], k)
+        R.main(["outcomes", "--units", *self.units, "--out", self.out])
+        fl = pd.read_csv(os.path.join(self.out, "flows.csv"))
+        self.assertGreater(len(fl), 0)
+        self.assertIn("net_flow_sol", fl.columns)
+        fz = os.path.join(self.tmp.name, "frozen.json")
+        pathlib.Path(fz).write_text(json.dumps(dict(verdict="continue", sign="high", code=R.tapeio.code_hash())))
+        self.refused(lambda: R.main(["score", "--out", self.out, "--frozen", fz]), "needs --sol-usd")
+
     # 1. Step A completeness
     def test_missing_middle_unit(self):
         self.refused(lambda: self.features([self.units[0], self.units[2]]), "missing units [(40000, 79999)]")

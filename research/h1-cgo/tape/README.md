@@ -1,6 +1,6 @@
 # H1-CGO scoring on the shared tape
 
-This code scores the frozen design in `../PREREG.md` on the shared on-chain tape (`research/shared-tape/README.md`). Where the prereg is silent, the reading used is in `OPEN_QUESTIONS.md`; `../AMENDMENT_1.md` confirms those readings, and `../AMENDMENT_2.md` sets the rent by date. Python 3 with pandas, numpy and zstandard. No network, no git.
+This code scores the frozen design in `../PREREG.md` on the shared on-chain tape (`research/shared-tape/README.md`). Where the prereg is silent, the reading used is in `OPEN_QUESTIONS.md`; `../AMENDMENT_1.md` confirms those readings, `../AMENDMENT_2.md` sets the rent by date, and `../AMENDMENT_3.md` adds the D60 arm and the H8 stratum (`research/brainstorm-loop/H8_AMENDMENT.md`). Python 3 with pandas, numpy and zstandard. No network, no git.
 
 ## Entry point
 `run.py`, one stage per call. Each stage reads the files the previous stage wrote to `--out`. Run every data command with `nice -n 19`. A unit is `/home/user/tape-cache/<day>/<from>-<to>` (the `research/` subfolder is optional).
@@ -8,10 +8,10 @@ This code scores the frozen design in `../PREREG.md` on the shared on-chain tape
 | Stage | Inputs | Outputs | Reads forward prices |
 |---|---|---|---|
 | `features --units U… --decision-days D… [--creation-days D…]` | tape units (E, B, T_coverage, S_curve, S_amm, T) | `features.csv`: one row per decision point, with the as-of features, eligibility and time schedule. `universe.csv`. `features_meta.json`: counts, contiguous intervals, sha256 of every input and source file. | no |
-| `gate0` | `features.csv` | `gate0.json`: §5 (a), (b), (c) and the verdict. Discovery days only. | no |
-| `outcomes --units U… [--counts-only]` | `features.csv` and the pools' S_amm rows | `outcomes.csv`: per eligible, in-time point and per (hold, size), the price, fees, impact, fixed costs, gross, net and status | yes (separate stage) |
-| `freeze` | gate0 passed, `features.csv`, `outcomes.csv` | `frozen.json`: §6 breakpoints, §7 sign, lifts, futility and verdict, plus hashes. Discovery days only. | yes |
-| `score --frozen FROZEN` | a validation `--out` dir and the committed `frozen.json` | `primary.json` (§8) and `secondary.json` (§10). Validation days only; refuses if discovery closed H1-CGO. | yes |
+| `gate0 [--sol-usd K…]` | `features.csv`, Binance SOLUSDT klines | `gate0.json`: §5 (a), (b), (c), the verdict, and the H8 count row. Discovery days only. | no |
+| `outcomes --units U… [--counts-only]` | `features.csv` and the pools' S_amm rows | `outcomes.csv`: per eligible, in-time point and per (hold, size), the price, fees, impact, fixed costs, gross, net and status. `flows.csv`: next-hour sells and net SOL flow, for the D60 gate. | yes (separate stage) |
+| `freeze` | gate0 passed, `features.csv`, `outcomes.csv`, `flows.csv` | `frozen.json`: §6 breakpoints, §7 sign, lifts, futility and verdict; the D60 gate rows and D60's P20; hashes. Discovery days only. | yes |
+| `score --frozen FROZEN --sol-usd K…` | a validation `--out` dir, the committed `frozen.json`, Binance SOLUSDT klines | `primary.json` (§8, plus `h8_stratum` and `d60_arm`) and `secondary.json` (§10). Validation days only; refuses if discovery closed H1-CGO. | yes |
 
 The order:
 1. Discovery: `features` (decision days 2026-09-10 and 2026-09-11), then `gate0`, `outcomes`, `freeze`.
@@ -31,7 +31,7 @@ nice -n 19 python3 run.py features --units /home/user/tape-cache/2026-09-11/4462
   /home/user/tape-cache/2026-09-11/446278500-446282999 --decision-days 2026-09-11 --out /tmp/h1   # now refused: 09-11 is incomplete (Step A guard)
 ```
 
-Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 62 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
+Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 77 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
 
 ## Look-ahead
 - `h1cgo/features.py` builds one stream per coin. `MintStream.advance(d)` applies exactly the rows with slot ≤ d, and every feature reads only what has been applied:
@@ -70,6 +70,10 @@ Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 62 tests on synthet
 | §9.3 coverage counts, excluded accounts by type | `features.csv` columns `coverage`, `known_tokens`, `unknown_tokens`, `excl_curve/pool/burn/protocol`, `owner_checks`, `owner_mismatch`, `overdraw_events`; universe counts in `features_meta.json` |
 | §9.4 code, seed and input hashes | `tapeio.code_hash`, `tapeio.input_hashes`, `constants.BOOT_SEED`; written to `features_meta.json` and `frozen.json` |
 | §10 secondary (holds 15 min and 4 h, quintiles, sizes, post-migration CGO) | `outcomes.run` plan, `stats.secondary`, `MintStream.snapshot` (`cgo_post`) |
+| A3: D60 (habits, due supply, traceable float, controls) | `habits.events_from/round_trips/Habits/d60`, `MintStream.snapshot` (`d60`, `vol_1h`, `volume_1h`) |
+| A3: D60 gate rows (Step A) and the arm | `outcomes.flows`, `stats.d60_gate`, `stats.d60_arm`, `stats.spearman/partial_spearman/cluster_bootstrap_stat` |
+| H8_AMENDMENT 1–4: H8 stratum, tradable flag, count row | `h8.SolUsd/eligible/flags/count_rows`, `stats.h8_stratum` |
+| Tests for the amendments | `tests/test_amendment3.py`, `tests/test_cli.py` |
 
 ## Checks on real data (2 units of 2026-09-11, counts only)
 - Universe: 1,061 created; 21 kept; 414 mayhem, 98 cashback, 74 not SOL, 454 not migrated in the units.

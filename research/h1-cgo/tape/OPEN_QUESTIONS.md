@@ -1,6 +1,6 @@
 # H1-CGO scoring: open questions
 
-**Resolved by `../AMENDMENT_1.md` (2026-10-08): all 25 readings below are confirmed as written.** `../AMENDMENT_2.md` sets the rent by date. Both changes are listed below, with the BOOST handling for decoder v3. Each item was a point where `../PREREG.md` is silent or ambiguous; the code uses the reading marked **Used**, the more conservative one.
+**Resolved by `../AMENDMENT_1.md` (2026-10-08): all 25 readings below are confirmed as written.** `../AMENDMENT_2.md` sets the rent by date. `../AMENDMENT_3.md` adds the D60 arm and, through `research/brainstorm-loop/H8_AMENDMENT.md`, the H8-eligible stratum and count row. All changes are listed below, with the BOOST handling for decoder v3. The D and H items at the end are new readings for amendment 3; they are open until the design owner confirms them. Each item was a point where `../PREREG.md` is silent or ambiguous; the code uses the reading marked **Used**, the more conservative one.
 
 ## Changes from the amendments and decoder v3
 - **Rent (AMENDMENT_2, replacing amendment 1's flat figure).** Rent = (128 + account size) × the lamports a byte in force at the trade's entry slot, with RENT-1's refund model (`pumpswap.token_account_rent(program, slot)`, applied per trade in `outcomes.run`).
@@ -57,6 +57,30 @@
 23. **Secondary "holders who bought after migration only."** **Used:** owners with at least one PumpSwap buy and no curve buy, counting their post-migration lots. That CGO gets its own P20 and P80 from discovery, frozen with the rest.
 
 24. **Validation plan.** `research/shared-tape/stepa-plan.txt` lists only 2026-09-10 and 09-11. The validation stage needs Step B's committed plan, passed with `--plan`. Until it exists, validation runs are refused.
+
+## Readings for AMENDMENT_3 (open; each is the conservative reading)
+
+**D60** (`habits.py`, `MintStream.snapshot`, `stats.d60_gate`, `stats.d60_arm`)
+- **D1. Round trip.** A position opens on a buy that takes the owner's balance from 0 (`owner_token_pre` = 0, `owner_token_post` > 0). It closes on a sell that leaves 0. The hold time is close time − open time. Round trips on every coin on the tape count. Protocol and BOOST swaps are left out. Positions that open or close by transfer are not seen.
+- **D2. Habit.** The median hold time over the owner's round trips that closed at or before the decision slot.
+- **D3. Due.** A holder is due when that median ≤ the age of their current position + 60 minutes, so an overdue holder counts as due. The position's age is measured from its open on this coin. A holder with no habit, or no recorded open, adds nothing to D60.
+- **D4. Scale.** D60 = due tokens ÷ all tokens of included holders (the float). Realised sells = every token sold on the pool in (decision slot, last slot before hour + 60 min] ÷ the same float. Sells by holders who bought after the decision also count, which makes ρ harder to reach.
+- **D5. Habit classifier at ≥ 60%.** The pooled share of (decision point, holder) pairs whose holder has a habit, over eligible, in-time Step A points.
+- **D6. ρ lower bound.** A pool-clustered bootstrap stratified by day: 10,000 resamples, the 2.5th percentile.
+- **D7. Independence.** R² is OLS with an intercept on r_1h, r_6h, r_mig, vol_1h, volume_1h and CGO:
+  - vol_1h is the standard deviation of log changes of trade mids in the past hour;
+  - volume_1h is the pool's SOL volume in the past hour.
+
+  Partial ρ is the Spearman partial correlation of D60 and realised sells, controlling for CGO and volume_1h.
+- **D8. Traceable float.** Tokens of holders with both a habit and a recorded open ÷ float, pooled.
+- **D9. Bottom quintile.** D60 ≤ its P20 over the gate sample, frozen in `frozen.json`. Net flow = SOL paid by buyers (fees included) − SOL received by sellers in the next hour, with protocol and BOOST left out. The row needs a mean above 0.
+- **D10. The arm.** It is judged only if the D60 gate passed on Step A and H1-CGO's primary passes. It must meet the four §8 conditions plus a lift over H1-CGO's own entries above 0. D60 ≤ P20 is applied before the first-per-coin-per-day rule.
+
+**H8** (`h8.py`, `stats.h8_stratum`)
+- **H1. SOL/USD.** The bot's hourly point: the close of the hour bar that ended at or before the decision hour. A point older than 2 hours, or a missing one, means not eligible (the bot's H16). The input is the Binance public archive's SOLUSDT kline CSVs (1-minute or 1-hour, in ms or µs), and each file's sha256 is recorded. H8's dust-at-migration check (5 SOL) is not applied, because the amendment names only the floor.
+- **H2.** Eligibility uses the effective quote as of the decision slot, as the bot evaluates H8 at decision time.
+- **H3.** For each size, the stratum keeps the entries of the frozen rule whose pool passes H8 at that size, priced at that size and held 60 min. Its baseline for lift is the H8-eligible eligible points at the same size. It is tradable as the bot stands only if some size has at least 300 trades and a mean above 0. Otherwise the note reads "this works only in pools below H8's floor".
+- **H4. Count row** (in `gate0.json`). H8-eligible pool-hours and graduates per day at each size, on two bases: decision points with a pool state, and H1-CGO-eligible points. `score` refuses to run without `--sol-usd`.
 
 ## Not done here
 25. §9.4 asks for the code, seeds and input hashes to be committed before validation days are read. `features_meta.json` and `frozen.json` record the sha256 of every input file and source file. The commit itself is for the supervisor (this builder runs no git).
