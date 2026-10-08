@@ -282,6 +282,15 @@ class RedTeamR1(unittest.TestCase):
             F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--plan", plan, "--boot", "50"])
         self.assertFalse(os.path.exists(out))
 
+    def test_gate_never_passes_without_the_payer_mass_bar(self):
+        # R1-9: PAYER_MASS.md names F1; until the bar is computed the gate is not reported as passed
+        base = {"followed_day1": 20, "persistent_share": 0.5, "late_share": 0.5, "day2_persistent_leader_buys": 15}
+        dec = F.decide(base)
+        self.assertFalse(dec["f1_closes"])
+        self.assertIsNone(dec["payer_mass_bar"]["passed"])
+        self.assertFalse(dec["gate_passes"])
+        self.assertTrue(F.decide(base, payer={"passed": True})["gate_passes"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -334,15 +334,24 @@ def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2):
     return summary, {"events_day1": ev1, "leaders_day1": lt1, "events_day2": ev2, "leaders_day2": lt2}
 
 
-def decide(s):
-    """GATE.md "Kill". Valid only on complete Step A days."""
+# PAYER_MASS.md (frozen) names F1: a necessary bar before any return. F1 has no hold window and no payer attribution
+# yet, so the bar is not computed (open question, research/brainstorm-loop/CODE_REDTEAM.md R1-9).
+PAYER_MASS_BAR = {"passed": None, "status": "not computed: PAYER_MASS.md's hold window, payer attribution, Q and cost "
+                                            "are not defined for F1 (open question, CODE_REDTEAM.md R1-9)"}
+
+
+def decide(s, payer=PAYER_MASS_BAR):
+    """GATE.md "Kill". Valid only on complete Step A days. `gate_passes` also needs the payer-mass bar
+    (PAYER_MASS.md); a bar not computed (None) never passes, and never closes F1 either."""
     kills = {
         "fewer_than_20_followed_day1": s["followed_day1"] < KILL_MIN_FOLLOWED,
         "under_half_persist_day2": (s["persistent_share"] is None) or s["persistent_share"] < KILL_MIN_PERSIST_SHARE,
         "under_50pct_volume_after_23_slots": (s["late_share"] is None) or s["late_share"] < KILL_MIN_LATE_SHARE,
         "fewer_than_15_persistent_buys_a_day": s["day2_persistent_leader_buys"] < KILL_MIN_BUYS_PER_DAY,
     }
-    return {"kills": kills, "f1_closes": any(kills.values())}
+    closes = any(kills.values())
+    return {"kills": kills, "f1_closes": closes, "payer_mass_bar": payer,
+            "gate_passes": bool(not closes and payer["passed"] is True)}
 
 
 def main(argv=None):

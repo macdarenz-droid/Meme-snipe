@@ -13,7 +13,7 @@ nice -n 19 python3 -m unittest -v        # from this folder
 - Needs pandas, numpy, zstandard.
 
 ## Outputs (in OUTDIR)
-- `f1_summary.json`: counts per step (candidates, buys used, drops by reason, followed leaders, persistent leaders, persistent-leader buys on day 2, follower SOL and the part landing after 23 slots). With `--decide`, also `decision.kills` and `decision.f1_closes`.
+- `f1_summary.json`: counts per step (candidates, buys used, drops by reason, followed leaders, persistent leaders, persistent-leader buys on day 2, follower SOL and the part landing after 23 slots). With `--decide`, also `decision.kills`, `decision.f1_closes`, `decision.payer_mass_bar` (`PAYER_MASS.md`, not computed yet) and `decision.gate_passes`, which stays false until that bar is computed and passes. `--decide` refuses any `--boot` other than 10,000.
 - `f1_events_day1.csv`, `f1_events_day2.csv`: one row per leader buy (follow count, follower SOL, late SOL, placebo owner, slot and follow count, or the drop reason).
 - `f1_leaders_day1.csv`, `f1_leaders_day2.csv`: per leader, mean follow, mean placebo, difference, one-sided 99.5% lower bound, followed flag.
 
