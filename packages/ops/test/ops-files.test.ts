@@ -665,10 +665,12 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     const rc = read('ops/host/files/etc/systemd/system/srv-zeroed_pull-md-receipts.mount');
     expect(md).toMatch(/^What=\/var\/lib\/zeroed-md$/m);
     expect(md).toMatch(/^Where=\/srv\/zeroed_pull\/md$/m);
-    expect(md).toMatch(/^Options=bind,ro,/m);
+    // private: under systemd / is a shared mount, and without it the receipts bind inside the chroot propagates back
+    // and stacks a second mount on /var/lib/zeroed-md/receipts (reproduced in the e2e host image with / shared).
+    expect(md).toMatch(/^Options=bind,ro,nodev,nosuid,noexec,private$/m);
     expect(rc).toMatch(/^What=\/var\/lib\/zeroed-md\/receipts$/m);
     expect(rc).toMatch(/^Where=\/srv\/zeroed_pull\/md\/receipts$/m);
-    expect(rc).toMatch(/^Options=bind,rw,/m);
+    expect(rc).toMatch(/^Options=bind,rw,nodev,nosuid,noexec,private$/m);
     for (const u of [md, rc]) expect(u).toMatch(/^Before=ssh\.service ssh\.socket$/m);
     expect(main).toContain('systemctl enable --now zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount');
     // Ruling 20: receipts/ is its own small filesystem, mounted before both binds and SSH.

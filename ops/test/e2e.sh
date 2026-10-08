@@ -184,7 +184,11 @@ in_c "id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-pull && id -nG zeroed
 in_c "systemctl is-active srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount" >/dev/null || fail "PATHS-FIX: chroot binds not mounted"
 # Ruling 20: receipts/ is its own 64 MiB ext4 with 32,768 inodes, root-only image outside every bot path.
 in_c "systemctl is-active zeroed-receipts-fs.service" >/dev/null || fail "PATHS-FIX: receipts filesystem not started"
-[ "$(in_c "findmnt -no FSTYPE /var/lib/zeroed-md/receipts")" = ext4 ] || fail "PATHS-FIX: receipts/ is not its own filesystem"
+in_c "findmnt /var/lib/zeroed-md/receipts; findmnt -no PROPAGATION /; grep zeroed /proc/self/mountinfo" >"$LOGS/receipts-mounts.txt" 2>&1 || true
+[ "$(in_c "findmnt -no FSTYPE /var/lib/zeroed-md/receipts")" = ext4 ] || { cat "$LOGS/receipts-mounts.txt"; fail "PATHS-FIX: receipts/ is not its own filesystem"; }
+# The chroot binds are private: restarting them never stacks a second mount on receipts/ (/ is shared under systemd).
+in_c "systemctl restart srv-zeroed_pull-md-receipts.mount && systemctl restart srv-zeroed_pull-md-receipts.mount"
+[ "$(in_c "grep -c ' /var/lib/zeroed-md/receipts ' /proc/self/mountinfo")" = 1 ] || { in_c "grep zeroed /proc/self/mountinfo"; fail "PATHS-FIX: mounts stack on receipts/"; }
 [ "$(in_c "df --output=itotal /var/lib/zeroed-md/receipts | tail -1 | tr -d ' '")" = 32768 ] || fail "PATHS-FIX: receipts inode count"
 [ "$(in_c "stat -c '%a %U %s' /var/lib/zeroed-receipts/receipts.img")" = "600 root 67108864" ] || fail "PATHS-FIX: receipts image owner, mode or size"
 # Ruling 26: preallocated, so its 64 MiB is really taken on disk.

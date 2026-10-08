@@ -326,7 +326,7 @@ Before=ssh.service ssh.socket
 What=/var/lib/zeroed-md/receipts
 Where=/srv/zeroed_pull/md/receipts
 Type=none
-Options=bind,rw,nodev,nosuid,noexec
+Options=bind,rw,nodev,nosuid,noexec,private
 
 [Install]
 WantedBy=multi-user.target
@@ -343,7 +343,7 @@ Before=ssh.service ssh.socket
 What=/var/lib/zeroed-md
 Where=/srv/zeroed_pull/md
 Type=none
-Options=bind,ro,nodev,nosuid,noexec
+Options=bind,ro,nodev,nosuid,noexec,private
 
 [Install]
 WantedBy=multi-user.target
