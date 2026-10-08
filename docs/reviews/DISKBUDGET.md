@@ -108,3 +108,14 @@ The MAJOR is the same recursive-delete hole the red team found; ruling 19 closed
 29. **MINOR 1, readdir of a flood.** Closed by ruling 20: the 32,768-inode image bounds the entry count. Say so in a comment at the readdir.
 30. **MINORs 2 and 3.** The PR body says that nothing calls `sweepReceipts` yet; A-M07-03 (Z08) wires it, and it is safe today because SSH is off and no pull key exists. It also names the card that adds the operator account to `zeroed-spool` (B-M30-02, the operator user).
 31. **MINOR 4.** Add "was / reason" notes at SPEC-B:2032 and :2584. Update ARCH.md:655, :1066 and :2718 (`/data/md`, `/data/backups`, `/var/lib/bot`) in this PR, with the reason.
+
+### #311 reviewer round 2 (delta `c173f777..f313ff1e`): REVIEW PASS; 0 BLOCKER, 0 MAJOR, 3 MINOR
+
+Rulings 19–28 are applied. The changed tests fail on `c173f777` (22 failures) and pass at head. install.sh is byte-identical and the pin is right.
+
+### Supervisor rulings (9 Oct 2026, about 2:08 AM)
+
+32. **MINOR 1, fix now.** `zeroed-worker.service` gets `After=` and `Wants=zeroed-receipts-fs.service`, so no sweep runs on the bare folder before the image mounts. Test: the unit file carries both lines.
+33. **MINORs 2 and 3, card notes in the DECISIONS row; not reachable today, because no sentinel exists.**
+    - B-M30-02: zeroed-backup copies `/var/lib/zeroed-usage` either as zeroed-worker (`setpriv --reuid`) or after an lstat regular-file check of the db, -wal and -shm.
+    - M14: the engine also lstat-checks `rpc-usage.db`, -wal and -shm before opening, or uses the NOFOLLOW open flag.
