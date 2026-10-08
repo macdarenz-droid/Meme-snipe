@@ -200,6 +200,23 @@ export function urlTarget(s: string, file: string): string | null {
 
 const trimSlash = (p: string): string => p.replace(/\/+$/, '');
 
+const MODULE_EXT = /\.(?:ts|mts|cts|tsx|js|mjs|cjs|jsx)$/;
+
+/**
+ * The rules on what a file may import by the imported file's repository path (Z02 rulings 29 and 30), whatever package
+ * or directory the importing file is in and whatever extension the specifier writes: only the listed files reach
+ * M24's schema transaction, and package code never reaches test code.
+ */
+function namedRuleFinding(file: string, target: string, where: string): Finding | null {
+  if (target.replace(MODULE_EXT, '') === SCHEMA_TX_FILE.replace(MODULE_EXT, '') && !SCHEMA_TX_IMPORTERS.includes(file) && !file.startsWith(SCHEMA_TX_TEST_DIR)) {
+    return finding('E_SCHEMA_TX_IMPORT', where, `${SCHEMA_TX_FILE} is the migration runner's (Z02 ruling 29); only ${SCHEMA_TX_IMPORTERS.join(' and ')} may import it`);
+  }
+  if (SRC_DIR_RE.test(file) && TEST_DIR_RE.test(target)) {
+    return finding('E_SRC_IMPORTS_TEST', where, `${target} is test code, reached from package code (Z02 ruling 30); move what both need into src`);
+  }
+  return null;
+}
+
 /** The finding for one module reference, or null when it is allowed. */
 export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Finding | null {
   const where = `${file}:${ref.line}`;
@@ -220,6 +237,8 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
   }
   if (s === '.' || s === '..' || s.startsWith('./') || s.startsWith('../')) {
     const target = posix.normalize(posix.join(posix.dirname(file), s));
+    const named = namedRuleFinding(file, target, where);
+    if (named !== null) return named;
     const inside = workspace ? target === manifest.dir || target.startsWith(`${manifest.dir}/`) : target !== '..' && !target.startsWith('../');
     if (!inside || target.split('/').includes('node_modules')) {
       return finding('E_IMPORT_PATH', where, `"${s}" leaves ${workspace ? manifest.dir : 'the repository'} or enters node_modules; import a declared package by name`);
@@ -230,12 +249,6 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
       return finding('E_IMPORT_PATH', where, `"${s}": Node resolves it as a URL to ${loaded ?? 'no file path'}, but tsc and ESLint read ${read} `
         + '(paths from the repository root); write a plain relative path (no %, \\, ?, #, tab, newline or empty segment)');
     }
-    if (SRC_DIR_RE.test(file) && TEST_DIR_RE.test(target)) {
-      return finding('E_SRC_IMPORTS_TEST', where, `"${s}" reaches test code from package code (Z02 ruling 30); move what both need into src`);
-    }
-    if ((target === SCHEMA_TX_FILE || target === SCHEMA_TX_FILE.replace(/\.ts$/, '')) && !SCHEMA_TX_IMPORTERS.includes(file) && !file.startsWith(SCHEMA_TX_TEST_DIR)) {
-      return finding('E_SCHEMA_TX_IMPORT', where, `${SCHEMA_TX_FILE} is the migration runner's (Z02 ruling 29); only ${SCHEMA_TX_IMPORTERS.join(' and ')} may import it`);
-    }
     return null;
   }
   if (s.startsWith('/') || s.startsWith('#') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(s)) {
@@ -243,8 +256,10 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
   }
   if (isBuiltin(s)) return finding('E_IMPORT_BUILTIN', where, `"${s}" is a Node built-in: import "node:${s}"`);
   const name = packageName(s);
-  if (SRC_DIR_RE.test(file) && name.startsWith(INTERNAL_SCOPE) && s.slice(name.length).split('/')[1] === 'test') {
-    return finding('E_SRC_IMPORTS_TEST', where, `"${s}" reaches test code from package code (Z02 ruling 30); move what both need into src`);
+  if (name.startsWith(INTERNAL_SCOPE) && s.length > name.length) {
+    // `@bot/<n>` is `packages/<n>`: a subpath names a file there, which the named rules check like a relative path.
+    const named = namedRuleFinding(file, posix.normalize(`packages/${name.slice(INTERNAL_SCOPE.length)}${s.slice(name.length)}`), where);
+    if (named !== null) return named;
   }
   if (workspace && WEB3_BANNED_IN.includes(manifest.json.name ?? '') && name === WEB3) {
     return finding('E_WEB3_BANNED', where, `${WEB3} is banned in ${String(manifest.json.name)} (B-M30-01)`);
