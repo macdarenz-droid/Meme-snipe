@@ -28,7 +28,7 @@ describe('A-M02-01 base58', () => {
   });
 
   it('matches known vectors', () => {
-    assert.equal(base58.encode(new Uint8Array(32)), '11111111111111111111111111111111');      // Pubkey::default()
+    assert.equal(base58.encode(new Uint8Array(32)), '1'.repeat(32));      // Pubkey::default()
     assert.equal(base58.encode(new Uint8Array(0)), '');
     assert.equal(base58.encode(Uint8Array.from([0, 0, 1])), '112');
     assert.equal(base58.encode(new TextEncoder().encode('hello world')), 'StV1DL6CwTryKyV');
@@ -106,7 +106,7 @@ describe('A-M02-01 Reader', () => {
     assert.deepEqual(r.bytes(2), Uint8Array.from([9, 8]));
     assert.equal(r.remaining(), 0);
     const k = new Reader(new Uint8Array(32));
-    assert.equal(k.pubkey(), '11111111111111111111111111111111');
+    assert.equal(k.pubkey(), '1'.repeat(32));
   });
 
   it('reads i128 with the high bit set as a negative bigint', () => {

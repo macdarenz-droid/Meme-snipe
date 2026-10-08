@@ -597,8 +597,13 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
       for (const m of st.bytes) m.record(mono(), n, w.method);
     };
     o.onTooLarge = (t) => { tooLarge = t; };
-    const settle = (r: Result<CallValue<unknown>, RpcError>): void => {
+    const settle = (answer: Result<CallValue<unknown>, RpcError>): void => {
       st.inFlight = false;
+      // Z03 ruling 4: a JSON-RPC error code the provider documents for rate limiting (HTTP 200) is a rate limit.
+      const r: Result<CallValue<unknown>, RpcError> = !answer.ok && answer.error.code === 'E_RPC' && answer.error.rpcCode !== undefined
+        && st.p.config.rateLimitRpcCodes.includes(answer.error.rpcCode)
+        ? { ok: false, error: { code: 'E_RATE_LIMITED', message: 'rpc_rate_limited', rpcCode: answer.error.rpcCode } }
+        : answer;
       if (r.ok) {
         if (cap !== undefined) {
           st.needBytes.set(w.method, read);
@@ -613,6 +618,7 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
         for (const s of t.overOwnCap ? states : [st]) startHold(s, w.method, t);
       }
       if (!r.ok && isLimited(r.error)) onLimited(st, r.error);
+      else if (!r.ok && r.error.code === 'E_HTTP' && r.error.httpStatus === 503 && r.error.retryAfterMs !== undefined) onUnavailable(st, r.error.retryAfterMs);
       w.resolve(r);
       pump(st);
     };
@@ -630,8 +636,10 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
     st.limitedAt = [...st.limitedAt.filter((t) => t > now - STOP_WINDOW_MS), now];
     const n = st.limitedAt.length;
     if (e.httpStatus === 429) deps.metrics.counter('rpc_429_total', { provider: st.label }).inc();
-    const doubled = Math.min(BACKOFF_MAX_MS, (e.retryAfterMs ?? BACKOFF_BASE_MS) * 2 ** (n - 1));
-    const pauseMs = Math.max(e.retryAfterMs ?? 0, doubled);
+    // Z03 ruling 1: max(Retry-After, BASE × 2^(n−1)), so a Retry-After of 0, a past date or junk (read as absent by the
+    // client) never gives a zero pause; the back-off is capped at BACKOFF_MAX_MS and Retry-After at MAX_PAUSE_MS below.
+    const backoff = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (n - 1));
+    const pauseMs = Math.max(e.retryAfterMs ?? 0, backoff);
     const status = e.httpStatus ?? 0;
     // The pause also holds after a stop, so an operator's early resume still waits it out (at most MAX_PAUSE_MS).
     st.pausedUntil = now + Math.min(pauseMs, MAX_PAUSE_MS);
@@ -643,6 +651,17 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
       deps.log.event('warn', 'm14.provider_paused', { provider: st.label, pause_ms: pauseMs, http_status: status });
     }
     saveStops();                                                // every answer, so a restart still counts it (N4)
+  }
+
+  /**
+   * Z03 ruling m9: a 503 with Retry-After pauses the provider for that long (at most MAX_PAUSE_MS). It is not a rate
+   * limit, so it does not count toward the stop rule.
+   */
+  function onUnavailable(st: ProviderState, retryAfterMs: number): void {
+    const pauseMs = Math.min(retryAfterMs, MAX_PAUSE_MS);
+    st.pausedUntil = Math.max(st.pausedUntil, mono() + pauseMs);
+    deps.log.event('warn', 'm14.provider_paused', { provider: st.label, pause_ms: pauseMs, http_status: 503 });
+    saveStops();
   }
 
   function enqueue(st: ProviderState, method: string, params: readonly unknown[], o: CallOptions, deadline: number, methodClass: MethodClass):
@@ -664,9 +683,12 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
   }
 
   /** Eligible providers in the order a call tries them (A-M14-02 logic 3, 4, 6, 7). */
-  function candidates(o: CallOptions, mode: GatewayMode): ProviderState[] | RpcError {
+  function candidates(method: string, o: CallOptions, mode: GatewayMode): ProviderState[] | RpcError {
     if (o.provider !== undefined && !byLabel.has(o.provider)) return { code: 'E_RPC', message: 'unknown_provider' };
-    const eligible = states.filter((st) => {
+    // Z03 ruling 4: a method is sent only to a provider that serves it; with none, the call fails with a named error.
+    const serving = states.filter((st) => st.p.config.methods.includes(method) && (o.provider === undefined || st.label === o.provider));
+    if (serving.length === 0) return { code: 'E_RPC', message: 'method_not_served' };
+    const eligible = serving.filter((st) => {
       const c = st.p.config;
       if (st.stopped !== null || !c.roles.includes(o.role)) return false;
       if (deps.context === 'engine' && !c.allowInLivePaths) return false;
@@ -691,7 +713,7 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
       if (spec === null) return err('E_RPC', 'unknown_method');
       const mode = modeOf();
       if (mode === 'degraded_reads' && o.priority >= 2) return err('E_RATE_LIMITED', 'degraded');
-      const list = candidates(o, mode);
+      const list = candidates(method, o, mode);
       if (!Array.isArray(list)) return { ok: false, error: list };
       if (list.length === 0) return err('E_ALL_PROVIDERS_DOWN', 'no_eligible_provider');
       const deadline = mono() + o.timeoutMs;

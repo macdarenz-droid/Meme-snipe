@@ -21,8 +21,11 @@ const WEB3_V1 = 'Banned in the engine and signer: use @solana/kit (B-M30-01; LD-
  */
 const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts'];
 
-/** The only file that may hold program ID literals (A-M01-01 logic 1): the constants registry. Exact path, as above. */
-const PROGRAM_ID_FILES = ['packages/venue/src/constants.ts'];
+/**
+ * The files that may hold address literals (A-M01-01 logic 1; Z03 ruling m7): the constants registry (exact path, as
+ * above), and fixture files: anything under fixtures/ and any module named fixtures.ts (recorded or synthetic test data).
+ */
+const PROGRAM_ID_FILES = ['packages/venue/src/constants.ts', 'fixtures/**', 'packages/*/src/fixtures.ts', 'packages/*/test/fixtures.ts'];
 
 /**
  * Every JavaScript and TypeScript source extension, so no module escapes the rules by its extension. The policy check

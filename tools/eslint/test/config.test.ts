@@ -94,4 +94,16 @@ describe('eslint.config.mjs: program ID literals (A-M01-01)', () => {
   it('packages/venue/src/constants.ts may hold program IDs', async () => {
     assert.deepEqual(await rulesHit('packages/venue/src/constants.ts', code), []);
   });
+  // Z03 ruling m7: any address literal, a mint for instance; fixture files may hold them.
+  const mint = `export const m = 'So${'1'.repeat(40)}2';\n`;
+  for (const file of ['packages/engine/src/a.ts', 'packages/decoders/test/a.test.ts', 'packages/contract/src/other.ts']) {
+    it(`an address literal in ${file} fails lint`, async () => {
+      assert.deepEqual(await rulesHit(file, mint), ['bot/no-program-id-literal']);
+    });
+  }
+  for (const file of ['packages/venue/src/constants.ts', 'fixtures/a.ts', 'packages/contract/src/fixtures.ts', 'packages/decoders/test/fixtures.ts']) {
+    it(`${file} may hold address literals`, async () => {
+      assert.deepEqual(await rulesHit(file, mint), []);
+    });
+  }
 });

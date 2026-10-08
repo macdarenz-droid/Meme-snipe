@@ -53,6 +53,17 @@ export interface ProviderConfig {
   failoverOrder: number;
   limits: { rps: number; sendRps?: number; heavyRps?: number; perMethodRps?: number; ownerMaxRps?: number };
   documentedLimits: DocumentedLimit[];
+  /**
+   * The RPC methods this provider serves on this plan (names from methods.ts), as its documentation states (Z03 ruling
+   * 4): a method missing here is never sent to it.
+   */
+  methods: string[];
+  /**
+   * JSON-RPC error codes the provider documents for rate limiting in an HTTP 200 answer (Z03 ruling 4, for example
+   * Chainstack's -32005); such an answer counts as a rate limit (pause, stop count, failover). Empty when none is
+   * documented.
+   */
+  rateLimitRpcCodes: number[];
   metering: { unit: 'credits' | 'requests'; monthlyAllowance: number; methodCost: Record<string, number> } | null;
   allowInLivePaths: boolean;
 }

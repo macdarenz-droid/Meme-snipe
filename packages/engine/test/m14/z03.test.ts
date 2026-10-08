@@ -11,7 +11,7 @@ import { M14_CONFIG } from '../../src/m14/config.ts';
 import { DEFAULT_PROVIDERS } from '../../src/m14/defaults.ts';
 import { createRpcGateway, STOP_AFTER_LIMITED } from '../../src/m14/gateway.ts';
 import { M14_LOG_CODES } from '../../src/m14/log.ts';
-import { maxRpsUnder, validateProviderConfigs, withOwnerCap } from '../../src/m14/providers.ts';
+import { envSecrets, loadProviders, maxRpsUnder, validateProviderConfigs, withOwnerCap } from '../../src/m14/providers.ts';
 import { m14Settings } from '../../src/m14/settings.ts';
 import type { CallValue, ProviderConfig, ResolvedProvider, RpcError } from '../../src/m14/types.ts';
 import { M24_LOG_CODES } from '../../src/m24/db.ts';
@@ -47,7 +47,7 @@ function m27(time: FakeTime) {
   return { lines, log, metrics };
 }
 
-async function settle<T>(time: FakeTime, p: Promise<T>, stepMs = 50, maxMs = 120_000): Promise<T> {
+async function settle<T>(time: FakeTime, p: Promise<T>, stepMs = 50, maxMs = 120_000): Promise<T> {   // stepMs 1: inspect a pause before it ends
   let done = false;
   let value: T | undefined;
   void p.then((v) => { done = true; value = v; });
@@ -177,3 +177,101 @@ describe('Z03 wiring onto M25 (config)', () => {
     assert.equal(send?.riskDirectionOnIncrease, 'increases_risk');
   });
 });
+
+// ---- Z03 round 2 (supervisor rulings 1, 4, m9, m12 of 8 Oct; docs/reviews/Z03.md). Each case fails on 5702022e. ----
+describe('Z03 round 2: gateway pauses, served methods, JSON-RPC rate limits, 503 and the allocation', () => {
+  const engineOf = (configs: readonly ProviderConfig[], client: FakeClient, time: FakeTime) => {
+    const { log, metrics, lines } = m27(time);
+    const gw = createRpcGateway({ registry: registryOf(configs), context: 'engine', client, clock: time, scheduler: time, log, metrics,
+      stopStore: new MemoryStopStore(), usage: { projectedOver80: () => false } });
+    return { gw, lines, metrics };
+  };
+  const shyft = DEFAULT_PROVIDERS[0] as ProviderConfig;
+  const chainstack = DEFAULT_PROVIDERS[1] as ProviderConfig;
+  const read = (priority: 0 | 1 | 2 | 3 | 4, extra: Record<string, unknown> = {}) =>
+    ({ priority, role: 'read' as const, commitment: 'confirmed' as const, timeoutMs: 60_000, ...extra });
+
+  it('ruling 1: a Retry-After of 0 (or a past date, or junk read as absent) still pauses for the back-off', async () => {
+    for (const retryAfterMs of [0, undefined]) {
+      const time = new FakeTime();
+      const client = new FakeClient(time);
+      client.answer = () => ({ ok: false, error: { code: 'E_RATE_LIMITED', message: 'http_429', httpStatus: 429, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) } });
+      const { gw } = engineOf([shyft, chainstack], client, time);
+      await settle(time, gw.call('getSlot', [], read(2)), 1);
+      assert.equal((gw.status()[0]?.pausedUntilMs as number) - time.now >= 999, true, `Retry-After ${String(retryAfterMs)}`);
+    }
+  });
+
+  it('ruling 4: a method a provider does not serve is never sent to it; with no provider serving it the call fails by name', async () => {
+    const time = new FakeTime();
+    const client = new FakeClient(time);
+    const { gw } = engineOf([shyft, chainstack], client, time);
+    const opts = { commitment: 'confirmed' as const, timeoutMs: 60_000, role: 'read' as const, priority: 0 as const };
+    const r = await settle(time, gw.call('getProgramAccounts', ['x', { encoding: 'base64' }], opts));
+    assert.deepEqual(r, { ok: false, error: { code: 'E_RPC', message: 'method_not_served' } });
+    assert.equal(client.sent.length, 0);
+    const served = { ...chainstack, methods: [...chainstack.methods, 'getProgramAccounts'] };
+    const { gw: gw2 } = engineOf([shyft, served], client, time);
+    const r2 = await settle(time, gw2.call('getProgramAccounts', ['x', { encoding: 'base64' }], opts));
+    assert.ok(r2.ok && r2.value.providerLabel === 'chainstack');
+    assert.deepEqual(client.sent.map((s) => s.label), ['chainstack']);
+    assert.deepEqual(DEFAULT_PROVIDERS.map((c) => c.methods.includes('getProgramAccounts')), [false, false]);
+  });
+
+  it('ruling 4: a documented JSON-RPC rate-limit code in an HTTP 200 answer pauses, counts toward the stop and fails over', async () => {
+    const time = new FakeTime();
+    const client = new FakeClient(time);
+    client.answer = (label) => (label === 'chainstack'
+      ? { ok: false, error: { code: 'E_RPC', message: 'rate limited', rpcCode: -32005 } }
+      : { ok: true, value: { value: 1, providerLabel: label, latencyMs: 0, contextSlot: null } });
+    const primaryFirst = { ...chainstack, unmeteredPrimary: true, metering: null, failoverOrder: 0 };
+    const backup = { ...shyft, unmeteredPrimary: false, failoverOrder: 1 };
+    const { gw, lines } = engineOf([primaryFirst, backup], client, time);
+    const r = await settle(time, gw.call('getSlot', [], read(1)));
+    assert.ok(r.ok && r.value.providerLabel === 'shyft', JSON.stringify(r.ok ? r.value.providerLabel : r.error));
+    assert.ok((gw.status().find((s) => s.label === 'chainstack')?.recentLimited as number) === 1);
+    assert.ok(lines.some((l) => l.code === 'm14.provider_paused' && l.provider === 'chainstack'));
+    // A code the provider does not document stays an E_RPC answer: no pause.
+    client.answer = () => ({ ok: false, error: { code: 'E_RPC', message: 'other', rpcCode: -32002 } });
+    const time2 = new FakeTime();
+    const c2 = new FakeClient(time2);
+    c2.answer = client.answer;
+    const { gw: gw2 } = engineOf([primaryFirst, backup], c2, time2);
+    const r2 = await settle(time2, gw2.call('getSlot', [], read(1)));
+    assert.deepEqual(r2, { ok: false, error: { code: 'E_RPC', message: 'other', rpcCode: -32002 } });
+    assert.equal(gw2.status()[0]?.recentLimited, 0);
+  });
+
+  it('ruling m9: a 503 with Retry-After pauses that provider (not counted toward the stop)', async () => {
+    const time = new FakeTime();
+    const client = new FakeClient(time);
+    client.answer = () => ({ ok: false, error: { code: 'E_HTTP', message: 'http_503', httpStatus: 503, retryAfterMs: 20_000 } });
+    const { gw, lines } = engineOf([shyft, chainstack], client, time);
+    await settle(time, gw.call('getSlot', [], read(2)), 1);
+    const st = gw.status()[0];
+    assert.ok((st?.pausedUntilMs as number) - time.now >= 19_000, String((st?.pausedUntilMs as number) - time.now));
+    assert.equal(st?.recentLimited, 0);
+    assert.ok(lines.some((l) => l.code === 'm14.provider_paused' && l.http_status === 503 && l.pause_ms === 20_000));
+  });
+
+  it('ruling m12: the engine needs the allocation; shares scale every rate; shares above 10,000 or a share of 0 refuse or disable', () => {
+    const secrets = envSecrets({ RPC_SHYFT_URL: 'https://shyft.example/k', RPC_CHAINSTACK_URL: 'https://chainstack.example/k' });
+    const log = new RecordingLogPort();
+    const none = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine' }, log);
+    assert.ok(!none.ok && none.error.problems[0]?.key === 'rpc.allocation');
+    const split = { consumer: 'engine', shares: { shyft: { engine: 8_000, sentinel: 2_000 }, chainstack: { engine: 5_000, sentinel: 4_000, signer: 1_000 } } };
+    const ok = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', allocation: split }, log);
+    assert.ok(ok.ok);
+    assert.deepEqual(ok.value.providers.map((p) => [p.config.label, p.config.limits.rps]), [['shyft', 4], ['chainstack', 0.25]]);
+    const over = { consumer: 'engine', shares: { shyft: { engine: 8_000, sentinel: 3_000 }, chainstack: { engine: 10_000 } } };
+    const r = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', allocation: over }, log);
+    assert.ok(!r.ok && r.error.problems.some((p) => p.key === 'rpc.allocation[shyft]' && /allocation_exceeds_cap/.test(p.message)));
+    const sentinelOnly = { consumer: 'sentinel', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 9_000, sentinel: 1_000 } } };
+    const s = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'research', allocation: sentinelOnly }, log);
+    assert.ok(s.ok);
+    assert.deepEqual(s.value.disabled, [{ label: 'shyft', reason: 'no_allocation' }]);
+    assert.deepEqual(s.value.providers.map((p) => [p.config.label, p.config.limits.rps]), [['chainstack', 0.05]]);
+  });
+});
+
+class RecordingLogPort { events: Array<{ code: string }> = []; event(_l: string, code: string): void { this.events.push({ code }); } }

@@ -4,6 +4,7 @@
 // Ported from Snipe-solana card C03 (#6 @ 6ae4d62), review fixes C03 R4 and N2 included. Z03 adds `limits.ownerMaxRps`
 // (SPEC-A A-M14-02: the bucket runs at the lower of the configured rate and the owner's cap).
 import type { Result } from '@bot/types';
+import { methodSpec } from './methods.ts';
 import type { DocumentedLimit, GatewayContext, LogPort, ProviderConfig, ResolvedProvider, SecretSource } from './types.ts';
 
 export interface ConfigProblem { key: string; message: string }
@@ -14,12 +15,27 @@ export interface RegistryOptions {
   context: GatewayContext;
   /** Hosts of the M30 egress allowlist; a provider host not listed is a warning (A-M14-01 logic 1). */
   egressHosts?: readonly string[];
+  /**
+   * How each provider's budget (its rates at most 50% of the documented limits) is split between the processes that read
+   * it (Z03 ruling m12; ARCH D04 and 11.1, SPEC-A A-M14-05: the engine, the sentinel and the signer all read providers).
+   * Required in the engine context. See `Allocation`.
+   */
+  allocation?: Allocation;
 }
+
+/**
+ * The split of every provider's rate budget between consumers, in basis points of that budget, and the consumer this
+ * process is. Per provider the shares add up to at most 10,000, or the load refuses (`E_CONFIG`,
+ * `allocation_exceeds_cap`; SPEC-A A-M14-05 `E_ALLOCATION_EXCEEDS_CAP`). A provider with no share, or a share of 0, for
+ * this consumer is not used by this process. Every rate of a provider is scaled by this consumer's share. A-M14-05
+ * reads it from the root-owned `/etc/bot/rpc-allocation.json`.
+ */
+export interface Allocation { consumer: string; shares: Readonly<Record<string, Readonly<Record<string, number>>>> }
 
 export interface ProviderRegistry {
   /** Enabled providers, in failover order. */
   providers: ResolvedProvider[];
-  disabled: Array<{ label: string; reason: 'secret_missing' }>;
+  disabled: Array<{ label: string; reason: 'secret_missing' | 'no_allocation' }>;
   warnings: ProviderWarning[];
   /** False when fewer than two engine-usable read providers are enabled: the engine refuses live modes (edge case 1). */
   liveModesAllowed: boolean;
@@ -93,18 +109,43 @@ function checkRates(c: ProviderConfig, limits: readonly DocumentedLimit[], bad: 
  */
 export function withOwnerCap(c: ProviderConfig): ProviderConfig {
   const cap = c.limits.ownerMaxRps;
-  if (cap === undefined) return c;
-  const at = (v: number | undefined): number | undefined => (v === undefined ? undefined : Math.min(v, cap));
-  const { sendRps, heavyRps, perMethodRps } = c.limits;
+  return cap === undefined ? c : mapRates(c, (v) => Math.min(v, cap));
+}
+
+/** `c` with every rate passed through `f` (`ownerMaxRps` kept as configured). */
+function mapRates(c: ProviderConfig, f: (rps: number) => number): ProviderConfig {
+  const { sendRps, heavyRps, perMethodRps, ownerMaxRps } = c.limits;
   return {
     ...c,
     limits: {
-      rps: Math.min(c.limits.rps, cap), ownerMaxRps: cap,
-      ...(sendRps === undefined ? {} : { sendRps: at(sendRps) as number }),
-      ...(heavyRps === undefined ? {} : { heavyRps: at(heavyRps) as number }),
-      ...(perMethodRps === undefined ? {} : { perMethodRps: at(perMethodRps) as number }),
+      rps: f(c.limits.rps),
+      ...(ownerMaxRps === undefined ? {} : { ownerMaxRps }),
+      ...(sendRps === undefined ? {} : { sendRps: f(sendRps) }),
+      ...(heavyRps === undefined ? {} : { heavyRps: f(heavyRps) }),
+      ...(perMethodRps === undefined ? {} : { perMethodRps: f(perMethodRps) }),
     },
   };
+}
+
+/**
+ * Checks the allocation (Z03 ruling m12) and returns this consumer's share of each provider, in basis points. Problems:
+ * a share that is not an integer in 0..10,000, or shares of one provider that add up to more than 10,000.
+ */
+function sharesOf(allocation: Allocation, labels: readonly string[], problems: ConfigProblem[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const label of labels) {
+    const byConsumer = Object.hasOwn(allocation.shares, label) ? allocation.shares[label] as Readonly<Record<string, number>> : {};
+    let sum = 0;
+    for (const [consumer, bps] of Object.entries(byConsumer)) {
+      if (!Number.isSafeInteger(bps) || bps < 0 || bps > 10_000) {
+        problems.push({ key: `rpc.allocation[${label}][${consumer}]`, message: 'a share is an integer number of basis points, 0-10,000' });
+      }
+      sum += bps;
+    }
+    if (sum > 10_000) problems.push({ key: `rpc.allocation[${label}]`, message: `allocation_exceeds_cap: the shares add up to ${sum} bps, above 10,000` });
+    out.set(label, Object.hasOwn(byConsumer, allocation.consumer) ? byConsumer[allocation.consumer] as number : 0);
+  }
+  return out;
 }
 
 function checkOne(raw: unknown, i: number, problems: ConfigProblem[]): ProviderConfig | null {
@@ -138,6 +179,13 @@ function checkOne(raw: unknown, i: number, problems: ConfigProblem[]): ProviderC
     && positiveInt(c.metering.monthlyAllowance) && isObject(c.metering.methodCost)
     && Object.values(c.metering.methodCost).every((v) => typeof v === 'number' && Number.isFinite(v) && v >= 0))) {
     bad('metering', 'must be null or { unit, monthlyAllowance, methodCost }');
+  }
+  if (!Array.isArray(c.methods) || c.methods.length === 0 || new Set(c.methods).size !== c.methods.length
+    || c.methods.some((m) => typeof m !== 'string' || methodSpec(m) === null)) {
+    bad('methods', 'must be a non-empty list of distinct methods the gateway knows (the methods the provider serves)');
+  }
+  if (!Array.isArray(c.rateLimitRpcCodes) || c.rateLimitRpcCodes.some((n) => !Number.isSafeInteger(n))) {
+    bad('rateLimitRpcCodes', 'must be a list of the JSON-RPC error codes the provider documents for rate limits (empty when none)');
   }
   if (c.unmeteredPrimary === true && c.metering !== null) bad('unmeteredPrimary', 'the unmetered primary must have metering null');
   if (c.unmeteredPrimary === true && Array.isArray(c.roles) && !c.roles.includes('read')) bad('unmeteredPrimary', 'the unmetered primary must have the read role');
@@ -190,13 +238,25 @@ export function loadProviders(raw: unknown, secrets: SecretSource, opts: Registr
   const valid = validateProviderConfigs(raw, opts);
   if (!valid.ok) return valid;
   const problems: ConfigProblem[] = [];
+  if (opts.context === 'engine' && opts.allocation === undefined) {
+    return { ok: false, error: { code: 'E_CONFIG', problems: [{ key: 'rpc.allocation', message: 'the engine needs the provider allocation (the engine, sentinel and signer share each budget; ARCH D04)' }] } };
+  }
+  const shares = opts.allocation === undefined ? null : sharesOf(opts.allocation, valid.value.map((c) => c.label), problems);
+  if (problems.length > 0) return { ok: false, error: { code: 'E_CONFIG', problems } };
   const providers: ResolvedProvider[] = [];
   const disabled: ProviderRegistry['disabled'] = [];
   const warnings: ProviderWarning[] = [];
   if (opts.egressHosts === undefined) {
     warnings.push({ label: '*', code: 'egress_allowlist_missing', message: 'no egress allowlist given; provider hosts not cross-checked' });
   }
-  for (const c of valid.value) {
+  for (const configured of valid.value) {
+    const share = shares?.get(configured.label) ?? 10_000;
+    if (share === 0) {
+      disabled.push({ label: configured.label, reason: 'no_allocation' });
+      log.event('info', 'm14.provider_disabled', { provider: configured.label, reason: 'no_allocation' });
+      continue;
+    }
+    const c = share === 10_000 ? configured : mapRates(configured, (v) => (v * share) / 10_000);
     const key = `rpc.providers[${c.label}]`;
     const url = secrets.get(c.urlSecretRef);
     if (url === undefined || url.trim() === '') {

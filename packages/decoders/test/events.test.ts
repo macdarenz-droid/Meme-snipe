@@ -4,7 +4,7 @@ import { describe, it } from 'vitest';
 import fc from 'fast-check';
 import type { DecodedEvent, RawTransaction } from '@bot/types';
 import { base58, createDecoders, decodeEvents, MAX_EVENT_DATA_BYTES, Reader, readRpcTransaction, UNKNOWN_EVENT_LOG_PERIOD_MS, type InnerIx, type PinnedIdl } from '../src/index.ts';
-import { decoders, DEFAULT_PUBKEY, fixture, idls, programOf } from './fixtures.ts';
+import { decoders, DEFAULT_PUBKEY, fixture, idls, programOf, WSOL } from './fixtures.ts';
 
 interface TxRecord { signature: string; slot: number; version: unknown; json: Record<string, unknown> }
 const d = decoders();
@@ -93,7 +93,8 @@ describe('A-M02-03 pump curve trades [EX-37, EX-05]', () => {
       for (const [i, e] of trades.entries()) {
         const f = fields[i] as Record<string, bigint | boolean | string>;
         assert.deepEqual([e.mint, e.isBuy, e.solAmount, e.tokenAmount, e.feeBps, e.fee, e.creatorFeeBps, e.creatorFee, e.quoteMint],
-          [f.mint, f.is_buy, f.sol_amount, f.token_amount, Number(f.fee_basis_points), f.fee, Number(f.creator_fee_basis_points), f.creator_fee, f.quote_mint]);
+          [f.mint, f.is_buy, f.sol_amount, f.token_amount, Number(f.fee_basis_points), f.fee, Number(f.creator_fee_basis_points), f.creator_fee,
+            f.quote_mint === DEFAULT_PUBKEY ? null : f.quote_mint]);                     // the default pubkey is native SOL: null (Z03 m6)
         assert.equal(e.slot, BigInt(rec.slot));
         assert.equal(e.signature, rec.signature);
         decoded++;
@@ -403,7 +404,7 @@ describe('A-M02-03 trust rules and gaps', () => {
   it('a fee above 10,000 bps in an event is refused (gap), and a transaction without inner instructions is a gap', () => {
     const gaps: string[] = [];
     const events: string[] = [];
-    const dd = createDecoders(idls(), { metrics: { counter: (name, l) => ({ inc: () => { if (name === 'decode_gap_total') gaps.push(String(l.reason)); else events.push(String(l.kind)); } }) } });
+    const dd = createDecoders(idls(), { wsolMint: WSOL, metrics: { counter: (name, l) => ({ inc: () => { if (name === 'decode_gap_total') gaps.push(String(l.reason)); else if (name === 'decode_events_total') events.push(String(l.kind)); } }) } });
     dd.decodeTransactionEvents(buy());
     assert.deepEqual(events, ['pumpswap_buy']);                // decode_events_total{kind}
     const t = raw(CURVE_TRADES[0] as TxRecord);
@@ -437,7 +438,8 @@ describe('A-M02-03 trust rules and gaps', () => {
     const t = buy();
     (t as { version: unknown }).version = 2;
     assert.throws(() => d.decodeTransactionEvents(t), /version must be legacy, 0 or 1/);
-    assert.equal(decodeEvents(buy(), idls()).length, 1);
+    assert.equal(decodeEvents(buy(), idls(), {}, { wsolMint: WSOL }).length, 1);
+    assert.equal(decodeEvents(buy(), idls()).length, 0);                                // no wSOL mint given: no PumpSwap trade is SOL-quoted (Z03 ruling 3)
   });
 
   it('never throws on random inner-instruction data and stack heights (property)', () => {
@@ -584,7 +586,8 @@ describe('A-M02-03 transaction reader', () => {
     }
     const sparse = j();
     const meta = sparse.meta as Record<string, unknown>;
-    for (const k of ['loadedAddresses', 'innerInstructions', 'preBalances', 'preTokenBalances', 'postTokenBalances', 'computeUnitsConsumed', 'err']) delete meta[k];
+    for (const k of ['loadedAddresses', 'innerInstructions', 'preBalances', 'preTokenBalances', 'postTokenBalances', 'computeUnitsConsumed']) delete meta[k];
+    meta.err = null;                                                          // meta.err is required (Z03 ruling m5), null is success
     meta.logMessages = [1];
     sparse.blockTime = null;
     sparse.slot = 2n ** 64n - 1n;

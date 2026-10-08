@@ -39,7 +39,7 @@ describe('A-M02-02 PumpSwap pools', () => {
       const pool = role(file, 'pool');
       const r = d.decodeAccountWithFlags(pool.owner, bytes(pool));
       const p = as(r.account, 'pumpswap_pool');
-      assert.equal(p.quoteMint, 'So11111111111111111111111111111111111111112');
+      assert.equal(p.quoteMint, role(file, 'quote_mint').pubkey);                  // wSOL, as C11 recorded it
       assert.ok(p.lpSupply > 0n && p.lpMint.length >= 32);
       assert.equal(bytes(pool).length, 301);                    // the IDL layout is 271 bytes
       if (r.flags.layoutExtended) extended++;
@@ -106,11 +106,11 @@ describe('A-M02-02 fee configs [EX-05, EX-07, EX-08]', () => {
 describe('A-M02-02 pump bonding curves [DA-13, DA-15, DA-V01]', () => {
   const curve = (f: string) => role(`mainnet/pump/curves/${f}`, 'bonding_curve');
 
-  it('decodes current curves; quote_mint all zeros (SOL) is returned as stored', () => {
+  it('decodes current curves; quote_mint all zeros (SOL) is returned as null, the native-SOL marker (Z03 m6)', () => {
     const r = d.decodeAccountWithFlags(PUMP, bytes(curve('curve_586AJyoo.json')));
     const c = as(r.account, 'pump_bonding_curve');
     assert.equal(c.complete, false);
-    assert.equal(c.quoteMint, DEFAULT_PUBKEY);
+    assert.equal(c.quoteMint, null);                                                   // was DEFAULT_PUBKEY before Z03 m6
     assert.ok(c.virtualQuote > c.realQuote && c.virtualToken > c.realToken);
     assert.deepEqual(r.flags, { layoutExtended: true, shortLegacy: false });
     const done = as(d.decodeAccount(PUMP, bytes(curve('curve_9ergzzPt.json'))), 'pump_bonding_curve');
@@ -124,10 +124,10 @@ describe('A-M02-02 pump bonding curves [DA-13, DA-15, DA-V01]', () => {
     const through = (n: number) => d.decodeAccountWithFlags(PUMP, full.slice(0, n));
     const withCreator = through(81);                           // discriminator, five u64, complete, creator
     assert.deepEqual(withCreator, {
-      account: { ...ref, quoteMint: DEFAULT_PUBKEY }, flags: { layoutExtended: false, shortLegacy: true },
+      account: { ...ref, quoteMint: null }, flags: { layoutExtended: false, shortLegacy: true },
     });
     const oldest = through(CURVE_MIN_LEN);
-    assert.deepEqual(oldest.account, { ...ref, creator: DEFAULT_PUBKEY, quoteMint: DEFAULT_PUBKEY });
+    assert.deepEqual(oldest.account, { ...ref, creator: DEFAULT_PUBKEY, quoteMint: null });
     assert.equal(oldest.flags.shortLegacy, true);
     assert.deepEqual(through(CURVE_MIN_LEN - 1).account, { kind: 'unknown', owner: PUMP, discriminatorHex: '17b7f83760d8ac60' });
   });

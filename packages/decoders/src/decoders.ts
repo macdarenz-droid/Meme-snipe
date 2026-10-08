@@ -4,7 +4,7 @@
 // stays free of every dependency but @bot/types (C-02).
 import type { DecodedEvent, Pubkey, RawTransaction } from '@bot/types';
 import { createAccountDecoder, type DecodedAccount, type DecodeFlags, type TokenPrograms } from './accounts.ts';
-import { decodeEvents, type EventHooks } from './events.ts';
+import { decodeEventsLocated, type EventHooks, type LocatedEvent } from './events.ts';
 import type { PinnedIdl } from './idl.ts';
 
 export class UnknownProgramError extends Error {
@@ -14,8 +14,10 @@ export class UnknownProgramError extends Error {
 export interface DecodersOptions {
   /** SPL Token and Token-2022 program IDs from the constants registry (A-M01-01); without them token accounts are `unknown`. */
   tokenPrograms?: TokenPrograms;
-  /** M27 metrics: `decode_accounts_total{kind,result}`, `decode_events_total{kind}`, `decode_gap_total{reason}`. */
-  metrics?: { counter(name: 'decode_accounts_total' | 'decode_events_total' | 'decode_gap_total', labels: Readonly<Record<string, string>>): { inc(by?: number): void } };
+  /** The wrapped SOL mint from the constants registry (A-M01-01 `MINTS.wsol`); without it no PumpSwap trade is SOL-quoted (Z03 ruling 3). */
+  wsolMint?: Pubkey;
+  /** M27 metrics: `decode_accounts_total{kind,result}`, `decode_events_total{kind}`, `decode_gap_total{reason}`, `decode_layout_extended_total{kind}`. */
+  metrics?: { counter(name: 'decode_accounts_total' | 'decode_events_total' | 'decode_gap_total' | 'decode_layout_extended_total', labels: Readonly<Record<string, string>>): { inc(by?: number): void } };
   /** M27 log for `m02.unknown_event`, written once per discriminator per hour of `clock` time. */
   unknownEventLog?: { log: { event(level: 'warn', code: string, fields: Readonly<Record<string, unknown>>): void }; clock: { nowMs(): number } };
 }
@@ -28,6 +30,8 @@ export interface Decoders {
   decodeAccount(owner: Pubkey, data: Uint8Array): DecodedAccount;
   decodeAccountWithFlags(owner: Pubkey, data: Uint8Array): { account: DecodedAccount; flags: DecodeFlags };
   decodeTransactionEvents(tx: RawTransaction): DecodedEvent[];
+  /** The events with their place in the transaction and the layout flag (Z03 rulings m11 and 2). */
+  decodeTransactionEventsLocated(tx: RawTransaction): LocatedEvent[];
 }
 
 export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions = {}): Decoders {
@@ -35,9 +39,11 @@ export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions
   const accounts = createAccountDecoder(idls, opts.tokenPrograms,
     opts.metrics === undefined ? undefined : (kind, result) => opts.metrics?.counter('decode_accounts_total', { kind, result }).inc());
   const lastLogged = new Map<string, number>();
+  const quote = opts.wsolMint === undefined ? {} : { wsolMint: opts.wsolMint };
   const hooks: EventHooks = {
     onEvent: (kind) => opts.metrics?.counter('decode_events_total', { kind }).inc(),
     onGap: (reason) => opts.metrics?.counter('decode_gap_total', { reason }).inc(),
+    onLayoutExtended: (kind) => opts.metrics?.counter('decode_layout_extended_total', { kind }).inc(),
     onUnknown: (programId, discriminatorHex, signature) => {
       const u = opts.unknownEventLog;
       if (u === undefined) return;
@@ -57,6 +63,7 @@ export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions
     },
     decodeAccount: accounts.decodeAccount,
     decodeAccountWithFlags: accounts.decodeAccountWithFlags,
-    decodeTransactionEvents: (tx) => decodeEvents(tx, idls, hooks),
+    decodeTransactionEvents: (tx) => decodeEventsLocated(tx, idls, hooks, quote).map((e) => e.event),
+    decodeTransactionEventsLocated: (tx) => decodeEventsLocated(tx, idls, hooks, quote),
   };
 }

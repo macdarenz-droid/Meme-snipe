@@ -3,13 +3,13 @@
 // program is never read as one of these. Every read is bounds-checked; anything that does not decode is `unknown`.
 // Ported from Snipe-solana card C03 (#6 @ 6ae4d62), review fixes C03-R1-4 (legacy curves on field boundaries) included.
 import type { BaseUnits, Bps, Lamports, Pubkey } from '@bot/types';
-import { DecodeError, Reader, toHex } from './codec.ts';
+import { base58, DecodeError, Reader, toHex } from './codec.ts';
 import type { IdlTypeDef, PinnedIdl } from './idl.ts';
 
 /** ARCH `DecodedAccount` with the C-03 variants; `pump_fee_config.raw` holds the stable and exotic tiers (logic 4). */
 export type DecodedAccount =
   | { kind: 'pump_bonding_curve'; virtualQuote: Lamports; virtualToken: BaseUnits; realQuote: Lamports; realToken: BaseUnits;
-      complete: boolean; quoteMint: Pubkey; creator: Pubkey }
+      complete: boolean; quoteMint: Pubkey | null /* null: native SOL (Z03 m6) */; creator: Pubkey }
   | { kind: 'pumpswap_pool'; baseMint: Pubkey; quoteMint: Pubkey; creator: Pubkey; virtualQuoteReserves: bigint /* i128 */;
       baseVault: Pubkey; quoteVault: Pubkey; lpMint: Pubkey; lpSupply: bigint }
   | { kind: 'pump_fee_config'; tiers: Array<{ thresholdLamports: Lamports; lpBps: Bps; protocolBps: Bps; creatorBps: Bps }>;
@@ -67,6 +67,8 @@ function decodeMint(data: Uint8Array, tokenProgram: 'spl_token' | 'token_2022'):
   const decimals = r.u8();
   const isInitialized = r.bool();
   const freezeAuthority = coptionKey(r);
+  // Z03 ruling m10: an uninitialized mint is not a mint yet.
+  if (!isInitialized) throw new DecodeError('E_BAD_VALUE', 'mint not initialized');
   return { kind: 'spl_mint', tokenProgram, mintAuthority, supply, decimals, isInitialized, freezeAuthority, extensionBytes: data.length - MINT_LEN };
 }
 
@@ -100,8 +102,14 @@ const bps = (v: unknown): Bps => {
 };
 const fees = (f: unknown): { lpBps: Bps; protocolBps: Bps; creatorBps: Bps } => {
   const x = f as { lp_fee_bps: bigint; protocol_fee_bps: bigint; creator_fee_bps: bigint };
-  return { lpBps: bps(x.lp_fee_bps), protocolBps: bps(x.protocol_fee_bps), creatorBps: bps(x.creator_fee_bps) };
+  const out = { lpBps: bps(x.lp_fee_bps), protocolBps: bps(x.protocol_fee_bps), creatorBps: bps(x.creator_fee_bps) };
+  // Z03 ruling m10: one tier's fees add up to at most 10,000 bps, or the account is `unknown`.
+  if (out.lpBps + out.protocolBps + out.creatorBps > MAX_BPS) throw new DecodeError('E_BAD_VALUE', 'fees add up to more than 10,000 bps');
+  return out;
 };
+
+/** `Pubkey::default()`; as a curve's `quote_mint` it means native SOL [DA-V01] and becomes null (Z03 m6). */
+const DEFAULT_PUBKEY = base58.encode(new Uint8Array(32));
 
 /** Maps a decoded Anchor struct to its variant; null for a type that has none (decoded as `unknown`). */
 function variant(def: IdlTypeDef, idl: PinnedIdl['name'], v: Record<string, unknown>): DecodedAccount | null {
@@ -110,7 +118,7 @@ function variant(def: IdlTypeDef, idl: PinnedIdl['name'], v: Record<string, unkn
     return {
       kind: 'pump_bonding_curve', virtualQuote: v.virtual_quote_reserves as bigint, virtualToken: v.virtual_token_reserves as bigint,
       realQuote: v.real_quote_reserves as bigint, realToken: v.real_token_reserves as bigint, complete: v.complete as boolean,
-      quoteMint: v.quote_mint as Pubkey, creator: v.creator as Pubkey,
+      quoteMint: v.quote_mint === DEFAULT_PUBKEY ? null : v.quote_mint as Pubkey, creator: v.creator as Pubkey,
     };
   }
   if (key === 'pump.Global') return { kind: 'pump_global', raw: v };

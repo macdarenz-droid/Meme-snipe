@@ -6,9 +6,8 @@ import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'vitest';
-import { readRpcTransaction, type DecodedAccount, type GapReason } from '../src/index.ts';
-import { decoders, idls } from './fixtures.ts';
-import { decodeEvents } from '../src/events.ts';
+import { decodeEventsLocated, readRpcTransaction, type DecodedAccount, type GapReason } from '../src/index.ts';
+import { decoders, idls, WSOL } from './fixtures.ts';
 
 const DIR = new URL('../../../fixtures/dec1/', import.meta.url);
 const raw = (name: string): Buffer => readFileSync(new URL(name, DIR));
@@ -21,7 +20,7 @@ interface TxFx {
 }
 interface Goldens {
   accounts: Array<{ address: string; label: string; kind: DecodedAccount['kind']; flags: { layoutExtended: boolean; shortLegacy: boolean }; expected: Record<string, unknown> | null }>;
-  transactions: Array<{ signature: string; label: string; expected: Array<Record<string, unknown>>; skipped: string[] }>;
+  transactions: Array<{ signature: string; label: string; expected: Array<Record<string, unknown>>; refused: Array<{ name: string; reason: GapReason }>; skipped: string[] }>;
 }
 
 const ACCOUNTS = read<{ accounts: AccountFx[] }>('accounts.json').accounts;
@@ -36,6 +35,7 @@ describe('DEC-1 mainnet goldens (Z03)', () => {
     const sha = (n: string): string => createHash('sha256').update(raw(n)).digest('hex');
     assert.equal(sha('accounts.json'), '9bd58ceb4fc5c5cd28cdef4b60f88b9f0320008b2c62a3ef24bef7504c7c1dab');
     assert.equal(sha('transactions.json'), 'bd6e07a18d97d38654963210d91f73be982995efb6c837c5d0b7cfed5ec7ef15');
+    assert.equal(sha('goldens.json'), '90adff0c299198d86c53435c409749f302370ecdf955218841be809eacb5be97');
     assert.equal(GOLDENS.accounts.length, 29);
     assert.equal(GOLDENS.transactions.length, 22);
   });
@@ -69,13 +69,15 @@ describe('DEC-1 mainnet goldens (Z03)', () => {
       const tx = readRpcTransaction(t.signature, json);
       assert.ok(tx.ok, tx.ok ? '' : tx.error.message);
       const gaps: GapReason[] = [];
-      const events = decodeEvents(tx.value, idls(), { onGap: (r) => gaps.push(r) });
-      assert.deepEqual(gaps, []);
-      assert.equal(events.length, g.expected.length);
-      for (const [k, e] of events.entries()) {
-        const want = g.expected[k] as Record<string, unknown>;
-        assert.deepEqual(pick(plain(e) as Record<string, unknown>, Object.keys(want)), want, `event ${k}`);
-        assert.equal(e.kind === 'unknown_event' ? '' : e.signature, t.signature);
+      const located = decodeEventsLocated(tx.value, idls(), { onGap: (r) => gaps.push(r) }, { wsolMint: WSOL });
+      // Z03 ruling 3: events whose quote is not SOL are refused, never Lamports.
+      assert.deepEqual(gaps, g.refused.map((r) => r.reason));
+      assert.equal(located.length, g.expected.length);
+      for (const [k, l] of located.entries()) {
+        const { layoutExtended, ...want } = g.expected[k] as Record<string, unknown>;
+        assert.deepEqual(pick(plain(l.event) as Record<string, unknown>, Object.keys(want)), want, `event ${k}`);
+        assert.equal(l.event.kind === 'unknown_event' ? '' : l.event.signature, t.signature);
+        assert.equal(l.layoutExtended, layoutExtended, `event ${k} layoutExtended`);   // ruling 2: the 8 bytes of 2026-10-02
       }
     });
   }
@@ -86,5 +88,13 @@ describe('DEC-1 mainnet goldens (Z03)', () => {
     assert.deepEqual(new Set(TXS.map((t) => t.version)), new Set(['legacy', 0, 1]));
     assert.ok(TXS.some((t) => t.base64.meta.err !== null && t.base64.meta.err !== undefined));
     assert.deepEqual([...new Set(GOLDENS.transactions.flatMap((t) => t.skipped))].sort(), ['BoostBuyAndBurnEvent', 'CreateEvent', 'CreatePoolEvent']);
+  });
+
+  it('Z03 ruling 3 on mainnet: 5 trades in this sample are not SOL-quoted and are refused (before Z03 round 2 they were reported as Lamports)', () => {
+    const refused = GOLDENS.transactions.flatMap((t) => t.refused.map((r) => r.name));
+    assert.deepEqual(refused.sort(), ['BuyEvent', 'BuyEvent', 'BuyEvent', 'SellEvent', 'TradeEvent']);
+    // Every TradeEvent, BuyEvent and SellEvent of this sample carries the 8 bytes appended on 2026-10-02 (ruling 2).
+    const trades = GOLDENS.transactions.flatMap((t) => t.expected.filter((e) => ['pump_trade', 'pumpswap_buy', 'pumpswap_sell'].includes(e.kind as string)));
+    assert.ok(trades.length > 0 && trades.every((e) => e.layoutExtended === true));
   });
 });

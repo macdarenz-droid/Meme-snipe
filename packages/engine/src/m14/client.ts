@@ -65,11 +65,19 @@ function stringifyBody(body: unknown): string {
   return JSON.stringify(body, (_k, v: unknown) => (typeof v === 'bigint' ? rawJSON(v.toString()) : v));
 }
 
-/** `Retry-After` in milliseconds: delta-seconds or an HTTP date (RFC 9110 10.2.3); undefined when absent or invalid. */
+/** RFC 9110 5.6.7 IMF-fixdate, e.g. `Sun, 06 Nov 1994 08:49:37 GMT`. */
+const IMF_FIXDATE = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/**
+ * `Retry-After` in milliseconds (RFC 9110 10.2.3): delta-seconds (a non-negative integer) or an IMF-fixdate; anything
+ * else, `Date.parse`'s lenient forms included (`garbage 7`, `-5`, `1.5`), counts as absent (Z03 ruling 1). A past date
+ * gives 0; the gateway's back-off still pauses (gateway.ts `onLimited`).
+ */
 export function parseRetryAfterMs(header: string | null, nowMs: number): number | undefined {
   if (header === null) return undefined;
   const h = header.trim();
   if (/^\d+$/.test(h)) return Number.parseInt(h, 10) * 1000;
+  if (!IMF_FIXDATE.test(h)) return undefined;
   const at = Date.parse(h);
   return Number.isNaN(at) ? undefined : Math.max(0, at - nowMs);
 }
@@ -184,6 +192,11 @@ export function createRpcClient(deps: RpcClientDeps): RpcClient {
         return fail({ code: 'E_HTTP', message: 'not_json', httpStatus: res.status });
       }
       if (typeof body !== 'object' || body === null || Array.isArray(body)) return fail({ code: 'E_HTTP', message: 'bad_response', httpStatus: res.status });
+      // JSON-RPC 2.0: the answer names the version and echoes the request's id; anything else is not this call's answer
+      // (Z03 ruling m8). A protocol error is a failure like a bad response.
+      if ((body as { jsonrpc?: unknown }).jsonrpc !== '2.0' || (body as { id?: unknown }).id !== id) {
+        return fail({ code: 'E_HTTP', message: 'protocol_error', httpStatus: res.status });
+      }
       if ('error' in body && body.error !== undefined && body.error !== null) {
         const e = body.error as { code?: unknown; message?: unknown };
         const rpcCode = typeof e.code === 'number' && Number.isSafeInteger(e.code) ? e.code : undefined;

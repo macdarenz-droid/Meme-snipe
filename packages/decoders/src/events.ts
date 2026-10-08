@@ -16,11 +16,18 @@ export const EVENT_CPI_PREFIX = 'e445a52e51cb9a1d';
  * `oversized` (pump or PumpSwap instruction data longer than any event, never decoded; review C03 R2) join the three
  * reasons of A-M02-03.
  */
-export type GapReason = 'no_inner' | 'truncated' | 'unknown_disc' | 'bad_trace' | 'oversized';
+export type GapReason = 'no_inner' | 'truncated' | 'unknown_disc' | 'bad_trace' | 'oversized' | 'non_sol_quote';
 export interface EventHooks {
   /** `decode_events_total{kind}` and `decode_gap_total{reason}` (M27). */
   onEvent?(kind: DecodedEvent['kind']): void;
   onGap?(reason: GapReason): void;
+  /**
+   * `decode_layout_extended_total{kind}` (M27; Z03 ruling 2): the event's data holds `bytes` more than the pinned layout
+   * describes. Pump appended `creator_fee_unclaimed: u64` to TradeEvent, BuyEvent and SellEvent (pump-fun/pump-public-docs
+   * 8cda1fa, 2026-10-08; DEC-1 saw the 8 bytes on mainnet from 2026-10-02); a newer IDL is pinned only in its own
+   * reviewed change, so until then such events carry `layoutExtended` and are counted.
+   */
+  onLayoutExtended?(kind: DecodedEvent['kind'], bytes: number): void;
   /** `m02.unknown_event` (the registry logs it once per discriminator per hour). */
   onUnknown?(programId: Pubkey, discriminatorHex: string, signature: Signature): void;
 }
@@ -48,23 +55,62 @@ export const MAX_EVENT_DATA_BYTES = 2_048;
 /** Base58 text longer than this decodes to more than MAX_EVENT_DATA_BYTES: L characters give more than (L − 1) × 0.732 bytes. */
 const MAX_EVENT_DATA_B58 = Math.ceil(MAX_EVENT_DATA_BYTES / 0.732) + 1;
 
+/** `Pubkey::default()`: a pump `quote_mint` with this value means native SOL [DA-V01]; it never leaves the decoder (Z03 m6). */
+const DEFAULT_PUBKEY = base58.encode(new Uint8Array(32));
+
+/**
+ * What the decoder needs to tell a SOL quote (Z03 ruling 3): the wrapped SOL mint (A-M01-01 `MINTS.wsol`, passed in so
+ * this package keeps no address literal and no dependency). Without it no PumpSwap trade is SOL-quoted (fail closed).
+ */
+export interface QuoteMints { wsolMint?: Pubkey }
+
+/**
+ * An event with where it sat in its transaction (Z03 ruling m11): `outerIx` is the top-level instruction, `innerIx`
+ * its position in that instruction's inner list, so with the signature a second delivery of the same event is told
+ * from a second fill. `layoutExtended`: the event's data held bytes the pinned layout does not describe (ruling 2).
+ */
+export interface LocatedEvent { event: DecodedEvent; outerIx: number; innerIx: number; layoutExtended: boolean }
+
 function bps(v: unknown): Bps {
   if (typeof v !== 'bigint' || v > MAX_BPS) throw new DecodeError('E_BAD_VALUE', 'a fee is at most 10,000 bps');
   return Number(v);
 }
 
-/** Maps a decoded IDL event to its `DecodedEvent` variant; null for an event the system does not use. */
-function mapEvent(idl: PinnedIdl['name'], name: string, v: Record<string, unknown>, slot: Slot, signature: Signature): DecodedEvent | null {
+/** Z03 ruling m10: the fees of one trade add up to at most 10,000 bps, or the event is refused. */
+function fitsTotal(...fees: Bps[]): void {
+  if (fees.reduce((a, b) => a + b, 0) > Number(MAX_BPS)) throw new DecodeError('E_BAD_VALUE', 'fees add up to more than 10,000 bps');
+}
+
+/** The default pubkey as null (native SOL); any other mint as itself (Z03 m6). */
+const quoteMintOf = (v: unknown): Pubkey | null => (v === DEFAULT_PUBKEY ? null : v as Pubkey);
+
+/** Thrown for a trade whose quote is not SOL, so it never yields Lamports (Z03 ruling 3); counted as `non_sol_quote`. */
+class NonSolQuote extends Error {}
+
+/**
+ * Maps a decoded IDL event to its `DecodedEvent` variant; null for an event the system does not use. `poolQuoteMint` is
+ * the PumpSwap pool's quote mint, or null when it cannot be read (ruling 3).
+ */
+function mapEvent(idl: PinnedIdl['name'], name: string, v: Record<string, unknown>, slot: Slot, signature: Signature,
+  poolQuoteMint: () => Pubkey | null, wsolMint: Pubkey | undefined): DecodedEvent | null {
   const key = `${idl}.${name}`;
   if (key === 'pump.TradeEvent') {
+    // Ruling 3: `sol_amount` is Lamports only on a SOL curve; pump coins may also trade against other mints (pump-public-
+    // docs 8cda1fa: "pump coins as quote mints"), where `sol_amount` is 0 and the amount is `quote_amount`.
+    const quoteMint = quoteMintOf(v.quote_mint);
+    if (quoteMint !== null) throw new NonSolQuote();
+    const feeBps = bps(v.fee_basis_points);
+    const creatorFeeBps = bps(v.creator_fee_basis_points);
+    fitsTotal(feeBps, creatorFeeBps);
     return {
       kind: 'pump_trade', mint: v.mint as Pubkey, isBuy: v.is_buy as boolean, solAmount: v.sol_amount as Lamports,
-      tokenAmount: v.token_amount as BaseUnits, feeBps: bps(v.fee_basis_points), fee: v.fee as Lamports,
-      creatorFeeBps: bps(v.creator_fee_basis_points), creatorFee: v.creator_fee as Lamports, quoteMint: v.quote_mint as Pubkey, slot, signature,
+      tokenAmount: v.token_amount as BaseUnits, feeBps, fee: v.fee as Lamports,
+      creatorFeeBps, creatorFee: v.creator_fee as Lamports, quoteMint, slot, signature,
     };
   }
   if (key === 'pump.CompleteEvent') return { kind: 'pump_complete', mint: v.mint as Pubkey, slot, signature };
   if (key === 'pump.CompletePumpAmmMigrationEvent') {
+    if (quoteMintOf(v.quote_mint) !== null) throw new NonSolQuote();          // ruling 3: `sol_amount` is Lamports only on a SOL curve
     return {
       kind: 'pump_migration', mint: v.mint as Pubkey, pool: v.pool as Pubkey, baseAmount: v.mint_amount as BaseUnits,
       solAmount: v.sol_amount as Lamports, poolMigrationFee: v.pool_migration_fee as Lamports, slot, signature,
@@ -74,12 +120,17 @@ function mapEvent(idl: PinnedIdl['name'], name: string, v: Record<string, unknow
   // recorded event user_quote_amount_in = quote_amount_in + lp_fee + protocol_fee + coin_creator_fee, and the sell
   // mirror of it (U-A05, U-A10: field names from the pinned pump_amm.json).
   if (key === 'pump_amm.BuyEvent' || key === 'pump_amm.SellEvent') {
+    // Ruling 3: `quoteAmount` is Lamports only when the pool's quote mint is wSOL.
+    if (wsolMint === undefined || poolQuoteMint() !== wsolMint) throw new NonSolQuote();
     const buy = name === 'BuyEvent';
+    const lpFeeBps = bps(v.lp_fee_basis_points);
+    const protocolFeeBps = bps(v.protocol_fee_basis_points);
+    const coinCreatorFeeBps = bps(v.coin_creator_fee_basis_points);
+    fitsTotal(lpFeeBps, protocolFeeBps, coinCreatorFeeBps);
     return {
       kind: buy ? 'pumpswap_buy' : 'pumpswap_sell', pool: v.pool as Pubkey,
       baseAmount: (buy ? v.base_amount_out : v.base_amount_in) as BaseUnits, quoteAmount: (buy ? v.quote_amount_in : v.quote_amount_out) as Lamports,
-      lpFeeBps: bps(v.lp_fee_basis_points), protocolFeeBps: bps(v.protocol_fee_basis_points), coinCreatorFeeBps: bps(v.coin_creator_fee_basis_points),
-      virtualQuoteReserves: v.virtual_quote_reserves as bigint, slot, signature,
+      lpFeeBps, protocolFeeBps, coinCreatorFeeBps, virtualQuoteReserves: v.virtual_quote_reserves as bigint, slot, signature,
     };
   }
   if (key === 'pump_amm.InitBoostEvent') return { kind: 'pumpswap_init_boost', pool: v.pool as Pubkey, virtualQuoteReserves: v.virtual_quote_reserves as bigint, slot, signature };
@@ -120,7 +171,31 @@ function invokerIndex(k: number, hs: readonly number[]): number | undefined {
  * PumpSwap's events inside pump's `migrate` decode because PumpSwap invoked them. Without stack heights the parent
  * top-level instruction must be the same program.
  */
-export function decodeEvents(tx: RawTransaction, idls: readonly PinnedIdl[], hooks: EventHooks = {}): DecodedEvent[] {
+export function decodeEvents(tx: RawTransaction, idls: readonly PinnedIdl[], hooks: EventHooks = {}, quote: QuoteMints = {}): DecodedEvent[] {
+  return decodeEventsLocated(tx, idls, hooks, quote).map((e) => e.event);
+}
+
+/**
+ * The PumpSwap pool's quote mint for an event its program emitted (ruling 3): the `quote_mint` account of the PumpSwap
+ * instruction that invoked the event-CPI. The pinned pump_amm.json marks that account `relations: ["pool"]` on `buy`,
+ * `buy_exact_quote_in` and `sell` (Anchor `has_one`: the program refuses an instruction whose `quote_mint` is not the
+ * pool's), so it is the pool account's own quote mint. Null when the invoker is not such an instruction.
+ */
+function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonly Pubkey[]): Pubkey | null {
+  if (invoker === undefined) return null;
+  const length58 = (invoker as InnerIx).dataLength58;
+  if (length58 !== undefined && length58 > MAX_EVENT_DATA_B58) return null;
+  const data = Buffer.from(invoker.dataB64, 'base64');
+  if (data.length < 8 || data.length > MAX_EVENT_DATA_BYTES) return null;
+  const ix = idl.instructions.get(data.subarray(0, 8).toString('hex'));
+  const at = ix === undefined ? -1 : ix.accounts.indexOf('quote_mint');
+  if (at < 0) return null;
+  const index = invoker.accounts[at];
+  return index === undefined ? null : keys[index] ?? null;
+}
+
+/** `decodeEvents` with each event's place in the transaction and its layout flag (rulings m11 and 2). */
+export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl[], hooks: EventHooks = {}, quote: QuoteMints = {}): LocatedEvent[] {
   if (tx.version !== 'legacy' && tx.version !== 0 && tx.version !== 1) throw new DecodeError('E_BAD_VALUE', 'transaction version must be legacy, 0 or 1 [LD-05]');
   if (tx.meta.err !== null && tx.meta.err !== undefined) return [];
   const byProgram = new Map(idls.filter((i) => i.name !== 'pump_fees').map((i) => [i.program, i]));
@@ -130,7 +205,7 @@ export function decodeEvents(tx: RawTransaction, idls: readonly PinnedIdl[], hoo
     if (keys.some((k) => byProgram.has(k))) hooks.onGap?.('no_inner');   // a pump program appears in the account keys (it may have been invoked at any depth)
     return [];
   }
-  const out: DecodedEvent[] = [];
+  const out: LocatedEvent[] = [];
   for (const group of tx.meta.innerInstructions) {
     const parent = tx.message.instructions[group.index];
     const top = parent === undefined ? undefined : programOf(parent);   // undefined: a bad trace for any event below
@@ -148,25 +223,31 @@ export function decodeEvents(tx: RawTransaction, idls: readonly PinnedIdl[], hoo
       const at = hs === 'bad' ? undefined : hs === null ? -1 : invokerIndex(k, hs);
       const invoker = at === undefined ? undefined : at === -1 ? top : programOf(ixs[at] as Ix);
       if (invoker === undefined) { hooks.onGap?.('bad_trace'); continue; }
+      const invokerIx = at === -1 ? parent : ixs[at as number];
       if (invoker !== program) continue;                      // not a self-CPI: ignored
       const disc = data.length >= 16 ? toHex(data.subarray(8, 16)) : '';
       const def = idl.events.get(disc);
       if (def === undefined) {
         hooks.onGap?.('unknown_disc');
         hooks.onUnknown?.(program, disc, tx.signature);
-        out.push({ kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature });
+        out.push({ event: { kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature }, outerIx: group.index, innerIx: k, layoutExtended: false });
         continue;
       }
       let ev: DecodedEvent | null;
+      let extra = 0;
       try {
-        ev = mapEvent(idl.name, def.name, def.read(new Reader(data.subarray(16))) as Record<string, unknown>, tx.slot, tx.signature);
-      } catch {
-        hooks.onGap?.('truncated');                          // E_SHORT or an invalid value: never a guessed event
+        const r = new Reader(data.subarray(16));
+        const value = def.read(r) as Record<string, unknown>;
+        extra = r.remaining();
+        ev = mapEvent(idl.name, def.name, value, tx.slot, tx.signature, () => invokerQuoteMint(invokerIx, idl, keys), quote.wsolMint);
+      } catch (e) {
+        hooks.onGap?.(e instanceof NonSolQuote ? 'non_sol_quote' : 'truncated');   // never a guessed event
         continue;
       }
       if (ev === null) continue;
       hooks.onEvent?.(ev.kind);
-      out.push(ev);
+      if (extra > 0) hooks.onLayoutExtended?.(ev.kind, extra);
+      out.push({ event: ev, outerIx: group.index, innerIx: k, layoutExtended: extra > 0 });
     }
   }
   return out;
@@ -200,7 +281,7 @@ function readIx(v: unknown, inner: boolean): InnerIx {
   let b64: string | null = null;
   const ix: InnerIx = {
     programIdIndex: v.programIdIndex as number,
-    accounts: v.accounts as number[],
+    accounts: [...(v.accounts as number[])],                     // copies: the result never aliases the caller's JSON
     get dataB64(): string {
       b64 ??= Buffer.from(base58.decode(data58)).toString('base64');
       return b64;
@@ -229,6 +310,7 @@ export function readRpcTransaction(signature: Signature, result: unknown): Resul
   if (version !== 'legacy' && version !== 0 && version !== 1) return { ok: false, error: { code: 'E_TX_VERSION', message: 'version must be legacy, 0 or 1 (fetch with maxSupportedTransactionVersion: 1)' } };
   const message = result.transaction.message;
   const meta = result.meta;
+  if (!('err' in meta)) return bad('meta.err missing');                     // Z03 ruling m5: success is never assumed
   if (!isObject(message) || !isKeys(message.accountKeys) || !Array.isArray(message.instructions)) return bad('message must be json-encoded');
   const loaded = meta.loadedAddresses ?? { writable: [], readonly: [] };
   if (!isObject(loaded) || !isKeys(loaded.writable) || !isKeys(loaded.readonly)) return bad('bad loadedAddresses');
@@ -242,7 +324,7 @@ export function readRpcTransaction(signature: Signature, result: unknown): Resul
       value: {
         signature, slot: toBig(result.slot), version,
         blockTimeS: typeof result.blockTime === 'number' ? result.blockTime : null,
-        message: { accountKeys: message.accountKeys, loadedAddresses: { writable: loaded.writable, readonly: loaded.readonly }, instructions: message.instructions.map((ix) => readIx(ix, false)) },
+        message: { accountKeys: [...message.accountKeys], loadedAddresses: { writable: [...loaded.writable], readonly: [...loaded.readonly] }, instructions: message.instructions.map((ix) => readIx(ix, false)) },
         meta: {
           err: meta.err ?? null, feeLamports: toBig(meta.fee), preBalances: balances(meta.preBalances), postBalances: balances(meta.postBalances),
           preTokenBalances: Array.isArray(meta.preTokenBalances) ? meta.preTokenBalances : [],

@@ -119,9 +119,9 @@ describe('A-M14-01 JSON-RPC client', () => {
     assert.deepEqual(await client.request(P, 'getSlot', [], READ), { ok: false, error: { code: 'E_HTTP', message: 'not_json', httpStatus: 200 } });
     server.route(KEYED_URL, () => new Response('[1]'));
     assert.deepEqual(await client.request(P, 'getSlot', [], READ), { ok: false, error: { code: 'E_HTTP', message: 'bad_response', httpStatus: 200 } });
-    server.route(KEYED_URL, () => json({ jsonrpc: '2.0', id: 1 }));
+    server.route(KEYED_URL, (req) => json({ jsonrpc: '2.0', id: req.body.id }));            // echoes the id (Z03 m8)
     assert.deepEqual(await client.request(P, 'getSlot', [], READ), { ok: false, error: { code: 'E_HTTP', message: 'bad_response', httpStatus: 200 } });
-    server.route(KEYED_URL, () => json({ jsonrpc: '2.0', id: 1, error: null, result: 9 }));
+    server.route(KEYED_URL, (req) => json({ jsonrpc: '2.0', id: req.body.id, error: null, result: 9 }));
     const r = await client.request(P, 'getSlot', [], READ);
     assert.ok(r.ok && r.value.value === 9 && r.value.contextSlot === null);
   });
@@ -342,5 +342,30 @@ describe('lossless JSON', () => {
   it('keeps safe integers and fractions as numbers', () => {
     assert.deepEqual(parseJsonLossless('{"a":1,"b":1.5,"c":"18446744073709551615"}'), { a: 1, b: 1.5, c: '18446744073709551615' });
     assert.deepEqual(parseJsonLossless('[9007199254740993, 1e300, 1234567890123456.5]'), [9_007_199_254_740_993n, 1e300, 1234567890123456.5]);
+  });
+});
+
+describe('Z03 round 2: Retry-After forms and the JSON-RPC envelope (rulings 1, m8)', () => {
+  it('Retry-After is delta-seconds or an IMF-fixdate; every other form counts as absent', () => {
+    const now = Date.parse('Thu, 08 Oct 2026 10:00:00 GMT');
+    assert.equal(parseRetryAfterMs('3', now), 3_000);
+    assert.equal(parseRetryAfterMs('0', now), 0);
+    assert.equal(parseRetryAfterMs('Thu, 08 Oct 2026 10:00:07 GMT', now), 7_000);
+    assert.equal(parseRetryAfterMs('Wed, 07 Oct 2026 10:00:00 GMT', now), 0);          // a past date: 0, never negative
+    for (const junk of ['-5', '1.5', 'garbage 7', '7 garbage', '2026-10-08T10:00:07Z', 'Thursday, 08-Oct-26 10:00:07 GMT', '']) {
+      assert.equal(parseRetryAfterMs(junk, now), undefined, junk);
+    }
+  });
+
+  it('an answer with another id or without jsonrpc "2.0" is a protocol error', async () => {
+    const { server, client } = setup();
+    server.route(KEYED_URL, (req) => json({ jsonrpc: '2.0', id: req.body.id + 1, result: 1 }));
+    assert.deepEqual(await client.request(P, 'getSlot', [], READ), { ok: false, error: { code: 'E_HTTP', message: 'protocol_error', httpStatus: 200 } });
+    server.route(KEYED_URL, (req) => json({ jsonrpc: '1.0', id: req.body.id, result: 1 }));
+    assert.deepEqual(await client.request(P, 'getSlot', [], READ), { ok: false, error: { code: 'E_HTTP', message: 'protocol_error', httpStatus: 200 } });
+    server.route(KEYED_URL, (req) => json({ id: req.body.id, result: 1 }));
+    assert.deepEqual(await client.request(P, 'getSlot', [], READ), { ok: false, error: { code: 'E_HTTP', message: 'protocol_error', httpStatus: 200 } });
+    server.route(KEYED_URL, (req) => json({ jsonrpc: '2.0', id: req.body.id, result: 1 }));
+    assert.ok((await client.request(P, 'getSlot', [], READ)).ok);
   });
 });

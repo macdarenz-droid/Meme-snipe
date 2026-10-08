@@ -347,7 +347,8 @@
     "realQuote": "0",
     "realToken": "0",
     "complete": true,
-    "creator": "11111111111111111111111111111111"
+    "creator": "11111111111111111111111111111111",
+    "quoteMint": null
    }
   },
   {
@@ -410,7 +411,8 @@
     "realQuote": "1",
     "realToken": "793100000000000",
     "complete": false,
-    "creator": "8qzWKhJRD3DMr3qsrdPB1f2E4TC3qKS2yQNx3DCxMzQD"
+    "creator": "8qzWKhJRD3DMr3qsrdPB1f2E4TC3qKS2yQNx3DCxMzQD",
+    "quoteMint": null
    }
   },
   {
@@ -444,7 +446,8 @@
     "realQuote": "6680491157",
     "realToken": "597678217573561",
     "complete": false,
-    "creator": "ki36NJ9J41KKq5AQjogWMMTMjknUzxJZZA9tP3hyWso"
+    "creator": "ki36NJ9J41KKq5AQjogWMMTMjknUzxJZZA9tP3hyWso",
+    "quoteMint": null
    }
   },
   {
@@ -478,7 +481,8 @@
     "realQuote": "2",
     "realToken": "793100000000000",
     "complete": false,
-    "creator": "8eCr7zSNtkddDJMw8HhYdWZLUPvaGaivkuScPDjztsev"
+    "creator": "8eCr7zSNtkddDJMw8HhYdWZLUPvaGaivkuScPDjztsev",
+    "quoteMint": null
    }
   },
   {
@@ -635,7 +639,8 @@
     "realQuote": "1",
     "realToken": "796880703607082",
     "complete": false,
-    "creator": "4YU7edpRVioZhNaHwr3E69SCvmfyFFzjfDRscCar5God"
+    "creator": "4YU7edpRVioZhNaHwr3E69SCvmfyFFzjfDRscCar5God",
+    "quoteMint": null
    }
   }
  ],
@@ -644,18 +649,21 @@
    "signature": "5XEFexq9pNDW6p3QvZPFfL4x7c61sBZMSFDJXE6oamCWzpEN3cBXvEvKNwL1CKzC2DAbCRN7Gif6FEX8nCabYEQn",
    "label": "legacy transaction",
    "expected": [],
+   "refused": [],
    "skipped": []
   },
   {
    "signature": "z7Bc24ybkrNStBgjz3pERfca8SFqEQSMnfm62wVn5CXupTCvjZdMgwJv1TJJtAR6Wiymt7bjJSetpchkwqD19YV",
    "label": "v0 transaction with 1 lookup tables",
    "expected": [],
+   "refused": [],
    "skipped": []
   },
   {
    "signature": "3CTyBBApXm5BM3nA2mtiBjFiqqBGjpYFGrhEfHBDoWjsdniPn5p1bM6kyev3yg1Bc7mXG7kgBm5JrX9d6HJRuS8q",
    "label": "v1 transaction",
    "expected": [],
+   "refused": [],
    "skipped": []
   },
   {
@@ -670,9 +678,11 @@
      "lpFeeBps": 20,
      "protocolFeeBps": 5,
      "coinCreatorFeeBps": 85,
-     "virtualQuoteReserves": "17584506065"
+     "virtualQuoteReserves": "17584506065",
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": []
   },
   {
@@ -687,9 +697,11 @@
      "lpFeeBps": 2,
      "protocolFeeBps": 93,
      "coinCreatorFeeBps": 30,
-     "virtualQuoteReserves": "17584505288"
+     "virtualQuoteReserves": "17584505288",
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": []
   },
   {
@@ -704,9 +716,11 @@
      "lpFeeBps": 2,
      "protocolFeeBps": 93,
      "coinCreatorFeeBps": 30,
-     "virtualQuoteReserves": "17584505288"
+     "virtualQuoteReserves": "17584505288",
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": []
   },
   {
@@ -721,9 +735,11 @@
      "lpFeeBps": 2,
      "protocolFeeBps": 93,
      "coinCreatorFeeBps": 30,
-     "virtualQuoteReserves": "17584505288"
+     "virtualQuoteReserves": "17584505288",
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": []
   },
   {
@@ -738,9 +754,11 @@
      "lpFeeBps": 20,
      "protocolFeeBps": 5,
      "coinCreatorFeeBps": 15,
-     "virtualQuoteReserves": "17584505288"
+     "virtualQuoteReserves": "17584505288",
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": []
   },
   {
@@ -757,9 +775,11 @@
      "fee": "3919092",
      "creatorFeeBps": 30,
      "creatorFee": "1237608",
-     "quoteMint": "11111111111111111111111111111111"
+     "quoteMint": null,
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": []
   },
   {
@@ -776,34 +796,25 @@
      "fee": "1876544",
      "creatorFeeBps": 30,
      "creatorFee": "592593",
-     "quoteMint": "11111111111111111111111111111111"
+     "quoteMint": null,
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": []
   },
   {
    "signature": "66m4kUug8VZ8cmSjZ55pUtsajEtZS2ujx8oDaBtuYgfAiPZMV1CmoKufHBdepV42YsJag7PwyQmEzEVWV9Q6NnWb",
    "label": "PumpSwap BuyEvent",
-   "expected": [
+   "expected": [],
+   "refused": [
     {
-     "kind": "pumpswap_sell",
-     "pool": "J1ELoNwhroEXx7CNTnhiMox853rASpFQfxos5iucTxfG",
-     "baseAmount": "9821127653",
-     "quoteAmount": "7015190679913",
-     "lpFeeBps": 25,
-     "protocolFeeBps": 5,
-     "coinCreatorFeeBps": 0,
-     "virtualQuoteReserves": "0"
+     "name": "SellEvent",
+     "reason": "non_sol_quote"
     },
     {
-     "kind": "pumpswap_buy",
-     "pool": "J1ELoNwhroEXx7CNTnhiMox853rASpFQfxos5iucTxfG",
-     "baseAmount": "10234106873",
-     "quoteAmount": "7313136685444",
-     "lpFeeBps": 25,
-     "protocolFeeBps": 5,
-     "coinCreatorFeeBps": 0,
-     "virtualQuoteReserves": "0"
+     "name": "BuyEvent",
+     "reason": "non_sol_quote"
     }
    ],
    "skipped": []
@@ -811,18 +822,11 @@
   {
    "signature": "MRwYci1nDj6UVuQG6xQSqcTL1pr9kQrFH1nJsFHxfJE4iXG1kKLL7x6GmqtWR4EgYU4BB2D2K1A8k5zpCL52o5V",
    "label": "pump TradeEvent",
-   "expected": [
+   "expected": [],
+   "refused": [
     {
-     "kind": "pump_trade",
-     "mint": "C3yQQkaob8Bmu5BS6jGwQQcbDh1GXye1LzsdrWv3pump",
-     "isBuy": true,
-     "solAmount": "0",
-     "tokenAmount": "142417265149",
-     "feeBps": 95,
-     "fee": "77569",
-     "creatorFeeBps": 100,
-     "creatorFee": "81651",
-     "quoteMint": "he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A"
+     "name": "TradeEvent",
+     "reason": "non_sol_quote"
     }
    ],
    "skipped": []
@@ -831,21 +835,17 @@
    "signature": "4zv1Hez28CTn3Q6ggqCSfb3vNBWufb44DCJVJeskVhXG6Fa6iiQqMrhcSaWRrD87xNec4SFDmzLupKWBvDGUTt26",
    "label": "pump failed transaction",
    "expected": [],
+   "refused": [],
    "skipped": []
   },
   {
    "signature": "2xD3cQ58t2Yj4C86qkgYGwYpui4yhadiwiExJLukwUohd1vrEXD1UtzjeppHFuwdfmvPzZSRAo6BgcFgP5QTM6Ab",
    "label": "PumpSwap BuyEvent (negative virtual_quote_reserves -184915875)",
-   "expected": [
+   "expected": [],
+   "refused": [
     {
-     "kind": "pumpswap_buy",
-     "pool": "QVCymnis5qQJEJRZPgbEJnNKrQdNkhJtTFk7v1xqu9D",
-     "baseAmount": "107865782840",
-     "quoteAmount": "3232658",
-     "lpFeeBps": 20,
-     "protocolFeeBps": 5,
-     "coinCreatorFeeBps": 250,
-     "virtualQuoteReserves": "-184915875"
+     "name": "BuyEvent",
+     "reason": "non_sol_quote"
     }
    ],
    "skipped": []
@@ -864,9 +864,11 @@
      "fee": "4691359",
      "creatorFeeBps": 30,
      "creatorFee": "1481482",
-     "quoteMint": "11111111111111111111111111111111"
+     "quoteMint": null,
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": [
     "CreateEvent"
    ]
@@ -885,9 +887,11 @@
      "fee": "14074075",
      "creatorFeeBps": 30,
      "creatorFee": "4444445",
-     "quoteMint": "11111111111111111111111111111111"
+     "quoteMint": null,
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": [
     "CreateEvent"
    ]
@@ -906,9 +910,11 @@
      "fee": "2821659",
      "creatorFeeBps": 30,
      "creatorFee": "891051",
-     "quoteMint": "11111111111111111111111111111111"
+     "quoteMint": null,
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": [
     "CreateEvent"
    ]
@@ -927,9 +933,11 @@
      "fee": "3968905",
      "creatorFeeBps": 30,
      "creatorFee": "1253339",
-     "quoteMint": "11111111111111111111111111111111"
+     "quoteMint": null,
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": [
     "CreateEvent"
    ]
@@ -937,16 +945,11 @@
   {
    "signature": "25u2ZJQf2ed9Bi9xHCpMbGgTKGV1MWv3ThCAGaMg6x25cy1597VcSSQGCnfKUP1zG1uz3bXm9cASwjmvcxtVHta7",
    "label": "PumpSwap BuyEvent (negative virtual_quote_reserves -184915875)",
-   "expected": [
+   "expected": [],
+   "refused": [
     {
-     "kind": "pumpswap_buy",
-     "pool": "QVCymnis5qQJEJRZPgbEJnNKrQdNkhJtTFk7v1xqu9D",
-     "baseAmount": "93667875625",
-     "quoteAmount": "2800636",
-     "lpFeeBps": 20,
-     "protocolFeeBps": 5,
-     "coinCreatorFeeBps": 250,
-     "virtualQuoteReserves": "-184915875"
+     "name": "BuyEvent",
+     "reason": "non_sol_quote"
     }
    ],
    "skipped": []
@@ -958,7 +961,8 @@
     {
      "kind": "pumpswap_init_boost",
      "pool": "3u3BeZjsfaWxoEfJDbgiGaqS4aikdgE3gKFJzJGSs4vn",
-     "virtualQuoteReserves": "17584505289"
+     "virtualQuoteReserves": "17584505289",
+     "layoutExtended": false
     },
     {
      "kind": "pump_migration",
@@ -966,7 +970,8 @@
      "pool": "3u3BeZjsfaWxoEfJDbgiGaqS4aikdgE3gKFJzJGSs4vn",
      "baseAmount": "206900000000000",
      "solAmount": "84990359062",
-     "poolMigrationFee": "15000001"
+     "poolMigrationFee": "15000001",
+     "layoutExtended": false
     },
     {
      "kind": "pumpswap_buy",
@@ -976,9 +981,11 @@
      "lpFeeBps": 2,
      "protocolFeeBps": 93,
      "coinCreatorFeeBps": 30,
-     "virtualQuoteReserves": "17584505289"
+     "virtualQuoteReserves": "17584505289",
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": [
     "CreatePoolEvent"
    ]
@@ -995,9 +1002,11 @@
      "lpFeeBps": 0,
      "protocolFeeBps": 0,
      "coinCreatorFeeBps": 0,
-     "virtualQuoteReserves": "17584505934"
+     "virtualQuoteReserves": "17584505934",
+     "layoutExtended": true
     }
    ],
+   "refused": [],
    "skipped": [
     "BoostBuyAndBurnEvent"
    ]
@@ -1016,13 +1025,16 @@
      "fee": "14083587",
      "creatorFeeBps": 30,
      "creatorFee": "4447449",
-     "quoteMint": "11111111111111111111111111111111"
+     "quoteMint": null,
+     "layoutExtended": true
     },
     {
      "kind": "pump_complete",
-     "mint": "DRnMYnkK3dCwypBgZaH5jcVoQHQhoEr8NcMNLJ18pump"
+     "mint": "DRnMYnkK3dCwypBgZaH5jcVoQHQhoEr8NcMNLJ18pump",
+     "layoutExtended": false
     }
    ],
+   "refused": [],
    "skipped": []
   }
  ]

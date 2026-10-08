@@ -6,6 +6,9 @@ export {
   type PinnedIdlSpec, type Plan,
 } from './idl.ts';
 export { createDecoders, UNKNOWN_EVENT_LOG_PERIOD_MS, UnknownProgramError, type Decoders, type DecodersOptions } from './decoders.ts';
-export { decodeEvents, EVENT_CPI_PREFIX, MAX_EVENT_DATA_BYTES, readRpcTransaction, type EventHooks, type GapReason, type InnerIx, type ReadTxError } from './events.ts';
+export {
+  decodeEvents, decodeEventsLocated, EVENT_CPI_PREFIX, MAX_EVENT_DATA_BYTES, readRpcTransaction, type EventHooks, type GapReason, type InnerIx,
+  type LocatedEvent, type QuoteMints, type ReadTxError,
+} from './events.ts';
 export { CURVE_MIN_LEN, MINT_LEN, TOKEN_ACCOUNT_LEN, type DecodedAccount, type DecodeFlags, type TokenPrograms } from './accounts.ts';
 export { M02_LOG_CODES } from './log.ts';

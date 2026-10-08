@@ -3,6 +3,7 @@
 // Ported from Snipe-solana card C03 (#6 @ 6ae4d62); runner moved from node:test to Vitest.
 import type { Clock, EventBus, UnixMs } from '@bot/types';
 import type { RecentLimited, StoppedProvider, StopState, StopStore } from '../../src/m14/gateway.ts';
+import { METHODS } from '../../src/m14/methods.ts';
 import type { FetchLike, Labels, LogLevel, LogPort, MetricsPort, ProviderConfig, Scheduler } from '../../src/m14/types.ts';
 
 export class FakeTime implements Clock, Scheduler {
@@ -120,6 +121,8 @@ export function provider(over: Partial<ProviderConfig> & { label: string }): Pro
     failoverOrder: 1,
     limits: { rps: 5 },
     documentedLimits: [{ scope: 'total', count: 10, windowMs: 1_000, fact: 'LD-33' }],
+    methods: Object.keys(METHODS),                     // Z03 ruling 4: every method unless a case says otherwise
+    rateLimitRpcCodes: [],
     metering: null,
     allowInLivePaths: true,
     ...over,

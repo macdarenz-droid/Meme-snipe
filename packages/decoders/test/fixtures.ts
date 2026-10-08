@@ -32,8 +32,11 @@ export const TOKEN_PROGRAMS = {
   token2022: role('mainnet/pumpswap/pools/pool_9jkXWMyt.json', 'base_mint').owner,
 };
 
+/** The wSOL mint as the fixtures record it (the quote mint of a C11 pool); the decoders take it from A-M01-01 in production. */
+export const WSOL = role('mainnet/pumpswap/pools/pool_9jkXWMyt.json', 'quote_mint').pubkey;
+
 export function decoders(): Decoders {
-  return createDecoders(idls(), { tokenPrograms: TOKEN_PROGRAMS });
+  return createDecoders(idls(), { tokenPrograms: TOKEN_PROGRAMS, wsolMint: WSOL });
 }
 
 export const DEFAULT_PUBKEY = '11111111111111111111111111111111';

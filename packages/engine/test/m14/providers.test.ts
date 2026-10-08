@@ -19,7 +19,9 @@ const secrets = envSecrets({
   RPC_URL_CHAINSTACK: 'https://chainstack.example/abcdef0123456789',
   RPC_URL_PUBLIC: 'https://api.mainnet-beta.solana.com',
 });
-const engine = { context: 'engine' as const, egressHosts: ['rpc.shyft.example', 'chainstack.example', 'api.mainnet-beta.solana.com'] };
+/** Every provider of these tests wholly to the engine (Z03 ruling m12: the engine context needs an allocation). */
+const WHOLE = { consumer: 'engine', shares: Object.fromEntries(['shyft', 'chainstack', 'public', 'helius', 'ws', 'live'].map((l) => [l, { engine: 10_000 }])) };
+const engine = { context: 'engine' as const, egressHosts: ['rpc.shyft.example', 'chainstack.example', 'api.mainnet-beta.solana.com'], allocation: WHOLE };
 
 function problems(raw: unknown, ctx: 'engine' | 'research' = 'engine'): string[] {
   const r = validateProviderConfigs(raw, { context: ctx });
@@ -149,10 +151,10 @@ describe('A-M14-01 secrets and registry', () => {
   });
 
   it('warns when a host is not in the egress allowlist, or when no allowlist is given', () => {
-    const a = loadProviders([primary, second], secrets, { context: 'engine', egressHosts: ['rpc.shyft.example'] }, new RecordingLog());
+    const a = loadProviders([primary, second], secrets, { context: 'engine', egressHosts: ['rpc.shyft.example'], allocation: WHOLE }, new RecordingLog());
     assert.ok(a.ok);
     assert.deepEqual(a.value.warnings.map((w) => [w.label, w.code]), [['chainstack', 'egress_host_missing']]);
-    const b = loadProviders([primary, second], secrets, { context: 'engine' }, new RecordingLog());
+    const b = loadProviders([primary, second], secrets, { context: 'engine', allocation: WHOLE }, new RecordingLog());
     assert.ok(b.ok);
     assert.deepEqual(b.value.warnings.map((w) => w.code), ['egress_allowlist_missing']);
   });
@@ -201,7 +203,7 @@ describe('A-M14-01 secrets and registry', () => {
     }
     const live = loadProviders([primary, second, { ...publicRpc, allowInLivePaths: true }],
       envSecrets({ RPC_URL_SHYFT: 'https://a.example/', RPC_URL_CHAINSTACK: 'https://b.example/', RPC_URL_PUBLIC: 'https://api.mainnet-beta.solana.com./' }),
-      { context: 'engine' }, new RecordingLog());
+      { context: 'engine', allocation: WHOLE }, new RecordingLog());
     assert.ok(!live.ok && live.error.problems.some((p) => /allowInLivePaths = false/.test(p.message)));
   });
 

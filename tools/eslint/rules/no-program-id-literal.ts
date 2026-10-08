@@ -4,6 +4,9 @@
 // A string or a template without expressions whose whole value is a known program ID is reported; import the constant
 // instead. Ported from Snipe-solana card C03 (#6 @ 6ae4d62); C11's fixture capture (tools/fixtures/lib.ts) is not
 // ported (it reads the network), so the registry is the only exempt file here.
+// Z03 round 2 (ruling m7): any base58 literal that decodes to 32 bytes (an address: a mint, a fixed account or a
+// program not yet in the registry) is reported too, so ACCOUNTS and MINTS are covered as well. Deliberate string
+// building at run time is out of scope (docs/DECISIONS.md Z03-9); review catches it.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parse } from '@typescript-eslint/parser';
@@ -26,6 +29,20 @@ export function knownProgramIds(file: string = CONSTANTS_FILE): Set<string> {
   return ids;
 }
 
+const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/** True when `s` is base58 text that decodes to exactly 32 bytes (Solana address length). */
+export function isAddressLiteral(s: string): boolean {
+  if (!BASE58.test(s)) return false;
+  let zeros = 0;
+  while (s[zeros] === '1') zeros++;
+  let v = 0n;
+  for (const c of s) v = v * 58n + BigInt(ALPHABET.indexOf(c));
+  const body = v === 0n ? 0 : Math.ceil(v.toString(16).length / 2);
+  return zeros + body === 32;
+}
+
 let cached: Set<string> | null = null;
 
 const rule: Rule.RuleModule = {
@@ -33,17 +50,24 @@ const rule: Rule.RuleModule = {
     type: 'problem',
     docs: { description: 'Reject program ID literals outside the constants registry (A-M01-01)' },
     schema: [],
-    messages: { literal: 'Program ID literal: import it from @bot/venue/constants (A-M01-01).' },
+    messages: {
+      literal: 'Program ID literal: import it from @bot/venue/constants (A-M01-01).',
+      address: 'Address literal: add it to @bot/venue/constants with its fact ID, or read it from a fixture file (A-M01-01).',
+    },
   },
   create(context) {
     cached ??= knownProgramIds();
     const ids = cached;
+    const check = (node: Rule.Node, value: string): void => {
+      if (ids.has(value)) context.report({ node, messageId: 'literal' });
+      else if (isAddressLiteral(value)) context.report({ node, messageId: 'address' });
+    };
     return {
       Literal(node) {
-        if (typeof node.value === 'string' && ids.has(node.value)) context.report({ node, messageId: 'literal' });
+        if (typeof node.value === 'string') check(node, node.value);
       },
       TemplateLiteral(node) {
-        if (node.expressions.length === 0 && ids.has(node.quasis[0]?.value.cooked ?? '')) context.report({ node, messageId: 'literal' });
+        if (node.expressions.length === 0) check(node, node.quasis[0]?.value.cooked ?? '');
       },
     };
   },

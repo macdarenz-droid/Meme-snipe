@@ -193,6 +193,7 @@ export const METRICS = {
   decode_accounts_total: counter('kind', 'result'),             // A-M02-02
   decode_events_total: counter('kind'),                         // A-M02-03
   decode_gap_total: counter('reason'),
+  decode_layout_extended_total: counter('kind'),                // A-M02-03, Z03 ruling 2
 } as const;
 
 export type MetricName = keyof typeof METRICS;

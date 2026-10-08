@@ -9,6 +9,7 @@ import {
   compileIdl, createDecoders, DEFAULT_IDL_DIR, IDL_COMMIT, PINNED_IDLS, Reader, UnknownProgramError, VENDORED_IDL_DIR,
   verifyPinnedIdls, type IdlError, type PinnedIdl, type PinnedIdlSpec,
 } from '../src/index.ts';
+import { DEFAULT_PUBKEY } from './fixtures.ts';
 
 const temps: string[] = [];
 afterAll(() => { for (const d of temps) rmSync(d, { recursive: true, force: true }); });
@@ -94,7 +95,7 @@ describe('A-M02-01 pinned IDLs', () => {
     const idls = loaded();
     const d = createDecoders(idls);
     for (const idl of idls) assert.deepEqual(d.idlVersion(idl.program), { commit: IDL_COMMIT, sha256: idl.sha256 });
-    assert.throws(() => d.idlVersion('11111111111111111111111111111111'), (e: unknown) => e instanceof UnknownProgramError && e.code === 'E_UNKNOWN_PROGRAM');
+    assert.throws(() => d.idlVersion(DEFAULT_PUBKEY), (e: unknown) => e instanceof UnknownProgramError && e.code === 'E_UNKNOWN_PROGRAM');
   });
 
   it('compiles reader plans for every account, event and instruction', () => {
@@ -110,7 +111,7 @@ describe('A-M02-01 pinned IDLs', () => {
 describe('A-M02-01 IDL compiler (fail closed)', () => {
   const pin: PinnedIdlSpec = { name: 'pump', file: 'x.json', sha256: 'h', accounts: [], events: [] };
   const base = () => ({
-    address: '11111111111111111111111111111111',
+    address: DEFAULT_PUBKEY,
     instructions: [{ name: 'go', discriminator: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [{ name: 'a' }], args: [{ name: 'n', type: 'u8' }] }],
     accounts: [{ name: 'S', discriminator: [9, 9, 9, 9, 9, 9, 9, 9] }],
     events: [{ name: 'E', discriminator: [8, 8, 8, 8, 8, 8, 8, 8] }],
@@ -137,7 +138,7 @@ describe('A-M02-01 IDL compiler (fail closed)', () => {
       0, 1, 0xff, 0xff, 0xff, 0xff,
     ]);
     assert.deepEqual(s?.read(new Reader(data)), {
-      a: 5n, o: '11111111111111111111111111111111', v: [7, 8], arr: [3, 4], e: 'A', d: { variant: 'B', fields: { x: -1 } },
+      a: 5n, o: DEFAULT_PUBKEY, v: [7, 8], arr: [3, 4], e: 'A', d: { variant: 'B', fields: { x: -1 } },
     });
     const en = s?.fields.find((f) => f.name === 'e');
     assert.deepEqual(en?.read(new Reader(Uint8Array.from([2, 1, 1, 0, 0, 0, 0x7a]))), { variant: 'C', fields: { 0: true, 1: 'z' } });
@@ -164,7 +165,7 @@ describe('A-M02-01 IDL compiler (fail closed)', () => {
     ]);
     assert.deepEqual(r.value.accounts.get('0606060606060606')?.read(new Reader(data)), {
       bool: true, u8: 2, i8: -2, u16: 3, i16: -3, u32: 4, i32: -4, u64: 5n, i64: -1n, u128: 6n, i128: -1n,
-      pubkey: '11111111111111111111111111111111', string: 'q', bytes: Uint8Array.from([7, 8]),
+      pubkey: DEFAULT_PUBKEY, string: 'q', bytes: Uint8Array.from([7, 8]),
     });
   });
 

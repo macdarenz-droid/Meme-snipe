@@ -11,7 +11,7 @@ import plugin from '../plugin.ts';
 import noAmbientClockOrRandom from '../rules/no-ambient-clock-or-random.ts';
 import noAwaitInWithTx from '../rules/no-await-in-withtx.ts';
 import noNumberOnUnits from '../rules/no-number-on-units.ts';
-import noProgramIdLiteral, { CONSTANTS_FILE, knownProgramIds } from '../rules/no-program-id-literal.ts';
+import noProgramIdLiteral, { CONSTANTS_FILE, isAddressLiteral, knownProgramIds } from '../rules/no-program-id-literal.ts';
 import noSharedTypeRedefinition, { exportedTypeNames } from '../rules/no-shared-type-redefinition.ts';
 
 RuleTester.describe = describe;
@@ -235,5 +235,31 @@ describe('knownProgramIds', () => {
     assert.deepEqual([...knownProgramIds(join(dir, 'a.ts'))].sort(), ['P1', 'P2']);
     writeFileSync(join(dir, 'b.ts'), "export const MINTS = { a: 'x' };\n");
     assert.deepEqual([...knownProgramIds(join(dir, 'b.ts'))], []);
+  });
+});
+
+// Z03 round 2, ruling m7: any base58 literal that decodes to 32 bytes is an address. Built at run time here, so this
+// file holds none.
+const WSOL = `So${'1'.repeat(40)}2`;                                   // the wrapped SOL mint
+const DEFAULT = '1'.repeat(32);                                        // Pubkey::default()
+tester.run('no-program-id-literal (addresses)', noProgramIdLiteral, {
+  valid: [
+    `const a = '${'1'.repeat(31)}';`,                                  // 31 zero bytes
+    `const a = '${'1'.repeat(33)}';`,                                  // 33 zero bytes
+    `const a = '${WSOL}0';`,                                           // not base58
+    `const sig = '${'2'.repeat(88)}';`,                                // a signature is 64 bytes
+  ],
+  invalid: [
+    { code: `const m = '${WSOL}';`, errors: [{ messageId: 'address' }] },
+    { code: `const d = \`${DEFAULT}\`;`, errors: [{ messageId: 'address' }] },
+  ],
+});
+
+describe('isAddressLiteral', () => {
+  it('is true exactly for base58 text that decodes to 32 bytes', () => {
+    assert.equal(isAddressLiteral(WSOL), true);
+    assert.equal(isAddressLiteral(DEFAULT), true);
+    for (const id of ids) assert.equal(isAddressLiteral(id), true, id);
+    for (const no of ['1'.repeat(31), '1'.repeat(33), `${WSOL}x`, 'I'.repeat(32), '2'.repeat(88), '']) assert.equal(isAddressLiteral(no), false, no);
   });
 });
