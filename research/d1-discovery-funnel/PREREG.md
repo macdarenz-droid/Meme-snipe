@@ -24,11 +24,11 @@ Who: share of buy SOL from W1's fast class, from the creator cluster, and from a
 Holders: top-10 share, creator share, H1-CGO's CGO and coverage.
 Protocol: BOOST finished (yes or no); market cap relative to 420 SOL; creator-fee collections in the last hour (CF).
 Pool: effective quote, real vault, age since migration.
-That is 25 features. Nothing is added after the first Step A row is read.
+That is 28 features (5 price path, 9 flow, 4 who, 4 holders, 3 protocol, 3 pool). Nothing is added after the first Step A row is read.
 
 ## 5. Search on discovery (fixed method)
 - Folds: each discovery day is split into four 6-hour blocks; folds leave one block out, with a 60-minute gap on each side.
-- Candidates: every single-feature rule "feature in its top or bottom quintile" (50 rules) and every two-feature rule "both features in a chosen extreme quintile" (1,200 rules), for each hold. Quintile edges come from the training folds only.
+- Candidates: every single-feature rule "feature in its top or bottom quintile" (56 rules) and every two-feature rule "each of two features in one of its extreme quintiles" (378 pairs × 4 = 1,512 rules), for each hold. Quintile edges come from the training folds only.
 - Score: the mean out-of-fold net return per trade, with at least 30 trades in each fold. Rules whose out-of-fold mean is below the median round-trip cost are discarded.
 - **Advance at most 5 rules** to validation, the 5 best by score among rules whose sign is the same in all four folds. Their exact definitions and the full-discovery quintile edges are committed before any validation day is read.
 - If no rule meets these conditions, D1 closes as "nothing found".
