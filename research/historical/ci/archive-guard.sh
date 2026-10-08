@@ -181,17 +181,28 @@ UNDER = re.compile(r"^\x22(?:\$out|\$RUNNER_TEMP|\$\{RUNNER_TEMP:\?\})/")
 # never linked, read or copied to an output (ln, cat, tee, head, tail on their paths)
 NONPLAIN = re.compile(r"\bfor\s+(?:qlog|slog|tlog)\b|\bread\b[^#;|]*\b(?:qlog|slog|tlog)\b|\bprintf\s+-v\s*(?:qlog|slog|tlog)\b|\b(?:declare|typeset)\b[^#;|]*\b(?:qlog|slog|tlog)\b|\$\{(?:qlog|slog|tlog):?[=?+-]")
 TOUCH = re.compile(r"(?:^|[\s;&|(])(?:ln|cat|tee|head|tail)\b[^#;|]*\$\{?(?:qlog|slog|tlog)\b")
-# ruling 63: the log directories (or any .../logs/ path under $out or $RUNNER_TEMP) appear
-# only as a write target (> or >>), in their plain assignment, to mkdir or rm, or to the
-# sealing call (cache-crypt.sh); never as a command argument or an input redirect
-LOGREF = re.compile(r"\$\{?(?:qlog|slog|tlog)\b|\$(?:out|RUNNER_TEMP|\{RUNNER_TEMP[^}]*\})[\w./${}-]*/logs\b")
+# OF-3 ruling 30 (replaces the deny-list of OF-2 ruling 63): an allow-list. A line that
+# names qlog, slog or tlog (or a .../logs path under $out or $RUNNER_TEMP) may only assign
+# it a path under $out or $RUNNER_TEMP, mkdir or rm it, redirect the output of a command into
+# it, mv migrations.list out of it, or name it in an echo to the step summary (and the
+# sealing call, cache-crypt.sh seal, takes the logs path). Anything else is refused, and
+# eval is refused in the CI scripts.
+LOGREF = re.compile(r"\$\{?(?:qlog|slog|tlog)\b|(?<![\w$])(?:qlog|slog|tlog)\b|\$(?:out|RUNNER_TEMP|\{RUNNER_TEMP[^}]*\})[\w./${}-]*/logs\b")
+SEP = re.compile(r";|&&|\|\||\||\$\(|[<>]\(|`|\(|\)")
+KW = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{|time)\s+)*")
+EVAL = re.compile(r"(?:^|[\s;&|(`!{])eval\b")
 def logref_ok(line, m):
-    seg = re.split(r";|&&|\|\||\|", line[:m.start()])[-1] + line[m.start():]
-    seg = re.split(r";|&&|\|\||\|", seg)[0] if not re.search(r"\$\(", line[:m.start()]) else seg
-    if re.search(r"(?:\d?>>?|&>>?)\s*\x22?$", line[:m.start()]): return True
-    if re.match(r"^\s*(?:local\s+)?(?:qlog|slog|tlog)=", seg): return True
-    if re.match(r"^\s*(?:mkdir|rm)\b", seg): return True
-    if "cache-crypt.sh" in seg: return True
+    before = line[:m.start()]
+    seps = list(SEP.finditer(before)); start = seps[-1].end() if seps else 0
+    nxt = SEP.search(line, m.end()); seg = line[start:nxt.start() if nxt else len(line)]
+    head = KW.sub("", seg, count=1); at = m.start() - start - (len(seg) - len(head)); name = not m.group(0).endswith("/logs")
+    if re.search(r"(?<![<>&\d])(?:[12]?>>?|&>>?)\s*\x22?$", before): return True
+    if re.match(r"^(?:local\s+)?(?:qlog|slog|tlog)=\S+\s*$", head): return True
+    if re.match(r"^(?:mkdir|rm)\s[^<]*$", head): return True
+    mv = re.match(r"^(mv\s+(?:-\w+\s+)*\x22)\$\{?(?:qlog|slog|tlog)\}?/migrations\.list\x22\s+(\S+)\s*$", head)
+    if mv and at == len(mv.group(1)) and not re.search(r"GITHUB_|/dev/|/proc/|qlog|slog|tlog|/logs\b", mv.group(2)): return True
+    if re.match(r"^echo\s[^<]*>>\s*\x22?\$\{?GITHUB_STEP_SUMMARY\b[^<]*$", head): return True
+    if not name and re.search(r"cache-crypt\.sh\x22?\s+seal\s", head): return True
     return False
 VIA = re.compile(r"(?:^|[\s;])(?:local\s+|export\s+)?\w+=[\x22\x27]?[^\s$(#]*zeroed-(?:scan|rpcscan)|command\s+-v\s+zeroed-|which\s+zeroed-|type\s+-p\s+zeroed-")
 def bad_lines(text):
@@ -202,6 +213,7 @@ def bad_lines(text):
         if VIA.search(line): yield n, "scanner binary through a variable: " + line.strip()[:100]
         if NONPLAIN.search(line): yield n, "log directory written other than by a plain assignment: " + line.strip()[:100]
         if TOUCH.search(line): yield n, "log directory linked or read out: " + line.strip()[:100]
+        if EVAL.search(line): yield n, "eval in a CI script: " + line.strip()[:100]
         for m in LOGREF.finditer(line):
             if not logref_ok(line, m):
                 yield n, "log directory named other than as a write target: " + line.strip()[:100]
