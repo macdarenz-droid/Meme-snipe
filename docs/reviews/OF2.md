@@ -222,3 +222,11 @@ REVIEW PASS with fixes. Red team 0 BLOCKER, 1 MAJOR, 4 MINOR. Every verified cla
     - Triton: "no archive-specific limit published";
     - note the API read of the fork-PR approval setting for the arm card.
 61. **Ruling 55 extended.** The `status=` listings (queued, in progress, waiting) are also capped at 1,000 per search. The guard fails closed when any `created` slice or status query returns 1,000 results. `gh run list` is never used uncapped for counts (its default is `--limit 20`).
+
+### #306 round 2 (head `a2981261`): REVIEW PASS, final; red team 0 BLOCKER, 0 MAJOR, 3 MINOR
+
+62. **Apply all three** (9 Oct, about 1:13 AM):
+    - L42: the fork-PR approval read is documented. It needs Administration (read) on a fine-grained token, or the `repo` scope on a classic token. The field is `approval_policy`. Arming refuses if the field is missing or holds any value other than the required one.
+    - L58: drop "500 cap". Paging has no 500 cap. A `created` slice or status query that returns 1,000 results fails closed, or is split further (rulings 55 and 61).
+    - L46: write "no archive-specific number published; the page says limits apply to all nodes, so the per-IP 429 → 10 s pause may apply to the archive too".
+    - Also add: never use `gh run list` uncapped for counts.
