@@ -336,3 +336,19 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
 93. **w1.** Refill blocks are disjoint and consecutive, and each trade is in one block only. A block lies wholly at one setting and starts after the last raise or A1 change. r refills to its PREREG value at most.
 94. **w2.** The evidence-backed setting is the whole configuration (all group S and admission keys) as frozen at the last gate pass or passing raise.
 95. **Reviewer n1.** AC-71: "what-if or replay trades are not counted" (real paper fills count at paper_passed).
+
+## Round 11 (head `ed4cb0d3`): reviewer PASS (2 optional MINOR); red team 0 BLOCKER, 1 MAJOR, 3 MINOR
+
+- X1: a neutral (A2) change to an admission or group S key (exit ladder shape, regime enum, per-token rule mode, dump window kind) falls in none of the paths, so it re-freezes with the stage standing and nothing checked.
+- x1: intermediate-value and A1 apply-time checks read W_R with no trial, so stepping through values leaks the holdout verdict.
+- x2: "not more favourable" must cover every window the recomputed gates use.
+- x3: a refill block should restart after any configKey change.
+- Reviewer n1: AC-76 leaves its setup implicit. n2: no AC for an intermediate value that raises a new block.
+
+### Supervisor rulings for round 12 (8 Oct 2026, 3:26 PM)
+
+96. **X1.** A neutral (A2) change to a group S or admission key is handled as a raise: a what-if on W_B and W_R plus the size table, one `whatif` trial, one use of r; refused if it fails (never demotes), and a pass moves the evidence-backed setting. A return to exactly the evidence-backed setting stays free. Add the sentence under "Raises". AC: an A2 change to the exit ladder or the regime enum on a live strategy registers a `whatif` trial and uses r; at r = 0 it is refused.
+97. **x1.** Keep the W_R check (it is what makes a tightening safe), but every apply-time check that reads W_R (an intermediate value or an A1 change) is a listed trial: kind `applycheck`, PROPOSED, no k and no r, listed in the gate report and counted in the DSR trial count. Add it to the A-M13-02 amendment line beside `whatif` and `recost`. Why not W_B only: dropping W_R would let a tightening that loses on the holdout go live unchecked.
+98. **x2.** "Not more favourable" holds only if it holds on the trades of every window the recomputed gates use (W_B, W_R, W_P, W_LS). Otherwise the change is a trial inside k.
+99. **x3.** A refill block starts after the last change to configKey (a raise, an A1 or A2 change, a code-deploy re-freeze or a `recost`).
+100. **Reviewer n1 and n2.** AC-76 states its setup (the key was tightened by A1 before the passing MAXPOS raise, so its old value is not in the new evidence-backed configuration). Add an AC row: an intermediate admission value whose CI lower bound is ≤ 0 raises `admission_not_profitable` where there was no block.
