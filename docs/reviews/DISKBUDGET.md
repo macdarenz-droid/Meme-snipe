@@ -98,3 +98,13 @@ The BLOCKER is closed: 0 of 10 plain-rename races and 0 deletions in 255k atomic
 The backup unit's new path opens nothing: links are skipped and SQLite refuses a symlinked -wal or -shm. `.backup` of a live WAL database is a consistent snapshot. fallocate plus nodiscard keeps the space reserved after mount. MINOR: the ruling 24 test needs the `sqlite3` CLI; it fails in containers that don't have it.
 
 28. **MINOR (9 Oct, about 1:55 AM).** Cite the runner image's toolset or readme for sqlite3 on ubuntu-24.04 (the builder reported 3.45.1). Make the test fail with a clear "sqlite3 missing" message when the CLI is absent. Never skip it. CI's `check` job on the ready PR is the proof.
+
+### #311 round 1 reviewer `session_012Hzd9JU63NkCCbX8kQvW8j` (head `c173f777`): FAIL on 1 MAJOR, 4 MINOR
+
+The MAJOR is the same recursive-delete hole the red team found; ruling 19 closed it at `c4d5d6db`. The installer modes, mounts, sshd Match block, paths and install.sh pin all check out. Tests fail before and pass after. One full-suite failure, m24 review-round2 "clock back across midnight", passed when run alone. It is unconfirmed; CI decides, and if it fails there it is root-caused, never called a flake.
+
+### Supervisor rulings (9 Oct 2026, about 2:05 AM)
+
+29. **MINOR 1, readdir of a flood.** Closed by ruling 20: the 32,768-inode image bounds the entry count. Say so in a comment at the readdir.
+30. **MINORs 2 and 3.** The PR body says that nothing calls `sweepReceipts` yet; A-M07-03 (Z08) wires it, and it is safe today because SSH is off and no pull key exists. It also names the card that adds the operator account to `zeroed-spool` (B-M30-02, the operator user).
+31. **MINOR 4.** Add "was / reason" notes at SPEC-B:2032 and :2584. Update ARCH.md:655, :1066 and :2718 (`/data/md`, `/data/backups`, `/var/lib/bot`) in this PR, with the reason.
