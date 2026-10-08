@@ -1,0 +1,6 @@
+/* Stylesheet entry (UI-T01). test/tooling/build.ts inlines each @import in order and hashes url() assets. */
+@import "./fonts.css";
+@import "./tokens.css";
+@import "./base.css";
+@import "./components.css";
+@import "./shell.css";
