@@ -132,3 +132,53 @@ describe('eslint.config.mjs: program ID literals (A-M01-01)', () => {
     });
   }
 });
+
+// Z03 ruling 32 (#304 merge red team): only named fixture files may hold addresses, none may hold a program ID, and only
+// the dashboard catalogue and test code may import a fixtures module.
+describe('eslint.config.mjs: fixture files and their importers (Z03 ruling 32)', () => {
+  const id = [...knownProgramIds()][0] as string;
+  const mint = `export const m = 'So${'1'.repeat(40)}2';\n`;
+
+  it('the red team\'s repro fails: a program ID in packages/engine/src/fixtures.ts, imported by production code', async () => {
+    assert.deepEqual(await rulesHit('packages/engine/src/fixtures.ts', `export const PUMP = '${id}';\n`), ['bot/no-program-id-literal']);
+    assert.deepEqual(await rulesHit('packages/engine/src/a.ts', "import { PUMP } from './fixtures.ts';\nexport const p = PUMP;\n"), ['bot/no-fixtures-import']);
+  });
+
+  for (const file of ['packages/engine/src/fixtures.ts', 'packages/signer/src/fixtures.ts', 'packages/venue/src/fixtures.ts']) {
+    it(`${file} is not a fixture file: an address literal there fails lint`, async () => {
+      assert.deepEqual(await rulesHit(file, mint), ['bot/no-program-id-literal']);
+    });
+  }
+
+  for (const file of ['packages/dashboard/src/fixtures.ts', 'packages/contract/src/fixtures.ts', 'packages/decoders/test/fixtures.ts', 'fixtures/a.ts']) {
+    it(`a fixtures value equal to a program ID fails lint in ${file}; an address does not`, async () => {
+      assert.deepEqual(await rulesHit(file, `export const p = '${id}';\n`), ['bot/no-program-id-literal']);
+      assert.deepEqual(await rulesHit(file, `export const p = 'x:${id} ';\n`), ['bot/no-program-id-literal']);
+      assert.deepEqual(await rulesHit(file, mint), []);
+    });
+  }
+
+  it('the dashboard catalogue and test code may import a fixtures module', async () => {
+    assert.deepEqual(await rulesHit('packages/dashboard/src/catalogue/sections/x.ts', "import { SAMPLE_MINT } from '../../fixtures.ts';\nexport const m = SAMPLE_MINT;\n"), []);
+    assert.deepEqual(await rulesHit('packages/dashboard/test/x.test.ts', "import { SAMPLE_MINT } from '../src/fixtures.ts';\nexport const m = SAMPLE_MINT;\n"), []);
+    assert.deepEqual(await rulesHit('packages/contract/test/x.test.ts', "import { FIXTURES } from '@bot/contract/fixtures';\nexport const f = FIXTURES;\n"), []);
+  });
+
+  const imports = [
+    "import { SAMPLE_MINT } from '../fixtures.ts';\nexport const m = SAMPLE_MINT;\n",
+    "export { SAMPLE_MINT } from '../fixtures';\n",
+    "export * from './fixtures.js';\n",
+    "import { FIXTURES } from '@bot/contract/fixtures';\nexport const f = FIXTURES;\n",
+    "export const f = () => import('./fixtures.ts');\n",
+    "export const f = () => import(`./test/fixtures.ts`);\n",
+  ];
+  for (const file of ['packages/dashboard/src/app/x.ts', 'packages/engine/src/x.ts', 'packages/contract/src/x.ts', 'tools/x.ts']) {
+    it(`${file} may not import a fixtures module (import, re-export, export *, package path, dynamic import)`, async () => {
+      for (const code of imports) assert.deepEqual(await rulesHit(file, code), ['bot/no-fixtures-import'], code);
+    });
+  }
+
+  it('a module merely named like fixtures is not a fixtures import', async () => {
+    assert.deepEqual(await rulesHit('packages/engine/src/x.ts', "import { a } from './fixtures-lib.ts';\nimport { b } from '../../fixtures/mainnet/x.ts';\nexport const c = a + b;\n"), []);
+  });
+});

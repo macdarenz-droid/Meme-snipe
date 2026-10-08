@@ -9,6 +9,8 @@
 // building at run time is out of scope (docs/DECISIONS.md Z03-9); review catches it. Round 3 (ruling 16): an address
 // inside a longer string (`solana:<address>`, padding, a URL path) is reported too: every run of base58 characters,
 // split at any other character, is checked. Concatenation and JSON config stay out of scope (Z03-9).
+// Ruling 32 (#304 merge red team): fixture files run the rule with `allowAddresses`, so they may hold addresses (random
+// test keys, a sample mint) but never a `PROGRAMS` id; only the registry itself turns the rule off.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parse } from '@typescript-eslint/parser';
@@ -56,7 +58,7 @@ const rule: Rule.RuleModule = {
   meta: {
     type: 'problem',
     docs: { description: 'Reject program ID literals outside the constants registry (A-M01-01)' },
-    schema: [],
+    schema: [{ type: 'object', properties: { allowAddresses: { type: 'boolean' } }, additionalProperties: false }],
     messages: {
       literal: 'Program ID literal: import it from @bot/venue/constants (A-M01-01).',
       address: 'Address literal: add it to @bot/venue/constants with its fact ID, or read it from a fixture file (A-M01-01).',
@@ -65,10 +67,11 @@ const rule: Rule.RuleModule = {
   create(context) {
     cached ??= knownProgramIds();
     const ids = cached;
+    const allowAddresses = (context.options[0] as { allowAddresses?: boolean } | undefined)?.allowAddresses === true;
     const check = (node: Rule.Node, value: string): void => {
       const runs = base58Runs(value);
       if (runs.some((t) => ids.has(t))) context.report({ node, messageId: 'literal' });
-      else if (runs.some(isAddressLiteral)) context.report({ node, messageId: 'address' });
+      else if (!allowAddresses && runs.some(isAddressLiteral)) context.report({ node, messageId: 'address' });
     };
     return {
       Literal(node) {
