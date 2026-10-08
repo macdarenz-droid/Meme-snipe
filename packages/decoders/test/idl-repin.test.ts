@@ -287,6 +287,28 @@ describe('round 2 (rulings 33-38)', () => {
     const hop = run(t).located.filter((l) => l.event.kind === 'pump_trade');
     assert.deepEqual(hop.map((l) => [l.event, l.multiHop]), plain.map((l) => [l.event, true]));
     assert.deepEqual(pumpBuyTotals(hop), []);
+    // A buy flagged multiHop stays out of the totals; the same buy without the flag is counted.
+    assert.deepEqual(pumpBuyTotals([trade('s', 2, 'm', 100n, { multiHop: true })]), []);
+    assert.equal(pumpBuyTotals([trade('s', 2, 'm', 100n)]).length, 1);
+  });
+
+  it('ruling 38: a multi_hop_swap invoked by an aggregator (an inner instruction) flags the pump events below it', () => {
+    const rec = fixture<TxRecord>('decoders/tx/v1_transaction.json');
+    const t = raw(rec);
+    const l = run(t).located.find((x) => x.event.kind === 'pump_trade') as LocatedEvent;
+    const group = t.meta.innerInstructions.find((g) => g.index === l.outerIx) as RawTransaction['meta']['innerInstructions'][number];
+    const ixs = group.instructions as InnerIx[];
+    // The event's invoker (pump, height 2) and the instructions it invoked move one level down, under a new PumpSwap
+    // multi_hop_swap at height 2; the top-level instruction stays the aggregator's.
+    const pumpAt = ixs.slice(0, l.innerIx).map((x, i) => [x, i] as const).filter(([x]) => x.stackHeight === 2).pop()?.[1] as number;
+    let end = pumpAt + 1;
+    while (end < ixs.length && (ixs[end]?.stackHeight ?? 0) > 2) end++;
+    for (let i = pumpAt; i < end; i++) (ixs[i] as InnerIx).stackHeight = ((ixs[i] as InnerIx).stackHeight as number) + 1;
+    t.message.accountKeys.push(idl('pump_amm').program);
+    const hopIx: InnerIx = { programIdIndex: t.message.accountKeys.length - 1, accounts: [], dataB64: withDisc(Buffer.alloc(24).toString('base64'), discOf(idl('pump_amm').instructions, 'multi_hop_swap')), stackHeight: 2 };
+    ixs.splice(pumpAt, 0, hopIx);
+    const after = run(t).located.filter((x) => x.event.kind === 'pump_trade');
+    assert.deepEqual(after.map((x) => [x.event, x.multiHop]), [[l.event, true]]);
   });
 
   it('ruling 34: in a short account, any non-zero byte of a partial field past the old end is unknown', () => {
