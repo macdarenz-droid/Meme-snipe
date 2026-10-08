@@ -17,7 +17,7 @@ The unpaired-switch fix is correct: update-unpaired fails 2 of 5 on the old code
 - m3: test cases for M1 and m2 are missing.
 - m4: linuxuser is unverified (the owner confirmed it on 8 Oct: "Not root its linuxuser").
 
-### Supervisor rulings for round 2 (8 Oct 2026, 3:12 PM)
+### Supervisor rulings for round 2 (8 Oct 2026, 3:09 PM)
 
 1. **M1: every first start of a deployed release is held.**
    - When a switch happens with worker_ready false, zeroed-update writes `$STATE_DIR/switch_unheld` (commit|prev|current). The installer writes the same marker for its first release.
