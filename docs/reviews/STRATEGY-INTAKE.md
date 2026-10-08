@@ -263,3 +263,22 @@ Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining
 ## Round 7 (head `5be4b143`)
 
 Reviewer: PASS (1 optional MINOR: record this withdrawal here, now done). Red team round 7 pending.
+
+Red team round 7: 0 BLOCKER, 2 MAJOR, 3 MINOR.
+- T1: the shared re-run rule lets a raise or an A1 admission tightening fail or sideline a proven strategy, always so at k = 0.
+- T2: the byte-identical path compares only the old window's trades, so a fill model that adds fills gets through.
+- t1–t3: safety fixes ship at once; the source of n_80 in the fresh-window state; AC-50's common case.
+
+### Supervisor rulings for round 8 (8 Oct 2026, 3:11 PM)
+
+77. **T1: what-if checks are not re-validations.**
+    - Raises (group S and admission A3) are what-if checks on the recorded proposals of W_B and W_R plus the size table.
+    - A failed what-if only refuses the raise. It never demotes, never sets `failed`, and never enters the fresh-window state.
+    - Each submitted raise (not a preview) is registered as a trial of kind `whatif`, counted in a separate raise budget that limits holdout probing without using k.
+    - An A1 admission tightening applies at once. If the new trade set's CI lower bound is ≤ 0 on W_B and W_R, entries are blocked with `admission_not_profitable` until it is reverted; otherwise the stage stands.
+    - k and the fresh-window state stay only for code deploys that change proposals.
+    - ACs: a failing MAXPOS raise is refused with the stage unchanged; at k = 0 a passing raise applies and the stage stands; at k = 0 an A1 regime tightening applies with no fresh-window state.
+78. **T2.** The byte-identical path also needs the filled-trade set and the rejection set (with reasons) to be identical under both models. Any difference goes to the re-run rule, or to the fresh-window state at k = 0. AC: a model that turns one rejected proposal into a fill is not re-frozen by the byte-identical rule.
+79. **t1.** A bug fix that touches trading safety (wrong data, wrong side, wrong size) ships at once and accepts the fresh-window state; it is never held back to protect a stage. A PREREG that wants room for deploys plans a longer W_B.
+80. **t2.** In the fresh-window state, R-1's `n_80` stays computed from the old W_B (the conservative choice).
+81. **t3.** Add the AC: 2 configurations + k = 0 on 30 days is accepted, and the first proposal-changing deploy goes straight to the fresh-window state.
