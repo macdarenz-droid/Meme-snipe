@@ -86,3 +86,7 @@ The restart-loop MAJOR is closed: only `zeroed-check` writes the stamp. MINOR: w
 ### Supervisor ruling for round 4 (9 Oct 2026, about 12:38 AM)
 
 13. **Fix now, because it fails open.** Print the time only if the write and the move both succeed; otherwise print nothing, which counts as old (the alert fires): `{ printf … > "$3.new" && mv -f "$3.new" "$3"; } || return 0`. Test: an unwritable stamp path with no status gives the alert.
+
+### #309 round 4 (head `de6632a5`): REVIEW PASS, final; red team 0/0/0
+
+**#309 is approved.** It was marked ready at about 12:52 AM so CI (including ops-e2e) runs. It merges once it is green on a head that contains the latest base.
