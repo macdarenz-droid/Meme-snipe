@@ -186,7 +186,10 @@ mkfx() {
   mkdir -p "$dir/.github/workflows"
   cp "$here/../../../.github/workflows/data-scan.yml" "$dir/.github/workflows/data-scan.yml"
   if [[ -z "${PUBLICSTORE:-}" ]]; then
-    sed -i 's/--repo "\$GITHUB_REPOSITORY"/--repo "$DATA_REPO"/g' "$dir/research/historical/ci/"*.sh
+    for f in "$dir/research/historical/ci/"*.sh; do
+      case $f in */archive-guard.sh|*/test-ci.sh) continue ;; esac
+      sed -i 's/--repo "\$GITHUB_REPOSITORY"/--repo "$DATA_REPO"/g' "$f"
+    done
     python3 - "$dir/.github/workflows/data-scan.yml" <<'PY'
 import re, sys
 p = sys.argv[1]; s = open(p).read()
