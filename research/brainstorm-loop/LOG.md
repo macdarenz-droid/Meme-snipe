@@ -23,6 +23,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 16:48 | W1 PREREG committed (eab1f4a) and sent (round 13) |
 | 2026-10-08 17:15 | Owner: "P2 No". P2 closed; told the lead |
 | 2026-10-08 18:10 | Sweep 1 finished (16 ideas, 9 agents, 87 min): survivors G1-HC, APP-TOLL, MAYHEM-24, CREATOR-BUY, FLUSH-BUY, each about 1–2% (judgement); report `SWEEP_1.md`. G1 amendment 1 (G1-HC arm, BOOST floor check) and W1 amendment 1 (S has no tx_fee column) drafted |
+| 2026-10-08 18:14 | Sweep 1 handed to the lead (time-critical: G1 amendment 1, S columns, fee-claim events); sweep 2 started (thresholds and alerts, other bots' habits, cross-coin state, other launchpads, research gaps) |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
