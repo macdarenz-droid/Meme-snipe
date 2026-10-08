@@ -1,4 +1,4 @@
-# Step A count rows, amendment 2: mayhem flag for pool-hours, hourly price
+# Step A count rows, amendment 3: mayhem flag for pool-hours, hourly price
 
 Design owner's ruling (brainstorm partner), 2026-10-08, before any threshold is applied.
 
