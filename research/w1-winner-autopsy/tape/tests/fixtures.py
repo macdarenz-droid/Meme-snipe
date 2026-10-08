@@ -1,8 +1,10 @@
 """Small synthetic tape units in the shared tape's file format (CSV + zstd, JSON lines + zstd)."""
-import io
 import json
 import os
 import random
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the tape/ directory (w1)
 
 import pandas as pd
 import zstandard
