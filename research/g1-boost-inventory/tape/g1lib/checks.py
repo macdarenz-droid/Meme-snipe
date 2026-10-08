@@ -21,8 +21,6 @@ def check2_reserves(tape) -> dict:
     prev_tok = c["real_token_reserves"].shift(1).to_numpy()
     after_sol = prev_real + sign * c["sol_amount"].to_numpy() == c["real_sol_reserves"].to_numpy()
     after_tok = prev_tok - sign * c["token_amount"].to_numpy() == c["real_token_reserves"].to_numpy()
-    # the same identity read as "before": this row's reserves equal the previous row's after a trade
-    before_sol = c["real_sol_reserves"].to_numpy() + sign * c["sol_amount"].to_numpy() == np.roll(c["real_sol_reserves"].to_numpy(), -1)
     out = {"curve_pairs": int(same.sum()),
            "curve_after_identity_share": float(after_sol[same].mean()) if same.any() else None,
            "curve_after_token_identity_share": float(after_tok[same].mean()) if same.any() else None}
