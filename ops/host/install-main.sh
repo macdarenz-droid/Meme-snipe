@@ -103,6 +103,7 @@ managed() {
   case "$p" in
     /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /etc/systemd/system/srv-zeroed_pull-*.mount) return 0 ;;
     /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
@@ -182,7 +183,7 @@ fi
 
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
-PACKAGES=(age ca-certificates curl git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
+PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
 # An update only touches apt when a package is missing (and waits for unattended-upgrades' lock).
 if [ "$UPDATE" = 0 ] || ! dpkg -s "${PACKAGES[@]}" >/dev/null 2>&1; then
   apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null
@@ -208,6 +209,14 @@ getent passwd zeroed-signer >/dev/null || useradd --system --gid zeroed-signer -
 getent group zeroed-worker >/dev/null || groupadd --system zeroed-worker
 # The worker may reach the signer's socket through the zeroed-signer group; nothing else is in that group.
 getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --groups zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
+# PATHS-FIX: the worker reads pull receipts through zeroed-pull and import bundles through zeroed-spool (never botops,
+# which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
+getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
+getent group zeroed-spool >/dev/null || groupadd --system zeroed-spool
+# PATHS-FIX ruling 21: the provider usage ledger is written by the engine and the sentinel; the sentinel joins this group.
+getent group zeroed-sentinel >/dev/null || groupadd --system zeroed-sentinel
+getent passwd zeroed-pull >/dev/null || useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull
+usermod -aG zeroed-pull,zeroed-spool zeroed-worker
 
 say "Files"
 # The SSH state of the running firewall, read before nftables.conf is replaced (an update keeps it).
@@ -229,6 +238,16 @@ install -d -m 0700 -o root -g root /etc/zeroed/age /etc/credstore.encrypted /var
 # Dry-run evidence stays on the host (RUN-1 writes it there); its index is readable by the worker API.
 install -d -m 0700 -o root -g root /var/lib/zeroed-dryrun /var/lib/zeroed-dryrun/evidence
 install -d -m 0755 -o root -g root /var/lib/zeroed-index
+# PATHS-FIX: the engine's two folders outside its 0700 state (one StateDirectoryMode per unit, so they are made here).
+# Market data: readable by the pull group, setgid so new files keep that group; receipts/ is the only folder the pull
+# account writes. Import spool: its group may write and enter but not list. The pull account's chroot is root-owned
+# 0755 (sshd requires it); md and md/receipts in it are bind mounts, never touched while mounted.
+install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md
+install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts
+install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool
+install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage
+install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys
+mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md
 
 say "Host key"
 # The host's own age key: backups are encrypted to it (the owner's key can be added later).
@@ -281,6 +300,13 @@ elif [ -n "$SSH_KEY" ]; then
 else
   for u in ssh.socket ssh.service; do systemctl disable --now "$u" >/dev/null 2>&1 || true; done
 fi
+# PATHS-FIX: the pull account's Match block (sshd_config.d/20-zeroed-pull.conf) is checked whenever sshd is installed,
+# and applied at once to a running SSH; a broken file stops the install before SSH ever reads it.
+if [ -x /usr/sbin/sshd ]; then
+  install -d -m 0755 /run/sshd
+  /usr/sbin/sshd -t || die "sshd refuses the SSH settings"
+  systemctl try-reload-or-restart ssh.service >/dev/null 2>&1 || true
+fi
 systemctl enable nftables >/dev/null 2>&1
 nft -f /etc/nftables.conf
 # The ruleset flush also drops Tailscale's own rules; its daemon puts them back on restart (live view, opt-in).
@@ -323,6 +349,17 @@ say "Services"
 systemctl daemon-reload
 # HOST-CAPS: journald reads its size limits only when it starts.
 [[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
+# PATHS-FIX: the receipts' own small filesystem (ruling 20), then the chroot's binds, all before SSH.
+# Only what is not running is started: a start job on the running receipts bind also queues receipts/'s loop device
+# (Requires=dev-loopN.device), which never comes where nothing announces devices (no udev, as in a container), so
+# every --update waited out systemd's 90 s job timeout.
+systemctl enable zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount >/dev/null
+PULL_DOWN=()
+for u in zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount; do
+  systemctl is-active --quiet "$u" || PULL_DOWN+=("$u")
+done
+# One start for all of them, as on a fresh install: started on its own after receipts-fs, the bind would queue the device.
+[ "${#PULL_DOWN[@]}" = 0 ] || systemctl start "${PULL_DOWN[@]}"
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

@@ -2242,7 +2242,7 @@ import json, sys
 json.dump([{"databaseId": 1000 + i, "status": "completed", "conclusion": "success", "createdAt": sys.argv[2], "updatedAt": sys.argv[2], "attempt": 1, "headBranch": "main", "headSha": "a" * 40, "displayTitle": "data-scan volume"} for i in range(5001)], open(sys.argv[1], "w"))
 PY
 rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" cap:$rc"
-[[ -z "$bad" ]] && ok "OF-2 r4 ruling 42 (as amended by 49): in-progress and queued runs are listed on their own (both workflows); more than 5,000 runs in the window fail closed" || no "OF-2 r4 run list cap:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 42 (as amended by 49): in-progress and queued runs are listed on their own (both workflows); each search fails closed at 1,000" || no "OF-2 r4 run list cap:$bad"
 bad=""; gdreset
 
 # ---- OF-2 round 6 (docs/reviews/OF2.md rulings 43-48, 44a) ----
@@ -2588,6 +2588,26 @@ c30 accept 'bash cache-crypt.sh seal "$RUNNER_TEMP/work/data/logs" "$RUNNER_TEMP
 mkfx "$T/fx30"; c="$T/fx30/research/historical/ci"; printf '%s\n' 'eval "$1"' >> "$c/scan-day.sh"
 ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "scan-day.sh line [0-9]* prints scanner or QA output to the job log: eval in a CI script" "$A/summary.md" || bad+=" [arming eval]"
 [[ -z "$bad" ]] && ok "OF-3 ruling 30: a line naming qlog, slog or tlog may only assign it under \$out or \$RUNNER_TEMP, mkdir or rm it, redirect output into it, mv migrations.list out of it, or echo it to the summary (each red-team form refused: cp to /dev/stdout, sed, awk, grep, while read <, cp -s, eval, cd, aliasing, for, read, printf -v, :=, ln, cat, <<<, exec <, env prefix, \$(cat), \$(<), mv elsewhere); arming refuses eval" || no "OF-3 r9 log allow-list:$bad"
+# ---- OF-2 round 10, ruling 67: a logs path after any spelling of $out or $RUNNER_TEMP; no read of $out itself or after a cd into it ----
+bad=""
+c30 refuse 'cat "${out}/logs/run.log"'
+c30 refuse 'cat "$out"/logs/run.log'
+c30 refuse 'cd "$out" && cat logs/run.log'
+c30 refuse 'find "$out" -name run.log -exec cat {} +'
+c30 refuse 'cat "$RUNNER_TEMP"/work/data/logs/run.log'
+c30 refuse 'cat "${RUNNER_TEMP}/work/data/logs/run.log"'
+c30 refuse 'grep -r curve "$out"'
+c30 refuse 'cp -r "$out/" "$RUNNER_TEMP/pub"'
+c30 refuse 'cat "$out"/*/run.log'
+c30 refuse 'find "$out" -type f | xargs cat'
+c30 refuse 'cd "$out" && find . -exec cat {} +'
+c30 refuse $'cd "$out"\ncat logs/run.log'
+c30 accept '(cd "$out" && find units -mindepth 3 -name x | LC_ALL=C sort)'
+c30 accept '(cd "$out/units" && sha256sum -- "$epoch/$range"/*.zst)'
+c30 accept 'cp "$out"/cache/* "$again/cache/"'
+c30 accept 'find "$out" -name x'
+[[ -z "$bad" ]] && ok "OF-2 ruling 67: arming refuses a logs path after a braced or quoted \$out or \$RUNNER_TEMP, a cd into \$out then a read (same line or later), find -exec or xargs on \$out, and grep, cp or a top-level glob on \$out itself; cd into a subdirectory, find listing names and a glob below the top level are accepted" || no "OF-2 r10 out spellings:$bad"
+bad=""
 bad=""
 bad=""; gdreset
 
