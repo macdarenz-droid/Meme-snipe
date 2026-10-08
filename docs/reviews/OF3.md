@@ -20,3 +20,14 @@ Card OF-3, `research/z-h-estimate/OLD-FAITHFUL.md` §5. Builder: the data builde
 4. **Horizon: 300 min, not 240.** PM-01's PREREG §3 (PM01-P5, `c0bdb04a` L45) keeps each listed pool from the migration slot to migration + 300 min (last entry at +120, time stop 120, plus 60 for the exit ladder). The list's lead-in must therefore include earlier migrations whose window reaches into D. The list builder takes the value from that section, with a citation; the scanner stays horizon-free (the list carries FROM and UNTIL).
 5. **OLD-FAITHFUL.md.** Change §2 and the OF-3 row: D's list is built from the days before D plus D's own migrations read from D's K2 units; D+1 is dispatched only after D is stored (read done).
 6. **Choices 1, 2, 4 and 5 accepted.** The B-10 loader must read `raw_canonical.jsonl.zst` and the config records: add that to card Z-H's acceptance in the doc, so it is not lost. P12's size stays **VERIFY** on batch 1.
+
+## Rulings 2–6 applied (head `4bfd4e01`, 8 Oct 2026, 4:03 PM report)
+
+- test-ci 201/0; 4 cases fail with the changed files set back to `aff19758`; `retention_test.go` does not compile on the old code. Label `deps-reviewed:4605e91c6cc7b5c92f425024b48e78df` (data-scan.yml changed).
+- Units are read newest first, so the per-unit prefix trim is not valid: the trim runs after the whole day, and `ARCHIVE_K2_PEAK_BYTES` is 55,000,000,000 (45 GB K2 high estimate + one trimmed unit + 5 GB; **VERIFY** on batch 1).
+- Fails closed until OF-5: the prior day's pinned list must come from the store, so every K3 day after the first stops before QA.
+- Open: a K2 day's progress (up to about 45 GB) cannot fit the 10 GB Actions cache, so a chained restart would lose it.
+
+### Supervisor ruling (8 Oct 2026, 4:04 PM)
+
+7. **K2 progress (OF-4 requirement).** A day whose saved progress cannot hold its units never restarts from zero: the continue job refuses the chained restart when the progress entry is missing or short of the day's finished units (the `expect_units` check already exists), the day counts as failed, and the chain holds for a decision. OF-4 decides whether K2 progress goes to private zeroed-data. Add this to the OF-4 row. Reviewer and red team for OF-3 start now on `4bfd4e01`, scoped to the OF-3 commits (`aa09d0b0..4bfd4e01`); OF-2 round 3 merges forward afterwards as a delta.
