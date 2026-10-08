@@ -1195,7 +1195,8 @@ class PayerMass(unittest.TestCase):
         for mint, pool, m, c in mints:
             u.create(m - 100, mint, creator=c, name="n" + mint)
             u.migrate(m, mint, pool, creator=c)
-            u.aswap(m + 1, "seed" + mint, mint, pool, creator=c)
+            # lone pools are twice as deep (Q = 200 SOL): AMENDMENT_8 compares shares of each event's own Q
+            u.aswap(m + 1, "seed" + mint, mint, pool, creator=c, quote=180e9 if mint in "DEF" else 80e9)
         # PB is busy: a 10 SOL first-time buy in its w1 window; the lone ones buy 1 SOL
         u.aswap(250 + 3600 + 30, "N1", "B", "PB", sol=10e9, creator="CB")
         for mint, pool, m, c in mints[3:]:
@@ -1212,12 +1213,15 @@ class PayerMass(unittest.TestCase):
         ev = r["events"]
         self.assertEqual(list(ev["pool"]), ["PB"])
         a = ev.set_index("pool").loc["PB"]
-        self.assertEqual(a["flow"], 10e9 - 1e9)        # busy minus the median lone graduate of the day
+        # AMENDMENT_8 (R1-20): excess in shares of each graduate's own Q: 10/100 - median lone 1/200
+        self.assertAlmostEqual(a["excess_share"], 10e9 / 100e9 - 1e9 / 200e9)
         self.assertEqual(a["Q"], 100e9)                 # eff quote of the last swap at or before m + 60 min
+        self.assertAlmostEqual(a["s_star"], np.sqrt(1 + a["c"]) - 1)
+        self.assertAlmostEqual(r["median_ratio"], a["excess_share"] / a["s_star"])
         tape2, s2, adj2 = load(self._seat_unit(late_swap=True))
         df2, _ = R.seat_drift(tape2, s2, adj2)
         a2 = PM.seat_drift_bar(df2, sorted({d for d, _, _ in tape2.ranges}))["events"].set_index("pool").loc["PB"]
-        self.assertEqual((a2["Q"], a2["x_star"]), (a["Q"], a["x_star"]))
+        self.assertEqual((a2["Q"], a2["s_star"]), (a["Q"], a["s_star"]))
 
     def test_decision_earns_only_with_the_bar(self):
         import run_step_a

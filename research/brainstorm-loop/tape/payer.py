@@ -1,6 +1,7 @@
 """The payer-mass bar (research/brainstorm-loop/PAYER_MASS.md, defined per event by COUNT_ROWS_AMENDMENT_7 Q-R1-a).
 
-Per event i: X*_i = Q_i x (sqrt(1 + c_i) - 1), with Q_i the event's own effective quote (vault + signed virtual reserves)
+Per event i (COUNT_ROWS_AMENDMENT_8: every comparison in shares of the event's own Q, s*_i = sqrt(1 + c_i) - 1 = X*_i / Q_i):
+X*_i = Q_i x (sqrt(1 + c_i) - 1), with Q_i the event's own effective quote (vault + signed virtual reserves)
 at its decision slot and c_i the round trip at $5 in that pool:
   2 x the tier fee the program applies at that market cap
   + the constant-product impact of a $5 buy and its sell at Q (x^2 / (Q + x) on the buy, x^2 / Q on the sell, vs spot)
@@ -76,22 +77,34 @@ def bar(flows, xstars, event_days, days) -> dict:
             "by_day": {d: int(((np.asarray(event_days) == d) & ok & (f >= 2 * xs)).sum()) for d in sorted(set(days))}}
 
 
+def s_star(c) -> float:
+    """COUNT_ROWS_AMENDMENT_8: the bar in shares of the event's own Q, s* = X* / Q = sqrt(1 + c) - 1."""
+    return float(np.sqrt(1 + c) - 1) if np.isfinite(c) else float("nan")
+
+
+def share_bar(excess, sstar, event_days, days) -> dict:
+    """AMENDMENT_8: amendment 7's two conditions on excess shares against s*: median(excess / s*) >= 1, and on average
+    at least 11 events a day with excess >= 2 s*."""
+    return bar(excess, sstar, event_days, days)
+
+
 def seat_drift_bar(sd: pd.DataFrame, days) -> dict:
-    """SEAT-DRIFT: payer flow = the busy graduate's first-time buyer SOL in (m + 60 min + 23 slots, m + 120 min] minus
-    the median of the lone graduates on the same day; Q and the tier from the pool's state at m + 60 min."""
-    cols = ["pool", "day", "flow", "Q", "c", "x_star"]
+    """SEAT-DRIFT (AMENDMENT_7, in shares per AMENDMENT_8): excess share = the busy graduate's first-time buyer SOL in
+    (m + 60 min + 23 slots, m + 120 min] / its Q, minus the median of the same share over the lone graduates of that
+    day; Q, base and supply from the pool's as-of state at m + 60 min. A day without lone graduates leaves the excess
+    undefined, which never helps."""
+    cols = ["pool", "day", "excess_share", "Q", "c", "s_star"]
     if not len(sd) or "tercile" not in sd:
-        return {**bar([], [], [], days), "events": pd.DataFrame(columns=cols)}
+        return {**share_bar([], [], [], days), "events": pd.DataFrame(columns=cols)}
     ok = sd[sd["dropped"] == ""]
     busy, lone = ok[ok["tercile"] == 2], ok[ok["tercile"] == 0]
-    lone_med = lone.groupby("day")["w1_ftb_sol"].median()
+    lone_med = lone.groupby("day")["w1_share"].median()
     rows = []
     for r in busy.itertuples(index=False):
-        flow = r.w1_ftb_sol - lone_med.get(r.day, np.nan)
         c = round_trip_cost(r.w1_eff_quote, r.w1_eff_quote, r.w1_base, r.w1_supply)
-        rows.append({"pool": r.pool, "day": r.day, "flow": float(flow), "Q": float(r.w1_eff_quote), "c": c,
-                     "x_star": x_star(r.w1_eff_quote, c)})
+        rows.append({"pool": r.pool, "day": r.day, "excess_share": float(r.w1_share - lone_med.get(r.day, np.nan)),
+                     "Q": float(r.w1_eff_quote), "c": c, "s_star": s_star(c)})
     ev = pd.DataFrame(rows, columns=cols)
-    out = bar(ev["flow"], ev["x_star"], ev["day"], days)
+    out = share_bar(ev["excess_share"], ev["s_star"], ev["day"], days)
     out["events"] = ev
     return out
