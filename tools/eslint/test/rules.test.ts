@@ -24,10 +24,10 @@ const tester = new RuleTester({ languageOptions: { parser: tsParser, ecmaVersion
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
 describe('plugin', () => {
-  it('exports the seven rules under the bot namespace', () => {
+  it('exports the eight rules under the bot namespace', () => {
     assert.equal(plugin.meta?.name, 'bot');
     assert.deepEqual(Object.keys(plugin.rules ?? {}).sort(),
-      ['no-ambient-clock-or-random', 'no-await-in-withtx', 'no-number-formatting', 'no-number-on-money', 'no-number-on-units', 'no-program-id-literal', 'no-shared-type-redefinition']);
+      ['no-ambient-clock-or-random', 'no-await-in-withtx', 'no-fixtures-import', 'no-number-formatting', 'no-number-on-money', 'no-number-on-units', 'no-program-id-literal', 'no-shared-type-redefinition']);
   });
 });
 

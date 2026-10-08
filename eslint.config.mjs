@@ -24,11 +24,18 @@ const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts', 'packages/dashboard/src/
 /** The dashboard's formatting library (UI-T03): the one dashboard source allowed to call toFixed and friends. */
 const DASHBOARD_MONEY_MODULE = 'packages/dashboard/src/lib/money.ts';
 
+/** The constants registry (A-M01-01 logic 1): the only file that may hold a program ID literal. */
+const CONSTANTS_REGISTRY = 'packages/venue/src/constants.ts';
+
 /**
- * The files that may hold address literals (A-M01-01 logic 1; Z03 ruling m7): the constants registry (exact path, as
- * above), and fixture files: anything under fixtures/ and any module named fixtures.ts (recorded or synthetic test data).
+ * The fixture files that may hold address literals, but never a program ID (Z03 ruling m7, narrowed by ruling 32):
+ * anything under fixtures/, test fixtures, and two named src files, the dashboard's display samples and the frozen
+ * `@bot/contract/fixtures` (random test keys, B-M28-01).
  */
-const PROGRAM_ID_FILES = ['packages/venue/src/constants.ts', 'fixtures/**', 'packages/*/src/fixtures.ts', 'packages/*/test/fixtures.ts'];
+const FIXTURE_FILES = ['fixtures/**', 'packages/*/test/fixtures.ts', 'packages/dashboard/src/fixtures.ts', 'packages/contract/src/fixtures.ts'];
+
+/** The code that may import a fixtures module (Z03 ruling 32): the dashboard catalogue and test code. */
+const FIXTURE_IMPORTERS = ['packages/dashboard/src/catalogue/**', '**/test/**'];
 
 /**
  * Every JavaScript and TypeScript source extension, so no module escapes the rules by its extension. The policy check
@@ -57,6 +64,7 @@ export default [
       // B-M24-01 logic 3: no await inside a withTx callback (ARCH 7.1).
       'bot/no-await-in-withtx': 'error',
       'bot/no-program-id-literal': 'error',
+      'bot/no-fixtures-import': 'error',
       // Code built from strings loads modules the import check cannot see (C01 review finding R2).
       'no-eval': 'error',
       'no-new-func': 'error',
@@ -79,8 +87,16 @@ export default [
     rules: { 'bot/no-ambient-clock-or-random': 'off' },
   },
   {
-    files: PROGRAM_ID_FILES,
+    files: [CONSTANTS_REGISTRY],
     rules: { 'bot/no-program-id-literal': 'off' },
+  },
+  {
+    files: FIXTURE_FILES,
+    rules: { 'bot/no-program-id-literal': ['error', { allowAddresses: true }] },
+  },
+  {
+    files: FIXTURE_IMPORTERS,
+    rules: { 'bot/no-fixtures-import': 'off' },
   },
   {
     files: [...sources('packages/engine/'), ...sources('packages/signer/')],
