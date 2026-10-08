@@ -7,6 +7,7 @@ Every choice the frozen text leaves open is marked "Q<n>" and listed in OPEN_QUE
 from __future__ import annotations
 
 import re
+import warnings
 from collections import defaultdict, deque
 
 import numpy as np
@@ -20,6 +21,7 @@ EFFECT = 0.034          # 3.4% of effective quote
 BOOT_N = 10_000
 SEED = 20261008
 LAMPORTS = 1e9
+warnings.filterwarnings("ignore", message="All-NaN slice", category=RuntimeWarning)
 
 
 # ===================================================================== helpers
