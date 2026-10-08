@@ -103,6 +103,16 @@ def _remap(d, tape):
     return d
 
 
+def strip_verdict(res: dict) -> dict:
+    """A gate run on partial days gives no verdict: every pass field becomes None."""
+    out = dict(res)
+    for k in list(out):
+        if k == "passes" or k.endswith("_pass") or k.endswith("_passes"):
+            out[k] = None
+    out["verdict"] = "none: partial days (dev subset)"
+    return out
+
+
 def cmd_gate(a):
     from g1lib import gate
     from g1lib.features import FeatureContext
@@ -121,6 +131,8 @@ def cmd_gate(a):
     res.pop("boost_slices").to_csv(os.path.join(a.out, "boost_slices.csv"), index=False)
     res["dev_subset"] = man["dev_subset"]
     res["complete_days"] = not man["dev_subset"]
+    if man["dev_subset"]:
+        res = strip_verdict(res)  # G1-0 is judged on complete days only (AMENDMENT_3, OQ-22)
     _json(os.path.join(a.out, "gate.json"), res)
     log(f"wrote {a.out}/gate.json")
 

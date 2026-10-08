@@ -126,7 +126,14 @@ class Ledger:
         self.pump_mints = set()           # §3 'pump mints' as of now (OPEN_QUESTIONS Q6)
         self.sol_mints = set()            # mints with a SOL-quoted venue or a create, as of now
         self.last_swap_slot = pd.Series(dtype=np.int64)
-        self.stats = {"cost_source": {"tx_fee": 0, "amendment": 0, "fixed_leg": 0}, "gaps": [], "no_state_marks": 0,
+        self.boost_txk = set()            # transactions with a BoostBuyAndBurnEvent (AMENDMENT 2 review item 4)
+        # per token account (AMENDMENT_2 Q22): tracked balance and its (owner, mint) pair
+        self.cacct = pd.DataFrame({"bal": pd.Series(dtype=np.int64), "pair": pd.Series(dtype=np.int64)})
+        self.allow_gaps = False
+        self.days_done = 0
+        self.stats = {"cost_source": {"tx_fee": 0, "amendment": 0, "fixed_leg": 0},
+                      "signer_method": {"txs": 0, "accepted": 0, "rows": 0, "rent_created": 0, "rent_returned": 0},
+                      "gaps": [], "no_state_marks": 0,
                       "overflow_rows": 0, "excluded_rows": 0}
         self._day_reset()
 
@@ -173,6 +180,9 @@ class Ledger:
     def _note_gap(self, lo):
         """A slot range the run did not read: every carried position loses its known start."""
         if self.prev_hi is not None and lo != self.prev_hi + 1:
+            if not self.allow_gaps:
+                raise RuntimeError(f"gap in the slots read: {self.prev_hi + 1}..{lo - 1} (allow_gaps is for "
+                                   "development only; a scored run refuses gaps)")
             self.stats["gaps"].append((int(self.prev_hi) + 1, int(lo) - 1))
             self.day_gaps += 1
             self.carry["ok"] = False
@@ -184,6 +194,8 @@ class Ledger:
             raise RuntimeError("finish_day() must run before a unit of the next day")
         if self.day_lo is None:
             self.day_lo = unit.lo
+            # the run's first day, or a day after a gap: positions carried in have no known start
+            self.day_first = self.days_done == 0 or (self.prev_hi is not None and unit.lo != self.prev_hi + 1)
         self._note_gap(unit.lo)
         self.prev_hi, self.prev_day, self.day_hi = unit.hi, unit.day, unit.hi
         sw = load.swaps(unit, v) if sw is None else sw
@@ -223,10 +235,14 @@ class Ledger:
             self.stats["cost_source"]["fixed_leg"] += int(na.sum()) - n_am
         self.stats["cost_source"]["tx_fee"] += int((~na).sum())
         sw["cost"] = cost
-        sw["net"] = sw["cash"].to_numpy() - cost
+        sw["net_alt"] = sw["cash"].to_numpy() - cost          # venue method (AMENDMENT_2 Q2 "otherwise")
+        sw["net"], sw["sig"] = self._signer_method(sw)          # signer's SOL change where it owns every swap
 
         ex = self._excluded(sw["owner"].to_numpy())
-        ex = np.where((sw["protocol"].to_numpy() != 0) | sw["boost"].to_numpy(bool), "protocol flow", ex) \
+        # protocol flow: the protocol column, boost_buy_and_burn, and (every schema version alike) any swap in a
+        # transaction that emitted a BoostBuyAndBurnEvent in E
+        boost_tx = np.isin(sw["txk"].to_numpy(np.int64), np.fromiter(self.boost_txk, np.int64, len(self.boost_txk)))
+        ex = np.where((sw["protocol"].to_numpy() != 0) | sw["boost"].to_numpy(bool) | boost_tx, "protocol flow", ex) \
             if len(sw) else ex
         for o, t in zip(sw["owner"].to_numpy(), ex):
             if t:
@@ -263,10 +279,14 @@ class Ledger:
         # swap events of tracked owners
         t = sw[tracked]
         isb = t["is_buy"].to_numpy(bool)
-        sev = pd.DataFrame({"pair": pair_of(t["owner"], t["mint"]), "key": t["key"].to_numpy(),
+        pr = pair_of(t["owner"], t["mint"])
+        sev = pd.DataFrame({"pair": pr, "acct": _acct(t["acct"].to_numpy(), pr), "key": t["key"].to_numpy(),
                             "txk": t["txk"].to_numpy(), "slot": t["slot"].to_numpy(),
                             "delta": np.where(isb, t["tokens"], -t["tokens"]).astype(np.int64),
                             "cash": t["net"].to_numpy(), "paid": np.where(isb, -t["net"].to_numpy(), 0.0),
+                            "cash_alt": t["net_alt"].to_numpy(),
+                            "paid_alt": np.where(isb, -t["net_alt"].to_numpy(), 0.0),
+                            "nsig": t["sig"].to_numpy().astype(np.int32),
                             "xin": 0.0, "swap": True, "nbuy": isb.astype(np.int32), "nsell": (~isb).astype(np.int32),
                             "pre": t["pre"].to_numpy(), "post": t["post"].to_numpy(), "bad": False,
                             "buykey": np.where(isb, t["key"].to_numpy(), np.iinfo(np.int64).max)})
@@ -318,6 +338,7 @@ class Ledger:
                 if f.get("pool"):
                     self.pools.add(v.id(f["pool"]))
             elif name == "BoostBuyAndBurnEvent":
+                self.boost_txk.add(int(load.make_key(slot, int(d["tx_idx"]), 0)) >> load.KEY_TX_SHIFT)
                 if f.get("authority"):
                     self.boost_auth.add(v.id(f["authority"]))
                 if f.get("pool"):
@@ -330,8 +351,8 @@ class Ledger:
                     self.pools.add(v.id(f["pool"]))
 
     def _movements(self, mv, unit_states):
-        cols = ["pair", "key", "txk", "slot", "delta", "cash", "paid", "xin", "swap", "nbuy", "nsell", "pre", "post",
-                "bad", "buykey"]
+        cols = ["pair", "acct", "key", "txk", "slot", "delta", "cash", "paid", "cash_alt", "paid_alt", "nsig", "xin",
+                "swap", "nbuy", "nsell", "pre", "post", "bad", "buykey"]
         if mv is None or len(mv) == 0:
             return pd.DataFrame(columns=cols)
         mv = mv[mv["mint"].isin(self.sol_mints) & (mv["kind"] <= 2)]
@@ -349,12 +370,14 @@ class Ledger:
         ex_t = (self._excluded(mv["to"].to_numpy()) != "") | (mv["to"].to_numpy() < 0)
         legs = []
         f_ok = (kind <= 1) & ~ex_f
-        legs.append(pd.DataFrame({"pair": pair_of(mv["frm"][f_ok], mv["mint"][f_ok]), "key": mv["key"][f_ok],
+        fp = pair_of(mv["frm"][f_ok], mv["mint"][f_ok])
+        legs.append(pd.DataFrame({"pair": fp, "acct": _acct(mv["facct"][f_ok].to_numpy(), fp), "key": mv["key"][f_ok],
                                   "txk": mv["txk"][f_ok], "slot": mv["slot"][f_ok],
                                   "delta": -mv["amount"][f_ok].to_numpy(), "cash": val[f_ok], "paid": 0.0, "xin": 0.0,
                                   "bad": (kind[f_ok] == 0) & ~has[f_ok]}))
         t_ok = ((kind == 0) | (kind == 2)) & ~ex_t
-        legs.append(pd.DataFrame({"pair": pair_of(mv["to"][t_ok], mv["mint"][t_ok]), "key": mv["key"][t_ok],
+        tp_ = pair_of(mv["to"][t_ok], mv["mint"][t_ok])
+        legs.append(pd.DataFrame({"pair": tp_, "acct": _acct(mv["tacct"][t_ok].to_numpy(), tp_), "key": mv["key"][t_ok],
                                   "txk": mv["txk"][t_ok], "slot": mv["slot"][t_ok],
                                   "delta": mv["amount"][t_ok].to_numpy(), "cash": -val[t_ok], "paid": val[t_ok],
                                   "xin": val[t_ok], "bad": (kind[t_ok] == 2) | ~has[t_ok]}))
@@ -363,6 +386,9 @@ class Ledger:
                                         "mint": mv["mint"][both].to_numpy(np.int32), "value": val[both],
                                         "key": mv["key"][both].to_numpy()}))
         out = pd.concat(legs, ignore_index=True)
+        out["cash_alt"] = out["cash"]
+        out["paid_alt"] = out["paid"]
+        out["nsig"] = 0
         out["swap"] = False
         out["nbuy"] = 0
         out["nsell"] = 0

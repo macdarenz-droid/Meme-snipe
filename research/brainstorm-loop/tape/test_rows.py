@@ -39,7 +39,7 @@ class Unit:
         return r
 
     def aswap(self, slot, owner, mint, pool, sol=1e9, buy=True, pre=0, post=0, creator="DEV", signer=None,
-              sig=None, quote=80e9, virtual=20e9, base=1e14, tokens=1):
+              sig=None, quote=80e9, virtual=20e9, base=1e14, tokens=1, chain=True):
         r = self._base(slot, owner, signer)
         r.update({"base_mint": mint, "pool": pool, "side": "buy" if buy else "sell", "quote_amount": sol,
                   "base_amount": tokens, "quote_mint": WSOL, "protocol": 0, "canonical": 1, "coin_creator": creator,
@@ -48,6 +48,8 @@ class Unit:
                   "owner_token_pre": pre, "owner_token_post": post})
         if sig:
             r["signature"] = sig
+        if not chain:
+            r["chain_pool_base"] = r["chain_pool_quote"] = None
         self.amm.append(r)
         return r
 
@@ -253,8 +255,9 @@ class SeatDrift(unittest.TestCase):
         self.assertEqual((d.at["PA", "N_m"], d.at["PB", "N_m"], d.at["PC", "N_m"]), (1, 1, 0))
         self.assertAlmostEqual(d.at["PA", "w1_share"], 10e9 / 100e9)
         self.assertAlmostEqual(d.at["PA", "w2_share"], 1e9 / 100e9)
-        self.assertEqual((summ["busy"], summ["lone"]), (1, 1))             # Q9: terciles of N_m per day
-        self.assertEqual((d.at["PC", "tercile"], d.at["PA", "tercile"], d.at["PB", "tercile"]), (0, 1, 2))
+        # Q9: terciles of N_m per day; N_m = 1 (PA, PB) ties across the cut between terciles 1 and 2: dropped
+        self.assertEqual((summ["busy"], summ["lone"]), (0, 1))
+        self.assertEqual((d.at["PC", "tercile"], d.at["PA", "tercile"], d.at["PB", "tercile"]), (0, -2, -2))
         tape, s, adj = load(self._unit(link=True))
         df, _ = R.seat_drift(tape, s, adj)
         self.assertEqual(df.set_index("pool").at["PA", "N_m"], 0)   # same creator cluster: not counted
@@ -355,7 +358,7 @@ class Rebuy(unittest.TestCase):
         self.assertTrue(q.at["Y", "below"] and not q.at["Y", "rebuy_2h"])
         self.assertNotIn("X", set(prs.loc[prs["hour"] == 2, "owner"]))   # X rebought: no longer an ex-holder
         self.assertEqual(summ["proceeds_readable_share"], 1.0)
-        self.assertEqual(summ["top_quintile_points_per_day"], {DAY: 1})
+        self.assertEqual(summ["top_quintile_points_per_day"], {DAY: 0})   # 2 points: no drawdown terciles
 
     def test_no_price_after_the_decision_point_is_read(self):
         tape, s, _ = load(rebuy_unit())
@@ -386,6 +389,52 @@ class SolUsd(unittest.TestCase):
         self.assertTrue(R._overlap(420 / 1.05, 420 / 0.95, 50_000 / 125.0, 50_000 / 115.0))
         g = R.placebo_grid(day_ranges=[(50_000 / 152.0, 50_000 / 150.0)])
         self.assertTrue(all(not R._overlap(c / 1.1, c / 0.9, 50_000 / 152.0, 50_000 / 150.0) for c in g))
+
+
+class LookAhead(unittest.TestCase):
+    def _unit(self):
+        u = Unit(0, 15000)
+        u.create(10, "M")
+        u.migrate(100, "M", "P")
+        u.aswap(150, "o", "M", "P")
+        u.aswap(3000, "o2", "M", "P", chain=False)          # no post reading; a deposit follows (not a swap)
+        u.aswap(3750, "o3", "M", "P", quote=500e9)         # after t1 = m + 1 h: pre reserves include the deposit
+        return u
+
+    def test_rebuy_point_never_uses_next_swap_after_t(self):
+        tape, s, _ = load(self._unit())
+        _, pts, _, _ = RB.rebuy_anchor(tape, s)
+        self.assertNotIn(1, set(pts["hour"]))              # state at t1 unknown: no point, never the later state
+        self.assertIn(2, set(pts["hour"]))
+
+    def test_state_asof_uses_next_pre_only_on_or_before_t(self):
+        tape, s, _ = load(self._unit())
+        g = R.by_pool(s)["P"]
+        ps = RB.pool_state(g)
+        t3 = T0 + 3750
+        i, mid, _ = RB.state_asof(ps, t3, 3750)
+        self.assertEqual(i, 2)
+        self.assertAlmostEqual(mid[1], (500e9 + 20e9) / 1e14)   # next swap is at t3: allowed
+        i, mid, _ = RB.state_asof(ps, t3 - 1, 3749)
+        self.assertTrue(np.isnan(mid[1]))
+
+    def test_mcap_segment_without_reading_is_nan(self):
+        tape, s, _ = load(self._unit())
+        seg = R.mcap_segments(tape, s).reset_index(drop=True)
+        self.assertTrue(np.isnan(seg.loc[1, "mcap"]))
+        self.assertAlmostEqual(seg.loc[2, "mcap"], (500e9 + 20e9) / 1e14 * SUPPLY / 1e9)
+
+    def test_top_quintile_count_ignores_zero_rb(self):
+        class T:
+            ranges = [(DAY, 0, 1)]
+        n = 15
+        pts = pd.DataFrame({"pool": [f"p{i}" for i in range(n)], "day": DAY, "RB": [0.0] * (n - 1) + [0.5],
+                            "net_rebuy_flow": 0.0, "drawdown": np.linspace(0, 0.5, n), "past_return_1h": 0.0,
+                            "age_h": 1, "depth_sol": 100.0})
+        empty = pd.DataFrame(columns=["proceeds", "readable"])
+        prs = pd.DataFrame(columns=["pool", "day", "owner", "exit_slot", "t", "proceeds", "gain", "below", "rebuy_2h"])
+        summ = RB.summarise(T(), empty, pts, prs)
+        self.assertEqual(summ["top_quintile_points_per_day"], {DAY: 1})
 
 
 class ReviewFixes(unittest.TestCase):
