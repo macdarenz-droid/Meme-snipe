@@ -3,6 +3,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import fc from 'fast-check';
+import { SAMPLE_ADDRESS, SAMPLE_MINT } from '../src/fixtures.ts';
 import { monotonicClock } from '../src/lib/clock.ts';
 import {
   ContractError, MINUS, UNKNOWN, formatAge, formatBps, formatDuration, formatFeeLamports, formatLamports, formatMicroLamportsPerCu,
@@ -304,10 +305,10 @@ describe('UI-T03 time', () => {
 
 describe('UI-T03 identifiers and untrusted text', () => {
   table<readonly [string, number, number]>('truncateMiddle', [
-    [['9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin', 4, 4], '9xQe…VFin'], [['short', 4, 4], 'short'], [['123456789', 4, 4], '123456789'],
+    [[SAMPLE_ADDRESS, 4, 4], '9xQe…VFin'], [['short', 4, 4], 'short'], [['123456789', 4, 4], '123456789'],
     [['1234567890', 4, 4], '1234…7890'], [['abcdefghij', 2, 3], 'ab…hij'],
   ], ([v, h, t]) => truncateMiddle(v, h, t));
-  it('truncateMiddle defaults to 4 + 4', () => assert.equal(truncateMiddle('So11111111111111111111111111111111111111112'), 'So11…1112'));
+  it('truncateMiddle defaults to 4 + 4', () => assert.equal(truncateMiddle(SAMPLE_MINT), 'So11…1112'));
 
   table<readonly [string, number]>('sanitizeUntrusted text', [
     [['BONK', 12], 'BONK'], [['  BO  NK\t\n', 12], 'BO NK'], [['\u202EKNOB', 12], 'KNOB'], [['A\u2066B\u2069C', 12], 'ABC'],
