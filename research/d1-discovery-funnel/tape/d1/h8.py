@@ -128,7 +128,7 @@ def h8_counts(df: pd.DataFrame, pool_days: pd.DataFrame = None) -> Dict:
     """Count row (H8_AMENDMENT item 4 as extended by H8_AMENDMENT_2 item 4): per day and size ($5..$10,000), on each
     point's universe floor, the pool-hours and graduates that are tradable (floor and gates) and that meet the floor
     only; plus the canonical pools whose creator fee is 0 (from `pool_days`)."""
-    res = {}
+    res = {"h8_basis": C.H13_PROXY_LABEL}   # AMENDMENT_4: "tradable" uses the tape proxy for H13
     for day, g in df[df.eligible.astype(bool)].groupby("day", sort=True):
         res[day] = {"points_by_universe": {k: int(v) for k, v in g.u_tag.value_counts().items()}}
         for s in C.H8_COUNT_SIZES_USD:

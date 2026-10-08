@@ -24,11 +24,15 @@ sys.path.insert(0, HERE)
 from d1 import config as C  # noqa: E402
 
 # Frozen rulings this code implements; written into frozen_rules.json, and validate refuses rules without H8_AMENDMENT.
-FROZEN_AMENDMENTS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2", "AMENDMENT_4")
+FROZEN_AMENDMENTS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2", "AMENDMENT_4",
+                     "AMENDMENT_5")
 # Every frozen ruling that governs D1 (red team R2-9). search and validate refuse while any is missing from
 # FROZEN_AMENDMENTS. AMENDMENT_3 (d1/search.py h8_first ranking) and research/brainstorm-loop/H8_AMENDMENT_2.md
-# (d1/gates.py, holders.gate_h12/gate_h13, h8.add_h8 universe floors, validate.h8_report at $5) are implemented.
-REQUIRED_RULINGS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2", "AMENDMENT_4")
+# (d1/gates.py, holders.gate_h12/gate_h13, h8.add_h8 universe floors, validate.h8_report at $5) are implemented;
+# AMENDMENT_4 (H13 tape proxy, holders.h13_proxy_sets, labelled config.H13_PROXY_LABEL; universe-exit secondary
+# dropped) and AMENDMENT_5 (creation-slot buyers: create slot .. +2, keyed on the curve user) too.
+REQUIRED_RULINGS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2", "AMENDMENT_4",
+                    "AMENDMENT_5")
 
 
 def code_hash() -> str:
@@ -257,7 +261,7 @@ def search(args):
     res["table"].to_csv(os.path.join(args.run, "search_table.csv"), index=False)
     m1 = json.load(open(os.path.join(args.run, "manifest_stage1.json")))
     frozen = {"design": "D1", "amendments": list(FROZEN_AMENDMENTS), "solusd_sha256": px_sha, "median_rt_cost": res["median_rt_cost"],
-              "outcome": res["outcome"], "advanced": res["advanced"], "discovery_days": list(C.DISCOVERY_DAYS),
+              "outcome": res["outcome"], "advanced": res["advanced"], "h8_basis": res["h8_basis"], "discovery_days": list(C.DISCOVERY_DAYS),
               "code_sha256": code_hash(), "input_sha256": m1["input_sha256"], "bootstrap_seed": C.BOOT_SEED}
     with open(args.out, "w") as fh:
         json.dump(frozen, fh, indent=1)

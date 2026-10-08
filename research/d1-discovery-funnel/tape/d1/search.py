@@ -155,7 +155,8 @@ def run_search(df: pd.DataFrame) -> Dict:
             row = {"rule": rule_id(r), "hold_min": hm, "n_total": int(n.sum()),
                    **{f"n_f{j}": int(n[j]) for j in range(C.N_BLOCKS)},
                    **{f"mean_f{j}": float(means[j]) for j in range(C.N_BLOCKS)},
-                   "score": float(score), "same_sign": same, "qualifies": ok, "h8_first": False}
+                   "score": float(score), "same_sign": same, "qualifies": ok, "h8_first": False,
+                   "h8_basis": C.H13_PROXY_LABEL}
             if h8:
                 for sz in C.H8_SIZES_USD:
                     fs = h8_stats[(rule_id(r), sz)]
@@ -186,6 +187,7 @@ def run_search(df: pd.DataFrame) -> Dict:
                        "terms": [{"feature": f, "side": s, "binary": f in C.BINARY_FEATURES,
                                   "edges_q20_q80": list(edges_of(d[f].to_numpy(dtype=float)))}
                                  for f, s in parts],
-                       "discovery_score": float(row.score), "h8_first": bool(row.h8_first)})
-    return {"median_rt_cost": median_cost, "table": tab, "advanced": frozen,
+                       "discovery_score": float(row.score), "h8_first": bool(row.h8_first),
+                       "h8_basis": C.H13_PROXY_LABEL})
+    return {"median_rt_cost": median_cost, "table": tab, "advanced": frozen, "h8_basis": C.H13_PROXY_LABEL,
             "outcome": "advance" if frozen else "nothing found"}
