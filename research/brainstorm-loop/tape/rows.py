@@ -433,7 +433,12 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
         ok["tercile"] = -1
         for d, g in ok.groupby("day"):
             if len(g) >= 3:
-                ok.loc[g.index, "tercile"] = pd.qcut(g["N_m"].rank(method="first"), 3, labels=False).astype(int)
+                ter = pd.qcut(g["N_m"].rank(method="first"), 3, labels=False).astype(int)
+                # an N_m value whose graduates fall in more than one tercile ties across a cut: drop them all
+                # (conservative; OPEN_QUESTIONS Q9)
+                split = ter.groupby(g["N_m"]).transform("nunique") > 1
+                ter[split] = -2
+                ok.loc[g.index, "tercile"] = ter
         df.loc[ok.index, "tercile"] = ok["tercile"]
     busy = ok[ok["tercile"] == 2] if len(ok) else ok
     lone = ok[ok["tercile"] == 0] if len(ok) else ok
@@ -573,8 +578,10 @@ def mcap_segments(tape: Tape, s: pd.DataFrame):
         if end_tape is None:
             continue
         end = min(end_cap, end_tape)
-        q = g["pool_quote_post"].fillna(g["pool_quote_pre"].shift(-1)) + g["virtual_quote"].fillna(0)
-        bse = g["pool_base_post"].fillna(g["pool_base_pre"].shift(-1))
+        # post-swap state from the swap's own chain reading only: the next swap's pre-trade reserves are known
+        # only at the next swap, after the segment starts (reviewer L1), so a missing reading stays NaN
+        q = g["pool_quote_post"] + g["virtual_quote"].fillna(0)
+        bse = g["pool_base_post"]
         mc = q / bse * g["supply"] / LAMPORTS
         t = g["block_time"].values
         tn = np.append(t[1:], end)

@@ -106,10 +106,34 @@ def ledger_exits(s_mint: pd.DataFrame, moves_mint: pd.DataFrame, Ledger) -> pd.D
 
 # ------------------------------------------------------------------ as-of pool state
 def pool_state(g: pd.DataFrame):
-    """Post-swap mid (lamports per raw token, effective reserves) and effective quote after each pool swap."""
-    q = g["pool_quote_post"].fillna(g["pool_quote_pre"].shift(-1)) + g["virtual_quote"].fillna(0)
-    b = g["pool_base_post"].fillna(g["pool_base_pre"].shift(-1))
-    return (q / b).to_numpy(), q.to_numpy(), g["block_time"].to_numpy()
+    """Per pool swap: post-swap mid (lamports per raw token, effective reserves) and effective quote from the
+    swap's own `chain_pool_*` reading, and the same from the NEXT swap's pre-trade reserves (`*_next`), which
+    may only be used when that next swap is itself on or before the decision point (see state_asof)."""
+    v = g["virtual_quote"].fillna(0)
+    q = g["pool_quote_post"] + v
+    b = g["pool_base_post"]
+    qn = g["pool_quote_pre"].shift(-1) + v
+    bn = g["pool_base_pre"].shift(-1)
+    return {"mid": (q / b).to_numpy(float), "eq": q.to_numpy(float), "mid_next": (qn / bn).to_numpy(float),
+            "eq_next": qn.to_numpy(float), "bt": g["block_time"].to_numpy(), "slot": g["slot"].to_numpy()}
+
+
+def state_asof(ps, t, st):
+    """Mid and effective quote after each swap at or before t, as known at t: the swap's own post reading, or
+    the next swap's pre-trade reserves only when that next swap has block_time <= t and slot <= st;
+    otherwise NaN (reviewer L1: no look-ahead). Returns (i, mid[:i+1], eq[:i+1]) with i the last swap <= t."""
+    bt, sl = ps["bt"], ps["slot"]
+    i = int(np.searchsorted(bt, t, side="right") - 1)
+    if i < 0:
+        return i, np.array([]), np.array([])
+    mid, eq = ps["mid"][: i + 1].copy(), ps["eq"][: i + 1].copy()
+    nxt = np.arange(1, i + 2)
+    ok_next = (nxt < len(bt)) & (bt[np.minimum(nxt, len(bt) - 1)] <= t) & (sl[np.minimum(nxt, len(bt) - 1)] <= st)
+    fill = ~np.isfinite(mid) & ok_next
+    mid[fill] = ps["mid_next"][: i + 1][fill]
+    fill_q = ~np.isfinite(eq) & ok_next
+    eq[fill_q] = ps["eq_next"][: i + 1][fill_q]
+    return i, mid, eq
 
 
 def last_block_slot(tape: Tape, t):
@@ -146,16 +170,17 @@ def rebuy_anchor(tape: Tape, s: pd.DataFrame, require_history=True, Ledger=None)
         g = pp.get(r.pool)
         if g is None or not len(g):
             continue
-        mid, eq, bt = pool_state(g)
+        ps = pool_state(g)
+        bt = ps["bt"]
         m = int(r.m_time)
         for k in DECISION_HOURS:
             t = m + 3600 * k
             if not tape.covered(int(r.m_slot), t + REBUY_S):
                 continue
-            i = np.searchsorted(bt, t, side="right") - 1
+            st = last_block_slot(tape, t)
+            i, mid, eq = state_asof(ps, t, st)
             if i < 0 or not np.isfinite(mid[i]) or not eq[i] > 0:
                 continue
-            st = last_block_slot(tape, t)
             mid_t, eq_t = float(mid[i]), float(eq[i])
             peak = np.nanmax(mid[: i + 1])
             j = np.searchsorted(bt, t - 3600, side="right") - 1
@@ -253,10 +278,9 @@ def summarise(tape: Tape, exits, pts, prs):
     diff = stratum_diff(top, mid) if len(top) and len(mid) else np.nan
     lb = (R.boot_lb_clustered(lambda a, b: stratum_diff(a, b), [top, mid], ["stratum", "net_rebuy_flow"])
           if np.isfinite(diff) else None)
-    per_day = {}
-    for d in days:
-        g = pts[pts["day"] == d]["RB"].dropna()
-        per_day[d] = int((g >= np.quantile(g, 0.8)).sum()) if len(g) else 0
+    # decisions a day in the top quintile: the ranking materiality_sets uses (rb_pct > 0.8 within day x
+    # drawdown tercile), and RB > 0 (reviewer L2: ties at 0 never count)
+    per_day = {d: int(((top["day"] == d) & (top["RB"] > 0)).sum()) if len(top) else 0 for d in days}
     reg = pts.dropna(subset=["RB", "past_return_1h", "drawdown", "age_h", "depth_sol"])
     r2 = None
     if len(reg) > 5:
