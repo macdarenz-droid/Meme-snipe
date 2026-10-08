@@ -479,13 +479,20 @@ jobs:
       - name: Collect the back-off for the next day and run
         id: backoff
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
+        env:
+          SOURCE: ${{ inputs.source }}
         run: |
           research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/work/data/archive-429.state" "$RUNNER_TEMP/backoff/archive-429.state"
           if [ -f "$RUNNER_TEMP/backoff/archive-429.state" ]; then
             echo "back-off state: $(cat "$RUNNER_TEMP/backoff/archive-429.state")"
             echo "has=true" >> "$GITHUB_OUTPUT"
             end=$(awk 'NF >= 3 && $3 ~ /^[0-9]+$/ {print $3; exit}' "$RUNNER_TEMP/backoff/archive-429.state")
-            if [ -n "$end" ]; then echo "end=$end" >> "$GITHUB_OUTPUT"; fi
+            if [ -n "$end" ]; then
+              echo "end=$end" >> "$GITHUB_OUTPUT"
+              # OF-2 ruling 14: the durable record of the back-off end, a check-run annotation
+              # the guard reads for every counted failure (ag_annotated_end).
+              if [ "${SOURCE:-archive}" != helius ]; then echo "::warning title=archive-backoff::end=$end"; fi
+            fi
           fi
       - name: Save the shared archive back-off
         if: always() && steps.published.outcome == 'success' && steps.backoff.outputs.has == 'true' && steps.published.outputs.complete != 'true'
@@ -605,6 +612,11 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$CHAIN" =~ ^[0-9]+$ ]] || { echo "bad chain '$CHAIN'"; exit 1; }
+          # OF-2 ruling 15: a re-run of this job never grants another restart.
+          if [ "$SOURCE" != helius ] && [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
+            echo "run attempt $GITHUB_RUN_ATTEMPT: a re-run never chains an archive day" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           resume=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '[.artifacts[].name | select(startswith("resume-"))] | join(",")')
           if [ -z "$resume" ]; then
             echo "a day failed for a reason other than time or back-off: chain stopped for review" | tee -a "$GITHUB_STEP_SUMMARY"
