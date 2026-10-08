@@ -203,9 +203,9 @@ describe('deploy code', () => {
 });
 
 describe('off-server backup gate', () => {
-  it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
+  it('on by the owner\'s decision (9 Oct about 12:54 AM: "Yes"); the deploy, not the installer, turns the timer on, and the sender checks the flag and the owner\'s code first', () => {
     expect(JSON.parse(read('ops/host-config.json'))).toEqual({
-      offsite_backup: false, worker: 'stub', // PAUSE (owner, 2026-10-07): back to 'release' when every blocker is fixed
+      offsite_backup: true, worker: 'stub', // PAUSE (owner, 2026-10-07): back to 'release' when every blocker is fixed
       // RECORD-UPLOAD: on by the owner's decision (6 Oct about 12:30 AM: "Approve upload", "Okay yes delete after upload").
       record_upload: true, record_upload_delete_local: true,
       // PRACTICE-ON: the S0 shakedown (packages/worker/test/practice-on.test.ts checks each value).
@@ -215,7 +215,12 @@ describe('off-server backup gate', () => {
       },
     });
     expect(read('ops/host/install-main.sh')).not.toMatch(/enable[^\n]*zeroed-backup-offsite/);
+    const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
+    expect(upd).toContain(`if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then\n  systemctl enable --now zeroed-backup-offsite.timer`);
     const send = read('ops/host/files/usr/local/sbin/zeroed-backup-offsite');
+    // Nothing is sent until the owner ran zeroed-backup-code (its recipient) and Telegram is paired.
+    expect(send.indexOf('owner_backup_recipient')).toBeLessThan(send.indexOf('sendDocument'));
+    expect(send.indexOf('paired ||')).toBeLessThan(send.indexOf('sendDocument'));
     expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeGreaterThan(0);
     expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeLessThan(send.indexOf('sendDocument'));
     expect(send).toContain('age -d -i /etc/zeroed/age/host.key "$newest" | age -r "$owner" -o "$copy"');
