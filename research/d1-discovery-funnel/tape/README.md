@@ -8,7 +8,7 @@ This code implements `../PREREG.md` (D1, a discovery funnel) on the shared on-ch
 ```
 U=$(ls -d /home/user/tape-cache/2026-09-1[01]/*-*)        # the unit directories, or use --units-file
 nice -n 19 python3 run_d1.py stage1 --units $U --days 2026-09-10 2026-09-11 --out RUN   # points + features
-nice -n 19 python3 run_d1.py stage2 --units $U --days 2026-09-10 2026-09-11 --out RUN   # outcomes
+nice -n 19 python3 run_d1.py stage2 --out RUN          # outcomes; reads exactly stage 1's units and re-checks their sha256
 nice -n 19 python3 run_d1.py summary --run RUN                                          # counts and shapes only
 nice -n 19 python3 run_d1.py search  --run RUN --out RUN/frozen_rules.json              # PREREG §5
 nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --confirm-validation-read   # §6, later
@@ -28,6 +28,15 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - `validation_result.json`: produced by `validate` only.
 
 **Guards.**
+- **Step A plan.**
+  - stage1 refuses a Step A plan whose sha256 is not `config.STEPA_PLAN_SHA256`.
+  - stage1 records in the manifest whether the units equal the plan rows day by day, with no gaps (`stepa.plan_check`).
+  - `search` refuses unless that check says complete.
+- **Input hashes.**
+  - `--no-hash` is refused on non-dev runs.
+  - stage2 refuses when the unit files differ from stage 1's hashes.
+  - `search` and `validate` refuse when hashes are skipped, when the two stages read different units, or when either stage ran on other code.
+  - `validate` also refuses frozen rules made by other code.
 - `search` refuses dev runs and any day that is not a discovery day.
 - `validate` refuses unless `--confirm-validation-read` is passed, and refuses when its days overlap the discovery days.
 - `--dev-unknown-migration` exists only for shape checks on the few units cached now. It gives pools that migrated before the tape a pseudo migration. Its runs are marked `dev` and can never be searched or validated.
@@ -38,7 +47,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - **Future-marker test.** `test_planted_future_marker` plants extreme rows of every table one slot after a decision and requires every earlier decision's features to be unchanged. The test was mutation-checked: a one-slot leak in features, clusters or holders makes it fail.
 
 ## Tests
-`cd tape && python3 -m unittest -v` runs 28 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
+`cd tape && python3 -m unittest -v` runs 37 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
 - costs;
 - pool state;
 - universe and timing;
@@ -48,7 +57,12 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - cost basis;
 - outcomes;
 - the search (planted rule found, "nothing found", fold gap, edges from training only, throttle);
-- validation verdicts.
+- validation verdicts;
+- the amendments (rent by date band, binary and degenerate features, cost screen);
+- BOOST flagging;
+- the guards (dev runs, partial days, overlapping days, plan sha, incomplete plan, input hashes, code sha).
+
+Every review and amendment fix was mutation-checked: undoing it makes a test fail.
 
 ## Mapping: registered item → function
 | PREREG item | Function |
@@ -56,7 +70,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 | §2 days, holdouts, windows dropped by time | `config.DISCOVERY_DAYS`, `config.WALL_EPOCH`, `load.load` (wall guard), `universe.decision_points` (`valid_15`, `valid_60`) |
 | §3 universe: canonical, non-mayhem, SOL, H10 to 24 h, effective quote ≥ 50, vault ≥ 30 | `universe.migrations`, `universe.decision_points`, `pool_state.PoolBook` |
 | §3 decision points every 5 min, as of the decision slot | `universe.decision_points`, `universe.Clock.decision_slot` |
-| §3 $50 buy at d + 23, 15/60-min holds, costs as edge-costs.ts | `outcomes.compute_outcomes`, `costs.buy_exact_quote_in`, `costs.sell`, `costs.expected_fixed` |
+| §3 $50 buy at d + 23, 15/60-min holds, costs as edge-costs.ts; rent by account size and date (AMENDMENT_1 item 11, AMENDMENT_2) | `outcomes.compute_outcomes`, `costs.buy_exact_quote_in`, `costs.sell`, `costs.expected_fixed`, `costs.rent_for`, `costs.fixed_for` |
 | §3 one entry per pool per hour | `search.throttle` |
 | §4 price path (5) | `features.price_flow_pool_protocol` |
 | §4 flow (9) | `features.price_flow_pool_protocol`, `features._first_buy_flags` |
@@ -65,15 +79,9 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 | §4 holders: top-10, creator, CGO, coverage | `holders.holder_features`, `holders.Holders` |
 | §4 protocol (BOOST, market cap / 420, CF), pool (3) | `features.price_flow_pool_protocol` |
 | §5 folds and 60-min gaps | `search.fold_masks` |
-| §5 1,568 rules per hold, quintiles from training folds | `search.all_rules`, `search.edges_of`, `search.side_mask` |
-| §5 score, ≥ 30 trades a fold, cost hurdle, same sign, advance ≤ 5, frozen edges | `search.run_search`, `search.median_rt_cost` |
+| §5 1,568 rules per hold, quintiles from training folds; binary and degenerate features (AMENDMENT_1 item 23) | `search.all_rules`, `search.edges_of`, `search.side_mask` |
+| §5 score, ≥ 30 trades a fold, net mean > 0 in every fold (AMENDMENT_1 item 24), advance ≤ 5, frozen edges | `search.run_search` |
+| Step A complete and inputs pinned (review fixes) | `stepa.plan_check`, `run_d1.search_guard`, `run_d1.validate_guard`, `run_d1.stage2` |
+| BOOST and protocol swaps flagged and left out of flow (OPEN_QUESTIONS #21) | `load.load` (`boost`, `protocol`, `signature`), `pool_state.flow_rows` |
 | §6 99.5% pool-clustered bootstrap by day, ≥ 300 trades, positive each day, lift, verdicts | `validate.judge`, `validate.cluster_bootstrap`, `validate.rule_trades` |
 | §7 as-of with a future marker, fold gaps, training-only edges, code and input hashes | tests `test_planted_future_marker`, `test_fold_gap`, `test_edges_from_training_only`; `run_d1.code_hash`, `load.file_hashes` |
-
-## Development check (2 units of 2026-09-11, v2)
-- **Strict run.** 39 migrations, 17 of them mayhem. There are 0 decision points, as expected: one hour of tape cannot reach migration + 60 min.
-- **Dev run.** 6,772 eligible points on 2,505 pools. All 28 features are filled, except:
-  - 60-minute and since-migration returns, which one hour cannot supply;
-  - the "Who" shares, NaN where no buys fall in the window.
-- **Outcomes.** 6,772 entries fill; 4,160 15-minute exits fit inside the tape.
-- **Not computed.** No return statistic and nothing from the primary.

@@ -14,8 +14,8 @@ Places where `PREREG.md` is silent or ambiguous. Each one has the reading the co
 7. **One entry per pool per hour.** The code uses a rolling 60 minutes from the last entry, chosen greedily in time order. A clock hour would allow entries 5 minutes apart. CONSERVATIVE.
 8. **Fee rates.** The rates are the lp, protocol and creator bps on the pool row whose state is used.
 9. **A sell larger than the real vault.** The program would refuse such a sell. The code caps the quote out at the real vault. CONSERVATIVE.
-10. **Our own trade's effect on the pool.** Our buy's impact is not carried into the exit state, so the exit is priced on the market's own state. This is standard in the repo's designs, but it is a small optimism.
-11. **Rent.** The code uses 1,513,840 lamports, as `edge-costs.ts` does. A Token-2022 associated token account (170 bytes) costs 2,074,080 lamports. G1 asks for this to be checked. D1 says "as edge-costs.ts", so the code is unchanged; flag for review.
+10. **Our own trade's effect on the pool.** Our buy's impact is not carried into the exit state, so the exit is priced on the market's own state. This is PESSIMISTIC: under constant product our buy's reserve change stays in the pool, so leaving it out understates the sell price. Confirmed by AMENDMENT_1.
+11. **Rent.** RESOLVED by AMENDMENT_1 item 11 and AMENDMENT_2. Rent = (128 + account bytes) × the lamports per byte in force at the entry slot: 6,960 before 2026-09-03, 6,333 from 2026-09-03, 5,080 from epoch 1033 (slot 446,256,000). Accounts are 170 bytes for Token-2022 and 165 for SPL Token, with RENT-1's refund model (`costs.rent_for`, `costs.fixed_for`). A mint whose create row (`token_program`) is not on the tape counts as 170 bytes. CONSERVATIVE.
 12. **Pool state between trades.** It comes from trade rows only. InitBoost, deposits and withdrawals show up only at the pool's next trade. How large this effect is has not been measured.
 
 ## Features
@@ -27,18 +27,18 @@ Places where `PREREG.md` is silent or ambiguous. Each one has the reading the co
 18. **Holders.** Only owners seen on the tape are counted. For coins created before the tape, `top10_share` is therefore a lower bound. Holdings from before the tape are found through `owner_token_pre/post` and given unknown cost. The denominator is `base_supply`. CGO is computed at any coverage; H1-CGO's 90% floor is not applied, because coverage is its own feature. Burn and protocol accounts other than the pool and the curve are not excluded, because the tape does not list them.
 19. **CF.** The feature is the count of both collection events by the coin's creator in the last hour. Neither event names a mint, so collections from the creator's other coins count too. Windows that touch a v1 unit are NaN.
 20. **BOOST finished.** It is 1 when the pool's last BoostBuyAndBurnEvent at or before d has `boost_vault_remaining` = 0, and 0 otherwise, including pools with no BOOST.
-21. **Definitions not spelled out in the PREREG:**
+21. **BOOST and protocol swaps; definitions not spelled out in the PREREG.**
+    - BOOST swaps have protocol = 0 and no owner on decoder v1 and v2, so they are flagged by signature through E's `BoostBuyAndBurnEvent`. Decoder v3 sets protocol = 1 on them, and both checks are kept. The flags are exposed as `boost` and `protocol` on the pool rows, with each row's `signature`.
+    - Whether BOOST and protocol swaps count as flow is OPEN for the lead. Until a ruling they are EXCLUDED (CONSERVATIVE, `config.EXCLUDE_PROTOCOL_SWAPS`): from buy and sell counts, net SOL, unique and first-time buyers, largest sell, all four "Who" shares and the fast-class buys. Pool state, prices and volatility still use every row.
     - net SOL is buy minus sell `quote_amount` (pre-fee);
-    - BOOST and protocol buys count in buys and net SOL;
     - largest sell is divided by the effective quote at d;
     - a first-time buyer is one whose first buy of the mint on the tape (curve or PumpSwap) falls in the window;
     - realised volatility is the square root of the sum of squared log changes of the post-trade mid over the window;
     - "since migration" is measured from the first pool row's pre-trade mid.
-
 ## Search
 22. **Folds.** Four folds: fold j holds out block j (00–06, 06–12, 12–18, 18–24 UTC) on every discovery day. A training point is dropped when its whole window [tau, exit] comes within 60 minutes of a held-out block. CONSERVATIVE: this also covers the hold. Points whose arm runs past the tape are used neither for edges nor for scoring.
-23. **Quintiles.** Edges are numpy linear percentiles. Top is x ≥ q80, bottom is x ≤ q20, and NaN is in neither. A binary or degenerate feature (`boost_finished`, often `cf_collections_1h`) can put most points in a "quintile".
-24. **Cost hurdle.** Read literally, the out-of-fold mean of net return must be at least the median round-trip cost, even though net already pays costs. CONSERVATIVE: this is stricter. The median is over all eligible discovery points with an entry fill.
+23. **Quintiles.** RESOLVED by AMENDMENT_1 item 23. Edges are numpy linear percentiles; top is x ≥ q80 and bottom is x ≤ q20. A binary feature (`config.BINARY_FEATURES`: `boost_finished`) uses top = 1 and bottom = 0. A feature whose training q20 equals its q80 gives no rule in that fold. NaN is in neither extreme.
+24. **Cost screen.** RESOLVED by AMENDMENT_1 item 24. A rule needs out-of-fold mean NET return above 0 in every fold, which also makes the sign the same in all four folds. Costs are not charged twice. The median round-trip cost is reported only.
 25. **Sign rule.** "The same in all four folds" is read as all four fold means non-zero with one sign. The 5 advanced rules are counted across both holds together.
 
 ## Validation (not run)
@@ -53,3 +53,7 @@ Places where `PREREG.md` is silent or ambiguous. Each one has the reading the co
     - memory is a few GB after the migrated-pool prefilter.
 
     None of this was run beyond 2 units, by rule.
+
+## Step A completeness (review fix)
+30. **Plan check.** stage1 checks `research/shared-tape/stepa-plan.txt` against the sha256 fixed in `config.STEPA_PLAN_SHA256`. It records whether each day's units equal that day's plan rows exactly, with no gaps (`stepa.plan_check`). search refuses unless the result is complete.
+31. **Validation days.** The Step A plan does not cover validation days, so a completeness check for Step B or forward days needs its own plan and sha. That is not written yet.
