@@ -2,7 +2,7 @@
 
 Reader 2 reads plan rows 63-123 (61 units) with ONLY_DAY=2026-09-10 and tee RPS 12; decoder tapedecdb72f1db28fd9c41efc500621702d817b91ff9df (v2, as reader 1's stored units). Each unit is stored in the private dataset Mrcdrnz/zeroed-tape under tape/2026-09-10/FROM-TO/ and read back (sha256) before its local copy is deleted (owner approval in this session, 2026-10-08).
 
-Updated 2026-10-08T12:36:59Z: 9 of 61 units stored; credits booked 57006 (each unit's 6000 is booked in advance, then corrected).
+Updated 2026-10-08T16:37:17Z: 24 of 61 units stored; credits booked 124507 (each unit's 6000 is booked in advance, then corrected).
 
 ## Stored units (v2)
 - 446008500-446012999
@@ -14,3 +14,18 @@ Updated 2026-10-08T12:36:59Z: 9 of 61 units stored; credits booked 57006 (each u
 - 445981500-445985999
 - 445977000-445981499
 - 445972500-445976999
+- 445968000-445972499
+- 445963500-445967999
+- 445959000-445963499
+- 445954500-445958999
+- 445950000-445954499
+- 445945500-445949999
+- 445941000-445945499
+- 445936500-445940999
+- 445932000-445936499
+- 445927500-445931999
+- 445923000-445927499
+- 445918500-445922999
+- 445914000-445918499
+- 445909500-445913999
+- 445905000-445909499
