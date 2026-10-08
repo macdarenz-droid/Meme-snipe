@@ -123,3 +123,4 @@ Rulings 19–28 are applied. The changed tests fail on `c173f777` (22 failures) 
 ### #311 CI (9 Oct 2026, about 2:25 AM)
 
 On `f313ff1e` and `d9511e13`, e2e is red: after "install" passes, `FAIL PATHS-FIX: receipts/ is not its own filesystem` (check run 113385546237). Sent to the builder to root-cause. It is not a flake; the check is not weakened, and any change of route comes to the supervisor first. #311 does not merge until e2e is green.
+- 9 Oct 2:05 AM: the first e2e fix (private chroot binds, `6895104f`) passed the filesystem check; the red team and reviewer saw it as final. 2:36 AM: e2e is red again at the next check, `receipts image is not preallocated` (job 113392311677). Sent back for root cause.
