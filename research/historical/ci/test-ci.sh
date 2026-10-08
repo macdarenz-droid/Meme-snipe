@@ -326,7 +326,7 @@ scan() {
 calls() { tr '\n' ' ' < "$T/calls.log"; }
 o="$T/scan1"; mkdir -p "$o"; now=$(date +%s); echo "$((now - 5)) 600 $((now + 120))" > "$o/archive-429.state"
 if scan "$o"; then
-  mapfile -t c < "$T/calls.log"; w=${c[0]#sleep }
+  mapfile -t c < "$T/calls.log"; c+=(""); w=${c[0]#sleep }; unset "c[-1]"
   [[ ${#c[@]} == 2 && "${c[0]}" == sleep* && "${c[1]}" == scan ]] && (( w >= 110 && w <= 120 )) &&
     ok "scan-day honours an existing back-off: waits until its end (${w} s) before the first scan" || no "existing back-off: $(calls)"
 else no "scan-day with an existing back-off: $(cat "$T/out.txt")"; fi
@@ -359,7 +359,7 @@ ARCHIVE_GO="$T/archive10.go" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md"
   ok "ARCHIVE-NODUP: scan-day refuses the Helius day 2026-09-21 (exit 2) before any scanner call" || no "scan-day helius day: rc=$rc $(calls)"
 o="$T/scan3"; mkdir -p "$o"; now=$(date +%s); echo "$now 7200 $((now + 7200))" > "$o/archive-429.state"
 rc=0; scan "$o" 60 || rc=$?
-mapfile -t c < "$T/calls.log"; w=${c[0]#sleep }
+mapfile -t c < "$T/calls.log"; c+=(""); w=${c[0]#sleep }; unset "c[-1]"
 [[ $rc == 75 && ${#c[@]} == 1 && "${c[0]}" == sleep* ]] && (( w >= 3290 && w <= 3300 )) &&
   ok "a back-off that does not fit the budget sleeps what the budget allows (${w} s of 3600 left), then exits 75 without scanning" || no "budget exit: rc=$rc $(calls)"
 o="$T/scan4"; mkdir -p "$o"; : > "$T/summary.md"
