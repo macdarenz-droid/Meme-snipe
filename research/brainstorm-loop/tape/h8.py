@@ -101,6 +101,7 @@ class GateCtx:
         self.lp = {p: (g["slot"].to_numpy(np.int64), g["lp_delta"].to_numpy(float).cumsum())
                    for p, g in tape.lp_moves.sort_values("slot").groupby("pool")}
         self._trades = {}
+        self._base = {}
 
     def trades(self, pool):
         """Per pool swap (all rows, BOOST included, as the core candle book): time, slot, pre and post price on
@@ -160,29 +161,39 @@ class GateCtx:
         return "h11_chase" if close > pm else None
 
     def check(self, pool, t, st, eq, size):
-        """'ok' or the first failing check, in the order: universe, dust, H6, H11, SOL/USD, H8 floor."""
+        """'ok' or the first failing check, in the order: universe, dust, H6, H11, SOL/USD, H8 floor. Everything
+        before the floor does not depend on size or eq, so it is computed once per (pool, t, st)."""
+        key = (pool, int(t), int(st))
+        if key not in self._base:
+            self._base[key] = self._base_check(pool, t, st)
+        why, uni = self._base[key]
+        if why:
+            return why
+        if eq is None or not np.isfinite(eq):
+            return "no_effective_quote"
+        return "ok" if eligible(eq, t, size, self.hourly, uni) else f"below_{uni}_floor"
+
+    def _base_check(self, pool, t, st):
         m = self.mig.get(pool)
         uni = universe(t - m[0]) if m is not None else "age_unknown"
         if uni not in ("U1", "U2"):
-            return uni
+            return uni, uni
         q = self.mig_quote.get(pool)
         if q is None:
-            return "dust_unknown"
+            return "dust_unknown", uni
         if q < DUST_AT_MIGRATION:
-            return "dust_at_migration"
+            return "dust_at_migration", uni
         lp = self.lp.get(pool)
         if lp is not None:
             i = int(np.searchsorted(lp[0], st, side="right")) - 1
             if i >= 0 and lp[1][i] > 0:
-                return "h6_lp_outstanding"
+                return "h6_lp_outstanding", uni
         r = self.h11(pool, t, st, uni)
         if r:
-            return r
+            return r, uni
         if not np.isfinite(px_asof(self.hourly, t)):
-            return "no_sol_usd"
-        if eq is None or not np.isfinite(eq):
-            return "no_effective_quote"
-        return "ok" if eligible(eq, t, size, self.hourly, uni) else f"below_{uni}_floor"
+            return "no_sol_usd", uni
+        return None, uni
 
 
 # ------------------------------------------------------------------ stratum reports for rows 1-3
@@ -276,9 +287,10 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly, ctx=None):
             st = RB.last_block_slot(tape, h)
             if st is None:
                 continue
-            i, mid, eq = RB.state_asof(ps, h, st)
-            if i < 0 or not np.isfinite(eq[i]):
+            i, _, eq_i = RB.state_at(ps, h, st)
+            if i < 0 or not np.isfinite(eq_i):
                 continue
+            eq = {i: eq_i}
             if not tape.covered(int(ps["slot"][i]), h):
                 stale[d] = stale.get(d, 0) + 1     # last state lies before a tape gap: not as-of the hour
                 continue
@@ -296,8 +308,9 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly, ctx=None):
         rec = {"day": r.day, "pool": r.pool, "assessable": False}
         if g is not None and tape.covered(int(r.m_slot), t):
             st = RB.last_block_slot(tape, t)
-            i, _, eq = RB.state_asof(RB.pool_state(g), t, st)
-            if i >= 0 and np.isfinite(eq[i]):
+            i, _, eq_i = RB.state_at(RB.pool_state(g), t, st)
+            eq = {i: eq_i}
+            if i >= 0 and np.isfinite(eq_i):
                 rec["assessable"] = True
                 for z in SIZES_USD:
                     rec[f"why_{z}"] = ctx.check(r.pool, t, st, eq[i], z)

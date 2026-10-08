@@ -7,7 +7,7 @@ As-of rule (Q14): the event and its exclusions read only rows at or before the e
 """
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict, deque
 
 import numpy as np
 import pandas as pd
@@ -42,17 +42,44 @@ def _cv(x):
     return float(x.std() / m) if m and np.isfinite(m) and m > 0 else 0.0     # a zero mean counts as regular
 
 
+class FastAsOf:
+    """`rows.w1_fast_asof` answered from an index: per (day, owner), the buy slots in order and running counts of
+    the two W1 flags, so a query is one binary search instead of a scan of every buy. Same result (tested)."""
+
+    def __init__(self, fb: pd.DataFrame):
+        self.idx = {}
+        fb = fb.sort_values("slot", kind="mergesort")
+        for k, g in fb.groupby(["day", "owner"], sort=False):
+            self.idx[k] = (g["slot"].to_numpy(), np.cumsum(g["near_anchor"].to_numpy(float)),
+                           np.cumsum(g["after_big"].to_numpy(float)))
+
+    def __call__(self, day, owner, slot) -> bool:
+        x = self.idx.get((day, owner))
+        if x is None:
+            return False
+        n = int(np.searchsorted(x[0], slot, side="right"))
+        if n == 0:
+            return False
+        return bool(x[1][n - 1] / n >= 0.10 or x[2][n - 1] / n >= 0.30)
+
+
 def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
     """Slicer events on canonical WSOL pools. One event per (mint, owner): the first buy k at which the owner has
     at least 3 buys of the mint in (t_k - 30 min, t_k], spanning at least 3 slots and 60 s (Q27). Returns
     (events, drops)."""
     sw = s[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL) & ~s["excluded"] & s["owner"].notna()]
     allx = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
-    sells_by = {k: g["block_time"].to_numpy() for k, g in allx[~allx["is_buy"]].groupby(["mint", "owner"], sort=False)}
+    buys = sw[sw["is_buy"]]
+    n = buys.groupby(["mint", "owner"], sort=False)["order"].transform("size")
+    buys = buys[n >= 3]                               # a pair with fewer than 3 buys can never fire
+    pairs = pd.MultiIndex.from_frame(buys[["mint", "owner"]]).unique()
+    sells = allx[~allx["is_buy"]]
+    sells = sells[pd.MultiIndex.from_frame(sells[["mint", "owner"]]).isin(pairs)]
+    sells_by = {k: g["block_time"].to_numpy() for k, g in sells.groupby(["mint", "owner"], sort=False)}
     ps_cache = {}
-    fast_buys = R.w1_fast_buys(tape, s)
+    fast_idx = FastAsOf(R.w1_fast_buys(tape, s))
     out, drops = [], Counter()
-    for (mint, x), g in sw[sw["is_buy"]].groupby(["mint", "owner"], sort=False):
+    for (mint, x), g in buys.groupby(["mint", "owner"], sort=False):
         if len(g) < 3:
             continue
         g = g.sort_values("order")
@@ -76,7 +103,7 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
             why = "routed_or_app"
         elif sl_rows["fake"].any():
             why = "two_sided_cluster"
-        elif R.w1_fast_asof(fast_buys, last["day"], x, st):     # as of the event slot (red team R2-17)
+        elif fast_idx(last["day"], x, st):     # as of the event slot (red team R2-17); = R.w1_fast_asof
             why = "w1_fast_class"
         else:
             seeds = {last["creator"]}
@@ -98,8 +125,8 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
         if why is None:
             if pool not in ps_cache:
                 ps_cache[pool] = RB.pool_state(ctx.pp[pool])
-            i, _, eq = RB.state_asof(ps_cache[pool], t, st)
-            q = float(eq[i]) if i >= 0 and np.isfinite(eq[i]) else np.nan
+            i, _, eq_i = RB.state_at(ps_cache[pool], t, st)
+            q = eq_i if i >= 0 and np.isfinite(eq_i) else np.nan
             b = float(last["signer_sol_post"]) if pd.notna(last["signer_sol_post"]) else np.nan
             if not np.isfinite(q) or q <= 0 or not np.isfinite(b):
                 why = "no_q_or_b"
@@ -163,8 +190,9 @@ def measure(tape: Tape, s: pd.DataFrame, ev: pd.DataFrame, fast, ctx):
     return pd.concat([ev.reset_index(drop=True), pd.DataFrame(res)], axis=1)
 
 
-def dispersed_controls(tape: Tape, s: pd.DataFrame, ctx, cmap):
-    """SWEEP_4 (c) control: at least 3 wallets, each with exactly 1 buy in (t' - 30 min, t'], in different hub-cap-50
+def dispersed_controls_reference(tape: Tape, s: pd.DataFrame, ctx, cmap):
+    """Row-by-row version of `dispersed_controls`, kept as the reference the tests compare it with.
+    SWEEP_4 (c) control: at least 3 wallets, each with exactly 1 buy in (t' - 30 min, t'], in different hub-cap-50
     clusters, whose buys sum to at least 1% of Q; the first such t' per pool and 2-h block (Q28). Its continuation
     is those wallets' net buy in (t' + 23 slots, t' + 60 min]."""
     sw = s[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL) & ~s["excluded"] & s["owner"].notna()]
@@ -184,8 +212,8 @@ def dispersed_controls(tape: Tape, s: pd.DataFrame, ctx, cmap):
             single = single.assign(cl=[cmap.get(o, o) for o in single["owner"]]).drop_duplicates("cl")
             if len(single) < 3:
                 continue
-            i, _, eq = RB.state_asof(ps, int(r.block_time), int(r.slot))
-            q = float(eq[i]) if i >= 0 and np.isfinite(eq[i]) else np.nan
+            i, _, eq_i = RB.state_at(ps, int(r.block_time), int(r.slot))
+            q = eq_i if i >= 0 and np.isfinite(eq_i) else np.nan
             if not np.isfinite(q) or single["sol"].sum() < MIN_BUYS_Q * q or not tape.covered(int(r.slot), int(r.block_time) + CONT_S):
                 continue
             later = g[(g["slot"] > r.slot + R.LANDING) & (g["block_time"] <= r.block_time + CONT_S)
@@ -194,6 +222,91 @@ def dispersed_controls(tape: Tape, s: pd.DataFrame, ctx, cmap):
             m = ctx.mig.get(pool)
             out.append({"day": r.day, "pool": pool, "t": int(r.block_time), "Q": q, "cont": cont,
                         "age_s": (int(r.block_time) - m[0]) if m else np.nan})
+            done.add(blk)
+    return pd.DataFrame(out, columns=["day", "pool", "t", "Q", "cont", "age_s"])
+
+
+def dispersed_controls(tape: Tape, s: pd.DataFrame, ctx, cmap):
+    """SWEEP_4 (c) control (Q28), same result as `dispersed_controls_reference`, in one pass per pool: a sliding
+    30-min window over the pool's buys keeps each owner's buy count, the sum of single-buy SOL and the clusters that
+    hold a single buyer; the exact cluster-deduplicated sum is formed only when the cheap bounds allow a hit.
+    Pools whose block times step back are left to the reference scan."""
+    sw = s[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL) & ~s["excluded"] & s["owner"].notna()]
+    out = []
+    for pool, g in sw.groupby("pool", sort=False):
+        g = g.sort_values("order")
+        b = g[g["is_buy"]]
+        if not len(b):
+            continue
+        bt = b["block_time"].to_numpy(np.int64)
+        if (np.diff(bt) < 0).any():
+            ref = dispersed_controls_reference(tape, g, ctx, cmap)
+            out += ref.to_dict("records")
+            continue
+        sl, sol = b["slot"].to_numpy(np.int64), b["sol"].to_numpy(float)
+        owners = b["owner"].to_numpy(object)
+        clus = np.array([cmap.get(o, o) for o in owners], dtype=object)
+        days = b["day"].to_numpy(object)
+        ps = RB.pool_state(ctx.pp[pool])
+        g_slot, g_bt = g["slot"].to_numpy(np.int64), g["block_time"].to_numpy(np.int64)
+        g_owner, g_buy, g_sol = g["owner"].to_numpy(object), g["is_buy"].to_numpy(bool), g["sol"].to_numpy(float)
+        m = ctx.mig.get(pool)
+        win = defaultdict(deque)              # owner -> indices of its buys in the window
+        csingle = Counter()                   # cluster -> number of single-buy owners in it
+        single_sum = 0.0
+        done = set()
+        lo = 0
+
+        def drop_single(o):
+            nonlocal single_sum
+            j = win[o][0]
+            single_sum -= sol[j]
+            csingle[clus[j]] -= 1
+            if csingle[clus[j]] == 0:
+                del csingle[clus[j]]
+
+        def add_single(o):
+            nonlocal single_sum
+            j = win[o][0]
+            single_sum += sol[j]
+            csingle[clus[j]] += 1
+
+        for k in range(len(b)):
+            o = owners[k]
+            if len(win[o]) == 1:
+                drop_single(o)
+            win[o].append(k)
+            if len(win[o]) == 1:
+                add_single(o)
+            while bt[lo] <= bt[k] - WINDOW_S:
+                ol = owners[lo]
+                if len(win[ol]) == 1:
+                    drop_single(ol)
+                win[ol].popleft()
+                if len(win[ol]) == 1:
+                    add_single(ol)
+                lo += 1
+            blk = (days[k], int(bt[k]) // 7200)
+            if blk in done or len(csingle) < 3:
+                continue
+            i, _, q = RB.state_at(ps, int(bt[k]), int(sl[k]))
+            if i < 0 or not np.isfinite(q) or single_sum < MIN_BUYS_Q * q:
+                continue
+            if not tape.covered(int(sl[k]), int(bt[k]) + CONT_S):
+                continue
+            kept, seen = [], set()
+            for j in range(lo, k + 1):
+                oj = owners[j]
+                if len(win[oj]) == 1 and clus[j] not in seen:
+                    seen.add(clus[j])
+                    kept.append(j)
+            if len(kept) < 3 or sol[kept].sum() < MIN_BUYS_Q * q:
+                continue
+            ks = {owners[j] for j in kept}
+            lm = (g_slot > sl[k] + R.LANDING) & (g_bt <= bt[k] + CONT_S) & np.array([x in ks for x in g_owner], bool)
+            cont = float(g_sol[lm & g_buy].sum() - g_sol[lm & ~g_buy].sum())
+            out.append({"day": days[k], "pool": pool, "t": int(bt[k]), "Q": q, "cont": cont,
+                        "age_s": (int(bt[k]) - m[0]) if m else np.nan})
             done.add(blk)
     return pd.DataFrame(out, columns=["day", "pool", "t", "Q", "cont", "age_s"])
 

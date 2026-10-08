@@ -830,6 +830,63 @@ class RunnerNewRows(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(out, f"stepa_{f}.csv")))
 
 
+class Speed(unittest.TestCase):
+    """The fast scans give the same results as the row-by-row references on synthetic data."""
+    def _random_unit(self, seed, step_back=False):
+        rng = np.random.default_rng(seed)
+        u = Unit(0, 20000)
+        for p in range(3):
+            mint, pool = f"M{p}", f"P{p}"
+            u.create(10 + p, mint); u.migrate(100 + p, mint, pool)
+            for i in range(400):
+                sl = int(150 + i * 40 + rng.integers(0, 30))
+                o = f"w{rng.integers(0, 60)}"
+                r = u.aswap(sl, o, mint, pool, sol=float(rng.uniform(0.05, 2.0)) * 1e9, buy=bool(rng.random() < 0.7),
+                            chain=bool(rng.random() < 0.9))
+            if step_back and p == 1:
+                u.amm[-50]["block_time"] -= 600                      # a block time that steps back
+        for i in range(40):                                       # some linked wallets (shared clusters)
+            u.w.append({"slot": 1, "from": f"w{rng.integers(0, 60)}", "to": f"w{rng.integers(0, 60)}"})
+        return u
+
+    def test_controls_match_reference(self):
+        for seed, step in ((1, False), (2, False), (3, True)):
+            tape, s, _ = load(self._random_unit(seed, step))
+            ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+            cmap = R.cluster_maps(tape)[0]["hub_cap_50"]
+            a = SL.dispersed_controls_reference(tape, s, ctx, cmap)
+            b = SL.dispersed_controls(tape, s, ctx, cmap)
+            self.assertGreater(len(a), 0)
+            pd.testing.assert_frame_equal(a.sort_values(["pool", "t"]).reset_index(drop=True),
+                                          b.sort_values(["pool", "t"]).reset_index(drop=True))
+
+    def test_fast_index_matches_w1_fast_asof(self):
+        u = self._random_unit(5)
+        for i in range(30):                                       # buys near the creates and after big buys
+            u.cbuy(11 + (i % 3), f"w{i % 60}", "M0", sol=2e9 if i % 4 == 0 else 1e8)
+        tape, s, _ = load(u)
+        fb = R.w1_fast_buys(tape, s)
+        idx = SL.FastAsOf(fb)
+        seen = 0
+        for day, owner in set(zip(fb["day"], fb["owner"])):
+            for slot in (0, 11, 12, 13, 500, 5000, 20000):
+                a, b = R.w1_fast_asof(fb, day, owner, slot), idx(day, owner, slot)
+                self.assertEqual(a, b, (owner, slot))
+                seen += a
+        self.assertGreater(seen, 0)
+
+    def test_state_at_matches_state_asof(self):
+        tape, s, _ = load(self._random_unit(4))
+        ps = RB.pool_state(R.by_pool(s)["P0"])
+        for t in range(T0 + 100, T0 + 17000, 97):
+            st = RB.last_block_slot(tape, t)
+            i, mid, eq = RB.state_asof(ps, t, st)
+            j, m1, e1 = RB.state_at(ps, t, st)
+            self.assertEqual(i, j)
+            if i >= 0:
+                np.testing.assert_equal([mid[i], eq[i]], [m1, e1])
+
+
 class SolUsdDir(unittest.TestCase):
     def _folder(self):
         import hashlib

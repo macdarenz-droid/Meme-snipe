@@ -290,18 +290,16 @@ class Tape:
     def mayhem_of_mint(self, mint):
         """COUNT_ROWS_AMENDMENT_3: mayhem is the mint's flag, taken in order from its CreateEvent, then any curve
         trade of the mint (`mayhem_mode`), then the CreatePoolEvent of a pool with that base mint. None when
-        none is on the tape. A 2B `base_supply` is never used to infer it."""
-        r = self.creates.loc[self.creates["mint"] == mint, "mayhem"]
-        if len(r) and pd.notna(r.iloc[0]):
-            return int(r.iloc[0])
-        r = self.swaps.loc[(self.swaps["venue"] == "curve") & (self.swaps["mint"] == mint)
-                           & self.swaps["mayhem"].notna(), "mayhem"]
-        if len(r):
-            return int(r.iloc[0])
-        r = self.pool_creates.loc[self.pool_creates["base_mint"] == mint, "mayhem"]
-        r = r.dropna()
-        if len(r):
-            return int(r.iloc[0])
+        none is on the tape. A 2B `base_supply` is never used to infer it. (Maps built once, then looked up.)"""
+        if not hasattr(self, "_mayhem_maps"):
+            cr = self.creates[self.creates["mayhem"].notna()].drop_duplicates("mint")
+            cu = self.swaps[(self.swaps["venue"] == "curve") & self.swaps["mayhem"].notna()].drop_duplicates("mint")
+            pc = self.pool_creates[self.pool_creates["mayhem"].notna()].drop_duplicates("base_mint")
+            self._mayhem_maps = (dict(zip(cr["mint"], cr["mayhem"])), dict(zip(cu["mint"], cu["mayhem"])),
+                                 dict(zip(pc["base_mint"], pc["mayhem"])))
+        for mp in self._mayhem_maps:
+            if mint in mp:
+                return int(mp[mint])
         return None
 
     # ---------------------------------------------------------------- coverage

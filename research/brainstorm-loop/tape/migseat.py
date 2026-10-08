@@ -161,8 +161,8 @@ def R_state(ctx, pool, t, st):
     g = ctx.pp.get(pool)
     if g is None:
         return -1, None, np.nan
-    i, mid, eq = RB.state_asof(RB.pool_state(g), t, st)
-    return i, mid, (float(eq[i]) if i >= 0 and np.isfinite(eq[i]) else np.nan)
+    i, mid, eq = RB.state_at(RB.pool_state(g), t, st)
+    return i, mid, (eq if i >= 0 and np.isfinite(eq) else np.nan)
 
 
 def arm_rows(a: pd.DataFrame, days):

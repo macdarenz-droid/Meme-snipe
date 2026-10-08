@@ -164,3 +164,13 @@
   - The re-price rule is written down as invariants (k, vSOL or vToken unchanged); fitting the full rule is left to the reader of those shares.
   - Amendment 6: `prereg_may_be_written` once (a), (b), (d) and (e) pass. The owner rules before any bot use, and a legal check comes before any real use.
 
+## Scale [open, for the lead]
+- One cached unit: about 250 s and 1.5 GB peak with 10,000 resamples. Before the speed fixes, the slicer's dispersed-control scan alone ran past 10 minutes on one unit. The fixes:
+  - one-pass control scan;
+  - O(log n) pool state;
+  - cached size-free H8 checks;
+  - indexed as-of fast class and mayhem lookups.
+
+  Each is tested equal to the old code on synthetic data.
+- Memory is linear in the units loaded (about 1.2 GB a unit, mostly string columns), so one process cannot hold a 62-unit day on this 15 GB machine. The rows need day-wide windows (24 h prior sells, 2 h flows). The options are a larger machine (about 80 GB) or a reader that keeps compact columns (categorical strings, dropped unused fields). That redesign is not built.
+

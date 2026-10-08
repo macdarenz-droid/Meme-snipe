@@ -137,6 +137,22 @@ def state_asof(ps, t, st):
     return i, mid, eq
 
 
+def state_at(ps, t, st):
+    """state_asof's value at its last index only, in O(log n): (i, mid_i, eq_i). Same rule: the swap's own post
+    reading, or the next swap's pre-trade reserves only when that swap has block_time <= t and slot <= st."""
+    bt, sl = ps["bt"], ps["slot"]
+    i = int(np.searchsorted(bt, t, side="right") - 1)
+    if i < 0:
+        return i, np.nan, np.nan
+    mid, eq = ps["mid"][i], ps["eq"][i]
+    ok_next = i + 1 < len(bt) and bt[i + 1] <= t and sl[i + 1] <= st
+    if not np.isfinite(mid) and ok_next:
+        mid = ps["mid_next"][i]
+    if not np.isfinite(eq) and ok_next:
+        eq = ps["eq_next"][i]
+    return i, float(mid), float(eq)
+
+
 def last_block_slot(tape: Tape, t):
     b = tape.blocks
     i = np.searchsorted(b["block_time"].values, t, side="right") - 1
