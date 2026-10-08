@@ -25,13 +25,16 @@ import { CONFIG_FIELDS, schema } from './registry.ts';
 export const CEILINGS_PATH = '/etc/bot/ceilings.json';
 export const CONFIG_PATH = '/etc/bot/config.json';
 export const SYSTEM_ACTOR: Actor = { type: 'system', id: 'm25.bootstrap', display: 'config bootstrap' };
+/** Writes the values an exits_only start runs on (ruling 16); while the newest version is one of these, entries stay blocked. */
+export const REPAIR_ACTOR: Actor = { type: 'system', id: 'm25.exits_only', display: 'config bootstrap (exits_only)' };
 
 export const M25_LOG_CODES = {
   'm25.bootstrap': { fields: { config_version: 'string', version_no: 'integer' } },
   'm25.loaded': { fields: { config_version: 'string', version_no: 'integer' } },
   'm25.config_file_ignored': { fields: { file_sha256: 'string', config_version: 'string' } },
   'm25.start_refused': { fields: { reason: 'string', error_code: 'string', message: 'string' } },
-  'm25.stored_invalid': { fields: { version_no: 'integer', used_version_no: 'integer', keys: 'string' } },
+  'm25.stored_invalid': { fields: { version_no: 'integer', used_version_no: 'integer', keys: 'string', defaults: 'string', rejected: 'string' } },
+  'm25.exits_only_kept': { fields: { config_version: 'string', version_no: 'integer' } },
   'm25.defaults_added': { fields: { config_version: 'string', version_no: 'integer', from_version_no: 'integer', keys: 'string' } },
 } as const;
 
@@ -93,6 +96,11 @@ function tryRead(read: (path: string) => string, path: string): string | null {
   }
 }
 
+const actorId = (json: string): unknown => {
+  const a = parseJson(json);
+  return typeof a === 'object' && a !== null ? (a as { id?: unknown }).id : undefined;
+};
+
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
@@ -113,6 +121,18 @@ export function bootstrapConfig(opts: BootstrapOptions): Result<ConfigService, S
     return { ok: false, error: { code, reason, message, errors } };
   };
 
+  /** The row that names `values`: an existing one with the same hash, or a new one (versionNo + 1) by `actor`. */
+  const storeValues = (values: Record<string, unknown>, versions: ReadonlyArray<{ configVersion: string; versionNo: number }>, actor: Actor) => {
+    const json = canonicalJson(values);
+    const configVersion = sha256(json);
+    const existing = versions.find((v) => v.configVersion === configVersion);
+    if (existing !== undefined) return { configVersion, versionNo: existing.versionNo, values };
+    const now = opts.clock.nowMs();
+    const versionNo = Math.max(0, ...versions.map((v) => v.versionNo)) + 1;
+    opts.db.withTx((tx) => opts.repo.insert(tx, { configVersion, versionNo, json, appliedAt: now, appliedBy: canonicalJson(actor), createdAt: now }));
+    return { configVersion, versionNo, values };
+  };
+
   const ceilingsTrust = trustProblem(ceilingsPath, opts.euid, stat);
   if (ceilingsTrust !== null) return refuse('ceilings_untrusted', ceilingsTrust.code, ceilingsTrust.message);
   const ceilingsText = tryRead(read, ceilingsPath);
@@ -127,42 +147,49 @@ export function bootstrapConfig(opts: BootstrapOptions): Result<ConfigService, S
   if (latest !== undefined) {
     const stored = resolveConfig(parseJson(latest.json), fields);
     if (!stored.ok) {
-      // Ruling 3: never refuse; exits_only on the newest version this build accepts.
+      // Ruling 3: never refuse; exits_only on the newest version this build accepts (a refused start would leave
+      // positions unmanaged). Ruling 16: the values in use get their own row and every key run on its default is listed.
       exitsOnly = true;
       const valid = versions.slice(1).map((v) => ({ v, r: resolveConfig(parseJson(v.json), fields) })).find((x) => x.r.ok);
+      let source: unknown;
+      let values: Record<string, unknown>;
+      let rejected: string[] = [];
       if (valid !== undefined && valid.r.ok) {
-        active = { configVersion: valid.v.configVersion, versionNo: valid.v.versionNo, values: valid.r.value };
+        source = parseJson(valid.v.json);
+        values = valid.r.value;
       } else {
         const given = parseJson(latest.json);
         const bad = new Set(stored.error.errors.map((e) => e.key));
+        rejected = [...bad].filter((k) => fields.some((f) => f.key === k));
         const kept = typeof given === 'object' && given !== null && !Array.isArray(given)
           ? Object.fromEntries(Object.entries(given as Record<string, unknown>).filter(([k]) => !bad.has(k) && fields.some((f) => f.key === k)))
           : {};
         const fallback = resolveConfig(kept, fields);
         if (!fallback.ok) return refuse('config_invalid', 'E_CONFIG_STORED_INVALID', `config_version ${latest.versionNo} cannot be repaired with defaults`, fallback.error.errors);
-        active = { configVersion: latest.configVersion, versionNo: latest.versionNo, values: fallback.value };
+        source = kept;
+        values = fallback.value;
       }
+      const given = typeof source === 'object' && source !== null ? source as Record<string, unknown> : {};
+      const defaults = Object.keys(values).filter((k) => !Object.hasOwn(given, k)).sort();
+      active = storeValues(values, versions, REPAIR_ACTOR);
       opts.log?.event('critical', 'm25.stored_invalid', {
         version_no: latest.versionNo, used_version_no: active.versionNo, keys: stored.error.errors.map((e) => `${e.key}:${e.code}`).join(','),
+        defaults: defaults.join(','), rejected: rejected.join(','),
       });
     } else {
       active = { configVersion: latest.configVersion, versionNo: latest.versionNo, values: stored.value };
+      if (actorId(latest.appliedBy) === REPAIR_ACTOR.id) {
+        // The newest version was written by an exits_only start: entries stay blocked until an operator writes a new one.
+        exitsOnly = true;
+        opts.log?.event('critical', 'm25.exits_only_kept', { config_version: latest.configVersion, version_no: latest.versionNo });
+      }
       const json = canonicalJson(stored.value);
       if (json !== latest.json) {
         // Ruling 4: this build added keys; store the values in use as a new version.
         const prior = parseJson(latest.json) as Record<string, unknown>;
         const added = Object.keys(stored.value).filter((k) => !Object.hasOwn(prior, k)).sort();
-        const configVersion = sha256(json);
-        const existing = versions.find((v) => v.configVersion === configVersion);
-        if (existing !== undefined) {
-          active = { configVersion, versionNo: existing.versionNo, values: stored.value };
-        } else {
-          const now = opts.clock.nowMs();
-          const versionNo = latest.versionNo + 1;
-          opts.db.withTx((tx) => opts.repo.insert(tx, { configVersion, versionNo, json, appliedAt: now, appliedBy: canonicalJson(SYSTEM_ACTOR), createdAt: now }));
-          active = { configVersion, versionNo, values: stored.value };
-        }
-        opts.log?.event('info', 'm25.defaults_added', { config_version: configVersion, version_no: active.versionNo, from_version_no: latest.versionNo, keys: added.join(',') });
+        active = storeValues(stored.value, versions, exitsOnly ? REPAIR_ACTOR : SYSTEM_ACTOR);
+        opts.log?.event('info', 'm25.defaults_added', { config_version: active.configVersion, version_no: active.versionNo, from_version_no: latest.versionNo, keys: added.join(',') });
       }
     }
     const fileText = tryRead(read, configPath);

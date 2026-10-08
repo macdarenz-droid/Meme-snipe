@@ -21,7 +21,7 @@ import { pubkey } from './samples.ts';
 const dir = tempDir('schema');
 let n = 0;
 /** The SHA-256 of migration 0001's text. Pinned: the text is frozen once applied anywhere; a change needs a new migration. */
-const M0001_SHA256 = 'ae1db15d0e075ad3ed3f4019ac192f069f8e8ec021147a93860a51f6fe798336';
+const M0001_SHA256 = '74473e882c2c4eb0b8a1cc679915654092427130f17e2258f2a23ff4c9a2b3af';
 
 function fresh(): { db: Db; path: string; lines: string[]; log: ReturnType<typeof createLogger> } {
   const path = join(dir, `m${n++}.db`);

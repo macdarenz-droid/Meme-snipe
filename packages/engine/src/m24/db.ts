@@ -52,6 +52,11 @@ export interface Db {
     backlog(): number;
   };
   integrityCheck(kind: 'quick' | 'full'): { ok: boolean; messages: string[] };
+  /**
+   * The retention job's transaction (retention.ts only; Z02 round 3 ruling 14): sets `retention_clock` to `nowMs`, runs
+   * `fn`, and resets it to 0 before the commit. No other SQL may name `retention_clock`.
+   */
+  withRetentionClock<T>(nowMs: number, fn: (tx: TxHandle) => T): T;
   /** Online backup of the main database to `path` (overwritten), `rate` pages per step. */
   backupTo(path: string, rate?: number): Promise<number>;
   close(): void;
@@ -69,13 +74,17 @@ export interface DbOptions {
   /**
    * A missing database file is created only by an explicit init (Z02 round 2 ruling 2): `create: true` is `botctl init`;
    * `initMarker` is a first-start marker file kept outside the database directory, removed once the database exists.
-   * Without either, a missing file refuses the start (E_DATABASE_MISSING, critical log).
+   * Without either, a missing file refuses the start (E_DATABASE_MISSING, critical log). The marker's directory must be
+   * writable by the engine's user, so the marker can be removed (ruling 15): on the host, `/var/lib/bot-init/first-start`
+   * in a `bot`-owned 0700 directory beside (not inside) `/var/lib/bot`. A marker that cannot be removed refuses the start
+   * (E_INIT_MARKER_STUCK) with the writer closed and the lock released, so it can never later recreate an empty
+   * database; a marker found beside an existing database is removed first, or the start is refused the same way.
    */
   create?: boolean;
   initMarker?: string;
 }
 
-export type DbOpenCode = 'E_DATABASE_MISSING' | 'E_DATABASE_EMPTY' | 'E_DATABASE_CORRUPT' | 'E_WRITER_LOCKED' | 'E_NOT_WAL';
+export type DbOpenCode = 'E_DATABASE_MISSING' | 'E_DATABASE_EMPTY' | 'E_DATABASE_CORRUPT' | 'E_WRITER_LOCKED' | 'E_NOT_WAL' | 'E_INIT_MARKER_STUCK';
 
 /** A start-up refusal of `openDb`; the caller keeps the engine stopped and the critical log raises the alert. */
 export class DbOpenError extends Error {
@@ -211,12 +220,24 @@ export function openDb(opts: DbOptions): Db {
   const memory = opts.path === ':memory:';
   const file = !memory && opts.path !== '';
   let fromMarker = false;
-  if (file && !existsSync(opts.path)) {
-    if (opts.initMarker !== undefined) {
-      const rel = relative(dirname(resolve(opts.path)), resolve(opts.initMarker));
-      if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) throw new TypeError('m24: the init marker must be outside the database directory');
-      fromMarker = existsSync(opts.initMarker);
+  const removeMarker = (): string | null => {
+    try {
+      rmSync(opts.initMarker as string, { force: true });
+      return existsSync(opts.initMarker as string) ? 'it is still there' : null;
+    } catch (e) {
+      return (e as Error).message;
     }
+  };
+  if (file && opts.initMarker !== undefined) {
+    const rel = relative(dirname(resolve(opts.path)), resolve(opts.initMarker));
+    if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) throw new TypeError('m24: the init marker must be outside the database directory');
+  }
+  if (file && existsSync(opts.path) && opts.initMarker !== undefined && existsSync(opts.initMarker)) {
+    const stuck = removeMarker();                                          // a marker left beside a live database
+    if (stuck !== null) throw refuse('E_INIT_MARKER_STUCK', `the first-start marker ${opts.initMarker} beside ${opts.path} cannot be removed: ${stuck}`);
+  }
+  if (file && !existsSync(opts.path)) {
+    if (opts.initMarker !== undefined) fromMarker = existsSync(opts.initMarker);
     if (opts.create !== true && !fromMarker) {
       throw refuse('E_DATABASE_MISSING', `${opts.path} does not exist; a database is created only by botctl init or a first-start marker`);
     }
@@ -249,7 +270,14 @@ export function openDb(opts: DbOptions): Db {
     throw e;
   }
   const writer: DatabaseSync = opened;
-  if (fromMarker) rmSync(opts.initMarker as string, { force: true });      // the database exists now: the marker is spent
+  if (fromMarker) {                                                       // the database exists now: the marker is spent
+    const stuck = removeMarker();
+    if (stuck !== null) {
+      writer.close();
+      release();
+      throw refuse('E_INIT_MARKER_STUCK', `the first-start marker ${opts.initMarker as string} cannot be removed: ${stuck}`);
+    }
+  }
   if (!memory) restrictFiles(opts.path);
   const ws = new Statements(writer);
   const readerConns = memory ? [] : Array.from({ length: opts.readers ?? 2 },
@@ -272,6 +300,9 @@ export function openDb(opts: DbOptions): Db {
     const guard = (sql: string): void => {
       if (!active()) throw new Error('m24: transaction handle used outside its withTx');
       if (isTxControl(sql)) throw new Error('m24: transaction control is withTx\'s alone');
+      // Only the schema (CREATE, from the migrations) and the retention job name it (ruling 14); a young row also needs
+      // SQLite's wall clock to agree, so even a statement that got past this check cannot delete it.
+      if (/retention_clock/i.test(sql) && !/^\s*CREATE\s/i.test(sql)) throw new Error('m24: retention_clock is the retention job\'s alone (retention.ts, withRetentionClock)');
       stillOpen();
     };
     return {
@@ -330,6 +361,19 @@ export function openDb(opts: DbOptions): Db {
       backlog += appended;
       opts.metrics?.outboxBacklog.set(backlog);
       return result;
+    },
+
+    withRetentionClock<T>(nowMs: number, fn: (tx: TxHandle) => T): T {
+      if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new RangeError('m24: retention needs a positive epoch-ms time');
+      const set = (v: number): void => {
+        ws.get('INSERT INTO "retention_clock" ("id", "now_ms") VALUES (1, ?) ON CONFLICT ("id") DO UPDATE SET "now_ms" = excluded."now_ms"').run(v);
+      };
+      return db.withTx((tx) => {
+        set(nowMs);
+        const result = fn(tx);
+        set(0);
+        return result;
+      });
     },
 
     reader(): ReaderHandle {

@@ -7,7 +7,7 @@ import { canonicalJson } from '@bot/types';
 import { openDb } from '../../src/m24/db.ts';
 import { prepareDatabase } from '../../src/m24/migrate.ts';
 import { createRepos } from '../../src/m24/repos.ts';
-import { bootstrapConfig, M25_LOG_CODES, SYSTEM_ACTOR, type BootstrapOptions } from '../../src/m25/bootstrap.ts';
+import { bootstrapConfig, M25_LOG_CODES, REPAIR_ACTOR, SYSTEM_ACTOR, type BootstrapOptions } from '../../src/m25/bootstrap.ts';
 import { CEILING_KEYS, parseCeilings } from '../../src/m25/ceilings.ts';
 import { ALL_MODES, type ConfigFieldDef } from '../../src/m25/fields.ts';
 import { lstatOrNull, trustProblem, type FileStat } from '../../src/m25/files.ts';
@@ -228,14 +228,28 @@ describe('stored config versions and newer builds (Z02 round 2 rulings 3 and 4)'
     db.close();
   });
 
-  it('ruling 3: with no stored version accepted, the newest one runs exits_only with each rejected key at its default', async () => {
-    const { db, opts } = await setup();
+  it('ruling 3 and 16: with no stored version accepted, the newest one runs exits_only with each rejected key at its default, in its own row', async () => {
+    const { db, opts, lines } = await setup();
     const at = Date.UTC(2026, 9, 8);
     db.withTx((tx) => repos.config_version.insert(tx, { configVersion: 'd'.repeat(64), versionNo: 1, json: '{"m24.removed":1,"m27.series_cap":3000,"m27.log_retention_days":0}',
       appliedAt: at, appliedBy: '{}', createdAt: at }));
     const r = bootstrapConfig(opts);
     assert.deepEqual(r.ok ? [r.value.exitsOnly, r.value.versionNo, r.value.current()['m27.series_cap'], r.value.current()['m27.log_retention_days']] : r.error,
-      [true, 1, 3_000, 14]);
+      [true, 2, 3_000, 14]);
+    if (!r.ok) return;
+    const row = repos.config_version.find(db.reader(), { versionNo: 2 })[0];
+    assert.equal(row?.configVersion, r.value.current().version);                         // the id names the values in use
+    assert.equal(row?.configVersion, createHash('sha256').update(row?.json ?? '').digest('hex'));
+    assert.deepEqual(JSON.parse(row?.appliedBy ?? '{}'), JSON.parse(canonicalJson(REPAIR_ACTOR)));
+    const alert = JSON.parse(lines.findLast((l) => l.includes('m25.stored_invalid')) as string);
+    assert.equal(alert.level, 'critical');
+    assert.equal(alert.rejected, 'm27.log_retention_days');                              // m24.removed is unknown: dropped, listed in keys
+    const defaults = (alert.defaults as string).split(',');
+    assert.ok(defaults.includes('m27.log_retention_days') && defaults.includes('m24.db_path') && !defaults.includes('m27.series_cap'), alert.defaults);
+    const again = bootstrapConfig(opts);                                                  // the repaired row is newest: still exits_only
+    assert.deepEqual(again.ok ? [again.value.exitsOnly, again.value.versionNo] : again.error, [true, 2]);
+    assert.ok(lines.some((l) => l.includes('m25.exits_only_kept')));
+    assert.equal(repos.config_version.find(db.reader()).length, 2);
     db.close();
   });
 

@@ -102,17 +102,18 @@ describe('C1 and RB-14 (red teams C and B): the M24 backup carries every piece o
   it('every table, the trading state, limits, breakers, discovery cursors and saved series included, is in the online backup', async () => {
     const path = fresh();
     const db = await migrated(path);
-    const tables = (Object.keys(TABLES) as TableName[]).filter((t) => t !== 'schema_migrations' && t !== 'outbox');
+    const tables = (Object.keys(TABLES) as TableName[]).filter((t) => t !== 'schema_migrations' && t !== 'outbox' && t !== 'retention_clock');
     for (const name of tables) {
       const row = name === 'system_state' ? { ...sampleRow(name, 1), id: 1, tradingState: 'exits_only' } : sampleRow(name, 1);
       db.withTx((tx) => (repos[name] as Repo<TableName>).insert(tx, row as RowOf<TableName>));
     }
     db.withTx((tx) => repos.kv_state.insert(tx, { ...sampleRow('kv_state', 2), key: 'm05.graduates', valueJson: '{"unobserved":[{"from":0,"to":1}]}' }));
     db.withTx((tx) => db.outbox.append(tx, 'state', { id: 'x' }));
+    db.withRetentionClock(Date.UTC(2026, 9, 8), () => 0);                              // leaves its row (now_ms 0)
     const copy = `${path}.restore`;
     await db.backupTo(copy);
     const restored = openDb({ create: true, path: copy, clock: fakeClock() });
-    for (const name of [...tables, 'schema_migrations', 'outbox'] as const) {
+    for (const name of [...tables, 'schema_migrations', 'outbox', 'retention_clock'] as const) {
       const all = (h: Db): unknown[] => h.reader().all(`SELECT * FROM "${name}" ORDER BY 1`).map((x) => ({ ...x }));
       assert.deepEqual(all(restored), all(db), name);
       assert.ok(all(db).length > 0, name);

@@ -2,10 +2,11 @@
 // passes here. Rulings 3 and 4 are in m25/bootstrap.test.ts, 5 in packages/contract, 6 in tools/policy and
 // packages/core/test/ledger/labels.test.ts.
 import { strict as assert } from 'node:assert';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
 import { DbOpenError, M24_LOG_CODES, openDb, type Db } from '../../src/m24/db.ts';
 import { prepareDatabase } from '../../src/m24/migrate.ts';
@@ -15,7 +16,7 @@ import { createLogger, M27_LOG_CODES, mergeLogCodes } from '../../src/m27/log.ts
 import { FileLogSink } from '../../src/m27/logfile.ts';
 import { MetricsRegistry, type RollupRow } from '../../src/m27/metrics.ts';
 import { fakeClock, tempDir } from '../helpers.ts';
-import { sampleRow, ulid } from './samples.ts';
+import { sampleRow } from './samples.ts';
 
 const dir = tempDir('round2');
 let n = 0;
@@ -69,6 +70,26 @@ describe('ruling 2: a database is created only by an explicit init', () => {
     assert.throws(() => openDb({ path: other, clock: fakeClock(T0), initMarker: join(dbDir, 'm') }), /outside the database directory/);
     assert.throws(() => openDb({ path: other, clock: fakeClock(T0), initMarker: join(dbDir, 'sub', 'm') }), /outside the database directory/);
     openDb({ path: other, clock: fakeClock(T0), create: true }).close();
+  });
+});
+
+describe('ruling 15: a first-start marker that cannot be removed refuses the start and leaks nothing', () => {
+  it('E_INIT_MARKER_STUCK with a critical log, the writer closed and the lock released; the marker never sits silently beside a database', () => {
+    const dbDir = join(dir, `db${n++}`);
+    const etc = join(dir, `etc${n++}`);
+    mkdirSync(dbDir);
+    const marker = join(etc, 'first-start');
+    mkdirSync(join(marker, 'x'), { recursive: true });                                     // cannot be removed (a non-empty directory)
+    const path = join(dbDir, 'bot.db');
+    const { log, parsed } = logger();
+    assert.throws(() => openDb({ path, clock: fakeClock(T0), initMarker: marker, log }), (e: unknown) => e instanceof DbOpenError && e.code === 'E_INIT_MARKER_STUCK');
+    assert.equal(parsed().at(-1)?.error_code, 'E_INIT_MARKER_STUCK');
+    openDb({ path, clock: fakeClock(T0) }).close();                                         // lock released, writer closed
+    assert.throws(() => openDb({ path, clock: fakeClock(T0), initMarker: marker }), /E_INIT_MARKER_STUCK|cannot be removed/);  // still beside it
+    rmSync(marker, { recursive: true });
+    writeFileSync(marker, '');                                                              // a removable leftover beside the database
+    openDb({ path, clock: fakeClock(T0), initMarker: marker }).close();
+    assert.equal(existsSync(marker), false);
   });
 });
 
@@ -210,18 +231,102 @@ describe('ruling 9: a damaged database or backup is named, not thrown raw or tru
   });
 });
 
-describe('ruling 10: deletes are judged by the retention job\'s clock, never SQLite\'s wall clock', () => {
-  it('a row old by the wall clock but young by the engine clock cannot be deleted; a row old by the engine clock can, whatever the wall clock says', async () => {
+describe('rulings 10 and 14: a delete needs a row old by both the retention job\'s clock and SQLite\'s wall clock', () => {
+  it('old by the wall clock only, or by the engine clock only: refused; old by both: deleted; a plain DELETE: refused', async () => {
     const db = await migrated();
-    const wall = Number(db.reader().get("SELECT unixepoch('now') * 1000 AS now")?.now);  // SQLite's wall clock (the old triggers' clock)
-    const wallAgo = wall - 40 * DAY;                                                      // 40 days old by the wall clock
-    db.withTx((tx) => repos.wallet_snapshot.insert(tx, { ...sampleRow('wallet_snapshot', 1), granularity: '30s', createdAt: wallAgo }));
+    const wall = Number(db.reader().get("SELECT unixepoch('now') * 1000 AS now")?.now);  // SQLite's wall clock
+    const ins = (i: number, createdAt: number): void => db.withTx((tx) => repos.wallet_snapshot.insert(tx, { ...sampleRow('wallet_snapshot', i), granularity: '30s', createdAt }));
+    ins(1, wall - 40 * DAY);                                                              // 40 days old by the wall clock
     assert.throws(() => db.withTx((tx) => tx.run('DELETE FROM wallet_snapshot')), /append_only/);   // no job, no delete
-    assert.equal(deleteExpired(db, 'wallet_snapshot', fakeClock(wallAgo + DAY)), 0);              // engine clock: 1 day old
-    const ahead = wall + 400 * DAY;                                                 // an engine clock far past the wall clock
-    db.withTx((tx) => repos.fill.insert(tx, { ...sampleRow('fill', 1), createdAt: ahead - 2_558 * DAY }));
-    assert.equal(deleteExpired(db, 'fill', fakeClock(ahead)), 1);
-    assert.equal(repos.fill.find(db.reader(), { fillId: ulid(1) }).length, 0);
+    assert.equal(deleteExpired(db, 'wallet_snapshot', fakeClock(wall - 39 * DAY)), 0);   // the engine clock says 1 day old
+    ins(2, wall - DAY);                                                                   // 1 day old by the wall clock
+    assert.equal(deleteExpired(db, 'wallet_snapshot', fakeClock(wall + 400 * DAY)), 1);  // an engine clock far ahead: only row 1 goes
+    assert.deepEqual(repos.wallet_snapshot.find(db.reader()).map((w) => w.createdAt), [wall - DAY]);
     db.close();
+  });
+});
+
+describe('ruling 14: only the retention job writes retention_clock', () => {
+  it('any other statement naming it is refused before it runs, in any spelling; a forged clock still cannot delete a young row', async () => {
+    const db = await migrated();
+    for (const sql of ['UPDATE retention_clock SET now_ms = 99999999999999', 'INSERT OR REPLACE INTO "retention_clock" VALUES (1, 5)',
+      'DELETE FROM Retention_Clock', '/* x */ UPDATE [retention_clock] SET now_ms = 1', 'SELECT now_ms FROM retention_clock', 'DROP TABLE retention_clock']) {
+      assert.throws(() => db.withTx((tx) => tx.run(sql)), /retention job's alone/, sql);
+    }
+    const wall = Number(db.reader().get("SELECT unixepoch('now') * 1000 AS now")?.now);
+    db.withTx((tx) => repos.fill.insert(tx, { ...sampleRow('fill', 1), createdAt: wall - DAY }));
+    db.withTx((tx) => tx.run('CREATE TRIGGER forge AFTER INSERT ON trade BEGIN UPDATE retention_clock SET now_ms = 99999999999999; END'));
+    db.withTx((tx) => repos.trade.insert(tx, sampleRow('trade', 1)));                     // the trigger forges a far-future clock
+    assert.throws(() => db.withTx((tx) => tx.run('DELETE FROM fill')), /append_only/);    // the wall clock still says 1 day old
+    assert.equal(repos.fill.find(db.reader()).length, 1);
+    db.close();
+  });
+
+  it('no source file but db.ts and retention.ts calls withRetentionClock or names retention_clock', () => {
+    const src = fileURLToPath(new URL('../../../', import.meta.url));
+    const found: string[] = [];
+    for (const pkg of readdirSync(src)) {
+      const dirPath = join(src, pkg, 'src');
+      if (!existsSync(dirPath)) continue;
+      for (const f of readdirSync(dirPath, { recursive: true, encoding: 'utf8' })) {
+        if (!f.endsWith('.ts')) continue;
+        const rel = `${pkg}/src/${f}`;
+        if (['engine/src/m24/db.ts', 'engine/src/m24/retention.ts', 'engine/src/m24/schema.ts', 'engine/src/m24/ddl.ts', 'engine/src/m24/migrations/0001_initial.ts'].includes(rel)) continue;
+        if (/withRetentionClock|retention_clock/.test(readFileSync(join(dirPath, f), 'utf8'))) found.push(rel);
+      }
+    }
+    assert.deepEqual(found, []);
+  });
+});
+
+describe('round 3 rulings 17-19', () => {
+  it('ruling 19: the retention job tells the rollup sink how many rows went, so its byte count frees room', async () => {
+    const db = await migrated();
+    const sink = metricRollupSink(db, repos.metric_rollup_1m, fakeClock(T0), { maxBytes: 2 * ROLLUP_ROW_BYTES });
+    const wall = Number(db.reader().get("SELECT unixepoch('now') * 1000 AS now")?.now);
+    const row = (i: number): RollupRow => ({ metric: `m${i}`, labelsHash: BigInt(i), minute: (wall - 9 * DAY) as never, scope: 'pool', count: 1, sum: 1, p50: null, p95: null, p99: null });
+    const old = metricRollupSink(db, repos.metric_rollup_1m, fakeClock(wall - 9 * DAY), { maxBytes: 10 * ROLLUP_ROW_BYTES });
+    old.append([row(1), row(2)]);                                                        // 9 days old by both clocks
+    const fresh2 = metricRollupSink(db, repos.metric_rollup_1m, fakeClock(T0), { maxBytes: 2 * ROLLUP_ROW_BYTES });
+    assert.equal(fresh2.storedRows(), 2);
+    assert.equal(sink.storedRows(), 0);                                                  // counted before the rows existed
+    assert.equal(deleteExpired(db, 'metric_rollup_1m', fakeClock(wall), [fresh2]), 2);
+    assert.equal(fresh2.storedRows(), 0);
+    fresh2.append([{ ...row(3), minute: wall as never }, { ...row(4), minute: wall as never }]);
+    assert.equal(repos.metric_rollup_1m.find(db.reader()).length, 2);                    // room again
+    db.close();
+  });
+
+  it('ruling 18: a start backup that fails its check leaves the previous backup as it was and no temp file', async () => {
+    const path = fresh();
+    writeFileSync(`${path}.bak`, 'previous backup');
+    const db = openDb({ create: true, path, clock: fakeClock(T0) });
+    const bad = { ...db, async backupTo(p: string): Promise<number> {
+      const other = new DatabaseSync(p);
+      other.exec('CREATE TABLE x (a)');
+      other.close();
+      return 1;
+    } };
+    const r = await prepareDatabase(bad, { clock: fakeClock(T0), backupPath: `${path}.bak` });
+    assert.equal(r.ok ? null : r.error.code, 'E_BACKUP_FAILED');
+    assert.equal(readFileSync(`${path}.bak`, 'utf8'), 'previous backup');
+    assert.equal(existsSync(`${path}.bak.tmp`), false);
+    const good = await prepareDatabase(db, { clock: fakeClock(T0), backupPath: `${path}.bak` });
+    assert.equal(good.ok, true);
+    assert.notEqual(readFileSync(`${path}.bak`).subarray(0, 15).toString(), 'previous backup');   // replaced by the checked copy
+    db.close();
+  });
+
+  it('ruling 17: a half-written append (.gz.part) left by a crash is cleared and the .gz it was replacing is intact', async () => {
+    const logDir = join(dir, `log${n++}`);
+    mkdirSync(logDir);
+    const old = join(logDir, 'engine-2026-10-07.ndjson');
+    writeFileSync(`${old}.gz`, gzipSync('{"kept":1}\n'));
+    writeFileSync(`${old}.gz.part`, 'half');
+    const clock = fakeClock(Date.UTC(2026, 9, 8, 12, 0, 0));
+    const s = new FileLogSink({ dir: logDir, clock, retentionDays: 14, maxBytesPerDay: 1_000_000, queueBytes: 1_000_000 });
+    await s.close();
+    assert.deepEqual(readdirSync(logDir).sort(), ['engine-2026-10-07.ndjson.gz', 'engine-2026-10-08.ndjson']);
+    assert.equal(gunzipSync(readFileSync(`${old}.gz`)).toString(), '{"kept":1}\n');
   });
 });

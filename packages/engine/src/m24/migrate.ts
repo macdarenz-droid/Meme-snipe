@@ -3,8 +3,8 @@
 // ONE transaction, each recorded in `schema_migrations` with the SHA-256 of its text. Any failure rolls the transaction
 // back, so the database stays at its previous version. A start with nothing to apply takes no backup (CL-52: "backup
 // first, migrate"; the routine backups are B-M24-04's), so a large database does not delay every start. The backup is
-// written through SQLite's online backup API, which writes the destination in a transaction (through its WAL, since
-// the source is WAL): a failed or killed backup leaves the previous backup file as it was.
+// written through SQLite's online backup API to `<backup>.tmp`, checked (quick_check and page count), then renamed over
+// the previous backup, so a failed, killed or bad backup leaves the previous one as it was (Z02 rulings 9 and 18).
 //
 // The caller acts on the result (ARCH 7.6, M24): any error means the engine runs `exits_only` on the unmigrated
 // database (positions still managed, entries blocked) and raises a critical alert:
@@ -18,6 +18,7 @@
 //   host stand-in's database at `m24.db_path`): nothing is applied on top of it and it is left as it was (MIGRATION
 //   Rule 3, the old state is never reused; red team B RB-15).
 import { createHash } from 'node:crypto';
+import { renameSync, rmSync } from 'node:fs';
 import type { Clock, Result } from '@bot/types';
 import type { Logger } from '../m27/log.ts';
 import { DatabaseSync } from 'node:sqlite';
@@ -128,9 +129,13 @@ export async function prepareDatabase(db: Db, opts: PrepareOptions): Promise<Res
   const pending = list.slice(from);
   if (pending.length === 0) return { ok: true, value: { from, to: from, applied: [] } };
   try {
-    await db.backupTo(opts.backupPath);
-    checkBackup(db, opts.backupPath);
+    // Written beside the previous backup and checked there; only a good copy replaces it (ruling 18).
+    rmSync(`${opts.backupPath}.tmp`, { force: true });
+    await db.backupTo(`${opts.backupPath}.tmp`);
+    checkBackup(db, `${opts.backupPath}.tmp`);
+    renameSync(`${opts.backupPath}.tmp`, opts.backupPath);
   } catch (e) {
+    rmSync(`${opts.backupPath}.tmp`, { force: true });
     const message = (e as Error).message;
     opts.log?.event('error', 'm24.start_backup_failed', { message });
     return fail('E_BACKUP_FAILED', `start backup failed, ${pending.length} migration(s) not applied: ${message}`, null);

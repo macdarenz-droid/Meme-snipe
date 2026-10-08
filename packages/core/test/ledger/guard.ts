@@ -46,6 +46,7 @@ export const importViolations = (root: string): string[] => {
   // @bot/engine's M24 owns its own SQLite file (B-M24-01); tools/policy (E_SQLITE_OUTSIDE_M24) keeps node:sqlite inside it
   // (Z02 round 2 ruling 6). Its files are not scanned and a path that reaches them stops there, like the ledger entry.
   const m24 = join(root, 'packages/engine/src/m24') + '/';
+  const engine = join(root, 'packages/engine/src') + '/';
   const allowed = [join(core, 'ledger') + '/', join(core, 'stats') + '/', m24];
   const forbidden = (file: string) => file.startsWith(join(core, 'ledger') + '/') && file !== ledgerEntry;
   const resolveSpec = (from: string, spec: string): string | null => {
@@ -65,7 +66,12 @@ export const importViolations = (root: string): string[] => {
       seen.add(file);
       const chain = [...via, relative(root, file)].join(' -> ');
       if (forbidden(file)) { violations.push(`${chain} (outcome store or ledger internal)`); continue; }
-      if (file === ledgerEntry || file.startsWith(m24)) continue; // the engine-facing entry is checked by its own tests
+      if (file.startsWith(m24)) {
+        // Only @bot/engine may use M24 (Z02 round 3 ruling 20): a path into it from anywhere else is a violation.
+        if (!start.startsWith(engine)) violations.push(`${chain} (reaches packages/engine/src/m24)`);
+        continue;
+      }
+      if (file === ledgerEntry) continue; // the engine-facing entry is checked by its own tests
       const text = readFileSync(file, 'utf8');
       for (const [pattern, what] of UNTRACEABLE) if (pattern.test(text)) violations.push(`${chain} (${what})`);
       for (const m of text.matchAll(SPEC)) {

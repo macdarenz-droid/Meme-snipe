@@ -90,7 +90,9 @@ export function tableStatements(name: string, def: TableDef): string[] {
   if (def.appendOnly) {
     out.push(`CREATE TRIGGER ${q(`${name}_no_update`)} BEFORE UPDATE ON ${q(name)} BEGIN SELECT RAISE(ABORT, 'append_only'); END`);
     const horizon = horizonSql(def);
-    const when = horizon === null ? '' : ` WHEN OLD.${q('created_at')} > ${RETENTION_NOW_SQL} - ${horizon} * 1000`;
+    // Old by both clocks, or refused (ruling 14): the retention job's time and SQLite's wall clock.
+    const when = horizon === null ? ''
+      : ` WHEN OLD.${q('created_at')} > ${RETENTION_NOW_SQL} - ${horizon} * 1000 OR OLD.${q('created_at')} > (unixepoch('now') - ${horizon}) * 1000`;
     out.push(`CREATE TRIGGER ${q(`${name}_no_delete`)} BEFORE DELETE ON ${q(name)}${when} BEGIN SELECT RAISE(ABORT, 'append_only'); END`);
   }
   if (def.updateOnce !== undefined) {

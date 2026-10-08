@@ -11,10 +11,9 @@
 // given in seconds is refused instead of reading as 1970 and expiring at once; below 10^14, year 5138, so a time given
 // in microseconds is refused instead of never expiring); every table has `created_at`.
 // Retention (ARCH 15): an append-only table rejects every UPDATE and any DELETE of a row younger than its horizon,
-// measured on `created_at` against the time the retention job writes into `retention_clock` for its own transaction
-// (retention.ts), never SQLite's wall clock (CL-51; Z02 round 2 ruling 10). Outside that transaction the time reads 0,
+// measured on `created_at` by both the time the retention job writes into `retention_clock` for its own transaction
+// (retention.ts) and SQLite's wall clock (CL-51; Z02 rulings 10 and 14). Outside that transaction the job's time reads 0,
 // so every DELETE is refused; `forever` rejects every DELETE.
-
 export type Kind =
   | 'ulid' | 'text' | 'pubkey' | 'signature' | 'sha256' | 'json' | 'bool' | 'int' | 'ms' | 'real'
   | 'lamports' | 'slamports' | 'i64' | 'u64' | 'i128' | 'decimal' | 'enum' | 'blob';
@@ -383,7 +382,7 @@ export const TABLES = {
     columns: { key: c.text, valueJson: c.json, createdAt: c.ms, updatedAt: c.ms },
     key: ['key'], appendOnly: false, retention: 'forever',
   },
-  // The time the retention job deletes against, set and reset inside its own transaction (retention.ts; ruling 10).
+  // The time the retention job deletes against, set and reset inside its own transaction (retention.ts; rulings 10, 14).
   retention_clock: {
     columns: { id: c.int, nowMs: c.i64 },
     key: ['id'], appendOnly: false, retention: 'forever', checks: ['"id" = 1', '"now_ms" >= 0'],

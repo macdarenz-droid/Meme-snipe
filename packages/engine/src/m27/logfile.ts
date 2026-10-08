@@ -20,9 +20,10 @@
 // `retentionDays` newest days at or before the current day, so a clock that jumps ahead deletes at most one older day
 // (never the whole history), and a file dated after the current day is kept and not counted. A day already compressed
 // is never overwritten: when the clock goes back across midnight and that day's file is written again, its new lines
-// are appended to the `.gz` as another gzip member (gunzip reads every member).
+// are added to the `.gz` as another gzip member (gunzip reads every member), through a copy that replaces it in one
+// rename (ruling 17).
 import {
-  appendFileSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync,
+  appendFileSync, copyFileSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync,
   type WriteStream,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -79,7 +80,7 @@ export class FileLogSink implements LogSink {
     this.opts = opts;
     if (!Number.isInteger(opts.retentionDays) || opts.retentionDays < 1) throw new RangeError('log: retentionDays must be an integer >= 1');
     this.prefix = opts.prefix ?? 'engine';
-    this.fileRe = new RegExp(`^${this.prefix}-(\\d{4}-\\d{2}-\\d{2})\\.ndjson(\\.gz|\\.gz\\.tmp|\\.compressing)?$`);
+    this.fileRe = new RegExp(`^${this.prefix}-(\\d{4}-\\d{2}-\\d{2})\\.ndjson(\\.gz|\\.gz\\.tmp|\\.gz\\.part|\\.compressing)?$`);
     mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     this.rotate(dayOf(opts.clock.nowMs()));
   }
@@ -188,7 +189,7 @@ export class FileLogSink implements LogSink {
     for (const { file, fileDay, suffix } of files) {
       const old = (today - Date.parse(`${fileDay}T00:00:00Z`)) / DAY_MS >= this.opts.retentionDays && !kept.has(fileDay);
       if (this.compressing.has(fileDay)) continue;
-      if (old || suffix === '.gz.tmp') {
+      if (old || suffix === '.gz.tmp' || suffix === '.gz.part') {
         rmSync(file, { force: true, recursive: true });
         continue;
       }
@@ -219,8 +220,11 @@ export class FileLogSink implements LogSink {
       }
       await pipeline(createReadStream(source), createGzip(), createWriteStream(`${plain}.gz.tmp`, { flags: 'wx', mode: 0o600 }));
       if (existsSync(`${plain}.gz`)) {
-        // The day was compressed before (the clock went back across midnight): add a member, never overwrite.
-        appendFileSync(`${plain}.gz`, readFileSync(`${plain}.gz.tmp`));
+        // The day was compressed before (the clock went back across midnight): the old file plus the new member go to
+        // `.gz.part`, which then replaces `.gz` in one rename, so a crash never leaves a half-appended `.gz` (ruling 17).
+        copyFileSync(`${plain}.gz`, `${plain}.gz.part`);
+        appendFileSync(`${plain}.gz.part`, readFileSync(`${plain}.gz.tmp`));
+        renameSync(`${plain}.gz.part`, `${plain}.gz`);
         rmSync(`${plain}.gz.tmp`);
       } else {
         renameSync(`${plain}.gz.tmp`, `${plain}.gz`);

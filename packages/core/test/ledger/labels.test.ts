@@ -132,6 +132,14 @@ describe('labels are out of the engine\'s reach', () => {
     expect(sqliteFound.every((f) => f.startsWith('packages/signer/') || f.startsWith('packages/engine/src/m09/'))).toBe(true);
     rmSync(join(root, 'packages/signer'), { recursive: true });
     rmSync(join(root, 'packages/engine/src/m09'), { recursive: true });
+    put('packages/worker/src/old.ts', "import { openDb } from '../../engine/src/m24/db.ts';\n");   // a Zeroed file reaching M24 (ruling 20)
+    put('packages/core/src/units/via.ts', "export * from '../../../engine/src/m25/boot.ts';\n");      // or reaching it through @bot/engine
+    const reach = importViolations(root);
+    expect(reach).toContain('packages/worker/src/old.ts -> packages/engine/src/m24/db.ts (reaches packages/engine/src/m24)');
+    expect(reach).toContain('packages/core/src/units/via.ts -> packages/engine/src/m25/boot.ts -> packages/engine/src/m24/db.ts (reaches packages/engine/src/m24)');
+    rmSync(join(root, 'packages/worker/src/old.ts'));
+    rmSync(join(root, 'packages/core/src/units/via.ts'));
+    expect(importViolations(root)).toEqual([]);
 
     const probes: Record<string, string> = {
       'sqlite.ts': "import { DatabaseSync } from 'node:sqlite';",
