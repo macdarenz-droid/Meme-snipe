@@ -210,12 +210,14 @@ held_restart() {
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
 
 # realign_current (OPS-CLEAN round 4): current and the deployed record name the same release. A run killed between moving
-# current and writing deployed leaves them apart; current goes back to the deployed release, the one the record and any
-# rollback target are built on, and the next switch is made again from there.
+# current and writing deployed leaves current on another release folder (releases/<commit>, 40 hex); current goes back to
+# the deployed release, the one the record and any rollback target are built on, and the next switch is made again from
+# there. A folder placed by hand under another name (the ops end-to-end's test copies) is not a release and is left as is.
 realign_current() {
   local d c
   d="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
   c="$(basename "$(readlink -f /opt/zeroed/current 2>/dev/null || true)")"
+  [[ "$c" =~ ^[0-9a-f]{40}$ ]] || return 0
   [ -n "$d" ] && [ "$c" != "$d" ] && [ -d "/opt/zeroed/releases/$d" ] || return 0
   ln -sfn "/opt/zeroed/releases/$d" /opt/zeroed/current.new
   mv -Tf /opt/zeroed/current.new /opt/zeroed/current
@@ -368,10 +370,11 @@ if ! lock; then
   exit 0
 fi
 realign_current
-# The rollback target is the deployed release (OPS-CLEAN round 4: never what current points at, which a killed run can
-# leave elsewhere). A release switched to but never started (switch_unheld) is not one: the release that ran before it
-# stays.
+# The rollback target is the deployed release (OPS-CLEAN round 4: not whatever release folder current points at, which a
+# killed run can leave elsewhere); a folder placed by hand under another name is what runs, and stays the target. A
+# release switched to but never started (switch_unheld) is not one: the release that ran before it stays.
 prev="/opt/zeroed/releases/$current"
+if [ -L /opt/zeroed/current ] && ! [[ "$(basename "$(readlink -f /opt/zeroed/current)")" =~ ^[0-9a-f]{40}$ ]]; then prev="$(readlink -f /opt/zeroed/current)"; fi
 if [ -s "$STATE_DIR/switch_unheld" ]; then IFS='|' read -r _ prev current < "$STATE_DIR/switch_unheld" || true; fi
 # No deployed release yet (a first deploy): nothing to go back to. Only a real release folder is a rollback target.
 { [ -n "$current" ] && [ -d "$prev" ] && [ ! -L "$prev" ]; } || prev=""

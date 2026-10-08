@@ -407,6 +407,20 @@ describe('OPS-CLEAN round 4: current and deployed agree, no restart mid-hold, on
     expect(h.read('state/failed_release').trim()).toBe(B);
   });
 
+  it('a folder placed by hand under another name (the ops e2e test copies) is left as current and is the rollback target', () => {
+    const h = host([...KEYS, 'telegram_chat_id']);
+    const copy = join(h.root, `opt/zeroed/releases/${A}-practice`);
+    spawnSync('cp', ['-a', h.rel(A), copy]);
+    spawnSync('ln', ['-sfn', copy, join(h.root, 'opt/zeroed/current')]);
+    expect(h.update().status).toBe(0);
+    expect(h.read('log')).not.toContain('Put current back');
+    expect(h.read('state/probation')).toMatch(new RegExp(`^${B}\\|${copy}\\|${A}\\|`));
+    h.set('sd/nrestarts', '1');
+    expect(h.update().status).toBe(1);
+    expect(h.current()).toBe(copy);
+    expect(h.read('state/deployed').trim()).toBe(A);
+  });
+
   it('a reboot between the switch and its hold, with the worker able to start: the next run holds the first start (13c)', () => {
     const h = host([...KEYS, 'telegram_chat_id']);
     h.set('sd/kill_on_timers');
