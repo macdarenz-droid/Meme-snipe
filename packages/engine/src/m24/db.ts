@@ -42,8 +42,12 @@ export interface OutboxRow { seq: bigint; topic: string; payloadJson: string; cr
 export interface Db {
   /** Runs `fn` in one write transaction; a throw rolls back and is rethrown. The body must be synchronous. No DDL. */
   withTx<T>(fn: (tx: TxHandle) => T): T;
-  /** `withTx` for the migration runner (migrate.ts) and test fixtures: schema statements are allowed (ruling 22). */
-  withSchemaTx<T>(fn: (tx: TxHandle) => T): T;
+  /**
+   * `withTx` for the migration runner (migrate.ts) and test fixtures: schema statements are allowed (ruling 22). A
+   * statement naming `retention_clock` runs only when its exact text is in `trusted`, the migrations' own statements
+   * (ruling 24), so not even a schema transaction can add a trigger that writes it.
+   */
+  withSchemaTx<T>(fn: (tx: TxHandle) => T, trusted?: ReadonlySet<string>): T;
   /** A read-only connection for API queries (round robin over the reader pool). */
   reader(): ReaderHandle;
   outbox: {
@@ -116,6 +120,7 @@ CREATE INDEX outbox_published_at ON outbox(published_at) WHERE published_at IS N
 
 export const OUTBOX_RETENTION_MS = 7 * 86_400_000;
 const DRAIN_BATCH = 500;
+const NONE: ReadonlySet<string> = new Set();
 const STATEMENT_CACHE = 512;
 const BUSY_TIMEOUT_MS = 5_000;
 
@@ -316,16 +321,15 @@ export function openDb(opts: DbOptions): Db {
   const stillOpen = (): void => {
     if (!writer.isTransaction) throw new Error('m24: the transaction ended inside withTx; nothing more runs in it');
   };
-  const handleFor = (active: () => boolean, schema: boolean): TxHandle => {
+  const handleFor = (active: () => boolean, schema: boolean, trusted: ReadonlySet<string>): TxHandle => {
     const guard = (sql: string): void => {
       if (!active()) throw new Error('m24: transaction handle used outside its withTx');
       if (isTxControl(sql)) throw new Error('m24: transaction control is withTx\'s alone');
-      if (!schema) {
-        // Ruling 22: a trigger, table or view is changed only by the migration runner (withSchemaTx), so no module can
-        // drop the append-only triggers. Ruling 14: only the retention job (withRetentionClock) writes retention_clock.
-        if (isDdl(sql)) throw new Error('m24: schema statements (CREATE, DROP, ALTER, PRAGMA, ATTACH) are the migration runner\'s alone (withSchemaTx)');
-        if (/retention_clock/i.test(sql)) throw new Error('m24: retention_clock is the retention job\'s alone (retention.ts, withRetentionClock)');
-      }
+      // Ruling 22: a trigger, table or view is changed only by the migration runner (withSchemaTx), so no module can
+      // drop the append-only triggers. Rulings 14 and 24: only the retention job (withRetentionClock) writes
+      // retention_clock, and only the migrations' own text may name it in a schema transaction.
+      if (!schema && isDdl(sql)) throw new Error('m24: schema statements (CREATE, DROP, ALTER, PRAGMA, ATTACH) are the migration runner\'s alone (withSchemaTx)');
+      if (/retention_clock/i.test(sql) && !trusted.has(sql)) throw new Error('m24: retention_clock is the retention job\'s alone (retention.ts, withRetentionClock)');
       stillOpen();
     };
     return {
@@ -353,11 +357,11 @@ export function openDb(opts: DbOptions): Db {
   let currentTx: TxHandle | null = null;
   let appended = 0;
 
-  const runTx = <T>(fn: (tx: TxHandle) => T, schema: boolean): T => {
+  const runTx = <T>(fn: (tx: TxHandle) => T, schema: boolean, trusted: ReadonlySet<string> = NONE): T => {
     if (inTx) throw new Error('m24: withTx cannot be nested');
     const started = opts.clock.nowMs();
     let open = true;
-    const tx = handleFor(() => open, schema);
+    const tx = handleFor(() => open, schema, trusted);
     const end = (): void => {
       open = false;
       inTx = false;
@@ -390,8 +394,8 @@ export function openDb(opts: DbOptions): Db {
       return runTx(fn, false);
     },
 
-    withSchemaTx<T>(fn: (tx: TxHandle) => T): T {
-      return runTx(fn, true);
+    withSchemaTx<T>(fn: (tx: TxHandle) => T, trusted: ReadonlySet<string> = NONE): T {
+      return runTx(fn, true, trusted);
     },
 
     withRetentionClock<T>(nowMs: number, fn: (tx: TxHandle) => T): T {

@@ -248,7 +248,8 @@ describe('rulings 10 and 14: a delete needs a row old by both the retention job\
 
 describe('ruling 14: only the retention job writes retention_clock', () => {
   it('any other statement naming it is refused before it runs, in any spelling; a forged clock still cannot delete a young row', async () => {
-    const db = await migrated();
+    const path = fresh();
+    const db = await migrated(path);
     for (const sql of ['UPDATE retention_clock SET now_ms = 99999999999999', 'INSERT OR REPLACE INTO "retention_clock" VALUES (1, 5)',
       'DELETE FROM Retention_Clock', '/* x */ UPDATE [retention_clock] SET now_ms = 1', 'SELECT now_ms FROM retention_clock', 'DROP TABLE retention_clock']) {
       assert.throws(() => db.withTx((tx) => tx.run(sql)), /retention job's alone|migration runner's alone/, sql);
@@ -257,7 +258,10 @@ describe('ruling 14: only the retention job writes retention_clock', () => {
     db.withTx((tx) => repos.fill.insert(tx, { ...sampleRow('fill', 1), createdAt: wall - DAY }));
     const forge = 'CREATE TRIGGER forge AFTER INSERT ON trade BEGIN UPDATE retention_clock SET now_ms = 99999999999999; END';
     assert.throws(() => db.withTx((tx) => tx.run(forge)), /migration runner's alone/);    // ruling 22: no DDL outside the runner
-    db.withSchemaTx((tx) => tx.run(forge));                                               // even if one got in through the runner
+    assert.throws(() => db.withSchemaTx((tx) => tx.run(forge)), /retention job's alone/); // ruling 24: not even in a schema transaction
+    const raw = new DatabaseSync(path);                                                   // a writer outside the engine adds it anyway
+    raw.exec(forge);
+    raw.close();
     db.withTx((tx) => repos.trade.insert(tx, sampleRow('trade', 1)));                     // the trigger forges a far-future clock
     assert.throws(() => db.withTx((tx) => tx.run('DELETE FROM fill')), /append_only/);    // the wall clock still says 1 day old
     assert.equal(repos.fill.find(db.reader()).length, 1);

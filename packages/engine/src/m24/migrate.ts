@@ -149,7 +149,7 @@ export async function prepareDatabase(db: Db, opts: PrepareOptions): Promise<Res
         for (const statement of m.statements) tx.run(statement);
         tx.run('INSERT INTO schema_migrations (version, sha256, applied_at) VALUES (?, ?, ?)', m.version, migrationSha256(m), opts.clock.nowMs());
       }
-    });
+    }, new Set(pending.flatMap((m) => m.statements)));
   } catch (e) {
     return fail('E_MIGRATION_FAILED', `migration ${current.version} (${current.name}) failed and nothing was applied: ${(e as Error).message}`, current.version);
   }
