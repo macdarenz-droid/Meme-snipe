@@ -1,5 +1,5 @@
 {
-  "offsite_backup": false,
+  "offsite_backup": true,
   "record_upload": true,
   "record_upload_delete_local": true,
   "worker": "stub",
