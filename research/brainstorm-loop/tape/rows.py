@@ -503,6 +503,24 @@ def seat_drift_decide(summ):
 def w1_fast_class(tape: Tape, s: pd.DataFrame):
     """W1 PREREG §5: fast on a day if >= 10% of its buys land within 2 slots of the mint's create or
     migration, or >= 30% land within 2 slots after another trader's buy of >= 1 SOL on the same mint."""
+    b = w1_fast_buys(tape, s)
+    g = b.groupby(["day", "owner"]).agg(n=("order", "size"), na=("near_anchor", "mean"), nb=("after_big", "mean"))
+    g["fast"] = (g["na"] >= 0.10) | (g["nb"] >= 0.30)
+    return g["fast"]
+
+
+def w1_fast_asof(fb: pd.DataFrame, day, owner, slot) -> bool:
+    """W1 §5 for one owner from its buys of `day` at or before `slot` only (red team R2-17: an event-time exclusion
+    never reads the owner's later buys). `fb` is w1_fast_buys' frame."""
+    b = fb[(fb["day"] == day) & (fb["owner"] == owner) & (fb["slot"] <= slot)]
+    if not len(b):
+        return False
+    return bool(b["near_anchor"].mean() >= 0.10 or b["after_big"].mean() >= 0.30)
+
+
+def w1_fast_buys(tape: Tape, s: pd.DataFrame) -> pd.DataFrame:
+    """Per buy: day, owner, slot and W1 §5's two flags (near a create or migration; within 2 slots after another
+    trader's >= 1 SOL buy). Each flag reads only that buy and earlier rows."""
     b = s[s["is_buy"] & ~s["excluded"] & s["owner"].notna()][["day", "mint", "owner", "slot", "order", "sol"]].copy()
     anchors = pd.concat([tape.creates[["mint", "slot"]], tape.migrations[["mint", "slot"]]]).rename(columns={"slot": "a"})
     near = b.merge(anchors, on="mint", how="left")
@@ -515,9 +533,7 @@ def w1_fast_class(tape: Tape, s: pd.DataFrame):
         x = b.assign(bs=b["slot"] - k).merge(big, on=["mint", "bs"])
         hits.append(x.loc[(x["bo"] != x["owner"]) & (x["bord"] < x["order"]), "order"])
     b["after_big"] = b["order"].isin(set(pd.concat(hits))) if hits else False
-    g = b.groupby(["day", "owner"]).agg(n=("order", "size"), na=("near_anchor", "mean"), nb=("after_big", "mean"))
-    g["fast"] = (g["na"] >= 0.10) | (g["nb"] >= 0.30)
-    return g["fast"]
+    return b
 
 
 # ============================================================ row 4: AGE-GATE

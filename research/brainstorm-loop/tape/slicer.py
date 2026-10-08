@@ -50,6 +50,7 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
     allx = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
     sells_by = {k: g["block_time"].to_numpy() for k, g in allx[~allx["is_buy"]].groupby(["mint", "owner"], sort=False)}
     ps_cache = {}
+    fast_buys = R.w1_fast_buys(tape, s)
     out, drops = [], Counter()
     for (mint, x), g in sw[sw["is_buy"]].groupby(["mint", "owner"], sort=False):
         if len(g) < 3:
@@ -75,7 +76,7 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
             why = "routed_or_app"
         elif sl_rows["fake"].any():
             why = "two_sided_cluster"
-        elif bool(fast.get((last["day"], x), False)):
+        elif R.w1_fast_asof(fast_buys, last["day"], x, st):     # as of the event slot (red team R2-17)
             why = "w1_fast_class"
         else:
             seeds = {last["creator"]}
