@@ -61,7 +61,15 @@ export interface PinnedIdl {
    * (see `invokerQuoteMint` in events.ts). Null when the IDL has no such instruction (pump, pump_fees).
    */
   multiHopSwap: { disc: string; fixedAccounts: number } | null;
+  /**
+   * The discriminators of the instructions that run a multi-hop route (ruling 44): PumpSwap `multi_hop_swap` and pump
+   * `multi_hop_curve_swap` (which only PumpSwap may call). An event with one among its invokers is a route hop.
+   */
+  routeInstructions: ReadonlySet<string>;
 }
+
+/** The instruction names that run a multi-hop route (pump-public-docs 8cda1fa, docs/instructions/MULTI_HOP_SWAP.md). */
+const ROUTE_INSTRUCTIONS = new Set(['multi_hop_swap', 'multi_hop_curve_swap']);
 
 export type IdlErrorCode = 'E_IDL_HASH' | 'E_IDL_MISSING' | 'E_IDL_PARSE';
 export interface IdlError { code: IdlErrorCode; file: string; expected?: string; actual?: string; message?: string }
@@ -232,6 +240,7 @@ function compileOrThrow(doc: unknown, pin: PinnedIdlSpec, sha256: string): Pinne
   const instructions = new Map<string, IdlInstrDef>();
   const poolQuoteMint = new Map<string, number>();
   let multiHopSwap: PinnedIdl['multiHopSwap'] = null;
+  const routeInstructions = new Set<string>();
   for (const ix of doc.instructions as unknown[]) {
     if (!isObject(ix) || typeof ix.name !== 'string' || !Array.isArray(ix.accounts)) return fail('an instruction needs a name and accounts');
     const hex = discriminator(ix.discriminator, `instructions.${ix.name}`);
@@ -242,11 +251,12 @@ function compileOrThrow(doc: unknown, pin: PinnedIdlSpec, sha256: string): Pinne
       && Array.isArray(a.relations) && a.relations.includes('pool'));
     if (at >= 0) poolQuoteMint.set(hex, at);
     if (ix.name === 'multi_hop_swap') multiHopSwap = { disc: hex, fixedAccounts: accts.length };
+    if (ROUTE_INSTRUCTIONS.has(ix.name)) routeInstructions.add(hex);
   }
   const names = (m: Map<string, IdlTypeDef>): Set<string> => new Set([...m.values()].map((d) => d.name));
   for (const a of pin.accounts) if (!names(accounts).has(a)) fail(`account ${a} is missing`);
   for (const e of pin.events) if (!names(events).has(e)) fail(`event ${e} is missing`);
-  return { name: pin.name, program: doc.address, file: pin.file, commit: IDL_COMMIT, sha256, accounts, events, instructions, poolQuoteMint, multiHopSwap };
+  return { name: pin.name, program: doc.address, file: pin.file, commit: IDL_COMMIT, sha256, accounts, events, instructions, poolQuoteMint, multiHopSwap, routeInstructions };
 }
 
 /**

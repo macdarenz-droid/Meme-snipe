@@ -95,7 +95,8 @@ export interface QuoteMints { wsolMint?: Pubkey }
  * from a second fill. `layoutExtended`: the event's data held bytes the pinned layout does not describe (ruling 2).
  * `shortLegacy`: the event was emitted before fields the pin appends existed, and reads them as 0 (card IDL-REPIN); a
  * consumer that reads an appended field checks it (IDL-REPIN-2). `multiHop`: a PumpSwap `multi_hop_swap` instruction
- * is among the event's invokers (ruling 38), so it is one hop of a route, not a trade of its own.
+ * or pump `multi_hop_curve_swap` is among the event's invokers, or the invoker chain cannot be followed (rulings 38,
+ * 44), so it is one hop of a route, not a trade of its own.
  */
 export interface LocatedEvent { event: M02Event; outerIx: number; innerIx: number; layoutExtended: boolean; shortLegacy: boolean; multiHop: boolean }
 
@@ -288,6 +289,19 @@ function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonl
   return null;
 }
 
+/** The located events of a transaction and its gaps with their places, from one decode (ruling 43). */
+export interface DecodedTransactionEvents { events: LocatedEvent[]; gaps: LocatedGap[] }
+
+/**
+ * `decodeEventsLocated` that also returns every gap with its place (`onGapAt`), so `pumpBuyTotals` gets both from one
+ * decode (ruling 43). The caller's hooks are still called.
+ */
+export function decodeEventsWithGaps(tx: RawTransaction, idls: readonly PinnedIdl[], hooks: EventHooks = {}, quote: QuoteMints = {}): DecodedTransactionEvents {
+  const gaps: LocatedGap[] = [];
+  const events = decodeEventsLocated(tx, idls, { ...hooks, onGapAt: (g) => { gaps.push(g); hooks.onGapAt?.(g); } }, quote);
+  return { events, gaps };
+}
+
 /** `decodeEvents` with each event's place in the transaction and its layout flag (rulings m11 and 2). */
 export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl[], hooks: EventHooks = {}, quote: QuoteMints = {}): LocatedEvent[] {
   if (tx.version !== 'legacy' && tx.version !== 0 && tx.version !== 1) throw new DecodeError('E_BAD_VALUE', 'transaction version must be legacy, 0 or 1 [LD-05]');
@@ -300,26 +314,29 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
     return [];
   }
   const out: LocatedEvent[] = [];
-  const amm = idls.find((i) => i.name === 'pump_amm');
-  /** True when `ix` is PumpSwap's `multi_hop_swap` (ruling 38). */
+  /** True when `ix` runs a multi-hop route: PumpSwap `multi_hop_swap` or pump `multi_hop_curve_swap` (rulings 38, 44). */
   const isMultiHop = (ix: Ix | undefined): boolean => {
-    if (ix === undefined || amm?.multiHopSwap == null || programOf(ix) !== amm.program) return false;
+    const routes = ix === undefined ? undefined : byProgram.get(programOf(ix) ?? '')?.routeInstructions;
+    if (ix === undefined || routes === undefined || routes.size === 0) return false;
     const length58 = (ix as InnerIx).dataLength58;
     if (length58 !== undefined && length58 > MAX_EVENT_DATA_B58) return false;
     const d = Buffer.from(ix.dataB64, 'base64');
-    return d.length >= 8 && d.length <= MAX_EVENT_DATA_BYTES && d.subarray(0, 8).toString('hex') === amm.multiHopSwap.disc;
+    return d.length >= 8 && d.length <= MAX_EVENT_DATA_BYTES && routes.has(d.subarray(0, 8).toString('hex'));
   };
   for (const group of tx.meta.innerInstructions) {
     const parent = tx.message.instructions[group.index];
     const top = parent === undefined ? undefined : programOf(parent);   // undefined: a bad trace for any event below
     const ixs: readonly InnerIx[] = group.instructions;
     const hs = heightsOf(ixs);
-    /** Whether a `multi_hop_swap` invoked instruction `k`, walking its invokers up to the top-level instruction. */
+    /**
+     * Whether a route instruction invoked instruction `k`, walking its invokers up to the top-level instruction. A
+     * trace that cannot be followed counts as a route (ruling 44), so the event stays out of the buyer totals.
+     */
     const underMultiHop = (k: number): boolean => {
       let j = k;
       for (;;) {
         const a = hs === 'bad' ? undefined : hs === null ? -1 : invokerIndex(j, hs);
-        if (a === undefined) return false;
+        if (a === undefined) return true;
         if (a === -1) return isMultiHop(parent);
         if (isMultiHop(ixs[a])) return true;
         j = a;
@@ -392,11 +409,11 @@ const BUY_TOTAL_PARTS = new Set(['TradeEvent', 'PostCompleteBuyEvent']);
  * first seen. pump-public-docs 8cda1fa, docs/SYNTHETIC_MIGRATION.md: "the buyer's total is the `TradeEvent` amounts
  * plus the `PostCompleteBuyEvent` amounts". A coin bought twice in one instruction is summed; sells are not counted.
  * Events under a `multi_hop_swap` are left out (ruling 38): the middle coins of a route net to zero for the user, and
- * routes are not decoded until a real multi-hop fixture proves them. `gaps` (from `onGapAt`) mark totals `incomplete`
- * (ruling 37). Before any card reads these totals, a golden from a real mainnet completing v3 buy is required, because
+ * routes are not decoded until a real multi-hop fixture proves them. `gaps` mark totals `incomplete` (ruling 37); it is
+ * required (ruling 43), so take both from one `decodeEventsWithGaps` call. Before any card reads these totals, a golden from a real mainnet completing v3 buy is required, because
  * the SOL rule for PostCompleteBuyEvent's quote mint (default key, not wSOL) is UNVERIFIED (ruling 37; Z08, PM01-KILL).
  */
-export function pumpBuyTotals(events: readonly LocatedEvent[], gaps: readonly LocatedGap[] = []): PumpBuyTotal[] {
+export function pumpBuyTotals(events: readonly LocatedEvent[], gaps: readonly LocatedGap[]): PumpBuyTotal[] {
   const totals = new Map<string, PumpBuyTotal>();
   const gapped = new Set(gaps.filter((g) => g.event === null || BUY_TOTAL_PARTS.has(g.event)).map((g) => `${g.signature} ${g.outerIx}`));
   for (const { event: e, outerIx, multiHop } of events) {

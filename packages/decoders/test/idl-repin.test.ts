@@ -7,7 +7,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import type { RawTransaction } from '@bot/types';
 import {
-  base58, decodeEvents, type LocatedEvent, type LocatedGap, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction,
+  base58, decodeEvents, decodeEventsWithGaps, type LocatedEvent, type LocatedGap, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction,
   type GapReason, type InnerIx, type PinnedIdl,
 } from '../src/index.ts';
 import { accountsOf, bytes, decoders, fixture, idls, WSOL, type FixtureAccount } from './fixtures.ts';
@@ -30,8 +30,8 @@ const discOf = (map: Map<string, { name: string }>, name: string): string => {
 };
 const run = (t: RawTransaction) => {
   const gaps: GapReason[] = [];
-  const located = decodeEventsLocated(t, idls(), { onGap: (g) => gaps.push(g) }, { wsolMint: WSOL });
-  return { located, gaps, kinds: located.map((l) => l.event.kind) };
+  const { events: located, gaps: placed } = decodeEventsWithGaps(t, idls(), { onGap: (g) => gaps.push(g) }, { wsolMint: WSOL });
+  return { located, gaps, placed, kinds: located.map((l) => l.event.kind) };
 };
 
 /** The recorded PumpSwap `buy` (top-level) and its accounts by IDL name. */
@@ -177,7 +177,7 @@ describe('PostCompleteBuyEvent: the pool part of a completing buy, counted into 
     const r = run(t);
     const trade = r.located[0]?.event;
     assert.ok(trade?.kind === 'pump_trade');
-    assert.deepEqual(pumpBuyTotals(r.located), [{
+    assert.deepEqual(pumpBuyTotals(r.located, r.placed), [{
       signature: t.signature, outerIx: r.located[0]?.outerIx, mint, solAmount: trade.solAmount + 250_000_000n,
       tokenAmount: trade.tokenAmount + 5_000_000n, fee: trade.fee + 2_375_000n, creatorFee: trade.creatorFee + 125_000n,
       incomplete: false,
@@ -201,11 +201,11 @@ describe('PostCompleteBuyEvent: the pool part of a completing buy, counted into 
 
   it('sells are not counted; a trade without a pool part is its own total', () => {
     const sell = TRADES.map(raw).find((t) => run(t).located.some((l) => l.event.kind === 'pump_trade' && !l.event.isBuy));
-    if (sell !== undefined) assert.deepEqual(pumpBuyTotals(run(sell).located), []);
+    if (sell !== undefined) assert.deepEqual(pumpBuyTotals(run(sell).located, run(sell).placed), []);
     const buy = TRADES.map(raw).find((t) => run(t).located.some((l) => l.event.kind === 'pump_trade' && l.event.isBuy)) as RawTransaction;
     const e = run(buy).located[0]?.event;
     assert.ok(e?.kind === 'pump_trade');
-    assert.deepEqual(pumpBuyTotals(run(buy).located).map((x) => [x.solAmount, x.tokenAmount]), [[e.solAmount, e.tokenAmount]]);
+    assert.deepEqual(pumpBuyTotals(run(buy).located, run(buy).placed).map((x) => [x.solAmount, x.tokenAmount]), [[e.solAmount, e.tokenAmount]]);
   });
 });
 
@@ -243,7 +243,7 @@ describe('round 2 (rulings 33-38)', () => {
   });
 
   it('ruling 33: two top-level instructions buying the same coin in one transaction give two totals', () => {
-    const totals = pumpBuyTotals([trade('s', 2, 'm', 100n), trade('s', 3, 'm', 50n), trade('s', 2, 'm', 7n)]);
+    const totals = pumpBuyTotals([trade('s', 2, 'm', 100n), trade('s', 3, 'm', 50n), trade('s', 2, 'm', 7n)], []);
     assert.deepEqual(totals.map((t) => [t.outerIx, t.solAmount]), [[2, 107n], [3, 50n]]);
   });
 
@@ -270,7 +270,10 @@ describe('round 2 (rulings 33-38)', () => {
     const located = decodeEventsLocated(t, idls(), { onGapAt: (g) => gaps.push(g) }, { wsolMint: WSOL });
     assert.deepEqual(gaps, [{ signature: t.signature, outerIx: l.outerIx, innerIx: l.innerIx + 1, reason: 'truncated', event: 'PostCompleteBuyEvent' }]);
     assert.deepEqual(pumpBuyTotals(located, gaps).map((x) => x.incomplete), [true]);
-    assert.deepEqual(pumpBuyTotals(located).map((x) => x.incomplete), [false]);
+    // Ruling 43: the Decoders path gives the gaps with the events, so the gapped pool part marks the total incomplete.
+    const both = decoders().decodeTransactionEventsWithGaps(t);
+    assert.deepEqual(both.gaps, gaps);
+    assert.deepEqual(pumpBuyTotals(both.events, both.gaps).map((x) => x.incomplete), [true]);
   });
 
   it('ruling 38: a TradeEvent under a multi_hop_swap still decodes, is flagged multiHop and is left out of the buyer totals', () => {
@@ -278,7 +281,7 @@ describe('round 2 (rulings 33-38)', () => {
     const base = raw(rec);
     const plain = run(base).located.filter((l) => l.event.kind === 'pump_trade');
     assert.ok(plain.length > 0 && plain.every((l) => !l.multiHop));
-    assert.equal(pumpBuyTotals(plain).length, plain.filter((l) => l.event.kind === 'pump_trade' && l.event.isBuy).length > 0 ? 1 : 0);
+    assert.equal(pumpBuyTotals(plain, run(base).placed).length, plain.filter((l) => l.event.kind === 'pump_trade' && l.event.isBuy).length > 0 ? 1 : 0);
     const t = raw(rec);
     const outer = t.message.instructions[plain[0]?.outerIx as number];
     assert.ok(outer !== undefined);
@@ -286,10 +289,10 @@ describe('round 2 (rulings 33-38)', () => {
     outer.dataB64 = withDisc(Buffer.alloc(24).toString('base64'), discOf(idl('pump_amm').instructions, 'multi_hop_swap'));
     const hop = run(t).located.filter((l) => l.event.kind === 'pump_trade');
     assert.deepEqual(hop.map((l) => [l.event, l.multiHop]), plain.map((l) => [l.event, true]));
-    assert.deepEqual(pumpBuyTotals(hop), []);
+    assert.deepEqual(pumpBuyTotals(hop, run(t).placed), []);
     // A buy flagged multiHop stays out of the totals; the same buy without the flag is counted.
-    assert.deepEqual(pumpBuyTotals([trade('s', 2, 'm', 100n, { multiHop: true })]), []);
-    assert.equal(pumpBuyTotals([trade('s', 2, 'm', 100n)]).length, 1);
+    assert.deepEqual(pumpBuyTotals([trade('s', 2, 'm', 100n, { multiHop: true })], []), []);
+    assert.equal(pumpBuyTotals([trade('s', 2, 'm', 100n)], []).length, 1);
   });
 
   it('ruling 38: a multi_hop_swap invoked by an aggregator (an inner instruction) flags the pump events below it', () => {
@@ -338,5 +341,41 @@ describe('round 2 (rulings 33-38)', () => {
     const data = Buffer.from(ix.dataB64, 'base64');
     ix.dataB64 = data.subarray(0, data.length - 8).toString('base64');
     assert.equal(run(t).located[0]?.shortLegacy, true);
+  });
+});
+
+describe('round 3 (ruling 44): unclear routes stay out of the buyer totals', () => {
+  /** The v1 fixture's pump TradeEvent, its group, and the index of its pump invoker (height 2). */
+  function setup(): { t: RawTransaction; l: LocatedEvent; ixs: InnerIx[]; pumpAt: number; end: number } {
+    const t = raw(fixture<TxRecord>('decoders/tx/v1_transaction.json'));
+    const l = run(t).located.find((x) => x.event.kind === 'pump_trade') as LocatedEvent;
+    const ixs = (t.meta.innerInstructions.find((g) => g.index === l.outerIx) as RawTransaction['meta']['innerInstructions'][number]).instructions as InnerIx[];
+    const pumpAt = ixs.slice(0, l.innerIx).map((x, i) => [x, i] as const).filter(([x]) => x.stackHeight === 2).pop()?.[1] as number;
+    let end = pumpAt + 1;
+    while (end < ixs.length && (ixs[end]?.stackHeight ?? 0) > 2) end++;
+    return { t, l, ixs, pumpAt, end };
+  }
+
+  it('an invoker chain that cannot be followed above the event counts as a route', () => {
+    const { t, l, ixs, pumpAt, end } = setup();
+    assert.equal(l.multiHop, false);
+    // The pump invoker and its subtree move two levels down under a height-2 instruction of another program, so the
+    // event's own invoker is still pump (self-CPI) but the pump instruction's invoker cannot be told.
+    for (let i = pumpAt; i < end; i++) (ixs[i] as InnerIx).stackHeight = ((ixs[i] as InnerIx).stackHeight as number) + 2;
+    ixs.splice(pumpAt, 0, { programIdIndex: t.message.instructions[l.outerIx]?.programIdIndex as number, accounts: [], dataB64: '', stackHeight: 2 });
+    const after = run(t).located.filter((x) => x.event.kind === 'pump_trade');
+    assert.deepEqual(after.map((x) => [x.event, x.multiHop]), [[l.event, true]]);
+    assert.deepEqual(pumpBuyTotals(after, run(t).placed), []);
+  });
+
+  it('a TradeEvent whose invoker is pump multi_hop_curve_swap is a route hop', () => {
+    const { t, l, ixs, pumpAt } = setup();
+    const pumpIx = ixs[pumpAt] as InnerIx;
+    pumpIx.dataB64 = withDisc(Buffer.alloc(24).toString('base64'), discOf(idl('pump').instructions, 'multi_hop_curve_swap'));
+    const after = run(t).located.filter((x) => x.event.kind === 'pump_trade');
+    assert.deepEqual(after.map((x) => [x.event, x.multiHop]), [[l.event, true]]);
+    assert.deepEqual(pumpBuyTotals(after, run(t).placed), []);
+    assert.deepEqual([...idl('pump').routeInstructions].map((h) => idl('pump').instructions.get(h)?.name), ['multi_hop_curve_swap']);
+    assert.deepEqual([...idl('pump_amm').routeInstructions].map((h) => idl('pump_amm').instructions.get(h)?.name), ['multi_hop_swap']);
   });
 });
