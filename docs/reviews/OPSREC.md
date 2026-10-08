@@ -27,3 +27,25 @@ The old server holds no DATA_STORE_TOKEN; the watchdog's `/record` allow-list re
 ### Supervisor ruling for round 2 (9 Oct 2026, about 12:23 AM)
 
 1. **MINOR, first-hour false alarm (`logic.sh:250`).** Fix it in this PR, because it is the same false-alarm class and fires the day the M1 recorder starts. Hold only "never reported" until the recorder folder is older than about 70 minutes (`stat -c %Y`; the timer is OnUnitInactiveSec=1h). The other three alerts are unchanged. Test: folder 10 minutes old, no status: no alert; folder 71 minutes old, no status: alert. Merge the base `e6cc8278` first (merge commit).
+
+## OLD-SERVER-COPY #310 (head `7028a38a`): reviewer + red team `session_0138fsn8QYHHe227K9RWwim5`
+
+REVIEW FAIL: 1 BLOCKER, 3 MAJOR, 4 MINOR. Release `171a61ce` and the current deploy tag `27043969` were both checked.
+
+### Supervisor rulings for round 2 (9 Oct 2026, about 12:32 AM)
+
+2. **BLOCKER, no MagicDNS** (`--accept-dns=false`, `zeroed-tailscale:58`). Step 4 prints `tailscale ip -4` and the DNSName. Step 5 uses `curl --resolve "<name>:443:<ip>"`, so TLS is still checked against the name.
+3. **MAJOR, race at boot.** Primary method: never boot the old OS with zeroed units enabled.
+   - Vultr Custom ISO "SystemRescue": mount the root partition and remove `etc/systemd/system/{multi-user,timers}.target.wants/zeroed-*`.
+   - From the rescue shell, VERIFY the release (`readlink /mnt/opt/zeroed/current` and that release's `ops/host-config.json` worker kind).
+   - Leave `/root/OLD-SERVER-ONLY`, then detach the ISO.
+   - VERIFY that the ISO library is free and the login still works (cite Vultr docs).
+   - Fallback, only if the ISO is not available: `systemd.mask=` in GRUB (VERIFY that the menu can be reached).
+   - Step 2 then only checks that no zeroed unit is active.
+4. **MAJOR, webhook fallback.** Moot with the ISO method. The doc still names the real fallback, "on the new host: `zeroed-new-deploy-code`, then Deploy". After the copy, a step checks on the new host that Telegram is still paired to it. The finding that `webhook_fp` hashes the URL but not `secret_token` (`logic.sh:31`) becomes the follow-up card WEBHOOK-FP for the ops builder after #310.
+5. **MAJOR, a release worker may run.** Covered by ruling 3's rescue-shell VERIFY before any boot.
+6. **MINORs.**
+   - Wrap every old-server block in an `OLD-SERVER-ONLY` guard. Step 6 also requires `/root/old-copy`.
+   - Never open the live ledger read-write: use `sqlite3 -readonly`, or copy the db, -wal and -shm with `cp -p` and back up from the copy.
+   - Note that one host shows as `zeroed-1`, and use the DNSName printed in step 4.
+   - The dryrun and backup units are moot with the ISO method.
