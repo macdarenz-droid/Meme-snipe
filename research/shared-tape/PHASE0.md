@@ -21,3 +21,6 @@ Then the session also needs the permission to attach `zeroed-data` with push acc
 
 ## Next, once P3 holds
 P2 line for Step A days (reviewed commit), then the tee, decoder and uploader with the plan's tests, one fresh review, then Phase 0 under P4. P1 still needs the owner's dashboard reading 15 minutes before and after.
+
+## Storage rule for zeroed-data (parent session, 2026-10-08)
+zeroed-data already holds the old Zeroed's data (reports/, recordings). Nothing in it is modified, moved or deleted. The tape goes only under its own new prefix: release assets tagged `tape-*`, or a new top-level folder `tape/`. Every git file stays under 100 MB; larger files go in release assets. The repo's layout is read before the first write, and this file then records the exact paths. Not read yet: this session has no access to zeroed-data.
