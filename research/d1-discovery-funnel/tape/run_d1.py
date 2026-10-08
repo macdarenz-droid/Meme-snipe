@@ -24,11 +24,11 @@ sys.path.insert(0, HERE)
 from d1 import config as C  # noqa: E402
 
 # Frozen rulings this code implements; written into frozen_rules.json, and validate refuses rules without H8_AMENDMENT.
-FROZEN_AMENDMENTS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2")
+FROZEN_AMENDMENTS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2", "AMENDMENT_4")
 # Every frozen ruling that governs D1 (red team R2-9). search and validate refuse while any is missing from
 # FROZEN_AMENDMENTS. AMENDMENT_3 (d1/search.py h8_first ranking) and research/brainstorm-loop/H8_AMENDMENT_2.md
 # (d1/gates.py, holders.gate_h12/gate_h13, h8.add_h8 universe floors, validate.h8_report at $5) are implemented.
-REQUIRED_RULINGS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2")
+REQUIRED_RULINGS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2", "AMENDMENT_4")
 
 
 def code_hash() -> str:

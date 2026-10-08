@@ -1100,7 +1100,8 @@ class BotGates(unittest.TestCase):
             book, clock = PoolBook(tape.amm), Clock(tape)
             pts = decision_points(tape, book, migrations(tape, book), clock)
             f = compute_features(tape, book, pts, clock)
-            self.assertTrue((f.gate_h13 == -1).all())              # no funder reads on the tape
+            # AMENDMENT_4 item 37 (R2-15): with the CreateEvent on the tape the proxy judges H13; without it, unknown
+            self.assertEqual(bool((f.gate_h13 != -1).any()), bool(creates))
             self.assertEqual(bool((f.gate_h12 != -1).any()), h12_known)
             if creates:
                 buyers = sorted(set(tape.amm.owner))
@@ -1131,6 +1132,77 @@ class BotGates(unittest.TestCase):
         self.assertEqual(gate_h13(H2, 1000.0, 9, (set(), {4})), 1)  # 3% dev cluster
         H2.add_known(4, 30.0, 1.0)
         self.assertEqual(gate_h13(H2, 1030.0, 9, (set(), {4})), 0)  # dev + cluster 5.8% > 5%
+
+    def test_h13_tape_proxy_R2_15(self):
+        """R2-15 (AMENDMENT_4 item 37): H13 by a tape proxy for coins whose CreateEvent is on the tape. Insiders: the
+        dev (creator and user), the creation-slot curve buyers keyed on the curve user (user_token_owner fallback), and
+        wallets linked to the dev by a W or T transfer on or before the decision slot, hub cap 50. Nothing later."""
+        from d1.holders import Holders, LinkIndex, gate_h13, h13_proxy_sets
+        curve = pd.DataFrame({"slot": [100, 101, 102, 103, 104], "mint": 7, "is_buy": 1,
+                              "owner": [31, 32, 33, 34, 35], "user": [21, -1, 23, 24, 25]})
+        t = type("T", (), {"curve": curve})()
+        # links: dev 9 - 40 at slot 150; dev's create user 8 - 41 at slot 300 (after d = 200); hub 42 with 51 links
+        u = [9, 8] + [9] + [42] * 50
+        v = [40, 41] + [42] + list(range(500, 550))
+        sl = [150, 300] + [160] + [170] * 50
+        L = LinkIndex(np.array(u), np.array(v), np.array(sl))
+        ins, cl = h13_proxy_sets(t, L, 7, 100, (9, 8), 200)
+        self.assertEqual(ins, {9, 8, 21, 32, 23, 40})               # create slot .. +2 by user; 32 by owner fallback
+        self.assertEqual(cl, {9, 8, 40})                             # 41 links after d; 42 is a hub (51 links)
+        ins2, cl2 = h13_proxy_sets(t, L, 7, 100, (9, 8), 300)
+        self.assertIn(41, cl2)                                       # the same link counts once it is on or before d
+        L50 = LinkIndex(np.array([9] + [42] * 49), np.array([42] + list(range(500, 549))), np.array([160] * 50))
+        self.assertIn(42, h13_proxy_sets(t, L50, 7, 100, (9, 8), 200)[1])   # exactly 50 links: not a hub
+        H = Holders({-1})
+        H.add_known(9, 10.0, 1.0)
+        H.add_known(40, 45.0, 1.0)                                   # dev + linked 5.5% > 5%
+        H.add_known(77, 945.0, 1.0)
+        self.assertEqual(gate_h13(H, 1000.0, 9, (ins, cl)), 0)
+        H2 = Holders({-1})
+        H2.add_known(9, 10.0, 1.0)
+        H2.add_known(21, 100.0, 1.0)
+        H2.add_known(23, 45.0, 1.0)                                  # insiders 15.5% > 15%, dev cluster 1%
+        H2.add_known(77, 845.0, 1.0)
+        self.assertEqual(gate_h13(H2, 1000.0, 9, (ins, cl)), 0)
+        H3 = Holders({-1})
+        H3.add_known(9, 10.0, 1.0)
+        H3.add_known(77, 990.0, 1.0)
+        self.assertEqual(gate_h13(H3, 1000.0, 9, (ins, cl)), 1)
+
+    def test_h13_proxy_in_features_and_label_R2_15(self):
+        """R2-15: with the CreateEvent on the tape the proxy judges H13 without funder reads; without it H13 stays
+        unknown. A tradable result carries the label "H8-tradable by tape proxy for H13"."""
+        from d1.validate import h8_report
+        sim, amm, migs, mig_slot, lo, hi = S.standard()
+        amm = amm.copy()
+        amm["supply"] = 206_900_000_000_000
+        cr = [(lo, "c", S.MINT, 90, 90, S.CURVE, 0, C.SYSTEM_PROGRAM)]
+        for creates, known in (([], False), (cr, True)):
+            tape = S.make_tape(amm, lo, hi, migs=migs, creates=creates)
+            book, clock = PoolBook(tape.amm), Clock(tape)
+            pts = decision_points(tape, book, migrations(tape, book), clock)
+            f = compute_features(tape, book, pts, clock)
+            self.assertEqual(bool((f.gate_h13 != -1).any()), known)
+            if not known:
+                self.assertTrue((f.gate_h13 == -1).all())
+        df = synthetic_search_frame(planted=False, n_pools=2).iloc[:50].copy()
+        for sz in C.H8_SIZES_USD:
+            df[f"h8_s{sz}"] = True
+            for h in C.HOLDS_S:
+                df[f"net_ret_{h // 60}_s{sz}"] = 0.1
+        rep = h8_report(df, {"hold_min": 15, "terms": [{"feature": "rv_15m", "side": "top", "binary": False,
+                                                        "edges_q20_q80": [-9.0, -9.0 + 1e-9]}]})
+        self.assertEqual(rep["h13_basis"], "H8-tradable by tape proxy for H13")
+
+    def test_universe_exit_secondary_dropped_R2_15(self):
+        """R2-15 (AMENDMENT_4 item 38): the universe-exit secondary is dropped; D1's 15- and 60-minute holds are its
+        only exits, and no output carries a universe-exit result."""
+        df = synthetic_search_frame(planted=False, n_pools=4)
+        res = run_search(df)
+        cols = " ".join(res["table"].columns).lower()
+        self.assertNotIn("universe", cols)
+        self.assertNotIn("uexit", cols)
+        self.assertEqual(C.HOLDS_S, (15 * 60, 60 * 60))
 
     def test_insider_sets_need_funders(self):
         from d1.holders import insider_sets

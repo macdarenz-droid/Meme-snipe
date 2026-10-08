@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from . import config as C
+from .clusters import link_pairs
 from .load import Tape
 from .pool_state import PoolBook
 
@@ -174,6 +175,50 @@ def insider_sets(tape: Tape, mint: int, create_slot: int, creator: int, funders)
     return (creation | cluster) - {creator}, cluster
 
 
+class LinkIndex:
+    """W and T links (clusters.link_pairs: each pair dated by its first link) for the H13 tape proxy, read as of a slot:
+    an address's degree and its neighbours count only links on or before that slot."""
+
+    def __init__(self, u, v, slot):
+        self.nb: Dict[int, list] = {}
+        for a, b, s in zip(np.asarray(u).tolist(), np.asarray(v).tolist(), np.asarray(slot).tolist()):
+            self.nb.setdefault(int(a), []).append((int(s), int(b)))
+            self.nb.setdefault(int(b), []).append((int(s), int(a)))
+        for k in self.nb:
+            self.nb[k].sort()
+
+    def neighbours(self, a: int, d: int) -> list:
+        return [b for s, b in self.nb.get(int(a), ()) if s <= d]
+
+    def degree(self, a: int, d: int) -> int:
+        return len({b for s, b in self.nb.get(int(a), ()) if s <= d})
+
+
+def h13_proxy_sets(tape: Tape, links: "LinkIndex", mint: int, create_slot: int, dev, d: int) -> tuple:
+    """D1 AMENDMENT_4 item 37 (red team R2-15): H13 by a tape proxy, as of decision slot d. Insiders = the dev (create
+    row's creator and user), the creation-slot curve buyers (create slot .. + H13_INSIDER_SLOTS, the bot's insider
+    window, keyed on the curve `user`, with `user_token_owner` as the fallback) and the wallets linked to the dev by a W
+    or T transfer on or before d. An address linked to more than HUB_MAX_LINKS addresses as of d is never joined (a
+    hub dev joins nothing; a hub neighbour is not a member). Returns (insiders, dev_cluster); the cluster holds the dev
+    and its linked wallets."""
+    dev = {int(x) for x in dev if int(x) >= 0}
+    cb = tape.curve[(tape.curve.mint == mint) & (tape.curve.is_buy == 1)]
+    cb = cb[(cb.slot >= create_slot) & (cb.slot <= create_slot + C.H13_INSIDER_SLOTS) & (cb.slot <= d)]
+    own = cb.owner.to_numpy()
+    usr = cb["user"].to_numpy() if "user" in cb.columns else np.full(len(cb), -1)
+    who = np.where(usr >= 0, usr, own)
+    creation = {int(w) for w in who if w >= 0}
+    linked = set()
+    for a in dev:
+        if links.degree(a, d) > C.HUB_MAX_LINKS:
+            continue
+        for b in links.neighbours(a, d):
+            if b not in dev and links.degree(b, d) <= C.HUB_MAX_LINKS:
+                linked.add(int(b))
+    cluster = dev | linked
+    return dev | creation | linked, cluster
+
+
 def gate_h13(H: "Holders", circ: float, creator: int, sets) -> int:
     if sets is None or circ <= 0:
         return -1
@@ -191,11 +236,13 @@ def gate_h13(H: "Holders", circ: float, creator: int, sets) -> int:
 
 def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame, funders: dict = None) -> pd.DataFrame:
     """funders: wallet code -> first funder code, from complete funder reads. The tape has none (a wallet's first-ever
-    funding is not on it), so H13 is unknown unless they are supplied (OPEN_QUESTIONS #37)."""
+    funding is not on it). Without them, H13 uses the tape proxy of AMENDMENT_4 item 37 (h13_proxy_sets) for coins whose
+    CreateEvent is on the tape; other coins stay unknown (-1)."""
     out = pd.DataFrame(np.nan, index=el.index, columns=["top10_share", "creator_share", "cgo", "cgo_coverage",
                                                         "gate_h12", "gate_h13"])
     ce = tape.ev["CreateEvent"].drop_duplicates("mint").set_index("mint")
     mg = tape.ev["CompletePumpAmmMigrationEvent"]
+    links = LinkIndex(*link_pairs(tape)) if funders is None else None
     for (pool, mint), g in el.groupby(["pool", "mint"], sort=False):
         curves = set(mg[mg.mint == mint].bonding_curve.tolist())
         if mint in ce.index:
@@ -209,7 +256,7 @@ def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame, funders: dict 
         r = book.rows[pool]
         has_create = mint in ce.index
         sets = insider_sets(tape, int(mint), int(ce.at[mint, "slot"]), int(ce.at[mint, "creator"]), funders) \
-            if has_create else None
+            if has_create and funders is not None else None
         i = 0
         for ix, d in zip(g.index, g.d.to_numpy()):
             while i < n and sl[i] <= d:
@@ -250,6 +297,9 @@ def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame, funders: dict 
             circ = supply - float(r["base_after"][iD])
             # H12 and H13 read the create row (hard.ts conc -> readCreate): without it they are unknown
             out.at[ix, "gate_h12"] = gate_h12(H, circ, creator) if has_create else -1
+            if has_create and funders is None:   # AMENDMENT_4 item 37: the tape proxy, as of d (R2-15)
+                dev = (int(ce.at[mint, "creator"]), int(ce.at[mint, "user"]))
+                sets = h13_proxy_sets(tape, links, int(mint), int(ce.at[mint, "slot"]), dev, int(d))
             out.at[ix, "gate_h13"] = gate_h13(H, circ, creator, sets) if has_create else -1
             held = H.K + H.U
             if held > 0:
