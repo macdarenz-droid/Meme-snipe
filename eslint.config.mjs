@@ -19,7 +19,10 @@ const WEB3_V1 = 'Banned in the engine and signer: use @solana/kit (B-M30-01; LD-
  * paths, never a file-name pattern, so a new clock.ts or rng.ts elsewhere is linted like any other file. The card that
  * builds a clock or RNG module adds its path here, in review.
  */
-const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts'];
+const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts', 'packages/dashboard/src/lib/clock.ts'];
+
+/** The dashboard's formatting library (UI-T03): the one dashboard source allowed to call toFixed and friends. */
+const DASHBOARD_MONEY_MODULE = 'packages/dashboard/src/lib/money.ts';
 
 /**
  * Every JavaScript and TypeScript source extension, so no module escapes the rules by its extension. The policy check
@@ -29,7 +32,12 @@ const SOURCES = ['ts', 'mts', 'cts', 'tsx', 'js', 'mjs', 'cjs', 'jsx'];
 const sources = (dir) => SOURCES.map((ext) => `${dir}**/*.${ext}`);
 
 export default [
-  { ignores: ['**/node_modules/**', 'coverage/**', 'tools/policy/test/fixtures/**', ...ZEROED_PACKAGE_PREFIXES.map((p) => `${p}**`), ...zeroedSourceFiles()] },
+  // The dashboard's build and test output (packages/dashboard/.gitignore) is generated, never committed: the policy
+  // check refuses any committed module under packages/ that is not .ts (E_SOURCE_TYPE).
+  {
+    ignores: ['**/node_modules/**', 'coverage/**', 'tools/policy/test/fixtures/**', ...ZEROED_PACKAGE_PREFIXES.map((p) => `${p}**`), ...zeroedSourceFiles(),
+      'packages/dashboard/{dist,.dev-build,.e2e-build,test-results,playwright-report}/**'],
+  },
   {
     files: sources(''),
     // The Node timers no-implied-eval checks are declared, so the rule sees them as the globals they are.
@@ -47,6 +55,17 @@ export default [
       'no-new-func': 'error',
       'no-implied-eval': 'error',
     },
+  },
+  {
+    // The dashboard's money rule (UI-T01): view-model money and slot fields are never converted to JS numbers.
+    files: sources('packages/dashboard/'),
+    rules: { 'bot/no-number-on-money': 'error' },
+  },
+  {
+    // UI-T03: the money module is the only dashboard source that formats numbers (exact path, never a name pattern).
+    files: sources('packages/dashboard/src/'),
+    ignores: [DASHBOARD_MONEY_MODULE],
+    rules: { 'bot/no-number-formatting': 'error' },
   },
   {
     files: CLOCK_AND_RNG_MODULES,
