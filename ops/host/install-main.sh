@@ -350,7 +350,16 @@ systemctl daemon-reload
 # HOST-CAPS: journald reads its size limits only when it starts.
 [[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
 # PATHS-FIX: the receipts' own small filesystem (ruling 20), then the chroot's binds, all before SSH.
-systemctl enable --now zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount >/dev/null
+# Only what is not running is started: a start job on the running receipts bind also queues receipts/'s loop device
+# (Requires=dev-loopN.device), which never comes where nothing announces devices (no udev, as in a container), so
+# every --update waited out systemd's 90 s job timeout.
+systemctl enable zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount >/dev/null
+PULL_DOWN=()
+for u in zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount; do
+  systemctl is-active --quiet "$u" || PULL_DOWN+=("$u")
+done
+# One start for all of them, as on a fresh install: started on its own after receipts-fs, the bind would queue the device.
+[ "${#PULL_DOWN[@]}" = 0 ] || systemctl start "${PULL_DOWN[@]}"
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

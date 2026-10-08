@@ -377,7 +377,11 @@ pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e
 # PATHS-FIX ruling 24: the provider usage ledger (its own shared folder) is in every backup and the drill checks it.
 # Section 8 applied the deployed release's host files (right for a release); until this branch merges, that release's
 # backup and drill predate the usage ledger, so put this branch's back, as 9c and 10b do, and test those.
+t0=$SECONDS
 in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-branch-files-9.txt" 2>&1 || { cat "$LOGS/console/update-branch-files-9.txt"; fail "install --update (this branch's host files, 9)"; }
+# An update with the pull mounts already running starts nothing: no start job waits out systemd's 90 s job timeout.
+upd_s=$((SECONDS - t0))
+[ "$upd_s" -lt 60 ] || { in_c "journalctl -b -o cat --no-pager | grep -i 'timed out' | tail -5"; fail "install --update took ${upd_s}s (a start job waited out systemd's timeout)"; }
 for f in usr/local/sbin/zeroed-backup usr/local/sbin/zeroed-restore-drill etc/systemd/system/zeroed-backup.service; do
   docker exec -i "$C" cmp -s "/$f" - <"$ROOT/ops/host/files/$f" || fail "test setup: this branch's /$f not in place"
 done

@@ -672,7 +672,24 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     expect(rc).toMatch(/^Where=\/srv\/zeroed_pull\/md\/receipts$/m);
     expect(rc).toMatch(/^Options=bind,rw,nodev,nosuid,noexec,private$/m);
     for (const u of [md, rc]) expect(u).toMatch(/^Before=ssh\.service ssh\.socket$/m);
-    expect(main).toContain('systemctl enable --now zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount');
+    // The installer's own lines, run against a stand-in systemctl: everything is enabled; only what is not running is
+    // started, in one call; nothing is started when all three run (a start job on the running receipts bind queues
+    // receipts/'s loop device, and every --update in the e2e host waited out systemd's 90 s job timeout for it).
+    const block = /^systemctl enable zeroed-receipts-fs\.service [^\n]*\n[\s\S]*?\n\[ "\$\{#PULL_DOWN\[@\]\}" = 0 \] \|\| systemctl start "\$\{PULL_DOWN\[@\]\}"$/m.exec(main)?.[0];
+    expect(block).toBeDefined();
+    const calls = (active: string) => {
+      const log = join(mkdtempSync(join(tmpdir(), 'pull-units-')), 'calls');
+      writeFileSync(log, '');
+      const r = spawnSync('bash', ['-c', `set -euo pipefail
+systemctl() { echo "$*" >> "$LOG"; if [ "$1" = is-active ]; then [[ " $ACTIVE " == *" $3 "* ]]; fi; }
+${block}`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', LOG: log, ACTIVE: active } });
+      expect(r.status, r.stderr).toBe(0);
+      return readFileSync(log, 'utf8').split('\n').filter((l) => l && !l.startsWith('is-active'));
+    };
+    const units = 'zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount';
+    expect(calls(units)).toEqual([`enable ${units}`]);
+    expect(calls('')).toEqual([`enable ${units}`, `start ${units}`]);
+    expect(calls('zeroed-receipts-fs.service srv-zeroed_pull-md.mount')).toEqual([`enable ${units}`, 'start srv-zeroed_pull-md-receipts.mount']);
     // Ruling 20: receipts/ is its own small filesystem, mounted before both binds and SSH.
     const fsu = read('ops/host/files/etc/systemd/system/zeroed-receipts-fs.service');
     expect(fsu).toMatch(/^Before=srv-zeroed_pull-md\.mount srv-zeroed_pull-md-receipts\.mount ssh\.service ssh\.socket$/m);
