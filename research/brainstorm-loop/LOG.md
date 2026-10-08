@@ -30,6 +30,8 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 19:22 | Sweep 2 finished (13 ideas, 8 agents, 70 min): nothing beats G1-HC; best new G1-CAP about 0.5%; corrections: BOOST limit is a price cap, 420 SOL ≈ $50k, tape v2 has the columns. Report `SWEEP_2.md` |
 | 2026-10-08 19:25 | G1 amendment 2 (cap fix, G1-CAP, quote strata) and STEP_A_COUNT_ROWS (DEV-ZERO, REBUY-ANCHOR, SEAT-DRIFT, AGE-GATE, cluster label, A round-USD check) committed |
 | 2026-10-08 19:27 | Round 14: D1 discovery funnel proposed (f9b9aef), and an early start of the tape worker on stored 09-11 units. Error caught and corrected: a commit hash typed from memory (88f3cc9) instead of the real a8d5872; hashes are now copied from git output only |
+| 2026-10-08 19:27 | Lead: G1 amendment 2, count rows and sweep 2 frozen at 2e12a3ef; suggested sweep 3 ground (creator-fee collections, payouts, protocol accounts beyond BOOST, exit liquidity) |
+| 2026-10-08 19:28 | Sweep 3 started on the lead's ground (4 lenses, 2 skeptics, synthesis) |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
