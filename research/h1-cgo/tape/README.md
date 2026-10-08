@@ -31,7 +31,7 @@ nice -n 19 python3 run.py features --units /home/user/tape-cache/2026-09-11/4462
   /home/user/tape-cache/2026-09-11/446278500-446282999 --decision-days 2026-09-11 --out /tmp/h1   # now refused: 09-11 is incomplete (Step A guard)
 ```
 
-Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 81 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
+Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 83 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
 
 ## Look-ahead
 - `h1cgo/features.py` builds one stream per coin. `MintStream.advance(d)` applies exactly the rows with slot ≤ d, and every feature reads only what has been applied:

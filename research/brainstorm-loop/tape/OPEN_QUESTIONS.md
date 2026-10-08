@@ -74,7 +74,7 @@
 - **Q19 Market cap [A1: `base_supply` until A amendment (a)'s program read].** Market cap = (pool quote after the swap + `virtual_quote_reserves`) ÷ pool base after the swap × `base_supply`. Post-swap reserves come from `chain_pool_*` only; a segment without that reading has no market cap (NaN), so no later state is used. Pools are kept for hours 0–72 after migration, from the end of the last BOOST event (or m + 5 min) to the end of the loaded tape. Market-cap levels are as-of states, which A1 allows.
 - **Bunching statistic.** It is Design A gate 2's statistic at each USD level: the log ratio of time in [L, 1.05 L) to time in [0.95 L, L), minus the median of the same ratio at the placebo cutoffs, with a pool-clustered bootstrap.
 - **"Round USD level".** Only $50k and $100k are checked, as named.
-- **Q22 SOL/USD input [A1, with an open reading].** By default `--sol-usd` reads the committed `../sol-usd/` folder, which holds the Binance SOLUSDT 1-minute daily klines. Each loaded day's zip is checked against `SHA256SUMS`, and the run refuses a missing day or a mismatch. The 1-hour files are not read, since the hour value comes from the 1-minute closes (Q23). Open times may be in ms or µs, and the UTC day comes from the open time. The summary records each file's sha256 (`sol_usd_files`).
+- **Q22 SOL/USD input [A1, with an open reading].** By default `--sol-usd` reads the committed `../sol-usd/` folder, which holds the Binance SOLUSDT 1-minute daily klines. Each loaded day's zip is checked against `SHA256SUMS`, and so is the previous day's zip when listed (for the 00:00 close). `SHA256SUMS` itself must match the sha256 pinned in `run_step_a.SOL_USD_SUMS_SHA256`. The run refuses a missing day or any mismatch. The 1-hour files are not read, since the hour value comes from the 1-minute closes (Q23). Open times may be in ms or µs, and the UTC day comes from the open time. The summary records each file's sha256 (`sol_usd_files`).
   - *[open]* A day's bunching uses the levels at its median close.
   - The "420 within 5%" flag, and the 10% placebo drop, use every minute's level in the day's [min, max] close range. That is conservative: it flags and drops more.
 - **Q20 Focused vs spread.**
@@ -97,5 +97,7 @@
 - **Q25 Capacity row [open].**
   - Pool-hours are taken at each whole UTC hour inside the loaded tape, for canonical WSOL PumpSwap pools with an as-of state at the hour start.
   - Non-mayhem is required (Q4). Pools whose mayhem flag is not on the tape (most pools that predate the loaded units) are counted apart as `*_mayhem_unknown` and never in the main count. On two partial units of 09-11, every pool-hour fell in that group.
+  - A pool-hour whose last state lies before a gap in the loaded tape is skipped and counted as `pool_hours_state_not_on_tape`.
+  - Each stratum reports `rows_without_sol_usd`, the rows whose hour has no price; those rows are never eligible.
   - Graduates (migration on the tape) count when their effective quote at m + 60 min (H10's earliest entry) meets the floor. A graduate whose m + 60 min is not on the tape is reported as not assessable.
 

@@ -83,6 +83,7 @@
     - any file listed in `SHA256SUMS` is missing or its sha256 differs;
     - a decision day, or the day before it, lacks its 1h or 1m file;
     - a 1h close differs from that hour's last 1-minute close.
+    - `SHA256SUMS` itself does not have the pinned sha256 `02083908…a964` (`h8.SOL_USD_SUMS_SHA256`). `freeze` records that hash in `frozen.json`, and `score` refuses a freeze with any other hash.
 - **H2.** Eligibility uses the effective quote as of the decision slot, as the bot evaluates H8 at decision time.
 - **H3.** For each size, the stratum keeps the entries of the frozen rule whose pool passes H8 at that size, priced at that size and held 60 min. Its baseline for lift is the H8-eligible eligible points at the same size. It is tradable as the bot stands only if some size has at least 300 trades and a mean above 0. Otherwise the note reads "this works only in pools below H8's floor".
 - **H4. Count row** (in `gate0.json`). H8-eligible pool-hours and graduates per day at each size, on two bases: decision points with a pool state, and H1-CGO-eligible points. `--sol-usd` defaults to the committed folder.
