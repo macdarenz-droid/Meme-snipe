@@ -195,6 +195,7 @@ jobs:
         run: >-
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
           GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" full "$DAY"
 
   scan:
@@ -345,6 +346,7 @@ jobs:
         run: >-
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
           GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard"
       # Exit 75 (the 300 min budget ran out, or a back-off did not fit it) is resumable:
       # progress is saved below and the `continue` job dispatches the next chained run.
@@ -418,6 +420,7 @@ jobs:
         run: >-
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
           GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard"
       - name: QA and determinism
         id: qa
@@ -481,6 +484,8 @@ jobs:
           if [ -f "$RUNNER_TEMP/backoff/archive-429.state" ]; then
             echo "back-off state: $(cat "$RUNNER_TEMP/backoff/archive-429.state")"
             echo "has=true" >> "$GITHUB_OUTPUT"
+            end=$(awk 'NF >= 3 && $3 ~ /^[0-9]+$/ {print $3; exit}' "$RUNNER_TEMP/backoff/archive-429.state")
+            if [ -n "$end" ]; then echo "end=$end" >> "$GITHUB_OUTPUT"; fi
           fi
       - name: Save the shared archive back-off
         if: always() && steps.published.outcome == 'success' && steps.backoff.outputs.has == 'true' && steps.published.outputs.complete != 'true'
@@ -488,6 +493,14 @@ jobs:
         with:
           path: ${{ runner.temp }}/backoff
           key: data-scan-backoff-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
+      # OF-2 round 2, ruling 10: the back-off end (the larger of 3 h and Retry-After) as
+      # cache key archive-backoff-<end>, which archive-check and the guard wait for.
+      - name: Record the back-off end for archive-check
+        if: always() && steps.published.outcome == 'success' && steps.backoff.outputs.end != '' && steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/backoff
+          key: archive-backoff-${{ steps.backoff.outputs.end }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
       # source helius (DATA-PUB): RPC units carry raw getBlock responses (raw.jsonl.zst),
       # which may not leave the repository's actions cache until Helius's terms are
       # confirmed. So a helius day is never uploaded as an artifact or published as a
@@ -568,10 +581,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: write # read this run's artifacts, dispatch the next run
+      contents: read # the checkout (archive-guard.sh restarts)
+      actions: write # read this run's artifacts and the run history, dispatch the next run
     env:
       MAX_CHAIN: "12"
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Dispatch the next run if a day stopped resumably
         env:
           GH_TOKEN: ${{ github.token }}
@@ -593,11 +610,15 @@ jobs:
             echo "a day failed for a reason other than time or back-off: chain stopped for review" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          # OF-2: one resumable restart a day for the archive; a second exit 75 on the same
-          # day is a failure (archive-guard.sh counts this run: its continue job failed).
-          if [ "$SOURCE" != helius ] && [ "$CHAIN" -ge 1 ]; then
-            echo "second resumable stop on $DAYS: counted as a failure (one resumable restart a day for the archive); chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
+          # OF-2: one resumable restart a day for the archive, counted per day from run
+          # history (archive-guard.sh restarts); a second exit 75 on the same day is a
+          # failure (archive-guard.sh counts this run: its continue job failed).
+          if [ "$SOURCE" != helius ]; then
+            before=$(research/historical/ci/archive-guard.sh restarts "$DAYS") || { echo "the run history cannot be read: chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+            if [ "$before" -ge 1 ]; then
+              echo "second resumable stop on $DAYS: counted as a failure (one resumable restart a day for the archive); chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           fi
           if [ "$CHAIN" -ge "$MAX_CHAIN" ]; then
             echo "resumable stop ($resume) but $CHAIN chained runs already: chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"
