@@ -38,11 +38,13 @@ case "$cmd" in
       jq -s --argjson d "$draft" '{isDraft: $d, assets: .}' | jq -r "$jqx" ;;
   download)
     [[ -d "$dir" ]] || exit 1
-    echo "$tag" >> "$T/downloads.log"
     out="" pats=()
     while (( $# )); do
       case "$1" in --dir) out=$2; shift ;; --pattern) pats+=("$2"); shift ;; esac; shift
     done
+    # downloads.log lists data downloads; reading only SHA256SUMS or the readback-ok marker
+    # (release-state.sh judging a release) is not one
+    for p in "${pats[@]}"; do [[ "$p" == SHA256SUMS-* || "$p" == readback-ok-* ]] || { echo "$tag" >> "$T/downloads.log"; break; }; done
     for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done
     # OF-4: FAKE_GH_CORRUPT=NAME hands back a changed copy of that asset (a read-back mismatch)
     [[ -n "${FAKE_GH_CORRUPT:-}" && -e "$out/$FAKE_GH_CORRUPT" ]] && echo changed >> "$out/$FAKE_GH_CORRUPT"
@@ -107,7 +109,10 @@ make_day() {
   (cd "$src" && tar -cf - units) | split -b 4000 -d -a 2 - "$dir/units-$day.tar.part"
   (cd "$src" && find units -mindepth 3 -maxdepth 3 \( -name events.jsonl.zst -o -name stats.json -o -name blocks.csv.zst \) | LC_ALL=C sort |
     tar --no-recursion -cf "$dir/events-$day.tar" -T -)
-  (cd "$dir" && sha256sum units-"$day".tar.part* events-"$day".tar > "SHA256SUMS-$day")
+  # the rest of a done release (OF-5 rulings 1 and 4): QA, manifest, parity, per-unit log and the readback-ok marker
+  for f in qa-$day.md qa-$day.json manifest-$day.json parity-$day.json units-$day.log; do echo "$f" > "$dir/$f"; done
+  (cd "$dir" && sha256sum units-"$day".tar.part* events-"$day".tar qa-* manifest-* parity-* units-"$day".log > "SHA256SUMS-$day")
+  printf 'readback-ok data-day-%s %s' "$day" "$(sha256sum "$dir/SHA256SUMS-$day" | cut -d' ' -f1)" > "$dir/readback-ok-$day"
   rm -rf "$src"
 }
 reset_store() {
@@ -156,6 +161,14 @@ run 2026-09-20 2026-09-22 "$T/w3" && no "existing dataset release replaced" || {
 reset_store; rm -rf "$T/rel/data-day-2026-09-10"
 run 2026-09-20 2026-09-22 "$T/work" && no "missing lead-in day skipped silently" ||
   { grep -q "data-day-2026-09-10 is missing" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "missing lead-in day fails before any download" || no "missing day: $(cat "$T/out.txt")"; }
+# OF-5 ruling 4: a complete day release without its readback-ok marker is refused before any download
+reset_store; rm "$T/rel/data-day-2026-09-21/readback-ok-2026-09-21"
+bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" > "$T/out.txt" 2>&1 && no "assemble took an unmarked day" ||
+  { grep -q "data-day-2026-09-21 is not done (complete); stopped for review" "$T/out.txt" && [[ ! -s "$T/downloads.log" && ! -d "$T/work" ]] &&
+    ok "OF-5 ruling 4: assemble --download refuses a complete day release without its readback-ok marker before any download" || no "OF-5 ruling 4: $(cat "$T/out.txt")"; }
+reset_store; echo units-2026-09-12.tar.part00 > "$T/rel/data-day-2026-09-12/.partial"
+bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" > "$T/out.txt" 2>&1 && no "assemble took a partial day" ||
+  { grep -q "data-day-2026-09-12 is not done (incomplete" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "OF-5 ruling 4: assemble --download refuses a day release with an asset not uploaded before any download" || no "OF-5 ruling 4 partial: $(cat "$T/out.txt")"; }
 
 reset_store
 FAKE_AVAIL=1000 run 2026-09-20 2026-09-22 "$T/work" && no "disk guard passed" || { grep -q "not enough disk" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "free-space guard (all the days' assets + 10 GB before the download; 2x a day's assets + 10 GB before its extraction)" || no "disk guard message"; }
