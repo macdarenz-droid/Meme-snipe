@@ -23,22 +23,18 @@ def count_rule(n_pools: int, steps_read: tuple[str, ...]) -> dict:
     return {"n": n_pools, "status": f"short: add Step {nxt} days" if nxt else "unresolved: A closes"}
 
 
-def _finite_or(x: np.ndarray, fill: float) -> np.ndarray:
-    return np.where(np.isfinite(x) | np.isinf(x), x, fill)
-
-
 def gate2_stat(up: np.ndarray, dn: np.ndarray) -> np.ndarray:
     """log(time in [c, 1.05c) / time in [0.95c, c)) at 420 minus the median of the same at the 20 placebos.
 
     Pooled over pools (ratio of summed seconds; the shares' common denominator cancels). Works on (P, K) or on
-    bootstrap sums (B, K). Undefined placebo ratios (no time in either band) count as +inf (lowers the statistic);
+    bootstrap sums (B, K). Non-finite placebo ratios (no time in one or both bands) count as +inf (lowers the statistic);
     a non-finite result is -inf (fails), see OPEN_QUESTIONS Q4.
     """
     U, D = np.atleast_2d(up), np.atleast_2d(dn)
     with np.errstate(divide="ignore", invalid="ignore"):
         lr = np.log(U) - np.log(D)
     main = lr[:, 0]
-    plac = _finite_or(lr[:, 1:], np.inf)
+    plac = np.where(np.isfinite(lr[:, 1:]), lr[:, 1:], np.inf)
     stat = main - np.median(plac, axis=1)
     return np.where(np.isfinite(stat), stat, -np.inf)
 

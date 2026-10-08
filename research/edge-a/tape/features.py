@@ -70,17 +70,22 @@ def load_fee_tiers(path: str):
 
 
 def supply_rule_tally(sw: pd.DataFrame, tiers) -> dict:
-    """Amendment (a) check on one chunk: does the FeeConfig tier picked from the pre-trade market cap reproduce the
-    creator fee rate the program charged? Canonical SOL swaps that charged a creator fee only."""
+    """Amendment (a) check on one chunk: on canonical SOL swaps that charged a creator fee, and only where the live
+    and the fixed 1B supply pick different FeeConfig tiers, how often each one reproduces the charged creator rate."""
     th, cr = tiers
     m = (sw.canonical == 1) & (sw.quote_mint == WSOL) & (sw.coin_creator_fee_basis_points > 0)
     s = sw[m]
-    out = {"n": int(len(s))}
+    preds = {}
+    oks = []
     for name, supply in (("base_supply", s.base_supply.to_numpy()), ("fixed_1e15", np.full(len(s), 1e15))):
         mc = market_cap_sol(s.pool_quote_token_reserves, s.virtual_quote_reserves, s.pool_base_token_reserves, supply)
-        ok = ~np.isnan(mc)
-        pred = cr[np.clip(np.searchsorted(th, mc[ok], side="right") - 1, 0, None)]
-        out[name] = int((pred == s.coin_creator_fee_basis_points.to_numpy()[ok]).sum())
+        oks.append(~np.isnan(mc))
+        preds[name] = cr[np.clip(np.searchsorted(th, np.nan_to_num(mc), side="right") - 1, 0, None)]
+    diff = oks[0] & oks[1] & (preds["base_supply"] != preds["fixed_1e15"])
+    obs = s.coin_creator_fee_basis_points.to_numpy()
+    out = {"n": int(len(s)), "n_diff": int(diff.sum())}
+    for name, p in preds.items():
+        out[name] = int((p[diff] == obs[diff]).sum())
     return out
 
 
