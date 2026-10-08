@@ -4,10 +4,13 @@ Implements `../GATE.md` (frozen) as counts only. It reads no price, return or ou
 
 ## Run
 ```
-nice -n 19 python3 f1_counts.py --unit <cache>/2026-09-11/<from>-<to> [--unit ...] --out OUTDIR [--boot 10000] [--decide]
+nice -n 19 python3 f1_counts.py --unit <cache>/2026-09-11/<from>-<to> [--unit ...] --out OUTDIR [--boot 10000] [--decide --min-buys N] [--plan FILE]
 nice -n 19 python3 -m unittest -v        # from this folder
 ```
 - `--unit`: a unit directory (`<day>/<from>-<to>`, or its `research/` folder), repeated. The day comes from the path. Units of 09-11 are day 1 and units of 09-10 are day 2; no other day is read.
+- `--decide` requires both of these, and stops with an error otherwise:
+  - `--min-buys N`, the minimum used buys per leader, picked by the lead (there is no default);
+  - loaded units that equal the plan rows for 09-11 and 09-10 exactly, with contiguous slots. The plan is `--plan`, by default `research/shared-tape/stepa-plan.txt`, and its sha256 goes into the summary.
 - Needs pandas, numpy, zstandard.
 
 ## Outputs (in OUTDIR)
@@ -28,5 +31,6 @@ nice -n 19 python3 -m unittest -v        # from this folder
 | Statistic 2: persistence on day 2 | `run` (`leader_test` on day 2 for day-1 followed leaders) |
 | Statistic 3: share of follower SOL after 23 slots (day-2 events of persistent leaders) | `follow_stats` (late volume), `run` (`late_share`) |
 | Kill rules (20 leaders; half persist; 50% after 23 slots; 15 buys a day) | `decide` (only with `--decide`) |
+| Complete Step A days for the decision | `check_plan` |
 
 Choices the gate leaves open are in `OPEN_QUESTIONS.md`, each with the conservative reading the code uses.

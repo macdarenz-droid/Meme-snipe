@@ -16,8 +16,13 @@
 6. **Placebo draw.** The draw is uniform over all buys (not owners) of the mint within ±1,800 slots, inclusive, by owners outside the day-1 candidate set. On day 2 the placebo still excludes every day-1 candidate. The draw uses `numpy.random.default_rng(20261008)`, in tape order. The seed is committed here.
    A placebo buy may itself be a follower of the leader buy. Its own followers may include the leader.
    Placebo followers exclude the placebo owner and the owners linked to it (the leader is not excluded).
-7. **Bootstrap.** 10,000 resamples of a leader's (buy, placebo) pairs, seed 20261009, percentile 0.5% bound. A leader is followed only if its mean difference is above 0 and the bound is above 0.
-   No minimum number of buys per leader is set. One lucky buy gives a bound of 0, so that leader is not followed.
+7. **Bootstrap and minimum buys.** 10,000 resamples of a leader's (buy, placebo) pairs, seed 20261009, percentile 0.5% bound. A leader counts as followed only if all of these hold:
+   - its mean difference is above 0 and the bound is above 0;
+   - its differences are not all equal (zero variance; this covers n = 1, whose bootstrap bound equals its single value);
+   - its number of used buys is at least `--min-buys`.
+
+   GATE.md sets no minimum, so the lead must pick it. `--decide` refuses to run without `--min-buys`, and the code has no default. Without `--decide`, only the zero-variance rule applies, and the result is descriptive.
 8. **Repeat buys.** A leader's repeat buys of the same mint are separate events. "Distinct mints" applies only to the candidate rule.
-9. **"Fewer than 15 persistent-leader buys a day".** `decide` compares the day-2 count of persistent-leader buys with 15. A partial day can therefore only fail this rule, never pass it falsely. The summary reports `slots_loaded` per day.
-10. **Day roles.** Day 1 = 2026-09-11 (ranking) and day 2 = 2026-09-10 (persistence), as written. Units of any other day are loaded but ignored.
+9. **Complete days for `--decide`.** `--decide` refuses unless the loaded units equal the committed plan's rows (`research/shared-tape/stepa-plan.txt`) for 09-11 and 09-10 exactly, with contiguous slots. The summary records the plan's sha256.
+10. **"Fewer than 15 persistent-leader buys a day".** `decide` compares the day-2 count of persistent-leader buys with 15. A partial day can therefore only fail this rule, never pass it falsely. The summary reports `slots_loaded` per day.
+11. **Day roles.** Day 1 = 2026-09-11 (ranking) and day 2 = 2026-09-10 (persistence), as written. Units of any other day are loaded but ignored.

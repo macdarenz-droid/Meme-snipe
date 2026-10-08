@@ -326,8 +326,11 @@ def load(units: List[Unit], links: bool = True, log=print) -> Tape:
     pool_rows = pool_rows.sort_values(["pool", "slot", "tx_idx", "ev_idx"], kind="stable").reset_index(drop=True)
     pool_rows = _pool_after_state(pool_rows)
     buys = pd.concat(Buys, ignore_index=True).sort_values(["slot", "tx_idx"], kind="stable").reset_index(drop=True)
+    buys = buys.astype({"owner": np.int32, "mint": np.int32, "tx_idx": np.int32})
     T = pd.concat(Tl, ignore_index=True).sort_values(["slot", "tx_idx", "outer_ix", "inner_ix"], kind="stable").reset_index(drop=True)
+    T = T.astype({"mint": np.int32, "from_owner": np.int32, "to_owner": np.int32})
     W = (pd.concat(Wl, ignore_index=True) if Wl else pd.DataFrame({"slot": [], "src": [], "dst": []}).astype(np.int64))
+    W = W.astype({"src": np.int32, "dst": np.int32})
     F_boost = pd.concat(Fl, ignore_index=True) if Fl else pd.DataFrame(columns=F_COLS)
     # codes for event address fields
     for k, df in events.items():

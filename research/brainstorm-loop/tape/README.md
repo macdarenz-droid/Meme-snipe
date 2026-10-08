@@ -5,11 +5,13 @@ Implements `../STEP_A_COUNT_ROWS.md` (frozen). The code reads flows, counts and 
 ## Run
 ```
 nice -n 19 python3 run_step_a.py --unit <cache>/<day>/<from>-<to> [--unit ...] --out OUTDIR \
-    [--sol-usd sol_usd.csv] [--boot 10000] [--decide]
+    [--sol-usd sol_usd.csv] [--boot 10000] [--decide] [--plan FILE]
 nice -n 19 python3 -m unittest -v        # from this folder
 ```
 - `--unit`: a unit directory (`<day>/<from>-<to>`, or its `research/` folder), repeated. The day comes from the path. Windows must lie inside contiguous loaded units.
 - `--sol-usd`: CSV `day,sol_usd`, one reading per tape day. Take the values from the Binance public archive. The code makes no network request, so row 6 reports "needs SOL/USD" until the file is supplied.
+- `--decide` stops with an error unless the loaded units equal the plan rows for 09-11 and 09-10 exactly, with contiguous slots. The plan is `--plan`, by default `research/shared-tape/stepa-plan.txt`, and its sha256 goes into the summary (`tapeio.check_plan`).
+- DEV-ZERO's events per day list every loaded day, with 0 for a day that has no events. Row 6 reports `None` (not `False`) for "not separable" when any day lacks a SOL/USD price. Gate 3 counts only the creator's swaps inside the pool's window (end of BOOST or m + 5 min, up to hour 72 or the end of the tape).
 - Needs pandas, numpy, zstandard. Two units of 09-11 take about 3.5 minutes and about 3 GB of RAM.
 
 ## Outputs (in OUTDIR)

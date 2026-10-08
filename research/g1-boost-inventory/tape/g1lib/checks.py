@@ -67,7 +67,7 @@ def check3_tier(tape, mkt: Market) -> dict:
 def check4_target(tape, mkt: Market) -> dict:
     """The 85.005 SOL target and the 0.015 SOL migration fee against the tape's completions."""
     c = tape.curve
-    done = c[(c["real_token_reserves"] <= 0) & (c["quote_mint"] == P.SOL_QUOTE_CURVE)]
+    done = c[(c["real_token_reserves"] <= 0) & (c["quote_mint"] == P.SOL_QUOTE_CURVE) & (c["mayhem_mode"] == 0)]
     real = (done["virtual_sol_reserves"] - P.INITIAL_VIRTUAL_SOL).to_numpy()
     mig = tape.events["CompletePumpAmmMigrationEvent"]
     fee = mig.loc[mig.get("quote_mint", pd.Series(dtype=str)) == P.SOL_QUOTE_CURVE, "pool_migration_fee"].astype(np.int64) if len(mig) else pd.Series(dtype=np.int64)

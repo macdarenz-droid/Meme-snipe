@@ -141,13 +141,26 @@ class Placebo(unittest.TestCase):
 
 class LeaderTest(unittest.TestCase):
     def test_followed_needs_positive_lower_bound(self):
-        ev = pd.DataFrame({"leader": ["A"] * 5 + ["B"] * 5 + ["C"] * 4, "dropped": [""] * 14,
-                           "follow": [3] * 5 + [1] * 5 + [9, 0, 0, 0], "placebo_follow": [1] * 5 + [1] * 5 + [0] * 4})
+        ev = pd.DataFrame({"leader": ["A"] * 6 + ["B"] * 5 + ["C"] * 4, "dropped": [""] * 15,
+                           "follow": [3, 4, 3, 5, 3, 4] + [1] * 5 + [9, 0, 0, 0],
+                           "placebo_follow": [1] * 6 + [1] * 5 + [0] * 4})
         t = F.leader_test(ev, n_boot=2000).set_index("leader")
         self.assertTrue(t.at["A", "followed"])
         self.assertFalse(t.at["B", "followed"])    # no difference
         self.assertFalse(t.at["C", "followed"])    # one lucky buy: 0.5% bound is 0
         self.assertAlmostEqual(t.at["C", "diff"], 2.25)
+
+    def test_single_buy_leader_not_followed(self):
+        ev = pd.DataFrame({"leader": ["A"], "dropped": [""], "follow": [5], "placebo_follow": [0]})
+        self.assertFalse(F.leader_test(ev, n_boot=500).iloc[0]["followed"])
+
+    def test_zero_variance_and_min_buys(self):
+        ev = pd.DataFrame({"leader": ["Z"] * 5, "dropped": [""] * 5, "follow": [3] * 5, "placebo_follow": [1] * 5})
+        self.assertFalse(F.leader_test(ev, n_boot=500).iloc[0]["followed"])
+        ev = pd.DataFrame({"leader": ["A"] * 6, "dropped": [""] * 6, "follow": [3, 4, 3, 5, 3, 4],
+                           "placebo_follow": [1] * 6})
+        self.assertTrue(F.leader_test(ev, n_boot=500, min_buys=6).iloc[0]["followed"])
+        self.assertFalse(F.leader_test(ev, n_boot=500, min_buys=7).iloc[0]["followed"])
 
     def test_decide(self):
         base = {"followed_day1": 20, "persistent_share": 0.5, "late_share": 0.5, "day2_persistent_leader_buys": 15}
@@ -166,7 +179,7 @@ class EndToEnd(unittest.TestCase):
                     s0 = base + 3000 + i * 100
                     rows.append(curve_row(s0, "L", f"m{i}"))
                     rows.append(curve_row(s0 + 700, f"pl{i}", f"m{i}"))       # placebo buy, no followers after it
-                    for k in range(leader_follows):
+                    for k in range(leader_follows + i % 2):
                         rows.append(curve_row(s0 + 30 + k, f"f{i}_{k}", f"m{i}", sol=1000))
                 return rows
             u1 = write_unit(root, F.DAY1, 1000, 9999, day_rows(1000, 3))
@@ -178,8 +191,45 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(summ["day2_persistent_leader_buys"], 10)
             self.assertEqual(summ["late_share"], 1.0)
             self.assertFalse(tabs["events_day1"]["placebo_owner"].eq("L").any())
-            self.assertTrue((tabs["events_day1"]["placebo_follow"] < 3).all())
-            self.assertTrue((tabs["events_day1"]["follow"] == 3).all())
+            e = tabs["events_day1"]; self.assertTrue((e["placebo_follow"] < e["follow"]).all())
+            self.assertTrue(tabs["events_day1"]["follow"].isin([3, 4]).all())
+
+
+class Plan(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.plan = os.path.join(self.d, "plan.txt")
+        with open(self.plan, "w") as fh:
+            fh.write("2026-09-11 1 1000 1999\n2026-09-11 1 2000 2999\n2026-09-11 1 3000 3999\n"
+                     "2026-09-10 1 9000 9999\n")
+        self.full = [(F.DAY1, 1000, 1999), (F.DAY1, 2000, 2999), (F.DAY1, 3000, 3999), (F.DAY2, 9000, 9999)]
+
+    def test_exact_plan_passes_with_sha(self):
+        import hashlib
+        self.assertEqual(F.check_plan(self.full, self.plan), hashlib.sha256(open(self.plan, "rb").read()).hexdigest())
+
+    def test_missing_middle_and_subset_refused(self):
+        with self.assertRaises(F.PlanError):
+            F.check_plan([r for r in self.full if r[1] != 2000], self.plan)
+        with self.assertRaises(F.PlanError):
+            F.check_plan(self.full[:3], self.plan)            # a correct subset is not enough
+        with self.assertRaises(F.PlanError):
+            F.check_plan(self.full[2:], self.plan)
+
+    def test_cli_decide_needs_min_buys_and_full_plan(self):
+        u = [write_unit(self.d, d, a, b, [curve_row(a + 1, "x", "m")]) for d, a, b in self.full]
+        out = os.path.join(self.d, "o")
+        with self.assertRaises(SystemExit):                    # no --min-buys
+            F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--plan", self.plan])
+        with self.assertRaises(SystemExit):                    # missing middle unit
+            F.main(sum([["--unit", x] for x in u[:1] + u[2:]], []) +
+                   ["--out", out, "--decide", "--min-buys", "5", "--plan", self.plan])
+        self.assertFalse(os.path.exists(out))
+        F.main(sum([["--unit", x] for x in u], []) + ["--out", out, "--decide", "--min-buys", "5",
+                                                      "--plan", self.plan, "--boot", "50"])
+        s = json.load(open(os.path.join(out, "f1_summary.json")))
+        self.assertEqual(s["min_buys"], 5)
+        self.assertEqual(len(s["plan"]["sha256"]), 64)
 
 
 if __name__ == "__main__":
