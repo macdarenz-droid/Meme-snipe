@@ -199,7 +199,7 @@ def _ray_vaults(pool, mint, txs):
     if v['meme'] and v['sol']:                 # only a complete result is kept; a later bar retries
         _vaults[pool] = v
         saved[pool] = v
-        json.dump(saved, open(path, 'w'))
+        hel._write_json(path, saved)
     return v
 
 def vault_bal(tx, addr):
@@ -450,8 +450,7 @@ def load_state():
 
 def save_state(st):
     p = os.path.join(OUT, 'state.json')
-    json.dump(st, open(p + '.tmp', 'w'))
-    os.replace(p + '.tmp', p)
+    hel._write_json(p, st)
 
 def all_sales(st):
     return [s for k in sorted(st['done']) for s in st['done'][k]['sales']]
