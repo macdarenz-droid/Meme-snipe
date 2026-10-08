@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll } from 'vitest';
 import type { Clock, UnixMs } from '@bot/types';
+import { schemaTx, type Db, type TxHandle } from '../src/m24/db.ts';
 
 export interface FakeClock extends Clock { set(ms: number): void; advance(ms: number): void }
 
@@ -38,4 +39,9 @@ export function waitFor(cond: () => boolean, timeoutMs = 5_000): Promise<void> {
     };
     poll();
   });
+}
+
+/** Test fixtures' own schema transaction (Z02 round 5 ruling 26): tables and triggers a test needs beside the migrations. */
+export function schemaFixture<T>(db: Db, fn: (tx: TxHandle) => T): T {
+  return schemaTx(db, fn);
 }

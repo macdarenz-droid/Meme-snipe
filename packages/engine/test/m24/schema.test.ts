@@ -15,7 +15,7 @@ import { M0001_INITIAL } from '../../src/m24/migrations/0001_initial.ts';
 import { TABLE_NAMES, TABLES } from '../../src/m24/schema.ts';
 import { createLogger, M27_LOG_CODES, mergeLogCodes } from '../../src/m27/log.ts';
 import { labelsHash } from '../../src/m27/metrics.ts';
-import { fakeClock, tempDir } from '../helpers.ts';
+import { fakeClock, tempDir, schemaFixture } from '../helpers.ts';
 import { pubkey } from './samples.ts';
 
 const dir = tempDir('schema');
@@ -113,7 +113,7 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
     assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` }), { ok: true, value: { from: 1, to: 1, applied: [] } });
     const raw = new DatabaseSync(':memory:');
     raw.exec(OUTBOX_DDL);
-    const cols = (d: DatabaseSync | Db, sql: string): unknown => (d instanceof DatabaseSync ? d.prepare(sql).all() : d.withSchemaTx((tx) => tx.all(sql)))
+    const cols = (d: DatabaseSync | Db, sql: string): unknown => (d instanceof DatabaseSync ? d.prepare(sql).all() : schemaFixture(d, (tx) => tx.all(sql)))
       .map((c) => { const r = c as Record<string, unknown>; return [r.name, r.type, Number(r.notnull), Number(r.pk)]; });
     assert.deepEqual(cols(raw, 'PRAGMA table_info(outbox)'), cols(db, 'PRAGMA table_info(outbox)'));
     raw.close();
@@ -140,7 +140,7 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
     assert.equal(r.ok, false);
     assert.deepEqual(r.ok ? null : [r.error.code, r.error.version], ['E_MIGRATION_FAILED', 2]);
     assert.deepEqual(appliedMigrations(db).map((m) => m.version), [1]);
-    assert.equal(db.withTx((tx) => tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name = 'half'")), undefined);
+    assert.equal(schemaFixture(db, (tx) => tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name = 'half'")), undefined);
     assert.equal(JSON.parse(lines.at(-1) as string).code, 'm24.migration_failed');
     assert.equal(JSON.parse(lines.at(-1) as string).level, 'critical');
     db.close();
@@ -148,7 +148,7 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
     const r2 = await prepareDatabase(empty.db, { clock: fakeClock(), backupPath: `${empty.path}.bak`, migrations: [M0001_INITIAL, bad] });
     assert.deepEqual(r2.ok ? null : [r2.error.code, r2.error.version], ['E_MIGRATION_FAILED', 2]);
     assert.deepEqual(appliedMigrations(empty.db), []);
-    assert.equal(empty.db.withTx((tx) => tx.get("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table'"))?.n, 0n);
+    assert.equal(schemaFixture(empty.db, (tx) => tx.get("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table'"))?.n, 0n);
     empty.db.close();
   });
 

@@ -42,12 +42,6 @@ export interface OutboxRow { seq: bigint; topic: string; payloadJson: string; cr
 export interface Db {
   /** Runs `fn` in one write transaction; a throw rolls back and is rethrown. The body must be synchronous. No DDL. */
   withTx<T>(fn: (tx: TxHandle) => T): T;
-  /**
-   * `withTx` for the migration runner (migrate.ts) and test fixtures: schema statements are allowed (ruling 22). A
-   * statement naming `retention_clock` runs only when its exact text is in `trusted`, the migrations' own statements
-   * (ruling 24), so not even a schema transaction can add a trigger that writes it.
-   */
-  withSchemaTx<T>(fn: (tx: TxHandle) => T, trusted?: ReadonlySet<string>): T;
   /** A read-only connection for API queries (round robin over the reader pool). */
   reader(): ReaderHandle;
   outbox: {
@@ -120,6 +114,13 @@ CREATE INDEX outbox_published_at ON outbox(published_at) WHERE published_at IS N
 
 export const OUTBOX_RETENTION_MS = 7 * 86_400_000;
 const DRAIN_BATCH = 500;
+/**
+ * The schema transaction is no method of `Db` (Z02 round 5 ruling 26): it hangs on this module-private symbol and is
+ * reached only through `schemaTx`, which only the migration runner (migrate.ts) and the test fixtures' helper import (a
+ * source scan in review-round2.test.ts keeps it so). A copy of the handle made with `{ ...db }` keeps it.
+ */
+const SCHEMA_TX = Symbol('m24.schemaTx');
+type SchemaRunner = <T>(fn: (tx: TxHandle) => T, trusted: ReadonlySet<string>) => T;
 const NONE: ReadonlySet<string> = new Set();
 const STATEMENT_CACHE = 512;
 const BUSY_TIMEOUT_MS = 5_000;
@@ -145,6 +146,11 @@ class Statements {
     if (st === undefined) {
       if (this.cache.size >= STATEMENT_CACHE) this.cache.clear();
       st = this.conn.prepare(sql);
+      // node:sqlite compiles only the first statement and drops the rest without an error (Z02 round 5 ruling 28):
+      // anything after SQLite's own end of that statement must be whitespace, `;` or comments.
+      const tail = sql.slice(st.sourceSQL.length);
+      const next = statementStart(tail);
+      if (next >= 0 && next < tail.length) throw new Error('m24: one SQL statement per call; the text holds a second statement');
       st.setReadBigInts(true);
       this.cache.set(sql, st);
     }
@@ -205,7 +211,7 @@ export function isTxControl(sql: string): boolean {
   return startsWith(TX_KEYWORD, sql);
 }
 
-/** Schema statements belong to the migration runner alone (`withSchemaTx`; Z02 round 4 ruling 22). */
+/** Schema statements belong to the migration runner alone (`schemaTx`; Z02 round 4 ruling 22). */
 export function isDdl(sql: string): boolean {
   return startsWith(DDL_KEYWORD, sql);
 }
@@ -325,10 +331,12 @@ export function openDb(opts: DbOptions): Db {
     const guard = (sql: string): void => {
       if (!active()) throw new Error('m24: transaction handle used outside its withTx');
       if (isTxControl(sql)) throw new Error('m24: transaction control is withTx\'s alone');
-      // Ruling 22: a trigger, table or view is changed only by the migration runner (withSchemaTx), so no module can
+      // Ruling 22: a trigger, table or view is changed only by the migration runner (schemaTx), so no module can
       // drop the append-only triggers. Rulings 14 and 24: only the retention job (withRetentionClock) writes
       // retention_clock, and only the migrations' own text may name it in a schema transaction.
-      if (!schema && isDdl(sql)) throw new Error('m24: schema statements (CREATE, DROP, ALTER, PRAGMA, ATTACH) are the migration runner\'s alone (withSchemaTx)');
+      if (!schema && isDdl(sql)) throw new Error('m24: schema statements (CREATE, DROP, ALTER, PRAGMA, ATTACH) are the migration runner\'s alone (schemaTx)');
+      // Ruling 27: SQLite's own tables (sqlite_schema, sqlite_sequence, …) are read and written only by the migration runner.
+      if (!schema && /sqlite_/i.test(sql)) throw new Error('m24: SQLite\'s own sqlite_* tables are the migration runner\'s alone (schemaTx)');
       if (/retention_clock/i.test(sql) && !trusted.has(sql)) throw new Error('m24: retention_clock is the retention job\'s alone (retention.ts, withRetentionClock)');
       stillOpen();
     };
@@ -392,10 +400,6 @@ export function openDb(opts: DbOptions): Db {
   const db: Db = {
     withTx<T>(fn: (tx: TxHandle) => T): T {
       return runTx(fn, false);
-    },
-
-    withSchemaTx<T>(fn: (tx: TxHandle) => T, trusted: ReadonlySet<string> = NONE): T {
-      return runTx(fn, true, trusted);
     },
 
     withRetentionClock<T>(nowMs: number, fn: (tx: TxHandle) => T): T {
@@ -465,7 +469,19 @@ export function openDb(opts: DbOptions): Db {
       release();
     },
   };
+  Object.defineProperty(db, SCHEMA_TX, { value: ((fn, trusted) => runTx(fn, true, trusted)) satisfies SchemaRunner, enumerable: true });
   return db;
+}
+
+/**
+ * A write transaction in which schema statements (CREATE, DROP, ALTER, PRAGMA, ATTACH) and the `sqlite_*` tables are
+ * allowed (rulings 22, 26, 27): the migration runner's alone. A statement naming `retention_clock` runs only when its
+ * exact text is in `trusted`, the migrations' own statements (ruling 24).
+ */
+export function schemaTx<T>(db: Db, fn: (tx: TxHandle) => T, trusted: ReadonlySet<string> = NONE): T {
+  const run = (db as unknown as Record<symbol, SchemaRunner | undefined>)[SCHEMA_TX];
+  if (run === undefined) throw new TypeError('m24: schemaTx needs a database opened by openDb');
+  return run(fn, trusted);
 }
 
 /**

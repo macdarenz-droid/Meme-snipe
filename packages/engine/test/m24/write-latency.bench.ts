@@ -3,7 +3,7 @@
 //   node packages/engine/test/m24/write-latency.bench.ts <data dir>/bench.db 2000
 // It prints one JSON line and deletes its database. The D06 switch trigger is a write p99 above 20 ms (ARCH 6).
 import { rmSync } from 'node:fs';
-import { openDb } from '../../src/m24/db.ts';
+import { openDb, schemaTx } from '../../src/m24/db.ts';
 
 export interface LatencyResult { transactions: number; p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number }
 
@@ -15,7 +15,7 @@ function at(sorted: number[], q: number): number {
 export function measureWriteLatency(path: string, n: number): LatencyResult {
   let tick = 0;
   const db = openDb({ create: true, path, clock: { kind: 'sim', nowMs: () => tick++ } });
-  db.withSchemaTx((tx) => tx.run('CREATE TABLE bench (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, c TEXT NOT NULL)'));
+  schemaTx(db, (tx) => tx.run('CREATE TABLE bench (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, c TEXT NOT NULL)'));
   const samples: number[] = [];
   let id = 0;
   for (let i = 0; i < n; i++) {

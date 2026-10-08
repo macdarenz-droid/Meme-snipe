@@ -3,15 +3,15 @@
 // SIGKILL at random points and restarts it; on restart the consumer reloads its watermark from the journal.
 // Usage: node crash-worker.ts <db path> <journal path> <total>
 import { closeSync, existsSync, openSync, readFileSync, writeSync } from 'node:fs';
-import { openDb, OUTBOX_DDL, OutboxConsumer } from '../../src/m24/db.ts';
+import { openDb, OUTBOX_DDL, OutboxConsumer, schemaTx } from '../../src/m24/db.ts';
 
 const [dbPath, journalPath, totalText] = process.argv.slice(2) as [string, string, string];
 const total = Number(totalText);
 let tick = 0;
 const db = openDb({ create: true, path: dbPath, clock: { kind: 'sim', nowMs: () => tick++ } });
-const exists = db.withTx((tx) => tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name = 'state'")) !== undefined;
+const exists = schemaTx(db, (tx) => tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name = 'state'")) !== undefined;
 if (!exists) {
-  db.withSchemaTx((tx) => {
+  schemaTx(db, (tx) => {
     for (const stmt of `${OUTBOX_DDL}\nCREATE TABLE state (id INTEGER PRIMARY KEY, v TEXT NOT NULL);`.split(';').map((s) => s.trim()).filter(Boolean)) tx.run(stmt);
   });
 }
