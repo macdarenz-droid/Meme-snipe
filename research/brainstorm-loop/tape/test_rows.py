@@ -756,5 +756,37 @@ class RoundUsd(unittest.TestCase):
         self.assertIn("needs SOL/USD", summ["status"])
 
 
+
+class RedTeamR1(unittest.TestCase):
+    """research/brainstorm-loop/CODE_REDTEAM.md, R1 findings on the count rows."""
+
+    def test_theme_wave_needs_a_real_name_or_symbol_match(self):
+        # R1-3: symbols that normalise to "" (emoji) matched each other, and matched any coin with no CreateEvent
+        u = Unit()
+        for mint, pool, m, nm, sym in (("A", "PA", 200, "Frog", "\U0001F438"), ("B", "PB", 250, "Dog", "\U0001F436")):
+            u.event("CreateEvent", m - 100, {"mint": mint, "creator": "C" + mint, "user": "C" + mint,
+                                             "is_mayhem_mode": "0", "quote_mint": SOL_NATIVE, "name": nm, "symbol": sym})
+            u.migrate(m, mint, pool, creator="C" + mint)
+            u.aswap(m + 1, "seed" + mint, mint, pool, creator="C" + mint)
+        u.migrate(260, "Z", "PZ", creator="CZ")              # graduate whose CreateEvent is not on the tape
+        u.aswap(261, "seedZ", "Z", "PZ", creator="CZ")
+        u.aswap(262, "x", "Z", "PZ", creator="CZ", buy=False)  # a curve-less mint: mayhem from CreatePoolEvent
+        tape, s, adj = load(u)
+        df, _ = R.seat_drift(tape, s, adj)
+        d = df.set_index("pool")
+        self.assertEqual(d.at["PA", "dropped"], "")
+        self.assertEqual(d.at["PB", "dropped"], "")
+        u2 = Unit()                                          # a real symbol match still drops
+        for mint, pool, m in (("A", "PA", 200), ("B", "PB", 250)):
+            u2.event("CreateEvent", m - 100, {"mint": mint, "creator": "C" + mint, "user": "C" + mint,
+                                              "is_mayhem_mode": "0", "quote_mint": SOL_NATIVE, "name": "n" + mint,
+                                              "symbol": "PEPE"})
+            u2.migrate(m, mint, pool, creator="C" + mint)
+            u2.aswap(m + 1, "seed" + mint, mint, pool, creator="C" + mint)
+        tape, s, adj = load(u2)
+        df, _ = R.seat_drift(tape, s, adj)
+        self.assertEqual(set(df["dropped"]), {"theme_wave_name_match"})
+
+
 if __name__ == "__main__":
     unittest.main()

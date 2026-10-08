@@ -408,7 +408,9 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
             continue
         others = pools[(pools["pool"] != r.pool) & (pools["m_time"] >= m - N_HALF_S) & (pools["m_time"] <= m + N_HALF_S)]
         nm = names.get(r.mint)
-        if nm and any(nm[0] and (names.get(o, ("", ""))[0] == nm[0] or names.get(o, ("", ""))[1] == nm[1])
+        # Q10: only coins whose CreateEvent is on the tape, and only a non-empty normalised name or symbol, can
+        # match (an all-emoji symbol normalises to "" and would match every other such coin; red team R1-3)
+        if nm and any(o in names and ((nm[0] and names[o][0] == nm[0]) or (nm[1] and names[o][1] == nm[1]))
                       for o in others["mint"]):
             out["dropped"] = "theme_wave_name_match"   # G1-CAP exclusion (Q10)
             rows.append(out)
