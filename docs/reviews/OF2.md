@@ -249,3 +249,5 @@ Slice paging is sound: inclusive UTC slices leave no gaps, and every query fails
 63. **MINOR 2.** Refuse any command argument or input redirect that names `$qlog`, `$slog`, `$tlog`, or a `*/logs/` path under `$out` or `$RUNNER_TEMP`, unless it is a write target of the allowed calls. One test per form above.
 64. **MINOR 1.** Run the status queries before the slices. Test the order.
 65. **Pin scope.** Arming also refuses archive-workflow jobs that use `container:` or `services:`, or that call a reusable workflow. Test it.
+- Round 8 reviewer: PASS, final, at `8aa5c131`; safe-b `4ca9d41a` is consistent. m1: `OLD-FAITHFUL.md:379` and `test-ci.sh:2216` still say "500 cap".
+66. **m1.** Change both to "sliced created searches and status queries each fail closed at total_count ≥ 1,000 or rows < total_count".
