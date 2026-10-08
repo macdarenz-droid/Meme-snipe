@@ -240,12 +240,15 @@ def rebuy_stratum(tape: Tape, exits, pts, prs, hourly, ctx=None):
 
 
 # ------------------------------------------------------------------ count row: H8 capacity
-def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
-    """H8_AMENDMENT item 4: per day, H8-eligible pool-hours and graduates at $5, $20 and $50.
-    Pool-hours: canonical, non-mayhem PumpSwap WSOL pools (pools whose mayhem flag is not on the tape are counted
-    apart, as `*_mayhem_unknown`), at each whole UTC hour inside the loaded tape, with an
-    as-of state at the hour start. Graduates: eligible graduates (migration on the tape) whose effective quote at
-    m + 60 min (H10's earliest entry) meets the floor (Q25)."""
+def h8_capacity(tape: Tape, s: pd.DataFrame, hourly, ctx=None):
+    """H8_AMENDMENT item 4 with H8_AMENDMENT_2: per day, H8-eligible pool-hours and graduates at each size, each on
+    its universe floor with H6, dust-at-migration and H11, plus the canonical pools whose creator fee is 0.
+    Pool-hours: canonical, non-mayhem PumpSwap WSOL pools, at each whole UTC hour inside the loaded tape, with an
+    as-of state at the hour start that lies in the same contiguous run of units. Pools whose mayhem flag is not on
+    the tape are counted apart (`*_mayhem_unknown`). A pool whose migration is not on the tape has no age, so no
+    universe tag: it is never eligible (reason `age_unknown`). Graduates: eligible graduates (migration on the
+    tape) checked at m + 60 min (H10's earliest entry, U2) (Q25)."""
+    ctx = ctx or GateCtx(tape, s, hourly)
     days = sorted({d for d, _, _ in tape.ranges})
     amm = s[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL)]
     hours = []
@@ -280,9 +283,12 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
                 stale[d] = stale.get(d, 0) + 1     # last state lies before a tape gap: not as-of the hour
                 continue
             rows.append({"day": d, "hour": h, "pool": pool, "mayhem_known": known, "eff_quote": float(eq[i]),
-                         **{f"ok_{z}": eligible(eq[i], h, z, hourly) for z in SIZES_USD}})
-    ph = pd.DataFrame(rows, columns=["day", "hour", "pool", "mayhem_known", "eff_quote"] + [f"ok_{z}" for z in SIZES_USD])
-    pp = R.by_pool(s)
+                         **{f"why_{z}": ctx.check(pool, h, st, eq[i], z) for z in SIZES_USD}})
+    cols = ["day", "hour", "pool", "mayhem_known", "eff_quote"] + [f"why_{z}" for z in SIZES_USD]
+    ph = pd.DataFrame(rows, columns=cols)
+    for z in SIZES_USD:
+        ph[f"ok_{z}"] = ph[f"why_{z}"] == "ok"
+    pp = ctx.pp
     grads = []
     for r in R.eligible_pools(tape).itertuples(index=False):
         t = int(r.m_time) + 3600
@@ -293,10 +299,17 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
             i, _, eq = RB.state_asof(RB.pool_state(g), t, st)
             if i >= 0 and np.isfinite(eq[i]):
                 rec["assessable"] = True
-                rec.update({f"ok_{z}": eligible(eq[i], t, z, hourly) for z in SIZES_USD})
+                for z in SIZES_USD:
+                    rec[f"why_{z}"] = ctx.check(r.pool, t, st, eq[i], z)
+                    rec[f"ok_{z}"] = rec[f"why_{z}"] == "ok"
         grads.append(rec)
-    gr = pd.DataFrame(grads, columns=["day", "pool", "assessable"] + [f"ok_{z}" for z in SIZES_USD])
-    summ = {}
+    gr = pd.DataFrame(grads, columns=["day", "pool", "assessable"] + [f"why_{z}" for z in SIZES_USD]
+                      + [f"ok_{z}" for z in SIZES_USD])
+    fee0 = {}
+    if len(amm):
+        f = amm.groupby(["day", "pool"])["creator_fee_bps"].agg(lambda x: bool(x.notna().all() and (x == 0).all()))
+        fee0 = {d: int(v.sum()) for d, v in f.groupby(level=0)}
+    summ = {"size_notes": SIZE_NOTES}
     for d in days:
         xa, y = ph[ph["day"] == d], gr[gr["day"] == d]
         x = xa[xa["mayhem_known"].astype(bool)] if len(xa) else xa
@@ -304,9 +317,11 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
         summ[d] = {"pool_hours": int(len(x)), "pool_hours_mayhem_unknown": int(len(xu)),
                    "pool_hours_state_not_on_tape": int(stale.get(d, 0)), "graduates": int(len(y)),
                    "graduates_assessable_at_m_plus_60": int(y["assessable"].sum()) if len(y) else 0,
-                   "hours_without_sol_usd": int(sum(1 for dd, h in hours if dd == d and not np.isfinite(px_asof(hourly, h))))}
+                   "hours_without_sol_usd": int(sum(1 for dd, h in hours if dd == d and not np.isfinite(px_asof(hourly, h)))),
+                   "canonical_pools_creator_fee_0": fee0.get(d, 0)}
         for z in SIZES_USD:
             summ[d][f"${z}"] = {"h8_pool_hours": int(x[f"ok_{z}"].sum()) if len(x) else 0,
                                 "h8_pool_hours_mayhem_unknown": int(xu[f"ok_{z}"].sum()) if len(xu) else 0,
-                                "h8_graduates": int(y[f"ok_{z}"].fillna(False).astype(bool).sum()) if len(y) else 0}
+                                "h8_graduates": int(y[f"ok_{z}"].fillna(False).astype(bool).sum()) if len(y) else 0,
+                                "pool_hour_checks": dict(Counter(x[f"why_{z}"])) if len(x) else {}}
     return ph, gr, summ
