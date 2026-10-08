@@ -179,3 +179,7 @@ Closed: checker bypasses, composites and the upload-* actions, the sha cache, br
 ### Round 6 reviewer: PASS at `4fc50e38` (1 MINOR)
 
 The reviewer exercised the seal directly: a round trip, a wrong key, a flipped byte, a swapped IV and an extra file. The token appears only in clean steps. A failed open stops before the scan, and the day never starts fresh. The m1 run-window concern is the same one the red team reported as MAJOR 1, and ruling 49 covers it. The arm checklist also moves `ARCHIVE_REARM_AT` to the arm time.
+
+### Supervisor ruling 54 (8 Oct 2026, 11:58 PM; from the retro red team, `docs/reviews/SUPDOCS.md` ruling 3)
+
+54. **MINOR, day count.** 2026-07-23 to 08-21 is 30 days, not 31. In the DECISIONS A06 Old Faithful row and any comment, test name or doc that counts that range, write "30 days; 31 with the 07-22 lead-in". Do not change the allow-list itself.

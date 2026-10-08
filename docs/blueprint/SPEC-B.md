@@ -1975,7 +1975,7 @@ interface OutboxRow { seq: bigint; topic: string; payloadJson: string; createdAt
 - **Observability:** metrics `db_write_latency_ms`, `outbox_backlog`; log code `m24.outbox_replay`.
 - **Security notes:** DB file owned by `bot`, mode 0600; not readable by `signer` or `sentinel` except the sentinel journal path is separate.
 - **Facts used:** VF-08 (Node 24 ≥ 24.15.0 and `node:sqlite` status; A-45 resolved by it).
-  - **Node version note (supervisor, 2026-10-08).** VF-08 names Node 24, but the repo stays on Node 22.23.3 (`.node-version`) for now, per the 2026-10-07 "Node: stay on Node 22" row in `docs/DECISIONS.md`. `node:sqlite` is used there with no `--experimental-sqlite` flag: the A-45 check (`packages/engine/test/m24/sqlite-verify.test.ts` on branch `claude/z02-persistence`, pending merge until Z02 merges) imports it directly and covers transactions, WAL and online backup on Node 22.23.x. Read VF-08's Node 24 figures as applying to the later Node card, not to this build.
+  - **Node version note (supervisor, 2026-10-08).** VF-08 names Node 24, but the repo stays on Node 22.23.3 (`.node-version`) for now, per the 2026-10-07 "Node: stay on Node 22" row in `docs/DECISIONS.md`. `node:sqlite` is used there with no `--experimental-sqlite` flag: the A-45 check (`packages/engine/test/m24/sqlite-verify.test.ts`, merged with Z02 in #301) imports it directly and covers transactions, WAL and online backup on Node 22.23.x. Read VF-08's Node 24 figures as applying to the later Node card, not to this build.
 - **Definition of done:** Common DoD; decision recorded with measurements.
 
 #### B-M24-02 — Schema, migrations, append-only triggers and PERTOKEN indexes for all modules
