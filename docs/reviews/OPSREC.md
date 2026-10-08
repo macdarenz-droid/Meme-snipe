@@ -49,3 +49,15 @@ REVIEW FAIL: 1 BLOCKER, 3 MAJOR, 4 MINOR. Release `171a61ce` and the current dep
    - Never open the live ledger read-write: use `sqlite3 -readonly`, or copy the db, -wal and -shm with `cp -p` and back up from the copy.
    - Note that one host shows as `zeroed-1`, and use the DNSName printed in step 4.
    - The dryrun and backup units are moot with the ISO method.
+
+### #309 round 2 (head `672eb59f`): delta review PASS on mechanics; red team 1 MAJOR, 1 MINOR
+
+The MAJOR: the folder's mtime moves with every worker start (a new boot folder) and with every prune of an empty one. A crash loop slower than StartLimitBurst (10 per 600 s) but faster than one per 70 min keeps re-arming the hold, so "never reported" stays silent indefinitely while the budget prunes unuploaded recordings. The MINOR: a future mtime gives a negative age, which counts as young.
+
+### Supervisor rulings for round 3 (9 Oct 2026, about 12:34 AM)
+
+7. **MAJOR.** Fix (a): `zeroed-check` writes a first-seen stamp once when the recorder folder appears, and removes it when the folder is gone. The hold is 70 minutes from that stamp, and nothing else moves it. Tests:
+   - after the stamp is 71 minutes old, touching the folder or adding a boot folder still raises the alert;
+   - removing the folder clears the stamp;
+   - a new folder starts a new hold.
+8. **MINOR.** A negative age counts as old (alert). The fixed stamp covers most of it; keep the explicit check too.
