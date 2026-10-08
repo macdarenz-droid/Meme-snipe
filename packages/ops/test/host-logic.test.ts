@@ -1049,6 +1049,32 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
   });
 });
 
+describe('pull mount alert (PATHS-FIX ruling 23)', () => {
+  const units = 'zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount';
+  const run = (states: string) => sh('pull_mount_alerts "${PULL_MOUNT_UNITS[@]}"', states).out;
+
+  it('watches the receipts filesystem and both chroot binds', () => {
+    expect(sh('echo "${PULL_MOUNT_UNITS[*]}"').out).toBe(units);
+  });
+
+  it('all active: no alert, and an open one is cleared', () => {
+    expect(run('active\nactive\nactive\n')).toBe('off|pull-mounts|CLEARED Zeroed host: the market-data pull folders are mounted again.');
+  });
+
+  it('any inactive, failed or unreported unit raises one alert naming each', () => {
+    expect(run('active\ninactive\nactive\n')).toBe('on|pull-mounts|ALERT Zeroed host: the market-data pull folders are not all mounted (srv-zeroed_pull-md.mount inactive). Pulls and receipts stop until they are.');
+    expect(run('failed\nactive\nactive\n').startsWith('on|pull-mounts|') && run('failed\nactive\nactive\n').includes('zeroed-receipts-fs.service failed')).toBe(true);
+    // systemctl printed nothing (not installed, bus down): every unit counts as not active.
+    expect(run('')).toContain('zeroed-receipts-fs.service unknown, srv-zeroed_pull-md.mount unknown, srv-zeroed_pull-md-receipts.mount unknown');
+  });
+
+  it('zeroed-check runs it every minute, before the key check can exit', () => {
+    const check = read('ops/host/files/usr/local/sbin/zeroed-check');
+    expect(check).toContain('done < <(systemctl is-active "${PULL_MOUNT_UNITS[@]}" 2>/dev/null | pull_mount_alerts "${PULL_MOUNT_UNITS[@]}")');
+    expect(check.indexOf('pull_mount_alerts')).toBeLessThan(check.indexOf('keys_stored || exit 0'));
+  });
+});
+
 describe('D07 host preflight (Z00)', () => {
   // The block runs from the built ops/install.sh, the file the README line downloads. Its reads stay real; the
   // test only shadows df and awk's /proc/meminfo with bash functions, which no host or environment can do.

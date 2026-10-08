@@ -645,17 +645,19 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
       'install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md',
       'install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts',
       'install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool',
+      'install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage',
       'install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys',
       // Never chmod the read-only bind while it is mounted (an update would stop on EROFS).
       'mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md',
     ]) expect(main.split('\n'), line).toContain(line);
-    expect(worker).toMatch(/^ReadWritePaths=\/var\/lib\/zeroed-md \/var\/lib\/zeroed-spool$/m);
+    expect(worker).toMatch(/^ReadWritePaths=\/var\/lib\/zeroed-md \/var\/lib\/zeroed-spool \/var\/lib\/zeroed-usage$/m);
     expect(worker).toMatch(/^SupplementaryGroups=zeroed-pull zeroed-spool$/m);
     expect(worker.split('\n').filter((l) => !l.startsWith('#')).join('\n')).not.toContain('botops');
     expect(worker).toMatch(/^StateDirectoryMode=0700$/m);
     // The groups exist before any unit names them.
     expect(main.indexOf('groupadd --system zeroed-pull')).toBeLessThan(main.indexOf('# @@FILES@@'));
     expect(main.indexOf('groupadd --system zeroed-spool')).toBeLessThan(main.indexOf('# @@FILES@@'));
+    expect(main.indexOf('groupadd --system zeroed-sentinel')).toBeLessThan(main.indexOf('# @@FILES@@'));
     expect(main).toContain('useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull');
   });
 
@@ -668,9 +670,20 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     expect(rc).toMatch(/^What=\/var\/lib\/zeroed-md\/receipts$/m);
     expect(rc).toMatch(/^Where=\/srv\/zeroed_pull\/md\/receipts$/m);
     expect(rc).toMatch(/^Options=bind,rw,/m);
-    expect(rc).toMatch(/^Requires=srv-zeroed_pull-md\.mount$/m);
     for (const u of [md, rc]) expect(u).toMatch(/^Before=ssh\.service ssh\.socket$/m);
-    expect(main).toContain('systemctl enable --now srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount');
+    expect(main).toContain('systemctl enable --now zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount');
+    // Ruling 20: receipts/ is its own small filesystem, mounted before both binds and SSH.
+    const fsu = read('ops/host/files/etc/systemd/system/zeroed-receipts-fs.service');
+    expect(fsu).toMatch(/^Before=srv-zeroed_pull-md\.mount srv-zeroed_pull-md-receipts\.mount ssh\.service ssh\.socket$/m);
+    expect(fsu).toMatch(/^ExecStart=\/usr\/local\/lib\/zeroed\/receipts-fs start$/m);
+    expect(rc).toMatch(/^Requires=srv-zeroed_pull-md\.mount zeroed-receipts-fs\.service$/m);
+    expect(md).toMatch(/^After=zeroed-receipts-fs\.service$/m);
+    const script = read('ops/host/files/usr/local/lib/zeroed/receipts-fs');
+    expect(script).toContain('mkfs.ext4 -q -F -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"');
+    expect(script).toContain('mount -o loop,nodev,nosuid,noexec "$IMG" "$MNT"');
+    expect(script).toMatch(/^IMG_DIR=\/var\/lib\/zeroed-receipts$/m);
+    // mkfs.ext4 and e2fsck come from e2fsprogs, installed like every other tool the host scripts use.
+    expect(main).toMatch(/^PACKAGES=\(.*\be2fsprogs\b.*\)$/m);
   });
 
   it('the pull account is sftp only, chrooted, with no key until the operator adds one, and its Match block ends', () => {

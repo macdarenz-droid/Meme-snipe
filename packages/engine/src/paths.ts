@@ -1,7 +1,7 @@
 // PATHS-FIX (docs/research/DISK-BUDGET.md §2.9; docs/reviews/DISKBUDGET.md rulings 6, 8, 9, 11–18): every place the
 // engine writes on the host, in one list. The engine runs in zeroed-worker.service under ProtectSystem=strict, which
-// can write only its StateDirectory (/var/lib/zeroed, 0700) and its ReadWritePaths (/var/lib/zeroed-md and
-// /var/lib/zeroed-spool, made by the installer with their own group and mode, because one unit has one
+// can write only its StateDirectory (/var/lib/zeroed, 0700) and its ReadWritePaths (/var/lib/zeroed-md,
+// /var/lib/zeroed-spool and /var/lib/zeroed-usage, made by the installer with their own group and mode, because one unit has one
 // StateDirectoryMode). A test checks that each path below sits inside one of them.
 
 /** The unit's StateDirectory: the worker's private state (ledger, logs, recovery journal). */
@@ -10,6 +10,8 @@ export const STATE_DIR = '/var/lib/zeroed';
 export const MD_DIR = '/var/lib/zeroed-md';
 /** Import spool (M13), group `zeroed-spool` = {operator, zeroed-worker}, 2730. */
 export const SPOOL_DIR = '/var/lib/zeroed-spool';
+/** Provider usage ledger (M14), shared with the sentinel: group `zeroed-sentinel`, 2770 (ruling 21; DECISIONS.md). */
+export const USAGE_DIR = '/var/lib/zeroed-usage';
 
 export const ENGINE_PATHS = {
   /** M24 ledger (`m24.db_path`); its writer lock `<db>-writer.lock` sits beside it. */
@@ -24,8 +26,8 @@ export const ENGINE_PATHS = {
   diskReserve: `${STATE_DIR}/reserve`,
   /** M27 log folder (`m27.log_dir`). */
   logDir: `${STATE_DIR}/log`,
-  /** M14 provider usage ledger. */
-  rpcUsageDb: `${STATE_DIR}/rpc-usage.db`,
+  /** M14 provider usage ledger: the engine and the sentinel both write it, so it is not in the 0700 state folder. */
+  rpcUsageDb: `${USAGE_DIR}/rpc-usage.db`,
   /** M07 recorder data folder (`recorder.data_dir`). */
   mdDir: MD_DIR,
   /** M07 pull receipts, the only folder the pull account may write. */

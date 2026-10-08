@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'vitest';
 import { M24_CONFIG } from '../src/m24/config.ts';
 import { M27_CONFIG } from '../src/m27/config.ts';
-import { ENGINE_PATHS, MD_DIR, SPOOL_DIR, STATE_DIR, writerLockPath } from '../src/paths.ts';
+import { ENGINE_PATHS, MD_DIR, SPOOL_DIR, STATE_DIR, USAGE_DIR, writerLockPath } from '../src/paths.ts';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const UNIT = readFileSync(join(ROOT, 'ops/host/files/etc/systemd/system/zeroed-worker.service'), 'utf8');
@@ -23,8 +23,8 @@ const def = (fields: readonly { key: string; default: unknown }[], key: string) 
 describe('engine write paths (PATHS-FIX)', () => {
   const roots = writable(UNIT);
 
-  it('the unit writes exactly its state folder and the two installer-made folders', () => {
-    assert.deepEqual([...roots].sort(), [MD_DIR, SPOOL_DIR, STATE_DIR].sort());
+  it('the unit writes exactly its state folder and the three installer-made folders', () => {
+    assert.deepEqual([...roots].sort(), [MD_DIR, SPOOL_DIR, STATE_DIR, USAGE_DIR].sort());
     assert.match(UNIT, /^ProtectSystem=strict$/m);
   });
 
@@ -44,7 +44,7 @@ describe('engine write paths (PATHS-FIX)', () => {
   });
 
   it('the private state stays out of the folders others can read', () => {
-    for (const k of ['db', 'preMigrationBackup', 'initMarker', 'recoveryDir', 'diskReserve', 'logDir', 'rpcUsageDb'] as const) {
+    for (const k of ['db', 'preMigrationBackup', 'initMarker', 'recoveryDir', 'diskReserve', 'logDir'] as const) {
       assert.ok(inside(ENGINE_PATHS[k], [STATE_DIR]), k);
     }
     // zeroed-backup copies every *.db / *.sqlite under the state folder; the pre-migration copy must not match.

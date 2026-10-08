@@ -183,7 +183,7 @@ fi
 
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
-PACKAGES=(age ca-certificates curl git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
+PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
 # An update only touches apt when a package is missing (and waits for unattended-upgrades' lock).
 if [ "$UPDATE" = 0 ] || ! dpkg -s "${PACKAGES[@]}" >/dev/null 2>&1; then
   apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null
@@ -213,6 +213,8 @@ getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker -
 # which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
 getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
 getent group zeroed-spool >/dev/null || groupadd --system zeroed-spool
+# PATHS-FIX ruling 21: the provider usage ledger is written by the engine and the sentinel; the sentinel joins this group.
+getent group zeroed-sentinel >/dev/null || groupadd --system zeroed-sentinel
 getent passwd zeroed-pull >/dev/null || useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull
 usermod -aG zeroed-pull,zeroed-spool zeroed-worker
 
@@ -316,8 +318,8 @@ install_file /etc/systemd/system/srv-zeroed_pull-md-receipts.mount 0644 <<'__ZER
 [Unit]
 Description=Zeroed: pull receipts, the one folder the pull account may write (PATHS-FIX)
 Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
-Requires=srv-zeroed_pull-md.mount
-After=srv-zeroed_pull-md.mount
+Requires=srv-zeroed_pull-md.mount zeroed-receipts-fs.service
+After=srv-zeroed_pull-md.mount zeroed-receipts-fs.service
 Before=ssh.service ssh.socket
 
 [Mount]
@@ -334,6 +336,7 @@ install_file /etc/systemd/system/srv-zeroed_pull-md.mount 0644 <<'__ZEROED_FILE_
 Description=Zeroed: market data, read-only, inside the pull account's sftp chroot (PATHS-FIX)
 Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
 # Mounted before SSH can let the pull account in, so it never sees an empty folder.
+After=zeroed-receipts-fs.service
 Before=ssh.service ssh.socket
 
 [Mount]
@@ -455,6 +458,23 @@ AccuracySec=5s
 
 [Install]
 WantedBy=timers.target
+__ZEROED_FILE__
+install_file /etc/systemd/system/zeroed-receipts-fs.service 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: the pull receipts' own fixed-size filesystem (PATHS-FIX ruling 20)
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+After=local-fs.target
+# Mounted before the chroot's binds and SSH, so the pull account only ever writes into the small filesystem.
+Before=srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount ssh.service ssh.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/zeroed/receipts-fs start
+ExecStop=/usr/local/lib/zeroed/receipts-fs stop
+
+[Install]
+WantedBy=multi-user.target
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-record-upload.timer 0644 <<'__ZEROED_FILE__'
 [Unit]
@@ -659,8 +679,9 @@ ImportCredential=heartbeat_hmac_key
 StateDirectory=zeroed
 StateDirectoryMode=0700
 # PATHS-FIX: one StateDirectoryMode per unit, so the market-data folder (2750, group zeroed-pull) and the import spool
-# (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here.
-ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-spool
+# (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here; so is the
+# provider usage ledger's folder (2770, group zeroed-sentinel), which the sentinel writes too (ruling 21).
+ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-spool /var/lib/zeroed-usage
 UMask=0077
 MemoryMax=800M
 # The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
@@ -1641,6 +1662,25 @@ prunable_releases() {
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
 }
 
+# PATHS-FIX ruling 23: the pull account's own filesystem and its two chroot binds.
+PULL_MOUNT_UNITS=(zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount)
+
+# pull_mount_alerts UNIT...: reads `systemctl is-active UNIT...` on stdin (one state per line, in the same order) and
+# prints "on|pull-mounts|TEXT" naming each unit that is not active, or "off|pull-mounts|TEXT" when all are. A missing
+# line counts as not active.
+pull_mount_alerts() {
+  local u s down=()
+  for u in "$@"; do
+    IFS= read -r s || s=unknown
+    [ "$s" = active ] || down+=("$u ${s:-unknown}")
+  done
+  if [ "${#down[@]}" -gt 0 ]; then
+    printf 'on|pull-mounts|ALERT Zeroed host: the market-data pull folders are not all mounted (%s). Pulls and receipts stop until they are.\n' "$(IFS=,; printf '%s' "${down[*]}" | sed 's/,/, /g')"
+  else
+    printf 'off|pull-mounts|CLEARED Zeroed host: the market-data pull folders are mounted again.\n'
+  fi
+}
+
 # recorder_first_seen NOW RECORDER STAMP: the time RECORDER was first seen, kept in STAMP (written once, by
 # zeroed-check). Prints it, or nothing while RECORDER does not exist (STAMP is then removed, so a folder that comes
 # back starts a new hold). A STAMP that is not a time is written again; if that write fails nothing is printed. The
@@ -1697,6 +1737,46 @@ record_alerts() {
          else "off|record-upload-stale|CLEARED Zeroed host: the recording upload reports again." end)
       ] | .[] end' 2>/dev/null || true
 }
+__ZEROED_FILE__
+install_file /usr/local/lib/zeroed/receipts-fs 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# PATHS-FIX ruling 20: the pull receipts live on their own small filesystem, so the pull account can never fill the
+# host's disk or run it out of inodes: a 64 MiB ext4 image with 1 KiB blocks and 32,768 inodes, loop-mounted at
+# /var/lib/zeroed-md/receipts. Measured: 32,757 receipt files fit, then every write fails with "No space left on
+# device" (fails closed: a segment without a receipt is only kept longer). At the recorder's 30-day retention that is
+# room for about 45 streams an hour (the stream count is UNVERIFIED). The image is root-only and outside every bot path.
+# Run by zeroed-receipts-fs.service: "start" checks, makes (once) and mounts it; "stop" unmounts it.
+set -euo pipefail
+IMG_DIR=/var/lib/zeroed-receipts
+IMG="$IMG_DIR/receipts.img"
+MNT=/var/lib/zeroed-md/receipts
+SIZE=64M
+INODES=32768
+
+case "${1:-}" in
+  start)
+    mountpoint -q "$MNT" && exit 0
+    install -d -m 0700 -o root -g root "$IMG_DIR"
+    if [ ! -s "$IMG" ]; then
+      truncate -s "$SIZE" "$IMG.new"
+      mkfs.ext4 -q -F -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"
+      chmod 0600 "$IMG.new"
+      mv -f "$IMG.new" "$IMG"
+    fi
+    # Repairs what is safe to repair; anything worse stops here and the mount stays off (zeroed-check alerts).
+    rc=0; e2fsck -p "$IMG" >/dev/null || rc=$?
+    [ "$rc" -le 1 ] || { echo "receipts filesystem needs a manual check (e2fsck exit $rc)"; exit 1; }
+    install -d -m 2770 -o zeroed-worker -g zeroed-pull "$MNT"
+    mount -o loop,nodev,nosuid,noexec "$IMG" "$MNT"
+    chown zeroed-worker:zeroed-pull "$MNT"
+    chmod 2770 "$MNT"
+    rmdir "$MNT/lost+found" 2>/dev/null || true
+    ;;
+  stop)
+    if mountpoint -q "$MNT"; then umount "$MNT"; fi
+    ;;
+  *) echo "Usage: receipts-fs start|stop" >&2; exit 2 ;;
+esac
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/record-upload.mjs 0644 <<'__ZEROED_FILE__'
 // RECORD-UPLOAD (owner, 2026-10-06: "Approve upload"; "Okay yes delete after upload"). Uploads the recorder's sealed files
@@ -2960,6 +3040,10 @@ seen="$(recorder_first_seen "$now" /var/lib/zeroed/recorder "$STATE_DIR/recorder
 while IFS='|' read -r what key text; do
   if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
 done < <(printf '%s' "$rec" | record_alerts "$now" /var/lib/zeroed/recorder "$seen")
+# PATHS-FIX ruling 23: the pull account's filesystem and binds; one alert while any is down, a CLEARED line after.
+while IFS='|' read -r what key text; do
+  if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
+done < <(systemctl is-active "${PULL_MOUNT_UNITS[@]}" 2>/dev/null | pull_mount_alerts "${PULL_MOUNT_UNITS[@]}")
 
 # 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
 # it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.
@@ -11837,6 +11921,7 @@ install -d -m 0755 -o root -g root /var/lib/zeroed-index
 install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md
 install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts
 install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool
+install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage
 install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys
 mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md
 
@@ -11940,8 +12025,8 @@ say "Services"
 systemctl daemon-reload
 # HOST-CAPS: journald reads its size limits only when it starts.
 [[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
-# PATHS-FIX: the chroot's binds, before SSH (srv-zeroed_pull-*.mount).
-systemctl enable --now srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount >/dev/null
+# PATHS-FIX: the receipts' own small filesystem (ruling 20), then the chroot's binds, all before SSH.
+systemctl enable --now zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount >/dev/null
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

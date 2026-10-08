@@ -240,6 +240,25 @@ prunable_releases() {
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
 }
 
+# PATHS-FIX ruling 23: the pull account's own filesystem and its two chroot binds.
+PULL_MOUNT_UNITS=(zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount)
+
+# pull_mount_alerts UNIT...: reads `systemctl is-active UNIT...` on stdin (one state per line, in the same order) and
+# prints "on|pull-mounts|TEXT" naming each unit that is not active, or "off|pull-mounts|TEXT" when all are. A missing
+# line counts as not active.
+pull_mount_alerts() {
+  local u s down=()
+  for u in "$@"; do
+    IFS= read -r s || s=unknown
+    [ "$s" = active ] || down+=("$u ${s:-unknown}")
+  done
+  if [ "${#down[@]}" -gt 0 ]; then
+    printf 'on|pull-mounts|ALERT Zeroed host: the market-data pull folders are not all mounted (%s). Pulls and receipts stop until they are.\n' "$(IFS=,; printf '%s' "${down[*]}" | sed 's/,/, /g')"
+  else
+    printf 'off|pull-mounts|CLEARED Zeroed host: the market-data pull folders are mounted again.\n'
+  fi
+}
+
 # recorder_first_seen NOW RECORDER STAMP: the time RECORDER was first seen, kept in STAMP (written once, by
 # zeroed-check). Prints it, or nothing while RECORDER does not exist (STAMP is then removed, so a folder that comes
 # back starts a new hold). A STAMP that is not a time is written again; if that write fails nothing is printed. The
