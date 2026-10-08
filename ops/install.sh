@@ -392,7 +392,7 @@ PrivateNetwork=yes
 NoNewPrivileges=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/var/backups/zeroed /var/lib/zeroed
+ReadWritePaths=/var/backups/zeroed /var/lib/zeroed /var/lib/zeroed-usage
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup.timer 0644 <<'__ZEROED_FILE__'
 [Unit]
@@ -2904,7 +2904,8 @@ exec /usr/local/bin/node "${heap[@]}" "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
-# Hourly encrypted backup of every SQLite file under /var/lib/zeroed. Each file is copied with SQLite's
+# Hourly encrypted backup of every SQLite file under /var/lib/zeroed, and (PATHS-FIX ruling 24) of the provider usage
+# ledger's folder /var/lib/zeroed-usage, stored in the bundle under zeroed-usage/. Each file is copied with SQLite's
 # online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed and
 # encrypted with age to /etc/zeroed/backup-recipients (the host key, plus the owner's key once the
 # Deploy workflow delivered one). Keeps the newest 72 locally.
@@ -2912,20 +2913,30 @@ set -euo pipefail
 umask 077
 
 SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+USAGE_SRC="${ZEROED_BACKUP_USAGE_SRC:-/var/lib/zeroed-usage}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 RECIPIENTS="${ZEROED_BACKUP_RECIPIENTS:-/etc/zeroed/backup-recipients}"
 KEEP="${ZEROED_BACKUP_KEEP:-72}"
 
 [ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
-mapfile -t dbs < <(cd "$SRC" && find . -type f \( -name '*.sqlite' -o -name '*.db' \) | sed 's#^\./##' | LC_ALL=C sort)
-[ "${#dbs[@]}" -gt 0 ] || { echo "No SQLite files yet; nothing backed up."; exit 0; }
+# Each entry is "source|path in the bundle"; the usage ledger's files go under zeroed-usage/.
+list() { # root prefix
+  [ -d "$1" ] || return 0
+  (cd "$1" && find . -type f \( -name '*.sqlite' -o -name '*.db' \) | sed 's#^\./##' | LC_ALL=C sort) | while IFS= read -r f; do printf '%s|%s\n' "$1/$f" "$2$f"; done
+}
+mapfile -t entries < <(list "$SRC" ''; list "$USAGE_SRC" 'zeroed-usage/')
+[ "${#entries[@]}" -gt 0 ] || { echo "No SQLite files yet; nothing backed up."; exit 0; }
+dbs=()
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/snap"
-for rel in "${dbs[@]}"; do
+for e in "${entries[@]}"; do
+  src="${e%%|*}"
+  rel="${e#*|}"
+  dbs+=("$rel")
   mkdir -p "$work/snap/$(dirname "$rel")"
-  sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
+  sqlite3 "$src" ".timeout 10000" ".backup '$work/snap/$rel'"
   check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
   [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
 done
@@ -3316,6 +3327,7 @@ set -euo pipefail
 umask 077
 
 SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+USAGE_SRC="${ZEROED_BACKUP_USAGE_SRC:-/var/lib/zeroed-usage}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 identity="${1:?usage: zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]}"
 backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
@@ -3337,8 +3349,10 @@ while read -r _ rel; do
   for t in $tables; do
     printf '  %s %s: %s rows\n' "$rel" "$t" "$(sqlite3 "$work/$rel" "SELECT count(*) FROM \"$t\";")"
   done
-  if [ -f "$SRC/$rel" ]; then
-    live="$(sqlite3 -readonly "$SRC/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
+  # The usage ledger's files are stored under zeroed-usage/ (PATHS-FIX ruling 24).
+  case "$rel" in zeroed-usage/*) livef="$USAGE_SRC/${rel#zeroed-usage/}" ;; *) livef="$SRC/$rel" ;; esac
+  if [ -f "$livef" ]; then
+    live="$(sqlite3 -readonly "$livef" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
     [ "$live" = "$tables" ] || fail "$rel tables differ from the live database"
   fi
 done < "$work/MANIFEST.sha256"

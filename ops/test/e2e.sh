@@ -368,6 +368,8 @@ git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-serve
 pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
 # ---------- 9. Backup and restore drill ----------
+# PATHS-FIX ruling 24: the provider usage ledger (its own shared folder) is in every backup and the drill checks it.
+in_c "sqlite3 /var/lib/zeroed-usage/rpc-usage.db 'PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS reservations(x); INSERT INTO reservations VALUES (1);' >/dev/null" || fail "PATHS-FIX: test usage ledger"
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
 bk="$(in_c "ls -1 /var/backups/zeroed/ | tail -1")"
 [[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.age$ ]] || fail "no backup file"
@@ -376,8 +378,10 @@ in_c "cp /var/backups/zeroed/$bk /root/tampered.age && printf 'x' | dd of=/root/
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key /root/tampered.age" >"$LOGS/drill-tampered.txt" 2>&1 && fail "tampered backup passed"
 in_c "rm -f /root/tampered.age"
 grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
+grep -q 'zeroed-usage/rpc-usage.db reservations: ' "$LOGS/drill-host.txt" || fail "PATHS-FIX: the usage ledger is not in the backup"
+in_c "rm -f /var/lib/zeroed-usage/rpc-usage.db*"
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
-pass "backup: hourly timer, $bk encrypted; restore drill PASS into a scratch directory, FAIL on a tampered file"
+pass "backup: hourly timer, $bk encrypted (with the usage ledger); restore drill PASS into a scratch directory, FAIL on a tampered file"
 
 # Off-server copy: the owner's backup code (shown once, never stored), then a silent Telegram document.
 BCODE="$(in_c "zeroed-backup-code" | tee "$LOGS/console/backup-code.txt" | sed -n 's/^  \([a-z -]*\)$/\1/p')"

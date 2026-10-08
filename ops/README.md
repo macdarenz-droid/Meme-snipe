@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/50113bef4b13167548acfe511b01dbda0c82fd3e/ops/install.sh -o i && echo '1f14fe6096bb77d4fbacccc7914cf72bc444eeafb641f3c7a09979e1af5ae9d9  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/669943689dc9b13c6d5b07dc8a89aff438441f79/ops/install.sh -o i && echo 'cec041150b29c37c3f4da4aacbab05a040fadb25a3c272bd7a7c904e1a04f433  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -23,7 +23,7 @@ The console screen can be left at any time (Ctrl+C); setup carries on in the bac
 
 The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
 
-SHA-256 of `install.sh`: `1f14fe6096bb77d4fbacccc7914cf72bc444eeafb641f3c7a09979e1af5ae9d9`
+SHA-256 of `install.sh`: `cec041150b29c37c3f4da4aacbab05a040fadb25a3c272bd7a7c904e1a04f433`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -79,7 +79,7 @@ First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). 
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` and under `/var/lib/zeroed-usage` (the provider usage ledger, stored as `zeroed-usage/` in the bundle) with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
 **Off-server copy (free, no R2): on.** The owner approved it on 9 Oct ("Yes", about 12:54 AM; CLAUDE.md "Off-server backup"), because sending backups to Telegram sends data to a third party. `ops/host-config.json` says `"offsite_backup": true`. Each code update (`zeroed-update`) turns `zeroed-backup-offsite.timer` on while it says `true`, and off if it is ever set back to `false`. `zeroed-backup-offsite` sends nothing until the owner's backup code exists and Telegram is paired.
 
