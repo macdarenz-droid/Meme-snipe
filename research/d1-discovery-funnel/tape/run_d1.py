@@ -25,6 +25,10 @@ from d1 import config as C  # noqa: E402
 
 # Frozen rulings this code implements; written into frozen_rules.json, and validate refuses rules without H8_AMENDMENT.
 FROZEN_AMENDMENTS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT")
+# Every frozen ruling that governs D1 (red team R2-9). search and validate refuse while any is missing from
+# FROZEN_AMENDMENTS: AMENDMENT_3 (rank H8-tradable rules first) and research/brainstorm-loop/H8_AMENDMENT_2.md
+# (universe-aware floor, H6/H9/H11/H12/H13/H17 and dust, tradable at $5) are frozen but not implemented yet.
+REQUIRED_RULINGS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2")
 
 
 def code_hash() -> str:
@@ -170,6 +174,9 @@ def _manifests(run):
 
 def _common_guard(ms, plan_path):
     from d1.stepa import plan_sha_ok
+    missing = [r for r in REQUIRED_RULINGS if r not in FROZEN_AMENDMENTS]
+    if missing:
+        sys.exit(f"refusing: frozen rulings not implemented in this code: {missing} (red team R2-9)")
     ok, sha = plan_sha_ok(plan_path)
     if not ok:
         sys.exit(f"refusing: Step A plan sha256 {sha} != {C.STEPA_PLAN_SHA256}")
@@ -211,6 +218,8 @@ def validate_guard(run, frozen, confirm, plan_path=None, solusd=None):
         sys.exit("refusing: the frozen rules came from different code")
     if "H8_AMENDMENT" not in frozen.get("amendments", []):
         sys.exit("refusing: the frozen rules predate the H8 amendment")
+    if [r for r in REQUIRED_RULINGS if r not in frozen.get("amendments", [])]:
+        sys.exit("refusing: the frozen rules predate a frozen ruling (R2-9)")
     px_dir = solusd or SOLUSD_DIR_DEFAULT
     px_sha = sums_sha(px_dir) if os.path.isdir(px_dir) else "missing"
     if px_sha != frozen.get("solusd_sha256") or px_sha != C.SOLUSD_SUMS_SHA256:

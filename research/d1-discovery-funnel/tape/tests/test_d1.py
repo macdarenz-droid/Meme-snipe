@@ -676,9 +676,26 @@ class Guards(unittest.TestCase):
             fn(*a, **k)
         self.assertIn("refusing", str(cm.exception.code))
 
-    def test_search_guard(self):
+    def test_search_refuses_until_every_frozen_ruling_is_implemented_R2_9(self):
+        """R2-9: D1 amendment 3 (rank H8-tradable rules first) and H8 amendment 2 (universe-aware floor, $5 for
+        "tradable as the bot stands") are frozen but not implemented. search and validate must refuse until the code
+        lists every frozen ruling as implemented, so rules are never advanced or judged under the superseded text."""
         ok = self._run(C.DISCOVERY_DAYS)
-        self.R.search_guard(ok, self.plan)                                   # a good run passes
+        missing = [r for r in self.R.REQUIRED_RULINGS if r not in self.R.FROZEN_AMENDMENTS]
+        self.assertIn("AMENDMENT_3", self.R.REQUIRED_RULINGS)
+        self.assertIn("H8_AMENDMENT_2", self.R.REQUIRED_RULINGS)
+        if missing:
+            self.refuses(self.R.search_guard, ok, self.plan)
+            frozen = {"code_sha256": self.R.code_hash(), "discovery_days": list(C.DISCOVERY_DAYS),
+                      "amendments": list(self.R.REQUIRED_RULINGS), "solusd_sha256": C.SOLUSD_SUMS_SHA256}
+            self.refuses(self.R.validate_guard, self._run(C.VALIDATION_DAYS_STEP_B, units=self._stepb_units()),
+                         frozen, True, self.plan)
+
+    def test_search_guard(self):
+        from unittest import mock
+        ok = self._run(C.DISCOVERY_DAYS)
+        with mock.patch.object(self.R, "FROZEN_AMENDMENTS", self.R.REQUIRED_RULINGS):
+            self.R.search_guard(ok, self.plan)                               # a good run passes
         self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS, dev=True), self.plan)
         self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS[:1]), self.plan)          # partial days
         self.refuses(self.R.search_guard, self._run(C.DISCOVERY_DAYS, complete=False), self.plan)
@@ -698,9 +715,14 @@ class Guards(unittest.TestCase):
         return [f"/x/{d}/{a}-{b}" for d, a, b in rows if d in days]
 
     def test_validate_guard(self):
+        from unittest import mock
+        with mock.patch.object(self.R, "FROZEN_AMENDMENTS", self.R.REQUIRED_RULINGS):
+            self._validate_guard()
+
+    def _validate_guard(self):
         val = C.VALIDATION_DAYS_STEP_B
         frozen = {"code_sha256": self.R.code_hash(), "discovery_days": list(C.DISCOVERY_DAYS),
-                  "amendments": ["AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT"], "solusd_sha256": C.SOLUSD_SUMS_SHA256}
+                  "amendments": list(self.R.REQUIRED_RULINGS), "solusd_sha256": C.SOLUSD_SUMS_SHA256}
         U = self._stepb_units()
         self.R.validate_guard(self._run(val, units=U), frozen, True, self.plan)
         self.refuses(self.R.validate_guard, self._run(val, units=U), frozen, False, self.plan)
@@ -718,11 +740,16 @@ class Guards(unittest.TestCase):
         self.refuses(self.R.validate_guard, self._run(val, units=U), frozen, True, bad)
 
     def test_validate_needs_whole_step_b_R2_1(self):
+        from unittest import mock
+        with mock.patch.object(self.R, "FROZEN_AMENDMENTS", self.R.REQUIRED_RULINGS):
+            self._validate_needs_whole_step_b()
+
+    def _validate_needs_whole_step_b(self):
         """R2-1: validation is judged only on the whole of Step B (every day, every planned unit, no gap); a subset of
         days or units could otherwise be chosen after looking (multiple looks, cherry-picked hours)."""
         val = C.VALIDATION_DAYS_STEP_B
         frozen = {"code_sha256": self.R.code_hash(), "discovery_days": list(C.DISCOVERY_DAYS),
-                  "amendments": ["AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT"], "solusd_sha256": C.SOLUSD_SUMS_SHA256}
+                  "amendments": list(self.R.REQUIRED_RULINGS), "solusd_sha256": C.SOLUSD_SUMS_SHA256}
         U = self._stepb_units()
         one = self._stepb_units(val[:1])
         self.refuses(self.R.validate_guard, self._run(val[:1], units=one), frozen, True, self.plan)   # one day only
