@@ -7,7 +7,7 @@ Scoring code for Design A (the 420 SOL creator-fee step), as frozen in `research
 
 ```
 # check mode: counts and shapes only, no gate statistic
-nice -n 19 python3 run_a.py --days 2026-09-10 2026-09-11 --steps A --cache /home/user/tape-cache --out OUT
+nice -n 19 python3 run_a.py --days 2026-09-10 2026-09-11 --cache /home/user/tape-cache --out OUT
 nice -n 19 python3 run_a.py --days 2026-09-11 --units /home/user/tape-cache/2026-09-11/446265000-446269499 ... --out OUT
 
 # scoring: only after Step A is complete and a reviewer has passed this code
@@ -17,7 +17,8 @@ nice -n 19 python3 run_a.py ... --score-primary --confirm REVIEW-PASSED-AND-STEP
 **Inputs**
 - Unit directories (`<day>/<from>-<to>` or its `research/`), or `--cache` with `--days`. The tables read are `B`, `E` (migration, CreatePool, BOOST events) and `S_amm`. These columns exist in schema v1 and v2.
 - `--days`: every unit must be from one of them. A day on or after 2026-09-12, or any row at or after 2026-09-12T00:00Z, raises `WallError`.
-- `--steps`: the tape steps the days complete (A, B, C), used by the count rule.
+- The steps (A, B, C) come from `--days` (`load.STEP_DAYS`), and the count rule uses them.
+- `--plan`: the planned units (default `/home/user/tape-work/plan.txt`). `--score-primary` refuses `--units` and `--max-units`, and needs the days to be exactly Step A, A+B or A+B+C, each day fully covered with the planned contiguous units (`load.scoring_steps`, `load.check_days_complete`).
 - `--fee-config`: the FeeConfig tiers (default `research/edge/snapshot/fee-configs.json`), used for the supply-rule check.
 
 **Outputs** (in `--out`)
@@ -30,12 +31,12 @@ nice -n 19 python3 run_a.py ... --score-primary --confirm REVIEW-PASSED-AND-STEP
 | Registered item | Where |
 |---|---|
 | Market cap = effective quote (vault + signed `virtual_quote_reserves`) × supply ÷ base reserve (amendment a) | `features.market_cap_sol` |
-| Which supply the tier rule uses (amendment a): live `base_supply`, checked against charged creator fees | `features.supply_rule_tally`, `run_a.summary` (`supply_rule_check`); scoring refuses below 99% |
+| Which supply the tier rule uses (amendment a): live `base_supply`, checked against charged creator fees where live and fixed supply pick different tiers | `features.supply_rule_tally`, `run_a.supply_verified`; scoring refuses below 99.9% |
 | Pools: canonical PumpSwap SOL pools of pump.fun graduates, not mayhem | `features.pool_table`, swap checks in `run_a.build` |
 | Hours 0–72 after migration | `features.pool_table` (`hi`), `features.clip_to_window`, `features.in_window` |
 | BOOST window excluded: migration to the end of the last `BoostBuyAndBurnEvent`, else first 5 minutes (amendment b) | `features.pool_table` (`lo`), `features.clip_to_window`, `features.in_window` |
 | Each swap's market cap holds until the next swap or hour 72 | `features.timeline`, `features.clip_to_window` |
-| Count rule: 200 pools trading within ±5% of 420; else Step B, then Step C; else unresolved (amendment c: unchanged) | `features.count_rule_pools`, `gates.count_rule` |
+| Count rule: 200 pools trading within ±5% of 420; else Step B, then Step C; else unresolved (amendment c: unchanged) | `features.count_rule_pools`, `gates.count_rule`, `load.STEP_DAYS`, `load.scoring_steps`, `load.check_days_complete` |
 | 20 placebo cutoffs on a log grid 340–1,300, > 10% from 420 and 1,470 | `features.placebo_grid`, `features.cutoffs` |
 | Gate 2: log(time in [c, 1.05c) ÷ time in [0.95c, c)) at 420 minus the placebo median | `features.band_seconds`, `gates.gate2_stat` |
 | Gate 3: coin_creator (signer or token owner) net SOL bought per hour in [399, 441) minus the placebo median | `features.creator_net`, `features.band_seconds`, `gates.gate3_stat` |
@@ -49,11 +50,18 @@ nice -n 19 python3 run_a.py ... --score-primary --confirm REVIEW-PASSED-AND-STEP
 - Cross events use only the crossing row. A test plants a future-only marker and checks that every event up to that time is unchanged.
 
 ## Tests
-`cd research/edge-a/tape && python3 -m unittest`. There are 21 tests on synthetic units: band seconds, the BOOST window, exclusions, the count rule, gaps, the 72-hour clip, the wall, look-ahead, gate values, the bootstrap and the CLI guard. Mutation checks were run on band width, the 5-minute window, the window edge, the interval value, placebo handling, the BOOST end and the creator match. Each mutation fails a test.
+`cd research/edge-a/tape && python3 -m unittest`. There are 25 tests on synthetic units. They cover:
+- band seconds, the BOOST window, exclusions and the count rule;
+- gaps, the 72-hour clip, the wall and look-ahead;
+- gate values, and -inf placebos counted as +inf;
+- the bootstrap and the supply check where tiers differ;
+- the step map, day coverage against the plan, and the CLI scoring guards.
+
+Mutation checks were run on band width, the 5-minute window, the window edge, the interval value, placebo handling, the BOOST end and the creator match. Each mutation fails a test.
 
 ## Development run (2 units, counts only)
 Units 2026-09-11 446265000–446273999, both v2, about 1 hour of tape:
 - 52 pools migrated and 29 were eligible. Excluded: 17 mayhem, 4 with no known BOOST end, 2 with a non-SOL quote.
-- 6 pools met the count rule, so the status is "short", which is expected on 1 hour of tape.
-- The supply-rule check agreed on 100% of 527,943 rows.
+- 6 pools met the count rule. The status is "short: add Step A days", because one partial day completes no step.
+- Supply-rule check: on the 5,565 rows where live and fixed supply pick different tiers, live supply was right on 100% and fixed on 0%.
 - The run took 9 s.

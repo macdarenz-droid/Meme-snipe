@@ -25,8 +25,9 @@ warnings.filterwarnings("ignore", message="All-NaN slice", category=RuntimeWarni
 
 
 # ===================================================================== helpers
-def boot_lb(stat, groups, n=BOOT_N, q=0.025, seed=SEED):
-    """Percentile bootstrap lower bound of stat(*resampled groups); each group resampled on its own."""
+def boot_lb(stat, groups, n=None, q=0.025, seed=SEED):
+    """Percentile bootstrap lower bound of stat(*resampled groups); each group resampled on its own (Q1)."""
+    n = BOOT_N if n is None else n
     groups = [np.asarray(g, dtype=float) for g in groups]
     if any(len(g) == 0 for g in groups):
         return None

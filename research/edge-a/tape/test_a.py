@@ -201,7 +201,7 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(out)), ["entries.csv", "pools.csv", "summary.json"])
         with open(os.path.join(out, "summary.json")) as f:
             s = json.load(f)
-        self.assertEqual(s["count_rule"], {"n": 2, "status": "short: add Step B days"})
+        self.assertEqual(s["count_rule"], {"n": 2, "status": "short: add Step A days"})  # 09-10 alone completes no step
         rc = subprocess.run([sys.executable, os.path.join(HERE, "run_a.py"), "--days", DAY, "--units", self.unit,
                              "--out", out, "--score-primary"], capture_output=True, text=True)
         self.assertNotEqual(rc.returncode, 0)  # scoring needs the confirmation

@@ -253,6 +253,7 @@ class Ledger:
                                            "slot": b["slot"].to_numpy(), "key": b["key"].to_numpy(),
                                            "bt": b["bt"].to_numpy(), "paid": -b["net"].to_numpy(),
                                            "jito": b["jito"].to_numpy() > 0, "lag": lag[tb].to_numpy(),
+                                           "opening": b["pre"].to_numpy() == 0,
                                            "venue": b["venue"].to_numpy(np.int8)}))
             bb = solsw[solsw["is_buy"].to_numpy(bool) & (solsw["owner"].to_numpy() >= 0)
                        & (-solsw["cash"].to_numpy() >= BIG_BUY)]

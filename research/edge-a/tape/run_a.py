@@ -4,7 +4,7 @@ Default (check) mode writes counts and shapes only: units, coverage, pool exclus
 check and cross-event counts. It never computes or prints a gate statistic or interval.
 Scoring (--score-primary) also needs --confirm REVIEW-PASSED-AND-STEP-A-COMPLETE.
 
-  nice -n 19 python3 run_a.py --days 2026-09-10 2026-09-11 --steps A --cache /home/user/tape-cache --out OUT
+  nice -n 19 python3 run_a.py --days 2026-09-10 2026-09-11 --cache /home/user/tape-cache --out OUT
   nice -n 19 python3 run_a.py --days 2026-09-11 --units DIR [DIR ...] --out OUT
 """
 from __future__ import annotations
@@ -26,7 +26,11 @@ import load as L  # noqa: E402
 CONFIRM = "REVIEW-PASSED-AND-STEP-A-COMPLETE"
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 FEE_CONFIG = os.path.join(REPO, "research", "edge", "snapshot", "fee-configs.json")
-SUPPLY_RULE_MIN_AGREEMENT = 0.99
+SUPPLY_RULE_MIN_AGREEMENT = 0.999  # on rows where live and fixed supply pick different tiers
+
+
+def supply_verified(t: dict) -> bool:
+    return bool(t["n_diff"] > 0 and t["base_supply"] / t["n_diff"] >= SUPPLY_RULE_MIN_AGREEMENT)
 
 
 def build(units: list[L.Unit], fee_config: str = FEE_CONFIG) -> dict:
@@ -39,7 +43,7 @@ def build(units: list[L.Unit], fee_config: str = FEE_CONFIG) -> dict:
     codes = {p: i for i, p in enumerate(pools.pool)}
     boost_sigs = set(events.loc[events.event == "BoostBuyAndBurnEvent", "signature"])
     tiers = F.load_fee_tiers(fee_config)
-    tally = {"n": 0, "base_supply": 0, "fixed_1e15": 0}
+    tally = {"n": 0, "n_diff": 0, "base_supply": 0, "fixed_1e15": 0}
     parts = []
     for u in units:
         for ch in L.iter_swaps(u):
@@ -79,7 +83,7 @@ def build(units: list[L.Unit], fee_config: str = FEE_CONFIG) -> dict:
 def summary(b: dict, steps: tuple[str, ...]) -> dict:
     p = b["pools"]
     t = b["supply_tally"]
-    agree = {k: (t[k] / t["n"] if t["n"] else None) for k in ("base_supply", "fixed_1e15")}
+    agree = {k: (t[k] / t["n_diff"] if t["n_diff"] else None) for k in ("base_supply", "fixed_1e15")}
     return {
         "units": [{"day": u.day, "from": u.from_slot, "to": u.to_slot, "schema": u.schema} for u in b["units"]],
         "steps_read": list(steps),
@@ -92,9 +96,9 @@ def summary(b: dict, steps: tuple[str, ...]) -> dict:
         "swaps_kept": int(b["n_swaps"]),
         "creator_swaps_in_window": b["n_creator_swaps_in_window"],
         "count_rule": G.count_rule(int(p.count_rule.sum()), steps),
-        "supply_rule_check": {"rows": t["n"], "agreement": agree,
-                              "used": "base_supply", "verified": bool(agree["base_supply"] is not None and
-                                                                       agree["base_supply"] >= SUPPLY_RULE_MIN_AGREEMENT)},
+        "supply_rule_check": {"rows": t["n"], "rows_where_tiers_differ": t["n_diff"],
+                              "agreement_where_tiers_differ": agree, "used": "base_supply",
+                              "verified": supply_verified(t)},
         "cutoffs_sol": [round(float(c), 3) for c in b["cuts"]],
         "cross_events_per_cutoff": b["entries"].groupby("cutoff_idx").size().reindex(range(len(b["cuts"])), fill_value=0).tolist(),
     }
@@ -106,7 +110,7 @@ def main(argv=None) -> int:
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--units", nargs="+", help="unit directories (<day>/<from>-<to> or its research/)")
     src.add_argument("--cache", help="tape cache root; every unit of --days under it is used")
-    ap.add_argument("--steps", nargs="+", default=["A"], choices=list(G.STEPS), help="tape steps these days complete")
+    ap.add_argument("--plan", default=L.PLAN, help='planned units, lines "DAY EPOCH FROM TO"')
     ap.add_argument("--max-units", type=int, default=0, help="development cap on the number of units")
     ap.add_argument("--out", required=True)
     ap.add_argument("--fee-config", default=FEE_CONFIG)
@@ -114,16 +118,29 @@ def main(argv=None) -> int:
     ap.add_argument("--confirm", default="")
     ap.add_argument("--n-boot", type=int, default=G.DEFAULT_B)
     a = ap.parse_args(argv)
-    if a.score_primary and a.confirm != CONFIRM:
-        ap.error(f"--score-primary needs --confirm {CONFIRM}")
+    if a.score_primary:
+        if a.confirm != CONFIRM:
+            ap.error(f"--score-primary needs --confirm {CONFIRM}")
+        if a.units or a.max_units:
+            ap.error("--score-primary reads whole steps from --cache: --units and --max-units are refused")
+        try:
+            steps = L.scoring_steps(a.days)
+        except L.IncompleteError as e:
+            ap.error(str(e))
+    else:
+        steps = L.steps_from_days(a.days)
     units = L.select_units(a.units, a.days) if a.units else L.find_units(a.cache, a.days)
     units.sort(key=lambda u: u.from_slot)
     if a.max_units:
         units = units[:a.max_units]
     if not units:
         ap.error("no units found")
+    if a.score_primary:
+        try:
+            L.check_days_complete(units, a.days, L.read_plan(a.plan))
+        except L.IncompleteError as e:
+            ap.error(str(e))
     b = build(units, a.fee_config)
-    steps = tuple(a.steps)
     os.makedirs(a.out, exist_ok=True)
     s = summary(b, steps)
     with open(os.path.join(a.out, "summary.json"), "w") as f:

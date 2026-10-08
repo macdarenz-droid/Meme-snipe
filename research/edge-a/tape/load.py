@@ -164,3 +164,62 @@ def segment_of(slots: np.ndarray, segs: pd.DataFrame) -> np.ndarray:
     i = np.searchsorted(segs.from_slot.to_numpy(), slots, side="right") - 1
     ok = (i >= 0) & (slots <= segs.to_slot.to_numpy()[np.clip(i, 0, None)])
     return np.where(ok, i, -1)
+
+
+# ---------------------------------------------------------------- tape steps (research/SHARED_TAPE_PLAN.md)
+
+STEP_DAYS = {
+    "A": ("2026-09-10", "2026-09-11"),
+    "B": ("2026-09-07", "2026-09-08", "2026-09-09"),
+    "C": ("2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06"),
+}
+STEP_ORDER = ("A", "B", "C")
+PLAN = "/home/user/tape-work/plan.txt"
+
+
+class IncompleteError(ValueError):
+    """The days do not form complete tape steps, or a step day is not fully covered."""
+
+
+def steps_from_days(days) -> tuple[str, ...]:
+    """The steps whose days are all among `days`, in order."""
+    ds = set(days)
+    return tuple(s for s in STEP_ORDER if set(STEP_DAYS[s]) <= ds)
+
+
+def scoring_steps(days) -> tuple[str, ...]:
+    """For scoring, the days must be exactly Step A, A+B or A+B+C (the count rule's order)."""
+    ds = set(days)
+    for k in range(1, len(STEP_ORDER) + 1):
+        steps = STEP_ORDER[:k]
+        if ds == {d for s in steps for d in STEP_DAYS[s]}:
+            return steps
+    raise IncompleteError(f"days {sorted(ds)} are not exactly Step A, A+B or A+B+C")
+
+
+def read_plan(path: str = PLAN) -> dict[str, list[tuple[int, int]]]:
+    """Planned units per day, from lines "DAY EPOCH FROM TO", sorted by slot."""
+    plan: dict[str, list[tuple[int, int]]] = {}
+    with open(path) as f:
+        for line in f:
+            p = line.split()
+            if len(p) == 4:
+                plan.setdefault(p[0], []).append((int(p[2]), int(p[3])))
+    return {d: sorted(set(v)) for d, v in plan.items()}
+
+
+def check_days_complete(units: list[Unit], days, plan: dict) -> None:
+    """Each day must be fully covered: its units are exactly the planned ones, and their slot ranges run
+    contiguously from the day's first unit to its last."""
+    for d in days:
+        planned = plan.get(d)
+        if not planned:
+            raise IncompleteError(f"{d}: no planned units")
+        for (a0, b0), (a1, _) in zip(planned, planned[1:]):
+            if a1 != b0 + 1:
+                raise IncompleteError(f"{d}: slot gap between planned units ending {b0} and starting {a1}")
+        have = sorted((u.from_slot, u.to_slot) for u in units if u.day == d)
+        missing = sorted(set(planned) - set(have))
+        extra = sorted(set(have) - set(planned))
+        if missing or extra or len(have) != len(set(have)):
+            raise IncompleteError(f"{d}: missing units {missing[:5]}, units not in the plan {extra[:5]}")

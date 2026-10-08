@@ -213,7 +213,7 @@ class Tape:
 
     def covered(self, start_slot, end_time, end_slot=None):
         """True if one contiguous run of loaded units holds slot `start_slot` and reaches block_time
-        `end_time` (and `end_slot` if given). Windows spanning days are never covered (Q-COV)."""
+        `end_time` (and `end_slot` if given). Windows spanning days are never covered (Q3)."""
         for (d, a, b), (t0, t1) in self.interval_times.items():
             if a <= start_slot <= b and t1 is not None and t1 >= end_time and (end_slot is None or end_slot <= b):
                 return True
