@@ -33,6 +33,18 @@ def supply_verified(t: dict) -> bool:
     return bool(t["n_diff"] > 0 and t["base_supply"] / t["n_diff"] >= SUPPLY_RULE_MIN_AGREEMENT)
 
 
+def earlier_step_met(units: list[L.Unit], steps: tuple[str, ...], fee_config: str = FEE_CONFIG):
+    """The count rule is read step by step (A, then A+B, then A+B+C), and the gates are scored once, at the first
+    step that meets it. Returns the earlier steps that already met it (a later scoring would be a second look)."""
+    for k in range(1, len(steps)):
+        prev = steps[:k]
+        days = {d for s in prev for d in L.STEP_DAYS[s]}
+        n = int(build([u for u in units if u.day in days], fee_config)["pools"].count_rule.sum())
+        if G.count_rule(n, prev)["status"] == "met":
+            return prev, n
+    return None
+
+
 def build(units: list[L.Unit], fee_config: str = FEE_CONFIG) -> dict:
     """All features for Design A from the given units. Returns pools, per-pool arrays and diagnostics."""
     blocks = [L.load_blocks(u) for u in units]
@@ -121,6 +133,8 @@ def main(argv=None) -> int:
     if a.score_primary:
         if a.confirm != CONFIRM:
             ap.error(f"--score-primary needs --confirm {CONFIRM}")
+        if a.n_boot != G.DEFAULT_B:
+            ap.error(f"--score-primary uses the registered {G.DEFAULT_B} resamples; --n-boot {a.n_boot} is refused")
         if a.units or a.max_units:
             ap.error("--score-primary reads whole steps from --cache: --units and --max-units are refused")
         try:
@@ -140,6 +154,10 @@ def main(argv=None) -> int:
             L.check_days_complete(units, a.days, L.read_plan(a.plan))
         except L.IncompleteError as e:
             ap.error(str(e))
+        met = earlier_step_met(units, steps, a.fee_config)
+        if met:
+            ap.error(f"the count rule was met at Step {'+'.join(met[0])} ({met[1]} pools); the gates are scored "
+                     f"there, once: scoring {'+'.join(steps)} would be a second look")
     b = build(units, a.fee_config)
     os.makedirs(a.out, exist_ok=True)
     s = summary(b, steps)

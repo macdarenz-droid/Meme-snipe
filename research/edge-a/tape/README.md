@@ -18,7 +18,7 @@ nice -n 19 python3 run_a.py ... --score-primary --confirm REVIEW-PASSED-AND-STEP
 - Unit directories (`<day>/<from>-<to>` or its `research/`), or `--cache` with `--days`. The tables read are `B`, `E` (migration, CreatePool, BOOST events) and `S_amm`. These columns exist in schema v1 and v2.
 - `--days`: every unit must be from one of them. A day on or after 2026-09-12, or any row at or after 2026-09-12T00:00Z, raises `WallError`.
 - The steps (A, B, C) come from `--days` (`load.STEP_DAYS`), and the count rule uses them.
-- `--plan`: the planned units (default `/home/user/tape-work/plan.txt`). `--score-primary` refuses `--units` and `--max-units`, and needs the days to be exactly Step A, A+B or A+B+C, each day fully covered with the planned contiguous units (`load.scoring_steps`, `load.check_days_complete`).
+- `--plan`: the planned units (default `/home/user/tape-work/plan.txt`). `--score-primary` refuses `--units` and `--max-units`, and needs the days to be exactly Step A, A+B or A+B+C, each day fully covered with the planned contiguous units (`load.scoring_steps`, `load.check_days_complete`). It also refuses A+B (or A+B+C) when an earlier step already met the count rule, since the gates are scored once, at that step (`run_a.earlier_step_met`), and any `--n-boot` other than the registered 10,000.
 - `--fee-config`: the FeeConfig tiers (default `research/edge/snapshot/fee-configs.json`), used for the supply-rule check.
 
 **Outputs** (in `--out`)
@@ -50,12 +50,12 @@ nice -n 19 python3 run_a.py ... --score-primary --confirm REVIEW-PASSED-AND-STEP
 - Cross events use only the crossing row. A test plants a future-only marker and checks that every event up to that time is unchanged.
 
 ## Tests
-`cd research/edge-a/tape && python3 -m unittest`. There are 25 tests on synthetic units. They cover:
+`cd research/edge-a/tape && python3 -m unittest`. There are 27 tests on synthetic units. They cover:
 - band seconds, the BOOST window, exclusions and the count rule;
 - gaps, the 72-hour clip, the wall and look-ahead;
 - gate values, and -inf placebos counted as +inf;
 - the bootstrap and the supply check where tiers differ;
-- the step map, day coverage against the plan, and the CLI scoring guards.
+- the step map, day coverage against the plan, and the CLI scoring guards (one look at the gates, 10,000 resamples).
 
 Mutation checks were run on band width, the 5-minute window, the window edge, the interval value, placebo handling, the BOOST end and the creator match. Each mutation fails a test.
 

@@ -415,5 +415,49 @@ class TestStepCompleteness(unittest.TestCase):
             self.assertEqual(ok.returncode, 0, ok.stderr)  # check mode still accepts --units
 
 
+
+class TestRedTeamR1(unittest.TestCase):
+    """CODE_REDTEAM.md R1-1 and R1-2: the gates are scored once, at the first step that meets the count rule,
+    with the registered 10,000 resamples."""
+    A = ["2026-09-10", "2026-09-11"]
+    B = ["2026-09-07", "2026-09-08", "2026-09-09"]
+
+    def _tape(self, r):
+        # Step B days: empty units at low slots; Step A: 09-10 holds P1 (counted at 420) and one row where live
+        # and fixed supply pick different tiers (so the supply rule is verified); 09-11 is empty.
+        rows = [(d, 10 * i + 10, 10 * i + 19) for i, d in enumerate(self.B)]
+        for d, a, b in rows:
+            write_unit(r, a, b, [], [], day=d)
+        events = migrate("P1", 1000) + [ev("BoostBuyAndBurnEvent", 1100, "boost1", pool="P1", boost_vault_remaining="0")]
+        px = dict(swap(1700, "PX", 410, cfee=95), base_supply=1.05e15)  # live cap 430.5 -> 95 bps; fixed 410 -> 30
+        write_unit(r, 1000, 1999, p1_rows() + [px], events, day="2026-09-10")
+        write_unit(r, 2000, 2999, [], [], day="2026-09-11")
+        rows += [("2026-09-10", 1000, 1999), ("2026-09-11", 2000, 2999)]
+        return plan_file(r, rows)
+
+    def _args(self, r, plan, days, extra=()):
+        return ["--days", *days, "--cache", r, "--out", os.path.join(r, "o"), "--fee-config", fee_config(r),
+                "--plan", plan, "--score-primary", "--confirm", run_a.CONFIRM, *extra]
+
+    def test_no_second_look_after_the_count_rule_is_met(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as r, mock.patch.object(G, "COUNT_BAR", 1):
+            plan = self._tape(r)
+            with self.assertRaises(SystemExit):  # Step A already met the count rule: A+B is a second look
+                run_a.main(self._args(r, plan, self.A + self.B))
+            self.assertFalse(os.path.exists(os.path.join(r, "o", "gates.json")))
+            self.assertEqual(run_a.main(self._args(r, plan, self.A, ["--n-boot", "10000"])), 0)  # the one look
+            self.assertTrue(os.path.exists(os.path.join(r, "o", "gates.json")))
+        with tempfile.TemporaryDirectory() as r, mock.patch.object(G, "COUNT_BAR", 2):
+            plan = self._tape(r)  # Step A short (1 pool < 2): adding Step B is the registered next step
+            self.assertEqual(run_a.main(self._args(r, plan, self.A + self.B)), 0)
+
+    def test_scoring_refuses_a_changed_resample_count(self):
+        with tempfile.TemporaryDirectory() as r:
+            plan = self._tape(r)
+            with self.assertRaises(SystemExit):
+                run_a.main(self._args(r, plan, self.A, ["--n-boot", "200"]))
+            self.assertFalse(os.path.exists(os.path.join(r, "o", "gates.json")))
+
 if __name__ == "__main__":
     unittest.main()
