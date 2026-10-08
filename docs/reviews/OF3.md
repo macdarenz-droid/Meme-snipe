@@ -127,3 +127,7 @@ Trim-failure logs are kept, half-trimmed units are never sealed, and progress-pi
 - Reviewer: PASS final, 0/0/0. Rulings 25–30 met; with the round 9 files set back, 9 tests fail. Label `deps-reviewed:02ff30afb950a03de09d33ac0a4cf61a`.
 - Red team: final, 0 BLOCKER, 0 MAJOR, 1 MINOR: the same guard gap as OF-2 ruling 67. A logs entry cannot be opened as progress; no restore key prefix-matches the wrong entry; a failed job seals logs before saving.
 31. **Supervisor ruling (9 Oct about 5:20 AM).** OF-2 ruling 67 covers it (the guard lives on of2-holds and flows here). OF-3 takes it with the base merge `455739ae`.
+
+## Merged (9 Oct 2026, about 6:53 AM)
+
+**#299 merged at `3aaee37e`** (the new base). Head `046fb038` has the same tree as the approved `e312997a` and contains base `a1ed5175`. The label was removed and re-added for this head, because the policy accepts only a label added after the head; labelled CI green. `ARCHIVE_ARM` stays empty. Next: OF-4 "nothing public" goes to the data builder from `3aaee37e`, with the ruling 73 notes; this reviewer and red team are kept for it.
