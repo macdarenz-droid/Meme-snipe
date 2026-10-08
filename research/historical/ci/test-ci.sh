@@ -625,7 +625,7 @@ gtok = [s.get("id") or s.get("name") for s in steps if "github.token" in str(s)]
 assert gtok == ["pickprogress", "guardscan", "guardqa"], gtok
 # OF-4: the store token as GH_TOKEN only in the skip, store, volume store and storage-check steps
 tok = [s for s in steps if (s.get("env") or {}).get("GH_TOKEN") == "${{ secrets.DATA_STORE_TOKEN }}"]
-assert [s.get("id") or s.get("name") for s in tok] == ["published", "store", "Store this day's volume hours", "Storage check after the batch"], tok
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "prior", "store", "Store this day's volume hours", "Storage check after the batch"], tok
 tok += [s for s in steps if (s.get("id") or s.get("name")) in ("guardscan", "guardqa")]
 pick = next(s for s in steps if s.get("id") == "pickprogress")
 assert pick["run"].endswith('research/historical/ci/progress-pick.sh" "$PREFIX"'), pick
@@ -2561,7 +2561,7 @@ for s in steps:
 # the token reaches only clean guard, crypt and store steps, never scan, trim or QA
 for s in steps:
     if "DATA_STORE_TOKEN" in str(s.get("env", "")):
-        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh", "storage-check.sh")), s
+        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh", "storage-check.sh", "prior-fetch.sh")), s
 for k in ("scan", "qa"):
     assert "DATA_STORE_TOKEN" not in str(by[k]), k
 PY
@@ -3234,7 +3234,7 @@ printf '2026-07-22\n2026-07-22-k3\n2026-07-23\n2026-07-24\n2026-07-26\n' > "$GD/
 GD_STORE_FAIL=1 b10; [[ $rc == 2 ]] || bad+=" [store error: $rc]"
 # ... while the queue still counts the K2 release as read done (07-22 is never read twice)
 echo 2026-07-22 > "$GD/published"
-(GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok; . "$here/archive-guard.sh"; ag_read_done) > "$T/rd" 2>/dev/null; [[ "$(cat "$T/rd")" == 2026-07-22 ]] || bad+=" [read done: $(cat "$T/rd")]"
+(export GD GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok; . "$here/archive-guard.sh"; ag_read_done) > "$T/rd" 2>/dev/null; [[ "$(cat "$T/rd")" == 2026-07-22 ]] || bad+=" [read done: $(cat "$T/rd")]"
 gdreset
 [[ -z "$bad" ]] && ok "OF-5 B-10 done: the K2 release data-day-2026-07-22 is read done but never B-10 done, data-day-2026-07-22-k3 is; 07-23 needs its -k3 too; other days count plain; a store error fails closed" || no "OF-5 B-10 done:$bad"
 bad=""

@@ -375,6 +375,25 @@ jobs:
       - name: Apply the shared back-off (the later end wins)
         if: steps.published.outputs.complete != 'true'
         run: research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/backoff/archive-429.state" "$RUNNER_TEMP/work/data/archive-429.state"
+      # OF-5: the day before's pinned list and its SHA256SUMS, from the read-done release of
+      # D-1 in the private store (none for the first allow-listed day); a store that cannot
+      # be read, or a release without them, fails the day before any archive read.
+      - name: Fetch the day before's pinned list
+        id: prior
+        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/prior-fetch.sh" "$DAY" "$RUNNER_TEMP/prior"
       # OF-2: the same guard as the plan job, just before the scan, in a clean shell; its
       # pass (a file in $RUNNER_TEMP/archive-guard) is what scan-day.sh requires, so the
       # scan step itself never holds a token.
@@ -396,25 +415,6 @@ jobs:
           GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
           GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard"
-      # OF-5: the day before's pinned list and its SHA256SUMS, from the read-done release of
-      # D-1 in the private store (none for the first allow-listed day); a store that cannot
-      # be read, or a release without them, fails the day before any archive read.
-      - name: Fetch the day before's pinned list
-        id: prior
-        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
-        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
-        env:
-          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
-          DATA_REPO: ${{ vars.DATA_REPO }}
-          DAY: ${{ matrix.day }}
-          BASH_ENV: ""
-          LD_PRELOAD: ""
-          LD_AUDIT: ""
-          LD_LIBRARY_PATH: ""
-        run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
-          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
-          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/prior-fetch.sh" "$DAY" "$RUNNER_TEMP/prior"
       # Exit 75 (the 300 min budget ran out, or a back-off did not fit it) is resumable:
       # progress is saved below and the `continue` job dispatches the next chained run.
       - name: Scan (one lane, stops on 429)

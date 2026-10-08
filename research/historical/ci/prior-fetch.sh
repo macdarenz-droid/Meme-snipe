@@ -22,8 +22,9 @@ day=$1 dir=$2
 [[ "${DATA_REPO:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "refused: DATA_REPO (the private store) is not set"; exit 1; }
 this_repo=${GITHUB_REPOSITORY:-}
 [[ "${DATA_REPO,,}" != "${this_repo,,}" ]] || { echo "refused: DATA_REPO is this repository, not the private store"; exit 1; }
-first=$(ag_first_day)
-[[ -n "$first" ]] || { echo "refused: ARCHIVE_DAYS in archive-limits.conf is malformed"; exit 1; }
+days=$(ag_days) || { echo "refused: ARCHIVE_DAYS in archive-limits.conf is malformed"; exit 1; }
+first=${days%%$'\n'*}
+[[ -n "$first" ]] || { echo "refused: ARCHIVE_DAYS in archive-limits.conf is empty"; exit 1; }
 if [[ "$day" == "$first" ]]; then
   printf 'list=\nsums=\n' >> "$out"
   echo "prior: $day is the first allow-listed day; it needs no prior list" | tee -a "$summary"
