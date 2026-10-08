@@ -118,6 +118,24 @@ func TestSRowsCarryTopProgramAndCUPrice(t *testing.T) {
 			price++
 		}
 	}
+	// Exact: an outer_ix off by one would move these counts (the testdata's trades:
+	// 104 under a top-level PumpSwap instruction, 6 under Jupiter).
+	if n := strings.Count(string(b), ",pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA,"); n < 104 {
+		t.Fatalf("top_program PumpSwap rows %d", n)
+	}
+	amm, jup := 0, 0
+	for _, l := range lines[1:] {
+		f := strings.Split(l, ",")
+		if len(f) == len(head) && f[ti] == "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA" {
+			amm++
+		}
+		if len(f) == len(head) && f[ti] == "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" {
+			jup++
+		}
+	}
+	if amm != 104 || jup != 6 {
+		t.Fatalf("top_program: PumpSwap %d (want 104), Jupiter %d (want 6)", amm, jup)
+	}
 	if top < 100 || price < 50 {
 		t.Fatalf("top_program filled %d, cu_price filled %d of %d", top, price, len(lines)-1)
 	}

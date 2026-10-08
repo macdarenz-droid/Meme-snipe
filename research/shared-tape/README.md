@@ -31,7 +31,7 @@ The tee, the research decoder and the uploader for research/SHARED_TAPE_PLAN.md.
 | File | Table | Rows |
 |---|---|---|
 | `S_curve.csv.zst`, `S_amm.csv.zst` | S | Every bonding-curve trade and every PumpSwap trade, all coins: the scanner's columns (with `tx_fee`, `cu`, `jito_tip`) plus `owner_token_pre/post` (the trade owner's raw balance of the mint, summed over their accounts, 0 if none), `signer_sol_pre/post` (lamports), `canonical` (PumpSwap), `protocol` (boost_buy_and_burn, or the buyback authority `GmFrDZT2…` as signer or user), `top_program` (the program of the trade's top-level instruction) and `cu_price` (SetComputeUnitPrice, micro-lamports per CU; empty if none) |
-| `CF.csv.zst` | CF | Creator-fee collections (`CollectCreatorFeeEvent`, `CollectCoinCreatorFeeEvent`; the scanner's own units drop them): creator, amount in lamports, quote mint or vault and token accounts. Neither event names a mint or pool |
+| `CF.csv.zst` | CF | Creator-fee collections (`CollectCreatorFeeEvent`, `CollectCoinCreatorFeeEvent`; the scanner's own units drop them): creator, `amount` in raw units of the quote mint (pump: `quote_mint`; PumpSwap: the vault ATA's mint, not in the event, so empty; WSOL for most pools), vault and token accounts. Neither event names a mint or pool. These events also appear in E |
 | `F.csv.zst` | F | (with `cu_price`) Every failed transaction in which a pump or PumpSwap instruction ran (an inner instruction, or a top-level one at or before the failing index) |
 | `W.csv.zst` | W | System-program transfers (instruction 2) of at least 0.05 SOL with no pump or PumpSwap instruction above them on the call stack, in successful transactions |
 | `T.csv.zst`, `T_coverage.csv.zst` | T | The scanner's movements, as today |

@@ -40,9 +40,11 @@ const (
 
 // creatorFeeCols: CollectCreatorFeeEvent (pump; quote_mint) and CollectCoinCreatorFeeEvent
 // (PumpSwap; the vault and destination token accounts). Neither event names a mint or a
-// pool: a creator's vault holds the fees of all their coins.
+// pool: a creator's vault holds the fees of all their coins. amount is in raw units of
+// the quote mint: quote_mint for pump; for PumpSwap the vault ATA's mint, which the
+// event does not record (empty here; WSOL for most pools, not all).
 var creatorFeeCols = []string{"slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "signature", "signer",
-	"program", "event", "creator", "amount_lamports", "quote_mint", "creator_vault_ata", "creator_token_account"}
+	"program", "event", "creator", "amount", "quote_mint", "creator_vault_ata", "creator_token_account"}
 
 var creatorFeeEvents = map[string]bool{"CollectCreatorFeeEvent": true, "CollectCoinCreatorFeeEvent": true}
 
