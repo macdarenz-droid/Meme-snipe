@@ -108,7 +108,7 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
   - Each is checked against the sha256 in the committed `stepb-plan.sha256` / `stepc-plan.sha256`, the same way as Step A against its registered hash. A missing file or a hash mismatch refuses.
   - W1 runs discovery only until a registered gate releases Step B: `validation`, `extract` and `ruletest` refuse while `guard.STEP_B_RELEASED` is False. Flipping it is a reviewed code change.
   - `ruletest` also verifies the extract work it reads.
-- **Q37. The signer-method plausibility cap (for the design owner).**
+- **Q37. The signer-method plausibility cap.** *Ruled (AMENDMENT_6): the cap is confirmed and the primary uses the capped method. Validation's "top-decile mean above 0" must hold under both the capped and the uncapped signer method; otherwise the verdict is "persistence depends on cost attribution" and it is not a pass.*
   - AMENDMENT_2 does not have the cap: an implied app fee below 0 or above 5% of the SOL traded + 0.01 SOL keeps the venue method.
   - It is kept. Every row also carries the signer method without the cap (`*_nc`).
   - The scored stages report the share of positions the cap moved, and the top decile's mean with the cap, without it, and under the venue method alone.

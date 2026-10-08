@@ -452,6 +452,20 @@ class Amendment5(unittest.TestCase):
         self.assertIn(("/ab", "extract"), calls)
 
 
+class Amendment6(unittest.TestCase):
+    def test_top_mean_must_hold_with_and_without_the_cap(self):
+        g = {"top": (np.array([1.0, 1.0]), np.array([10.0, 10.0])), "mid": (np.array([0.0]), np.array([10.0]))}
+        boot = np.full(1000, 0.1)
+        v = persist.validation_verdict(g, boot, 0.02, top_mean_uncapped=-0.01)
+        self.assertFalse(v["pass"])
+        self.assertEqual(v["verdict"], "persistence depends on cost attribution")
+        v = persist.validation_verdict(g, boot, 0.02, top_mean_uncapped=0.03)
+        self.assertTrue(v["pass"])
+        g_neg = {"top": (np.array([-1.0]), np.array([10.0])), "mid": g["mid"]}
+        v = persist.validation_verdict(g_neg, boot, 0.02, top_mean_uncapped=0.03)
+        self.assertEqual(v["verdict"], "persistence depends on cost attribution")
+
+
 class MissingDayAndGaps(unittest.TestCase):
     def test_find_units_never_skips_a_day(self):
         with tempfile.TemporaryDirectory() as root:

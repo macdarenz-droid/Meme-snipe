@@ -161,22 +161,30 @@ def discovery_verdict(gr, boot):
             "top_trades": int(gr["top"][1].sum()), "mid_trades": int(gr["mid"][1].sum())}
 
 
-def validation_verdict(gr, boot, replay_mean):
-    """§7 validation (pooled test days): all of 99.5% two-sided lower bound > 0, top-decile mean > 0, replay > 0."""
+def validation_verdict(gr, boot, replay_mean, top_mean_uncapped=None):
+    """§7 validation (pooled test days): all of 99.5% two-sided lower bound > 0, top-decile mean > 0, replay > 0.
+    AMENDMENT_6: the top-decile mean (capped signer method, the primary) must also be above 0 under the uncapped
+    signer method; if it holds under only one, the verdict is "persistence depends on cost attribution", not a pass.
+    `top_mean_uncapped` None means the caller has no uncapped figure: treated as equal to the capped one."""
     lo, hi = (float(x) for x in np.nanpercentile(boot, [0.25, 99.75]))
     st, nt = gr["top"]
     top_mean = float(st.sum() / nt.sum()) if nt.sum() else float("nan")
-    lb_ok, top_ok, rp_ok = lo > 0, top_mean > 0, (replay_mean is not None and replay_mean > 0)
+    top_nc = top_mean if top_mean_uncapped is None else float(top_mean_uncapped)
+    lb_ok, rp_ok = lo > 0, (replay_mean is not None and replay_mean > 0)
+    cap_ok, nc_ok = top_mean > 0, top_nc > 0
+    top_ok = cap_ok and nc_ok
     passed = bool(lb_ok and top_ok and rp_ok)
     if passed:
         verdict = "pass"
+    elif cap_ok != nc_ok:
+        verdict = "persistence depends on cost attribution"
     elif lb_ok and top_ok and not rp_ok:
         verdict = "persistent, but not at our speed or cost"
     else:
         verdict = "fail"
     return {"lift": lift(gr), "ci99_5": [lo, hi], "lower_above_0": lb_ok, "top_mean": top_mean,
-            "top_mean_above_0": top_ok, "replay_mean": replay_mean, "replay_above_0": rp_ok, "pass": passed,
-            "verdict": verdict}
+            "top_mean_uncapped": top_nc, "top_mean_above_0": top_ok, "replay_mean": replay_mean,
+            "replay_above_0": rp_ok, "pass": passed, "verdict": verdict}
 
 
 def winners(test_pos):

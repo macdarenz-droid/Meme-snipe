@@ -223,7 +223,8 @@ def _persistence(a, role, with_replay):
     out["replay"] = {"trades": int(len(rp)), "replayed": int(np.isfinite(rp["ret_replay"]).sum()),
                      **replay.shares(rp),
                      "reasons": {k: int(v) for k, v in rp["replay_reason"].value_counts().items() if k}}
-    out["validation"] = persist.validation_verdict(gr, boot, rm)
+    top_nc = float(tp.loc[tp["decile"] == 10, "ret_nc"].mean()) if (tp["decile"] == 10).any() else float("nan")
+    out["validation"] = persist.validation_verdict(gr, boot, rm, top_mean_uncapped=top_nc)   # AMENDMENT_6
     return out, tp, ranked, m
 
 
