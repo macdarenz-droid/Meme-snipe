@@ -14,7 +14,7 @@ export const SPOOL_DIR = '/var/lib/zeroed-spool';
 export const ENGINE_PATHS = {
   /** M24 ledger (`m24.db_path`); its writer lock `<db>-writer.lock` sits beside it. */
   db: `${STATE_DIR}/bot.db`,
-  /** M24 pre-migration backup (`backupPath`); the extension keeps it out of zeroed-backup's `*.db`/`*.sqlite` glob. */
+  /** M24 pre-migration backup (`backupPath`); the extension keeps it out of the database-file glob zeroed-backup copies. */
   preMigrationBackup: `${STATE_DIR}/premigrate/bot.premigrate`,
   /** M24 first-start marker (`initMarker`), outside the database's own name but inside the state folder. */
   initMarker: `${STATE_DIR}/init/first-start`,
