@@ -1,0 +1,498 @@
+{
+  "schema_version": 1,
+  "mode": "paper",
+  "simulated": true,
+  "as_of": "2026-10-06T14:02:11.123Z",
+  "positions": [
+    {
+      "position_id": "01K6YD5RNNW0ZD2861ZCXS6RPQ",
+      "simulated": true,
+      "mode": "paper",
+      "strategy_id": "mr",
+      "mint": "G1n8FFbgtUxmeypgL5V2wfDMxq7odoJ8pyEHpUPSzbUQ",
+      "symbol": "BONK",
+      "name": "Bonk",
+      "decimals": 5,
+      "venue": "pumpswap",
+      "state": "open",
+      "opened_at": "2026-10-06T13:41:05.512Z",
+      "opened_slot": "312345678",
+      "entry_signatures": [
+        "RDFXnL4d4CKHaKG1AEm3ZmTztC17enAqVe63k5QEvfQMrTa1z4XdH3d6jFHDmhhPJUc3kY5uEfxM6s1cRT8aUqbP"
+      ],
+      "entry_size_base": "123456789012",
+      "size_base": "123456789012",
+      "entry_price_sol_per_token": "0.000004321",
+      "entry_cost_lamports": "533000000",
+      "entry_fees": {
+        "base_fee_lamports": "5000",
+        "priority_fee_lamports": "125000",
+        "tip_lamports": "1000000",
+        "venue_fee_lamports": "250000"
+      },
+      "mark_price_sol_per_token": "0.000004712",
+      "mark_method": "exit_quote",
+      "mark_as_of": "2026-10-06T14:02:11.123Z",
+      "mark_slot": "312345901",
+      "exit_cost_est_lamports": "1380000",
+      "exit_value_est_lamports": "574700000",
+      "price_impact_exit_bps": 42,
+      "unrealized_pnl_net_lamports": "41700000",
+      "unrealized_pnl_net_bps": 782,
+      "unrealized_pnl_net_usd_e6": "6255000",
+      "realized_partial_lamports": "0",
+      "stops": [
+        {
+          "type": "price",
+          "trigger_price_sol_per_token": "0.000003",
+          "trigger_pnl_bps": null,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "targets": [
+        {
+          "type": "pnl_pct",
+          "trigger_price_sol_per_token": null,
+          "trigger_pnl_bps": 2500,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "time_stop_at": "2026-10-06T15:41:05.512Z",
+      "pending_close": null,
+      "close_failed_reason": null,
+      "risk_flags": []
+    },
+    {
+      "position_id": "01K6YT0NC2MS9QM20G8JFPPT82",
+      "simulated": true,
+      "mode": "paper",
+      "strategy_id": "pm",
+      "mint": "nt4juSZhfLGEfsyP8VXKmu4szib6kqdgNGWWtBQxhuAA",
+      "symbol": "WIF",
+      "name": "dogwifhat",
+      "decimals": 6,
+      "venue": "pumpswap",
+      "state": "open",
+      "opened_at": "2026-10-06T13:41:05.512Z",
+      "opened_slot": "312345678",
+      "entry_signatures": [
+        "EBGvxzZm3LRdpUW8BuZYf2LWseZa6Wejr91qcX4dDeBU96bZhHtGW4Zdo6oeSWM3YMw5G5Y4zWxUNVWzdMY71peY"
+      ],
+      "entry_size_base": "250000000",
+      "size_base": "250000000",
+      "entry_price_sol_per_token": "0.0123",
+      "entry_cost_lamports": "3075000000",
+      "entry_fees": {
+        "base_fee_lamports": "5000",
+        "priority_fee_lamports": "125000",
+        "tip_lamports": "1000000",
+        "venue_fee_lamports": "250000"
+      },
+      "mark_price_sol_per_token": "0.0109",
+      "mark_method": "exit_quote",
+      "mark_as_of": "2026-10-06T14:02:11.123Z",
+      "mark_slot": "312345901",
+      "exit_cost_est_lamports": "1380000",
+      "exit_value_est_lamports": "2723750000",
+      "price_impact_exit_bps": 42,
+      "unrealized_pnl_net_lamports": "-351250000",
+      "unrealized_pnl_net_bps": -1142,
+      "unrealized_pnl_net_usd_e6": "-52687500",
+      "realized_partial_lamports": "0",
+      "stops": [
+        {
+          "type": "price",
+          "trigger_price_sol_per_token": "0.000003",
+          "trigger_pnl_bps": null,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "targets": [
+        {
+          "type": "pnl_pct",
+          "trigger_price_sol_per_token": null,
+          "trigger_pnl_bps": 2500,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "time_stop_at": "2026-10-06T15:41:05.512Z",
+      "pending_close": null,
+      "close_failed_reason": null,
+      "risk_flags": []
+    },
+    {
+      "position_id": "01K6YBA08HY5HPPB6SJ8WDWNFD",
+      "simulated": true,
+      "mode": "paper",
+      "strategy_id": "mr",
+      "mint": "saFVGbLFn1dpMneAgZ1rDTtvirgey57DMRJDZNVtxQ93",
+      "symbol": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "name": "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN",
+      "decimals": 9,
+      "venue": "pumpswap",
+      "state": "open",
+      "opened_at": "2026-10-06T13:41:05.512Z",
+      "opened_slot": "312345678",
+      "entry_signatures": [
+        "tNwMAMxHCaRWetk7YZmqW6hPNDPCMeRB8pyQmopL6eiWRPRR8aGdKYAYpt3ikmftoXGxpySHCdiC6WoGAvDdMkLv"
+      ],
+      "entry_size_base": "1000000000",
+      "size_base": "1000000000",
+      "entry_price_sol_per_token": "0.5",
+      "entry_cost_lamports": "500000000",
+      "entry_fees": {
+        "base_fee_lamports": "5000",
+        "priority_fee_lamports": "125000",
+        "tip_lamports": "1000000",
+        "venue_fee_lamports": "250000"
+      },
+      "mark_price_sol_per_token": "0.51",
+      "mark_method": "exit_quote",
+      "mark_as_of": "2026-10-06T14:02:11.123Z",
+      "mark_slot": "312345901",
+      "exit_cost_est_lamports": "1380000",
+      "exit_value_est_lamports": "509620000",
+      "price_impact_exit_bps": 42,
+      "unrealized_pnl_net_lamports": "9620000",
+      "unrealized_pnl_net_bps": 192,
+      "unrealized_pnl_net_usd_e6": "1443000",
+      "realized_partial_lamports": "0",
+      "stops": [
+        {
+          "type": "price",
+          "trigger_price_sol_per_token": "0.000003",
+          "trigger_pnl_bps": null,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "targets": [
+        {
+          "type": "pnl_pct",
+          "trigger_price_sol_per_token": null,
+          "trigger_pnl_bps": 2500,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "time_stop_at": "2026-10-06T15:41:05.512Z",
+      "pending_close": null,
+      "close_failed_reason": null,
+      "risk_flags": []
+    },
+    {
+      "position_id": "01K6YN6HZGDWRD43BR063CJ0N7",
+      "simulated": true,
+      "mode": "paper",
+      "strategy_id": "pm",
+      "mint": "KpuLKD7k2ZikaGa4RrQgwTyA8kYCJpCsRdBZ8vVYk8Vp",
+      "symbol": "US\u202EDC",
+      "name": "Ꮪolana Ꭰollar",
+      "decimals": 6,
+      "venue": "pumpswap",
+      "state": "open",
+      "opened_at": "2026-10-06T13:41:05.512Z",
+      "opened_slot": "312345678",
+      "entry_signatures": [
+        "zt92dURkjTdqToB76oXbNd4vMg3S6ozjpdkKyzoJuygiykMREnFdDwHuheocxEdREFVjshjxDxxPrY7CFrmhWXED"
+      ],
+      "entry_size_base": "5000000",
+      "size_base": "5000000",
+      "entry_price_sol_per_token": "0.0055",
+      "entry_cost_lamports": "27500000",
+      "entry_fees": {
+        "base_fee_lamports": "5000",
+        "priority_fee_lamports": "125000",
+        "tip_lamports": "1000000",
+        "venue_fee_lamports": "250000"
+      },
+      "mark_price_sol_per_token": "0.0054",
+      "mark_method": "exit_quote",
+      "mark_as_of": "2026-10-06T14:02:11.123Z",
+      "mark_slot": "312345901",
+      "exit_cost_est_lamports": "1380000",
+      "exit_value_est_lamports": "25848000",
+      "price_impact_exit_bps": 42,
+      "unrealized_pnl_net_lamports": "-1652000",
+      "unrealized_pnl_net_bps": -601,
+      "unrealized_pnl_net_usd_e6": "-247800",
+      "realized_partial_lamports": "0",
+      "stops": [
+        {
+          "type": "price",
+          "trigger_price_sol_per_token": "0.000003",
+          "trigger_pnl_bps": null,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "targets": [
+        {
+          "type": "pnl_pct",
+          "trigger_price_sol_per_token": null,
+          "trigger_pnl_bps": 2500,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "time_stop_at": "2026-10-06T15:41:05.512Z",
+      "pending_close": null,
+      "close_failed_reason": null,
+      "risk_flags": []
+    },
+    {
+      "position_id": "01K6Y1WZM6M9AKDE4KYPZQBNGM",
+      "simulated": true,
+      "mode": "paper",
+      "strategy_id": "mr",
+      "mint": "1a6mtkuby7f1k12aPTMPchzJpg6bDFXY2iNNVFhLSTMy",
+      "symbol": "MAX",
+      "name": "Max values",
+      "decimals": 0,
+      "venue": "pumpswap",
+      "state": "open",
+      "opened_at": "2026-10-06T13:41:05.512Z",
+      "opened_slot": "312345678",
+      "entry_signatures": [
+        "TCsrPKG7f5bTfZptFk34Ah4M9iQXGHo3sWDZzyApoMZrL4LZ7F76Nq6ChdvuwSvBYJ7cAkDrQQsBCgb3F8YWSxFm"
+      ],
+      "entry_size_base": "18446744073709551615",
+      "size_base": "18446744073709551615",
+      "entry_price_sol_per_token": "0.000000000001",
+      "entry_cost_lamports": "18446744073709551615",
+      "entry_fees": {
+        "base_fee_lamports": "5000",
+        "priority_fee_lamports": "125000",
+        "tip_lamports": "1000000",
+        "venue_fee_lamports": "250000"
+      },
+      "mark_price_sol_per_token": "0.000000000002",
+      "mark_method": "exit_quote",
+      "mark_as_of": "2026-10-06T14:02:11.123Z",
+      "mark_slot": "312345901",
+      "exit_cost_est_lamports": "1380000",
+      "exit_value_est_lamports": "9223372036854775807",
+      "price_impact_exit_bps": 42,
+      "unrealized_pnl_net_lamports": "-9223372036854775808",
+      "unrealized_pnl_net_bps": -10000,
+      "unrealized_pnl_net_usd_e6": "-9223372036854775808",
+      "realized_partial_lamports": "0",
+      "stops": [
+        {
+          "type": "price",
+          "trigger_price_sol_per_token": "0.000003",
+          "trigger_pnl_bps": null,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "targets": [
+        {
+          "type": "pnl_pct",
+          "trigger_price_sol_per_token": null,
+          "trigger_pnl_bps": 2500,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "time_stop_at": "2026-10-06T15:41:05.512Z",
+      "pending_close": null,
+      "close_failed_reason": null,
+      "risk_flags": []
+    },
+    {
+      "position_id": "01K6YR554P84R0DK4C8TY395DA",
+      "simulated": true,
+      "mode": "paper",
+      "strategy_id": "mr",
+      "mint": "6eZV3oqA868Y1vw5K2XtuF2bHxHyo6QZ8jz9HbES4jAi",
+      "symbol": "NOMARK",
+      "name": "No mark yet",
+      "decimals": 6,
+      "venue": "pumpswap",
+      "state": "opening",
+      "opened_at": "2026-10-06T13:41:05.512Z",
+      "opened_slot": "312345678",
+      "entry_signatures": [
+        "ZhVZM6dssbJtaMqGce9U6CxS8iRJECH8kn8UdycMGsE7Aw96dQ85RzKP9xc72R3DJKACQ2tpXzp88TjYNhcqx5SE"
+      ],
+      "entry_size_base": "1000000",
+      "size_base": "1000000",
+      "entry_price_sol_per_token": "0.002",
+      "entry_cost_lamports": "2000000",
+      "entry_fees": {
+        "base_fee_lamports": "5000",
+        "priority_fee_lamports": "125000",
+        "tip_lamports": "1000000",
+        "venue_fee_lamports": "250000"
+      },
+      "mark_price_sol_per_token": null,
+      "mark_method": "exit_quote",
+      "mark_as_of": null,
+      "mark_slot": "312345901",
+      "exit_cost_est_lamports": null,
+      "exit_value_est_lamports": null,
+      "price_impact_exit_bps": null,
+      "unrealized_pnl_net_lamports": null,
+      "unrealized_pnl_net_bps": null,
+      "unrealized_pnl_net_usd_e6": null,
+      "realized_partial_lamports": "0",
+      "stops": [
+        {
+          "type": "price",
+          "trigger_price_sol_per_token": "0.000003",
+          "trigger_pnl_bps": null,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "targets": [
+        {
+          "type": "pnl_pct",
+          "trigger_price_sol_per_token": null,
+          "trigger_pnl_bps": 2500,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "time_stop_at": "2026-10-06T15:41:05.512Z",
+      "pending_close": null,
+      "close_failed_reason": null,
+      "risk_flags": [
+        {
+          "code": "entry_unconfirmed",
+          "severity": "warning",
+          "message": "Exits armed; entry not yet confirmed"
+        }
+      ]
+    },
+    {
+      "position_id": "01K6Y0Y8V9TAKR97F5RYEZCW0T",
+      "simulated": true,
+      "mode": "paper",
+      "strategy_id": "mr",
+      "mint": "5QwXVCHa7VbHJamFtds3KaLAeU68MD1qnotgjXGREc5Y",
+      "symbol": "CLOSE",
+      "name": "Closing",
+      "decimals": 6,
+      "venue": "pumpswap",
+      "state": "closing",
+      "opened_at": "2026-10-06T13:41:05.512Z",
+      "opened_slot": "312345678",
+      "entry_signatures": [
+        "Z4SCpckj3JfrCkAEQ3WEdqCnqn2AijexyoYpkdiNYM1gpJNydEai33dBFXRp3Y5AmcikFWXUZ61oK23McEZqxEpo"
+      ],
+      "entry_size_base": "3000000",
+      "size_base": "3000000",
+      "entry_price_sol_per_token": "0.01",
+      "entry_cost_lamports": "30000000",
+      "entry_fees": {
+        "base_fee_lamports": "5000",
+        "priority_fee_lamports": "125000",
+        "tip_lamports": "1000000",
+        "venue_fee_lamports": "250000"
+      },
+      "mark_price_sol_per_token": "0.0102",
+      "mark_method": "exit_quote",
+      "mark_as_of": "2026-10-06T14:02:11.123Z",
+      "mark_slot": "312345901",
+      "exit_cost_est_lamports": "1380000",
+      "exit_value_est_lamports": "30600000",
+      "price_impact_exit_bps": 42,
+      "unrealized_pnl_net_lamports": "600000",
+      "unrealized_pnl_net_bps": 200,
+      "unrealized_pnl_net_usd_e6": "90000",
+      "realized_partial_lamports": "0",
+      "stops": [
+        {
+          "type": "price",
+          "trigger_price_sol_per_token": "0.000003",
+          "trigger_pnl_bps": null,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "targets": [
+        {
+          "type": "pnl_pct",
+          "trigger_price_sol_per_token": null,
+          "trigger_pnl_bps": 2500,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "time_stop_at": "2026-10-06T15:41:05.512Z",
+      "pending_close": {
+        "command_id": "01K6Y696CSGDNQZEG0R6SPP12B",
+        "requested_at": "2026-10-06T14:02:05.000Z",
+        "reason": "operator"
+      },
+      "close_failed_reason": null,
+      "risk_flags": []
+    },
+    {
+      "position_id": "01K6YGHC6H3Q7SZB7F8D1QVA67",
+      "simulated": true,
+      "mode": "paper",
+      "strategy_id": "mr",
+      "mint": "Rmjo6MuZBRD9rwW8Ax4ysBs5ATv4xShCGUKHymv7uSkz",
+      "symbol": "STUCK",
+      "name": "Close failed",
+      "decimals": 6,
+      "venue": "pumpswap",
+      "state": "close_failed",
+      "opened_at": "2026-10-06T13:41:05.512Z",
+      "opened_slot": "312345678",
+      "entry_signatures": [
+        "dLYNpAn63NKR1WTUU29JuLaUZXzphavNtZhmteVvbabrr4EnoPkLQ5rfMiSEZzoRSyBk1zkpymnZuAmwhW7dMZKU"
+      ],
+      "entry_size_base": "4000000",
+      "size_base": "4000000",
+      "entry_price_sol_per_token": "0.01",
+      "entry_cost_lamports": "40000000",
+      "entry_fees": {
+        "base_fee_lamports": "5000",
+        "priority_fee_lamports": "125000",
+        "tip_lamports": "1000000",
+        "venue_fee_lamports": "250000"
+      },
+      "mark_price_sol_per_token": "0.0098",
+      "mark_method": "exit_quote",
+      "mark_as_of": "2026-10-06T14:02:11.123Z",
+      "mark_slot": "312345901",
+      "exit_cost_est_lamports": "1380000",
+      "exit_value_est_lamports": "39200000",
+      "price_impact_exit_bps": 42,
+      "unrealized_pnl_net_lamports": "-800000",
+      "unrealized_pnl_net_bps": -200,
+      "unrealized_pnl_net_usd_e6": "-120000",
+      "realized_partial_lamports": "0",
+      "stops": [
+        {
+          "type": "price",
+          "trigger_price_sol_per_token": "0.000003",
+          "trigger_pnl_bps": null,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "targets": [
+        {
+          "type": "pnl_pct",
+          "trigger_price_sol_per_token": null,
+          "trigger_pnl_bps": 2500,
+          "trailing_distance_bps": null,
+          "armed": true
+        }
+      ],
+      "time_stop_at": "2026-10-06T15:41:05.512Z",
+      "pending_close": null,
+      "close_failed_reason": "Slippage above the limit",
+      "risk_flags": []
+    }
+  ]
+}
