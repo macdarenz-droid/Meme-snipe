@@ -192,7 +192,7 @@ in_c "systemctl restart srv-zeroed_pull-md-receipts.mount && systemctl restart s
 [ "$(in_c "df --output=itotal /var/lib/zeroed-md/receipts | tail -1 | tr -d ' '")" = 32768 ] || fail "PATHS-FIX: receipts inode count"
 [ "$(in_c "stat -c '%a %U %s' /var/lib/zeroed-receipts/receipts.img")" = "600 root 67108864" ] || fail "PATHS-FIX: receipts image owner, mode or size"
 # Ruling 26: preallocated, so its 64 MiB is really taken on disk.
-[ "$(in_c "stat -c '%b %B' /var/lib/zeroed-receipts/receipts.img" | awk '{ print ($1 * $2 >= 67108864) ? "full" : "sparse" }')" = full ] || fail "PATHS-FIX: receipts image is not preallocated"
+[ "$(in_c "stat -c '%b %B' /var/lib/zeroed-receipts/receipts.img" | awk '{ print ($1 * $2 >= 67108864) ? "full" : "sparse" }')" = full ] || { in_c "stat /var/lib/zeroed-receipts/receipts.img"; fail "PATHS-FIX: receipts image is not preallocated"; }
 in_c "! touch /srv/zeroed_pull/md/x 2>/dev/null && touch /srv/zeroed_pull/md/receipts/x && test -e /var/lib/zeroed-md/receipts/x && rm /var/lib/zeroed-md/receipts/x" || fail "PATHS-FIX: md must be read-only and receipts writable through the chroot"
 in_c "sshd -t && sshd -T -C user=zeroed-pull,host=h,addr=127.0.0.1" >"$LOGS/sshd-pull.txt" || fail "PATHS-FIX: sshd refuses its settings"
 for l in 'chrootdirectory /srv/zeroed_pull' 'forcecommand internal-sftp -u 0027' 'authorizedkeysfile /etc/zeroed/pull-keys/%u' 'allowtcpforwarding no' 'permittty no' 'passwordauthentication no'; do
@@ -385,6 +385,8 @@ in_c "zeroed-restore-drill /etc/zeroed/age/host.key /root/tampered.age" >"$LOGS/
 in_c "rm -f /root/tampered.age"
 grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
 grep -q 'zeroed-usage/rpc-usage.db reservations: ' "$LOGS/drill-host.txt" || fail "PATHS-FIX: the usage ledger is not in the backup"
+# Ruling 26, minutes after the first mount: the receipts image is still fully allocated (no lazy-init hole punching).
+[ "$(in_c "stat -c '%b %B' /var/lib/zeroed-receipts/receipts.img" | awk '{ print ($1 * $2 >= 67108864) ? "full" : "sparse" }')" = full ] || { in_c "stat /var/lib/zeroed-receipts/receipts.img"; fail "PATHS-FIX: receipts image lost blocks after mounting"; }
 in_c "rm -f /var/lib/zeroed-usage/rpc-usage.db*"
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
 pass "backup: hourly timer, $bk encrypted (with the usage ledger); restore drill PASS into a scratch directory, FAIL on a tampered file"
