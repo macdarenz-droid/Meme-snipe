@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "state_version": "102",
+  "mode": "live_small",
+  "simulated": false,
+  "mode_since": "2026-10-06T12:00:00.000Z",
+  "run_id": "01K6Y3V2Q8ZQ4D5M7N9P1R3T5Y",
+  "trading_state": "running",
+  "trading_state_changed_at": "2026-10-06T08:00:05.000Z",
+  "kill": {
+    "halted_by": null,
+    "latch_set_by": null,
+    "latch_clear_requires": null,
+    "reason_code": null,
+    "reason_text": null,
+    "components": [
+      {
+        "name": "executor",
+        "acked": true,
+        "acked_at": "2026-10-06T08:00:05.000Z"
+      },
+      {
+        "name": "risk",
+        "acked": true,
+        "acked_at": "2026-10-06T08:00:05.000Z"
+      }
+    ]
+  },
+  "signer": {
+    "lock": "unlocked",
+    "exit_lease_holder": "engine"
+  },
+  "live_caps": {
+    "max_trade_lamports": "250000000",
+    "max_open_positions": 2,
+    "max_daily_loss_lamports": "600000000"
+  },
+  "scheduled_change": {
+    "command_id": "01K6YF0A9B8C7D6E5F4G3H2J1K",
+    "kind": "update_limit",
+    "summary": "RAISE MAXPOS 0.30",
+    "effective_at": "2026-10-06T14:03:11.123Z",
+    "cancellable": true
+  },
+  "strategies": [
+    {
+      "strategy_id": "mr-01",
+      "name": "Mean reversion",
+      "enabled": true,
+      "modes": [
+        "paper",
+        "live_small"
+      ]
+    }
+  ],
+  "sim_clock": null,
+  "versions": {
+    "bot": "0.1.0+2026-10-06",
+    "config": "cfg-17"
+  },
+  "trading_wallet_pubkey": "FuuP5Kfgnudp7Jxu9Zcuq7u7Xy1hDo8bBC8MmDQfXzG1"
+}
