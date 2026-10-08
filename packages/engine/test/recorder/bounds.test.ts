@@ -71,8 +71,11 @@ describe('watched pools (ruling 1)', () => {
     assert.ok(maxWatched <= cap, `watched ${maxWatched}`);
     assert.ok(st.acceptedHashes <= cap && st.encoderStates <= 2 * cap, `hashes ${st.acceptedHashes}, encoder ${st.encoderStates}`);
     assert.ok(maxTick <= cap * DEFAULT_CONFIG.pollCatchUpMaxMinutes, `one tick wrote ${maxTick}`);
-    assert.ok(st.rejectedTotal.E_POOL_CAP > 0, 'the cap was reached and counted');
-    assert.ok(st.idleUnwatched > 0, 'idle pools were unwatched');
+    // Every pool that left made way at the cap (no poll this minute) or went idle; none was refused, since each new
+    // wave arrives a minute after the last one polled (ruling 12).
+    assert.ok(st.capUnwatched > 0, 'the cap was reached and pools made way');
+    assert.equal(st.capUnwatched + st.idleUnwatched, 100_000 - st.watchedPools);
+    assert.equal(st.rejectedTotal.E_POOL_CAP, 0);
   });
 });
 
@@ -118,5 +121,44 @@ describe('gap seconds (ruling 9)', () => {
     const sum = gaps.reduce((a, g) => a + (g.toMs - g.fromMs) / 1000, 0);
     assert.ok(gaps.length <= GAPS_MAX_PER_STREAM, `${gaps.length} gaps`);
     assert.equal(q.stats().gapSecondsTotal.discovery, sum);
+  });
+});
+
+describe('the cap makes way (round 3, ruling 12)', () => {
+  const full = (q: RecorderQueue, t: number, idle: string | null): void => {
+    for (let i = 0; i < DEFAULT_CONFIG.maxWatchedPools; i++) {
+      const id = `w${i}`;
+      q.append(snap(id, 1, id === idle ? t - 2 * 60_000 : t));
+    }
+  };
+
+  it('60 watched with one idle for 2 min: a new pool is queued and the idle one makes way', () => {
+    const q = new RecorderQueue();
+    full(q, T0 + 10 * 60_000, 'w7');
+    assert.equal(q.stats().watchedPools, DEFAULT_CONFIG.maxWatchedPools);
+    assert.equal(q.append(snap('new', 1, T0 + 10 * 60_000 + 1)), 'queued');
+    const st = q.stats();
+    assert.equal(st.watchedPools, DEFAULT_CONFIG.maxWatchedPools);
+    assert.equal(st.capUnwatched, 1);
+    assert.equal(st.rejectedTotal.E_POOL_CAP, 0);
+    // w7's counts were written before it was forgotten.
+    const w7 = q.take(1_000, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf).filter((p) => p.poolId === 'w7');
+    assert.equal(w7.reduce((a, p) => a + (p.successfulPolls as number), 0), 1);
+  });
+
+  it('60 watched, all polled this minute: a new candidate is refused and counted', () => {
+    const q = new RecorderQueue();
+    full(q, T0 + 10 * 60_000, null);
+    assert.deepEqual(q.append(snap('new', 1, T0 + 10 * 60_000 + 1)), { rejected: 'E_POOL_CAP' });
+    assert.equal(q.stats().rejectedTotal.E_POOL_CAP, 1);
+    assert.equal(q.stats().capUnwatched, 0);
+  });
+
+  it('a position pool at a full cap is queued, past the cap', () => {
+    const q = new RecorderQueue();
+    full(q, T0 + 10 * 60_000, null);
+    assert.equal(q.append(snap('pos', 1, T0 + 10 * 60_000 + 1, 'pool_snapshot_position', 'position')), 'queued');
+    assert.equal(q.stats().watchedPools, DEFAULT_CONFIG.maxWatchedPools + 1);
+    assert.equal(q.stats().rejectedTotal.E_POOL_CAP, 0);
   });
 });

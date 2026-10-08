@@ -3,8 +3,8 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import { canonicalJson, type UnixMs } from '@bot/types';
 import {
-  DEFAULT_CONFIG, DeltaDecodeError, RECORD_OVERHEAD_BYTES, RecorderError, RecorderQueue, SnapshotDecoder, recordLine,
-  type EncodedSnapshot, type LogLevel,
+  DEFAULT_CONFIG, DeltaDecodeError, RECORD_OVERHEAD_BYTES, RecorderError, RecorderQueue, SnapshotDecoder, SnapshotEncoder, recordLine,
+  type EncodedSnapshot, type LogLevel, type PoolSnapshotPayload,
 } from '../../src/index.ts';
 import { SEG, T0, payloadOf, rec, snap } from './helpers.ts';
 
@@ -69,6 +69,15 @@ describe('redaction (security notes)', () => {
     assert.deepEqual(JSON.parse(r!.payloadJson), { nested: [{ '[redacted:1]': 1 }], ok: 'https://z.example/?page=2', url: '[redacted:2]' });
     assert.equal(r!.payloadJson, canonicalJson(JSON.parse(r!.payloadJson)));
     assert.equal(q.stats().redactedTotal, 3);
+  });
+
+  it('refuses a payload that already has a "[redacted:" key, or whose redaction would merge two keys (ruling 13)', () => {
+    const q = new RecorderQueue();
+    assert.deepEqual(q.append(rec('discovery', T0, { '[redacted:1]': 1, u: 'https://a.example/?key=1' })), { rejected: 'E_PAYLOAD' });
+    assert.deepEqual(q.append(rec('discovery', T0, { m: { '[redacted:9]': 1 } })), { rejected: 'E_PAYLOAD' });
+    // A value that looks like the marker is a value, not a key: accepted.
+    assert.equal(q.append(rec('discovery', T0, { m: '[redacted:1]' })), 'queued');
+    assert.equal(q.stats().rejectedTotal.E_PAYLOAD, 2);
   });
 
   it('two redacted keys of one object stay two keys', () => {
@@ -153,6 +162,28 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
     assert.deepEqual(out.map((r) => [r.stream, payloadOf(r).kind, payloadOf(r).priorityClass]), [
       ['pool_snapshot', 'keyframe', 'normal'], ['pool_snapshot', 'delta', 'tail'], ['pool_snapshot_position', 'keyframe', 'position'],
     ]);
+  });
+
+  it('changedPolls counts a change of rawHash only, not of stream or class (ruling 15)', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0, 'pool_snapshot', 'normal'));
+    q.append(snap('a', 1, T0 + 1_000, 'pool_snapshot', 'tail'));
+    q.append(snap('a', 1, T0 + 2_000, 'pool_snapshot_tail', 'tail'));
+    q.append(snap('a', 2, T0 + 3_000, 'pool_snapshot_tail', 'tail'));
+    q.tick(ms(T0 + 60_000));
+    const [c] = q.take(100, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
+    assert.equal(c!.successfulPolls, 4);
+    assert.equal(c!.changedPolls, 2);
+  });
+
+  it('the encoder writes a record when only the stream or the class changed, and nothing when all three match (ruling 16)', () => {
+    const e = new SnapshotEncoder();
+    const p = (cls: string): PoolSnapshotPayload => ({ poolId: 'a', rawHash: 'h1', priorityClass: cls, fields: { x: '1' } });
+    assert.equal(e.encode('pool_snapshot', SEG, p('normal'))?.kind, 'keyframe');
+    assert.equal(e.encode('pool_snapshot', SEG, p('normal')), null);
+    assert.deepEqual(e.encode('pool_snapshot', SEG, p('tail')), { kind: 'delta', poolId: 'a', rawHash: 'h1', priorityClass: 'tail', set: Object.create(null) as Record<string, unknown>, unset: [] });
+    assert.equal(e.encode('pool_snapshot_tail', SEG, p('tail'))?.kind, 'keyframe');
+    assert.equal(e.encode('pool_snapshot_tail', SEG, p('tail')), null);
   });
 
   it('refuses a snapshot with a top-level key outside the four', () => {

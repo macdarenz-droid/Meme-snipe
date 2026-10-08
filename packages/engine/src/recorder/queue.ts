@@ -86,8 +86,10 @@ export interface RecorderQueueConfig {
   /** A drop this close (by recvMs) after a stream's last gap extends that gap instead of starting a new one. */
   gapMergeMs: number;
   /**
-   * Pools watched for poll counts at once; past it a new pool's snapshots and polls are refused (`E_POOL_CAP`) and
-   * counted. Default 60: M05's `max_watched` of 30 (ARCH.md:1007) plus up to 30 eviction-tail pools (ARCH.md:1027).
+   * Pools watched for poll counts at once. At the cap a new pool takes the place of the watched pool with the oldest
+   * last poll that had no poll in the current minute; only when every watched pool polled this minute is the new one
+   * refused (`E_POOL_CAP`, counted). `pool_snapshot_position` records are never refused and may take the set past the
+   * cap. Default 60: M05's `max_watched` of 30 (ARCH.md:1007) plus up to 30 eviction-tail pools (ARCH.md:1027).
    * Range 1-10,000.
    */
   maxWatchedPools: number;
@@ -155,6 +157,8 @@ export interface RecorderStats {
   skippedPollMinutes: number;
   /** Pools unwatched by tick() after idleUnwatchMinutes with no poll. */
   idleUnwatched: number;
+  /** Pools that made way for a new pool at the cap (no poll in the current minute). */
+  capUnwatched: number;
   watchedPools: number;
   acceptedHashes: number;
   encoderStates: number;
@@ -184,8 +188,10 @@ interface Bucket {
 interface WatchedPool {
   priorityClass: string;
   nextMinute: number;
-  /** The minute of the last poll (or of watch()), for idle unwatching. */
-  lastPollMinute: number;
+  /** recvMs of the last poll (or nowMs of watch()), for idle unwatching and for choosing whom to make way at the cap. */
+  lastPollMs: number;
+  /** rawHash of the last successful poll: changedPolls counts a poll as changed only when this differs. */
+  lastRawHash: string | null;
   buckets: Map<number, Bucket>;
 }
 
@@ -255,6 +261,7 @@ export class RecorderQueue {
       skewedPolls: 0,
       skippedPollMinutes: 0,
       idleUnwatched: 0,
+      capUnwatched: 0,
       watchedPools: 0,
       acceptedHashes: 0,
       encoderStates: 0,
@@ -291,6 +298,7 @@ export class RecorderQueue {
       return this.reject(stream, 'E_PAYLOAD', 'payload does not serialise to JSON');
     }
     const red = redactJson(json);
+    if (red.collision) return this.reject(stream, 'E_PAYLOAD', 'redaction key collision');
     json = red.json;
     let source = e.source;
     if (isSecretShaped(source)) {
@@ -309,9 +317,13 @@ export class RecorderQueue {
       // A new stream or priority class with the same rawHash is a change too (review round 1, red team m3).
       signature = `${stream}\u0000${p.priorityClass}\u0000${p.rawHash}`;
       const unchanged = this.lastAccepted.get(poolId) === signature;
-      if (!this.countPoll(poolId, p.priorityClass, e.recvMs, unchanged ? 'successful' : 'changed')) {
-        return this.reject(stream, 'E_POOL_CAP', 'watched pool cap reached');
-      }
+      // A position pool is never refused (ruling 12): it may take the watched set past the cap.
+      const w = this.admit(poolId, p.priorityClass, e.recvMs, stream === 'pool_snapshot_position');
+      if (w === null) return this.reject(stream, 'E_POOL_CAP', 'watched pool cap reached');
+      // changedPolls counts a change of state only, not of stream or class (ruling 15).
+      const changed = w.lastRawHash !== p.rawHash;
+      w.lastRawHash = p.rawHash;
+      this.countPoll(w, p.priorityClass, e.recvMs, changed ? 'changed' : 'successful');
       if (unchanged) {
         this.s.recordsTotal[stream].notWritten++;
         return 'unchanged';
@@ -336,30 +348,30 @@ export class RecorderQueue {
 
   /**
    * A poll of a watched pool that failed (A-M07-01 logic 3, `failedPolls`). False when the pool is new and the
-   * watched pool cap is reached (counted as E_POOL_CAP).
+   * watched pool cap is full of pools polled this minute (counted as E_POOL_CAP).
    */
   notePollFailed(poolId: string, priorityClass: string, recvMs: UnixMs): boolean {
-    if (this.countPoll(poolId, priorityClass, recvMs, 'failed')) return true;
-    this.reject('poll_counts', 'E_POOL_CAP', 'watched pool cap reached');
-    return false;
+    const w = this.admit(poolId, priorityClass, recvMs, false);
+    if (w === null) {
+      this.reject('poll_counts', 'E_POOL_CAP', 'watched pool cap reached');
+      return false;
+    }
+    this.countPoll(w, priorityClass, recvMs, 'failed');
+    return true;
   }
 
   /**
    * Starts the per-minute poll counts for a pool from the minute of `nowMs`. A pool is also watched from its first
-   * snapshot or failed poll. False when the pool is new and the watched pool cap is reached (counted as E_POOL_CAP).
+   * snapshot or failed poll. False when the pool is new and the watched pool cap is full of pools polled this minute
+   * (counted as E_POOL_CAP).
    */
   watch(poolId: string, priorityClass: string, nowMs: UnixMs): boolean {
-    const w = this.watched.get(poolId);
-    if (w !== undefined) {
-      w.priorityClass = priorityClass;
-      return true;
-    }
-    if (this.watched.size >= this.cfg.maxWatchedPools) {
+    const w = this.admit(poolId, priorityClass, nowMs, false);
+    if (w === null) {
       this.reject('poll_counts', 'E_POOL_CAP', 'watched pool cap reached');
       return false;
     }
-    const minute = Math.floor(nowMs / MINUTE_MS);
-    this.watched.set(poolId, { priorityClass, nextMinute: minute, lastPollMinute: minute, buckets: new Map() });
+    w.priorityClass = priorityClass;
     return true;
   }
 
@@ -382,7 +394,7 @@ export class RecorderQueue {
     const nowMinute = Math.floor(nowMs / MINUTE_MS);
     for (const [poolId, w] of this.watched) {
       this.flushPool(poolId, w, nowMinute, nowMs);
-      if (nowMinute - w.lastPollMinute > this.cfg.idleUnwatchMinutes) {
+      if (nowMinute - Math.floor(w.lastPollMs / MINUTE_MS) > this.cfg.idleUnwatchMinutes) {
         this.forget(poolId);
         this.s.idleUnwatched++;
       }
@@ -549,15 +561,37 @@ export class RecorderQueue {
     this.encoder.forget(poolId);
   }
 
-  /** Counts one poll; false (nothing counted) when the pool is new and the watched pool cap is reached. */
-  private countPoll(poolId: string, priorityClass: string, recvMs: number, kind: 'successful' | 'changed' | 'failed'): boolean {
-    let w = this.watched.get(poolId);
-    if (w === undefined) {
-      if (this.watched.size >= this.cfg.maxWatchedPools) return false;
-      const m = Math.floor(recvMs / MINUTE_MS);
-      w = { priorityClass, nextMinute: m, lastPollMinute: m, buckets: new Map() };
-      this.watched.set(poolId, w);
+  /**
+   * The watched entry for a pool, watching it if it is new. At the cap the pool with the oldest last poll that had no
+   * poll in the current minute (by `nowMs`) makes way: its counts are written and it is forgotten. Null only when
+   * every watched pool polled this minute (ruling 12). `always` admits past the cap (position pools).
+   */
+  private admit(poolId: string, priorityClass: string, nowMs: number, always: boolean): WatchedPool | null {
+    const known = this.watched.get(poolId);
+    if (known !== undefined) return known;
+    const minute = Math.floor(nowMs / MINUTE_MS);
+    while (!always && this.watched.size >= this.cfg.maxWatchedPools) {
+      let victim: string | null = null;
+      let victimMs = Infinity;
+      for (const [id, v] of this.watched) {
+        if (Math.floor(v.lastPollMs / MINUTE_MS) < minute && v.lastPollMs < victimMs) {
+          victim = id;
+          victimMs = v.lastPollMs;
+        }
+      }
+      if (victim === null) return null;
+      const v = this.watched.get(victim) as WatchedPool;
+      this.flushPool(victim, v, minute + 1, nowMs);
+      this.forget(victim);
+      this.s.capUnwatched++;
     }
+    const w: WatchedPool = { priorityClass, nextMinute: minute, lastPollMs: nowMs, lastRawHash: null, buckets: new Map() };
+    this.watched.set(poolId, w);
+    return w;
+  }
+
+  /** Counts one poll of a watched pool. */
+  private countPoll(w: WatchedPool, priorityClass: string, recvMs: number, kind: 'successful' | 'changed' | 'failed'): void {
     w.priorityClass = priorityClass;
     let minute = Math.floor(recvMs / MINUTE_MS);
     if (minute < w.nextMinute) {
@@ -579,8 +613,7 @@ export class RecorderQueue {
       b.successful++;
       if (kind === 'changed') b.changed++;
     }
-    w.lastPollMinute = Math.max(w.lastPollMinute, minute);
-    return true;
+    w.lastPollMs = Math.max(w.lastPollMs, recvMs);
   }
 
   /**
