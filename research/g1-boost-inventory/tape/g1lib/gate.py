@@ -1,6 +1,8 @@
 """Gate G1-0 (PREREG §6) with the descriptive rows of amendments 1 and 2, and the amendment arms' gates.
 Reads timing, BOOST events, holdings and flows; never computes a fill or a strategy return."""
+import json
 import math
+import os
 from typing import Dict, Optional
 
 import numpy as np
@@ -70,6 +72,60 @@ def boost_rows(mkt: Market, tape, mint: int, mig: dict) -> dict:
     return out
 
 
+ACCOUNTING = ("virtual_quote_reserves", "real_quote_reserves_after", "boost_vault_remaining")
+DECODER_PUMP_IDL = os.path.join(P.HERE, "..", "..", "shared-tape", "tapedec", "idl", "pump.json")
+V3_ITEMS = ("buy_v3", "buy_exact_quote_in_v3", "PostCompleteBuyEvent")
+V3_POOL_PART_FIELDS = ("quote_amount", "sol_amount", "quote_amount_in")   # field name UNVERIFIED (OQ-29)
+
+
+def decoder_has_v3(idl_path: str = DECODER_PUMP_IDL) -> bool:
+    """Amendment 6: PostCompleteBuyEvent counts are checkable only once the decoder's pump IDL has the v3 items."""
+    try:
+        with open(idl_path) as f:
+            idl = json.load(f)
+    except (OSError, ValueError):
+        return False
+    names = {x.get("name") for k in ("instructions", "events", "types") for x in idl.get(k, []) if isinstance(x, dict)}
+    return all(i in names for i in V3_ITEMS)
+
+
+def v3_rows(tape, mkt: Market, grads: pd.DataFrame) -> dict:
+    """Amendment 6 G1-0 rows: PostCompleteBuyEvent count (expected 0 on tape days; "not checkable" until the decoder
+    has the v3 items), and pools whose opening reserves differ from a plain migrate deposit (mint_amount base,
+    sol_amount = vault + virtual) with no PostCompleteBuyEvent for the mint."""
+    pc = tape.events.get("PostCompleteBuyEvent", pd.DataFrame())
+    checkable = decoder_has_v3()
+    pc_mints = set(pc["mint_c"]) if len(pc) and "mint_c" in pc else set()
+    flagged, explained = [], []
+    for mint, mig in mkt.mig.items():
+        pool = int(mig["pool_c"])
+        rows = tape.pool_of(pool)
+        if not len(rows):
+            continue
+        r = rows.iloc[0]
+        base_ok = int(r["pool_base_token_reserves"]) == int(mig["mint_amount"])
+        quote_ok = int(r["pool_quote_token_reserves"]) + int(r["virtual_quote_reserves"]) == int(mig["sol_amount"])
+        if base_ok and quote_ok:
+            continue
+        (explained if mint in pc_mints else flagged).append(tape.names.name(pool))
+    return {"count": int(len(pc)), "checkable": checkable, "status": "checked" if checkable else "not checkable"}, \
+        {"flagged": sorted(flagged), "explained_by_post_complete_buy": sorted(explained)}
+
+
+def v3_pool_part(tape, mint: int) -> float:
+    """Amendment 6 item 3: the v3 completer's pool part per graduation (descriptive; field name UNVERIFIED)."""
+    pc = tape.events.get("PostCompleteBuyEvent", pd.DataFrame())
+    if not len(pc) or "mint_c" not in pc:
+        return np.nan
+    x = pc[pc["mint_c"] == mint]
+    if not len(x):
+        return np.nan
+    for f in V3_POOL_PART_FIELDS:
+        if f in x.columns:
+            return float(pd.to_numeric(x[f], errors="coerce").sum())
+    return np.nan
+
+
 def cap_headroom(tape, pool: int, m: int) -> pd.DataFrame:
     """Amendment 3 (OQ-14) descriptive row: per BOOST slice, (cap price ÷ pool price just before the slice) − 1, with
     the slice's order and its slot after m. Cap price = quote_amount_in ÷ min_base_amount_burned, where
@@ -79,7 +135,11 @@ def cap_headroom(tape, pool: int, m: int) -> pd.DataFrame:
     bb = tape.events["BoostBuyAndBurnEvent"]
     if not len(br) or not len(bb):
         return pd.DataFrame(columns=["pool", "slice", "slots_after_m", "headroom"])
-    ev = bb[bb["pool_c"] == pool][["slot", "tx_idx", "quote_amount_in_requested"]].astype(np.int64)
+    acct = [c for c in ACCOUNTING if c in bb.columns]
+    ev = bb[bb["pool_c"] == pool][["slot", "tx_idx", "quote_amount_in_requested"] + acct].copy()
+    for c in ["slot", "tx_idx", "quote_amount_in_requested"] + acct:
+        ev[c] = pd.to_numeric(ev[c], errors="coerce")
+    ev = ev.rename(columns={c: "ev_" + c for c in acct})
     j = br.merge(ev, on=["slot", "tx_idx"], how="inner").sort_values(["slot", "tx_idx", "ev_idx"])
     j = j.drop_duplicates(["slot", "tx_idx"])
     cap_base = j["min_base_amount_out"].to_numpy().astype(float)
@@ -88,8 +148,12 @@ def cap_headroom(tape, pool: int, m: int) -> pd.DataFrame:
     with np.errstate(divide="ignore", invalid="ignore"):
         cap_price = j["quote_amount_in_requested"].to_numpy() / cap_base
         head = np.where(cap_base > 0, cap_price / price - 1, np.nan)
-    return pd.DataFrame({"pool": tape.names.name(pool), "slice": np.arange(1, len(j) + 1),
-                         "slots_after_m": j["slot"].to_numpy() - m, "headroom": head})
+    out = pd.DataFrame({"pool": tape.names.name(pool), "slice": np.arange(1, len(j) + 1),
+                        "slots_after_m": j["slot"].to_numpy() - m, "headroom": head})
+    # amendment 6 BOOST accounting row (descriptive): the event's own reserves and vault per slice
+    for c in ACCOUNTING:
+        out[c] = j["ev_" + c].to_numpy() if ("ev_" + c) in j.columns else np.nan
+    return out
 
 
 def headroom_summary(slices: pd.DataFrame) -> dict:
@@ -115,7 +179,8 @@ def graduates(tape, mkt: Market) -> pd.DataFrame:
         c = creates.get(mint)
         st, reason = flags_asof(upto, c if (c is not None and int(c["slot"]) <= int(mig["slot"])) else None)
         r = boost_rows(mkt, tape, mint, mig)
-        r.update({"mint_c": mint, "stratum": st, "reason": reason, "day": tape.day_of(int(mig["slot"]))})
+        r.update({"mint_c": mint, "stratum": st, "reason": reason, "day": tape.day_of(int(mig["slot"])),
+                  "v3_completer_pool_part": v3_pool_part(tape, mint)})
         rows.append(r)
     return pd.DataFrame(rows)
 
@@ -141,6 +206,8 @@ def g1_0(d: pd.DataFrame, grads: pd.DataFrame, mkt: Market, days) -> dict:
     out["b_share_more_than_D"] = float((slots_to_m > P.D).mean()) if len(slots_to_m) else math.nan
     catch = trig.groupby("day")["catchable"].sum()
     out["catchable_per_day"] = {str(k): int(v) for k, v in catch.items()}
+    # amendment 6: on tape days this is an upper bound for post-v3 days; re-count there before any forward return
+    out["catchable_share_upper_bound_for_post_v3"] = float(trig["catchable"].mean()) if len(trig) else math.nan
     g = grads[(grads["stratum"] == "sol") & (grads["reason"] == "")]
     gc = g[g["boost_complete"]]
     trig_mints = set(trig["mint_c"])
@@ -330,9 +397,10 @@ def run(tape, d: pd.DataFrame, ctx: FeatureContext, mkt: Market, days, log=print
             flows[mint] = migration_flows(ctx, mkt, mint, fo)
     log(f"  gate: {len(trig)} triggers, {len(grads)} graduates, {len(flows)} flow rows")
     out = {"G1_0": g10, "strata": strata_rows(d, grads, flows)}
+    out["G1_0"]["v3_post_complete_buy_events"], out["G1_0"]["v3_opening_reserve_check"] = v3_rows(tape, mkt, grads)
     sol = grads[(grads["stratum"] == "sol") & (grads["reason"] == "")]
     tabs = [cap_headroom(tape, tape.names.get(p), int(m)) for p, m in zip(sol["pool"], sol["m"])] if len(sol) else []
-    slices = pd.concat(tabs, ignore_index=True) if tabs else pd.DataFrame(columns=["pool", "slice", "slots_after_m", "headroom"])
+    slices = pd.concat(tabs, ignore_index=True) if tabs else pd.DataFrame(columns=["pool", "slice", "slots_after_m", "headroom", *ACCOUNTING])
     out["G1_0"]["desc_cap_headroom"] = headroom_summary(slices)
     out["boost_slices"] = slices
     if "R" in trig:

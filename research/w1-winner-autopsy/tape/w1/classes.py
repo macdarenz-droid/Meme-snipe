@@ -102,3 +102,40 @@ def stability(day1, day2, trader1):
     return {"common": int(len(common)), "same": float((a == b).mean()),
             "slow_stays_slow": float((~b[~a]).mean()) if (~a).any() else None,
             "fast_stays_fast": float(b[a].mean()) if a.any() else None}
+
+
+def seat_tag(day, trader):
+    """AMENDMENT_7 (descriptive): per trader, the median (jito_tip + tx_fee) per trade, in SOL (the transaction's whole
+    fee and tip; trades with no tx_fee left out), and the median within-slot rank of its buys (1 = the first
+    transaction swapping that mint in the slot). A tag only: it never changes the latency class or the ranking."""
+    f = day.get("fees")
+    out = pd.DataFrame(columns=["trades", "median_seat_cost_sol"])
+    if f is not None and len(f):
+        f = f[~f["fee_na"].astype(bool)]
+        g = pd.DataFrame({"trader": clusters.assign(f["owner"].to_numpy(), trader),
+                          "seat": f["seat"].to_numpy(np.float64)}).groupby("trader")["seat"]
+        out = pd.DataFrame({"trades": g.size(), "median_seat_cost_sol": g.median() / 1e9})
+    b = day.get("buys")
+    if b is not None and len(b) and "slot_rank" in b:
+        g = pd.DataFrame({"trader": clusters.assign(b["owner"].to_numpy(), trader),
+                          "r": b["slot_rank"].to_numpy(np.float64)}).groupby("trader")["r"]
+        r = pd.DataFrame({"buys": g.size(), "median_buy_slot_rank": g.median()})
+        out = out.join(r, how="outer")
+    for c in ("buys", "median_buy_slot_rank"):
+        if c not in out:
+            out[c] = np.nan
+    return out
+
+
+def seat_summary(tag, cls):
+    """Per latency class: quartiles of the two seat medians (no address)."""
+    if len(tag) == 0:
+        return {}
+    lab = class_of(tag.index.to_numpy(), cls)
+    out = {}
+    for c in ("fast", "slow"):
+        t = tag[lab == c]
+        out[c] = {k: [float(x) for x in t[k].dropna().quantile([0.25, 0.5, 0.75])] if t[k].notna().any() else None
+                  for k in ("median_seat_cost_sol", "median_buy_slot_rank")}
+        out[c]["traders"] = int(len(t))
+    return out

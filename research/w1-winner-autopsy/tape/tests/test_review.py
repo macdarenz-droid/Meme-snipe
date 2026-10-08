@@ -495,3 +495,38 @@ class HolderExclusion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SeatTagA7(unittest.TestCase):
+    """AMENDMENT_7: per trader, the median (jito_tip + tx_fee) per trade and the median within-slot rank of its buys;
+    a tag only, never a change to the class or the ranking."""
+
+    def test_seat_cost_and_slot_rank(self):
+        from w1 import classes, clusters
+        A_, B_ = address("seatA"), address("seatB")
+
+        def b(u):
+            # same mint, same slot: B's buy comes first (rank 1), A's second (rank 2)
+            u.curve(L1 + 10, 3, 0, B_, M, True, 10**8, 10**12, *ST, pre=0, post=10**12, tx_fee=5_000, jito=0)
+            u.curve(L1 + 10, 7, 0, A_, M, True, 10**8, 10**12, *ST, pre=0, post=10**12, tx_fee=105_000, jito=1_000_000)
+            # A's sell is a trade too: its fee + tip counts in the per-trade median
+            u.curve(L1 + 20, 1, 0, A_, M, False, 10**8, 10**12, *ST, pre=10**12, post=0, tx_fee=25_000, jito=0)
+            u.curve(L1 + 30, 1, 0, A_, M, True, 10**8, 10**12, *ST, pre=0, post=10**12, tx_fee=45_000, jito=0)
+        v, (d,), _ = one_day([(A10, L1, H1, b)])
+        tr, _ = clusters.build([d], A10)
+        before = classes.classify(d, tr)
+        tag = classes.seat_tag(d, tr)
+        a, b_ = tag.loc[tr[v.get(A_)]], tag.loc[tr[v.get(B_)]]
+        self.assertAlmostEqual(a["median_seat_cost_sol"], 0.000045)          # median of 1,105,000 / 25,000 / 45,000
+        self.assertEqual(a["trades"], 3)
+        self.assertEqual(a["median_buy_slot_rank"], 1.5)                    # ranks 2 and 1
+        self.assertEqual(b_["median_buy_slot_rank"], 1.0)
+        self.assertAlmostEqual(b_["median_seat_cost_sol"], 0.000005)
+        # a tag only: the class table is unchanged and carries no tag column
+        pd.testing.assert_frame_equal(before, classes.classify(d, tr))
+        self.assertNotIn("median_seat_cost_sol", before.columns)
+
+    def test_rule_carries_the_seat_reference(self):
+        X = np.random.default_rng(0).uniform(0, 1, (40, len(rules.FEATURES)))
+        r = rules.extract(X[:20], np.full(20, 10.0), X[20:])
+        self.assertIn("COUNT_ROWS_AMENDMENT_5.md", r["seat"]["reference"])

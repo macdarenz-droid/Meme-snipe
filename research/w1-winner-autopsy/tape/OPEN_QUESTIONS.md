@@ -115,3 +115,8 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
 
 ## Red team R2-8 (2026-10-08)
 - **Fee-free rows.** BOOST slices and protocol swaps carry fee fields of 0. A venue state after one keeps its reserves but takes the fee rate of the venue's last fee-paying row (same mint and class), or, before the first such row, the dearest rate `ledger.FALLBACK_BPS` (125 bps; red team R2-11: no later row is read) (`ledger._paid_bps`, used by `States.asof` and `States.advance`). Replays, rule-test fills and marks therefore never trade fee-free.
+- **Q38. Seat-cost tag (AMENDMENT_7; reading, for the lead).**
+  - Per trader and day: the median of the transaction's whole `tx_fee + jito_tip` over its trades (buys and sells; rows with no `tx_fee` left out), in SOL. This is MIG-SEAT's G2 measure.
+  - The median within-slot rank of its buys: the dense rank of the buy's transaction among the slot's SOL-quoted swaps of the same mint, 1 = first.
+  - The tag is reported per class (quartiles) in `gate`, and for the winners beside any extracted rule. It never enters the class or the ranking.
+  - W1 ranks slow traders only, so a rule never comes from fast winners. `rule.json` still names MIG-SEAT's seat estimate as the reference.

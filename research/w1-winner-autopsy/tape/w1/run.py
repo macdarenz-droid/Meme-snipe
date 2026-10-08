@@ -167,6 +167,7 @@ def cmd_gate(a):
     for d in days:
         trader, info = clusters.build(days, d["day"])
         g = persist.gate(d, trader, counts_only=False)
+        g["seat_tag_by_class"] = classes.seat_summary(classes.seat_tag(d, trader), classes.classify(d, trader))
         g["clusters"] = info
         g["hub_effect"] = clusters.hub_effect(days, d["day"])
         res.append(g)
@@ -275,6 +276,10 @@ def cmd_extract(a):
     wX = rules.entry_features(w.reset_index(drop=True), tapes, info)
     cX = rules.entry_features(ctl, tapes, info)
     rule = rules.extract(wX.to_numpy(), w["hold"].to_numpy(), cX.to_numpy())
+    tags = pd.concat([classes.seat_tag(d, trader) for d in days])
+    wt = tags[tags.index.isin(winners)]
+    rule["seat"]["winners_median_seat_cost_sol"] = float(wt["median_seat_cost_sol"].median()) if len(wt) else None
+    rule["seat"]["winners_median_buy_slot_rank"] = float(wt["median_buy_slot_rank"].median()) if len(wt) else None
     rule["winners"] = len(winners)
     rule["winner_entries"] = int(len(w))
     rule["matched_entries"] = int(len(ctl))

@@ -248,7 +248,13 @@ def extract(win_X, win_hold, ctl_X):
     mask = in_leaf(win_X, path)
     hold = float(np.median(np.asarray(win_hold)[mask])) if mask.any() else float("nan")
     return {"tree": tree, "path": [(FEATURES[f], op, thr) for f, op, thr in path], "path_idx": path,
-            "leaf": leaf, "hold_slots": hold}
+            "leaf": leaf, "hold_slots": hold, "seat": dict(SEAT_REFERENCE)}
+
+
+# AMENDMENT_7: a rule extracted from fast winners (if ever allowed) carries the cost of the seat it would need
+SEAT_REFERENCE = {"reference": "MIG-SEAT seat estimate, research/brainstorm-loop/COUNT_ROWS_AMENDMENT_5.md",
+                  "note": "W1 ranks slow traders only, so a rule comes from slow winners; the winners' seat tag is "
+                          "reported beside it"}
 
 
 # ---------------------------------------------------------------- rule test (untouched days; outcome stage)

@@ -1,6 +1,6 @@
 # W1 tape scoring code
 
-This code implements the frozen design in `../PREREG.md` and `../AMENDMENT_1.md` to `../AMENDMENT_6.md` on the shared tape (`research/shared-tape/README.md`). `OPEN_QUESTIONS.md` lists every reading the design leaves open and the one the code takes.
+This code implements the frozen design in `../PREREG.md` and `../AMENDMENT_1.md` to `../AMENDMENT_7.md` on the shared tape (`research/shared-tape/README.md`). `OPEN_QUESTIONS.md` lists every reading the design leaves open and the one the code takes.
 
 It is Python 3 and uses pandas, numpy, scipy and zstandard.
 
@@ -85,6 +85,7 @@ python3 -m unittest discover -s tests
 | AMENDMENT_3 replay outcomes (unpaid exit −100%, no state dropped, shares) | `replay.replay_trades`, `replay.shares`, `venue.sell_detail`, `rules.replay_entry` |
 | AMENDMENT_5 refused entry = no trade (share, 10% flag); rents by date; Step B/C plans and release gate; no-cap report | `replay.replay_trades`, `replay.shares`, `rules.replay_entry`, `costs.rent_candidates`, `guard.plan_units`, `guard.verify`, `positions` (`ret_nc`), `persist.top_decile_means` |
 | AMENDMENT_6 top-decile mean above 0 under capped and uncapped methods | `persist.validation_verdict` (`top_mean_uncapped`), `run._persistence` |
+| AMENDMENT_7 seat-cost tag (median tx_fee + tip per trade, median within-slot buy rank) | `Ledger.process_unit` (`fees`, `slot_rank`), `classes.seat_tag`, `classes.seat_summary`, `rules.SEAT_REFERENCE`, `run.cmd_gate`, `run.cmd_extract` |
 | AMENDMENT_4 flipper rows | `Ledger._trips`, `flippers.*`, `run.cmd_flippers` |
 | Review: guards, registered days, BOOST by transaction, missing days | `guard.verify`, `guard.check_args`, `guard.ledger_units`, `load.find_units`, `Ledger.process_unit` |
 | §9.1 as-of only, planted future marker | `tests/test_leak.py` |

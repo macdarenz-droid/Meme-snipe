@@ -98,7 +98,8 @@ class Synth:
         if boost:
             self.E.append({"event": "BoostBuyAndBurnEvent", "slot": slot, "block_time": bt(slot), "tx_idx": tx, "ev_idx": 1,
                            "fields": {"pool": pool, "mint": mint, "quote_amount_in_used": str(quote), "quote_amount_in_requested": str(quote),
-                                      "boost_vault_remaining": "1000", "base_amount_burned": str(base)}})
+                                      "boost_vault_remaining": "1000", "base_amount_burned": str(base),
+                                      "virtual_quote_reserves": str(v), "real_quote_reserves_after": str(nq)}})
         return base
 
     def transfer(self, slot, tx, mint, a, b, amount, kind="transfer"):
