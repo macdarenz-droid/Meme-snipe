@@ -1,15 +1,15 @@
 # Step A count rows: open questions
 
-`STEP_A_COUNT_ROWS.md` is frozen, and the documents it points to are SWEEP_1/2, G1 amendments 1–2, W1 and H1-CGO. None of them settles the points below. Each entry gives the reading the code uses, chosen as the most conservative one: it makes a row harder to pass, or it computes nothing. A reviewer or the lead should confirm or replace each one before any threshold is applied. The question numbers match the `Q<n>` notes in `rows.py`.
+`STEP_A_COUNT_ROWS.md` is frozen. The design owner answered these questions in `../COUNT_ROWS_AMENDMENT_1.md` (frozen, 2026-10-08), and the code implements that amendment. Items the amendment names are marked **[A1]** with its ruling. Every other item is confirmed as the code reads it. Items marked **[open]** are new readings the amendment does not settle; each takes the conservative choice. Question numbers match the `Q<n>` notes in the code.
 
 ## Shared
-- **Q1 Intervals.** "95% lower bound" is read as a percentile bootstrap, 10,000 resamples, seed 20261008. Event and control sets are resampled separately, with no clustering by pool or day. A pool-clustered or day-stratified bootstrap would also fit; the lead should fix one.
+- **Q1 Intervals [A1].** A pool-clustered bootstrap stratified by day, 10,000 resamples, seed 20261008 (`rows.boot_lb_clustered`). Within each day, pools are drawn with replacement and every row of a drawn pool comes along. Event and control sets are resampled separately. A draw where the statistic is undefined counts as minus infinity (conservative). Row 6's bunching interval is pool-clustered within each day.
 - **Q2 First-time buyer.** The rows say "first-time buyer" but do not say how much history is needed.
   - *Used:* a buy is first-time when it is the owner's first buy of the mint on the loaded tape. It counts only when the coin's CreateEvent lies in the same contiguous run of units, so the whole history is on the tape (W1's rule). Without that, the event is dropped (`history_not_on_tape`).
   - This removes most graduates whose curve began before the loaded units. It can be switched off with `require_history=False`, but that is not the conservative reading.
 - **Q3 Coverage.** A window counts only if one contiguous run of loaded units of one day covers it, so windows across a day boundary are dropped.
 - **Q4 Mayhem.** It is read from CreateEvent, then CreatePoolEvent, then curve rows. A coin whose mayhem flag is unknown is dropped.
-- **BOOST finding.** On v2 unit 09-11 446265000-446269499, all 651 BOOST buy-and-burn rows in S_amm have `protocol` = 0 and an empty `user_token_owner`. The tape README says `protocol` marks BOOST, but it does not. The code removes BOOST rows by matching E `BoostBuyAndBurnEvent` signatures. The decoder's `protocol` flag should be checked.
+- **BOOST rows [A1].** Removing them by `BoostBuyAndBurnEvent` signature is correct; the v1/v2 `protocol` flag of 0 is a decoder defect. Decoder v3 sets `protocol=1` on BOOST swaps. Any non-zero `protocol` is excluded, and the signature match stays for older units (tested both ways).
 - **SOL amounts.** The code uses `sol_amount` on curve rows and `quote_amount` on PumpSwap rows (pool-side, without user fees). Non-SOL-quoted swaps carry no SOL amount.
 
 ## 1 DEV-ZERO
@@ -25,17 +25,26 @@
 - **Mint vs pool.** Flows are counted on the canonical pool only.
 
 ## 2 REBUY-ANCHOR
-- **Q14 Price and return.** Three rows need a price comparison or a realised gain or return:
-  - the two odds ratios ("price below the sale price"; gain-sellers vs loss-sellers);
-  - the share of gain ex-holders who rebuy once below the sale price;
-  - the R² "on past returns, drawdown, age and depth".
-  This build may compute no return or price change. *Used:* none of these is computed. The code reports only ex-holder exits, rebuys within 2 h of the exit (not conditioned on price), the split by exit-size tercile, and the share of exit proceeds readable (signer = owner, `signer_sol_post` present). The lead must rule whether these rows may read prices and gains.
-- **Q15 Rebuy-pressure measure.** The measure (RB, its P90 and median, and the top quintile) and the "predicted" net rebuy SOL are not defined in the frozen row, SWEEP_2 or H1-CGO. Not computed.
-- **Exits.** An exit is a sale leaving the owner's `owner_token_post` at 0. SWEEP_2's "young pools, hours 1–12" is not in the frozen row, so all coins are kept. Exit-size bands are not fixed, so terciles are used (descriptive only).
-- **Ledger.** H1-CGO's per-(mint, owner) cost ledger does not exist in the repo yet. Only its holding fields, which carry no price, are used here.
+- **Q14 What may be read [A1].** As-of price levels and as-of past returns are allowed. That covers the mid compared with an ex-holder's sale price, realised gains, and past return, drawdown, age and depth. After a decision point the code reads flows only. `test_no_price_after_the_decision_point_is_read` plants a price after t and checks that nothing at t changes.
+- **Q15 Decisions, RB and materiality [A1].** Implemented in `rebuy.py`.
+  - Decision points are m + 1 h, …, m + 12 h on eligible pools.
+  - RB = the proceeds of readable gain ex-holders who exited in the last 12 h, whose exit price is above the mid, divided by effective quote.
+  - Net rebuy flow = ex-holders' buy SOL − other owners' sell SOL in (t + 23 slots, t + 2 h], divided by effective quote.
+  - The comparison is the top RB quintile against points within ±10 percentile points of the median RB, inside (day, drawdown tercile).
+- **[open] Rebuy readings.**
+  - Points are hourly from migration time (not whole UTC hours).
+  - The mid is the post-swap effective-reserve mid of the last canonical-pool swap at or before t.
+  - Past return is over 1 h; drawdown is from the peak mid since migration.
+  - A rebuy is any buy of the mint by the ex-holder in (t, t + 2 h]. A buy also ends ex-holder status.
+  - The odds-ratio population is the ex-holders who exited in the last 12 h, one row per (ex-holder, point). Gain = 0 is left out of the gain/loss odds ratio. An empty cell makes the odds ratio undefined, which fails the row.
+  - Materiality pools the strata's (top − mid) mean differences, weighted by top counts. Top and mid membership is fixed at the point estimate, and the two sets are resampled separately.
+  - Top-quintile points per day = points with RB ≥ that day's 80th percentile, with 0 for a day without points.
+  - R² is plain OLS with an intercept.
+- **Exits [open].** An exit is a SOL-quoted sale leaving the owner at 0 (tape `owner_token_post`, else the ledger). It closes a holding episode, and the episode's proceeds, tokens and known cost give the exit VWAP and the realised gain. Gain is unknown when any sold token had unknown cost. Readable means every sale of the episode was signed by the owner, with a signer SOL reading. Leaving by transfer is not an exit.
+- **Ledger [A1].** This is H1-CGO's `Ledger` (`research/h1-cgo/tape/h1cgo/ledger.py`), loaded read-only and fed with swaps (cost with fees, as H1-CGO counts it; proceeds after fees) and T transfer/mint/burn rows. History must be on the tape (Q2).
 
 ## 3 SEAT-DRIFT
-- **Q9 Busy vs lone.** These are not defined. *Used:* lone = N_m = 0, busy = N_m ≥ 1.
+- **Q9 Busy vs lone [A1].** Lone = the bottom tercile and busy = the top tercile of N_m, over each day's eligible graduates. Ties are broken by migration order.
 - **Q10 G1-CAP definitions.**
   - N_m counts other eligible graduates (canonical, SOL, not mayhem) whose creator seeds (create `creator`/`user`, pool `coin_creator`) are outside the coin's creator group as of m.
   - A graduate whose normalised name or symbol matches another graduate in the window is dropped (theme wave). The match uses only coins whose CreateEvent is on the tape.
@@ -53,19 +62,18 @@
   - hub-keyed = each owner linked to such a hub is keyed by the hub of its earliest hub link, and owners with the same key form one cluster.
   - Both rules use all links on the loaded tape, not as-of. This matters only for a label; it reads no outcome.
 - **Q12 "Short windows".** *Used:* 600 slots (F1's window): a cluster buy and a cluster sell of the same mint within 600 slots.
-- **Q13 Label use.** An owner is labelled on a mint if either rule flags its cluster on that mint. Labelled owners are removed from rows 1, 3 and 4's first-time-buyer counts.
-- **Shape seen on two units of 09-11.** The label covers about 35% of swap rows. The hub-cap rule has one component of 6,433 owners, and hub-keyed clusters reach 8,835 owners (probably exchange or router hubs). The label is therefore broad, and it removes a lot of first-time demand. That makes rows 1, 3 and 4 harder to pass. The lead should decide whether to cap the cluster size or narrow the window.
+- **Q13 Label use [A1].** Only clusters of 2–50 owners are labelled. The summary reports the share of swap rows labelled before and after the cap (`either_rule`, and per rule).
+- **Shape seen on two units of 09-11 [open].** The share is taken over owner-known, non-BOOST, SOL-quoted swap rows. It falls from 58% of rows labelled without the cap to 43% with it, so the label is still broad. The 600-slot window (Q12) is the remaining lever for the lead.
 
 ## 6 Round-USD and Gate 3 split
 - **Q18 Placebo grid.** Design A gives "20 placebo cutoffs on a log grid from 340 to 1,300 SOL, each more than 10% from 420 and 1,470".
   - *Used:* `geomspace(340, 1300, 20)`, then the exclusions are applied, so fewer than 20 remain. The amendment then drops cutoffs within 10% of that day's $50k and $100k SOL levels.
-- **Q19 Market cap.** Market cap = (pool quote after the swap + `virtual_quote_reserves`) ÷ pool base after the swap × `base_supply`.
-  - Post-swap reserves come from `chain_pool_*`, or else from the next swap's pre-trade reserves.
-  - Which supply the FeeConfig tier uses is still to be read from the program (A amendment (a)). `base_supply` is used until then.
-  - Pools are kept for hours 0–72 after migration, from the end of the last BOOST event (or m + 5 min) to the end of the loaded tape.
+- **Q19 Market cap [A1: `base_supply` until A amendment (a)'s program read].** Market cap = (pool quote after the swap + `virtual_quote_reserves`) ÷ pool base after the swap × `base_supply`. Post-swap reserves come from `chain_pool_*`, or else from the next swap's pre-trade reserves. Pools are kept for hours 0–72 after migration, from the end of the last BOOST event (or m + 5 min) to the end of the loaded tape. Market-cap levels are as-of states, which A1 allows.
 - **Bunching statistic.** It is Design A gate 2's statistic at each USD level: the log ratio of time in [L, 1.05 L) to time in [0.95 L, L), minus the median of the same ratio at the placebo cutoffs, with a pool-clustered bootstrap.
 - **"Round USD level".** Only $50k and $100k are checked, as named.
-- **SOL/USD.** This is an input file, because the code makes no network request.
+- **Q22 SOL/USD input [A1, with an open reading].** `--sol-usd` takes the Binance SOLUSDT 1-minute kline CSVs, one per day and repeatable. Open times may be in ms or µs, and the UTC day comes from the open time. The summary records each file's sha256 (`sol_usd_files`).
+  - *[open]* A day's bunching uses the levels at its median close.
+  - The "420 within 5%" flag, and the 10% placebo drop, use every minute's level in the day's [min, max] close range. That is conservative: it flags and drops more.
 - **Q20 Focused vs spread.**
   - *Used:* spread = the coin creator's group (same creator-group rule, as of the end of the loaded tape) holds the creator role on 2 or more mints on the tape. The role comes from CreateEvent `creator` and the S `creator`/`coin_creator` columns.
   - The measure is Design A gate 3: the creator's net SOL buying per hour while the pool is in [399, 441), minus the median of the same measure in ±5% bands around the placebo cutoffs.

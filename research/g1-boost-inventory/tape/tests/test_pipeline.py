@@ -26,7 +26,19 @@ S = U1[0]
 quiet = lambda *a, **k: None
 
 
-def scenario(marker=None):
+def same_time_cutoff(first):
+    """A t0 at or after `first` whose cutoff slot t0 + D − 1 shares its block time with the next slot."""
+    from synth import bt
+    t0 = first
+    while bt(t0 + P.D - 1) != bt(t0 + P.D):
+        t0 += 1
+    return t0
+
+
+Y_T0 = same_time_cutoff(S + 9100)
+
+
+def scenario(marker=None, zcase=False):
     """A: catchable, migrates; B: never completes (exit B); C: completes before entry; M: mayhem; K: cashback;
     L: left-censored; Z: crosses too late (dropped by time)."""
     s = Synth()
@@ -62,19 +74,28 @@ def scenario(marker=None):
     # Z: crosses close to the end of the data
     s.buy_to(U2[1] - 3000, 1, "Z", "r1", 60 * 10 ** 9)
     s.buy_to(U2[1] - 2900, 1, "Z", "r2", 80 * 10 ** 9)
+    # a buyback-authority buy inside [m, m + D] on A's pool: a protocol row, never counted as opening flow
+    s.pool_trade(S + 315, 1, "poolA", "A", P.BUYBACK_AUTHORITY, "buy", quote=3 * 10 ** 9)
+    if zcase:
+        # Y: decision late enough for a covered trailing hour; R: a rival curve below 68 SOL
+        s.create(S + 8000, 1, "Y", "creatorY", name="nameY", symbol="SYMY")
+        s.buy_to(S + 8500, 1, "Y", "y1", 50 * 10 ** 9)
+        s.buy_to(Y_T0, 1, "Y", "y2", 80 * 10 ** 9)
+        s.create(S + 100, 2, "R", "creatorR", name="nameR", symbol="SYMR")
+        s.buy_to(S + 200, 2, "R", "rr", 60 * 10 ** 9)
     if marker:
         marker(s)
     return s
 
 
 class Pipeline(unittest.TestCase):
-    def build(self, marker=None, links=True):
+    def build(self, marker=None, links=True, zcase=False):
         root = tempfile.mkdtemp(prefix="g1t_")
         self.addCleanup(shutil.rmtree, root)
-        s = scenario(marker)
+        s = scenario(marker, zcase)
         s.write(root, DAY, *U1)
         s.write(root, DAY, *U2, schema_v2=False)
-        units = find_units([root])
+        units = find_units([root], plan={DAY: [U1, U2]})
         tape = load(units, links=links, log=quiet)
         d = timing(tape, decisions(tape, log=quiet))
         ctx = FeatureContext(tape, with_links=links)
@@ -174,7 +195,7 @@ class Pipeline(unittest.TestCase):
         res, grads, trig, flows = gate.run(tape, d, ctx, Market(tape), [DAY], log=quiet)
         g = res["G1_0"]
         self.assertEqual(g["a_triggers_per_day"][DAY], 4)               # A, B, C, Z (L censored; M, K excluded)
-        self.assertEqual(g["catchable_per_day"][DAY], 3)                # C completes before entry
+        self.assertEqual(g["catchable_per_day"][DAY], 2)                # C completes before entry; Z dropped by time
         self.assertEqual(g["b_n_migrating"], 2)
         ga = grads[grads["mint"] == "A"].iloc[0]
         self.assertEqual(int(ga["first_boost_slots"]), 5)
@@ -187,7 +208,23 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(g["desc_cap_headroom"]["n"], 2)
         fa = flows[tape.names.get("A")]
         self.assertGreater(fa["share_pre_sold"], 0)                      # o2 sold in slot m
-        self.assertGreater(fa["first_time_buy_sol"], 0)                  # n1, n2
+        pr = tape.pool_rows
+        own = [tape.names.get(x) for x in ("n1", "n2")]
+        want = pr[pr["owner"].isin(own) & (pr["slot"] <= S + 300 + P.D)]["quote_amount_lp_adjusted"].sum()
+        self.assertEqual(fa["first_time_buy_sol"], float(want))         # n1, n2; not the buyback authority
+
+    def test_z_counts_rows_by_slot(self):
+        """Review finding 2: a rival crossing 68 SOL in slot cutoff + 1, with the cutoff's block time, must not count."""
+        cutoff = Y_T0 + P.D - 1
+        cols = ["N", "lam", "Z", "cap_reason"]
+        _, base, _ = self.build(zcase=True)
+        _, future, _ = self.build(zcase=True, marker=lambda s: s.buy_to(cutoff + 1, 1, "R", "rx", 70 * 10 ** 9))
+        _, now, _ = self.build(zcase=True, marker=lambda s: s.buy_to(cutoff, 1, "R", "rx", 70 * 10 ** 9))
+        b, f, n = (x[(x["kind"] == "G1") & (x["mint"] == "Y")][cols].iloc[0] for x in (base, future, now))
+        self.assertEqual(b["cap_reason"], "")
+        self.assertFalse(math.isnan(b["Z"]))
+        pd.testing.assert_series_equal(b, f, check_names=False)
+        self.assertEqual(n["N"], b["N"] + 1)
 
 
 if __name__ == "__main__":

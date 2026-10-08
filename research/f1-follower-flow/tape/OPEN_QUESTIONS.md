@@ -1,10 +1,11 @@
 # F1 tape code: open questions
 
-`GATE.md` is frozen and does not settle these points. Each entry gives the reading the code uses, chosen as the most conservative one. A reviewer or the lead should confirm or replace each one before the gate is evaluated.
+`GATE.md` is frozen and does not settle these points. The design owner answered them in `../AMENDMENT_1.md` (frozen, 2026-10-08): items 1–6 and 8–10 are confirmed as the code reads them, and item 7 is replaced by the amendment's rule, which the code implements. Each entry gives the reading the code uses, chosen as the most conservative one. A reviewer or the lead should confirm or replace each one before the gate is evaluated.
 
 1. **Which swaps count.** GATE.md says "buy" and "follower SOL volume" without naming the quote.
    *Conservative reading used:* SOL-quoted swaps only (curve `quote_mint` = native SOL; PumpSwap `quote_mint` = WSOL). Rows with no `user_token_owner` are dropped.
    BOOST buy-and-burn rows are dropped by signature (E `BoostBuyAndBurnEvent`), and so are rows with a non-zero `protocol`.
+   Decoder v3 sets `protocol=1` on BOOST swaps. Any non-zero `protocol` is dropped, and the signature match stays for older units.
    Finding: on the v2 unit 09-11 446265000-446269499, all 651 BOOST rows in S_amm have `protocol` = 0 and an empty owner. The README says `protocol` marks them, but it does not. The signature match is what removes them.
 2. **SOL amount.** The code uses curve `sol_amount` and PumpSwap `quote_amount`, which are pool-side amounts without the user's fees. `user_quote_amount` (with fees) is the alternative.
 3. **Link timing.** "Ran between them on the tape" has no time limit.
@@ -16,12 +17,9 @@
 6. **Placebo draw.** The draw is uniform over all buys (not owners) of the mint within ±1,800 slots, inclusive, by owners outside the day-1 candidate set. On day 2 the placebo still excludes every day-1 candidate. The draw uses `numpy.random.default_rng(20261008)`, in tape order. The seed is committed here.
    A placebo buy may itself be a follower of the leader buy. Its own followers may include the leader.
    Placebo followers exclude the placebo owner and the owners linked to it (the leader is not excluded).
-7. **Bootstrap and minimum buys.** 10,000 resamples of a leader's (buy, placebo) pairs, seed 20261009, percentile 0.5% bound. A leader counts as followed only if all of these hold:
-   - its mean difference is above 0 and the bound is above 0;
-   - its differences are not all equal (zero variance; this covers n = 1, whose bootstrap bound equals its single value);
-   - its number of used buys is at least `--min-buys`.
-
-   GATE.md sets no minimum, so the lead must pick it. `--decide` refuses to run without `--min-buys`, and the code has no default. Without `--decide`, only the zero-variance rule applies, and the result is descriptive.
+7. **Minimum valid pairs [AMENDMENT_1].** A leader is testable on a day only with at least 8 valid (buy, placebo) pairs that day (window on the tape and a placebo found; `MIN_VALID_PAIRS = 8`, fixed in code). With fewer pairs it is "untestable": not followed on day 1, not persisting on day 2. The bound is the one-sided 0.5% percentile bound from 10,000 resamples, seed 20261009.
+   - The earlier `--min-buys` flag and the zero-variance rule are gone. The amendment keeps the percentile bound as the rule. `zero_variance` is still reported per leader.
+   - The summary counts untestable leaders per day.
 8. **Repeat buys.** A leader's repeat buys of the same mint are separate events. "Distinct mints" applies only to the candidate rule.
 9. **Complete days for `--decide`.** `--decide` refuses unless the loaded units equal the committed plan's rows (`research/shared-tape/stepa-plan.txt`) for 09-11 and 09-10 exactly, with contiguous slots. The summary records the plan's sha256.
 10. **"Fewer than 15 persistent-leader buys a day".** `decide` compares the day-2 count of persistent-leader buys with 15. A partial day can therefore only fail this rule, never pass it falsely. The summary reports `slots_loaded` per day.
