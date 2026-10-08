@@ -3675,8 +3675,8 @@ Rulings in `docs/reviews/Z05.md` on `claude/supervisor-docs-2` at `d95eb80f`. Th
 - **Production headers** (red team m5; ruling 9). Only the development and test server sends the CSP and security headers today. The production server must send the same headers, tested in the card that builds it.
 - **Fixtures and audit records** (reviewer m1, m4; rulings 10, 11). `replay-paused.json` carries every VM-03 field. UI.md U-04 records lucide-react 1.47.0, the audited version.
 
-## Z05 UI system, round 4 (2026-10-08, supervisor rulings 17–19)
+## Z05 UI system, round 4 (2026-10-08, supervisor rulings 17–20)
 
-- **Copy guard reads every confusable** (ruling 17). Every single-letter skeleton in confusables.txt 18.0.0 is mapped to Latin, before and after NFKC. Combining marks are removed, and text is read with l-like letters as both `l` and `I`. Plain `l` and `I` keep their letters.
+- **Copy guard reads every confusable** (ruling 17). Every single-letter skeleton in confusables.txt 18.0.0 is mapped to Latin, before and after NFKC. Combining marks are removed, and text is read with l-like letters as both `l` and `I`. Plain `l` and `I` keep their letters. The table's generator and both pinned inputs (confusables.txt and UnicodeData.txt 18.0.0, with their sha256) are committed, and a test checks the table against the generator (ruling 20).
 - **HOLD claim expires after a move** (ruling 18). A press cancelled by a move or by leaving the button keeps its click claim for 1 s, as after a pointer up. A pointer lifted outside the button then never swallows a later click.
 - **Only HALT's secondary can be risk-reducing** (ruling 19). The type refuses the mark on other dialogs, and the runtime ignores it there. In the render where the mode changed, every action is disabled except HALT's confirm. Cancel stays enabled: it changes nothing.
