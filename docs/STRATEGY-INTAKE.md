@@ -115,6 +115,8 @@ The runner, on the research host too, refuses to register an `id@version` whose 
 
 **Pending decisions** (round 15 ruling 108). While a `recost`, a k trial or a B-9 decision is pending for a strategy, the validator refuses any other change that touches its `configKey` (`E_DECISION_PENDING`, PROPOSED code, named by the ruling); only A1 tightenings and a cancel of the pending change are accepted. The SOL test, every what-if and every apply-time check use the last frozen `configKey`'s model, never a pending value.
 - An A1 change during a pending decision applies but does not re-freeze. Its apply-time check runs against the last frozen model with the A1 value. The host stays mismatched (no new emissions, exits kept) until the decision resolves. The outcome then freezes either the decided result with the A1 keys, or, if the pending value is reverted, the last frozen model plus the A1 keys (round 16 ruling 111).
+- Each A1 check during a pending decision runs against the last frozen model with every A1 value applied since the decision started (round 17 ruling 115).
+- When the decision resolves, the A1 apply-time checks (the size table and the admission trade set) are run again on the configuration about to be frozen, before emission resumes. If the CI lower bound is ≤ 0 or null, that configuration is still frozen, but `size_not_profitable` or `admission_not_profitable` is raised. This re-run is an `applycheck` trial (no k, no r) (round 17 ruling 114).
 - A cancel reverts the pending value to the last frozen value, as a free exact return. The k, `recost` or B-9 trial is registered when the decision starts, before it reads any window, and a cancel keeps it (round 16 ruling 112).
 - A pending decision older than 24 h raises the mismatch alert chain (at 24 h, then daily, then a DECISIONS line within 2 days). That DECISIONS entry may only cancel or complete the decision, never apply the pending value (round 16 ruling 113).
 
@@ -377,6 +379,8 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | AC-93 | With a group M change B pending (frozen model A), an A1 `MAXPOS` lowering applies; the frozen `configKey` still holds A, the host emits nothing new and keeps exits, and a later what-if uses A; when the decision resolves, the frozen key holds the outcome with the lowered `MAXPOS` | Round 16 ruling 111 |
 | AC-94 | A cancelled pending group M change restores A at no cost; its trial, registered when the decision started, stays in the registry and in the DSR count | Round 16 ruling 112 |
 | AC-95 | A decision pending for more than 24 h raises the alert at 24 h, then daily (fake clock); the DECISIONS path can cancel or complete it but never applies the pending value | Round 16 ruling 113 |
+| AC-96 | A conservative group M change B is pending as a `recost`, and an A1 `MAXPOS` lowering applies during it; B resolves and the re-run size table fails at the lowered size: the configuration is frozen, an `applycheck` trial is registered, and the strategy resumes with entries blocked (`size_not_profitable`) | Round 17 ruling 114 |
+| AC-97 | Two A1 changes during one pending decision: the second change's check sees the last frozen model with both A1 values applied | Round 17 ruling 115 |
 
 ### Tests
 
@@ -460,6 +464,7 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | Validator unit with a fake registry: `scheduler`, `cli` and `sentinel` actors | AC-92 |
 | Validator and host unit with a fake pending decision: A1 during the decision; cancel; trial at start | AC-93, AC-94 |
 | Host unit with a fake clock: the pending-decision alert chain and the allowed DECISIONS outcomes | AC-95 |
+| Validator and host unit with a fake pending decision and a size-table fixture: resolve-time check; two A1 changes | AC-96, AC-97 |
 | Metrics: `signals_total{strategy}`, `proposal_dropped_total{reason}`, `strategy_onbar_ms{strategy}`; log `M09.strategy_disabled` | A-M09-01 observability |
 
 Every bug-fix test must fail before and pass after (AGENTS.md "Builders"). MIGRATION row A-M09-01 marks `core/src/engine/engine.ts:17-40` and `core/test/purity.test.ts` as adapt; under "No bugs migrate" its B1 and B5 probes are AC-27 and AC-28.
@@ -721,6 +726,13 @@ Reviewer at `664f75e2` (PASS) and red team round 15 at `664f75e2` (1 MAJOR, 2 MI
 111. B1: an A1 change during a pending decision applies without re-freezing, is checked against the last frozen model, keeps the host mismatched, and is frozen with the outcome (section 3, "Pending decisions"; AC-93).
 112. b1: a cancel reverts to the last frozen value at no cost; the decision's trial is registered at its start and kept on cancel (AC-94).
 113. b2: a pending decision older than 24 h raises the alert chain; its DECISIONS entry may only cancel or complete it (AC-95).
+
+### Round 17
+
+Reviewer and red team round 16 at `e57e9394`; rulings 114–115 in the review log on `claude/supervisor-docs-2` @ `3b610613`, the last text changes (nothing at MAJOR remains):
+
+114. c1: when a decision resolves, the A1 apply-time checks run again on the configuration about to be frozen; a failing or null result freezes it with an entry block; an `applycheck` trial (section 3, "Pending decisions"; AC-96).
+115. c2: each A1 check during a pending decision includes every A1 value applied since it started (AC-97).
 
 ## Open points
 
