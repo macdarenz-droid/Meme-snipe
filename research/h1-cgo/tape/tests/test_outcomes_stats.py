@@ -60,6 +60,18 @@ class Pricing(unittest.TestCase):
             with self.assertRaises(ValueError):
                 b.end(slot)
 
+    def test_run_charges_the_mints_rent(self):
+        r1 = amm_row(100, 1, "X", "buy", 10**12, 200 * 10**12, 80 * 10**9)
+        books = O.books_from_rows(frame([r1], AMM_COLS), 0, 10**6)
+        d = pd.DataFrame([dict(mint="M", pool="P", hour=0, decision_slot=150, decision_day="2026-09-11", eligible=True,
+                               token_program=tp, exit_slot_3600=900, in_time_3600=True, exit_slot_900=0,
+                               in_time_900=False, exit_slot_14400=0, in_time_14400=False)
+                          for tp in (ps.TOKEN_2022, ps.SPL_TOKEN)])
+        out = O.run(d, books)
+        reg = out[(out.hold == 3600) & (out.usd == 50.0)]
+        self.assertEqual(list(reg.fixed), [ps.expected_fixed(2_074_080), ps.expected_fixed(2_039_280)])
+        self.assertTrue((out.fixed != ps.expected_fixed()).all())
+
     def test_refusals(self):
         r1 = amm_row(100, 1, "X", "buy", 10**12, 200 * 10**12, 80 * 10**9)
         self.assertEqual(O.price_trade(book([r1]), 50, 900, spend_of(50), self.tiers, self.fixed)["status"], "no_entry_state")

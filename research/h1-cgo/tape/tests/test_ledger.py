@@ -122,3 +122,36 @@ class StreamFixtures(unittest.TestCase):
         # every S row carries owner_token_post; the ledger matches it at the end of each transaction
         self.assertEqual(self.s.owner_checks, 5)
         self.assertEqual(self.s.owner_mismatch, 0)  # R's post-transaction balance is 0: the same tx moves it to B
+
+
+class BoostRows(unittest.TestCase):
+    """Decoder v3 flags BOOST swaps protocol=1; older units leave 0 and are matched through BoostBuyAndBurnEvent."""
+
+    def _run(self, protocol, boosts):
+        from h1cgo.features import boost_keys
+        r = amm_row(1100, 1, "BOOSTER", "buy", 10**9, 10**12, 80 * 10**9, protocol=protocol, outer=2)
+        r["signature"] = "SIG"
+        user = amm_row(1101, 1, "U", "buy", 10**9, 10**12, 80 * 10**9)
+        ev = [dict(event="BoostBuyAndBurnEvent", signature="SIG", outer_ix=2, fields=dict(pool="P"))] if boosts else []
+        st = build_streams(universe(mig_slot=1000), frame([], CURVE_COLS), frame([r, user], AMM_COLS), frame([], T_COLS),
+                           tcov(), boost_keys(ev))["M"]
+        st.advance(2000)
+        return st
+
+    def test_old_unit_matched_by_signature(self):
+        st = self._run("0", boosts=True)
+        self.assertEqual(st.ledger.balance("BOOSTER"), 0)
+        self.assertEqual(st.protocol_rows, 1)
+        self.assertEqual(st.excluded.get("BOOSTER"), "protocol")
+        self.assertEqual(st.ledger.balance("U"), 10**9)
+
+    def test_v3_flag(self):
+        st = self._run("1", boosts=False)
+        self.assertEqual((st.ledger.balance("BOOSTER"), st.protocol_rows), (0, 1))
+
+    def test_match_needs_the_same_instruction(self):
+        from h1cgo.features import boost_keys
+        self.assertEqual(boost_keys([dict(event="BoostBuyAndBurnEvent", signature="S", outer_ix=3, fields=dict(pool="P")),
+                                     dict(event="CreateEvent", signature="X", outer_ix=0, fields={})]), {("S", "3", "P")})
+        st = self._run("0", boosts=False)  # no event: an ordinary trade
+        self.assertEqual(st.ledger.balance("BOOSTER"), 10**9)

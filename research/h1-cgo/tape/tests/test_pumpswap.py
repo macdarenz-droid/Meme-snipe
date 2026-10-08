@@ -88,3 +88,19 @@ class FixedCosts(unittest.TestCase):
         rows = {(r["setup"], r["usd"]): r for r in _load_json(COSTS)["rows"]}
         self.assertEqual(spend_of(50), 419252054)  # floor(50 / 119.26 * 1e9), about 0.4193 SOL
         self.assertIn(("young", 20), rows)
+
+
+class Rent(unittest.TestCase):
+    """AMENDMENT_1: rent of the account the mint needs, with RENT-1's refund model."""
+
+    def test_rent_by_program(self):
+        self.assertEqual(ps.token_account_rent(ps.TOKEN_2022), 2_074_080)
+        self.assertEqual(ps.token_account_rent(ps.SPL_TOKEN), 2_039_280)
+        self.assertEqual(ps.token_account_rent(""), 2_074_080)
+
+    def test_fixed_with_amended_rent(self):
+        # only the rent terms change: (1 - rent_back) x rent, rent_back = 0.9 x 0.95
+        delta = (1 - 0.9 * 0.95) * (2_074_080 - 1_513_840)
+        self.assertAlmostEqual(ps.expected_fixed(2_074_080), ps.expected_fixed() + delta, places=6)
+        self.assertEqual(round(ps.expected_fixed(2_074_080)), 495244)
+
