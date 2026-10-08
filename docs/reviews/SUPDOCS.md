@@ -18,3 +18,13 @@ No secrets, IPs, hosts or tailnet names in any of the five diffs. #291 clean (an
 8. **#303 MINOR, "checked private".** Accepted: re-checked with `list_repos` on 8 Oct (`macdarenz-droid/Snipe-solana`, visibility private); CLAUDE.md names the check.
 9. **#303 MINOR, "Lean supervisor" bullets.** Accepted: marked as the supervisor's rule made under the owner's 4:48 PM instruction.
 10. **Not covered:** HANDOVER and the review logs were scanned for secrets and hosts only, not line by line. Accepted as a known limit; #305's reviewer covers the current HANDOVER.
+
+## #305 (`claude/supervisor-docs-2` at `cc405609`, base `1e4df569`): reviewer and red team `session_01TmNbs3Nf6q3ysiDMU4LJf5`
+
+Reviewer PASS. Red team PASS: 0 BLOCKER, 0 MAJOR, 3 MINOR. Secret and host scan clean; 96 of 102 shas resolve; no ruling loosens a check.
+
+### Supervisor rulings (9 Oct 2026, about 12:00 AM), applied on `claude/supervisor-docs-3` (not on #305, so its reviewed head stays)
+
+11. **MINOR 1, six shas on no branch.** Accepted: each now names its review log and says the log commit is not on any branch now.
+12. **MINOR 2, mixed order.** Accepted: an order note above the 3:12 PM entry.
+13. **MINOR 3, REC-UPLOAD-NEWHOST.** Accepted: marked superseded by REC-UPLOAD-QUIET.
