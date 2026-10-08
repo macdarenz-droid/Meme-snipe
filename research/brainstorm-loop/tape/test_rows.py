@@ -515,6 +515,51 @@ class H8Stratum(unittest.TestCase):
         self.assertEqual(summ[DAY]["$5"]["h8_pool_hours"], 0)   # no price: nothing is eligible
 
 
+class SolUsdDir(unittest.TestCase):
+    def _folder(self):
+        import hashlib
+        import zipfile
+        d = tempfile.mkdtemp()
+        name = f"SOLUSDT-1m-{DAY}.zip"
+        t0 = 1789084800000000                                 # microseconds, as the archive writes them
+        with zipfile.ZipFile(os.path.join(d, name), "w") as z:
+            z.writestr(f"SOLUSDT-1m-{DAY}.csv", "".join(f"{t0 + i * 60_000_000},0,0,0,{150 + i},0,0,0,0,0,0,0\n"
+                                                         for i in range(3)))
+        sha = hashlib.sha256(open(os.path.join(d, name), "rb").read()).hexdigest()
+        with open(os.path.join(d, "SHA256SUMS"), "w") as fh:
+            fh.write(f"{sha}  {name}\n")
+        return d, name
+
+    def test_checked_load_and_refusals(self):
+        import run_step_a as RS
+        d, name = self._folder()
+        px, sha, minutes = RS.load_sol_usd_dir([DAY], d)
+        self.assertEqual(px[DAY], (151.0, 150.0, 152.0))
+        self.assertEqual(len(minutes), 3)
+        with self.assertRaises(RS.SolUsdError):
+            RS.load_sol_usd_dir([DAY, "2026-09-12"], d)       # missing day
+        with open(os.path.join(d, name), "ab") as fh:
+            fh.write(b"x")                                     # tampered file
+        with self.assertRaises(RS.SolUsdError):
+            RS.load_sol_usd_dir([DAY], d)
+
+    def test_cli_defaults_to_committed_folder_and_refuses_missing_day(self):
+        import run_step_a as RS
+        self.assertTrue(RS.DEFAULT_SOL_USD_DIR.endswith(os.path.join("brainstorm-loop", "sol-usd")))
+        d = tempfile.mkdtemp()
+        u = Unit().write(d, "2026-09-12")
+        with self.assertRaises(SystemExit):
+            RS.main(["--unit", u, "--out", os.path.join(d, "o")])
+        self.assertFalse(os.path.exists(os.path.join(d, "o")))
+
+    def test_committed_files_pass_for_step_a_days(self):
+        import run_step_a as RS
+        if not os.path.isdir(RS.DEFAULT_SOL_USD_DIR):
+            self.skipTest("committed SOL/USD folder not present")
+        px, sha, _ = RS.load_sol_usd_dir(["2026-09-10", "2026-09-11"])
+        self.assertEqual(len(sha), 2)
+
+
 class ReviewFixes(unittest.TestCase):
     def test_dev_zero_counts_zero_for_loaded_day_without_events(self):
         d = tempfile.mkdtemp()

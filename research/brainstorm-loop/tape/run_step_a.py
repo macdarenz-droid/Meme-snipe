@@ -56,6 +56,44 @@ def read_sol_usd(paths):
     return out, shas, m
 
 
+DEFAULT_SOL_USD_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sol-usd"))
+
+
+class SolUsdError(Exception):
+    pass
+
+
+def load_sol_usd_dir(days, folder=DEFAULT_SOL_USD_DIR):
+    """The committed Binance SOLUSDT 1-minute klines for each tape day (`SOLUSDT-1m-<day>.zip`), each checked
+    against the folder's SHA256SUMS. Refuses (SolUsdError) on a missing day, a file not listed, or a mismatch."""
+    import hashlib
+
+    sums_path = os.path.join(folder, "SHA256SUMS")
+    if not os.path.exists(sums_path):
+        raise SolUsdError(f"no SHA256SUMS in {folder}")
+    sums = {}
+    for line in open(sums_path):
+        f = line.split()
+        if len(f) == 2:
+            sums[f[1].lstrip("*")] = f[0].lower()
+    paths = []
+    for d in sorted(days):
+        name = f"SOLUSDT-1m-{d}.zip"
+        p = os.path.join(folder, name)
+        if name not in sums or not os.path.exists(p):
+            raise SolUsdError(f"SOL/USD missing for {d} ({name})")
+        with open(p, "rb") as fh:
+            got = hashlib.sha256(fh.read()).hexdigest()
+        if got != sums[name]:
+            raise SolUsdError(f"{name}: sha256 {got} does not match SHA256SUMS {sums[name]}")
+        paths.append(p)
+    px, shas, minutes = read_sol_usd(paths)
+    missing = [d for d in days if d not in px]
+    if missing:
+        raise SolUsdError(f"no closes for {missing} in the SOL/USD files")
+    return px, shas, minutes
+
+
 def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_usd_files=None, minutes=None):
     R.BOOT_N = n_boot
     tape = Tape(units)
@@ -107,7 +145,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--unit", action="append", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--sol-usd", action="append", help="SOLUSDT 1-minute kline CSV per day (repeat), or day,sol_usd")
+    ap.add_argument("--sol-usd", default=DEFAULT_SOL_USD_DIR,
+                    help="folder of Binance SOLUSDT-1m-<day>.zip files with SHA256SUMS (default: the committed one)")
     ap.add_argument("--boot", type=int, default=R.BOOT_N)
     ap.add_argument("--decide", action="store_true")
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="committed Step A plan (checked with --decide)")
@@ -118,7 +157,10 @@ def main(argv=None):
             plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
         except PlanError as e:
             ap.error(f"--decide refused: {e}")
-    px, px_sha, minutes = read_sol_usd(a.sol_usd)
+    try:
+        px, px_sha, minutes = load_sol_usd_dir(sorted({unit_info(u)[1] for u in a.unit}), a.sol_usd)
+    except SolUsdError as e:
+        ap.error(f"SOL/USD refused: {e}")
     s = run(a.unit, a.out, px, a.boot, a.decide, sol_usd_files=px_sha, minutes=minutes,
             plan={"path": a.plan, "sha256": plan_sha} if a.decide else None)
     json.dump(s, sys.stdout, indent=1, default=str)

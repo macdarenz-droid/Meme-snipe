@@ -701,6 +701,44 @@ class Guards(unittest.TestCase):
         self.assertFalse(plan_check(units, C.DISCOVERY_DAYS, self.plan, expected="0" * 64)["complete"])
 
 
+class SolUsdInput(unittest.TestCase):
+    """--solusd defaults to research/brainstorm-loop/sol-usd; each file is checked against SHA256SUMS."""
+
+    def test_default_dir_loads_and_checks(self):
+        import shutil
+        import tempfile
+        import run_d1
+        from d1.h8 import SOLUSD_DIR_DEFAULT, load_solusd_dir
+        self.assertTrue(os.path.isdir(SOLUSD_DIR_DEFAULT))
+        hours, close, sha = load_solusd_dir(SOLUSD_DIR_DEFAULT, C.DISCOVERY_DAYS)
+        self.assertEqual(len(hours), 72)                                   # 09-09 (previous day) .. 09-11
+        self.assertEqual(hours[0], C.epoch("2026-09-09"))
+        self.assertTrue((np.diff(hours) == 3600).all())
+        df = pd.DataFrame({"day": [C.DISCOVERY_DAYS[0]], "tau": [C.epoch(C.DISCOVERY_DAYS[0]) + 600],
+                           "effective_quote_sol": [500.0]})
+        out, sha2 = run_d1.with_h8(df, None)                              # the default directory
+        self.assertEqual(sha2, sha)
+        self.assertFalse(np.isnan(out.sol_usd.iloc[0]))                    # 00:10 uses 09-09 23:00's close
+        with self.assertRaises(ValueError):
+            load_solusd_dir(SOLUSD_DIR_DEFAULT, ["2026-09-12"])          # a day not committed
+        tmp = tempfile.mkdtemp()
+        bad = os.path.join(tmp, "sol")
+        shutil.copytree(SOLUSD_DIR_DEFAULT, bad)
+        f = os.path.join(bad, "SOLUSDT-1h-2026-09-10.zip")
+        with open(f, "ab") as fh:
+            fh.write(b"x")
+        with self.assertRaises(ValueError) as cm:
+            load_solusd_dir(bad, C.DISCOVERY_DAYS)
+        self.assertIn("mismatch", str(cm.exception))
+        with self.assertRaises(SystemExit) as cm:
+            run_d1.with_h8(df, bad)
+        self.assertIn("refusing", str(cm.exception.code))
+        os.remove(f)
+        with self.assertRaises(ValueError) as cm:
+            load_solusd_dir(bad, C.DISCOVERY_DAYS)
+        self.assertIn("missing day", str(cm.exception))
+
+
 class H8Amendment(unittest.TestCase):
     def setUp(self):
         from d1 import h8
@@ -783,11 +821,6 @@ class H8Amendment(unittest.TestCase):
         self.assertEqual(o["net_ret_15_s50"], o["net_ret_15"])
         self.assertLess(o["net_ret_15_s5"], o["net_ret_15_s50"])          # fixed costs weigh more at $5
         import run_d1
-        for argv in (["search", "--run", "x", "--out", "y"], ["validate", "--run", "x", "--frozen", "y",
-                                                              "--confirm-validation-read"]):
-            with self.assertRaises(SystemExit) as cm:
-                run_d1.main(argv)
-            self.assertIn("--solusd", str(cm.exception.code))
         self.assertIn("H8_AMENDMENT", run_d1.FROZEN_AMENDMENTS)
 
 
