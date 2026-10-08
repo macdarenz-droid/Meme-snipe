@@ -359,51 +359,7 @@ def dev_zero_decide(summ):
     return out
 
 
-# ============================================================ row 2: REBUY-ANCHOR (price-free parts only)
-REBUY_S = 2 * 3600
-REBUY_BLOCKED = [
-    "odds of a rebuy below vs above the sale price (needs a price comparison; Q14)",
-    "odds for gain-sellers vs loss-sellers (needs realised gain, a return; Q14)",
-    "share of GAIN ex-holders who rebuy once BELOW the sale price (Q14)",
-    "predicted net rebuy SOL, P90 vs median of the rebuy-pressure measure (measure not defined; Q15)",
-    "decisions a day in the top quintile (same measure; Q15)",
-    "R^2 on past returns, drawdown, age and depth (needs returns; Q14)",
-]
-
-
-def rebuy_anchor(tape: Tape, s: pd.DataFrame):
-    """Ex-holder exits (a sell leaving the owner with 0 of the mint) and whether the same owner buys the
-    mint again within 2 h; proceeds readability. No price, gain or return is read."""
-    x = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
-    sells = x[~x["is_buy"] & (x["owner_token_pre"] > 0) & (x["owner_token_post"] == 0)]
-    buys = x[x["is_buy"]]
-    bt = {k: g["block_time"].values for k, g in buys.groupby(["mint", "owner"], sort=False)}
-    rows = []
-    for r in sells.itertuples(index=False):
-        covered = tape.covered(int(r.slot), int(r.block_time) + REBUY_S)
-        t = bt.get((r.mint, r.owner))
-        reb = bool(t is not None and ((t > r.block_time) & (t <= r.block_time + REBUY_S)).any())
-        rows.append({"day": r.day, "mint": r.mint, "owner": r.owner, "slot": r.slot, "block_time": r.block_time,
-                     "exit_sol": r.sol, "signer_is_owner": r.signer == r.owner,
-                     "proceeds_readable": bool(r.signer == r.owner and pd.notna(r.signer_sol_post)),
-                     "window_on_tape": covered, "rebuy_2h": reb if covered else None})
-    df = pd.DataFrame(rows, columns=["day", "mint", "owner", "slot", "block_time", "exit_sol", "signer_is_owner",
-                                     "proceeds_readable", "window_on_tape", "rebuy_2h"])
-    tot = float(df["exit_sol"].sum()) if len(df) else 0.0
-    u = df[df["window_on_tape"]].copy() if len(df) else df
-    by_size = {}
-    if len(u) >= 3:
-        u["size_tercile"] = pd.qcut(u["exit_sol"].rank(method="first"), 3, labels=["low", "mid", "high"])
-        by_size = {str(k): {"exits": int(len(g)), "rebuy_2h_share": float(g["rebuy_2h"].mean())}
-                   for k, g in u.groupby("size_tercile", observed=True)}
-    summ = {
-        "exits": int(len(df)), "exits_with_2h_on_tape": int(len(u)),
-        "rebuy_2h_share_unconditional": float(u["rebuy_2h"].mean()) if len(u) else None,
-        "by_exit_size_tercile_descriptive": by_size,
-        "proceeds_readable_share": (float(df.loc[df["proceeds_readable"], "exit_sol"].sum()) / tot) if tot else None,
-        "not_computed_pending_ruling": REBUY_BLOCKED,
-    }
-    return df, summ
+# Row 2 REBUY-ANCHOR lives in rebuy.py.
 
 
 # ============================================================ row 3: SEAT-DRIFT

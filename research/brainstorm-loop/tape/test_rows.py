@@ -258,24 +258,6 @@ class SeatDrift(unittest.TestCase):
         self.assertEqual(df.set_index("pool").at["PA", "N_m"], 0)   # same creator cluster: not counted
 
 
-class Rebuy(unittest.TestCase):
-    def test_exit_rebuy_and_readability(self):
-        u = Unit()
-        u.cbuy(10, "A", "M")
-        u.cbuy(100, "A", "M", buy=False, sol=3e9, pre=5, post=0)       # exit
-        u.cbuy(100 + 7200, "A", "M")                                   # rebuy at exactly 2 h
-        u.cbuy(20, "B", "M")
-        r = u.cbuy(30, "B", "M", buy=False, sol=1e9, pre=5, post=0)    # exit by a router: signer != owner
-        r["signer"] = "router"
-        tape, s, _ = load(u)
-        df, summ = R.rebuy_anchor(tape, s)
-        self.assertEqual(summ["exits"], 2)
-        self.assertEqual(df.set_index("owner").at["A", "rebuy_2h"], True)
-        self.assertEqual(df.set_index("owner").at["B", "rebuy_2h"], False)
-        self.assertAlmostEqual(summ["proceeds_readable_share"], 0.75)
-        self.assertTrue(summ["not_computed_pending_ruling"])
-
-
 class ReviewFixes(unittest.TestCase):
     def test_dev_zero_counts_zero_for_loaded_day_without_events(self):
         d = tempfile.mkdtemp()

@@ -16,6 +16,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import rebuy as RB  # noqa: E402
 import rows as R  # noqa: E402
 from tapeio import DEFAULT_PLAN, PlanError, Tape, check_plan, unit_info  # noqa: E402
 
@@ -36,7 +37,7 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None):
     s = R.prepare(tape, labels)
     fast = R.w1_fast_class(tape, s)
     dz, dz_s = R.dev_zero(tape, s, adj)
-    rb, rb_s = R.rebuy_anchor(tape, s)
+    rb, rb_pts, rb_pairs, rb_s = RB.rebuy_anchor(tape, s)
     sd, sd_s = R.seat_drift(tape, s, adj)
     ag, ag_s = R.age_gate(tape, s, fast)
     ru, ru_s = R.round_usd(tape, s, sol_usd, adj, n_boot=min(n_boot, 1000))
@@ -52,9 +53,9 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None):
         summary["plan"] = plan
         summary["decision"] = {"1_dev_zero_prereg_by_arm": R.dev_zero_decide(dz_s),
                                "3_seat_drift_prereg": R.seat_drift_decide(sd_s),
-                               "2_rebuy_anchor": "not decidable: see not_computed_pending_ruling"}
+                               "2_rebuy_anchor_prereg": RB.rebuy_decide(rb_s)}
     os.makedirs(out, exist_ok=True)
-    for name, df in (("dev_zero", dz), ("rebuy_exits", rb), ("seat_drift", sd), ("age_gate", ag),
+    for name, df in (("dev_zero", dz), ("rebuy_exits", rb), ("rebuy_points", rb_pts), ("rebuy_pairs", rb_pairs), ("seat_drift", sd), ("age_gate", ag),
                      ("two_sided_labels", labels), ("round_usd", ru)):
         df.to_csv(os.path.join(out, f"stepa_{name}.csv"), index=False)
     with open(os.path.join(out, "stepa_summary.json"), "w") as fh:

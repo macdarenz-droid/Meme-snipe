@@ -255,3 +255,25 @@ class ReplayAndFeaturesOnTape(unittest.TestCase):
             self.assertEqual(f["uniq_buyers_5m"].iat[0], 2)
             self.assertEqual(f["venue"].iat[0], 1)
             self.assertAlmostEqual(f["top10_share"].iat[0], 2 * 10**12 / 10**15)
+
+
+class Reading(unittest.TestCase):
+    def test_exact_ints_missing_values_and_overflow(self):
+        import tempfile
+        from w1 import load
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.csv.zst")
+            pd.DataFrame({"slot": [1, 2, 3], "block_time": [10, 11, 12], "a": ["9007199254740993", "", "5"],
+                          "s": ["x", "", "z"]}).to_csv(p, index=False, compression="zstd")
+            t = load.read_table(p, ["slot", "block_time", "a", "s"], ["slot", "block_time", "a"])
+            self.assertEqual(int(t["a"][0]), 9007199254740993)
+            self.assertTrue(bool(t["a_na"][1]) and int(t["a"][1]) == 0)
+            self.assertFalse(t["_overflow"].any())
+            pd.DataFrame({"slot": [1, 2], "block_time": [10, 11], "a": ["18446744073709551615", "7"],
+                          "s": ["x", "y"]}).to_csv(p, index=False, compression="zstd")
+            t = load.read_table(p, ["slot", "block_time", "a", "s"], ["slot", "block_time", "a"])
+            self.assertEqual(t["_overflow"].tolist(), [True, False])
+            self.assertEqual(int(t["a"][1]), 7)
+            pd.DataFrame({"slot": [1], "block_time": [load.WALL_TS], "a": [1], "s": ["x"]}).to_csv(
+                p, index=False, compression="zstd")
+            self.assertEqual(len(load.read_table(p, ["slot", "block_time", "a", "s"], ["slot", "block_time", "a"])), 0)

@@ -1,6 +1,6 @@
 # G1 scoring code (shared tape)
 
-Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md` and `../AMENDMENT_2.md`. It reads the shared tape (`research/shared-tape/README.md`) and nothing else. Where the design is silent, the most conservative reading is used and listed in `OPEN_QUESTIONS.md` (OQ-n in the code).
+Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md`, `../AMENDMENT_2.md` and `../AMENDMENT_3.md`. It reads the shared tape (`research/shared-tape/README.md`) and nothing else. Where the design is silent, the most conservative reading is used and listed in `OPEN_QUESTIONS.md` (OQ-n in the code).
 
 ## Entry point
 
@@ -10,7 +10,7 @@ Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md` and `../AMENDM
 |---|---|---|---|
 | `g1.py checks --units U... --out DIR` | tape | `checks.json` (§7 checks 2–5: reserves before/after, fee-tier market cap, 85.005 SOL target and migration fee, token programs, sha256 of every input table and code file, seeds) | no |
 | `g1.py decide --units U... --out DIR [--no-links]` | tape, only as of each decision | `decisions.csv`, `decisions_summary.json`: universe, triggers (90%, 80%, 95%), S0, non-SOL strata, entry and exit-B slots, drop-by-time, features R and Z | no |
-| `g1.py gate --units U... --out DIR --days D...` | tape, `decisions.csv` | `gate.json` (G1-0, descriptive BOOST rows, strata, G1-HC and G1-CAP gates), `graduates.csv`, `triggers.csv`, `flows.csv` | no (timing, holdings, flows) |
+| `g1.py gate --units U... --out DIR --days D...` | tape, `decisions.csv` | `gate.json` (G1-0, descriptive BOOST rows, strata, G1-HC and G1-CAP gates), `graduates.csv`, `triggers.csv`, `flows.csv`, `boost_slices.csv` | no (timing, holdings, flows) |
 | `g1.py freeze --out DIR` | `decisions.csv` (discovery) | `frozen.json`: discovery medians of R and Z | no |
 | `g1.py outcome --units U... --out DIR --allow-returns [--counts-only]` | tape, `decisions.csv` | `trades.csv` (or, with `--counts-only`, `trades_counts.csv` and `outcome_counts.json` without any return column) | **yes** |
 | `g1.py score --out DIR --role discovery\|validation --frozen FILE --allow-scoring` | `trades.csv`, `decisions.csv`, `frozen.json` | `score_<role>.json` | **yes** |
@@ -101,3 +101,6 @@ The gate's per-day counts assume whole days: run it once every unit of a day is 
 | A2 gates (a)–(d) incl. net opening flow and W1 fast class | `gate.cap_gate`, `flows.migration_flows`, `flows.FastClass` |
 | A2 arm: Z at or below the frozen median; judgement with lifts over G1 and S0 | `score.freeze`, `score.arms`, `score.judge` |
 | A2 §3 quote-mint strata (triggers, InitBoost share, BOOST unspent after m + D, distinct buyers) | `decide.quote_target`, `gate.strata_rows` |
+| A3 OQ-14 cap headroom per BOOST slice, by slice order and slot after m (descriptive) | `gate.cap_headroom`, `gate.headroom_summary` |
+| A3 OQ-6 rent by date: 6,960 / 6,333 / 5,080 lamports per byte | `params.RENT_LAMPORTS_PER_BYTE`, `costs.token_account_rent` |
+| A3 OQ-16 fallback tier at effective quote × base_supply ÷ base | `market.fallback_tier`, `Market.pool_fees` |
