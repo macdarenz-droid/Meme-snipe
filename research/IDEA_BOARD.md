@@ -52,7 +52,7 @@ Every confirmatory primary from the outside reviewer's ideas, and the connect-th
 |---|---|
 | Absorption entry (+ ABS-S1 secondary, fixed sequence) | UNRESOLVED: too few events (5 tradable of about 30 needed) |
 | Squeeze, spot (H1) | registered primary UNRESOLVED; new trial H1-T2 KILLED (mean net −0.71%; 99.58% CI −1.68% to +0.39%) |
-| Squeeze traded on the perp (H1-PERP, P1) | **CLOSED by the owner** (2026-10-08: "Yes no hyperliquid"): no Hyperliquid or futures trading, so no perp designs |
+| Squeeze traded on the perp (H1-PERP, P1) | **Reopened for research** (owner, 2026-10-08 21:55: "Either or, test any angles. U shouldnt take any rules from me to follow to make this resesrch success. As long as u find an edge"). Research may test any venue or rule. A winner that needs a product-rule change (Hyperliquid, H8, H10, sizes) goes back to the owner before the bot uses it. Kept: honest testing, paper only, law and ethics |
 | Liquidation fire-sale (H3) | UNRESOLVED: too rare (at most 2 events of 100 needed) |
 | D-SPLIT: liquidated, not dying (P2) | frozen in `daily-probe/PREREG.md`; waits for the survivorship-free download |
 | Failed transactions; community crossing; SOLMEMES; audience gains | shared tape approved 2026-10-08; build and Phase 0 started |
