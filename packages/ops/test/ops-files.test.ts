@@ -710,6 +710,11 @@ describe('PATHS-FIX ruling 24: the provider usage ledger is in every backup', ()
     spawnSync('bash', [join(root, script), ...args], { encoding: 'utf8', env: { PATH: `${bin}:${process.env['PATH'] ?? ''}`, ...env } });
 
   it('a bundle holds zeroed-usage/rpc-usage.db and the restore drill restores and checks it', () => {
+    // Ruling 28: the scripts need the sqlite3 CLI, so this test needs it too and never skips without it. CI's check job
+    // runs on ubuntu-latest (Ubuntu 24.04 until Nov 2026), whose image lists "sqlite3 3.45.1" under Databases
+    // (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md); the host installs it (install-main.sh PACKAGES).
+    const cli = spawnSync('sqlite3', ['-version'], { encoding: 'utf8' });
+    if (cli.status !== 0) throw new Error('sqlite3 missing: install the sqlite3 command-line tool (apt-get install sqlite3); zeroed-backup and zeroed-restore-drill need it');
     const t = mkdtempSync(join(tmpdir(), 'zeroed-bk-'));
     const src = join(t, 'zeroed');
     const usage = join(t, 'zeroed-usage');
