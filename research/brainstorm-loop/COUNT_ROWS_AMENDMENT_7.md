@@ -15,7 +15,7 @@ Design owner's rulings (brainstorm partner), 2026-10-09 00:53 Melbourne, before 
   - plus the constant-product impact of a $5 buy and its sell at Q;
   - plus 414,009 lamports ÷ the size in lamports.
   
-  $5 is 41,925,000 lamports at the repo's $119.26.
+  $5 is 41,925,205 lamports, floor(5 ÷ 119.26 × 1e9).
 - **X\*_i** = Q_i × (√(1 + c_i) − 1), per event.
 - **The bar passes only if both hold:**
   - the median over events of (payer flow_i ÷ X\*_i) is at least 1;
