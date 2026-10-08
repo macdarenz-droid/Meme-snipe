@@ -181,6 +181,7 @@ msg=$(ag_backoff_ok 2>&1) || hold 2 "${msg#refused: }"
 (( AG_FAILS < 3 )) || hold 3 "the chain is stopped: $AG_FAILS failures since ARCHIVE_REARM_AT $ARCHIVE_REARM_AT with no successful batch between them; only a reviewed change re-arms it"
 (( AG_FOREIGN == 0 )) || hold 3 "the chain is stopped: $AG_FOREIGN run(s) since ARCHIVE_REARM_AT may have read the archive unguarded (a scan or an archive check from another branch, or a re-run of a commit without archive-guard.sh); only a reviewed change re-arms it"
 msg=$(ag_store_ok 2>&1) || hold 3 "${msg#refused: }"
+msg=$(ag_caches_sealed 2>&1) || hold 3 "${msg#refused: }"
 # 4. ARCHIVE-SAFE: the scanner's request cap
 if ! cap=$("$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}"); then
   hold 4 "the scanner's request cap ($cap/s, scanner/archive.go) is above $ARCHIVE_MAX_RPS/s (archive-limits.conf)"
