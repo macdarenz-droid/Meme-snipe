@@ -193,8 +193,13 @@ recommendation, before `ARCHIVE_ARM` is set:
 2. Every old run of `data-scan.yml` or `archive-check.yml` from a commit without `archive-guard.sh` whose re-run window
    is still open (GitHub allows a re-run for a limited time after a run; the exact window is **VERIFY** in GitHub's
    docs at arm time). A re-run of one stops the chain (ruling 21); deleting runs is hard to undo, so the owner decides
-   "delete them, or wait for the window to close". A run list that reaches its 500 cap fails the guard closed
-   (ruling 42), so the number of listed runs of each workflow is checked here too.
+   "delete them, or wait for the window to close". The guard lists only runs created since the earlier of 35 days ago
+   and `ARCHIVE_REARM_AT`, plus every queued, in-progress, waiting, requested or pending run (round 6, ruling 43:
+   GitHub allows a re-run only within 30 days of the run, per GitHub Docs "Re-running workflows and jobs", **VERIFY**
+   the page and wording at arm time). A list that reaches its 500 cap inside that window fails closed (ruling 42);
+   before ruling 43 that would have happened about 62 days after the first archive check, whatever the window. A cap
+   trip goes to the owner, since deleting runs is hard to undo. The guard logs the runner's gh version and fails
+   closed if its `gh run list` has no `--created` or lacks one of those statuses.
 3. The repository's Actions log retention (ruling 28; the back-off annotations and the run history the guard reads
    must outlive the window it reads). Read through the API if the arming session can (read only,
    `repos/{owner}/{repo}/actions/permissions/artifact-and-log-retention`, **VERIFY** the endpoint and the permission it
@@ -203,6 +208,14 @@ recommendation, before `ARCHIVE_ARM` is set:
 4. Which YAML parser the runner has for the permissions check (python3's `yaml`, else `yq`; **VERIFY** on the runner
    image). The guard logs the parser and its version ("permissions: parsed with ..."); a parser that does not refuse a
    repeated key, or no parser, fails arming closed (OF-2 round 4, ruling 33).
+5. The progress cache (round 6, rulings 44 and 44a). In this public repository a fork's pull_request workflow can
+   restore the base branch's caches, so the scan's progress is saved only sealed (`ci/cache-crypt.sh`: AES-256-CTR
+   then HMAC-SHA256, keys derived from `DATA_STORE_TOKEN`, entries named with the key id); arming refuses a progress
+   cache saved or restored from any other path. Owner steps: (a) Settings → Actions → General → "Fork pull request
+   workflows": require approval for all outside collaborators (defence in depth); (b) do not rotate
+   `DATA_STORE_TOKEN` while the download runs: a progress sealed with the old token is refused, nothing is read, and
+   the day waits for a decision instead of starting fresh. The `data-rpc-*` Helius entries saved before this change
+   stay unsealed until they expire (7 days unused); they are not deleted by hand.
 
 **Reads, and the one allowed second read (DERIVED).**
 - Each day's unit plan carries two units of margin on each side (`scanner/main.go:310`, 3,600 s), about 1.9 units each
