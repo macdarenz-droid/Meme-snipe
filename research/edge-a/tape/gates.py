@@ -11,7 +11,7 @@ COUNT_BAR = 200  # never lowered
 STEPS = ("A", "B", "C")
 LEVEL = 0.95
 DEFAULT_B = 10_000
-DEFAULT_SEED = 20261008
+DEFAULT_SEED = 20261009  # AMENDMENT_2 Q5: registered seed, the same for both gates
 
 
 def count_rule(n_pools: int, steps_read: tuple[str, ...]) -> dict:
@@ -71,18 +71,28 @@ def pool_bootstrap(stat_fn, arrays: list[np.ndarray], n_boot: int = DEFAULT_B, s
 
 
 def score_gates(up, dn, net, n_count: int, steps_read: tuple[str, ...], n_boot: int = DEFAULT_B,
-                seed: int = DEFAULT_SEED) -> dict:
+                seed: int = DEFAULT_SEED, *, usd_not_separable: bool) -> dict:
     """The registered rule: both gates need a 95% lower bound above 0, else A closes and no return is read.
-    Scored only when the count rule is met."""
+    Scored only when the count rule is met. AMENDMENT_2 Q11: the verdict reads count row 6; when 420 SOL lies within
+    5% of a round USD level on every tape day (`usd_not_separable`), a pass is recorded as not separable from a USD
+    level and no return test runs. Row 6 must have been read (True or False); None is refused."""
+    if usd_not_separable not in (True, False):
+        raise ValueError("Design A's verdict needs count row 6's round-USD result (True or False)")
     cr = count_rule(n_count, steps_read)
     if cr["status"] != "met":
-        return {"count_rule": cr, "decision": "not scored: count rule not met"}
+        return {"count_rule": cr, "decision": "not scored: count rule not met", "return_test_may_run": False,
+                "usd_not_separable": usd_not_separable}
     secs = up + dn
     g2 = pool_bootstrap(gate2_stat, [up, dn], n_boot, seed)
-    g3 = pool_bootstrap(gate3_stat, [net, secs], n_boot, seed + 1)
+    g3 = pool_bootstrap(gate3_stat, [net, secs], n_boot, seed)
     g2["pass"] = bool(np.isfinite(g2["point"]) and g2["lo"] > 0)
     g3["pass"] = bool(np.isfinite(g3["point"]) and g3["lo"] > 0)
     ok = g2["pass"] and g3["pass"]
-    return {"count_rule": cr, "gate2_bunching": g2, "gate3_creator": g3,
-            "decision": "gates pass: the frozen return test may be written and run" if ok
-            else "A closes: no return is read"}
+    if ok and usd_not_separable:
+        decision = "gates pass, but not separable from a USD level (count row 6): no return test runs"
+    elif ok:
+        decision = "gates pass: the frozen return test (AMENDMENT_2 Q9) may run"
+    else:
+        decision = "A closes: no return is read"
+    return {"count_rule": cr, "gate2_bunching": g2, "gate3_creator": g3, "usd_not_separable": usd_not_separable,
+            "return_test_may_run": bool(ok and not usd_not_separable), "decision": decision}
