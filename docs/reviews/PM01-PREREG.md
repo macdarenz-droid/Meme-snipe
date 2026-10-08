@@ -321,3 +321,17 @@ No MAJOR is open, so these are the last text changes before merge (merge still w
 93. **r4.** Map by PDA seeds and deriving program id, or by ATA owner, mint and token program; anything else is unmapped, so economic.
 94. **Reviewer m1.** B5 stays counted economic and is not tested: no read outside the allow-list, and it affects no window.
 95. **Reviewer m2.** Add part 7's pinned-rule VERIFY as start item 5.9.
+
+## Round 13 (head `a2d9a02f`): reviewer PASS (1 MINOR); red team 0 BLOCKER, 0 MAJOR, 3 MINOR
+
+- Block sha256 `1ca7e8cc…b381`, recomputed by both; base merge `047cf6c5` touches no PM-01 file.
+- Nothing at MAJOR remains. Reviewer m1: the Poisson path's 10% size rule is not in the block. Red team: r1, "absent before" over a short look-back flags rare, long-standing instructions; r2, reserve-changing types beyond the two listed ratios have no test; r3, whole-day denominators skew partial pending days.
+
+### Supervisor rulings for round 14, the last text changes (8 Oct 2026, 3:45 PM)
+
+96. **Reviewer m1.** Add `gates.boundary.part7.lowCount.sizeRule` (`{"on": "rate", "toleranceBps": 1000}`) so the evaluator applies it from the block.
+97. **r1.** "Absent before" means not seen since the latest pinned IDL baseline and not in the item 5.10 B-10 counts. Only a type never seen before is new. A type seen before but rare takes the Poisson path over the longest look-back that does not cross the previous economic boundary.
+98. **r2.** Every reserve-changing type with no pinned rule and no listed ratio is compared on its event rate per unit of swap volume (Poisson path) and its reserve-delta size distribution (KS plus the size rule). Items 5.9 and 5.10 list every such type found in the B-10 days.
+99. **r3.** Numerator and denominator cover the same span: fees and volume over the same UTC hour as the event, or over the covered span of a capped sample.
+
+After this push, one closure check by the reviewer and the red team; then #294 is ready, and its merge waits only on the owner's keep-or-undo answer (3:10 PM).
