@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **9 Oct 3:36 AM: hourly back-check.**
+  - Heads: base `f0ce7284`; #300 Z04 `9f23d462`, approved, waiting for its base merge with f0ce7284.
+  - #311 `53774d90`: e2e red at the usage-ledger backup check, with the builder.
+  - #312 `aa5b5f29`.
+  - #313 `a941cb5b`: round 3 rulings 43–44 with the builder.
+  - OF #296 `8aa5c131`, #214 `4ca9d41a`, #299 `024399cb`: round 8 in review and red team.
+  - No deploy since 6 PM. Owner waits unchanged.
 - **9 Oct 3:26 AM: #304 Z03 merged at `f0ce7284`** (the new base). The labelled CI was green on `daf16598`. The Z03 red team is archived. The Z03 reviewer stays parked until IDL-REPIN #313 merges. Next in the queue: Z04 merges `f0ce7284`, gets its label, CI, merge. #311's e2e is red for the third time, now at the later check `usage ledger is not in the backup`; it is with the builder. OF round 8 has gone to the OF-2 and OF-3 reviewers and red teams.
 - **9 Oct about 2:53 AM: merge queue.** Approved: Z03 #304 `daf16598` (label `856910671f…` added 15:48 UTC, CI running), Z04 #300 `9f23d462`, #311 `53774d90` (CI running after two e2e root-cause fixes: private chroot binds, and mkfs lazy init off), #312 (after #311). Order: #304 → #300 → #311 → #312. Each one merges the new base and runs CI before it merges. #313 IDL-REPIN round 2 (33–39) and OF round 8 are with their builders.
 - **9 Oct 2:36 AM: hourly back-check.** Heads (ls-remote): base `e99e61af`; #304 `5116d3ce` (ruling 32 pending); #313 `6529122d` (round 2 rulings 33–39 sent); #300 `9f23d462` (red team final, reviewer pending); #311 `6895104f` (e2e red: receipts image not preallocated, with the builder); #312 `cb738c2d`; OF #296 `56000cb1`, #214 `2e80aaae`, #299 `9700120f` (round 8 pending). No deploy since 6 PM. Owner waits unchanged.
