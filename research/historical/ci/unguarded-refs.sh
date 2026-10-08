@@ -30,7 +30,9 @@ file() {
 }
 while read -r line; do
   [[ -n "$line" ]] || continue
-  b=${line#tag }
+  # Round 6, ruling 48: refs/tags/NAME and refs/heads/NAME, so a tag and a branch of one
+  # name are each checked.
+  if [[ "$line" == "tag "* ]]; then b=refs/tags/${line#tag }; else b=refs/heads/$line; fi
   n=$((n + 1))
   unguarded=0
   rc=0; wf=$(file "$b" .github/workflows/data-scan.yml) || rc=$?
