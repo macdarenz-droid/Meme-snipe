@@ -7,7 +7,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import type { RawTransaction } from '@bot/types';
 import {
-  base58, decodeEvents, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction,
+  base58, decodeEvents, type LocatedEvent, type LocatedGap, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction,
   type GapReason, type InnerIx, type PinnedIdl,
 } from '../src/index.ts';
 import { accountsOf, bytes, decoders, fixture, idls, WSOL, type FixtureAccount } from './fixtures.ts';
@@ -90,6 +90,8 @@ describe('re-pin to pump-public-docs 8cda1fa', () => {
       assert.deepEqual(old.located[0]?.event, full.located[0]?.event);   // creator_fee_unclaimed is not mapped; every mapped field equal
       assert.deepEqual([cut(4).kinds, cut(4).gaps], [[], ['truncated']]);
       assert.deepEqual([cut(9).kinds, cut(9).gaps], [[], ['truncated']]);   // shorter than the previous pin: never padded
+      // Ruling 33: data ending on the boundary before the cb188ce last field (holder_rewards) is truncated, not padded.
+      assert.deepEqual([cut(16).kinds, cut(16).gaps], [[], ['truncated']]);
     }
   });
 });
@@ -178,6 +180,7 @@ describe('PostCompleteBuyEvent: the pool part of a completing buy, counted into 
     assert.deepEqual(pumpBuyTotals(r.located), [{
       signature: t.signature, outerIx: r.located[0]?.outerIx, mint, solAmount: trade.solAmount + 250_000_000n,
       tokenAmount: trade.tokenAmount + 5_000_000n, fee: trade.fee + 2_375_000n, creatorFee: trade.creatorFee + 125_000n,
+      incomplete: false,
     }]);
   });
 
@@ -229,5 +232,89 @@ describe('accounts the new pin lengthens', () => {
     assert.equal(d.decodeAccount(pool.owner, inside).kind, 'unknown');
     inside.fill(0, 8 + 263, 8 + 267);                                                    // zero bytes: capacity, read as 0
     assert.equal(d.decodeAccountWithFlags(pool.owner, inside).flags.shortLegacy, true);
+  });
+});
+
+describe('round 2 (rulings 33-38)', () => {
+  const d = decoders();
+  const trade = (signature: string, outerIx: number, mint: string, solAmount: bigint, extra: Partial<LocatedEvent> = {}): LocatedEvent => ({
+    event: { kind: 'pump_trade', mint, isBuy: true, solAmount, tokenAmount: solAmount * 10n, feeBps: 95, fee: 1n, creatorFeeBps: 30, creatorFee: 1n, quoteMint: null, slot: 1n, signature },
+    outerIx, innerIx: 0, layoutExtended: false, shortLegacy: false, multiHop: false, ...extra,
+  });
+
+  it('ruling 33: two top-level instructions buying the same coin in one transaction give two totals', () => {
+    const totals = pumpBuyTotals([trade('s', 2, 'm', 100n), trade('s', 3, 'm', 50n), trade('s', 2, 'm', 7n)]);
+    assert.deepEqual(totals.map((t) => [t.outerIx, t.solAmount]), [[2, 107n], [3, 50n]]);
+  });
+
+  it('ruling 37: a total is incomplete when a TradeEvent, a PostCompleteBuyEvent or an unnamed event gapped in its instruction', () => {
+    const gap = (outerIx: number, event: string | null, signature = 's'): LocatedGap => ({ signature, outerIx, innerIx: 9, reason: 'truncated', event });
+    const events = [trade('s', 2, 'm', 100n), trade('s', 3, 'm', 50n)];
+    const flags = (gaps: LocatedGap[]) => pumpBuyTotals(events, gaps).map((t) => t.incomplete);
+    assert.deepEqual(flags([]), [false, false]);
+    assert.deepEqual(flags([gap(2, 'PostCompleteBuyEvent')]), [true, false]);
+    assert.deepEqual(flags([gap(3, 'TradeEvent')]), [false, true]);
+    assert.deepEqual(flags([gap(2, null)]), [true, false]);
+    assert.deepEqual(flags([gap(2, 'BuyEvent'), gap(3, 'TradeEvent', 'other')]), [false, false]);   // another event, another transaction
+  });
+
+  it('ruling 37: onGapAt reports the place and the event of a gap that drops a PostCompleteBuyEvent', () => {
+    const rec = TRADES.find((x) => run(raw(x)).located.some((l) => l.event.kind === 'pump_trade' && l.event.isBuy)) as TxRecord;
+    const t = raw(rec);
+    const l = run(t).located[0] as LocatedEvent;
+    const group = t.meta.innerInstructions.find((g) => g.index === l.outerIx) as RawTransaction['meta']['innerInstructions'][number];
+    const tradeIx = group.instructions[l.innerIx] as InnerIx;
+    const disc = discOf(idl('pump').events, 'PostCompleteBuyEvent');
+    group.instructions.splice(l.innerIx + 1, 0, { ...tradeIx, dataB64: Buffer.from(PREFIX + disc + '00', 'hex').toString('base64') });   // a cut pool part
+    const gaps: LocatedGap[] = [];
+    const located = decodeEventsLocated(t, idls(), { onGapAt: (g) => gaps.push(g) }, { wsolMint: WSOL });
+    assert.deepEqual(gaps, [{ signature: t.signature, outerIx: l.outerIx, innerIx: l.innerIx + 1, reason: 'truncated', event: 'PostCompleteBuyEvent' }]);
+    assert.deepEqual(pumpBuyTotals(located, gaps).map((x) => x.incomplete), [true]);
+    assert.deepEqual(pumpBuyTotals(located).map((x) => x.incomplete), [false]);
+  });
+
+  it('ruling 38: a TradeEvent under a multi_hop_swap still decodes, is flagged multiHop and is left out of the buyer totals', () => {
+    const rec = fixture<TxRecord>('decoders/tx/v1_transaction.json');
+    const base = raw(rec);
+    const plain = run(base).located.filter((l) => l.event.kind === 'pump_trade');
+    assert.ok(plain.length > 0 && plain.every((l) => !l.multiHop));
+    assert.equal(pumpBuyTotals(plain).length, plain.filter((l) => l.event.kind === 'pump_trade' && l.event.isBuy).length > 0 ? 1 : 0);
+    const t = raw(rec);
+    const outer = t.message.instructions[plain[0]?.outerIx as number];
+    assert.ok(outer !== undefined);
+    t.message.accountKeys[outer.programIdIndex] = idl('pump_amm').program;      // the aggregator's place taken by PumpSwap
+    outer.dataB64 = withDisc(Buffer.alloc(24).toString('base64'), discOf(idl('pump_amm').instructions, 'multi_hop_swap'));
+    const hop = run(t).located.filter((l) => l.event.kind === 'pump_trade');
+    assert.deepEqual(hop.map((l) => [l.event, l.multiHop]), plain.map((l) => [l.event, true]));
+    assert.deepEqual(pumpBuyTotals(hop), []);
+  });
+
+  it('ruling 34: in a short account, any non-zero byte of a partial field past the old end is unknown', () => {
+    const pool = accountsOf('mainnet/pumpswap/pools/pool_9jkXWMyt.json').find((a) => a.role === 'pool') as FixtureAccount;
+    const full = bytes(pool);
+    for (let end = 8 + 264; end < 8 + 271; end++) {                              // inside protocol_fees (263..271)
+      for (let at = 8 + 263; at < end; at++) {
+        const cut = Uint8Array.from(full.slice(0, end));
+        cut.fill(0, 8 + 263);
+        cut[at] = 1;
+        assert.equal(d.decodeAccount(pool.owner, cut).kind, 'unknown', `${end - 8} bytes, byte ${at - 8} set`);
+      }
+      const zero = Uint8Array.from(full.slice(0, end)).fill(0, 8 + 263);
+      assert.equal(d.decodeAccountWithFlags(pool.owner, zero).flags.shortLegacy, true, `${end - 8} bytes, zeros`);
+    }
+  });
+
+  it('ruling 35: shortLegacy is set exactly when an appended field was read as zero (accounts and events)', () => {
+    const pool = accountsOf('mainnet/pumpswap/pools/pool_9jkXWMyt.json').find((a) => a.role === 'pool') as FixtureAccount;
+    const full = bytes(pool);
+    assert.equal(d.decodeAccountWithFlags(pool.owner, full.slice(0, 8 + 279)).flags.shortLegacy, false);   // the whole 8cda1fa layout
+    for (const n of [263, 271]) assert.equal(d.decodeAccountWithFlags(pool.owner, full.slice(0, 8 + n)).flags.shortLegacy, true, `${n}`);
+    const t = raw(TRADES[0] as TxRecord);
+    assert.equal(run(t).located[0]?.shortLegacy, false);
+    const l = run(t).located[0] as LocatedEvent;
+    const ix = t.meta.innerInstructions.find((g) => g.index === l.outerIx)?.instructions[l.innerIx] as InnerIx;
+    const data = Buffer.from(ix.dataB64, 'base64');
+    ix.dataB64 = data.subarray(0, data.length - 8).toString('base64');
+    assert.equal(run(t).located[0]?.shortLegacy, true);
   });
 });

@@ -33,10 +33,19 @@ export interface PumpPostCompleteBuy {
 /** Every event M02 decodes: the `DecodedEvent` variants and `PumpPostCompleteBuy`. */
 export type M02Event = DecodedEvent | PumpPostCompleteBuy;
 
+/**
+ * A gap with its place (card IDL-REPIN, ruling 37): the instruction it sat at and, when its discriminator was read, the
+ * IDL event name, so `pumpBuyTotals` can tell a buy whose parts did not all decode. `no_inner` has no place and is not
+ * reported here.
+ */
+export interface LocatedGap { signature: Signature; outerIx: number; innerIx: number; reason: GapReason; event: string | null }
+
 export interface EventHooks {
   /** `decode_events_total{kind}` and `decode_gap_total{reason}` (M27). */
   onEvent?(kind: M02Event['kind']): void;
   onGap?(reason: GapReason): void;
+  /** Every gap but `no_inner`, with its place (ruling 37); called after `onGap`. */
+  onGapAt?(gap: LocatedGap): void;
   /**
    * `decode_layout_extended_total{kind}` (M27; Z03 ruling 2): the event's data holds `bytes` more than the pinned layout
    * describes, as TradeEvent, BuyEvent and SellEvent did under the earlier pin cb188ce (pump appended
@@ -84,9 +93,11 @@ export interface QuoteMints { wsolMint?: Pubkey }
  * An event with where it sat in its transaction (Z03 ruling m11): `outerIx` is the top-level instruction, `innerIx`
  * its position in that instruction's inner list, so with the signature a second delivery of the same event is told
  * from a second fill. `layoutExtended`: the event's data held bytes the pinned layout does not describe (ruling 2).
- * `shortLegacy`: the event was emitted before fields the pin appends existed, and reads them as 0 (card IDL-REPIN).
+ * `shortLegacy`: the event was emitted before fields the pin appends existed, and reads them as 0 (card IDL-REPIN); a
+ * consumer that reads an appended field checks it (IDL-REPIN-2). `multiHop`: a PumpSwap `multi_hop_swap` instruction
+ * is among the event's invokers (ruling 38), so it is one hop of a route, not a trade of its own.
  */
-export interface LocatedEvent { event: M02Event; outerIx: number; innerIx: number; layoutExtended: boolean; shortLegacy: boolean }
+export interface LocatedEvent { event: M02Event; outerIx: number; innerIx: number; layoutExtended: boolean; shortLegacy: boolean; multiHop: boolean }
 
 /**
  * POLICY (card IDL-REPIN): the last field each event had at the previous pin cb188ce, for the events pump-public-docs
@@ -289,31 +300,55 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
     return [];
   }
   const out: LocatedEvent[] = [];
+  const amm = idls.find((i) => i.name === 'pump_amm');
+  /** True when `ix` is PumpSwap's `multi_hop_swap` (ruling 38). */
+  const isMultiHop = (ix: Ix | undefined): boolean => {
+    if (ix === undefined || amm?.multiHopSwap == null || programOf(ix) !== amm.program) return false;
+    const length58 = (ix as InnerIx).dataLength58;
+    if (length58 !== undefined && length58 > MAX_EVENT_DATA_B58) return false;
+    const d = Buffer.from(ix.dataB64, 'base64');
+    return d.length >= 8 && d.length <= MAX_EVENT_DATA_BYTES && d.subarray(0, 8).toString('hex') === amm.multiHopSwap.disc;
+  };
   for (const group of tx.meta.innerInstructions) {
     const parent = tx.message.instructions[group.index];
     const top = parent === undefined ? undefined : programOf(parent);   // undefined: a bad trace for any event below
     const ixs: readonly InnerIx[] = group.instructions;
     const hs = heightsOf(ixs);
+    /** Whether a `multi_hop_swap` invoked instruction `k`, walking its invokers up to the top-level instruction. */
+    const underMultiHop = (k: number): boolean => {
+      let j = k;
+      for (;;) {
+        const a = hs === 'bad' ? undefined : hs === null ? -1 : invokerIndex(j, hs);
+        if (a === undefined) return false;
+        if (a === -1) return isMultiHop(parent);
+        if (isMultiHop(ixs[a])) return true;
+        j = a;
+      }
+    };
     for (const [k, ix] of ixs.entries()) {
+      const gap = (reason: GapReason, event: string | null): void => {
+        hooks.onGap?.(reason);
+        hooks.onGapAt?.({ signature: tx.signature, outerIx: group.index, innerIx: k, reason, event });
+      };
       const program = programOf(ix);
       const idl = program === undefined ? undefined : byProgram.get(program);
       if (program === undefined || idl === undefined) continue;   // other programs' data is never decoded
-      if (ix.dataLength58 !== undefined && ix.dataLength58 > MAX_EVENT_DATA_B58) { hooks.onGap?.('oversized'); continue; }
+      if (ix.dataLength58 !== undefined && ix.dataLength58 > MAX_EVENT_DATA_B58) { gap('oversized', null); continue; }
       const data = Buffer.from(ix.dataB64, 'base64');
-      if (data.length > MAX_EVENT_DATA_BYTES) { hooks.onGap?.('oversized'); continue; }
+      if (data.length > MAX_EVENT_DATA_BYTES) { gap('oversized', null); continue; }
       if (data.length < 8 || data.subarray(0, 8).toString('hex') !== EVENT_CPI_PREFIX) continue;   // a normal CPI
       // An inconsistent call trace or a missing invoker: the event cannot be trusted, and the gap is counted.
       const at = hs === 'bad' ? undefined : hs === null ? -1 : invokerIndex(k, hs);
       const invoker = at === undefined ? undefined : at === -1 ? top : programOf(ixs[at] as Ix);
-      if (invoker === undefined) { hooks.onGap?.('bad_trace'); continue; }
+      if (invoker === undefined) { gap('bad_trace', null); continue; }
       const invokerIx = at === -1 ? parent : ixs[at as number];
       if (invoker !== program) continue;                      // not a self-CPI: ignored
       const disc = data.length >= 16 ? toHex(data.subarray(8, 16)) : '';
       const def = idl.events.get(disc);
       if (def === undefined) {
-        hooks.onGap?.('unknown_disc');
+        gap('unknown_disc', null);
         hooks.onUnknown?.(program, disc, tx.signature);
-        out.push({ event: { kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature }, outerIx: group.index, innerIx: k, layoutExtended: false, shortLegacy: false });
+        out.push({ event: { kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature }, outerIx: group.index, innerIx: k, layoutExtended: false, shortLegacy: false, multiHop: underMultiHop(k) });
         continue;
       }
       let ev: M02Event | null;
@@ -326,35 +361,53 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
         shortLegacy = read.shortLegacy;
         ev = mapEvent(idl.name, def.name, value, tx.slot, tx.signature, () => invokerQuoteMint(invokerIx, idl, keys), quote.wsolMint);
       } catch (e) {
-        hooks.onGap?.(gapOf(e));                              // never a guessed event
+        gap(gapOf(e), def.name);                              // never a guessed event
         continue;
       }
       if (ev === null) continue;
       hooks.onEvent?.(ev.kind);
       if (extra > 0) hooks.onLayoutExtended?.(ev.kind, extra);
-      out.push({ event: ev, outerIx: group.index, innerIx: k, layoutExtended: extra > 0, shortLegacy });
+      out.push({ event: ev, outerIx: group.index, innerIx: k, layoutExtended: extra > 0, shortLegacy, multiHop: underMultiHop(k) });
     }
   }
   return out;
 }
 
-/** One buyer's curve purchase of one coin in one top-level instruction, the pool part of a completing buy included. */
-export interface PumpBuyTotal { signature: Signature; outerIx: number; mint: Pubkey; solAmount: Lamports; tokenAmount: BaseUnits; fee: Lamports; creatorFee: Lamports }
+/**
+ * One buyer's curve purchase of one coin in one top-level instruction, the pool part of a completing buy included.
+ * `incomplete`: a TradeEvent, a PostCompleteBuyEvent or an event that could not be named gapped in the same top-level
+ * instruction (ruling 37), so the amounts may lack a part; a reader treats it as unknown, never as the total.
+ */
+export interface PumpBuyTotal {
+  signature: Signature; outerIx: number; mint: Pubkey; solAmount: Lamports; tokenAmount: BaseUnits; fee: Lamports; creatorFee: Lamports;
+  incomplete: boolean;
+}
+
+/** The IDL events whose gap can take a part from a pump buyer's total; a gap with no event name counts too. */
+const BUY_TOTAL_PARTS = new Set(['TradeEvent', 'PostCompleteBuyEvent']);
 
 /**
  * The buyer's totals of pump curve buys (card IDL-REPIN): each `pump_trade` buy plus the `pump_post_complete_buy` of
  * the same coin in the same top-level instruction, summed per signature, top-level instruction and coin in the order
  * first seen. pump-public-docs 8cda1fa, docs/SYNTHETIC_MIGRATION.md: "the buyer's total is the `TradeEvent` amounts
- * plus the `PostCompleteBuyEvent` amounts"; a `multi_hop_swap` curve hop may be followed by the same events. A curve
- * hop and a coin bought twice in one instruction are summed per coin. Sells are not counted.
+ * plus the `PostCompleteBuyEvent` amounts". A coin bought twice in one instruction is summed; sells are not counted.
+ * Events under a `multi_hop_swap` are left out (ruling 38): the middle coins of a route net to zero for the user, and
+ * routes are not decoded until a real multi-hop fixture proves them. `gaps` (from `onGapAt`) mark totals `incomplete`
+ * (ruling 37). Before any card reads these totals, a golden from a real mainnet completing v3 buy is required, because
+ * the SOL rule for PostCompleteBuyEvent's quote mint (default key, not wSOL) is UNVERIFIED (ruling 37; Z08, PM01-KILL).
  */
-export function pumpBuyTotals(events: readonly LocatedEvent[]): PumpBuyTotal[] {
+export function pumpBuyTotals(events: readonly LocatedEvent[], gaps: readonly LocatedGap[] = []): PumpBuyTotal[] {
   const totals = new Map<string, PumpBuyTotal>();
-  for (const { event: e, outerIx } of events) {
+  const gapped = new Set(gaps.filter((g) => g.event === null || BUY_TOTAL_PARTS.has(g.event)).map((g) => `${g.signature} ${g.outerIx}`));
+  for (const { event: e, outerIx, multiHop } of events) {
+    if (multiHop) continue;
     if (e.kind !== 'pump_trade' && e.kind !== 'pump_post_complete_buy') continue;
     if (e.kind === 'pump_trade' && !e.isBuy) continue;
     const key = `${e.signature} ${outerIx} ${e.mint}`;
-    const t = totals.get(key) ?? { signature: e.signature, outerIx, mint: e.mint, solAmount: 0n, tokenAmount: 0n, fee: 0n, creatorFee: 0n };
+    const t = totals.get(key) ?? {
+      signature: e.signature, outerIx, mint: e.mint, solAmount: 0n, tokenAmount: 0n, fee: 0n, creatorFee: 0n,
+      incomplete: gapped.has(`${e.signature} ${outerIx}`),
+    };
     totals.set(key, { ...t, solAmount: t.solAmount + e.solAmount, tokenAmount: t.tokenAmount + e.tokenAmount, fee: t.fee + e.fee, creatorFee: t.creatorFee + e.creatorFee });
   }
   return [...totals.values()];
