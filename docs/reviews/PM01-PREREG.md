@@ -155,3 +155,29 @@ All 19 round 1 findings are closed.
 33. **R-n6.** Pin the program IDs and config account addresses from the pinned IDLs in this repo. L-4 hashes only the listed economic fields. If a field list cannot be confirmed from the pinned IDLs, mark it VERIFY with its source.
 34. **R-n7.** Report the bankroll P-9 implies as PM-01's capital requirement (DERIVED, approximate).
 35. **R-n8.** The RNG sort key includes the config id. B-8 checks a week only when it holds ≥ 10 trades; a smaller edge week is merged into the next one.
+
+## Round 5 (head `6457e652`): reviewer FAIL on 1 MAJOR, 4 MINOR; red team 0 BLOCKER, 2 MAJOR, 7 MINOR
+
+- Both: the frozen block does not hold every affectsReturns value (and no gate thresholds), so the hash check is weaker than it reads.
+- Red team R3-M2: economic boundaries come about as often as the windows last, so W_B may never complete.
+- Minors: the VERIFY items are not in the start condition; field omissions (fee_recipient, create_v2_enabled, whitelist_pda); the idl-pinned citation; two ruling numberings; the per-window monthly row is outside the hash; a re-run against an absorbing kill; the interval row difference; the Rent source.
+
+### Supervisor rulings for round 6 (8 Oct 2026, 3:07 PM)
+
+36. **The frozen block (V-M1, R3-M1).**
+    - Add an `engine` sub-object holding the values, or the sha256 of each frozen file they live in: risk config (MAXOPEN, PERTOKEN, DEPTHPCT, LOSSRUN, the live-small limit table), the M06 threshold table, features config (dump window, −4×MAD, bar completeness, freshness, M08 bar keys), the exit ladder, and the cost parameters.
+    - Add a `gates` sub-object with every decision threshold: coverage 95%, effective size, side floors, n_b, B-8 ≥ 10 trades, embargo, the W_B 30 days and 300 trades, the kill subsets, and the bootstrap resamples and block rule.
+    - configKey = hash(block bytes ‖ the sha256s of the referenced files). The engine's configKey must equal it, or the run refuses.
+    - AC: changing any one listed value makes the run refuse.
+37. **Boundaries (R3-M2).**
+    - (a) The decoder-only test is mechanical. For one day after an upgrade, every swap's output is recomputed with the pinned formula from the pre-upgrade fields. If every result matches exactly and no listed economic field changed, the upgrade is decoder-only; otherwise it is economic.
+    - (b) A fee-only economic change (only fee fields changed) does not end the window. Every trade in the window is costed at the higher of the old and new fee, and the window is reported as split. Every other economic class still ends the window.
+    - Kill rule 4's 90-day clock does not restart with W_B; it counts from the first W_B start.
+38. **r1.** Each window's run bundle records the sha256 of its monthly DECISIONS row at the window's start and refuses if the row changes. R-3 and P-3 use the higher of the two windows' figures on both sides.
+39. **r2.** A recorded kill stands, unless the fix record shows the bug changed the failing statistic. Even then, the retry counts as a new trial and goes to the owner first.
+40. **r3 and V-m2.** Hash `fee_recipient`, `create_v2_enabled` and `whitelist_pda`, or record for each why it is not economic.
+41. **r4 and V-m3.** Write "pump_fees entry sha256 d87b5230… in idl-pinned.json".
+42. **r5 and V-m4.** Use one numbering: review-file rulings are cited with a prefix (for example "R5-29"). Add round 5 at 9:47 AM and round 6 at 3:07 PM to the §13 header.
+43. **r6.** State that the voided-W_R kill (lean row) and R-3/P-3 (conservative row) use different rows on purpose.
+44. **r7.** List `burn_percent` as excluded, with the reason. The VERIFY source for the Rent fields is the Solana SDK `Rent` struct at a named version.
+45. **V-m1.** The VERIFY items (config addresses re-derived from the IDL PDA seeds, the graduation field, the Rent fields) become start-condition item 5, so the screen cannot start with them open.
