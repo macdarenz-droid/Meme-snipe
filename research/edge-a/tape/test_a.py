@@ -555,6 +555,21 @@ class TestReturnTestQ9(unittest.TestCase):
         r3 = O.trades(sw, self.ent([(0, 5, 410.0, 100)]), self.blocks, self.segs, self.tiers).iloc[0]
         self.assertEqual(r3.exit_kind, "time")                             # 398 >= 0.95 x 410 = 389.5
 
+    def test_exit_state_without_a_chain_reading_is_dropped(self):
+        # AMENDMENT_3 item 5 (R1-24): a state with no chain reading is never priced: the trade is dropped and counted
+        O = self.O
+        sw = self.sw([(0, 100, 410.0, 421e9), (0, 500, 398.0, float("nan"))])
+        tr = O.trades(sw, self.ent([(0, 0, 420.0, 100)]), self.blocks, self.segs, self.tiers)
+        self.assertEqual(tr.iloc[0].dropped, "exit_no_chain_reading")
+        j = O.judge(tr, ["2026-09-10"], n_boot=50)
+        self.assertEqual((j["n_trades"], j["dropped"]), (0, {"exit_no_chain_reading": 1}))
+        sw3 = self.sw([(0, 100, 410.0, 421e9), (0, 500, 398.0, 400e9), (0, 523, 398.0, float("nan"))])
+        self.assertEqual(O.trades(sw3, self.ent([(0, 0, 420.0, 100)]), self.blocks, self.segs,
+                                  self.tiers).iloc[0].dropped, "exit_no_chain_reading")   # the slot's end has none
+        sw2 = self.sw([(0, 100, 410.0, float("nan")), (0, 500, 398.0, 400e9)])
+        self.assertEqual(O.trades(sw2, self.ent([(0, 0, 420.0, 100)]), self.blocks, self.segs,
+                                  self.tiers).iloc[0].dropped, "entry_no_chain_reading")
+
     def test_no_look_ahead_after_the_exit(self):
         O = self.O
         base = [(0, 100, 410.0, 421e9), (0, 500, 430.0, 430e9)]
