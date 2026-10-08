@@ -135,6 +135,12 @@
 - **8 Oct 3:12 PM: docs branches.** Every push to `claude/supervisor-docs` restarts #298's CI (one concurrency group). The log now goes to `claude/supervisor-docs-2` until #298 merges at `d2ba7204` (reviewer PASS at `f0220a00`; the delta to `d2ba7204` is one review-log commit, records only). After the merge, `claude/supervisor-docs-2` merges the base and becomes the next docs PR.
   - #293: round 7 reviewer PASS at `5be4b143`; red team 2 MAJOR (T1 what-if vs re-validation; T2 fill sets); round 8 rulings 77–81 sent.
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
+- **8 Oct 3:33 PM:**
+  - **#300 Z04** ready (head `8d18027a`, 7,346 tests, label `deps-reviewed:2923e9b440472556ad4e48d9e1f4b978`). Reviewer `session_01DyzMPdLwhExKfZU6jxjZ2P`, red team `session_01NMmTk3S5Ztm8mcuCQ2nD4f`. Ruling: keep the `E_QUEUE_FULL` throw; B-M19-01 treats it as a failed record that blocks new entries (fail closed).
+  - **#301 Z02** ready (head `ff140bce`, 7,544 tests, label `deps-reviewed:d33f2cbaa4d5b9d82ba7a054ee0aad10`). Reviewer `session_01SrirRVi47enLdpHRtJFee7`, red team `session_01VSjjTjEsn1LfDCts9AqEm4`. Answers sent: zod cell dated 2026-10-08; contract sign-offs after review; guard.ts change only as a scope fix; Node 22.23.3 pin stays (VF-08 note to Z0D-2); write latency is a later server check. Follow-up: metric_rollup_1m keeps per-pool series 1 year (about 9.1 GB a year, builder's estimate) against the 55 GB disk.
+  - #295 OPS-CLEAN round 2 head `a19ba37e`: delta review PASS (3 MINOR: a silent exit when the host lock is busy; a pre-existing restart race during the hold; the lock is stubbed in tests). Red team round 2 running.
+  - #293 STRATEGY-INTAKE: rounds 12–14 (rulings 96–107); head `4bf69714`, review and red team round 14 running. Each round the reviewer passes and the red team finds one narrower MAJOR.
+  - #294 PM-01: round 10 head `e7a40562`; delta review FAIL on one MAJOR (the pinned pump IDL lacks the v3 instructions live since 2 Oct, so every later upgrade would read as economic); red team round 8 running.
 - **8 Oct 3:25 PM:**
   - #294 PM-01: round 8 reviewer PASS at `c0bdb04a` (1 MINOR); red team round 6: 0 BLOCKER, 0 MAJOR, 5 MINOR. Round 9 rulings 63–67 (`docs/reviews/PM01-PREREG.md`) sent to `session_015oSGiMB1sKnM13Di7CE8np`. Merge still waits on the owner's keep-or-undo answer (3:10 PM).
   - #293 STRATEGY-INTAKE: round 11 head `ed4cb0d3` (rulings 91–95). Delta review and red team round 11 sent to the same sessions.
