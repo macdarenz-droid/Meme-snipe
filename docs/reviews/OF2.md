@@ -103,3 +103,8 @@ Round 3 items A, B and C are closed. No archive request is possible from current
 40. **MINOR 5.** OLD-FAITHFUL §2 states that one cancelled or timed-out check stops the chain until a reviewed re-arm. Whether `always()` steps run after a job-level timeout is VERIFY; the chain fails closed either way.
 41. **MINOR 6.** The "data-scan volume" title skip applies only to default-branch runs whose head SHA is guarded.
 42. **MINOR 7.** If the run list reaches its cap (500), the guard fails closed. It also lists `status=in_progress` runs explicitly.
+
+### Round 4 reviewer: PASS at `dd08171c` (2 MINOR)
+
+- test-ci 212/213/224 pass; 15 rows fail on the `3b67e97d` files. Labels match. Merge-forwards consistent. Arming refuses today: data-scan.yml still grants `contents: write` and uploads the day artifact.
+- m1 is the red team's MAJOR 1, covered by ruling 36. m2: the parser and the log retention stay VERIFY items on the arm checklist (rulings 28 and 33).
