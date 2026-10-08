@@ -91,7 +91,8 @@ def rebuy_stratum(tape: Tape, exits, pts, prs, hourly):
 # ------------------------------------------------------------------ count row: H8 capacity
 def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
     """H8_AMENDMENT item 4: per day, H8-eligible pool-hours and graduates at $5, $20 and $50.
-    Pool-hours: canonical, non-mayhem PumpSwap WSOL pools, at each whole UTC hour inside the loaded tape, with an
+    Pool-hours: canonical, non-mayhem PumpSwap WSOL pools (pools whose mayhem flag is not on the tape are counted
+    apart, as `*_mayhem_unknown`), at each whole UTC hour inside the loaded tape, with an
     as-of state at the hour start. Graduates: eligible graduates (migration on the tape) whose effective quote at
     m + 60 min (H10's earliest entry) meets the floor (Q25)."""
     days = sorted({d for d, _, _ in tape.ranges})
@@ -110,8 +111,10 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
         mint = g["mint"].iloc[0]
         if mint not in mayhem_cache:
             mayhem_cache[mint] = tape.mayhem_of_mint(mint)
-        if mayhem_cache[mint] != 0:
+        mh = mayhem_cache[mint]
+        if mh == 1:
             continue
+        known = mh == 0         # Q25: pools with unknown mayhem are counted apart, never in the main count
         g = g.sort_values("order")
         ps = RB.pool_state(g)
         for d, h in hours:
@@ -121,9 +124,9 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
             i, mid, eq = RB.state_asof(ps, h, st)
             if i < 0 or not np.isfinite(eq[i]):
                 continue
-            rows.append({"day": d, "hour": h, "pool": pool, "eff_quote": float(eq[i]),
+            rows.append({"day": d, "hour": h, "pool": pool, "mayhem_known": known, "eff_quote": float(eq[i]),
                          **{f"ok_{z}": eligible(eq[i], h, z, hourly) for z in SIZES_USD}})
-    ph = pd.DataFrame(rows, columns=["day", "hour", "pool", "eff_quote"] + [f"ok_{z}" for z in SIZES_USD])
+    ph = pd.DataFrame(rows, columns=["day", "hour", "pool", "mayhem_known", "eff_quote"] + [f"ok_{z}" for z in SIZES_USD])
     pp = R.by_pool(s)
     grads = []
     for r in R.eligible_pools(tape).itertuples(index=False):
@@ -140,11 +143,14 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
     gr = pd.DataFrame(grads, columns=["day", "pool", "assessable"] + [f"ok_{z}" for z in SIZES_USD])
     summ = {}
     for d in days:
-        x, y = ph[ph["day"] == d], gr[gr["day"] == d]
-        summ[d] = {"pool_hours": int(len(x)), "graduates": int(len(y)),
+        xa, y = ph[ph["day"] == d], gr[gr["day"] == d]
+        x = xa[xa["mayhem_known"].astype(bool)] if len(xa) else xa
+        xu = xa[~xa["mayhem_known"].astype(bool)] if len(xa) else xa
+        summ[d] = {"pool_hours": int(len(x)), "pool_hours_mayhem_unknown": int(len(xu)), "graduates": int(len(y)),
                    "graduates_assessable_at_m_plus_60": int(y["assessable"].sum()) if len(y) else 0,
                    "hours_without_sol_usd": int(sum(1 for dd, h in hours if dd == d and not np.isfinite(px_asof(hourly, h))))}
         for z in SIZES_USD:
             summ[d][f"${z}"] = {"h8_pool_hours": int(x[f"ok_{z}"].sum()) if len(x) else 0,
+                                "h8_pool_hours_mayhem_unknown": int(xu[f"ok_{z}"].sum()) if len(xu) else 0,
                                 "h8_graduates": int(y[f"ok_{z}"].fillna(False).astype(bool).sum()) if len(y) else 0}
     return ph, gr, summ

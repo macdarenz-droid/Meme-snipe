@@ -501,8 +501,16 @@ class H8Stratum(unittest.TestCase):
         ph, gr, summ = H8.h8_capacity(tape, s, flat_hourly(200.0))
         x = summ[DAY]
         self.assertEqual(x["pool_hours"], 4)                  # hour starts T0+800 ... T0+11600
+        self.assertEqual(x["pool_hours_mayhem_unknown"], 0)
         self.assertEqual((x["$5"]["h8_pool_hours"], x["$50"]["h8_pool_hours"]), (4, 0))
         self.assertEqual((x["graduates"], x["$20"]["h8_graduates"], x["$50"]["h8_graduates"]), (1, 1, 0))
+        u = rebuy_unit()
+        u.ev = [e for e in u.ev if e["event"] not in ("CreateEvent", "CreatePoolEvent")]
+        u.curve = []                                          # no mayhem flag anywhere on the tape
+        tape2, s2, _ = load(u)
+        _, _, sm = H8.h8_capacity(tape2, s2, flat_hourly(200.0))
+        self.assertEqual((sm[DAY]["pool_hours"], sm[DAY]["pool_hours_mayhem_unknown"]), (0, 4))
+        self.assertEqual(sm[DAY]["$5"]["h8_pool_hours_mayhem_unknown"], 4)
         _, _, summ = H8.h8_capacity(tape, s, {})
         self.assertEqual(summ[DAY]["$5"]["h8_pool_hours"], 0)   # no price: nothing is eligible
 
