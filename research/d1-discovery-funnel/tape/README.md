@@ -10,8 +10,9 @@ U=$(ls -d /home/user/tape-cache/2026-09-1[01]/*-*)        # the unit directories
 nice -n 19 python3 run_d1.py stage1 --units $U --days 2026-09-10 2026-09-11 --out RUN   # points + features
 nice -n 19 python3 run_d1.py stage2 --out RUN          # outcomes; reads exactly stage 1's units and re-checks their sha256
 nice -n 19 python3 run_d1.py summary --run RUN                                          # counts and shapes only
-nice -n 19 python3 run_d1.py search  --run RUN --out RUN/frozen_rules.json              # PREREG §5
-nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --confirm-validation-read   # §6, later
+nice -n 19 python3 run_d1.py summary --run RUN --solusd SOLUSDT-1h.csv                  # + H8 count row
+nice -n 19 python3 run_d1.py search  --run RUN --out RUN/frozen_rules.json --solusd SOLUSDT-1h.csv   # PREREG §5
+nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --solusd SOLUSDT-1h.csv --confirm-validation-read   # §6, later
 ```
 
 **Inputs.** The inputs are a list of unit directories `<cache>/<day>/<from>-<to>`, each holding `research/*.csv.zst` and `E.jsonl.zst`, and the day(s) they belong to.
@@ -37,6 +38,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
   - stage2 refuses when the unit files differ from stage 1's hashes.
   - `search` and `validate` refuse when hashes are skipped, when the two stages read different units, or when either stage ran on other code.
   - `validate` also refuses frozen rules made by other code.
+- **H8 stratum.** `search` and `validate` refuse without `--solusd`. `validate` refuses frozen rules made before the H8 amendment (`run_d1.FROZEN_AMENDMENTS`).
 - `search` refuses dev runs and any day that is not a discovery day.
 - `validate` refuses unless `--confirm-validation-read` is passed, and refuses when its days overlap the discovery days.
 - `--dev-unknown-migration` exists only for shape checks on the few units cached now. It gives pools that migrated before the tape a pseudo migration. Its runs are marked `dev` and can never be searched or validated.
@@ -47,7 +49,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - **Future-marker test.** `test_planted_future_marker` plants extreme rows of every table one slot after a decision and requires every earlier decision's features to be unchanged. The test was mutation-checked: a one-slot leak in features, clusters or holders makes it fail.
 
 ## Tests
-`cd tape && python3 -m unittest -v` runs 37 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
+`cd tape && python3 -m unittest -v` runs 43 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
 - costs;
 - pool state;
 - universe and timing;
@@ -58,7 +60,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - outcomes;
 - the search (planted rule found, "nothing found", fold gap, edges from training only, throttle);
 - validation verdicts;
-- the amendments (rent by date band, binary and degenerate features, cost screen);
+- the amendments (rent by date band, binary and degenerate features, cost screen, H8 stratum and count row);
 - BOOST flagging;
 - the guards (dev runs, partial days, overlapping days, plan sha, incomplete plan, input hashes, code sha).
 
@@ -82,6 +84,7 @@ Every review and amendment fix was mutation-checked: undoing it makes a test fai
 | §5 1,568 rules per hold, quintiles from training folds; binary and degenerate features (AMENDMENT_1 item 23) | `search.all_rules`, `search.edges_of`, `search.side_mask` |
 | §5 score, ≥ 30 trades a fold, net mean > 0 in every fold (AMENDMENT_1 item 24), advance ≤ 5, frozen edges | `search.run_search` |
 | Step A complete and inputs pinned (review fixes) | `stepa.plan_check`, `run_d1.search_guard`, `run_d1.validate_guard`, `run_d1.stage2` |
+| H8_AMENDMENT: H8-eligible stratum at $5/$20/$50 (search table, validation), "tradable as the bot stands", count row | `h8.add_h8`, `h8.price_asof`, `h8.h8_counts`, `search.run_search` (`h8_s*` columns), `validate.h8_report`, `outcomes._sized` |
 | BOOST and protocol swaps flagged and left out of flow (OPEN_QUESTIONS #21) | `load.load` (`boost`, `protocol`, `signature`), `pool_state.flow_rows` |
 | §6 99.5% pool-clustered bootstrap by day, ≥ 300 trades, positive each day, lift, verdicts | `validate.judge`, `validate.cluster_bootstrap`, `validate.rule_trades` |
 | §7 as-of with a future marker, fold gaps, training-only edges, code and input hashes | tests `test_planted_future_marker`, `test_fold_gap`, `test_edges_from_training_only`; `run_d1.code_hash`, `load.file_hashes` |

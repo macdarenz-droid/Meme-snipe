@@ -55,7 +55,8 @@ def dev_zero_stratum(dz: pd.DataFrame, days, hourly):
         if not len(dz) or "eff_quote" not in dz:
             out[f"${size}"] = R.dev_summary(dz.iloc[:0] if len(dz) else dz, days)
             continue
-        ok = (dz["dropped"] == "") & [eligible(q, t, size, hourly) for q, t in zip(dz["eff_quote"], dz["block_time"])]
+        ok = (dz["dropped"] == "").to_numpy() & np.array(
+            [eligible(q, t, size, hourly) for q, t in zip(dz["eff_quote"], dz["block_time"])], bool)
         out[f"${size}"] = R.dev_summary(dz[ok], days)
     return out
 

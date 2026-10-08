@@ -252,26 +252,34 @@ def extract(win_X, win_hold, ctl_X):
 
 
 # ---------------------------------------------------------------- rule test (untouched days; outcome stage)
-def replay_entry(rows_states, mint, entry_slot, exit_slot):
-    """$50 in at the end of entry_slot, all out at the end of exit_slot; return net of fixed costs."""
+def replay_entry(rows_states, mint, entry_slot, exit_slot, first_slot=None, last_slot=None):
+    """$50 in at the end of entry_slot, all out at the end of exit_slot; return net of fixed costs. AMENDMENT_3: no
+    state on the tape (or a slot not read) -> nan (dropped, share reported); a refused entry -> -100%; an exit the vault
+    cannot pay scores what it pays."""
     from .replay import END_OF_SLOT, _tuple
+    if first_slot is not None and not (first_slot <= entry_slot <= last_slot and first_slot <= exit_slot <= last_slot):
+        return float("nan")
     h = States()
     se = h.asof(rows_states, [mint], load.make_key([entry_slot], END_OF_SLOT, 255))
     sx = h.asof(rows_states, [mint], load.make_key([exit_slot], END_OF_SLOT, 255))
-    tok, _ = venue.buy_exact_in(_tuple(se, 0), REPLAY_SPEND)
-    if tok <= 0:   # unquotable: -100% (pessimistic; OPEN_QUESTIONS Q33)
+    a, x = _tuple(se, 0), _tuple(sx, 0)
+    if a is None or x is None:
+        return float("nan")
+    tok, _ = venue.buy_exact_in(a, REPLAY_SPEND)
+    if tok <= 0:
         return -1.0
-    return (venue.sell(_tuple(sx, 0), tok) - REPLAY_SPEND - FIXED_ROUND_TRIP) / REPLAY_SPEND
+    return (venue.sell(x, tok) - REPLAY_SPEND - FIXED_ROUND_TRIP) / REPLAY_SPEND
 
 
-def rule_test_trades(fires, controls, rows_states, hold_slots):
+def rule_test_trades(fires, controls, rows_states, hold_slots, first_slot=None, last_slot=None):
     """fires/controls: frames with mint, slot, day. Entry D = slot + 23; exit = entry + hold."""
     out = []
     for name, df in (("rule", fires), ("control", controls)):
         for m, s, d in zip(df["mint"], df["slot"], df["day"]):
             e = int(s) + REPLAY_DELAY_SLOTS
             out.append({"arm": name, "day": d, "mint": int(m), "entry_slot": e,
-                        "ret": replay_entry(rows_states, int(m), e, e + int(round(hold_slots)))})
+                        "ret": replay_entry(rows_states, int(m), e, e + int(round(hold_slots)), first_slot,
+                                            last_slot)})
     return pd.DataFrame(out, columns=["arm", "day", "mint", "entry_slot", "ret"])
 
 
@@ -297,19 +305,21 @@ def pool_bootstrap(trades, b=10_000, seed=SEED):
 def rule_test_verdict(trades, required_days, b=10_000, seed=SEED):
     """§8 pass: 99.5% lower bound > 0 (pool-clustered bootstrap stratified by day, AMENDMENT_2 Q20), >= 300 trades,
     positive on each day, and the lift over the control > 0. Every required day must have rule trades."""
+    dropped = float((~np.isfinite(trades.loc[trades["arm"] == "rule", "ret"])).mean()) if len(trades) else None
     r = trades[(trades["arm"] == "rule") & np.isfinite(trades["ret"])]
     c = trades[(trades["arm"] == "control") & np.isfinite(trades["ret"])]
     missing = sorted(set(required_days) - set(r["day"]))
     x = r["ret"].to_numpy()
     if len(x) == 0 or missing:
-        return {"pass": False, "trades": int(len(x)), "days_without_trades": missing}
+        return {"pass": False, "trades": int(len(x)), "days_without_trades": missing, "dropped_no_state_share": dropped}
     lo = float(np.nanpercentile(pool_bootstrap(r, b, seed), 0.25))
     per_day = r.groupby("day")["ret"].mean()
     liftc = float(x.mean() - c["ret"].mean()) if len(c) else float("nan")
     ok = lo > 0 and len(x) >= 300 and bool((per_day > 0).all()) and liftc > 0
     return {"pass": bool(ok), "trades": int(len(x)), "mean": float(x.mean()), "lower99_5": lo,
             "per_day": {k: float(v) for k, v in per_day.items()}, "lift_over_control": liftc,
-            "unquotable_share": float((x == -1.0).mean()), "days_without_trades": []}
+            "refused_entry_share": float((x == -1.0).mean()), "dropped_no_state_share": dropped,
+            "days_without_trades": []}
 
 
 def rule_fires(cands, X, path_idx, hold_slots):

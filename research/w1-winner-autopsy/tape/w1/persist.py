@@ -174,3 +174,18 @@ def validation_verdict(gr, boot, replay_mean):
     return {"lift": lift(gr), "ci99_5": [lo, hi], "lower_above_0": lb_ok, "top_mean": top_mean,
             "top_mean_above_0": top_ok, "replay_mean": replay_mean, "replay_above_0": rp_ok, "pass": passed,
             "verdict": verdict}
+
+
+def winners(test_pos):
+    """AMENDMENT_3 Q17: top decile on the ranking day; at least 5 positions on at least one test day (test_pos holds
+    only qualifying days); own mean per-trade return pooled over the test days it qualifies on above the pooled mean of
+    deciles 5-6 over the same days; and that own mean above 0 after its own costs."""
+    top = test_pos[test_pos["decile"] == 10]
+    mid = test_pos[test_pos["decile"].isin([5, 6])]
+    out = set()
+    for tr, g in top.groupby("trader"):
+        own = g["ret"].mean()
+        m = mid.loc[mid["day"].isin(set(g["day"])), "ret"].mean()
+        if np.isfinite(own) and own > 0 and np.isfinite(m) and own > m:
+            out.add(tr)
+    return out

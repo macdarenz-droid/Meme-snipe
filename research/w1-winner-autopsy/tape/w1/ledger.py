@@ -122,8 +122,11 @@ class Ledger:
         self.v = vocab
         self.states = States()
         # carry: open positions (bal > 0) by pair: bal, ok (start known, consistent), ver (verified by a swap), mark
+        # ep_*: the open round trip (AMENDMENT_4): its opening time and key, and whether a transfer broke it
         self.carry = pd.DataFrame({"bal": pd.Series(dtype=np.int64), "ok": pd.Series(dtype=bool),
-                                   "ver": pd.Series(dtype=bool), "mark": pd.Series(dtype=np.float64)})
+                                   "ver": pd.Series(dtype=bool), "mark": pd.Series(dtype=np.float64),
+                                   "ep_bt": pd.Series(dtype=np.float64), "ep_key": pd.Series(dtype=np.float64),
+                                   "ep_brk": pd.Series(dtype=bool)})
         self.prev_hi = None
         self.prev_day = None
         self.offcurve = {}
@@ -153,6 +156,7 @@ class Ledger:
     def _day_reset(self):
         self.acc = []
         self.buys, self.big, self.xfers, self.wedges, self.tedges = [], [], [], [], []
+        self.trips = []
         self.owners_day = set()
         self.ex_seen = {}
         self.day_start = self.carry.copy()
@@ -198,6 +202,7 @@ class Ledger:
             self.stats["gaps"].append((int(self.prev_hi) + 1, int(lo) - 1))
             self.day_gaps += 1
             self.carry["ok"] = False
+            self.carry["ep_brk"] = True
 
     # ---------------------------------------------------------------- unit
     def process_unit(self, unit, sw=None, mv=None, ev=None, cov=None, w=None):
@@ -297,6 +302,7 @@ class Ledger:
         isb = t["is_buy"].to_numpy(bool)
         pr = pair_of(t["owner"], t["mint"])
         sev = pd.DataFrame({"pair": pr, "acct": _acct(t["acct"].to_numpy(), pr), "key": t["key"].to_numpy(),
+                            "bt": t["bt"].to_numpy(),
                             "txk": t["txk"].to_numpy(), "slot": t["slot"].to_numpy(),
                             "delta": np.where(isb, t["tokens"], -t["tokens"]).astype(np.int64),
                             "cash": t["net"].to_numpy(), "paid": np.where(isb, -t["net"].to_numpy(), 0.0),
@@ -367,7 +373,7 @@ class Ledger:
                     self.pools.add(v.id(f["pool"]))
 
     def _movements(self, mv, unit_states):
-        cols = ["pair", "acct", "key", "txk", "slot", "delta", "cash", "paid", "cash_alt", "paid_alt", "nsig", "xin",
+        cols = ["pair", "acct", "key", "bt", "txk", "slot", "delta", "cash", "paid", "cash_alt", "paid_alt", "nsig", "xin",
                 "swap", "nbuy", "nsell", "pre", "post", "bad", "buykey"]
         if mv is None or len(mv) == 0:
             return pd.DataFrame(columns=cols)
@@ -387,13 +393,13 @@ class Ledger:
         legs = []
         f_ok = (kind <= 1) & ~ex_f
         fp = pair_of(mv["frm"][f_ok], mv["mint"][f_ok])
-        legs.append(pd.DataFrame({"pair": fp, "acct": _acct(mv["facct"][f_ok].to_numpy(), fp), "key": mv["key"][f_ok],
+        legs.append(pd.DataFrame({"pair": fp, "acct": _acct(mv["facct"][f_ok].to_numpy(), fp), "key": mv["key"][f_ok], "bt": mv["bt"][f_ok],
                                   "txk": mv["txk"][f_ok], "slot": mv["slot"][f_ok],
                                   "delta": -mv["amount"][f_ok].to_numpy(), "cash": val[f_ok], "paid": 0.0, "xin": 0.0,
                                   "bad": (kind[f_ok] == 0) & ~has[f_ok]}))
         t_ok = ((kind == 0) | (kind == 2)) & ~ex_t
         tp_ = pair_of(mv["to"][t_ok], mv["mint"][t_ok])
-        legs.append(pd.DataFrame({"pair": tp_, "acct": _acct(mv["tacct"][t_ok].to_numpy(), tp_), "key": mv["key"][t_ok],
+        legs.append(pd.DataFrame({"pair": tp_, "acct": _acct(mv["tacct"][t_ok].to_numpy(), tp_), "key": mv["key"][t_ok], "bt": mv["bt"][t_ok],
                                   "txk": mv["txk"][t_ok], "slot": mv["slot"][t_ok],
                                   "delta": mv["amount"][t_ok].to_numpy(), "cash": -val[t_ok], "paid": val[t_ok],
                                   "xin": val[t_ok], "bad": (kind[t_ok] == 2) | ~has[t_ok]}))
@@ -469,7 +475,8 @@ class Ledger:
         tx = g.agg(delta=("delta", "sum"), cash=("cash", "sum"), paid=("paid", "sum"), cash_alt=("cash_alt", "sum"),
                    paid_alt=("paid_alt", "sum"), nsig=("nsig", "sum"), xin=("xin", "sum"),
                    swap=("swap", "any"), nbuy=("nbuy", "sum"), nsell=("nsell", "sum"), bad=("bad", "any"),
-                   key=("key", "max"), slot=("slot", "max"), buykey=("buykey", "min")).reset_index()
+                   key=("key", "max"), slot=("slot", "max"), bt=("bt", "max"), buykey=("buykey", "min"),
+                   mv=("swap", lambda x: bool((~x).any()))).reset_index()
         pp = evs[evs["swap"]].groupby(["pair", "txk"], sort=False).agg(pre=("pre", "first"), post=("post", "first"))
         tx = tx.merge(pp, left_on=["pair", "txk"], right_index=True, how="left")
         # accounts: tracked balance per (account, transaction)
@@ -510,6 +517,7 @@ class Ledger:
         tx["mstart"] = mism & first_swap & unseen
         tx["mother"] = mism & ~tx["mstart"].to_numpy()
         tx["bal"] = (tx["pair"].map(pstart).to_numpy() + tx.groupby("pair")["chg"].cumsum()).astype(np.int64)
+        self._trips(tx, pstart)
         tx["closekey"] = np.where(tx["bal"].to_numpy() == 0, tx["key"].to_numpy(), -1)
         tx["zsw"] = sw_ & (tx["post"].to_numpy() == 0)
         agg = tx.groupby("pair", sort=False).agg(
@@ -546,9 +554,50 @@ class Ledger:
         keep = self.carry[~self.carry.index.isin(agg.index)]
         new = pd.DataFrame({"bal": agg["end"].astype(np.int64), "ok": agg["end_ok"].astype(bool),
                             "ver": agg["end_ver"].astype(bool),
-                            "mark": self.carry["mark"].reindex(agg.index).fillna(0.0).to_numpy()}, index=agg.index)
+                            "mark": self.carry["mark"].reindex(agg.index).fillna(0.0).to_numpy(),
+                            "ep_bt": self._ep_open["ep_bt"].reindex(agg.index).to_numpy(np.float64),
+                            "ep_key": self._ep_open["ep_key"].reindex(agg.index).to_numpy(np.float64),
+                            "ep_brk": self._ep_open["ep_brk"].reindex(agg.index).fillna(True).astype(bool).to_numpy()},
+                           index=agg.index)
         new = new[new["bal"] > 0]
         self.carry = pd.concat([keep, new])
+
+    def _trips(self, tx, pstart):
+        """AMENDMENT_4 round trips: from the balance leaving zero to its return to zero. A token movement (or a
+        balance mismatch) inside the trip breaks it. Sets self._ep_open for the trips still open at unit end."""
+        prev = tx.groupby("pair")["bal"].shift(1)
+        prev = prev.fillna(tx["pair"].map(pstart)).to_numpy()
+        bal = tx["bal"].to_numpy()
+        opn = (prev == 0) & (bal > 0)
+        cls_ = (prev > 0) & (bal == 0)
+        tx["ep"] = pd.Series(opn.astype(np.int64)).groupby(tx["pair"].to_numpy()).cumsum().to_numpy()
+        brk_row = tx["mv"].to_numpy(bool) | tx["mism"].to_numpy(bool)
+        tx["brk"] = pd.Series(brk_row).groupby([tx["pair"].to_numpy(), tx["ep"].to_numpy()]).cummax().to_numpy()
+        o = tx[opn].set_index(["pair", "ep"])[["bt", "key"]]
+        c = self.carry.reindex(tx["pair"].unique())
+        carried = pd.DataFrame({"bt": c["ep_bt"], "key": c["ep_key"], "brk": c["ep_brk"].fillna(True).astype(bool)})
+        def start_of(rows):
+            k = list(zip(rows["pair"], rows["ep"]))
+            ob = o["bt"].reindex(k).to_numpy(np.float64)
+            ok_ = o["key"].reindex(k).to_numpy(np.float64)
+            cb = rows["pair"].map(carried["bt"]).to_numpy(np.float64)
+            ck = rows["pair"].map(carried["key"]).to_numpy(np.float64)
+            cbrk = rows["pair"].map(carried["brk"]).fillna(True).astype(bool).to_numpy()
+            ep0 = rows["ep"].to_numpy() == 0
+            return (np.where(ep0, cb, ob), np.where(ep0, ck, ok_),
+                    rows["brk"].to_numpy(bool) | (ep0 & cbrk))
+        cl = tx[cls_]
+        if len(cl):
+            ob, ok_, brk = start_of(cl)
+            ow, mi = split_pair(cl["pair"].to_numpy())
+            keep = ~np.isnan(ob)
+            self.trips.append(pd.DataFrame({"owner": ow[keep], "mint": mi[keep], "open_bt": ob[keep],
+                                            "close_bt": cl["bt"].to_numpy()[keep], "open_key": ok_[keep],
+                                            "close_key": cl["key"].to_numpy()[keep], "broken": brk[keep]}))
+        last = tx.groupby("pair", sort=False).tail(1)
+        last = last[last["bal"] > 0]
+        ob, ok_, brk = start_of(last) if len(last) else (np.zeros(0), np.zeros(0), np.zeros(0, bool))
+        self._ep_open = pd.DataFrame({"ep_bt": ob, "ep_key": ok_, "ep_brk": brk}, index=last["pair"].to_numpy())
 
     def _collapse_acc(self):
         """Merges the per-unit aggregates of the day into one frame (keeps memory flat over a day)."""
@@ -630,6 +679,8 @@ class Ledger:
             "xfers": pd.concat(self.xfers, ignore_index=True) if self.xfers else pd.DataFrame(
                 columns=["frm", "to", "mint", "value", "key"]),
             "cg": cg,
+            "trips": pd.concat(self.trips, ignore_index=True) if self.trips else pd.DataFrame(
+                columns=["owner", "mint", "open_bt", "close_bt", "open_key", "close_key", "broken"]),
             "wedges": _uniq_edges(self.wedges, 2),
             "tedges": _tedges(self.tedges, self.pump_mints | self._pump_suffix()),
             "w_present": self.w_present,

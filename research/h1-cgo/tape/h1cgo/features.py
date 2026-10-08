@@ -9,21 +9,23 @@ import bisect
 import math
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 
 from . import tapeio
 from .constants import (BURN_OWNERS, D_SLOTS, FIRST_DECISION_AFTER_MIGRATION_S, HOLD_S, LAST_DECISION_AFTER_MIGRATION_S,
                         MIN_COVERAGE, MIN_EFFECTIVE_QUOTE_LAMPORTS, MIN_REAL_VAULT_LAMPORTS, PAST_RETURN_WINDOWS_S,
                         PROTOCOL_OWNERS, SECONDARY_HOLDS_S, SOL_CURVE_QUOTE, WSOL)
+from . import habits as HB
 from .ledger import Ledger
 from .pumpswap import Pool, amm_post_state
 
 CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "mint", "is_buy", "sol_amount",
-              "token_amount", "fee", "creator_fee", "user_token_owner", "owner_token_post", "protocol", "quote_mint"]
+              "token_amount", "fee", "creator_fee", "user_token_owner", "owner_token_pre", "owner_token_post", "protocol", "quote_mint"]
 AMM_COLS = ["slot", "block_time", "tx_idx", "signature", "ev_idx", "outer_ix", "inner_ix", "pool", "base_mint", "quote_mint", "side",
             "base_amount", "quote_amount", "quote_amount_lp_adjusted", "lp_fee", "protocol_fee", "coin_creator_fee",
             "user_quote_amount", "pool_base_token_reserves", "pool_quote_token_reserves", "virtual_quote_reserves",
-            "base_supply", "coin_creator", "user_token_owner", "owner_token_post", "canonical", "protocol",
+            "base_supply", "coin_creator", "user_token_owner", "owner_token_pre", "owner_token_post", "canonical", "protocol",
             "last_in_tx", "chain_pool_quote", "lp_fee_basis_points", "protocol_fee_basis_points",
             "coin_creator_fee_basis_points"]
 T_COLS = ["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner", "amount"]
@@ -149,6 +151,10 @@ def schedule_windows(dp: pd.DataFrame, clock: Clock) -> pd.DataFrame:
             ok.append(s is not None and e <= r.interval_end)
         out[f"exit_slot_{h}"] = ex
         out[f"in_time_{h}"] = ok
+    # AMENDMENT_3 gate rows: flows in the hour after the decision, slots (decision slot, last slot before hour + 60 min]
+    fe = [clock.last_before(r.hour + HOLD_S, r.decision_slot, r.interval_end) for r in out.itertuples(index=False)]
+    out["flow_end_slot"] = [x if x is not None else -1 for x in fe]
+    out["in_time_flow"] = [x is not None for x in fe]
     return out
 
 
@@ -167,7 +173,11 @@ class MintStream:
     events: list  # sorted [(key, kind, payload)]
     pool_rows: list  # sorted [(key, block_time, pre, post)] for the coin's canonical pool
     unresolved: list  # sorted slots of T_coverage 'unresolved' marks for this mint
+    habits: object = None  # habits.Habits (AMENDMENT_3 D60); None gives NaN D60
     ledger: Ledger = field(default_factory=Ledger)
+    open_time: dict = field(default_factory=dict)  # owner -> block time their current position opened
+    vol_t: list = field(default_factory=list)  # every applied pool trade: block time
+    vol_cum: list = field(default_factory=list)  # and the cumulative SOL volume through it
     i: int = 0
     j: int = 0
     applied_slot: int = -1
@@ -195,7 +205,7 @@ class MintStream:
             self._tx = tx
         L = self.ledger
         if kind in ("curve", "amm"):
-            owner, buy, tokens, cost, protocol, post = p
+            owner, buy, tokens, cost, protocol, post, pre, bt = p
             if protocol:
                 self.protocol_rows += 1
                 if owner:
@@ -207,6 +217,11 @@ class MintStream:
                 L.buy(owner, tokens, cost, post_migration=(kind == "amm"))
             else:
                 L.sell(owner, tokens)
+            if pre != "" and post != "":  # positions as habits.events_from defines them
+                if buy and pre == "0" and post != "0":
+                    self.open_time[owner] = bt
+                elif not buy and post == "0":
+                    self.open_time.pop(owner, None)
             if post != "":
                 self._pending[owner] = int(post)
         else:
@@ -232,7 +247,9 @@ class MintStream:
         self._flush()
         pr = self.pool_rows
         while self.j < len(pr) and pr[self.j][0][0] <= slot:
-            _, bt, pre, post, good = pr[self.j]
+            _, bt, pre, post, good, vol = pr[self.j]
+            self.vol_t.append(bt)
+            self.vol_cum.append((self.vol_cum[-1] if self.vol_cum else 0) + vol)
             self.bad_pool = self.bad_pool or not good  # canonical SOL pool of this coin, from applied rows
             if self.init_mid is None and pre.base > 0:
                 self.init_mid = pre.mid()
@@ -254,6 +271,7 @@ class MintStream:
         pk = pc = 0
         excl = {"bonding_curve": 0, "pool": 0, "burn": 0, "protocol": 0}
         n_hold = 0
+        holders = []
         for o, x in self.ledger.h.items():
             if x.total == 0:
                 continue
@@ -262,6 +280,7 @@ class MintStream:
                 excl[typ] += x.total
                 continue
             n_hold += 1
+            holders.append((o, x.total))
             kt += x.known
             kc += x.cost
             ut += x.unknown
@@ -289,18 +308,24 @@ class MintStream:
             m = self.mid_before(hour - w) if out["has_state"] else None
             out[f"r_{w // 3600}h"] = (p / m - 1) if m else float("nan")
         out["r_mig"] = (p / self.init_mid - 1) if out["has_state"] and self.init_mid else float("nan")
+        # AMENDMENT_3 controls: past-hour volatility of trade mids (std of log changes) and SOL volume
+        lo = bisect.bisect_left(self.hist_t, hour - 3600)
+        mids = self.hist_mid[max(lo - 1, 0):]
+        out["vol_1h"] = float(np.std(np.diff(np.log(mids)))) if len(mids) > 2 else 0.0
+        k = bisect.bisect_left(self.vol_t, hour - 3600)
+        out["volume_1h"] = (self.vol_cum[-1] - (self.vol_cum[k - 1] if k else 0)) if self.vol_cum else 0
+        if self.habits is None:
+            out.update(d60=float("nan"), d60_traceable=float("nan"), d60_holders=n_hold, d60_habit_holders=0)
+        else:
+            out.update(HB.d60(holders, self.open_time, self.habits, self.applied_slot, hour))
         return out
 
 
-def boost_keys(events: list) -> set:
-    """(signature, outer_ix, pool) of every BoostBuyAndBurnEvent. Decoder v3 flags these swaps protocol=1; older units
-    leave the flag 0 (and the owner empty), so the S row is matched to its event instead."""
-    return {(e["signature"], str(e["outer_ix"]), e["fields"].get("pool", "")) for e in events
-            if e.get("event") == "BoostBuyAndBurnEvent"}
+boost_keys = tapeio.boost_keys
 
 
 def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd.DataFrame, tcov: pd.DataFrame,
-                  boosts: set = frozenset()):
+                  boosts: set = frozenset(), habits=None):
     """One MintStream per universe coin, from the coin's rows only. A PumpSwap row is protocol flow when the tape flags
     it (`protocol`) or when it matches a BoostBuyAndBurnEvent (`boosts`); protocol rows never enter the holders."""
     ev = {m: [] for m in u.mint}
@@ -310,7 +335,7 @@ def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd
         cost = int(r.sol_amount) + int(r.fee) + int(r.creator_fee)  # SOL paid, fees included
         ev[r.mint].append((_key(r.slot, r.tx_idx, r.outer_ix, r.inner_ix, r.ev_idx), "curve",
                            (r.user_token_owner, r.is_buy == "1", int(r.token_amount), cost,
-                            r.protocol not in ("", "0"), r.owner_token_post)))
+                            r.protocol not in ("", "0"), r.owner_token_post, r.owner_token_pre, int(r.block_time))))
     pool_of = dict(zip(u.pool, u.mint))
     prow = {m: [] for m in u.mint}
     for r in amm.to_dict("records"):
@@ -320,12 +345,14 @@ def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd
         good = r["canonical"] == "1" and r["quote_mint"] == WSOL and r["base_mint"] == m
         key = _key(r["slot"], r["tx_idx"], r["outer_ix"], r["inner_ix"], r["ev_idx"])
         pre, post = amm_post_state(r)
-        prow[m].append((key, int(r["block_time"]), pre, post, good))
         buy = r["side"] == "buy"
+        vol = int(r["quote_amount_lp_adjusted"]) if buy else int(r["quote_amount"])
+        prow[m].append((key, int(r["block_time"]), pre, post, good, vol))
         cost = int(r["quote_amount_lp_adjusted"]) + int(r["protocol_fee"]) + int(r["coin_creator_fee"]) if buy else 0
         ev[m].append((key, "amm", (r["user_token_owner"], buy, int(r["base_amount"]), cost,
                                    r["protocol"] not in ("", "0")
-                                   or (r["signature"], r["outer_ix"], r["pool"]) in boosts, r["owner_token_post"])))
+                                   or (r["signature"], r["outer_ix"], r["pool"]) in boosts, r["owner_token_post"],
+                                   r["owner_token_pre"], int(r["block_time"]))))
     for r in t.itertuples(index=False):
         if r.mint in ev:
             ev[r.mint].append((_key(r.slot, r.tx_idx, r.outer_ix, r.inner_ix, -1), "t",
@@ -342,7 +369,7 @@ def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd
             excl[r.bonding_curve] = "bonding_curve"
         excl[r.pool] = "pool"
         streams[r.mint] = MintStream(r.mint, r.pool, r.mig_slot, excl, sorted(ev[r.mint], key=lambda x: x[0]),
-                                     sorted(prow[r.mint], key=lambda x: x[0]), sorted(unres[r.mint]))
+                                     sorted(prow[r.mint], key=lambda x: x[0]), sorted(unres[r.mint]), habits)
     return streams
 
 
@@ -380,18 +407,23 @@ def load(units, creation_days, log=print):
         tcov.append(tapeio.read_table(un, "T_coverage", TCOV_COLS))
     u, why = build_universe(creates, migs, set(creation_days))
     mints, pools = set(u.mint), set(u.pool)
-    curve, amm, tt = [], [], []
+    curve, amm, tt, rte = [], [], [], []
     for un in units:
         c = tapeio.read_table(un, "S_curve", CURVE_COLS)
+        rte.append(HB.events_from(c, "curve"))  # every coin's positions, for the D60 habits
         curve.append(c[c.mint.isin(mints)])
         a = tapeio.read_table(un, "S_amm", AMM_COLS)
+        a = a.assign(protocol=a.protocol.where(~pd.Series([k in boosts for k in zip(a.signature, a.outer_ix, a.pool)],
+                                                           index=a.index, dtype=bool), "1"))
+        rte.append(HB.events_from(a, "amm"))
         amm.append(a[a.pool.isin(pools)])
         x = tapeio.read_table(un, "T", T_COLS)
         tt.append(x[x.mint.isin(mints)])
         del c, a, x
         log(f"read {un.day} {un.from_slot}-{un.to_slot}")
     cat = lambda fs, cols: pd.concat(fs, ignore_index=True) if fs else pd.DataFrame(columns=cols)
-    return dict(universe=u, universe_counts=why, boosts=boosts, blocks=cat(blocks, ["slot", "block_time"]),
+    rt = HB.round_trips(pd.concat(rte, ignore_index=True)) if rte else HB.round_trips(pd.DataFrame())
+    return dict(universe=u, universe_counts=why, boosts=boosts, round_trips=rt, blocks=cat(blocks, ["slot", "block_time"]),
                 tcov=cat(tcov, TCOV_COLS), curve=cat(curve, CURVE_COLS), amm=cat(amm, AMM_COLS), t=cat(tt, T_COLS))
 
 
@@ -405,11 +437,12 @@ def run(units, decision_days, creation_days=None, log=print) -> tuple:
     n_all = len(dp)
     dp = dp[dp.decision_day.isin(set(decision_days))]
     dp = schedule_windows(dp, clock)
-    streams = build_streams(data["universe"], data["curve"], data["amm"], data["t"], data["tcov"], data["boosts"])
+    streams = build_streams(data["universe"], data["curve"], data["amm"], data["t"], data["tcov"], data["boosts"],
+                            HB.Habits(data["round_trips"]))
     feats = compute_features(dp, streams)
     diag = dict(units=[f"{x.day} {x.from_slot}-{x.to_slot}" for x in units], intervals=iv,
                 universe=data["universe_counts"], decision_points_any_day=n_all, decision_points=len(dp),
                 rows=dict(curve=len(data["curve"]), amm=len(data["amm"]), t=len(data["t"])),
-                boost_events=len(data["boosts"]),
+                boost_events=len(data["boosts"]), round_trips=len(data["round_trips"]),
                 protocol_rows=int(sum(st.protocol_rows for st in streams.values())))
     return feats, data["universe"], diag

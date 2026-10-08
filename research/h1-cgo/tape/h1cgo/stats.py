@@ -151,22 +151,14 @@ def interval(boot: np.ndarray, level: float) -> tuple:
     return float(lo), float(hi)
 
 
-def primary(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_days) -> dict:
-    """§8 on validation days: mean net return per trade in SOL for entries in the frozen extreme, pooled; pool-clustered
-    bootstrap stratified by day (10,000, fixed seed), 99.5% and 95% two-sided; pass needs all four conditions."""
-    _check_days(feats, VALIDATION_DAYS, "primary")
-    if list(decision_days) != list(VALIDATION_DAYS):
-        raise ValueError(f"primary needs exactly the validation days {VALIDATION_DAYS}; got {list(decision_days)}")
-    if frozen.get("sign") not in ("high", "low") or "p20" not in frozen.get("breakpoints", {}):
-        raise ValueError("primary needs the frozen sign and breakpoints from discovery")
-    bp, side = frozen["breakpoints"], frozen["sign"]
-    t = _join(entries(feats, side, bp), out)
-    base = _join(eligible(feats), out)
+def _judge(t: pd.DataFrame, base: pd.DataFrame, extra: dict = None) -> dict:
+    """The §8 statistic and the four pass conditions for trades `t` against the baseline `base`; `extra` adds
+    conditions (name -> bool) that a pass also needs."""
     sol = t.net_lamports.to_numpy(float) / 1e9
     n = len(t)
-    res = dict(sign=side, n_trades=int(n), n_baseline=int(len(base)))
+    res = dict(n_trades=int(n), n_baseline=int(len(base)))
     if n == 0:
-        res.update(verdict="unresolved" if n < MIN_TRADES else "not supported")
+        res.update(verdict="unresolved")
         return res
     boot = cluster_bootstrap(t.decision_day.to_numpy(), t.pool.to_numpy(), sol)
     lo, hi = interval(boot, CI_PRIMARY)
@@ -177,13 +169,159 @@ def primary(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_days)
     res.update(mean_net_sol=float(sol.mean()), mean_net_ret=float(t.net_ret.mean()), ci995=(lo, hi), ci95=(lo95, hi95),
                per_day_mean_sol={k: float(v) for k, v in per_day.items()}, lift_net_sol=lift,
                conditions=dict(lower995_above_0=lo > 0, at_least_300=n >= MIN_TRADES, every_day_above_0=days_ok,
-                               lift_above_0=lift > 0))
+                               lift_above_0=lift > 0, **(extra or {})))
     if all(res["conditions"].values()):
         res["verdict"] = "pass"
     elif n < MIN_TRADES:
         res["verdict"] = "unresolved"
     else:
         res["verdict"] = "not supported"
+    return res
+
+
+def _frozen_rule(feats, frozen, decision_days):
+    _check_days(feats, VALIDATION_DAYS, "primary")
+    if list(decision_days) != list(VALIDATION_DAYS):
+        raise ValueError(f"primary needs exactly the validation days {VALIDATION_DAYS}; got {list(decision_days)}")
+    if frozen.get("sign") not in ("high", "low") or "p20" not in frozen.get("breakpoints", {}):
+        raise ValueError("primary needs the frozen sign and breakpoints from discovery")
+    return frozen["breakpoints"], frozen["sign"]
+
+
+def primary(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_days) -> dict:
+    """§8 on validation days: mean net return per trade in SOL for entries in the frozen extreme, pooled; pool-clustered
+    bootstrap stratified by day (10,000, fixed seed), 99.5% and 95% two-sided; pass needs all four conditions."""
+    bp, side = _frozen_rule(feats, frozen, decision_days)
+    res = dict(sign=side)
+    res.update(_judge(_join(entries(feats, side, bp), out), _join(eligible(feats), out)))
+    return res
+
+
+def h8_stratum(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_days, sol) -> dict:
+    """H8_AMENDMENT items 1-3: H1-CGO's primary on the H8-eligible stratum at $5, $20 and $50 (entries of the frozen
+    rule whose pool passes H8 at that size, priced at that size). Tradable as the bot stands only if at some size the
+    stratum holds at least 300 validation trades with a positive point mean."""
+    from . import h8 as H8
+    bp, side = _frozen_rule(feats, frozen, decision_days)
+    f = H8.flags(feats, sol)
+    e = entries(f, side, bp)
+    ok = out[out.status.isin(["ok", "exit_refused"]) & (out.hold == HOLD_S)]
+    res = {}
+    tradable = False
+    for s in H8.SIZES_USD:
+        t = e[e[f"h8_{s}"]][["mint", "decision_slot"]].merge(ok[ok.usd == float(s)], on=["mint", "decision_slot"])
+        base = f[f.eligible & f[f"in_time_{HOLD_S}"] & f[f"h8_{s}"]][["mint", "decision_slot"]].merge(
+            ok[ok.usd == float(s)], on=["mint", "decision_slot"])
+        r = _judge(t, base)
+        res[f"${s}"] = r
+        tradable = tradable or (r["n_trades"] >= MIN_TRADES and r.get("mean_net_sol", 0) > 0)
+    res["tradable_as_bot_stands"] = tradable
+    res["note"] = None if tradable else "this works only in pools below H8's floor"
+    res["sol_usd_files"] = sol.files
+    return res
+
+
+def _rank(x):
+    from scipy.stats import rankdata
+    return rankdata(x)
+
+
+def spearman(x, y) -> float:
+    rx, ry = _rank(x), _rank(y)
+    if rx.std() == 0 or ry.std() == 0:
+        return float("nan")
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
+def partial_spearman(x, y, controls) -> float:
+    """Spearman partial correlation: ranks of x and y, each regressed on the ranks of the controls (with an intercept);
+    the correlation of the residuals."""
+    C = np.column_stack([np.ones(len(x))] + [_rank(c) for c in controls])
+    def resid(v):
+        b, *_ = np.linalg.lstsq(C, v, rcond=None)
+        return v - C @ b
+    a, b = resid(_rank(x)), resid(_rank(y))
+    return float(np.corrcoef(a, b)[0, 1]) if a.std() > 0 and b.std() > 0 else float("nan")
+
+
+def cluster_bootstrap_stat(day, pool, stat, n=BOOT_RESAMPLES, seed=BOOT_SEED) -> np.ndarray:
+    """stat(index array) over resamples that draw pools with replacement within each day."""
+    rng = np.random.default_rng(seed)
+    groups = []
+    for d in sorted(set(day)):
+        m = np.flatnonzero(day == d)
+        pools = {}
+        for i in m:
+            pools.setdefault(pool[i], []).append(i)
+        groups.append([np.array(v) for v in pools.values()])
+    out = np.empty(n)
+    for k in range(n):
+        idx = np.concatenate([g[j] for g in groups for j in rng.integers(0, len(g), size=len(g))])
+        out[k] = stat(idx)
+    return out
+
+
+D60_GATE = dict(habit_share=0.60, rho=0.3, r2_max=0.3, partial_rho=0.2, traceable=0.90)
+
+
+def d60_sample(feats: pd.DataFrame, flows: pd.DataFrame) -> pd.DataFrame:
+    e = eligible(feats)
+    e = e[e.d60.notna()].merge(flows[["mint", "decision_slot", "sell_tokens", "net_flow_sol"]], on=["mint", "decision_slot"])
+    flt = (e.known_tokens + e.unknown_tokens).astype(float)
+    return e.assign(float_tokens=flt, sells_frac=e.sell_tokens / flt)
+
+
+def d60_gate(feats: pd.DataFrame, flows: pd.DataFrame, n_boot=BOOT_RESAMPLES) -> dict:
+    """AMENDMENT_3 gate rows on the Step A days (flows and holdings only): habit share >= 60%; Spearman(D60, next-hour
+    sells) >= 0.3 with a pool-clustered 95% lower bound > 0; R² of D60 on returns, volatility, volume and CGO <= 0.3
+    and partial rho (over CGO and 60-minute volume) >= 0.2; traceable float >= 90%; the bottom D60 quintile's mean
+    net flow > 0. Also freezes D60's P20 (the arm's bottom quintile)."""
+    _check_days(feats, DISCOVERY_DAYS, "d60_gate")
+    z = d60_sample(feats, flows)
+    res = dict(n=int(len(z)))
+    if len(z) < 5:
+        res.update(passed=False, reason="too few points")
+        return res
+    d, y = z.d60.to_numpy(float), z.sells_frac.to_numpy(float)
+    res["habit_share"] = float(z.d60_habit_holders.sum() / z.d60_holders.sum())
+    res["traceable_float"] = float((z.d60_traceable * z.float_tokens).sum() / z.float_tokens.sum())
+    res["rho"] = spearman(d, y)
+    boot = cluster_bootstrap_stat(z.decision_day.to_numpy(), z.pool.to_numpy(), lambda i: spearman(d[i], y[i]), n=n_boot)
+    res["rho_lower95"] = float(np.nanpercentile(boot, 2.5))
+    X = z[["r_1h", "r_6h", "r_mig", "vol_1h", "volume_1h", "cgo"]].to_numpy(float)
+    ok = np.isfinite(X).all(axis=1)
+    res["r2_controls"] = r2(d[ok], X[ok]) if ok.sum() > 7 else float("nan")
+    res["partial_rho"] = partial_spearman(d, y, [z.cgo.to_numpy(float), z.volume_1h.to_numpy(float)])
+    p20 = float(np.percentile(d, 20))
+    res["d60_p20"] = p20
+    res["bottom_quintile_mean_net_flow_sol"] = float(z[z.d60 <= p20].net_flow_sol.mean() / 1e9)
+    G = D60_GATE
+    res["rows"] = dict(habit=res["habit_share"] >= G["habit_share"],
+                       rho=res["rho"] >= G["rho"] and res["rho_lower95"] > 0,
+                       independence=res["r2_controls"] <= G["r2_max"] and res["partial_rho"] >= G["partial_rho"],
+                       traceable=res["traceable_float"] >= G["traceable"],
+                       bottom_net_flow=res["bottom_quintile_mean_net_flow_sol"] > 0)
+    res["passed"] = bool(all(res["rows"].values()))
+    return res
+
+
+def d60_arm(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_days, primary_res: dict) -> dict:
+    """AMENDMENT_3 arm: H1-CGO's frozen rule restricted to D60's bottom quintile (D60 <= the frozen P20). Judged only if
+    the D60 gate passed on Step A and H1-CGO's primary passes; then as one more loop-family test with the §8
+    conditions plus a lift over H1-CGO's own entries above 0."""
+    bp, side = _frozen_rule(feats, frozen, decision_days)
+    g = frozen.get("d60") or {}
+    if not g.get("passed"):
+        return dict(verdict="not judged: the D60 gate did not pass on Step A")
+    if primary_res.get("verdict") != "pass":
+        return dict(verdict="not judged: H1-CGO's primary did not pass")
+    e = eligible(feats)
+    sel = first_per_mint_day(e[in_extreme(e.cgo, side, bp) & (e.d60 <= g["d60_p20"])])
+    t = _join(sel, out)
+    h1 = _join(entries(feats, side, bp), out)
+    lift_h1 = float(t.net_lamports.mean() / 1e9 - h1.net_lamports.mean() / 1e9) if len(t) else float("nan")
+    res = _judge(t, _join(e, out), extra=dict(lift_over_h1cgo_above_0=bool(lift_h1 > 0)))
+    res["lift_over_h1cgo_sol"] = lift_h1
     return res
 
 

@@ -169,3 +169,17 @@ def check_complete(units, days, plan: dict) -> None:
 
 def unit_record(u: Unit) -> dict:
     return dict(day=u.day, from_slot=u.from_slot, to_slot=u.to_slot, dir=u.dir)
+
+
+def boost_keys(events: list) -> set:
+    """(signature, outer_ix, pool) of every BoostBuyAndBurnEvent. Decoder v3 flags these swaps protocol=1; older units
+    leave the flag 0 (and the owner empty), so the S row is matched to its event instead."""
+    return {(e["signature"], str(e["outer_ix"]), e["fields"].get("pool", "")) for e in events
+            if e.get("event") == "BoostBuyAndBurnEvent"}
+
+
+def read_boost_keys(units) -> set:
+    out = set()
+    for u in units:
+        out |= boost_keys(read_events(u, {"BoostBuyAndBurnEvent"}))
+    return out

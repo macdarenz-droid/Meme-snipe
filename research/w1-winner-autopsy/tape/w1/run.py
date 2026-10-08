@@ -3,6 +3,7 @@
   python3 -m w1.run ledger  --work DIR (--units U [U ...] | --cache C --days D [D ...]) [--dev-allow-gaps]
   python3 -m w1.run counts  --work DIR [--days D ...]          development: counts and shapes only
   python3 -m w1.run gate       --work A_WORK --score            §6 gate W1-0 on 09-10 and 09-11
+  python3 -m w1.run flippers   --work A_WORK --score            AMENDMENT_4 rows on 09-10 and 09-11
   python3 -m w1.run discovery  --work A_WORK --score            §7 rank 09-10, test 09-11
   python3 -m w1.run validation --work B_WORK --score            §7 rank 09-07, test 09-08 and 09-09
   python3 -m w1.run extract    --work AB_WORK --score           §8 (ledger 09-07..09-11, after validation passed there)
@@ -23,7 +24,7 @@ import sys
 
 import numpy as np
 
-from . import classes, clusters, guard, load, persist, positions, replay, rules
+from . import classes, clusters, flippers, guard, load, persist, positions, replay, rules
 from .ledger import Ledger
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -172,6 +173,29 @@ def cmd_gate(a):
     print(json.dumps({"days": res, "verdict": persist.gate_verdict(res, spec["days"])}, indent=1, default=str))
 
 
+def cmd_flippers(a):
+    """AMENDMENT_4 rows on Step A: flipper class per day and over the tape, its persistence, a census of buy SOL by
+    class, and the flows around flippers' trips. No P&L and no ranking."""
+    m, spec, days = _scored(a, "gate")
+    import pandas as pd
+    t_last, _ = clusters.build(days, days[-1]["day"])
+    tape = flippers.flipper_class(pd.concat([d["trips"] for d in days], ignore_index=True), t_last)
+    flip_tape = set(tape.index[tape["flipper"]]) if len(tape) else set()
+    out = {"flippers_on_tape": len(flip_tape), "days": {}}
+    for d in days:
+        tr, _ = clusters.build(days, d["day"])
+        fc = flippers.flipper_class(d["trips"], tr)
+        out["days"][d["day"]] = {"trips": int(len(d["trips"])),
+                                 "flippers_that_day": int(fc["flipper"].sum()) if len(fc) else 0,
+                                 "buy_sol_census": flippers.census(d, tr, flip_tape),
+                                 "flows": flippers.flows(d["trips"], flip_tape, t_last,
+                                                         guard.ledger_units(m, [d["day"]]), _vocab(a.work))}
+    for d1, d2 in zip(days, days[1:]):
+        t1, _ = clusters.build(days, d1["day"])
+        out[f"persistence {d1['day']}->{d2['day']}"] = flippers.persistence(d1, d2, t1)
+    print(json.dumps(out, indent=1, default=str))
+
+
 def _persistence(a, role, with_replay):
     m, spec, days = _scored(a, role)
     by = {d["day"]: d for d in days}
@@ -197,7 +221,7 @@ def _persistence(a, role, with_replay):
     rp = replay.replay_trades(top[["mint", "entry_slot", "exit_slot", "open_at_end", "day_hi"]], units, _vocab(a.work))
     rm = replay.replay_mean(rp)
     out["replay"] = {"trades": int(len(rp)), "replayed": int(np.isfinite(rp["ret_replay"]).sum()),
-                     "unquotable_share": replay.unquotable_share(rp),
+                     **replay.shares(rp),
                      "reasons": {k: int(v) for k, v in rp["replay_reason"].value_counts().items() if k}}
     out["validation"] = persist.validation_verdict(gr, boot, rm)
     return out, tp, ranked, m
@@ -228,9 +252,7 @@ def cmd_extract(a):
     vocab = _vocab(a.work)
     trader, _ = clusters.build(days, spec["rank"])
     tp, ranked = val["test_positions"], val["ranked"]
-    mid = tp[tp["decile"].isin([5, 6])]["ret"].mean()
-    top = tp[tp["decile"] == 10].groupby("trader")["ret"].mean()
-    winners = set(top[top > mid].index)                  # OPEN_QUESTIONS Q17
+    winners = persist.winners(tp)                        # AMENDMENT_3 Q17
     ent = []
     for d in days:
         b = d["buys"]
@@ -323,13 +345,15 @@ def cmd_ruletest(a):
     fires = rules.rule_fires(cands, X, path, rule["hold_slots"])
     ctl = rules.control_entries(fires, cands)
     rows = replay.state_rows(units, vocab, set(fires["mint"]) | set(ctl["mint"]))
-    trades = rules.rule_test_trades(fires, ctl, rows, rule["hold_slots"])
+    trades = rules.rule_test_trades(fires, ctl, rows, rule["hold_slots"], min(u.lo for u in units),
+                                    max(u.hi for u in units))
     print(json.dumps(rules.rule_test_verdict(trades, spec["days"]), indent=1, default=str))
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="w1")
-    p.add_argument("stage", choices=["ledger", "counts", "gate", "discovery", "validation", "extract", "ruletest"])
+    p.add_argument("stage", choices=["ledger", "counts", "gate", "flippers", "discovery", "validation", "extract",
+                                     "ruletest"])
     p.add_argument("--work", required=True)
     p.add_argument("--units", nargs="*")
     p.add_argument("--cache", default="/home/user/tape-cache")
@@ -340,7 +364,7 @@ def main(argv=None):
     p.add_argument("--dev-allow-gaps", action="store_true", help="development only; scored stages refuse it")
     p.add_argument("--score", action="store_true")
     a = p.parse_args(argv)
-    {"ledger": cmd_ledger, "counts": cmd_counts, "gate": cmd_gate, "discovery": cmd_discovery,
+    {"ledger": cmd_ledger, "counts": cmd_counts, "gate": cmd_gate, "flippers": cmd_flippers, "discovery": cmd_discovery,
      "validation": cmd_validation, "extract": cmd_extract, "ruletest": cmd_ruletest}[a.stage](a)
 
 

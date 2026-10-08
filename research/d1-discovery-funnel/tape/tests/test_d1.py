@@ -788,8 +788,7 @@ class H8Amendment(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 run_d1.main(argv)
             self.assertIn("--solusd", str(cm.exception.code))
-        with open(os.path.join(HERE, "run_d1.py")) as fh:
-            self.assertIn('"H8_AMENDMENT"', fh.read())
+        self.assertIn("H8_AMENDMENT", run_d1.FROZEN_AMENDMENTS)
 
 
 if __name__ == "__main__":

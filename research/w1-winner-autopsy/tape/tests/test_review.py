@@ -167,23 +167,109 @@ class Boost(unittest.TestCase):
         self.assertIn(v.get(X), d["excluded"]["protocol flow"])
 
 
-class ReplayUnquotable(unittest.TestCase):
-    def test_unquotable_counts_as_minus_100(self):
+class ReplayAmendment3(unittest.TestCase):
+    def run_replay(self, pre_quote, virtual, lp_adj, entry, exit_, base=2 * 10**14):
         with tempfile.TemporaryDirectory() as root:
             u = Unit(root, A10, L1, H1)
-            u.amm(L1 + 1, 1, 0, address("q"), M, address("pq", False), "buy", 10**12, 10**9, 2 * 10**14, 0,
-                  -10**9, pre=0, post=10**12, lp_adj=0)
+            u.amm(L1 + 1, 1, 0, address("q"), M, address("pq", False), "buy", 10**12, 10**9, base, pre_quote,
+                  virtual, pre=0, post=10**12, lp_adj=lp_adj)
             u.write()
             units = load.parse_units([u.dir])
             v = load.Vocab()
+            Ledger(v).process_unit(units[0])
+            t = pd.DataFrame({"mint": [v.get(M)], "entry_slot": [entry], "exit_slot": [exit_],
+                              "open_at_end": [False], "day_hi": [H1]})
+            return replay.replay_trades(t, units, v)
+
+    def test_refused_entry_counts_as_minus_100(self):
+        out = self.run_replay(0, -10**9, 0, L1 + 1, L1 + 9)
+        self.assertEqual(out["ret_replay"].iat[0], -1.0)
+        self.assertEqual(replay.shares(out)["refused_entry_share"], 1.0)
+
+    def test_exit_the_vault_cannot_pay_scores_what_it_pays(self):
+        # effective quote is mostly virtual: the real vault (1 SOL) cannot pay the gross proceeds
+        out = self.run_replay(0, 40 * 10**9, 10**8, L1 + 1, L1 + 9)
+        self.assertEqual(out["replay_reason"].iat[0], replay.UNPAID)
+        self.assertGreater(out["ret_replay"].iat[0], -1.0)
+        self.assertLess(out["ret_replay"].iat[0], -0.5)
+        self.assertEqual(replay.shares(out)["unpaid_exit_share"], 1.0)
+
+    def test_slot_not_read_is_dropped(self):
+        out = self.run_replay(80 * 10**9, 0, 10**9, L1 + 1, H1 - 5)      # exit + 23 is past the last slot read
+        self.assertTrue(np.isnan(out["ret_replay"].iat[0]))
+        self.assertEqual(replay.shares(out)["dropped_no_state_share"], 1.0)
+        self.assertIsNone(replay.replay_mean(out))
+
+
+class CostQ29(unittest.TestCase):
+    def test_tx_cost_only_on_included_rows(self):
+        T, PDA = address("traderT"), address("pdaT", False)
+
+        def b(u):
+            u.curve(L1 + 10, 1, 0, T, M, True, 10**9, Q, *ST, pre=0, post=Q, tx_fee=40_000, jito=20_000)
+            u.curve(L1 + 10, 1, 1, PDA, M, True, 10**9, Q, *ST, pre=0, post=Q, tx_fee=40_000, jito=20_000)
+        v, (d,), _ = one_day([(A10, L1, H1, b)])
+        self.assertAlmostEqual(row(v, d, T)["cash"], -(10**9 + 60_000))
+
+
+class WinnersQ17(unittest.TestCase):
+    def test_winner_definition(self):
+        tp = pd.DataFrame([
+            # trader 1 qualifies only on 09-08, where deciles 5-6 average 0.01: winner (0.05 > 0.01 and > 0)
+            *[{"trader": 1, "decile": 10, "day": "2026-09-08", "ret": 0.05}] * 5,
+            # trader 2 beats deciles 5-6 but loses money: not a winner
+            *[{"trader": 2, "decile": 10, "day": "2026-09-09", "ret": -0.01}] * 5,
+            *[{"trader": 3, "decile": 5, "day": "2026-09-08", "ret": 0.01}] * 5,
+            *[{"trader": 4, "decile": 6, "day": "2026-09-09", "ret": -0.20}] * 5,
+            *[{"trader": 5, "decile": 5, "day": "2026-09-09", "ret": 0.20}] * 1])
+        # pooled over both days deciles 5-6 average -0.075: trader 1 would win either way; trader 2 only by the
+        # missing > 0 condition; over 09-09 alone deciles 5-6 average -0.133
+        self.assertEqual(persist.winners(tp), {1})
+
+
+class FlipperA4(unittest.TestCase):
+    def test_trips_flipper_class_and_flows(self):
+        F, G, O = address("flipF"), address("flipG"), address("otherO")
+
+        def b(u):
+            for i in range(5):
+                s0 = L1 + 100 + i * 400
+                u.curve(s0, 1, 0, F, M, True, 10**8, 10**12, *ST, pre=0, post=10**12, bps=(0, 0, 0))
+                u.curve(s0 + 150, 1, 0, F, M, False, 10**8, 10**12, *ST, pre=10**12, post=0, bps=(0, 0, 0))
+                u.curve(s0 + 5, 2, 0, G, M, True, 10**8, 10**12, *ST, pre=0, post=10**12, bps=(0, 0, 0))
+                u.transfer(s0 + 6, 3, M, G, O, 1)                           # breaks G's trip
+                u.curve(s0 + 150, 4, 0, G, M, False, 10**8, 10**12 - 1, *ST, pre=10**12 - 1, post=0, bps=(0, 0, 0))
+            s0 = L1 + 100
+            u.curve(s0 + 10, 9, 0, O, M, True, 10**9, 10**12, *ST, pre=1, post=10**12 + 1, bps=(0, 0, 0))
+            u.curve(s0 + 50, 9, 0, O, M, True, 10**9, 10**12, *ST, pre=10**12 + 1, post=2 * 10**12 + 1,
+                    bps=(0, 0, 0))
+            u.curve(s0 + 200, 9, 0, O, M, False, 5 * 10**8, 10**12, *ST, pre=2 * 10**12 + 1, post=10**12 + 1,
+                    bps=(0, 0, 0))
+        with tempfile.TemporaryDirectory() as root:
+            uu = Unit(root, A10, L1, H1)
+            b(uu)
+            units = load.parse_units([uu.write()])
+            v = load.Vocab()
             led = Ledger(v)
             led.process_unit(units[0])
-            t = pd.DataFrame({"mint": [v.get(M)], "entry_slot": [L1 + 1], "exit_slot": [L1 + 9],
-                              "open_at_end": [False], "day_hi": [H1]})
-            out = replay.replay_trades(t, units, v)
-            self.assertEqual(out["ret_replay"].iat[0], -1.0)
-            self.assertEqual(replay.unquotable_share(out), 1.0)
-            self.assertEqual(replay.replay_mean(out), -1.0)
+            d = led.finish_day()
+            from w1 import clusters, flippers
+            tr, _ = clusters.build([d], A10)
+            trips = d["trips"]
+            self.assertEqual(int((trips["owner"] == v.get(F)).sum()), 5)
+            self.assertTrue(trips.loc[trips["owner"] == v.get(G), "broken"].all())
+            fc = flippers.flipper_class(trips, tr)
+            self.assertTrue(fc.loc[tr[v.get(F)], "flipper"])
+            self.assertNotIn(tr[v.get(G)], fc.index)
+            flip = {int(tr[v.get(F)])}
+            f = flippers.flows(trips, flip, tr, units, v)
+            # O's +2 SOL inside F's first trip (G's buys of 0.1 SOL each are inside too: 0.1 SOL), 1 of them after
+            # 23 slots; after each exit, within the trip's length: G's 0.1 SOL sell (5 trips) and O's 0.5 SOL sell
+            self.assertAlmostEqual(f["others_net_buy_sol_inside"], 2.5, places=6)
+            self.assertAlmostEqual(f["share_after_23_slots"], 1.0 / 2.5, places=6)
+            self.assertAlmostEqual(f["others_net_sell_sol_after_exit"], 0.5 + 5 * 0.1, places=6)
+            c = flippers.census(d, tr, flip)
+            self.assertAlmostEqual(c["flipper"], 0.5 + 5 * 5_000 / 1e9)   # buys with their tx_fee
 
 
 class Guards(unittest.TestCase):

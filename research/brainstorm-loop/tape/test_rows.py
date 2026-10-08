@@ -10,6 +10,7 @@ import pandas as pd
 import zstandard
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import h8 as H8  # noqa: E402
 import rebuy as RB  # noqa: E402
 import rows as R  # noqa: E402
 from tapeio import AMM_COLS, CURVE_COLS, SOL_NATIVE, WSOL, Tape  # noqa: E402
@@ -396,7 +397,8 @@ class SolUsd(unittest.TestCase):
         with open(p, "w") as fh:
             for i, c in enumerate([150.0, 151.0, 152.0]):
                 fh.write(f"{t0 + i * 60000},0,0,0,{c},0,0,0,0,0,0,0\n")
-        px, sha = run_step_a.read_sol_usd([p])
+        px, sha, minutes = run_step_a.read_sol_usd([p])
+        self.assertEqual(list(minutes.index), [t0 // 1000 + 60 * i for i in range(3)])
         self.assertEqual(px, {"2026-09-11": (151.0, 150.0, 152.0)})
         self.assertEqual(sha[0]["sha256"], hashlib.sha256(open(p, "rb").read()).hexdigest())
         # a day whose minute range reaches $50k / 420 SOL (about 119) is flagged, though the median is far
@@ -449,6 +451,60 @@ class LookAhead(unittest.TestCase):
         prs = pd.DataFrame(columns=["pool", "day", "owner", "exit_slot", "t", "proceeds", "gain", "below", "rebuy_2h"])
         summ = RB.summarise(T(), empty, pts, prs)
         self.assertEqual(summ["top_quintile_points_per_day"], {DAY: 1})
+
+
+def flat_hourly(px, t0=T0 - 7200, t1=T0 + 20000):
+    """Minute closes at `px` for every minute in [t0, t1], as read_sol_usd returns them."""
+    idx = np.arange(t0 // 60 * 60, t1, 60)
+    return H8.hourly_px(pd.Series(px, index=idx))
+
+
+class H8Stratum(unittest.TestCase):
+    def test_hourly_price_is_the_close_known_at_the_hour_start(self):
+        h = H8.hourly_px(pd.Series([100.0, 110.0, 120.0], index=[3600 - 120, 3600 - 60, 3600]))
+        self.assertEqual(h, {3600: 110.0})
+        self.assertEqual(H8.px_asof(h, 3600 + 3599), 110.0)
+        self.assertTrue(np.isnan(H8.px_asof(h, 7200)))
+
+    def test_floor_at_each_size(self):
+        h = {0: 119.26}
+        self.assertTrue(H8.eligible(420e9, 10, 50, h))        # 420 SOL >= $50,000 / 119.26 = 419.25 SOL
+        self.assertFalse(H8.eligible(418e9, 10, 50, h))
+        self.assertTrue(H8.eligible(126e9, 10, 5, h))         # $15,000 floor = 125.8 SOL at $5 and $5..$15
+        self.assertFalse(H8.eligible(125e9, 10, 5, h))
+        self.assertFalse(H8.eligible(1e15, 4000, 5, h))       # no price for that hour: not eligible
+
+    def test_dev_zero_stratum(self):
+        tape, s, adj = load(dev_unit())
+        dz, _ = R.dev_zero(tape, s, adj)
+        out = H8.dev_zero_stratum(dz, [DAY], flat_hourly(200.0))   # 100 SOL x $200 = $20,000
+        self.assertEqual(out["$5"]["le5"]["events_used"], 1)
+        self.assertEqual(out["$20"]["le5"]["events_used"], 1)
+        self.assertEqual(out["$50"]["le5"]["events_used"], 0)
+        self.assertEqual(out["$50"]["le5"]["events_per_day"], {DAY: 0})
+
+    def test_rebuy_and_seat_drift_strata(self):
+        tape, s, _ = load(rebuy_unit())
+        ex, pts, prs, _ = RB.rebuy_anchor(tape, s)
+        out = H8.rebuy_stratum(tape, ex, pts, prs, flat_hourly(200.0))
+        self.assertEqual(out["$5"]["decision_points"], len(pts))
+        self.assertEqual(out["$50"]["decision_points"], 0)
+        self.assertEqual(out["$50"]["ex_holder_point_pairs"], 0)
+        tape, s, adj = load(SeatDrift()._unit())
+        sd, _ = R.seat_drift(tape, s, adj)
+        o = H8.seat_drift_stratum(sd, flat_hourly(200.0))
+        self.assertEqual(o["$5"]["used"], 3)
+        self.assertEqual(o["$50"]["used"], 0)
+
+    def test_capacity_row(self):
+        tape, s, _ = load(rebuy_unit())
+        ph, gr, summ = H8.h8_capacity(tape, s, flat_hourly(200.0))
+        x = summ[DAY]
+        self.assertEqual(x["pool_hours"], 4)                  # hour starts T0+800 ... T0+11600
+        self.assertEqual((x["$5"]["h8_pool_hours"], x["$50"]["h8_pool_hours"]), (4, 0))
+        self.assertEqual((x["graduates"], x["$20"]["h8_graduates"], x["$50"]["h8_graduates"]), (1, 1, 0))
+        _, _, summ = H8.h8_capacity(tape, s, {})
+        self.assertEqual(summ[DAY]["$5"]["h8_pool_hours"], 0)   # no price: nothing is eligible
 
 
 class ReviewFixes(unittest.TestCase):

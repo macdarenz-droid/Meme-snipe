@@ -3,8 +3,9 @@ venue states after the trades it scores, and nothing in ranking or features call
 
 Entry: buy REPLAY_SPEND (fees included) at the venue state at the end of slot (first buy + 23). Exit: sell every token
 at the state at the end of slot (exit + 23); a position the trader still held at day end exits at the day-end state
-with no delay (OPEN_QUESTIONS Q16). Return = (proceeds - spend - expected fixed costs) / spend. A trade with no entry
-quote counts as -100% and its share is reported (OPEN_QUESTIONS Q33)."""
+with no delay (OPEN_QUESTIONS Q16). Return = (proceeds - spend - expected fixed costs) / spend. AMENDMENT_3: an exit the vault
+cannot pay scores what it pays (-100% for the unpaid part); a trade the tape has no state for is dropped and its share
+reported."""
 import numpy as np
 import pandas as pd
 
@@ -13,8 +14,11 @@ from .costs import FIXED_ROUND_TRIP, REPLAY_DELAY_SLOTS, REPLAY_SPEND
 from .ledger import States
 
 END_OF_SLOT = (1 << 16) - 1
-UNQUOTABLE = "unquotable (counted as -100%)"
+UNQUOTABLE = "entry refused by the venue (counted as -100%)"
 UNQUOTABLE_RET = -1.0
+UNPAID = "exit capped by the real vault (unpaid part -100%)"
+NO_STATE = "no state on the tape (dropped)"
+NO_BUY = "no buy on the test day"
 
 
 def _tuple(st, i):
@@ -37,39 +41,52 @@ def replay_trades(trades, units, vocab):
     for every trade that could not be replayed."""
     trades = trades.copy()
     ok = trades["entry_slot"].to_numpy() >= 0
-    trades["replay_reason"] = np.where(ok, "", "no buy on the test day")
+    trades["replay_reason"] = np.where(ok, "", NO_BUY)
     rows = state_rows(units, vocab, set(trades.loc[ok, "mint"].astype(int)))
     st_holder = States()
-    last_slot = max(u.hi for u in units)
-    es = np.minimum(trades["entry_slot"].to_numpy() + REPLAY_DELAY_SLOTS, last_slot)
-    xs_delay = np.minimum(trades["exit_slot"].to_numpy() + REPLAY_DELAY_SLOTS, last_slot)
-    xs = np.where(trades["open_at_end"].to_numpy(bool), trades["day_hi"].to_numpy(), xs_delay)
+    first_slot, last_slot = min(u.lo for u in units), max(u.hi for u in units)
+    es = trades["entry_slot"].to_numpy() + REPLAY_DELAY_SLOTS
+    xs = np.where(trades["open_at_end"].to_numpy(bool), trades["day_hi"].to_numpy(),   # Q16: day-end mark, no delay
+                  trades["exit_slot"].to_numpy() + REPLAY_DELAY_SLOTS)
     m = trades["mint"].to_numpy(np.int64)
-    se = st_holder.asof(rows, m, load.make_key(es, END_OF_SLOT, 255))
-    sx = st_holder.asof(rows, m, load.make_key(xs, END_OF_SLOT, 255))
+    se = st_holder.asof(rows, m, load.make_key(np.clip(es, 0, None), END_OF_SLOT, 255))
+    sx = st_holder.asof(rows, m, load.make_key(np.clip(xs, 0, None), END_OF_SLOT, 255))
     rets, reasons = [], []
     for i in range(len(trades)):
         if not ok[i]:
             rets.append(np.nan)
             reasons.append(trades["replay_reason"].iat[i])
             continue
-        a = _tuple(se, i)
+        a, x = _tuple(se, i), _tuple(sx, i)
+        # AMENDMENT_3: a slot the tape did not read, or no venue state on the tape, is a data gap: dropped
+        if not (first_slot <= es[i] <= last_slot and first_slot <= xs[i] <= last_slot) or a is None or x is None:
+            rets.append(np.nan)
+            reasons.append(NO_STATE)
+            continue
         tok, _ = venue.buy_exact_in(a, REPLAY_SPEND)
-        if tok <= 0:   # review item 5: an unquotable trade counts as -100% (pessimistic), never dropped
+        if tok <= 0:   # the venue refuses the entry although its state is on the tape: economic, -100%
             rets.append(UNQUOTABLE_RET)
             reasons.append(UNQUOTABLE)
             continue
-        proceeds = venue.sell(_tuple(sx, i), tok)
+        proceeds, capped = venue.sell_detail(x, tok)
+        # an exit the vault cannot (fully) pay scores what it pays: -100% for the unpaid part
         rets.append((proceeds - REPLAY_SPEND - FIXED_ROUND_TRIP) / REPLAY_SPEND)
-        reasons.append("")
+        reasons.append(UNPAID if capped else "")
     trades["ret_replay"] = rets
     trades["replay_reason"] = reasons
     return trades
 
 
-def unquotable_share(trades):
-    n = int((trades["replay_reason"] != "no buy on the test day").sum())
-    return float((trades["replay_reason"] == UNQUOTABLE).sum() / n) if n else None
+def shares(trades):
+    """AMENDMENT_3: the share of attempted trades dropped for a data gap, and the shares scored with an unpaid
+    exit or a refused entry (both inside the mean)."""
+    att = trades[trades["replay_reason"] != NO_BUY]
+    n = len(att)
+    if n == 0:
+        return {"attempted": 0}
+    r = att["replay_reason"]
+    return {"attempted": int(n), "dropped_no_state_share": float((r == NO_STATE).mean()),
+            "unpaid_exit_share": float((r == UNPAID).mean()), "refused_entry_share": float((r == UNQUOTABLE).mean())}
 
 
 def replay_mean(trades):

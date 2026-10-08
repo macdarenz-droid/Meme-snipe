@@ -23,6 +23,9 @@ sys.path.insert(0, HERE)
 
 from d1 import config as C  # noqa: E402
 
+# Frozen rulings this code implements; written into frozen_rules.json, and validate refuses rules without H8_AMENDMENT.
+FROZEN_AMENDMENTS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT")
+
 
 def code_hash() -> str:
     h = hashlib.sha256()
@@ -216,7 +219,7 @@ def search(args):
     res = run_search(df)
     res["table"].to_csv(os.path.join(args.run, "search_table.csv"), index=False)
     m1 = json.load(open(os.path.join(args.run, "manifest_stage1.json")))
-    frozen = {"design": "D1", "amendments": ["AMENDMENT_1", "AMENDMENT_2"], "median_rt_cost": res["median_rt_cost"],
+    frozen = {"design": "D1", "amendments": list(FROZEN_AMENDMENTS), "solusd_sha256": px_sha, "median_rt_cost": res["median_rt_cost"],
               "outcome": res["outcome"], "advanced": res["advanced"], "discovery_days": list(C.DISCOVERY_DAYS),
               "code_sha256": code_hash(), "input_sha256": m1["input_sha256"], "bootstrap_seed": C.BOOT_SEED}
     with open(args.out, "w") as fh:

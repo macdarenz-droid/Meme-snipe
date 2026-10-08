@@ -57,3 +57,11 @@ Places where `PREREG.md` is silent or ambiguous. Each one has the reading the co
 ## Step A completeness (review fix)
 30. **Plan check.** stage1 checks `research/shared-tape/stepa-plan.txt` against the sha256 fixed in `config.STEPA_PLAN_SHA256`. It records whether each day's units equal that day's plan rows exactly, with no gaps (`stepa.plan_check`). search refuses unless the result is complete.
 31. **Validation days.** The Step A plan does not cover validation days, so a completeness check for Step B or forward days needs its own plan and sha. That is not written yet.
+
+## H8 at trade size (research/brainstorm-loop/H8_AMENDMENT.md; reporting only)
+32. **"That hour's SOL/USD".** The code uses the close of the last complete UTC hour before tau (as-of). A missing hour in the price file means no price, so the point is not H8-eligible. CONSERVATIVE.
+33. **Stratum trades.** The stratum at $5 and $20 uses fills at that size: same slots, own impact and fees, the same fixed costs. Entries are throttled inside the stratum, because the bot can enter only H8-eligible pools. Effective quote is the as-of feature at d.
+34. **Count row 4.** It runs over D1's eligible decision points (from 50 SOL up):
+    - pool-hours are distinct (pool, UTC hour) with an H8-eligible point;
+    - graduates are distinct pools.
+35. **Price file not in the repo yet.** The Binance hourly file is not committed. search and validate refuse without `--solusd`, and they record the file's sha256.

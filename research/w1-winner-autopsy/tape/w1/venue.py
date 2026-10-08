@@ -43,6 +43,22 @@ def pool_sell(state, tokens: int) -> int:
     return max(gross - _fee(gross, fee_bps), 0)
 
 
+def sell_detail(state, tokens: int):
+    """(lamports received, True when the real reserves capped the gross proceeds)."""
+    if state is None or tokens <= 0:
+        return 0, False
+    if state[0] == "c":
+        _, vsr, vtr, rsr, rtr, _f = state
+        if rtr <= 0:
+            return 0, True
+        return curve_sell(state, tokens), tokens * vsr // (vtr + tokens) > rsr
+    _, base, vault, virtual, _f = state
+    q_eff = vault + virtual
+    if base <= 0 or q_eff <= 0:
+        return 0, True
+    return pool_sell(state, tokens), q_eff * tokens // (base + tokens) > max(vault, 0)
+
+
 def sell(state, tokens: int) -> int:
     if state is None or tokens <= 0:
         return 0

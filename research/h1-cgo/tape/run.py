@@ -18,6 +18,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from h1cgo import features, outcomes, stats, tapeio  # noqa: E402
+from h1cgo import h8 as H8  # noqa: E402
 from h1cgo.constants import DISCOVERY_DAYS, VALIDATION_DAYS  # noqa: E402
 
 
@@ -74,6 +75,7 @@ def main(argv=None):
     a.add_argument("--out", required=True)
     a.add_argument("--frozen")
     a.add_argument("--counts-only", action="store_true", help="outcomes: print status counts, write no returns")
+    a.add_argument("--sol-usd", nargs="*", default=[], help="Binance SOLUSDT kline CSVs (H8 stratum and count rows)")
     a.add_argument("--plan", default=tapeio.PLAN_PATH, help="committed unit plan (DAY EPOCH FROM TO per unit)")
     o = a.parse_args(argv)
     os.makedirs(o.out, exist_ok=True)
@@ -108,6 +110,8 @@ def main(argv=None):
         if f.empty:
             sys.exit("gate0: features.csv holds no decision points; nothing to judge")
         g = stats.gate0(f, meta["decision_days"])
+        # H8_AMENDMENT item 4: count row (reads no forward return)
+        g["h8_count_rows"] = H8.count_rows(f, H8.SolUsd.from_klines(o.sol_usd)) if o.sol_usd else "needs --sol-usd"
         _dump(os.path.join(o.out, "gate0.json"), g)
         print("gate H1-CGO-0:", "pass" if g["passed"] else "closed", f"(a {g['a_pass']}, b {g['b_pass']}, c {g['c_pass']})")
 
@@ -128,7 +132,9 @@ def main(argv=None):
             print(json.dumps(dict(priced=len(out), status=out.status.value_counts().to_dict() if len(out) else {})))
         else:
             out.to_csv(os.path.join(o.out, "outcomes.csv"), index=False)
-            print(f"outcomes: {len(out)} rows")
+            fl = outcomes.load_flows(us, f)  # AMENDMENT_3 gate flows
+            fl.to_csv(os.path.join(o.out, "flows.csv"), index=False)
+            print(f"outcomes: {len(out)} rows; flows: {len(fl)} rows")
 
     elif o.stage == "freeze":
         gp = os.path.join(o.out, "gate0.json")
@@ -138,6 +144,8 @@ def main(argv=None):
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
         res = stats.sign_and_futility(f, out)
+        fl = pd.read_csv(os.path.join(o.out, "flows.csv"), dtype={"decision_day": str})
+        res["d60"] = stats.d60_gate(f, fl)  # AMENDMENT_3 gate rows; freezes D60's P20
         res.update(code=tapeio.code_hash(), feature_inputs=meta.get("inputs"), discovery_days=meta["decision_days"])
         _dump(os.path.join(o.out, "frozen.json"), res)
         print("frozen:", res["verdict"], "sign", res["sign"])
@@ -155,7 +163,11 @@ def main(argv=None):
             sys.exit(f"score needs decision days exactly {VALIDATION_DAYS}; got {meta['decision_days']}")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
+        if not o.sol_usd:
+            sys.exit("score needs --sol-usd (H8_AMENDMENT: the H8-eligible stratum)")
         p = stats.primary(f, out, frozen, meta["decision_days"])
+        p["h8_stratum"] = stats.h8_stratum(f, out, frozen, meta["decision_days"], H8.SolUsd.from_klines(o.sol_usd))
+        p["d60_arm"] = stats.d60_arm(f, out, frozen, meta["decision_days"], p)
         s = stats.secondary(f, out, frozen)
         p.update(code=tapeio.code_hash())
         _dump(os.path.join(o.out, "primary.json"), p)

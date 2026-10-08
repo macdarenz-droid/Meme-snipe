@@ -7,6 +7,8 @@ two states. Costs in lamports: venue fees and impact on both legs (from the quot
 edge-costs.ts (pumpswap.expected_fixed)."""
 import bisect
 
+import numpy as np
+
 import pandas as pd
 
 from . import tapeio
@@ -129,3 +131,47 @@ def run(decisions: pd.DataFrame, books: dict, tiers=None) -> pd.DataFrame:
                 row.update(price_trade(book, row["entry_slot"], row["exit_slot"], spend_of(usd), tiers, fixed))
             out.append(row)
     return pd.DataFrame(out)
+
+
+# ---------------------------------------------------------------- AMENDMENT_3 gate flows (forward; Step A only)
+
+FLOW_COLS = ["slot", "pool", "side", "base_amount", "quote_amount_lp_adjusted", "protocol_fee", "coin_creator_fee",
+             "user_quote_amount", "protocol", "signature", "outer_ix"]
+
+
+def flows(decisions: pd.DataFrame, amm: pd.DataFrame, boosts=frozenset()) -> pd.DataFrame:
+    """Per eligible decision point whose flow window is in time: the pool's swaps in (decision slot, flow_end_slot]
+    (the hour after the decision): tokens sold, SOL paid by buyers (fees included) and SOL received by sellers.
+    Protocol and BOOST swaps are left out."""
+    a = amm[amm.protocol.isin(["", "0"])]
+    a = a[[k not in boosts for k in zip(a.signature, a.outer_ix, a.pool)]]
+    a = a.assign(slot=a.slot.astype("int64"), sell_tok=(a.side == "sell") * a.base_amount.astype("int64"),
+                 buy_sol=(a.side == "buy") * (a.quote_amount_lp_adjusted.astype("int64") + a.protocol_fee.astype("int64")
+                                              + a.coin_creator_fee.astype("int64")),
+                 sell_sol=(a.side == "sell") * a.user_quote_amount.astype("int64"))
+    by = {p: g.sort_values("slot") for p, g in a.groupby("pool")}
+    out = []
+    d = decisions[decisions.eligible & decisions.in_time_flow]
+    for r in d.itertuples(index=False):
+        g = by.get(r.pool)
+        row = dict(mint=r.mint, pool=r.pool, decision_slot=r.decision_slot, decision_day=r.decision_day,
+                   sell_tokens=0, buy_sol=0, sell_sol=0)
+        if g is not None:
+            s = g.slot.to_numpy()
+            i, j = np.searchsorted(s, r.decision_slot, "right"), np.searchsorted(s, r.flow_end_slot, "right")
+            w = g.iloc[i:j]
+            row.update(sell_tokens=int(w.sell_tok.sum()), buy_sol=int(w.buy_sol.sum()), sell_sol=int(w.sell_sol.sum()))
+        out.append(row)
+    f = pd.DataFrame(out, columns=["mint", "pool", "decision_slot", "decision_day", "sell_tokens", "buy_sol", "sell_sol"])
+    f["net_flow_sol"] = f.buy_sol - f.sell_sol
+    return f
+
+
+def load_flows(units, decisions) -> pd.DataFrame:
+    pools = set(decisions[decisions.eligible].pool)
+    fs = []
+    for u in sorted(units, key=lambda x: x.from_slot):
+        x = tapeio.read_table(u, "S_amm", FLOW_COLS)
+        fs.append(x[x.pool.isin(pools)])
+    amm = pd.concat(fs, ignore_index=True) if fs else pd.DataFrame(columns=FLOW_COLS)
+    return flows(decisions, amm, tapeio.read_boost_keys(units))

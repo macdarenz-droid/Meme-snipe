@@ -17,6 +17,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import h8 as H8  # noqa: E402
 import rebuy as RB  # noqa: E402
 import rows as R  # noqa: E402
 from tapeio import DEFAULT_PLAN, PlanError, Tape, check_plan, unit_info  # noqa: E402
@@ -25,13 +26,14 @@ from tapeio import DEFAULT_PLAN, PlanError, Tape, check_plan, unit_info  # noqa:
 def read_sol_usd(paths):
     """SOL/USD per tape day, with each file's sha256 (COUNT_ROWS_AMENDMENT_1: the Binance public archive's
     SOLUSDT 1-minute closes, committed with their sha256).
+    Also returns the minute closes (Series: open time in epoch s -> close) for H8's hourly SOL/USD, or None.
     Accepts Binance kline CSVs (no header: open_time, open, high, low, close, ...; open_time in ms or us,
     UTC day from open_time) -> {day: (median, min, max) of the closes}; or a CSV with header day,sol_usd."""
     import hashlib
 
     if not paths:
-        return None, []
-    out, shas = {}, []
+        return None, [], None
+    out, shas, minutes = {}, [], []
     for p in paths:
         with open(p, "rb") as fh:
             shas.append({"path": p, "sha256": hashlib.sha256(fh.read()).hexdigest()})
@@ -48,10 +50,13 @@ def read_sol_usd(paths):
         close = pd.to_numeric(k[4]).astype(float)
         for d, c in close.groupby(ts.strftime("%Y-%m-%d").values):
             out[d] = (float(c.median()), float(c.min()), float(c.max()))
-    return out, shas
+        secs = np.where(unit == "us", t // 10**6, t // 1000)
+        minutes.append(pd.Series(close.values, index=secs))
+    m = pd.concat(minutes).sort_index() if minutes else None
+    return out, shas, m
 
 
-def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_usd_files=None):
+def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_usd_files=None, minutes=None):
     R.BOOT_N = n_boot
     tape = Tape(units)
     adj = R.adjacency(tape.links)
@@ -63,6 +68,18 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
     sd, sd_s = R.seat_drift(tape, s, adj)
     ag, ag_s = R.age_gate(tape, s, fast)
     ru, ru_s = R.round_usd(tape, s, sol_usd, adj, n_boot=min(n_boot, 1000))
+    # H8_AMENDMENT: rows 1-3 on the H8-eligible stratum at $5, $20, $50, and the H8 capacity count row
+    hourly = H8.hourly_px(minutes)
+    days = sorted({d for d, _, _ in tape.ranges})
+    if hourly:
+        h8_strata = {"1_dev_zero": H8.dev_zero_stratum(dz, days, hourly),
+                     "2_rebuy_anchor": H8.rebuy_stratum(tape, rb, rb_pts, rb_pairs, hourly),
+                     "3_seat_drift": H8.seat_drift_stratum(sd, hourly)}
+        h8_ph, h8_gr, h8_cap = H8.h8_capacity(tape, s, hourly)
+    else:
+        need = "needs SOL/USD 1-minute closes (--sol-usd Binance kline CSVs)"
+        h8_strata, h8_cap = {"status": need}, {"status": need}
+        h8_ph = h8_gr = pd.DataFrame()
     summary = {
         "units": [f"{d} {a}-{b}" for d, a, b in tape.ranges],
         "swaps": int(len(s)), "boost_rows_excluded": int(s["boost"].sum()),
@@ -70,6 +87,7 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
         "w1_fast_owner_days": int(fast.sum()), "w1_owner_days": int(len(fast)),
         "1_dev_zero": dz_s, "2_rebuy_anchor": rb_s, "3_seat_drift": sd_s, "4_age_gate": ag_s,
         "5_two_sided_clusters": two, "6_round_usd": ru_s, "sol_usd_files": sol_usd_files or [],
+        "h8_stratum_rows_1_3": h8_strata, "7_h8_capacity": h8_cap,
     }
     if decide:
         summary["plan"] = plan
@@ -78,7 +96,7 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
                                "2_rebuy_anchor_prereg": RB.rebuy_decide(rb_s)}
     os.makedirs(out, exist_ok=True)
     for name, df in (("dev_zero", dz), ("rebuy_exits", rb), ("rebuy_points", rb_pts), ("rebuy_pairs", rb_pairs), ("seat_drift", sd), ("age_gate", ag),
-                     ("two_sided_labels", labels), ("round_usd", ru)):
+                     ("two_sided_labels", labels), ("round_usd", ru), ("h8_pool_hours", h8_ph), ("h8_graduates", h8_gr)):
         df.to_csv(os.path.join(out, f"stepa_{name}.csv"), index=False)
     with open(os.path.join(out, "stepa_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1, default=str)
@@ -100,8 +118,8 @@ def main(argv=None):
             plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
         except PlanError as e:
             ap.error(f"--decide refused: {e}")
-    px, px_sha = read_sol_usd(a.sol_usd)
-    s = run(a.unit, a.out, px, a.boot, a.decide, sol_usd_files=px_sha,
+    px, px_sha, minutes = read_sol_usd(a.sol_usd)
+    s = run(a.unit, a.out, px, a.boot, a.decide, sol_usd_files=px_sha, minutes=minutes,
             plan={"path": a.plan, "sha256": plan_sha} if a.decide else None)
     json.dump(s, sys.stdout, indent=1, default=str)
     print()
