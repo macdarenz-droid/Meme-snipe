@@ -46,6 +46,8 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 20:35 | Sweep 4 started: only pools the bot can enter under H8 (who trades there, lifecycle events of surviving coins, best designs moved into H8, size economics) |
 | 2026-10-08 20:36 | Count rows amendment 3 (41be588, renamed from 2 to avoid the lead's file): mayhem carried by mint, unknown pool-hours excluded |
 | 2026-10-08 20:43 | W1 amendment 6 (44b6fd2): plausibility cap confirmed; the own-cost check must hold with and without it. Lead registered Step B (182 units) and Step C (304 units) plans |
+| 2026-10-08 21:46 | Sweep 4 finished (8 ideas, 7 agents, 71 min, inside H8 only): nothing beats W1, D1 or G1-HC; slicer ride about 0.2% and needs an owner ethics ruling. Correction checked in code: H8's U1 floor is $50k (about 419 SOL) up to $50; trial max is $5 |
+| 2026-10-08 21:48 | H8 amendment 2, D1 amendment 3 (D1-H8), payer-mass bar and slicer count rows committed (519b58d) and sent to the lead |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
