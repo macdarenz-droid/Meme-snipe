@@ -14,6 +14,7 @@
 
 - **H8 amendment 2 (red team R2-10).** `research/brainstorm-loop/H8_AMENDMENT_2.md` (frozen) changes the stratum: the floor of the universe the bot would tag (U2 60–240 min with H11; U1 $50k; 4–24 h not tradable), H6, and tradable only at $5. Not implemented yet, so `h8_stratum` reports its rows and `tradable_under_superseded_h8_rule`, and sets `tradable_as_bot_stands` to None.
 - **Registered plans (red team R2-5).** `--plan` must be a registered plan (`tapeio.REGISTERED_PLANS`: Step A `fa99c878…` for 09-10 and 09-11, Step B `44f133a5…` for 09-07..09-09), registered for every day used; `features` and every later stage refuse any other plan. This answers item 24's wait for Step B's plan.
+- **H8-tradable sample (AMENDMENT_6, red team R1-19).** `h8_stratum` filters each decision point by its own as-of H8 flag first, then keeps the first H8-eligible entry per coin per day (as D1). The unfiltered primary still takes the first entry.
 - **Whole discovery (red team R2-4).** `gate0` passes only on both Step A days (`whole_discovery`); `freeze` and `score` refuse breakpoints, sign and futility made from a subset of the discovery days or of their creation days.
 
 ## Timing

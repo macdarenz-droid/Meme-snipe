@@ -98,5 +98,5 @@ def h8_report(df: pd.DataFrame, frozen: Dict) -> Dict:
                         "role": "bot as it stands" if s == C.H8_TRADABLE_SIZE_USD else "research line (owner: maxNotional)"}
         if s == C.H8_TRADABLE_SIZE_USD:
             tradable = n >= C.MIN_TRADES_VALIDATION and mean > 0
-    return {"h8": out, "tradable_as_bot_stands": bool(tradable),
+    return {"h8": out, "tradable_as_bot_stands": bool(tradable), "h13_basis": C.H13_PROXY_LABEL,
             "unknown_share": float(unk[rule_k].mean()) if rule_k.any() else float("nan")}

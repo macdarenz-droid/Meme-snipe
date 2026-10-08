@@ -1195,7 +1195,8 @@ class PayerMass(unittest.TestCase):
         for mint, pool, m, c in mints:
             u.create(m - 100, mint, creator=c, name="n" + mint)
             u.migrate(m, mint, pool, creator=c)
-            u.aswap(m + 1, "seed" + mint, mint, pool, creator=c)
+            # lone pools are twice as deep (Q = 200 SOL): AMENDMENT_8 compares shares of each event's own Q
+            u.aswap(m + 1, "seed" + mint, mint, pool, creator=c, quote=180e9 if mint in "DEF" else 80e9)
         # PB is busy: a 10 SOL first-time buy in its w1 window; the lone ones buy 1 SOL
         u.aswap(250 + 3600 + 30, "N1", "B", "PB", sol=10e9, creator="CB")
         for mint, pool, m, c in mints[3:]:
@@ -1212,12 +1213,15 @@ class PayerMass(unittest.TestCase):
         ev = r["events"]
         self.assertEqual(list(ev["pool"]), ["PB"])
         a = ev.set_index("pool").loc["PB"]
-        self.assertEqual(a["flow"], 10e9 - 1e9)        # busy minus the median lone graduate of the day
+        # AMENDMENT_8 (R1-20): excess in shares of each graduate's own Q: 10/100 - median lone 1/200
+        self.assertAlmostEqual(a["excess_share"], 10e9 / 100e9 - 1e9 / 200e9)
         self.assertEqual(a["Q"], 100e9)                 # eff quote of the last swap at or before m + 60 min
+        self.assertAlmostEqual(a["s_star"], np.sqrt(1 + a["c"]) - 1)
+        self.assertAlmostEqual(r["median_ratio"], a["excess_share"] / a["s_star"])
         tape2, s2, adj2 = load(self._seat_unit(late_swap=True))
         df2, _ = R.seat_drift(tape2, s2, adj2)
         a2 = PM.seat_drift_bar(df2, sorted({d for d, _, _ in tape2.ranges}))["events"].set_index("pool").loc["PB"]
-        self.assertEqual((a2["Q"], a2["x_star"]), (a["Q"], a["x_star"]))
+        self.assertEqual((a2["Q"], a2["s_star"]), (a["Q"], a["s_star"]))
 
     def test_decision_earns_only_with_the_bar(self):
         import run_step_a
@@ -1233,6 +1237,81 @@ class PayerMass(unittest.TestCase):
         for d in (yes, no):                              # not computed for these rows: never earned
             self.assertFalse(d["2_rebuy_anchor_prereg"])
             self.assertFalse(any(d["1_dev_zero_prereg_by_arm"].values()))
+
+
+class PayerMassAmendment8(unittest.TestCase):
+    """COUNT_ROWS_AMENDMENT_8: the bar for DEV-ZERO, REBUY-ANCHOR (CODE_REDTEAM.md R1-21, R1-22)."""
+
+    def test_dev_zero_bar_matched_controls_same_day_and_q_tercile(self):
+        import payer as PM
+        D2 = "2026-09-10"
+        rows = []
+        # one arm, day DAY: Q values 100, 200, 300 SOL for both events and controls -> terciles split them apart
+        for k, q in enumerate((100e9, 200e9, 300e9)):
+            rows.append({"arm": "le5", "kind": "event", "pool": f"E{k}", "day": DAY, "dropped": "", "net": 0.20,
+                         "eff_quote": q, "base": 1e15, "supply": 1e15})
+            rows.append({"arm": "le5", "kind": "control", "pool": f"C{k}", "day": DAY, "dropped": "",
+                         "net": 0.01 * (k + 1), "eff_quote": q, "base": 1e15, "supply": 1e15})
+        # an event on another day with no control that day: left out of the bar and counted
+        rows.append({"arm": "le5", "kind": "event", "pool": "E9", "day": D2, "dropped": "", "net": 0.5,
+                     "eff_quote": 100e9, "base": 1e15, "supply": 1e15})
+        r = PM.dev_zero_bar(pd.DataFrame(rows), [DAY, D2])["le5"]
+        ev = r["events"].set_index("pool")
+        for k in range(3):
+            self.assertAlmostEqual(ev.at[f"E{k}", "excess_share"], 0.20 - 0.01 * (k + 1))   # its own tercile's control
+        self.assertNotIn("E9", ev.index)
+        self.assertEqual(r["events_without_matched_control"], 1)
+        c = PM.round_trip_cost(100e9, 100e9, 1e15, 1e15)
+        self.assertAlmostEqual(ev.at["E0", "s_star"], np.sqrt(1 + c) - 1)
+        self.assertEqual(r["days"], 2)
+
+    def test_dev_zero_rows_carry_the_as_of_state(self):
+        tape, s, adj = load(dev_unit())
+        df, _ = R.dev_zero(tape, s, adj)
+        e = df[(df["arm"] == "le5") & (df["kind"] == "event")].iloc[0]
+        self.assertTrue(np.isfinite(e["base"]) and np.isfinite(e["supply"]))
+        row = s[(s["slot"] == e["slot"]) & (s["owner"] == e["dev"])].iloc[0]
+        self.assertEqual(e["base"], row["pool_base_post"])                # the state just after the dev's sale
+
+    def test_decision_needs_the_bar_and_the_tercile_ruling(self):
+        import run_step_a
+        from unittest import mock
+        own = {"le5": True, "zero": True, "le3": True}
+        with mock.patch.object(R, "dev_zero_decide", lambda s: own), \
+                mock.patch.object(R, "seat_drift_decide", lambda s: True), \
+                mock.patch.object(RB, "rebuy_decide", lambda s: True):
+            d = run_step_a.decision({}, {}, {}, {"1_dev_zero": {"by_arm": {"le5": {"passed": True},
+                                                                            "zero": {"passed": False},
+                                                                            "le3": {"passed": True}}},
+                                                  "2_rebuy_anchor": {"passed": True}})
+        self.assertTrue(d["2_rebuy_anchor_prereg"])
+        # fixed sequence: zero fails its bar, so le3 cannot earn either; le5 waits for the tercile ruling (Q-R1-i)
+        self.assertEqual(d["1_dev_zero_prereg_by_arm"], {"le5": run_step_a.DEV_ZERO_Q_TERCILE_RULED, "zero": False,
+                                                         "le3": False})
+
+
+class PayerMassRebuy(unittest.TestCase):
+    """COUNT_ROWS_AMENDMENT_8 Q-R1-f: REBUY-ANCHOR's bar (CODE_REDTEAM.md R1-22)."""
+
+    def test_rebuy_bar_top_quintile_against_the_median_band(self):
+        import payer as PM
+        n = 30
+        k = np.arange(n)
+        pts = pd.DataFrame({"pool": [f"p{i}" for i in k], "mint": "m", "day": DAY, "t": k, "hour": 1,
+                            "RB": (k % 10).astype(float), "net_rebuy_flow": (k % 10) * 0.01, "drawdown": k / 100,
+                            "eff_quote": 100e9, "mid": 100e9 / 1e15, "supply": 1e15})
+        r = PM.rebuy_bar(pts, [DAY])
+        ev = r["events"]
+        self.assertEqual(len(ev), 6)                                  # RB 8 and 9 in each of 3 drawdown terciles
+        top9 = ev[np.isclose(ev["net_rebuy_share"], 0.09)]
+        self.assertTrue(np.allclose(top9["excess_share"], 0.09 - 0.04))   # minus the median of RB 3, 4, 5
+        c = PM.round_trip_cost(100e9, 100e9, 1e15, 1e15)
+        self.assertTrue(np.allclose(ev["s_star"], np.sqrt(1 + c) - 1))
+
+    def test_rebuy_points_carry_supply_as_of_t(self):
+        tape, s, _ = load(rebuy_unit())
+        _, pts, _, _ = RB.rebuy_anchor(tape, s)
+        self.assertEqual(float(pts[pts["hour"] == 1].iloc[0]["supply"]), SUPPLY)   # the state at or before t
 
 
 if __name__ == "__main__":

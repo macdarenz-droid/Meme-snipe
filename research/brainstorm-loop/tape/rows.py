@@ -318,7 +318,11 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
         ftb = w["is_buy"] & w["ftb"] & ~w["fake"]
         holder = ~w["is_buy"] & ~(w["first_buy_order"] > e_order)
         eq = eff_quote(r)
-        out.update({"eff_quote": eq, "ftb_sol_all": float(w.loc[ftb, "sol"].sum()),
+        out.update({"eff_quote": eq,
+                    # the same as-of state (just after the dev's sale), for the tier in the payer-mass bar (AMENDMENT_8)
+                    "base": r["pool_base_post"] if pd.notna(r["pool_base_post"]) else r["pool_base_pre"],
+                    "supply": r["supply"],
+                    "ftb_sol_all": float(w.loc[ftb, "sol"].sum()),
                     "ftb_sol_late": float(w.loc[ftb & late, "sol"].sum()),
                     "holder_sell_late": float(w.loc[holder & late, "sol"].sum()), "group_size": len(grp)})
         out["net"] = (out["ftb_sol_late"] - out["holder_sell_late"]) / eq if eq > 0 else np.nan

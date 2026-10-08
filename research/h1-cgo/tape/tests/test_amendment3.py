@@ -371,5 +371,40 @@ class D60Arm(unittest.TestCase):
         self.assertTrue(S.d60_arm(f, o, FROZEN, VDAYS, dict(verdict="unresolved"))["verdict"].startswith("not judged"))
 
 
+class Amendment6(unittest.TestCase):
+    """AMENDMENT_6 (CODE_REDTEAM.md R1-19): the H8-tradable stratum applies H8 first, then keeps the first eligible
+    entry per coin per day; the unfiltered primary still takes the first entry."""
+
+    def feats(self, eff_first, eff_later):
+        f = val_feats(8).assign(eff_quote=100 * 10**9)                 # $100 a SOL: 100 SOL fails the $5 floor (150)
+        x = f.iloc[:2].copy()
+        x["mint"], x["pool"], x["decision_day"] = "X", "pX", VDAYS[0]
+        x["decision_slot"], x["cgo"], x["eff_quote"] = [100, 101], 2.0, [eff_first, eff_later]
+        return pd.concat([f, x], ignore_index=True)
+
+    def outs(self, f):
+        return outs(f, net=lambda g: np.where(g.decision_slot == 101, 3e7, np.where(g.cgo > 1, 2e7, -1e7)))
+
+    def test_later_h8_eligible_entry_enters_the_stratum(self):
+        s = H8.SolUsd({DAY0: 100_000_000}, [])
+        f = self.feats(100 * 10**9, 500 * 10**9)                       # first entry fails H8, the later one passes
+        r = S.h8_stratum(f, self.outs(f), FROZEN, VDAYS, s)["$5"]
+        self.assertEqual(r["n_trades"], 1)
+        self.assertAlmostEqual(r["mean_net_sol"], 0.03)                 # the slot-101 entry
+        e = S.entries(f, "high", FROZEN["breakpoints"])
+        self.assertEqual(int(e.loc[e.mint == "X", "decision_slot"].iloc[0]), 100)   # the primary: first entry
+
+    def test_eligibility_is_as_of_each_entry(self):
+        s = H8.SolUsd({DAY0: 100_000_000}, [])
+        a = H8.flags(self.feats(500 * 10**9, 100 * 10**9), s)
+        b = H8.flags(self.feats(500 * 10**9, 10**20), s)               # only the later row changes
+        self.assertEqual(bool(a.loc[a.decision_slot == 100, "h8_5"].iloc[0]),
+                         bool(b.loc[b.decision_slot == 100, "h8_5"].iloc[0]))
+        f = self.feats(500 * 10**9, 500 * 10**9)                       # both pass: the first one is the entry
+        r = S.h8_stratum(f, self.outs(f), FROZEN, VDAYS, s)["$5"]
+        self.assertEqual(r["n_trades"], 1)
+        self.assertAlmostEqual(r["mean_net_sol"], 0.02)
+
+
 if __name__ == "__main__":
     unittest.main()

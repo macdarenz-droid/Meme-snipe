@@ -1,6 +1,7 @@
 """The payer-mass bar (research/brainstorm-loop/PAYER_MASS.md, defined per event by COUNT_ROWS_AMENDMENT_7 Q-R1-a).
 
-Per event i: X*_i = Q_i x (sqrt(1 + c_i) - 1), with Q_i the event's own effective quote (vault + signed virtual reserves)
+Per event i (COUNT_ROWS_AMENDMENT_8: every comparison in shares of the event's own Q, s*_i = sqrt(1 + c_i) - 1 = X*_i / Q_i):
+X*_i = Q_i x (sqrt(1 + c_i) - 1), with Q_i the event's own effective quote (vault + signed virtual reserves)
 at its decision slot and c_i the round trip at $5 in that pool:
   2 x the tier fee the program applies at that market cap
   + the constant-product impact of a $5 buy and its sell at Q (x^2 / (Q + x) on the buy, x^2 / Q on the sell, vs spot)
@@ -76,22 +77,96 @@ def bar(flows, xstars, event_days, days) -> dict:
             "by_day": {d: int(((np.asarray(event_days) == d) & ok & (f >= 2 * xs)).sum()) for d in sorted(set(days))}}
 
 
+def s_star(c) -> float:
+    """COUNT_ROWS_AMENDMENT_8: the bar in shares of the event's own Q, s* = X* / Q = sqrt(1 + c) - 1."""
+    return float(np.sqrt(1 + c) - 1) if np.isfinite(c) else float("nan")
+
+
+def share_bar(excess, sstar, event_days, days) -> dict:
+    """AMENDMENT_8: amendment 7's two conditions on excess shares against s*: median(excess / s*) >= 1, and on average
+    at least 11 events a day with excess >= 2 s*."""
+    return bar(excess, sstar, event_days, days)
+
+
 def seat_drift_bar(sd: pd.DataFrame, days) -> dict:
-    """SEAT-DRIFT: payer flow = the busy graduate's first-time buyer SOL in (m + 60 min + 23 slots, m + 120 min] minus
-    the median of the lone graduates on the same day; Q and the tier from the pool's state at m + 60 min."""
-    cols = ["pool", "day", "flow", "Q", "c", "x_star"]
+    """SEAT-DRIFT (AMENDMENT_7, in shares per AMENDMENT_8): excess share = the busy graduate's first-time buyer SOL in
+    (m + 60 min + 23 slots, m + 120 min] / its Q, minus the median of the same share over the lone graduates of that
+    day; Q, base and supply from the pool's as-of state at m + 60 min. A day without lone graduates leaves the excess
+    undefined, which never helps."""
+    cols = ["pool", "day", "excess_share", "Q", "c", "s_star"]
     if not len(sd) or "tercile" not in sd:
-        return {**bar([], [], [], days), "events": pd.DataFrame(columns=cols)}
+        return {**share_bar([], [], [], days), "events": pd.DataFrame(columns=cols)}
     ok = sd[sd["dropped"] == ""]
     busy, lone = ok[ok["tercile"] == 2], ok[ok["tercile"] == 0]
-    lone_med = lone.groupby("day")["w1_ftb_sol"].median()
+    lone_med = lone.groupby("day")["w1_share"].median()
     rows = []
     for r in busy.itertuples(index=False):
-        flow = r.w1_ftb_sol - lone_med.get(r.day, np.nan)
         c = round_trip_cost(r.w1_eff_quote, r.w1_eff_quote, r.w1_base, r.w1_supply)
-        rows.append({"pool": r.pool, "day": r.day, "flow": float(flow), "Q": float(r.w1_eff_quote), "c": c,
-                     "x_star": x_star(r.w1_eff_quote, c)})
+        rows.append({"pool": r.pool, "day": r.day, "excess_share": float(r.w1_share - lone_med.get(r.day, np.nan)),
+                     "Q": float(r.w1_eff_quote), "c": c, "s_star": s_star(c)})
     ev = pd.DataFrame(rows, columns=cols)
-    out = bar(ev["flow"], ev["x_star"], ev["day"], days)
+    out = share_bar(ev["excess_share"], ev["s_star"], ev["day"], days)
+    out["events"] = ev
+    return out
+
+
+def q_terciles(q: np.ndarray) -> np.ndarray:
+    """Tercile of each Q in its own set: cuts at the 1/3 and 2/3 quantiles (numpy linear); a value on a cut goes to the
+    lower bin (the count rows' rule, COUNT_ROWS_AMENDMENT_2)."""
+    q = np.asarray(q, float)
+    if len(q) < 3:
+        return np.zeros(len(q), int)
+    c1, c2 = np.quantile(q, [1 / 3, 2 / 3])
+    return np.where(q <= c1, 0, np.where(q <= c2, 1, 2))
+
+
+def dev_zero_bar(dz: pd.DataFrame, days) -> dict:
+    """DEV-ZERO (AMENDMENT_8 Q-R1-e), per arm. Matched controls: the arm's primary controls on the same UTC day and in the
+    same effective-quote tercile as of the event. The terciles are cut over the arm's used events and controls of that
+    day together (a reading the amendment leaves open: CODE_REDTEAM.md Q-R1-i). Excess share = net / Q (the row's
+    `net` is already a share of the effective quote just after the dev's sale) minus the matched controls' median.
+    An event with no matched control is left out of the bar and counted."""
+    cols = ["pool", "day", "excess_share", "Q", "c", "s_star"]
+    out = {}
+    for arm in ("le5", "zero", "le3"):
+        a = dz[(dz.get("arm") == arm) & (dz["dropped"] == "")] if len(dz) else dz
+        a = a[a["net"].notna() & a["eff_quote"].notna()] if len(a) else a
+        rows, missing = [], 0
+        for d, g in (a.groupby("day") if len(a) else []):
+            g = g.assign(qt=q_terciles(g["eff_quote"].to_numpy(float)))
+            for e in g[g["kind"] == "event"].itertuples(index=False):
+                ctl = g[(g["kind"] == "control") & (g["qt"] == e.qt)]
+                if not len(ctl):
+                    missing += 1
+                    continue
+                c = round_trip_cost(e.eff_quote, e.eff_quote, e.base, e.supply)
+                rows.append({"pool": e.pool, "day": d, "excess_share": float(e.net - ctl["net"].median()),
+                             "Q": float(e.eff_quote), "c": c, "s_star": s_star(c)})
+        ev = pd.DataFrame(rows, columns=cols)
+        r = share_bar(ev["excess_share"], ev["s_star"], ev["day"], days)
+        r.update(events=ev, events_without_matched_control=missing, reading_pending="Q-R1-i (Q tercile population)")
+        out[arm] = r
+    return out
+
+
+def rebuy_bar(pts: pd.DataFrame, days) -> dict:
+    """REBUY-ANCHOR (AMENDMENT_8 Q-R1-f): events are the top-quintile RB decision points (rebuy.materiality_sets); each
+    event's control is the median net-rebuy share of the median-band points (+/-10 percentile points of RB) of the same
+    day and drawdown tercile; excess share = the event's net rebuy share (already a share of its Q) minus that median.
+    Q is the point's effective quote, the tier from its as-of state (base = Q / mid). An event whose stratum has no
+    median-band point has an undefined excess, which never helps."""
+    import rebuy as RBm
+    cols = ["pool", "day", "t", "net_rebuy_share", "excess_share", "Q", "c", "s_star"]
+    top, mid = RBm.materiality_sets(pts) if len(pts) else (pts, pts)
+    med = mid.groupby("stratum")["net_rebuy_flow"].median() if len(mid) else pd.Series(dtype=float)
+    rows = []
+    for e in top.itertuples(index=False):
+        base = e.eff_quote / e.mid if e.mid and np.isfinite(e.mid) else np.nan
+        c = round_trip_cost(e.eff_quote, e.eff_quote, base, getattr(e, "supply", np.nan))
+        rows.append({"pool": e.pool, "day": e.day, "t": e.t, "net_rebuy_share": float(e.net_rebuy_flow),
+                     "excess_share": float(e.net_rebuy_flow - med.get(e.stratum, np.nan)), "Q": float(e.eff_quote),
+                     "c": c, "s_star": s_star(c)})
+    ev = pd.DataFrame(rows, columns=cols)
+    out = share_bar(ev["excess_share"], ev["s_star"], ev["day"], days)
     out["events"] = ev
     return out
