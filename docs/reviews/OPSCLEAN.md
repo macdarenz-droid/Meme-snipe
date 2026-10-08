@@ -47,3 +47,19 @@ The unpaired-switch fix is correct: update-unpaired fails 2 of 5 on the old code
 10. **m3.** At the end of zeroed-update, if the marker exists and `worker_ready` is true, run the marker block once more (under the lock). Test: `/pair` during an active run → the held start happens in the same run.
 11. **m4.** While `held_restart` runs, write `$STATE_DIR/holding`; the re-pair and zeroed-check `try-restart` paths set `worker_restart_pending` instead while it exists; `held_restart` and `due_rollback` remove it. Test: a re-pair during the hold does not restart the worker and the hold passes; the pending restart runs after.
 12. Note (a) stays as is: with no pairing the worker-unready alert can only be logged; `zeroed-status` shows it.
+
+## Round 3 (head `52555101`): reviewer PASS (3 MINOR); red team 0 BLOCKER, 0 MAJOR, 3 MINOR
+
+- Both confirm rulings 8–11 and the builder's marker-rewrite extra; base merge `52555101` is docs only (tree equals `git merge-tree`).
+- Red team m1 (borderline MAJOR): a crash between `mv -Tf current` (zeroed-update:364) and the `deployed` write (:365) splits current from deployed; unheld_start then drops the marker and the next switch takes the never-run release as its rollback target.
+- Red team m2 and reviewer m2: zeroed-pair's key-rotation restart ignores the hold, so a handoff inside the ~90 s hold can fail a good release, or (unheld path) leave the new keys unloaded.
+- Red team m3: on a busy lock, apply_host silently does nothing when the running release's installer predates `--update`.
+- Reviewer m1: `holding` is written after `flock -u 9`, leaving a short gap. m3: the "Waiting on the first held start" line is logged twice per run.
+
+### Supervisor rulings for round 4 (8 Oct 2026, 3:56 PM)
+
+13. **Red team m1.** (a) At the start of unheld_start and of the switch: if `basename "$(readlink -f current)"` differs from `deployed`, put `current` back to the deployed release first, with one log line. (b) Take `prev` from `deployed`, never from `readlink current`. (c) Write the marker before `ln`/`mv` in the ready case too, and let held_restart remove it, so a reboot between the switch and the hold is covered. Test: kill between `mv` and the `deployed` write, run again → `current` equals `deployed`, and the rollback target is A.
+14. **Red team m2 and reviewer m2.** In zeroed-pair, if `$STATE_DIR/holding` exists, write `worker_restart_pending` instead of restarting or starting; pending_restart restarts after the hold. Test: rotation during a hold → no restart, the pending file, then one restart after `holding` clears, with the new keys loaded.
+15. **Red team m3.** Log a line when apply_host skips because the running release's installer has no `--update`; note it as accepted in DECISIONS.
+16. **Reviewer m1.** Write `holding` before `flock -u 9`.
+17. **Reviewer m3.** Skip the at-exit "Waiting on" line when the start-of-run check already logged it.
