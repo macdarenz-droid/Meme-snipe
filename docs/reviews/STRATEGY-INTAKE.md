@@ -287,3 +287,20 @@ Red team round 7: 0 BLOCKER, 2 MAJOR, 3 MINOR.
 ## Round 8 (head `94d24c06`)
 
 Reviewer: PASS (1 optional MINOR: record ruling 82 here, now done). Red team round 8 pending.
+
+Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
+- U1: r does not limit holdout probing (previews are free), blocks normal stepwise scaling, and can trap a block forever (a revert is itself a raise).
+- U2: the fresh-window state has no re-freeze to the new code, so W_P can never emit.
+- u1: a null CI on a small trade set. u2: a fill-only change counts as "changes trades".
+
+### Supervisor rulings for round 9 (8 Oct 2026, 3:15 PM)
+
+83. **U1.**
+    - A preview shows only the blocking reasons that need no holdout data (ceilings, stage, budget). The holdout what-if is computed and shown only at submit, where it registers the trial.
+    - Every `whatif` trial counts in the DSR (B-3).
+    - r refills when a fresh forward window (W_P, or W_LS for a live strategy) passes at the current setting.
+    - A return to the stage's last frozen setting (reverting a tightening, or raising the size back to the frozen value) uses no r and needs no what-if.
+    - ACs: a preview registers no trial and shows no holdout result; at r = 0 a revert to the frozen setting applies; r refills after a passing W_P.
+84. **U2.** On entering the fresh-window state, the stage record is re-frozen to the new configKey by an audited A2 with actor `system`, recording the old key, the deploy, and "fresh window". Gates R and P then run on the new key. AC: after a fresh-window entry and a passing W_R, paper emission resumes under the new configKey.
+85. **u1.** A null CI (fewer than 30 trades, A-M13-04) counts as ≤ 0: entries are blocked, or the raise is refused.
+86. **u2.** A difference in the fill or rejection sets counts as "changes trades", so AC-61's path runs end to end through the re-run rule.
