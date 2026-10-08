@@ -90,6 +90,8 @@ fi
 if [[ "${1:-}" == --probe ]]; then
   [[ $# -eq 2 ]] || { echo "usage: archive-check.sh --probe DAY" >&2; exit 2; }
   next=$2 now=$(ag_now)
+  # Ruling 20: the probe checks the day itself (allow-list, arm, retention) first.
+  msg=$(ag_local "$next" 2>&1 >/dev/null) || { echo "archive-check: $msg; no request made" | tee -a "$summary"; exit 2; }
   echo "archive-check $(iso "$now"): probe sent for $next" | tee -a "$summary"
   hdr=$(mktemp)
   body=$(mktemp)
@@ -118,18 +120,31 @@ if [[ "${1:-}" == --probe ]]; then
   echo "archive-check $at: status ${code:-none}, $got bytes, curl exit $rc, cf-ray ${ray:-none}, retry-after ${ra:-none}"
   if ! [[ "$code" == 206 && $rc == 0 && $got -le 64 ]]; then
     echo "served=false" >> "$output"
-    # Ruling 10: a Retry-After (seconds or an HTTP date) is recorded as the back-off
-    # end; the workflow saves it as cache key archive-backoff-<end>, and hold 2 waits
-    # for max(3 h, that end).
-    end=""
-    if [[ "$ra" =~ ^[0-9]{1,9}$ ]]; then end=$(( now + ra ))
-    elif [[ -n "$ra" ]] && e=$(date -u -d "$ra" +%s 2>/dev/null); then end=$e
+    # Rulings 10, 14, 18: the back-off end, max(3 h, a Retry-After parsed strictly as
+    # delta-seconds or an IMF-fixdate, RFC 9110), is recorded durably as a check-run
+    # annotation (title archive-backoff, end=<unix>) and as cache key
+    # archive-backoff-<end> (the fast path). A Retry-After present but unclean, or above
+    # 7 days, records end=hold, which holds the chain until a reviewed re-arm.
+    end=$(( now + ARCHIVE_BACKOFF_S ))
+    if [[ -n "$ra" ]]; then
+      if [[ "$ra" =~ ^[0-9]{1,9}$ ]]; then e=$(( now + 10#$ra ))
+      elif [[ "$ra" =~ ^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\ [0-9]{2}\ (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] &&
+           e=$(date -u -d "$ra" +%s 2>/dev/null); then :
+      else e=hold
+      fi
+      if [[ "$e" != hold ]] && (( e > now + 7 * 86400 )); then e=hold; fi
+      if [[ "$e" == hold ]]; then end=hold; elif (( e > end )); then end=$e; fi
     fi
-    if [[ -n "$end" ]]; then
+    echo "::warning title=archive-backoff::end=$end"
+    if [[ "$end" != hold ]]; then
       echo "backoff_end=$end" >> "$output"
       mkdir -p "${RUNNER_TEMP:-/tmp}/archive-backoff" && echo "$end" > "${RUNNER_TEMP:-/tmp}/archive-backoff/end"
     fi
-    echo "archive-check: not served; counted as a failure, nothing dispatched; the back-off holds every request for at least $(( ARCHIVE_BACKOFF_S / 3600 )) h${end:+ and until $(iso "$end")}" | tee -a "$summary"
+    if [[ "$end" == hold ]]; then
+      echo "archive-check: not served; counted as a failure; the Retry-After '$ra' is unclean or above 7 days, so the chain holds until a reviewed re-arm" | tee -a "$summary"
+    else
+      echo "archive-check: not served; counted as a failure, nothing dispatched; the back-off holds every request until $(iso "$end")" | tee -a "$summary"
+    fi
     exit 1
   fi
   key="archive-dispatch-$(date -u -d "@$now" +%Y%m%dT%H%M%SZ)-${GITHUB_RUN_ID:?}"
@@ -157,6 +172,7 @@ ag_history || hold 2 "the run history cannot be read (fail closed)"
 [[ "${GITHUB_REF:-}" == "refs/heads/$AG_BRANCH" ]] || hold 1 "ref '${GITHUB_REF:-}' is not the default branch refs/heads/$AG_BRANCH"
 msg=$(ag_backoff_ok 2>&1) || hold 2 "${msg#refused: }"
 (( AG_FAILS < 3 )) || hold 3 "the chain is stopped: $AG_FAILS failures since ARCHIVE_REARM_AT $ARCHIVE_REARM_AT with no successful batch between them; only a reviewed change re-arms it"
+(( AG_FOREIGN == 0 )) || hold 3 "the chain is stopped: $AG_FOREIGN data-scan run(s) outside the Helius lane ran from another branch since ARCHIVE_REARM_AT; only a reviewed change re-arms it"
 msg=$(ag_store_ok 2>&1) || hold 3 "${msg#refused: }"
 # 4. ARCHIVE-SAFE: the scanner's request cap
 if ! cap=$("$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}"); then
