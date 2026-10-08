@@ -74,3 +74,7 @@ The builder found the premise wrong. Telegram's `getWebhookInfo` reply (WebhookI
 10. Line 46 starts with `mountpoint -q /mnt && [ -d /mnt/etc/systemd/system ] &&`. The check lists at least `zeroed-worker.service` and `zeroed-check.timer` as removed.
 11. The GRUB fallback also masks `zeroed-dryrun-tick.timer`.
 12. On the fallback path, after login: `touch /root/OLD-SERVER-ONLY`, then check that no zeroed unit is active.
+
+### #310 round 3 (head `f5399438`)
+
+The supervisor checked the delta from `fc106e20` itself: one file, rulings 9–12 applied as worded. **#310 is approved.** It merges in the docs bundle (#305).
