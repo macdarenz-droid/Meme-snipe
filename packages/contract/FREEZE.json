@@ -1,0 +1,17 @@
+{
+  "package": "@bot/contract",
+  "version": "1.0.0",
+  "sha256": "39c8608435ebae8b58f7c0794c6f24331347ca4b7b804ab06c887c91f58f217d",
+  "files": [
+    "package.json",
+    "src/fixtures.ts",
+    "src/index.ts",
+    "src/scalars.ts",
+    "src/versions.ts",
+    "src/vm.ts",
+    "tsconfig.json",
+    "../../tsconfig.bot.json",
+    "../../tsconfig.json"
+  ],
+  "typescript": "7.0.2"
+}

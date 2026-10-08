@@ -121,6 +121,27 @@ describe('freeze of @bot/types (B-M19-01 logic 2)', () => {
   });
 });
 
+describe('freeze of @bot/contract (B-M28-01: the same mechanism as @bot/types)', () => {
+  it('a change to its files fails, a re-record without a bump fails, and a signed bump passes', () => {
+    const change = (repo: TempRepo): void => editText(repo.dir, 'packages/contract/src/index.ts', (s) => `${s}export const added = 1;\n`);
+    const repo = goodRepo();
+    try {
+      change(repo);
+      repo.commit('change frozen contract');
+      assert.deepEqual(codes(runChecks(repo.dir, 'main')), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED']);
+      writeFreeze(repo.dir, 'packages/contract');
+      repo.commit('re-freeze without bump');
+      assert.deepEqual(codes(runChecks(repo.dir, 'main')), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF']);
+      editJson(repo.dir, 'packages/contract/package.json', (p) => { p['version'] = '1.1.0'; });
+      editText(repo.dir, 'packages/contract/CHANGELOG.md', (s) => s.replace('## 1.0.0',
+        '## 1.1.0\n\nAdded.\n\nSign-off (group A lead): UI Lead\nSign-off (group B lead): Backend Lead\n\n## 1.0.0'));
+      writeFreeze(repo.dir, 'packages/contract');
+      repo.commit('signed bump');
+      assert.deepEqual(runChecks(repo.dir, 'main'), []);
+    } finally { repo.remove(); }
+  });
+});
+
 describe('repository scan and base ref', () => {
   it('finds a secret in a new, not yet committed file and never prints it', () => {
     const repo = goodRepo();
