@@ -55,7 +55,7 @@ def px_asof(hourly: dict, t) -> float:
 def universe(age_s):
     if age_s is None or not np.isfinite(age_s):
         return "age_unknown"
-    if U2_FROM_S <= age_s <= U2_TO_S:
+    if U2_FROM_S <= age_s < U2_TO_S:   # the bot ends U2 at migration + 240 min (red team R1-26, as D1 R2-16)
         return "U2"
     if U1_FROM_S <= age_s <= U1_TO_S:
         return "U1"

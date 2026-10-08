@@ -536,7 +536,7 @@ class H8Stratum(unittest.TestCase):
 
 class H8Amendment2(unittest.TestCase):
     def test_universe_tags_and_floors(self):
-        self.assertEqual([H8.universe(a) for a in (3599, 3600, 14400, 14401, 86399, 86400, 14 * 86400, 14 * 86400 + 1)],
+        self.assertEqual([H8.universe(a) for a in (3599, 3600, 14399, 14400, 86399, 86400, 14 * 86400, 14 * 86400 + 1)],
                          ["under_60min", "U2", "U2", "4_24h", "4_24h", "U1", "U1", "over_14d"])
         self.assertEqual(H8.floor_usd(5, "U2"), 15_000)
         self.assertEqual(H8.floor_usd(5, "U1"), 50_000)
@@ -1352,6 +1352,16 @@ class DevZeroRuledR1_25(unittest.TestCase):
                          {"le5": True, "zero": False, "le3": False})
         self.assertEqual(self._decide({"le5": None, "zero": True, "le3": True})["1_dev_zero_prereg_by_arm"],
                          {"le5": False, "zero": False, "le3": False})   # a bar not computed never earns
+
+
+class U2WindowEndR1_26(unittest.TestCase):
+    """R1-26 (as D1's R2-16): the bot ends U2 at migration + 240 min (worker strategy.ts: atMs >= migratedAtMs +
+    windowToMs), so age exactly 240 min is outside U2; 60 min is inside."""
+
+    def test_u2_is_60_inclusive_to_240_exclusive(self):
+        self.assertEqual(H8.universe(60 * 60), "U2")
+        self.assertEqual(H8.universe(240 * 60 - 1), "U2")
+        self.assertEqual(H8.universe(240 * 60), "4_24h")
 
 
 if __name__ == "__main__":
