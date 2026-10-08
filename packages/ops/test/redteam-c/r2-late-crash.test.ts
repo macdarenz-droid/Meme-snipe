@@ -125,5 +125,6 @@ describe('red team C r2: a worker that passes every start gate and crashes at mi
       restarts: crashes.length,
     };
     expect(noticed.hostAlerts !== '' || noticed.hostNotifyAlerts.length > 0 || noticed.failedRelease || noticed.deployed === 'changed' || noticed.unitFailed || noticed.watchdogAlerts.length > 0, JSON.stringify(noticed)).toBe(true);
-  });
+    // 145 runs of the host scripts take about 4.5-5.1 s (measured in round 1), at vitest's 5 s default: an explicit limit, as CI-1's are.
+  }, 20_000);
 });

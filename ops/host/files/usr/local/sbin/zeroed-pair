@@ -75,7 +75,11 @@ log "Stored ${#API_NAMES[@]} keys from the handoff (issue $issued); deploy code 
 
 if paired; then
   # Rotation: restart the worker (reconcile first) and tell the owner.
-  if systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
+  # A release never started under the hold (switch_unheld) gets its held first start from zeroed-update (OPS-CLEAN M1).
+  if [ -s "$STATE_DIR/switch_unheld" ]; then
+    systemctl start --no-block zeroed-update.service || true
+    w="starting under the hold"
+  elif systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
   notify "Zeroed server: keys replaced (issue $issued). Worker $w." || true
   webhook_try || true
 else

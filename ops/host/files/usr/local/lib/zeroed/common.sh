@@ -157,3 +157,8 @@ keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || retu
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
 # worker_ready: the worker may start: every key stored and the owner's chat paired (its unit's ConditionPathExists, and more).
 worker_ready() { keys_stored && paired; }
+# start_worker: starts the worker, or, while a switched release has never run under the hold (switch_unheld, OPS-CLEAN
+# M1), starts zeroed-update for its held first start. --no-block: the caller may hold the host lock.
+start_worker() {
+  if [ -s "$STATE_DIR/switch_unheld" ]; then systemctl start --no-block zeroed-update.service; else systemctl start zeroed-worker.service; fi
+}

@@ -1250,6 +1250,11 @@ keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || retu
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
 # worker_ready: the worker may start: every key stored and the owner's chat paired (its unit's ConditionPathExists, and more).
 worker_ready() { keys_stored && paired; }
+# start_worker: starts the worker, or, while a switched release has never run under the hold (switch_unheld, OPS-CLEAN
+# M1), starts zeroed-update for its held first start. --no-block: the caller may hold the host lock.
+start_worker() {
+  if [ -s "$STATE_DIR/switch_unheld" ]; then systemctl start --no-block zeroed-update.service; else systemctl start zeroed-worker.service; fi
+}
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/derive-key.mjs 0644 <<'__ZEROED_FILE__'
 // Derives the one-time age identity for the Deploy handoff from the deploy code (6 words), read on stdin;
@@ -3041,7 +3046,11 @@ log "Stored ${#API_NAMES[@]} keys from the handoff (issue $issued); deploy code 
 
 if paired; then
   # Rotation: restart the worker (reconcile first) and tell the owner.
-  if systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
+  # A release never started under the hold (switch_unheld) gets its held first start from zeroed-update (OPS-CLEAN M1).
+  if [ -s "$STATE_DIR/switch_unheld" ]; then
+    systemctl start --no-block zeroed-update.service || true
+    w="starting under the hold"
+  elif systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
   notify "Zeroed server: keys replaced (issue $issued). Worker $w." || true
   webhook_try || true
 else
@@ -3434,7 +3443,7 @@ while IFS=$'\t' read -r id date chat kind text; do
     notify "Paired. Zeroed alerts come to this chat only." || true
     webhook_try || true
     if [ "$was_paired" = false ]; then
-      systemctl start zeroed-worker.service || true
+      start_worker || true
     elif worker_busy; then
       # The worker reads the chat at start; it moves at the next safe moment (zeroed-check).
       : > "$STATE_DIR/worker_restart_pending"
@@ -3639,13 +3648,43 @@ probation_check() {
 # by a later run.
 due_rollback() {
   printf '%s|%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" 0 "${1//|/ }" > "$STATE_DIR/probation"
+  rm -f "$STATE_DIR/switch_unheld"
   probation_check
   exit 1
+}
+
+# held_restart: the switched release's worker started under the hold (SWITCH-1): restart (reconcile first), hold, then
+# the probation baseline (RC-R2-3, the restart count right after the hold). A failure makes the rollback due. Needs
+# commit, prev, current and dest.
+held_restart() {
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || due_rollback "it failed to start"
+  if ! why="$(holds)"; then due_rollback "$why"; fi
+  printf '%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" "$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || echo 0)" > "$STATE_DIR/probation"
+  rm -f "$STATE_DIR/switch_unheld" "$STATE_DIR/probation.prev" "$STATE_DIR/standin_after_rollback"
+  alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 }
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
 # The probation first, whether GitHub answers or not.
 probation_check
+# OPS-CLEAN M1: a release switched to while the worker could not start (keys or pairing missing) left switch_unheld
+# (commit|prev|current). Its first start is held like any switch, as soon as the worker can start: zeroed-telegram-pair,
+# zeroed-pair and the installer start this unit instead of the worker while the marker exists. A worker that systemd
+# started on its own meanwhile (a reboot) is restarted under the hold, once no dry run is active and no intent is open.
+if [ -s "$STATE_DIR/switch_unheld" ] && worker_ready; then
+  IFS='|' read -r commit prev current < "$STATE_DIR/switch_unheld" || true
+  if [ "$commit" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ]; then
+    rm -f "$STATE_DIR/switch_unheld"
+  elif systemctl is-active --quiet zeroed-worker.service && { [ -n "$(active_run)" ] || [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]; }; then
+    log "Waiting on the first held start of ${commit:0:12}: a qualifying dry run is active or the worker has open intents."
+  else
+    dest="/opt/zeroed/releases/$commit"
+    held_restart
+    log "Started ${commit:0:12} under the hold (switched to before the keys or the pairing). Worker: restarted and up."
+    notify "Zeroed host: started ${commit:0:12}. Worker restarted and up." || true
+  fi
+fi
 git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
   "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
 commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
@@ -3692,6 +3731,15 @@ if [ -n "$run" ]; then
   exit 0
 fi
 
+# OPS-CLEAN m2: a running worker that could not start again (a key or the pairing gone) is never left running the old
+# release under a new deployed record.
+if systemctl is-active --quiet zeroed-worker.service && ! worker_ready; then
+  log "Waiting on ${commit:0:12}: the worker runs but a key or the pairing is missing."
+  alert worker-unready "ALERT Zeroed host: the worker runs but a key or the Telegram pairing is missing, so update ${commit:0:12} waits. It tries again every 5 minutes."
+  exit 0
+fi
+alert_clear worker-unready "CLEARED Zeroed host: the keys and the pairing are back; updates go ahead."
+
 if systemctl is-active --quiet zeroed-worker.service; then
   open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
   if [ "$open" != 0 ]; then
@@ -3726,7 +3774,13 @@ fi
 alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} starts."
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
+# OPS-CLEAN M1: the host lock from here to the start decision, so a /pair (zeroed-telegram-pair holds the same lock)
+# lands wholly before it (the worker can start: held restart below) or wholly after it (it finds switch_unheld and
+# starts this unit). Not held earlier: install.sh --update above runs zeroed-check, which takes the lock too.
+lock
 prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
+# A release switched to but never started (switch_unheld) is not a rollback target: the release that ran before it stays.
+if [ -s "$STATE_DIR/switch_unheld" ]; then IFS='|' read -r _ prev current < "$STATE_DIR/switch_unheld" || true; fi
 # No current yet (a first deploy): readlink -f prints /opt/zeroed/current itself, and a rollback to it would point
 # current at itself. Only a real release folder is a rollback target.
 { [ -d "$prev" ] && [ ! -L "$prev" ]; } || prev=""
@@ -3751,20 +3805,18 @@ else
 fi
 
 # Restart with reconcile first (ExecStartPre). Before the keys and the pairing the worker is not started at all: its unit
-# would skip the start (ConditionPathExists), the hold below would wait for nothing and roll a good release back
-# (OPS-CLEAN, 8 Oct). Pairing starts it (zeroed-telegram-pair). After a restart the new worker must stay up, or the
-# server goes back to the release it ran (SWITCH-1).
+# would skip the start (ConditionPathExists), the hold would wait for nothing and roll a good release back (OPS-CLEAN,
+# 8 Oct). switch_unheld then marks the release, and its first start is held once the worker can start (above). After a
+# restart the new worker must stay up, or the server goes back to the release it ran (SWITCH-1).
 worker="not started (no keys yet)"
 if keys_stored && ! paired; then worker="not started (not paired yet)"; fi
 if worker_ready; then
-  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
-  systemctl restart zeroed-worker.service || due_rollback "it failed to start"
-  if ! why="$(holds)"; then due_rollback "$why"; fi
-  # RC-R2-3: the probation baseline, the restart count right after the hold.
-  printf '%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" "$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || echo 0)" > "$STATE_DIR/probation"
-  rm -f "$STATE_DIR/probation.prev" "$STATE_DIR/standin_after_rollback"
+  flock -u 9 2>/dev/null || true
+  held_restart
   worker="restarted and up"
-  alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
+else
+  printf '%s|%s|%s\n' "$commit" "$prev" "$current" > "$STATE_DIR/switch_unheld"
+  flock -u 9 2>/dev/null || true
 fi
 # HOST-CAPS: old releases go once the new one runs; it, the one before it (the roll-back target) and the 3 newest stay.
 # Never during a switch (a rollback exits above); an unreadable current prunes nothing (logic.sh).
@@ -11670,7 +11722,8 @@ if [ "$UPDATE" = 1 ]; then
   say "Updated: ${#CHANGED[@]} host files changed"
   exit 0
 fi
-# Starts once credentials exist (skipped by its ConditionPathExists until then). A running worker whose
+# Starts once credentials exist (skipped by its ConditionPathExists until then); a release never started under the
+# hold gets its held first start from zeroed-update instead (start_worker, OPS-CLEAN M1). A running worker whose
 # start files changed restarts (reconcile first) unless a dry run or an open intent is in the way.
 if systemctl is-active --quiet zeroed-worker.service; then
   for f in "${CHANGED[@]}"; do
@@ -11680,7 +11733,7 @@ if systemctl is-active --quiet zeroed-worker.service; then
     esac
   done
 fi
-systemctl start zeroed-worker.service || true
+start_worker || true
 
 printf '\nInstalled. Next: the deploy code below goes into GitHub as the secret DEPLOY_CODE.\n\n'
 if [ "${ZEROED_NO_WAIT:-}" != 1 ] && [ -t 1 ]; then

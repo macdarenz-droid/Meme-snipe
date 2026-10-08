@@ -66,7 +66,7 @@ while IFS=$'\t' read -r id date chat kind text; do
     notify "Paired. Zeroed alerts come to this chat only." || true
     webhook_try || true
     if [ "$was_paired" = false ]; then
-      systemctl start zeroed-worker.service || true
+      start_worker || true
     elif worker_busy; then
       # The worker reads the chat at start; it moves at the next safe moment (zeroed-check).
       : > "$STATE_DIR/worker_restart_pending"

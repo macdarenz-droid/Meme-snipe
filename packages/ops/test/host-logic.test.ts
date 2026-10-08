@@ -380,10 +380,13 @@ describe('worker start and API address', () => {
     // After the switch: the new worker must stay up, else back to the release that ran, not tried again, one alert.
     const after = upd.slice(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
     expect(upd.indexOf('prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"')).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
-    expect(after).toMatch(/systemctl restart zeroed-worker\.service \|\| due_rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then due_rollback "\$why"; fi/);
+    // OPS-CLEAN M1: the restart and hold live in held_restart, which the switch and the held first start both call.
+    const held = upd.slice(upd.indexOf('held_restart() {'));
+    expect(held.slice(0, held.indexOf('\n}\n'))).toMatch(/systemctl restart zeroed-worker\.service \|\| due_rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then due_rollback "\$why"; fi/);
+    expect(after).toMatch(/if worker_ready; then\n\s+flock -u 9 2>\/dev\/null \|\| true\n\s+held_restart\n/);
     // RC-FIXES-2b (red team C R3-2): a due rollback goes through probation_check's gate, which ends in rollback().
     const due = upd.slice(upd.indexOf('due_rollback() {'));
-    expect(due.slice(0, due.indexOf('\n}\n'))).toMatch(/> "\$STATE_DIR\/probation"\n\s+probation_check\n\s+exit 1$/);
+    expect(due.slice(0, due.indexOf('\n}\n'))).toMatch(/> "\$STATE_DIR\/probation"\n\s+rm -f "\$STATE_DIR\/switch_unheld"\n\s+probation_check\n\s+exit 1$/);
     const rb = upd.slice(upd.indexOf('rollback() {'), upd.indexOf('# Restart with reconcile first'));
     for (const want of ['printf \'%s\\n\' "$commit" > "$STATE_DIR/failed_release"', 'ln -sfn "$prev" /opt/zeroed/current.new', 'printf \'%s\\n\' "$current" > "$STATE_DIR/deployed"', 'apply_host', 'systemctl restart zeroed-worker.service', 'alert worker-switch "ALERT']) expect(rb, want).toContain(want);
     expect(upd).toContain('[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0');
@@ -749,12 +752,16 @@ describe('install.sh --update', () => {
     expect(file.indexOf('\nprobation_check\n')).toBeGreaterThan(file.indexOf('\nrollback() {'));
     const apply = s.indexOf('apply_host "$commit" "$dest" || exit 1');
     expect(apply).toBeGreaterThan(s.indexOf('mv "$dest.new" "$dest"'));
-    for (const later of ['ln -sfn "$dest" /opt/zeroed/current.new', 'mv -Tf /opt/zeroed/current.new /opt/zeroed/current', `printf '%s\\n' "$commit" > "$STATE_DIR/deployed"`, 'systemctl restart zeroed-worker.service', 'zeroed-backup-offsite.timer']) {
+    for (const later of ['ln -sfn "$dest" /opt/zeroed/current.new', 'mv -Tf /opt/zeroed/current.new /opt/zeroed/current', `printf '%s\\n' "$commit" > "$STATE_DIR/deployed"`, '  held_restart\n  worker="restarted and up"', 'zeroed-backup-offsite.timer']) {
       expect(s.indexOf(later), later).toBeGreaterThan(apply);
     }
     // After every gate: a retry next run goes through the same gates (deployed is not moved on failure).
     for (const gate of ['run="$(active_run)"', 'open="$(cat /var/lib/zeroed/open_intents', 'if [ "$verdict" != green ]']) expect(s.indexOf(gate), gate).toBeLessThan(apply);
     expect(file.match(/apply_host "\$commit"/g)).toHaveLength(1);
+    // OPS-CLEAN M1: the one restart before it is the held first start of the release already deployed (switch_unheld).
+    const early = s.slice(0, apply);
+    expect(early.match(/held_restart/g)).toHaveLength(1);
+    expect(early).toContain('if [ "$commit" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ]; then\n    rm -f "$STATE_DIR/switch_unheld"');
     expect(file).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
     expect(file).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
     // The new release's RUN-1 units, not the running one's.
