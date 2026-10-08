@@ -100,18 +100,37 @@ ag_armed() {
     { ag_refuse "ARCHIVE_REARM_AT '${ARCHIVE_REARM_AT:-}' is not a past UTC time (YYYY-MM-DDTHH:MM:SSZ)"; return 2; }
   ag_private_storage || return 2
 }
-# ag_private_storage (OF-2 round 2, ruling 9): the chain cannot be armed while a day
-# would still be stored in this public repository: publish-day.sh (also the skip step,
-# publish-day.sh --check) or publish-volume.sh releasing to $GITHUB_REPOSITORY, or
-# data-scan.yml uploading the day-DAY artifact. OF-4 and OF-5 must land first.
+# ag_private_storage (OF-2 rulings 9 and 13): the chain cannot be armed while a day could
+# still be stored in this public repository. The capability is checked, not a spelling:
+#   - data-scan.yml grants `contents: write` nowhere (top level, scan, volume, assemble or
+#     any other job: none of them may write releases here);
+#   - the scan job uploads no artifact but the resume- marker;
+#   - every release call in research/historical/ci/*.sh (gh/"$GH" release ..., or a
+#     .../releases API path) names `--repo "$DATA_REPO"` or `repos/$DATA_REPO/`, and none
+#     names GITHUB_REPOSITORY, GH_REPO or -R.
+# OF-4 and OF-5 must land first.
 ag_private_storage() {
-  local f wf="$ag_here/../../../.github/workflows/data-scan.yml"
-  for f in "$ag_here/publish-day.sh" "$ag_here/publish-volume.sh"; do
-    [[ -f "$f" ]] && ! grep -qF -- '--repo "$GITHUB_REPOSITORY"' "$f" ||
-      { ag_refuse "the archive chain is not armed: $(basename "$f") still stores days in this public repository (OF-4/OF-5 first)"; return 2; }
+  local wf="$ag_here/../../../.github/workflows/data-scan.yml" f bad
+  [[ -f "$wf" ]] || { ag_refuse "the archive chain is not armed: data-scan.yml cannot be read"; return 2; }
+  grep -qE '^[[:space:]]*contents:[[:space:]]*write' "$wf" &&
+    { ag_refuse "the archive chain is not armed: data-scan.yml still grants contents: write (OF-4 first)"; return 2; }
+  bad=$(awk '
+    /^jobs:/ { injobs = 1; next }
+    injobs && /^  [A-Za-z0-9_-]+:/ { job = $1; sub(":", "", job); up = 0; next }
+    job == "scan" && /uses:[[:space:]]*actions\/upload-artifact@/ { up = 1; next }
+    job == "scan" && up && /^[[:space:]]+name:/ { n = $0; sub(/^[[:space:]]+name:[[:space:]]*/, "", n); if (n !~ /^resume-/) print n; up = 0; next }
+    job == "scan" && up && /^      - / { print "(unnamed)"; up = 0 }
+  ' "$wf")
+  [[ -z "$bad" ]] ||
+    { ag_refuse "the archive chain is not armed: the scan job uploads an artifact other than resume- ($bad) (OF-4 first)"; return 2; }
+  for f in "$ag_here"/*.sh; do
+    case "$(basename "$f")" in test-ci.sh|archive-guard.sh) continue ;; esac
+    bad=$(sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$f" | grep -nE '(^|[^A-Za-z_])release[[:space:]]+(create|upload|view|download|list|delete|edit)|/releases' |
+      grep -vE -- '--repo "\$DATA_REPO"|repos/\$DATA_REPO/' ; sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$f" |
+      grep -nE '(^|[^A-Za-z_])release[[:space:]]+(create|upload|view|download|list|delete|edit)|/releases' | grep -E 'GITHUB_REPOSITORY|GH_REPO|(^|[[:space:]])-R[[:space:]]' || true)
+    [[ -z "$bad" ]] ||
+      { ag_refuse "the archive chain is not armed: $(basename "$f") still has a release call that does not target the private store (OF-4/OF-5 first)"; return 2; }
   done
-  [[ -f "$wf" ]] && ! grep -qF 'name: day-${{ matrix.day }}' "$wf" ||
-    { ag_refuse "the archive chain is not armed: data-scan.yml still uploads the public day-DAY artifact (OF-4 first)"; return 2; }
 }
 # ag_retention DAY: the retention a fresh read of DAY uses, or nothing. Unset: only the
 # first allow-listed day (2026-07-22, K2, measurement day 1); K2: the first two days (the
@@ -237,7 +256,24 @@ ag_attempt() {
 # attempt K of run ID.
 ag_jobs() {
   "$ag_gh" api --paginate "repos/$ag_repo/actions/runs/$1/attempts/$2/jobs?per_page=100" \
-    --jq '.jobs[] | ("job\t\(.name)\t\(.conclusion // "-")"), (.steps[]? | "step\t\(.name)\t\(.conclusion // "-")")' 2>/dev/null
+    --jq '.jobs[] | ("job\t\(.name)\t\(.conclusion // "-")\t\(.id)"), (.steps[]? | "step\t\(.name)\t\(.conclusion // "-")")' 2>/dev/null
+}
+# ag_annotated_end JOB_IDS...: the back-off end recorded by those jobs as a check-run
+# annotation titled archive-backoff ("end=<unix>", or "end=hold": a Retry-After that was
+# unclean or above 7 days), the largest; 0 when none. Fails when one cannot be read.
+ag_annotated_end() {
+  local j a max=0 v
+  for j in "$@"; do
+    [[ "$j" =~ ^[0-9]+$ ]] || continue
+    a=$("$ag_gh" api --paginate "repos/$ag_repo/check-runs/$j/annotations?per_page=100" \
+      --jq '.[] | select(.title == "archive-backoff") | .message' 2>/dev/null) || return 1
+    while read -r v; do
+      [[ -n "$v" ]] || continue
+      if [[ "$v" == end=hold ]]; then echo hold; return 0; fi
+      [[ "$v" =~ ^end=([0-9]{9,11})$ ]] && (( BASH_REMATCH[1] > max )) && max=${BASH_REMATCH[1]}
+    done <<< "$a"
+  done
+  echo "$max"
 }
 # ag_backoff_end: the latest back-off end recorded as an Actions cache key
 # archive-backoff-<unix end>-... on the default branch (a probe's Retry-After, a scan's
@@ -259,17 +295,20 @@ ag_backoff_end() {
 #   AG_LANE_END    unix end of the last completed data-scan run outside the Helius lane (0: none)
 #   AG_LANE_RESUME the day that run stopped resumably and chained ("" otherwise)
 #   AG_RESTARTS    "unix day" lines: resumable stops that were chained
+#   AG_FAIL_JOBS   job ids of the attempts counted as failures since ARCHIVE_REARM_AT
+#   AG_FOREIGN     data-scan runs outside the Helius lane, on another branch, since ARCHIVE_REARM_AT
+#   AG_BUSY        other data-scan runs outside the Helius lane not completed (not GITHUB_RUN_ID)
 #   AG_DS_RUNS / AG_AC_RUNS / AG_BRANCH  the run lists and the default branch
 # Fails when anything cannot be read (fail closed).
 ag_history() {
-  local now rearm id st co cr up at br ti k meta kst kco kup jobs t ev d events="" lastok=0 lane_id=""
+  local now rearm id st co cr up at br ti k meta kst kco kup jobs t ev d events="" lastok=0 lane_id="" ids
   now=$(ag_now)
   rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
   AG_SINCE=$(( rearm < now - 86400 ? rearm : now - 86400 ))
   AG_BRANCH=$(ag_default_branch) || return 1
   AG_AC_RUNS=$(ag_runs archive-check.yml) || return 1
   AG_DS_RUNS=$(ag_runs data-scan.yml) || return 1
-  AG_FAILS=0 AG_LAST_FAIL=0 AG_LANE_END=0 AG_LANE_RESUME="" AG_RESTARTS=""
+  AG_FAILS=0 AG_LAST_FAIL=0 AG_LANE_END=0 AG_LANE_RESUME="" AG_RESTARTS="" AG_FAIL_JOBS="" AG_FOREIGN=0 AG_BUSY=0
   while IFS=$'\t' read -r id st co cr up at br ti; do
     [[ -n "$id" && "$st" == completed ]] || continue
     cr=$(ag_ts "$cr") || return 1
@@ -282,7 +321,12 @@ ag_history() {
       [[ "$kst" == completed ]] || continue
       kup=$(ag_ts "$kup") || return 1
       jobs=$(ag_jobs "$id" "$k") || return 1
-      grep -qE $'^step\tArchive probe \\(a failure unless served\\)\t(failure|cancelled|timed_out)$' <<< "$jobs" && events+="$kup F"$'\n'
+      # Ruling 17: the probe step ending any way but success or skipped (null included)
+      if grep -qE $'^step\tArchive probe \\(a failure unless served\\)\t' <<< "$jobs" &&
+         ! grep -qE $'^step\tArchive probe \\(a failure unless served\\)\t(success|skipped)$' <<< "$jobs"; then
+        ids=$(awk -F'\t' '$1 == "job" {printf "%s ", $4}' <<< "$jobs")
+        events+="$kup F $ids"$'\n'
+      fi
     done
   done <<< "$AG_AC_RUNS"
   while IFS=$'\t' read -r id st co cr up at br ti; do
@@ -290,6 +334,9 @@ ag_history() {
     cr=$(ag_ts "$cr") && up=$(ag_ts "$up") || return 1
     (( cr >= AG_SINCE )) || continue
     [[ "$at" =~ ^[1-9][0-9]*$ ]] || return 1
+    # Ruling 12 (b): a run outside the Helius lane from another branch (an old data-scan.yml
+    # may read the archive with no guard) stops the chain until a reviewed re-arm.
+    [[ "$ti" != "data-scan scan source=helius" && "$br" != "$AG_BRANCH" ]] && (( cr >= rearm )) && AG_FOREIGN=$(( AG_FOREIGN + 1 ))
     if [[ "$ti" != "data-scan scan source=helius" ]] && (( up > AG_LANE_END )); then AG_LANE_END=$up lane_id=$id; fi
     [[ "$ti" == "data-scan scan source=archive" ]] || continue
     for (( k = 1; k <= at; k++ )); do
@@ -300,25 +347,33 @@ ag_history() {
       jobs=$(ag_jobs "$id" "$k") || return 1
       # A success counts from attempt 1 only: a re-run (refused by the guard anyway) never
       # turns an earlier attempt's failure into a success.
-      if (( k == 1 )) && grep -qxF $'step\tPublish this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
-      if grep -qE $'^job\tscan[^\t]*\t(failure|cancelled|timed_out)$' <<< "$jobs"; then
-        if grep -qxF $'job\tcontinue\tsuccess' <<< "$jobs"; then
-          d=$(sed -n $'s/^job\tscan (\\([0-9-]*\\))\t\\(failure\\|cancelled\\|timed_out\\)$/\\1/p' <<< "$jobs" | head -1)
+      # Ruling 12 (a): only a default-branch run whose plan job's guard passed
+      if (( k == 1 )) && [[ "$br" == "$AG_BRANCH" ]] && grep -qxF $'step\tArchive guard\tsuccess' <<< "$jobs" &&
+         grep -qxF $'step\tPublish this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
+      if grep -qE $'^job\tscan[^\t]*\t(failure|cancelled|timed_out)(\t|$)' <<< "$jobs"; then
+        if grep -qE $'^job\tcontinue\tsuccess(\t|$)' <<< "$jobs"; then
+          d=$(sed -n $'s/^job\tscan (\\([0-9-]*\\))\t\\(failure\\|cancelled\\|timed_out\\)\\(\t.*\\)\\{0,1\\}$/\\1/p' <<< "$jobs" | head -1)
           AG_RESTARTS+="$kup $d"$'\n'
           [[ "$id" == "$lane_id" && $k == "$at" ]] && AG_LANE_RESUME=$d
         else
-          events+="$kup F"$'\n'
+          ids=$(awk -F'\t' '$1 == "job" {printf "%s ", $4}' <<< "$jobs")
+          events+="$kup F $ids"$'\n'
         fi
       fi
     done
   done <<< "$AG_DS_RUNS"
-  while read -r t ev; do
+  while read -r t ev _; do
     [[ -n "$t" ]] || continue
     if [[ "$ev" == S ]]; then (( t > lastok )) && lastok=$t; else (( t > AG_LAST_FAIL )) && AG_LAST_FAIL=$t; fi
   done <<< "$events"
-  while read -r t ev; do
+  while read -r t ev ids; do
+    [[ "$ev" == F ]] && (( t >= rearm )) && AG_FAIL_JOBS+="$ids "
     [[ "$ev" == F ]] && (( t >= rearm && t > lastok )) && AG_FAILS=$(( AG_FAILS + 1 ))
   done <<< "$events"
+  # Ruling 16: another run outside the Helius lane not completed (this run excluded)
+  while IFS=$'\t' read -r id st _ _ _ _ _ ti; do
+    [[ -n "$id" && "$st" != completed && "$ti" != "data-scan scan source=helius" && "$id" != "${GITHUB_RUN_ID:-}" ]] && AG_BUSY=$(( AG_BUSY + 1 ))
+  done <<< "$AG_DS_RUNS"
   return 0
 }
 # ag_restarts DAY: how many chained resumable stops DAY had since ARCHIVE_REARM_AT.
@@ -333,6 +388,8 @@ ag_stop_ok() {
   ag_history || { ag_refuse "the run history cannot be read, so the 3-failure stop cannot be ruled out"; return 2; }
   (( AG_FAILS < 3 )) ||
     { ag_refuse "the archive chain is stopped: $AG_FAILS failures since ARCHIVE_REARM_AT ${ARCHIVE_REARM_AT} with no successful batch between them; only a reviewed change re-arms it"; return 2; }
+  (( AG_FOREIGN == 0 )) ||
+    { ag_refuse "the archive chain is stopped: $AG_FOREIGN data-scan run(s) outside the Helius lane ran from another branch since ARCHIVE_REARM_AT (an old data-scan.yml reads unguarded); only a reviewed change re-arms it"; return 2; }
 }
 # ag_run_ok: attempt 1 of a run on the default branch (a re-run never reads; a probe or a
 # scan from another branch never runs). Needs AG_BRANCH (ag_history).
@@ -345,11 +402,18 @@ ag_run_ok() {
 # ag_backoff_ok: no back-off running: 3 h after the last failure, and the latest recorded
 # Retry-After or scan back-off end.
 ag_backoff_ok() {
-  local now end rec
+  local now end rec ann
   now=$(ag_now)
   rec=$(ag_backoff_end) || { ag_refuse "the recorded back-off ends cannot be read (fail closed)"; return 2; }
+  # Ruling 14: the durable record, a check-run annotation of every counted failure since
+  # ARCHIVE_REARM_AT (the cache key above is the fast path).
+  # shellcheck disable=SC2086
+  ann=$(ag_annotated_end $AG_FAIL_JOBS) || { ag_refuse "the failures' archive-backoff annotations cannot be read (fail closed)"; return 2; }
+  [[ "$ann" != hold ]] ||
+    { ag_refuse "back-off: a failure since ARCHIVE_REARM_AT recorded an unclean or over-7-day Retry-After; only a reviewed change re-arms the chain"; return 2; }
   end=$(( AG_LAST_FAIL > 0 ? AG_LAST_FAIL + ARCHIVE_BACKOFF_S : 0 ))
   (( rec > end )) && end=$rec
+  (( ann > end )) && end=$ann
   (( now >= end )) ||
     { ag_refuse "back-off: nothing goes out before $(date -u -d "@$end" +%FT%TZ) (3 h after the last failure, or a recorded Retry-After)"; return 2; }
 }
@@ -370,6 +434,9 @@ ag_full() {
   ag_store_ok || return 2
   ag_backoff_ok || return 2
   now=$(ag_now)
+  # Ruling 16: another archive-lane run not completed counts as ending now.
+  (( AG_BUSY == 0 )) ||
+    { ag_refuse "$AG_BUSY other data-scan run(s) outside the Helius lane are not completed (ending now, so less than 60 min ago)"; return 2; }
   if (( AG_LANE_END > 0 && now - AG_LANE_END < 3600 )) && [[ "$AG_LANE_RESUME" != "$1" ]]; then
     ag_refuse "the last archive-lane run ended $(date -u -d "@$AG_LANE_END" +%FT%TZ), less than 60 min ago"; return 2
   fi
