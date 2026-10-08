@@ -77,7 +77,7 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
     const config = { ...(resolved.ok ? resolved.value : {}), version: 'v' } as Config;
     assert.deepEqual(m24Settings(config), { dbPath: '/x/bot.db', synchronous: 'FULL' });
     assert.deepEqual(m27Settings(config), { seriesCap: 5_000, logRetentionDays: 14, ringBudgetBytes: 67_108_864, logMaxBytesPerDay: 268_435_456,
-      logQueueBytes: 8_388_608, logDir: '/var/lib/bot/log', metricsPort: 9_464, rollupMaxBytes: 4_294_967_296 });
+      logQueueBytes: 8_388_608, logDir: '/var/lib/zeroed/log', metricsPort: 9_464, rollupMaxBytes: 4_294_967_296 });
     assert.throws(() => configValue({ version: 'v' } as Config, 'm24.db_path'), /no value/);
   });
 });
