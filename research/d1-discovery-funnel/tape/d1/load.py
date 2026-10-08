@@ -122,10 +122,10 @@ AMM_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "p
             "base_amount", "quote_amount", "quote_amount_lp_adjusted", "user_quote_amount",
             "pool_base_token_reserves", "pool_quote_token_reserves", "virtual_quote_reserves",
             "lp_fee_basis_points", "protocol_fee_basis_points", "coin_creator_fee_basis_points", "coin_creator",
-            "base_supply", "user_token_owner", "owner_token_pre", "owner_token_post", "canonical", "top_program"]
+            "base_supply", "user_token_owner", "owner_token_pre", "owner_token_post", "canonical", "top_program", "signature", "protocol"]
 CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "mint", "is_buy", "sol_amount",
               "token_amount", "fee", "creator_fee", "quote_mint", "quote_amount", "mayhem_mode", "user_token_owner",
-              "owner_token_pre", "owner_token_post"]
+              "owner_token_pre", "owner_token_post", "signature", "protocol"]
 T_COLS = ["slot", "block_time", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner", "amount"]
 W_COLS = ["slot", "block_time", "from", "to"]
 F_COLS = ["slot", "block_time", "venue", "side", "err_class", "pool_or_curve"]
@@ -201,6 +201,17 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
     v1 = []
     for u in units:
         r = u.research
+        boost_sigs = set()
+        ep = os.path.join(r, "E.jsonl.zst")
+        if os.path.exists(ep):
+            e = pd.read_json(ep, compression="zstd", lines=True, dtype=False)
+            e = e[e.event.isin(E_EVENTS)]
+            for name, g in e.groupby("event"):
+                flds = pd.DataFrame(list(g.fields))
+                flds["slot"] = g.slot.astype(np.int64).to_numpy()
+                flds["signature"] = g.signature.to_numpy()
+                evp[name].append(flds)
+            boost_sigs = set(e.loc[e.event == "BoostBuyAndBurnEvent", "signature"])
         b = _read(u, "B.csv.zst", ["slot", "block_time"])
         _wall(b, "B", u)
         parts["b"].append(pd.DataFrame({"slot": _int(b.slot), "block_time": _int(b.block_time)}))
@@ -212,7 +223,13 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
             u.schema = 1
             v1.append((u.from_slot, u.to_slot))
         # all PumpSwap buys (fast class)
-        isb = (a.side == "buy").to_numpy()
+        # BOOST swaps (protocol = 0, no owner) are found by signature through E's BoostBuyAndBurnEvent
+        a_boost = a.signature.isin(boost_sigs).to_numpy().astype(int)
+        a_prot = _int(a.protocol, 0)
+        if C.EXCLUDE_PROTOCOL_SWAPS:
+            isb = ((a.side == "buy").to_numpy()) & (a_boost == 0) & (a_prot == 0)
+        else:
+            isb = (a.side == "buy").to_numpy()
         ab = a[isb]
         parts["buys"].append(pd.DataFrame({
             "slot": _int(ab.slot), "tx_idx": _int(ab.tx_idx), "ev_idx": _int(ab.ev_idx), "venue": 1,
@@ -223,6 +240,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
         if mig_pools is not None:
             keep &= a.pool.isin(mig_pools).to_numpy()
         k = a[keep]
+        k_boost, k_prot = a_boost[keep], a_prot[keep]
         side = np.where((k.side == "buy").to_numpy(), 1, -1)
         tp = k.top_program
         parts["amm"].append(pd.DataFrame({
@@ -236,6 +254,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
             "lp_bps": _int(k.lp_fee_basis_points, 0), "protocol_bps": _int(k.protocol_fee_basis_points, 0),
             "creator_bps": _int(k.coin_creator_fee_basis_points, 0), "coin_creator": codec.encode(k.coin_creator),
             "supply": _int(k.base_supply), "owner": codec.encode(k.user_token_owner),
+            "signature": k.signature.to_numpy(), "boost": k_boost, "protocol": k_prot,
             "owner_pre": _int(k.owner_token_pre), "owner_post": _int(k.owner_token_post),
             # 1 = top-level instruction is neither PumpSwap nor pump (app-routed); -1 = unknown (schema v1)
             "app_routed": np.where(tp.isna().to_numpy(), -1,
@@ -249,10 +268,12 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
         mint_c = codec.encode(c.mint)
         owner_c = codec.encode(c.user_token_owner)
         is_buy = (c.is_buy == "1").to_numpy()
+        c_proto = (_int(c.protocol, 0) != 0) | c.signature.isin(boost_sigs).to_numpy()
+        b_keep = is_buy & ~c_proto if C.EXCLUDE_PROTOCOL_SWAPS else is_buy
         parts["buys"].append(pd.DataFrame({
-            "slot": _int(c.slot)[is_buy], "tx_idx": _int(c.tx_idx)[is_buy], "ev_idx": _int(c.ev_idx)[is_buy],
-            "venue": 0, "mint": mint_c[is_buy], "owner": owner_c[is_buy],
-            "sol": np.where(sol_curve, _num(c.sol_amount), np.nan)[is_buy]}))
+            "slot": _int(c.slot)[b_keep], "tx_idx": _int(c.tx_idx)[b_keep], "ev_idx": _int(c.ev_idx)[b_keep],
+            "venue": 0, "mint": mint_c[b_keep], "owner": owner_c[b_keep],
+            "sol": np.where(sol_curve, _num(c.sol_amount), np.nan)[b_keep]}))
         parts["curve"].append(pd.DataFrame({
             "slot": _int(c.slot), "block_time": _int(c.block_time), "tx_idx": _int(c.tx_idx), "ev_idx": _int(c.ev_idx),
             "outer_ix": _int(c.outer_ix), "inner_ix": _int(c.inner_ix), "mint": mint_c, "is_buy": is_buy.astype(int),
@@ -289,15 +310,6 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
             parts["cf"].append(pd.DataFrame({"slot": _int(cf.slot), "block_time": _int(cf.block_time),
                                              "creator": codec.encode(cf.creator)}))
 
-        ep = os.path.join(r, "E.jsonl.zst")
-        if os.path.exists(ep):
-            e = pd.read_json(ep, compression="zstd", lines=True, dtype=False)
-            e = e[e.event.isin(E_EVENTS)]
-            for name, g in e.groupby("event"):
-                flds = pd.DataFrame(list(g.fields))
-                flds["slot"] = g.slot.astype(np.int64).to_numpy()
-                flds["signature"] = g.signature.to_numpy()
-                evp[name].append(flds)
 
     def cat(name, cols=None, sort=("slot",)):
         if not parts[name]:

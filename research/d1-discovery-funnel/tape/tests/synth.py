@@ -35,7 +35,7 @@ class AmmSim:
         self.rows = []
         self.tx = 0
 
-    def trade(self, slot, side, amount, owner=-1, app=0, pre=-1, post=-1):
+    def trade(self, slot, side, amount, owner=-1, app=0, pre=-1, post=-1, boost=0, protocol=0):
         lp, pr, cr = self.fees
         base_b, vault_b = self.base, self.vault
         eff = self.vault + self.virt
@@ -60,7 +60,8 @@ class AmmSim:
                               pool=self.pool, mint=self.mint, side=sgn, base_amount=b, quote_amount=q, quote_lp_adj=adj,
                               user_quote=user, base_before=base_b, vault_before=vault_b, virt=self.virt, lp_bps=lp,
                               protocol_bps=pr, creator_bps=cr, coin_creator=self.creator, supply=self.supply,
-                              owner=owner, owner_pre=pre, owner_post=post, app_routed=app))
+                              owner=owner, owner_pre=pre, owner_post=post, app_routed=app,
+                              signature=f"s{self.pool}-{self.tx}", boost=boost, protocol=protocol))
         return b
 
     def df(self):

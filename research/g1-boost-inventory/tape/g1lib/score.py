@@ -44,7 +44,9 @@ def secondary(trades: pd.DataFrame) -> dict:
 def judge(trades: pd.DataFrame, decisions: pd.DataFrame, frozen: dict, role: str) -> dict:
     g1, s0, hc, cap = arms(trades, decisions, frozen)
     if role == "discovery":
-        out = {"G1": futility(g1), "G1_HC": futility(hc), "G1_CAP": futility(cap)}
+        # PREREG §8: the primary on discovery days is for information only; futility may only close
+        out = {"G1": futility(g1), "G1_HC": futility(hc), "G1_CAP": futility(cap),
+               "G1_information_only": primary(g1, control=s0)}
         g1_closes = out["G1"]["closes"]
         for k in ("G1_HC", "G1_CAP"):
             # amendments: closes with G1 unless its own one-sided 95% upper bound on discovery is above 0

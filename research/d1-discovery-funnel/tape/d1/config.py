@@ -61,6 +61,13 @@ FAST_FOLLOW_SHARE = 0.30
 FAST_LEADER_MIN_LAMPORTS = 1 * 10**9
 HUB_MAX_LINKS = 50                 # an address linked to more than 50 owners is never used for joining
 
+# BOOST swaps (found by signature via BoostBuyAndBurnEvent) and protocol swaps are left out of every flow, buyer and
+# "Who" feature and of the fast-class buys. CONSERVATIVE pending the lead's ruling (OPEN_QUESTIONS #21).
+EXCLUDE_PROTOCOL_SWAPS = True
+
+# Step A plan (research/shared-tape/stepa-plan.txt: "DAY EPOCH FROM TO" per unit). Its sha256 is fixed here.
+STEPA_PLAN_SHA256 = "fa99c8788f845a7d9f4a5c967d7cce18c0a7f476082c1969fc35cf4f57f38fc7"
+
 # ---- Feature windows (PREREG §4) --------------------------------------------------------------------------------
 W5 = 5 * 60
 W15 = 15 * 60

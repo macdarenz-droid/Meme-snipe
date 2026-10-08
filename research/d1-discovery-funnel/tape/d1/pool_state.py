@@ -11,6 +11,7 @@ from typing import Dict, Optional
 import numpy as np
 import pandas as pd
 
+from . import config as C
 from .costs import Pool
 
 
@@ -23,7 +24,7 @@ class PoolBook:
         cols = ["slot", "block_time", "side", "base_amount", "quote_amount", "user_quote", "base_before", "vault_before",
                 "base_after", "vault_after", "virt", "lp_bps", "protocol_bps", "creator_bps", "supply", "owner",
                 "coin_creator", "app_routed", "tx_idx", "ev_idx", "mint", "outer_ix", "inner_ix", "owner_pre",
-                "owner_post"]
+                "owner_post", "boost", "protocol"]
         arrs = {c: amm[c].to_numpy() for c in cols}
         pools = amm.pool.to_numpy()
         starts = np.flatnonzero(np.r_[True, pools[1:] != pools[:-1]])
@@ -65,3 +66,11 @@ class PoolBook:
     def mid_before_first(self, pool: int) -> float:
         r = self.rows[pool]
         return float(r["vault_before"][0] + r["virt"][0]) / float(max(r["base_before"][0], 1))
+
+
+def flow_rows(r) -> np.ndarray:
+    """Rows that count as market flow. BOOST swaps (signature in BoostBuyAndBurnEvent) and protocol swaps are left out
+    when config.EXCLUDE_PROTOCOL_SWAPS (CONSERVATIVE, OPEN_QUESTIONS #21). Pool state and prices use every row."""
+    if not C.EXCLUDE_PROTOCOL_SWAPS:
+        return np.ones(len(r["slot"]), dtype=bool)
+    return (r["boost"] == 0) & (r["protocol"] == 0)

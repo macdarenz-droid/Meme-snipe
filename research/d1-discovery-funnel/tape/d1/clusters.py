@@ -20,7 +20,7 @@ from scipy.sparse.csgraph import connected_components
 
 from . import config as C
 from .load import Tape
-from .pool_state import PoolBook
+from .pool_state import PoolBook, flow_rows
 
 
 def link_pairs(tape: Tape) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -143,7 +143,7 @@ def who_shares(tape: Tape, book: PoolBook, el: pd.DataFrame, idx: pd.DataFrame) 
             s, e = int(idx.at[ix, "_l15"]), int(idx.at[ix, "_iD"]) + 1
             if e <= s:
                 continue
-            bm = r["side"][s:e] == 1
+            bm = (r["side"][s:e] == 1) & flow_rows(r)[s:e]
             q = r["quote_amount"][s:e][bm].astype(float)
             ow = r["owner"][s:e][bm]
             tot = q.sum()

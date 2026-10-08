@@ -160,3 +160,16 @@ func TestCreatorFeeRow(t *testing.T) {
 		t.Fatal("a trade became a CF row")
 	}
 }
+
+// BOOST swaps are flagged protocol through E's BoostBuyAndBurnEvent signature.
+func TestBoostSwapsFlaggedProtocol(t *testing.T) {
+	row := make([]string, len(ammCols))
+	row[colIndex(ammCols, "signature")] = "sigB"
+	row[colIndex(ammCols, "ix_name")] = "buy"
+	if protocolFlagAmm(row, map[string]bool{"sigB": true}) != "1" {
+		t.Fatal("a BOOST swap is not flagged")
+	}
+	if protocolFlagAmm(row, map[string]bool{"other": true}) != "0" {
+		t.Fatal("an ordinary swap is flagged")
+	}
+}

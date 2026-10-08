@@ -316,13 +316,25 @@ func decodeUnit(spool string, from, to uint64, day string, outDir string, useMan
 			b := ex.sAdd[atoi(row[2])]
 			write(fCurve, append(append([]string{}, row...), sAdd(b, row[len(curveCols)-1], row[8], "", protocolFlag(row[5], row[colIndex(curveCols, "user")], row[colIndex(curveCols, "ix_name")]), row[colIndex(curveCols, "outer_ix")])...))
 		}
+		// BOOST swaps carry the event's own ix_name; their signatures come from E's
+		// BoostBuyAndBurnEvent (same transaction).
+		boost := map[string]bool{}
+		for _, l := range r.other {
+			var e struct {
+				Event     string `json:"event"`
+				Signature string `json:"signature"`
+			}
+			if json.Unmarshal([]byte(l), &e) == nil && e.Event == "BoostBuyAndBurnEvent" {
+				boost[e.Signature] = true
+			}
+		}
 		for _, row := range r.amm {
 			b := ex.sAdd[atoi(row[2])]
 			canon := "0"
 			if isCanonicalPool(row[8], row[9], row[10]) {
 				canon = "1"
 			}
-			write(fAmm, append(append([]string{}, row...), sAdd(b, row[len(ammCols)-1], row[9], canon, protocolFlag(row[5], row[colIndex(ammCols, "user")], row[colIndex(ammCols, "ix_name")]), row[colIndex(ammCols, "outer_ix")])...))
+			write(fAmm, append(append([]string{}, row...), sAdd(b, row[len(ammCols)-1], row[9], canon, protocolFlagAmm(row, boost), row[colIndex(ammCols, "outer_ix")])...))
 		}
 		for _, row := range ex.failed {
 			write(fFailed, row)
@@ -385,6 +397,14 @@ func protocolFlag(signer, user, ixName string) string {
 		return "1"
 	}
 	return "0"
+}
+
+// protocolFlagAmm is protocolFlag for a PumpSwap row, plus the BOOST swaps.
+func protocolFlagAmm(row []string, boost map[string]bool) string {
+	if boost[row[colIndex(ammCols, "signature")]] {
+		return "1"
+	}
+	return protocolFlag(row[5], row[colIndex(ammCols, "user")], row[colIndex(ammCols, "ix_name")])
 }
 
 func runDecode(args []string) int {

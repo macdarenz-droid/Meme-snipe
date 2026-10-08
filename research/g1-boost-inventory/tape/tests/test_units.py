@@ -118,5 +118,19 @@ class Stats(unittest.TestCase):
         self.assertFalse(futility(good)["closes"])
 
 
+class Arms(unittest.TestCase):
+    def test_frozen_medians_select_arms(self):
+        from g1lib.score import arms, judge
+        t = pd.DataFrame({"kind": ["G1"] * 4 + ["S0"], "variant": "primary", "mint": list("abcda"), "day": "d",
+                          "filled": True, "miss": "", "ret": [0.1, 0.2, 0.3, 0.4, 0.0], "exit": "A"})
+        d = pd.DataFrame({"kind": "G1", "mint": list("abcd"), "R": [0.1, 0.5, 0.9, float("nan")],
+                          "Z": [-1.0, 0.0, 2.0, -3.0], "cap_reason": ["", "", "", "theme-wave"]})
+        g1, s0, hc, cap = arms(t, d, {"median_R": 0.5, "median_Z": 0.0})
+        self.assertEqual(list(hc["mint"]), ["a"])            # R strictly below the frozen median
+        self.assertEqual(list(cap["mint"]), ["a", "b"])      # Z at or below; theme-wave excluded
+        self.assertEqual(len(s0), 1)
+        self.assertIn("secondary", judge(t, d, {"median_R": 0.5, "median_Z": 0.0}, "validation"))
+
+
 if __name__ == "__main__":
     unittest.main()

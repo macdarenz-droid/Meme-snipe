@@ -14,7 +14,7 @@ from . import config as C
 from .clusters import who_shares
 from .holders import holder_features
 from .load import Tape
-from .pool_state import PoolBook
+from .pool_state import PoolBook, flow_rows
 from .universe import Clock
 
 
@@ -31,7 +31,7 @@ def _first_buy_flags(tape: Tape, book: PoolBook) -> Dict[int, np.ndarray]:
     for p, r in book.rows.items():
         m = int(r["mint"][0])
         f = np.zeros(len(r["slot"]), dtype=np.int64)
-        for k in np.flatnonzero(r["side"] == 1):
+        for k in np.flatnonzero((r["side"] == 1) & flow_rows(r)):
             o = int(r["owner"][k])
             if o >= 0 and key.get((m, o)) == (int(r["slot"][k]), int(r["tx_idx"][k]), int(r["ev_idx"][k])):
                 f[k] = 1
@@ -87,10 +87,11 @@ def price_flow_pool_protocol(tape: Tape, book: PoolBook, pts: pd.DataFrame, cloc
         rv = np.where(iD >= a, cs[iD] - cs[np.maximum(a - 1, 0)], 0.0)
         res["rv_15m"] = np.sqrt(np.maximum(rv, 0.0))
 
-        isbuy = (r["side"] == 1).astype(np.int64)
-        issell = 1 - isbuy
+        fl = flow_rows(r)
+        isbuy = ((r["side"] == 1) & fl).astype(np.int64)
+        issell = ((r["side"] == -1) & fl).astype(np.int64)
         cb, csl = np.cumsum(isbuy), np.cumsum(issell)
-        cnet = np.cumsum(r["side"] * r["quote_amount"]).astype(float)
+        cnet = np.cumsum(np.where(fl, r["side"] * r["quote_amount"], 0)).astype(float)
 
         def rng(c, l):
             prev = np.where(l > 0, c[np.maximum(l - 1, 0)], 0)
@@ -113,10 +114,10 @@ def price_flow_pool_protocol(tape: Tape, book: PoolBook, pts: pd.DataFrame, cloc
                 app[k] = np.nan
                 continue
             sl = slice(s, e)
-            bm = r["side"][sl] == 1
+            bm = (r["side"][sl] == 1) & fl[sl]
             ow = r["owner"][sl][bm]
             uniq[k] = len(np.unique(ow[ow >= 0]))
-            sm = ~bm
+            sm = (r["side"][sl] == -1) & fl[sl]
             if sm.any():
                 maxsell[k] = r["quote_amount"][sl][sm].max() / eff[k]
             q = r["quote_amount"][sl][bm].astype(float)
