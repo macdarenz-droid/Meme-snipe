@@ -24,6 +24,12 @@ BURN_OWNERS = frozenset({"1nc1nerator11111111111111111111111111111111"})
 # The tokenized-agent buyback authority (research/shared-tape/README.md, S `protocol`).
 PROTOCOL_OWNERS = frozenset({"GmFrDZT2cdrqykgTikVdXbe8EtCgzUDM9VsDhQnwsUsG"})
 
+# H8_AMENDMENT_2: H11 as the bot runs it (packages/core/src/config/policy.ts gates)
+H11_CHASE_AFTER_S = 5 * 60  # chaseCheckAfterMs
+H11_CHASE_MAX_ABOVE_BPS = 0  # chaseMaxAboveMigrationBps
+H11_SPIKE_BPS = 2500  # candleSpikeBps
+H11_CANDLE_WINDOW_S = 3 * 60  # candleWindowMs
+
 # §5 gate H1-CGO-0
 GATE_A_MIN_PER_DAY = 150
 GATE_B_MAX_R2 = 0.8

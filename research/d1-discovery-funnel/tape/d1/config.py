@@ -131,6 +131,24 @@ H8_SIZES_USD = (5, 20, 50)
 # sha256 of research/brainstorm-loop/sol-usd/SHA256SUMS (Binance SOLUSDT 1h/1m, 09-02..09-11): the pinned price input
 SOLUSD_SUMS_SHA256 = "02083908d386a53c07acd1663bdd74f102053f12bcd92856cf09670fcf3da964"
 
+# ---- H8 amendment 2 and AMENDMENT_3: universe tags and the bot's gates as of the decision ---------------------
+# packages/core/src/config/research.ts (s0.u2Window*), docs/ARCHITECTURE.md §3.2 (U1), config/policy.ts gates.
+U2_FROM_S, U2_TO_S = 60 * 60, 240 * 60
+U1_FROM_S, U1_TO_S = 24 * 3600, 14 * 24 * 3600
+U1_MIN_MCAP_SOL = 1_470
+H8_U1_FLOOR_USD = 50_000           # policy.ts u1FloorUsd
+H8_COUNT_SIZES_USD = (5, 20, 50, 100, 200, 500, 1_000, 10_000)   # H8_AMENDMENT_2 item 4
+H8_TRADABLE_SIZE_USD = 5           # H8_AMENDMENT_2 item 3: the trial maximum (policy.ts maxNotional)
+DUST_MIN_AT_MIGRATION = 5 * 10**9  # policy.ts gates.dustPoolMinAtMigration
+H9_MIN_GRADUATION_S = 5 * 60       # gates.instantGraduationMinMs
+H11_SPIKE_WINDOW_S = 3 * 60        # gates.candleWindowMs
+H11_SPIKE_BPS = 2_500              # gates.candleSpikeBps
+H11_CHASE_AFTER_S = 5 * 60         # gates.chaseCheckAfterMs (chaseMaxAboveMigrationBps = 0)
+POOL_ACCOUNT_MIN_BYTES = 300       # tx/shape.ts POOL_ACCOUNT_MIN_BYTES
+H12_HARD_BPS, H12_SINGLE_BPS, H12_TOP10_BPS = 4_000, 1_000, 3_000
+H13_INSIDER_BPS, H13_DEV_CLUSTER_BPS = 1_500, 500
+H13_INSIDER_SLOTS, H13_FIRST_BUYERS = 2, 20   # facts/producer.ts insiderSlots, firstBuyers
+
 # ---- Validation (PREREG §6; bootstrap size and seed as H1-CGO §8 / G1 §9) ---------------------------------------
 ALPHA = 0.005
 N_BOOT = 10_000

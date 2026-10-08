@@ -24,6 +24,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
+from . import config as C
 from .load import Tape
 from .pool_state import PoolBook
 
@@ -89,6 +90,9 @@ class Holders:
                     du += tok - moved
                 self._delta(dst, dk, dc, du)
 
+    def included(self) -> np.ndarray:
+        return np.fromiter((r[0] + r[2] for o, r in self.h.items() if o not in self.ex), dtype=float)
+
     def top10(self) -> float:
         v = np.fromiter((r[0] + r[2] for o, r in self.h.items() if o not in self.ex), dtype=float)
         if len(v) == 0:
@@ -127,8 +131,69 @@ def _events(tape: Tape, book: PoolBook, mint: int, pool: int) -> pd.DataFrame:
     return ev.sort_values(["slot", "tx_idx", "outer_ix", "inner_ix", "src"], kind="mergesort").reset_index(drop=True)
 
 
-def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame) -> pd.DataFrame:
-    out = pd.DataFrame(np.nan, index=el.index, columns=["top10_share", "creator_share", "cgo", "cgo_coverage"])
+def _bps(x: float, circ: float) -> int:
+    return int(np.floor(x * 10_000 / circ)) if circ > 0 else 10**9
+
+
+def gate_h12(H: "Holders", circ: float, creator: int) -> int:
+    """hard.ts h12 on the tape's holder book: shares of circulating (supply - pool base reserve); tokens the book does
+    not account for are put in the worst place (GATE-1d), and a book holding more than circulating is unknown."""
+    if circ <= 0:
+        return 0
+    v = np.clip(H.included(), 0, None)
+    tracked = float(v.sum())
+    u = circ - tracked
+    if u < -1.0:
+        return -1
+    u = max(u, 0.0)
+    top1 = float(v.max()) if len(v) else 0.0
+    top10 = float(np.sort(v)[-10:].sum()) if len(v) else 0.0
+    dev = max(H.total(creator), 0.0)
+    t1, dv, t10 = _bps(top1, circ), _bps(dev, circ), _bps(top10, circ)
+    if t1 >= C.H12_HARD_BPS or dv >= C.H12_HARD_BPS or C.H12_SINGLE_BPS < t1 < C.H12_HARD_BPS or t10 > C.H12_TOP10_BPS:
+        return 0
+    if u <= 0.5:
+        return 1
+    w1, w10 = _bps(top1 + u, circ), _bps(top10 + u, circ)
+    return -1 if (w1 > C.H12_SINGLE_BPS or w1 >= C.H12_HARD_BPS or w10 > C.H12_TOP10_BPS) else 1
+
+
+def insider_sets(tape: Tape, mint: int, create_slot: int, creator: int, funders) -> tuple:
+    """facts/producer.ts #insiders + facts/funding.ts insiderLinks: creation-slot buyers (create slot .. +2) and the
+    dev's linked cluster among the first 20 curve buyers (funded by the dev or by the dev's own funder). Returns
+    (insiders, dev_cluster) or None when a funder read is missing (incomplete: never "not linked")."""
+    cb = tape.curve[(tape.curve.mint == mint) & (tape.curve.is_buy == 1) & (tape.curve.owner >= 0)]
+    creation = set(cb.loc[(cb.slot >= create_slot) & (cb.slot <= create_slot + C.H13_INSIDER_SLOTS), "owner"].tolist())
+    first = cb.drop_duplicates("owner").sort_values(["slot", "owner"], kind="mergesort").owner.tolist()[:C.H13_FIRST_BUYERS]
+    funders = funders or {}
+    if creator not in funders or any(w not in funders for w in first):
+        return None
+    dev_funder = funders[creator]
+    others = [w for w in first if w != creator]
+    cluster = {w for w in others if funders[w] == creator or (dev_funder is not None and funders[w] == dev_funder)}
+    return (creation | cluster) - {creator}, cluster
+
+
+def gate_h13(H: "Holders", circ: float, creator: int, sets) -> int:
+    if sets is None or circ <= 0:
+        return -1
+    insiders, cluster = sets
+    held = lambda ws: sum(max(H.total(w), 0.0) for w in set(ws) | {creator})
+    tracked = float(np.clip(H.included(), 0, None).sum())
+    u = max(circ - tracked, 0.0)
+    if _bps(held(insiders), circ) > C.H13_INSIDER_BPS or _bps(held(cluster), circ) > C.H13_DEV_CLUSTER_BPS:
+        return 0
+    if u <= 0.5:
+        return 1
+    return -1 if (_bps(held(insiders) + u, circ) > C.H13_INSIDER_BPS
+                  or _bps(held(cluster) + u, circ) > C.H13_DEV_CLUSTER_BPS) else 1
+
+
+def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame, funders: dict = None) -> pd.DataFrame:
+    """funders: wallet code -> first funder code, from complete funder reads. The tape has none (a wallet's first-ever
+    funding is not on it), so H13 is unknown unless they are supplied (OPEN_QUESTIONS #37)."""
+    out = pd.DataFrame(np.nan, index=el.index, columns=["top10_share", "creator_share", "cgo", "cgo_coverage",
+                                                        "gate_h12", "gate_h13"])
     ce = tape.ev["CreateEvent"].drop_duplicates("mint").set_index("mint")
     mg = tape.ev["CompletePumpAmmMigrationEvent"]
     for (pool, mint), g in el.groupby(["pool", "mint"], sort=False):
@@ -142,6 +207,9 @@ def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame) -> pd.DataFram
         n = len(sl)
         g = g.sort_values("d")
         r = book.rows[pool]
+        has_create = mint in ce.index
+        sets = insider_sets(tape, int(mint), int(ce.at[mint, "slot"]), int(ce.at[mint, "creator"]), funders) \
+            if has_create else None
         i = 0
         for ix, d in zip(g.index, g.d.to_numpy()):
             while i < n and sl[i] <= d:
@@ -179,6 +247,10 @@ def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame) -> pd.DataFram
             sd = ce.loc[mint] if mint in ce.index and int(ce.at[mint, "slot"]) <= d else None
             creator = int(sd["creator"]) if sd is not None else int(r["coin_creator"][iD])
             out.at[ix, "creator_share"] = max(H.total(creator), 0.0) / supply if creator >= 0 else np.nan
+            circ = supply - float(r["base_after"][iD])
+            # H12 and H13 read the create row (hard.ts conc -> readCreate): without it they are unknown
+            out.at[ix, "gate_h12"] = gate_h12(H, circ, creator) if has_create else -1
+            out.at[ix, "gate_h13"] = gate_h13(H, circ, creator, sets) if has_create else -1
             held = H.K + H.U
             if held > 0:
                 out.at[ix, "cgo_coverage"] = H.K / held

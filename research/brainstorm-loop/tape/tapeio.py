@@ -97,16 +97,19 @@ def _num(s):
 CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "signature", "signer", "user_token_owner", "mint", "is_buy",
               "sol_amount", "token_amount", "quote_mint", "protocol", "mayhem_mode", "creator",
               "owner_token_pre", "owner_token_post", "signer_sol_pre", "signer_sol_post",
-              "fee", "creator_fee", "outer_ix", "inner_ix"]
+              "fee", "creator_fee", "outer_ix", "inner_ix",
+              "top_program", "jito_tip", "tx_fee", "cu", "virtual_sol_reserves", "virtual_token_reserves",
+              "real_sol_reserves"]
 AMM_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "signature", "signer", "user_token_owner", "base_mint", "pool",
             "side", "quote_amount", "base_amount", "quote_mint", "protocol", "canonical", "coin_creator",
             "pool_base_token_reserves", "pool_quote_token_reserves", "chain_pool_base", "chain_pool_quote",
             "virtual_quote_reserves", "base_supply", "owner_token_pre", "owner_token_post",
             "signer_sol_pre", "signer_sol_post",
-            "quote_amount_lp_adjusted", "protocol_fee", "coin_creator_fee", "user_quote_amount", "outer_ix", "inner_ix"]
+            "quote_amount_lp_adjusted", "protocol_fee", "coin_creator_fee", "user_quote_amount", "outer_ix", "inner_ix",
+            "top_program", "jito_tip", "tx_fee", "cu", "coin_creator_fee_basis_points"]
 
 
-def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str) -> pd.DataFrame:
+def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str, schema_v2: bool = True) -> pd.DataFrame:
     """One row per swap (curve and PumpSwap). `sol` is the quote amount in lamports where the quote is SOL.
     `excluded` marks BOOST (by BoostBuyAndBurnEvent signature) and protocol rows."""
     c = pd.DataFrame({
@@ -123,6 +126,9 @@ def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str
         # SOL paid with fees (buy) and SOL received after fees (sell), as H1-CGO's ledger counts them
         "cost": _num(curve["sol_amount"]) + _num(curve["fee"]).fillna(0) + _num(curve["creator_fee"]).fillna(0),
         "proceeds": _num(curve["sol_amount"]) - _num(curve["fee"]).fillna(0) - _num(curve["creator_fee"]).fillna(0),
+        "top_program": curve["top_program"], "jito_tip": curve["jito_tip"], "tx_fee": curve["tx_fee"], "cu": curve["cu"],
+        "lp_adj": pd.NA, "creator_fee_bps": pd.NA, "curve_vsol": curve["virtual_sol_reserves"],
+        "curve_vtok": curve["virtual_token_reserves"], "curve_real_sol": curve["real_sol_reserves"],
     })
     a = pd.DataFrame({
         "venue": "amm", "slot": amm["slot"], "block_time": amm["block_time"], "tx_idx": amm["tx_idx"],
@@ -140,12 +146,16 @@ def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str
         "cost": _num(amm["quote_amount_lp_adjusted"]).fillna(_num(amm["quote_amount"]))
         + _num(amm["protocol_fee"]).fillna(0) + _num(amm["coin_creator_fee"]).fillna(0),
         "proceeds": _num(amm["user_quote_amount"]).fillna(_num(amm["quote_amount"])),
+        "top_program": amm["top_program"], "jito_tip": amm["jito_tip"], "tx_fee": amm["tx_fee"], "cu": amm["cu"],
+        "lp_adj": amm["quote_amount_lp_adjusted"], "creator_fee_bps": amm["coin_creator_fee_basis_points"],
+        "curve_vsol": pd.NA, "curve_vtok": pd.NA, "curve_real_sol": pd.NA,
     })
     s = pd.concat([c, a], ignore_index=True)
     for col in ("slot", "block_time", "tx_idx", "ev_idx"):
         s[col] = _num(s[col]).astype(np.int64)
     for col in ("quote", "base", "owner_token_pre", "owner_token_post", "signer_sol_pre", "signer_sol_post",
-                "pool_base_pre", "pool_quote_pre", "pool_base_post", "pool_quote_post", "virtual_quote", "supply"):
+                "pool_base_pre", "pool_quote_pre", "pool_base_post", "pool_quote_post", "virtual_quote", "supply",
+                "jito_tip", "tx_fee", "cu", "lp_adj", "creator_fee_bps", "curve_vsol", "curve_vtok", "curve_real_sol"):
         s[col] = _num(s[col]).astype("float64")
     for col in ("outer_ix", "inner_ix"):
         s[col] = _num(s[col]).fillna(-1).astype(np.int64)
@@ -157,24 +167,34 @@ def swaps_from(curve: pd.DataFrame, amm: pd.DataFrame, boost_sigs: set, day: str
     s["boost"] = s["signature"].isin(boost_sigs)
     s["excluded"] = s["boost"] | ~s["protocol"].fillna("0").astype(str).isin(["0", ""])
     s["day"] = day
+    s["schema_v2"] = schema_v2      # the unit's S tables carry top_program (README: v1 units do not)
     return s
+
+
+EVENT_NAMES = {"CreateEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent", "BoostBuyAndBurnEvent",
+               "CompleteEvent", "DepositEvent", "WithdrawEvent", "UpdateMayhemVirtualParamsEvent",
+               "PostCompleteBuyEvent"}
 
 
 class Tape:
     """Everything loaded from a list of unit directories."""
 
     def __init__(self, paths):
-        swaps, t, w, cf, blocks, ev = [], [], [], [], [], []
+        swaps, t, w, cf, blocks, ev, fails = [], [], [], [], [], [], []
         self.ranges = []
         for path in paths:
             p, day, lo, hi = unit_info(path)
-            e = read_events(p, {"CreateEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent",
-                                "BoostBuyAndBurnEvent"})
+            e = read_events(p, EVENT_NAMES)
             for j in e:
                 j["day"] = day
             ev += e
             boost = {j["signature"] for j in e if j["event"] == "BoostBuyAndBurnEvent"}
-            swaps.append(swaps_from(read_csv(p, "S_curve", CURVE_COLS), read_csv(p, "S_amm", AMM_COLS), boost, day))
+            f_amm = os.path.join(p, "S_amm.csv.zst")
+            v2 = os.path.exists(f_amm) and "top_program" in pd.read_csv(f_amm, compression="zstd", nrows=0).columns
+            swaps.append(swaps_from(read_csv(p, "S_curve", CURVE_COLS), read_csv(p, "S_amm", AMM_COLS), boost, day, v2))
+            ff = read_csv(p, "F", ["slot", "block_time", "signature", "venue", "pool_or_curve", "err_class"])
+            ff["day"] = day
+            fails.append(ff)
             tt = read_csv(p, "T", ["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner",
                                    "amount"])
             t.append(tt)
@@ -200,6 +220,13 @@ class Tape:
         links = links[links["from_owner"] != links["to_owner"]]
         links["slot"] = _num(links["slot"]).astype(np.int64)
         self.links = links.sort_values("slot", kind="mergesort").reset_index(drop=True)
+        wl = pd.concat(w, ignore_index=True).dropna(subset=["from_owner", "to_owner"])
+        wl = wl[wl["from_owner"] != wl["to_owner"]]
+        wl["slot"] = _num(wl["slot"]).astype(np.int64)
+        self.w_links = wl.reset_index(drop=True)      # W (SOL) links only, for MIG-SEAT's creator group
+        self.fails = pd.concat(fails, ignore_index=True)
+        for col in ("slot", "block_time"):
+            self.fails[col] = _num(self.fails[col]).astype("Int64")
         self.cf = pd.concat(cf, ignore_index=True)
         self.blocks = pd.concat(blocks, ignore_index=True)
         self.blocks["slot"] = _num(self.blocks["slot"]).astype(np.int64)
@@ -211,7 +238,8 @@ class Tape:
 
     # ------------------------------------------------------------------ events
     def _index_events(self):
-        cr, mig, pools, boost = [], [], [], []
+        cr, mig, pools, boost, comp, lp, rep = [], [], [], [], [], [], []
+        self.post_complete_buys = 0
         for j in self.events:
             f = j["fields"]
             base = {"slot": int(j["slot"]), "block_time": int(j["block_time"]), "day": j["day"]}
@@ -223,16 +251,41 @@ class Tape:
             elif j["event"] == "CreatePoolEvent":
                 pools.append({**base, "pool": f.get("pool"), "base_mint": f.get("base_mint"),
                               "quote_mint": f.get("quote_mint"), "mayhem": _int(f.get("is_mayhem_mode")),
-                              "coin_creator": f.get("coin_creator"), "creator": f.get("creator")})
+                              "coin_creator": f.get("coin_creator"), "creator": f.get("creator"),
+                              "pool_quote_amount": _int(f.get("pool_quote_amount")),
+                              "pool_base_amount": _int(f.get("pool_base_amount")), "signature": j.get("signature")})
             elif j["event"] == "BoostBuyAndBurnEvent":
-                boost.append({**base, "mint": f.get("mint"), "pool": f.get("pool")})
+                boost.append({**base, "mint": f.get("mint"), "pool": f.get("pool"),
+                              "quote_used": _int(f.get("quote_amount_in_used")),
+                              "quote_requested": _int(f.get("quote_amount_in_requested")), "signature": j.get("signature")})
+            elif j["event"] == "CompleteEvent":
+                comp.append({**base, "mint": f.get("mint")})
+            elif j["event"] in ("DepositEvent", "WithdrawEvent"):
+                sign = 1 if j["event"] == "DepositEvent" else -1
+                amt = _int(f.get("lp_token_amount_out" if sign > 0 else "lp_token_amount_in")) or 0
+                lp.append({**base, "pool": f.get("pool"), "lp_delta": sign * amt})
+            elif j["event"] == "UpdateMayhemVirtualParamsEvent":
+                rep.append({**base, "tx_idx": _int(j.get("tx_idx")), "signature": j.get("signature"), "mint": f.get("mint"),
+                            **{k: _int(f.get(k)) for k in ("virtual_sol_reserves", "virtual_token_reserves",
+                                                           "new_virtual_sol_reserves", "new_virtual_token_reserves",
+                                                           "real_sol_reserves", "real_token_reserves")}})
+            elif j["event"] == "PostCompleteBuyEvent":
+                self.post_complete_buys += 1
         self.creates = pd.DataFrame(cr, columns=["slot", "block_time", "day", "mint", "creator", "user", "mayhem",
                                                  "quote_mint"]).drop_duplicates("mint")
         self.migrations = pd.DataFrame(mig, columns=["slot", "block_time", "day", "mint", "pool",
                                                      "quote_mint"]).drop_duplicates("pool")
         self.pool_creates = pd.DataFrame(pools, columns=["slot", "block_time", "day", "pool", "base_mint", "quote_mint",
-                                                         "mayhem", "coin_creator", "creator"]).drop_duplicates("pool")
-        self.boosts = pd.DataFrame(boost, columns=["slot", "block_time", "day", "mint", "pool"])
+                                                         "mayhem", "coin_creator", "creator", "pool_quote_amount",
+                                                         "pool_base_amount", "signature"]).drop_duplicates("pool")
+        self.boosts = pd.DataFrame(boost, columns=["slot", "block_time", "day", "mint", "pool", "quote_used",
+                                                   "quote_requested", "signature"])
+        self.completes = pd.DataFrame(comp, columns=["slot", "block_time", "day", "mint"]).drop_duplicates("mint")
+        self.lp_moves = pd.DataFrame(lp, columns=["slot", "block_time", "day", "pool", "lp_delta"])
+        self.reprices = pd.DataFrame(rep, columns=["slot", "block_time", "day", "tx_idx", "signature", "mint",
+                                                   "virtual_sol_reserves", "virtual_token_reserves",
+                                                   "new_virtual_sol_reserves", "new_virtual_token_reserves",
+                                                   "real_sol_reserves", "real_token_reserves"])
 
     def mayhem_of_mint(self, mint):
         """COUNT_ROWS_AMENDMENT_3: mayhem is the mint's flag, taken in order from its CreateEvent, then any curve

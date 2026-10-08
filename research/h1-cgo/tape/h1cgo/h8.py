@@ -63,11 +63,31 @@ class SolUsd:
         return self.p[k - 1]
 
 
-def floor_micro_usd(size_usd: float) -> int:
-    return max(FLOOR_USD, FLOOR_NOTIONAL_MULTIPLE * size_usd) * 1_000_000
+U1_FLOOR_USD = 50_000  # policy.ts liquidity.u1FloorUsd
+U2_WINDOW_S = (60 * 60, 240 * 60)  # research.ts s0.u2WindowFromMs / u2WindowToMs; the end is excluded (OPEN_QUESTIONS)
+U1_WINDOW_S = (24 * 3600, 14 * 86_400)  # ARCHITECTURE §3.2: pools aged 24 h to 14 days
+COUNT_SIZES_USD = (5, 20, 50, 100, 200, 500, 1_000, 10_000)  # H8_AMENDMENT_2 item 4
+TRADABLE_SIZE_USD = 5  # H8_AMENDMENT_2 item 3: the trial maximum (policy.ts capital.maxNotional)
 
 
-def eligible(eff_quote_lamports, hour: int, size_usd: float, sol: SolUsd, quote_at_migration=None) -> bool:
+def universe_tag(age_s) -> str:
+    """H8_AMENDMENT_2 item 1: the universe the bot would tag a pool of this age with; None between them (4-24 h)."""
+    if U2_WINDOW_S[0] <= age_s < U2_WINDOW_S[1]:
+        return "U2"
+    if U1_WINDOW_S[0] <= age_s <= U1_WINDOW_S[1]:
+        return "U1"
+    return None
+
+
+def floor_micro_usd(size_usd: float, tag: str = None) -> int:
+    """hard.ts liquidityFloor: max($15k, 1,000 x size), raised to the U1 floor for U1."""
+    f = max(FLOOR_USD, FLOOR_NOTIONAL_MULTIPLE * size_usd)
+    if tag == "U1":
+        f = max(f, U1_FLOOR_USD)
+    return int(f * 1_000_000)
+
+
+def eligible(eff_quote_lamports, hour: int, size_usd: float, sol: SolUsd, quote_at_migration=None, tag=None) -> bool:
     """H8 at `size_usd` for an effective quote as of the decision hour, as hard.ts h8 runs it: first the
     dust-at-migration check (no migration pool quote, or less than 5 SOL: not eligible; AMENDMENT_4), then the floor.
     No SOL/USD point (or a stale one): not eligible (the bot's H16 refusal)."""
@@ -79,28 +99,41 @@ def eligible(eff_quote_lamports, hour: int, size_usd: float, sol: SolUsd, quote_
         return False
     eff = int(eff_quote_lamports)
     usd = eff * px // 1_000_000_000 if eff > 0 else 0
-    return usd >= floor_micro_usd(size_usd)
+    return usd >= floor_micro_usd(size_usd, tag)
 
 
-def flags(feats: pd.DataFrame, sol: SolUsd) -> pd.DataFrame:
-    """h8_<size> columns for $5, $20 and $50."""
+def tradable(r, size_usd: float, sol: SolUsd) -> bool:
+    """H8_AMENDMENT_2 items 1-2 for one decision point: the universe tag by age (4-24 h: not tradable without a new
+    tag), H6 (no LP outstanding), H11 (no candle spike; for U2 also the chase check), then H8 with the dust check on
+    that universe's floor."""
+    tag = universe_tag(r["hour"] - r["mig_time"])
+    if tag is None or r["h6_lp_outstanding"] != 0 or r["h11_spike"] or (tag == "U2" and r["h11_chase_reject"]):
+        return False
+    return eligible(r["eff_quote"], r["hour"], size_usd, sol, r["quote_at_migration"], tag)
+
+
+def flags(feats: pd.DataFrame, sol: SolUsd, sizes=SIZES_USD) -> pd.DataFrame:
+    """h8_<size> columns: tradable under H8_AMENDMENT_2 at each size."""
     out = feats.copy()
-    for s in SIZES_USD:
-        out[f"h8_{s}"] = [eligible(e, h, s, sol, q) for e, h, q in zip(out.eff_quote, out.hour, out.quote_at_migration)]
+    for s in sizes:
+        out[f"h8_{s}"] = [tradable(r, s, sol) for _, r in out.iterrows()] if len(out) else []
     return out
 
 
 def count_rows(feats: pd.DataFrame, sol: SolUsd) -> dict:
-    """H8_AMENDMENT item 4: H8-eligible pool-hours and graduates per day at each size, over the decision points with a
-    pool state and over H1-CGO's eligible ones."""
-    f = flags(feats, sol)
+    """H8_AMENDMENT item 4 with H8_AMENDMENT_2 item 4: pool-hours and graduates per day passing H8 on their universe's
+    floor (with H6 and H11) at $5 ... $10,000, over the decision points with a pool state and over H1-CGO's eligible
+    ones; and per day the canonical pools whose creator fee is 0."""
+    f = flags(feats, sol, COUNT_SIZES_USD)
+    days = sorted(set(f.decision_day))
     res = {}
     for base, sub in (("with_state", f[f.has_state]), ("h1cgo_eligible", f[f.eligible])):
-        for s in SIZES_USD:
+        for s in COUNT_SIZES_USD:
             g = sub[sub[f"h8_{s}"]]
             res[f"{base}_${s}"] = {d: dict(pool_hours=int((g.decision_day == d).sum()),
-                                            graduates=int(g[g.decision_day == d].mint.nunique()))
-                                   for d in sorted(set(f.decision_day))}
+                                            graduates=int(g[g.decision_day == d].mint.nunique())) for d in days}
+    z = f[f.has_state & f.creator_fee_zero.astype(bool)]
+    res["creator_fee_zero_pools"] = {d: int(z[z.decision_day == d].pool.nunique()) for d in days}
     res["sol_usd_files"] = sol.files
     return res
 

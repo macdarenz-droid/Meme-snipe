@@ -148,10 +148,11 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
     hourly = H8.hourly_px(minutes)
     days = sorted({d for d, _, _ in tape.ranges})
     if hourly:
-        h8_strata = {"1_dev_zero": H8.dev_zero_stratum(dz, days, hourly),
-                     "2_rebuy_anchor": H8.rebuy_stratum(tape, rb, rb_pts, rb_pairs, hourly),
-                     "3_seat_drift": H8.seat_drift_stratum(sd, hourly)}
-        h8_ph, h8_gr, h8_cap = H8.h8_capacity(tape, s, hourly)
+        ctx = H8.GateCtx(tape, s, hourly)
+        h8_strata = {"1_dev_zero": H8.dev_zero_stratum(dz, days, hourly, ctx),
+                     "2_rebuy_anchor": H8.rebuy_stratum(tape, rb, rb_pts, rb_pairs, hourly, ctx),
+                     "3_seat_drift": H8.seat_drift_stratum(sd, hourly, ctx)}
+        h8_ph, h8_gr, h8_cap = H8.h8_capacity(tape, s, hourly, ctx)
     else:
         need = "needs SOL/USD 1-minute closes (--sol-usd Binance kline CSVs)"
         h8_strata, h8_cap = {"status": need}, {"status": need}

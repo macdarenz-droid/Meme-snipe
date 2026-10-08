@@ -200,28 +200,28 @@ def primary(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_days)
 
 
 def h8_stratum(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_days, sol) -> dict:
-    """H8_AMENDMENT items 1-3: H1-CGO's primary on the H8-eligible stratum at $5, $20 and $50 (entries of the frozen
-    rule whose pool passes H8 at that size, priced at that size). Tradable as the bot stands only if at some size the
-    stratum holds at least 300 validation trades with a positive point mean."""
+    """H8_AMENDMENT items 1-3 as corrected by H8_AMENDMENT_2: H1-CGO's primary on the stratum the bot could trade at $5,
+    $20 and $50 (entries of the frozen rule whose decision point passes, at that size, the floor of the universe the bot
+    would tag, with H6, H11 and the dust check; priced at that size). Tradable as the bot stands only with at least 300
+    validation trades and a positive mean at $5, the trial maximum; $20 and $50 are research lines."""
     from . import h8 as H8
     bp, side = _frozen_rule(feats, frozen, decision_days)
     f = H8.flags(feats, sol)
     e = entries(f, side, bp)
     ok = out[out.status.isin(["ok", "exit_refused"]) & (out.hold == HOLD_S)]
     res = {}
-    tradable = False
     for s in H8.SIZES_USD:
         t = e[e[f"h8_{s}"]][["mint", "decision_slot"]].merge(ok[ok.usd == float(s)], on=["mint", "decision_slot"])
         base = f[f.eligible & f[f"in_time_{HOLD_S}"] & f[f"h8_{s}"]][["mint", "decision_slot"]].merge(
             ok[ok.usd == float(s)], on=["mint", "decision_slot"])
         r = _judge(t, base)
+        if s != H8.TRADABLE_SIZE_USD:
+            r["line"] = "research: needs the owner to raise maxNotional"
         res[f"${s}"] = r
-        tradable = tradable or (r["n_trades"] >= MIN_TRADES and r.get("mean_net_sol", 0) > 0)
-    # R2-10: H8 amendment 2 (frozen 2026-10-08) replaces this rule: tradable needs 300+ positive trades at $5 under
-    # the floor of the universe the bot would tag, with H6 and H11. Until it is implemented no claim is made.
-    res["tradable_under_superseded_h8_rule"] = tradable
-    res["tradable_as_bot_stands"] = None
-    res["note"] = "not judged: H8 amendment 2 (universe-aware floor, $5) is not implemented yet"
+    r5 = res[f"${H8.TRADABLE_SIZE_USD}"]
+    tradable = bool(r5["n_trades"] >= MIN_TRADES and r5.get("mean_net_sol", 0) > 0)
+    res["tradable_as_bot_stands"] = tradable
+    res["note"] = None if tradable else "this works only in pools below H8's floor"
     res["sol_usd_files"] = sol.files
     return res
 
