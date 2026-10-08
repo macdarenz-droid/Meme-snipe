@@ -151,6 +151,15 @@ describe('dashboard copy guard', () => {
     assert.deepEqual(findBanned('Modern turn · Close all · Slippage 1\u20132% · Tier 1 · Fill rate'), []);
   });
 
+  it('Z05 round 5 (ruling 25): look-alikes that only appear after NFKC/NFD are mapped by the second pass', () => {
+    // Each precomposed Greek letter has no table entry; NFD splits off its accent and leaves a Greek look-alike.
+    const seeded: ReadonlyArray<[string, string]> = [['r\u03CCbust', 'robust'], ['\u0386I picks', 'AI'], ['sm\u0386rt', 'smart']];
+    for (const [text, label] of seeded) {
+      assert.ok(findBanned(text).includes(label), `${JSON.stringify(text)} → ${findBanned(text).join(' | ')}`);
+    }
+    assert.equal(normaliseCopy('r\u03CCbust'), 'robust');
+  });
+
   it('normaliseCopy reads text as a reader sees it, and leaves plain text alone', () => {
     assert.equal(normaliseCopy('\u0405m\u200Bart'), 'Smart');
     assert.equal(normaliseCopy('\uFF21\uFF29', 'I'), 'AI');
