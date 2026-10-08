@@ -270,7 +270,8 @@ if __name__ == "__main__" and len(sys.argv) == 1:
 # repeated key; an explicit top-level permissions mapping with contents: read; at any
 # level only contents: read|none and actions: read|none, actions: write only where it is
 # needed (archive-check.yml dispatches data-scan; data-scan.yml's continue job dispatches
-# the chained run), every other scope absent or none, never a string (write-all,
+# the chained run; its forget job, OF-4 ruling 1, deletes a stored day's progress cache
+# after the read-back and runs only a checkout and cache-forget.sh), every other scope absent or none, never a string (write-all,
 # read-all); the actions/upload-* family only as data-scan.yml's resume-* artifact in the
 # scan job; a local action (uses: ./) only as a composite whose steps pass the same checks;
 # every run: block, and every script outside ci/ it calls, passes ag_calls_py; and an
@@ -288,7 +289,7 @@ def mapping(loader, node, deep=False):
     return yaml.SafeLoader.construct_mapping(loader, node, deep)
 L.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
 MARK = re.compile(r"scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-|archive-check\.sh|archive-guard\.sh")
-WRITE_OK = {("archive-check.yml", None), ("data-scan.yml", "continue")}
+WRITE_OK = {("archive-check.yml", None), ("data-scan.yml", "continue"), ("data-scan.yml", "forget")}
 def scopes(perm, name, job):
     if perm is None: return None
     if not isinstance(perm, dict): return "grants " + str(perm)
@@ -361,6 +362,10 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
         if not isinstance(job, dict): continue
         e = scopes(job.get("permissions"), name, j)
         if e: fail(name + " job " + str(j) + " " + e)
+        if (name, j) == ("data-scan.yml", "forget"):
+            sts = [st for st in job.get("steps") or [] if isinstance(st, dict)]
+            if len(sts) != 2 or not str(sts[0].get("uses", "")).startswith("actions/checkout@") or "uses" in sts[1] or str(sts[1].get("run", "")).strip() != "research/historical/ci/cache-forget.sh \"$PREFIX\"":
+                fail(name + " job forget holds actions: write and may run only a checkout and cache-forget.sh (OF-4 ruling 1)")
         envcheck(job.get("env"), name + " job " + str(j))
         for st in job.get("steps") or []:
             if isinstance(st, dict): envcheck(st.get("env"), name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))))

@@ -1900,9 +1900,13 @@ rm -f "$o/units.log"; rc=0; SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci P
 [[ -z "$bad" ]] && ok "OF-3 ruling 9: a restored day already trimmed (every unit K3, per-unit log present and checked, expect_units met) is read done: scan-day exits 0 with no request, trim-day does nothing but copy its log and list again; with expect_units unmet, a failing check or no log it is refused" || no "OF-3 restored trimmed day:$bad"
 bad=""
 # Ruling 11: a day stored at K2 writes its pinned list too.
-mkk2; td 2026-07-22 - --list-only && [[ -f "$T/tk2/list-2026-07-22.txt" && -f "$T/tassets/list-2026-07-22.txt" ]] && ! grep -q "^trim " "$T/trim.args" && [[ -d "$T/tk2/units/1046/1-2" && ! -e "$T/tk2/units.log" ]] || bad+=" list-only"
+mkk2; td 2026-07-22 - --list-only && [[ -f "$T/tk2/list-2026-07-22.txt" && -f "$T/tassets/list-2026-07-22.txt" ]] && ! grep "^trim " "$T/trim.args" | grep -qv -- "-out $T/tk2/units.measure/" && [[ -d "$T/tk2/units/1046/1-2" && ! -e "$T/tk2/units.log" && ! -e "$T/tk2/units.k3" ]] || bad+=" list-only"
+# OF-4 ruling 2: --list-only also measures the day's PM-01 subset (each unit trimmed into a
+# scratch copy that is deleted; the K2 units stay) into ASSET_DIR/pm01-subset-DAY.txt.
+[[ $(grep -c "^trim -in $T/tk2/units/1046/[13]-[24] -out $T/tk2/units.measure/1046/[13]-[24] -migration-list $T/tk2/list-2026-07-22.txt$" "$T/trim.args") == 2 && ! -e "$T/tk2/units.measure" ]] || bad+=" measure-trims"
+grep -qE '^[1-9][0-9]*$' "$T/tassets/pm01-subset-2026-07-22.txt" 2>/dev/null && ! grep -q '"retention": "K3"' "$T"/tk2/units/1046/*/stats.json || bad+=" subset-file"
 mkk2; rc=0; td 2026-07-23 - --list-only || rc=$?; [[ $rc == 2 ]] || bad+=" list-only-no-prior:$rc"
-[[ -z "$bad" ]] && ok "OF-3 ruling 11: a day stored at K2 writes list-D.txt (the next day's prior) and is not trimmed; a day after the first needs the verified prior for it too" || no "OF-3 K2 list:$bad"
+[[ -z "$bad" ]] && ok "OF-3 ruling 11 (OF-4 ruling 2): a day stored at K2 writes list-D.txt (the next day's prior) and pm01-subset-D.txt (its units trimmed only into a deleted scratch copy) and is not trimmed; a day after the first needs the verified prior for it too" || no "OF-3 K2 list:$bad"
 bad=""
 # Ruling 8: a day after the first is refused before the disk guard, the back-off and any
 # scanner call when no verified prior list is present.
@@ -3096,6 +3100,63 @@ echo "n/a" > "$T/store/data-day-2026-07-22/pm01-subset-2026-07-22.txt"; sck; [[ 
 rm -rf "$T/store"; mkdir -p "$T/store"; sck; [[ $rc == 1 ]] || bad+=" [empty: $rc]"
 rc=0; GH_BIN="$T/ghrec4" bash "$here/storage-check.sh" >/dev/null 2>&1 || rc=$?; [[ $rc == 1 ]] || bad+=" [unreadable: $rc]"
 [[ -z "$bad" ]] && ok "OF-4 storage stop: after batch 5, 120 GB stored + 26 x 15 GB = 0.51 TB writes the published storage-stop marker (once) and exits 3, and the guard then refuses; 0.49 TB passes; a draft marker does not count; after batch 1 the K2 day counts as its measured PM-01 subset (195 GB, not 1.395 TB); a bad subset, an empty or unreadable store fail closed without a marker" || no "OF-4 storage stop:$bad"
+bad=""
+
+# ---- OF-4 ruling 1: the stored day's progress cache is deleted after the read-back, by the forget job alone ----
+bad=""
+cat > "$T/cfgh" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$T/cf.log"
+[[ "$1 $2" == "api -X" ]] && exit 0
+[[ -n "${CF_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+printf '11\tdata-scan-2026-07-24-k0123456789ab-77-1\n12\tdata-scan-2026-07-24-k0123456789ab-77-1-qa\n13\tdata-scan-2026-07-24-k0123456789ab-78-2-logs\n14\tdata-scan-2026-07-25-k0123456789ab-79-1\n15\tdata-scan-2026-07-24-kfedcba987654-77-1\n'
+EOF
+chmod +x "$T/cfgh"
+: > "$T/cf.log"; GH_BIN="$T/cfgh" GH_REPO=o/r bash "$here/cache-forget.sh" data-scan-2026-07-24-k0123456789ab- >/dev/null 2>&1 || bad+=" [run]"
+[[ "$(grep -- '-X DELETE' "$T/cf.log" | sed 's#.*/caches/##' | tr '\n' ' ')" == "11 12 13 " ]] || bad+=" [deleted: $(grep -- '-X DELETE' "$T/cf.log" | tr '\n' ' ')]"
+for pf in "" data-scan-2026-07-24- data-scan-2026-07-24-k0123456789ab data-rpc-2026-07-24-k0123456789ab- 'data-scan-2026-07-24-k0123456789ab-*' data-scan-; do
+  : > "$T/cf.log"; rc=0; GH_BIN="$T/cfgh" GH_REPO=o/r bash "$here/cache-forget.sh" "$pf" >/dev/null 2>&1 || rc=$?
+  [[ $rc == 2 && ! -s "$T/cf.log" ]] || bad+=" [prefix '$pf': $rc]"
+done
+: > "$T/cf.log"; rc=0; CF_FAIL=1 GH_BIN="$T/cfgh" GH_REPO=o/r bash "$here/cache-forget.sh" data-scan-2026-07-24-k0123456789ab- >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 ]] && ! grep -q -- '-X DELETE' "$T/cf.log" || bad+=" [list error: $rc]"
+python3 - "$wf/data-scan.yml" <<'PY' || bad+=" [workflow]"
+import sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
+for j, job in jobs.items():
+    if (job.get("permissions") or {}).get("actions") == "write":
+        assert j in ("continue", "forget"), j
+f = jobs["forget"]
+assert f["needs"] == "scan" and f["if"] == "always() && inputs.mode == 'scan' && needs.scan.outputs.forget != ''", f
+assert f["permissions"] == {"contents": "read", "actions": "write"}, f["permissions"]
+st = f["steps"]; assert len(st) == 2 and st[0]["uses"].startswith("actions/checkout@") and st[0]["with"]["persist-credentials"] is False, st
+assert st[1]["run"] == 'research/historical/ci/cache-forget.sh "$PREFIX"' and st[1]["env"]["PREFIX"] == "${{ needs.scan.outputs.forget }}", st
+scan = jobs["scan"]; assert scan["outputs"] == {"forget": "${{ steps.forgetmark.outputs.prefix }}"}, scan.get("outputs")
+steps = scan["steps"]; ids = [x.get("id") or x.get("name") for x in steps]
+m = steps[ids.index("forgetmark")]
+assert "steps.store.outputs.readback == 'true'" in m["if"] and "always()" not in m["if"] and ids.index("store") < ids.index("forgetmark"), m
+assert 'echo "prefix=data-scan-$DAY-k$KID-" >> "$GITHUB_OUTPUT"' in m["run"], m
+PY
+# the guard: the forget job alone may hold actions: write, and only with a checkout and cache-forget.sh
+gdreset; touch "$GD/noguard-$NG"
+for v in extra-step scan-write other-run; do
+  mkfx "$T/fxf"; w="$T/fxf/.github/workflows/data-scan.yml"
+  python3 - "$w" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+if v == "extra-step":
+    s = s.replace('        run: research/historical/ci/cache-forget.sh "$PREFIX"\n', '        run: research/historical/ci/cache-forget.sh "$PREFIX"\n      - run: research/historical/ci/scan-day.sh x\n', 1)
+elif v == "scan-write":
+    s = s.replace("      actions: read # \"Pick the fullest progress cache\"", "      actions: write # \"Pick the fullest progress cache\"", 1)
+else:
+    s = s.replace('        run: research/historical/ci/cache-forget.sh "$PREFIX"\n', '        run: research/historical/ci/cache-forget.sh "$PREFIX" && gh workflow run data-scan.yml\n', 1)
+open(p, "w").write(s)
+PY
+  ACFX=$T/fxf/research/historical/ci ac env AC_STATUS=206
+  [[ ! -e "$A/curl.calls" ]] && grep -qE "held \(1\): the archive chain is not armed: .*(job forget holds actions: write|job scan grants actions: write)" "$A/summary.md" || bad+=" [guard $v]"
+done
+mkfx "$T/fxf"; ACFX=$T/fxf/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" [control: $(tail -c 300 "$A/summary.md")]"
+[[ -z "$bad" ]] && ok "OF-4 ruling 1: cache-forget deletes exactly the stored day's data-scan-DAY-k<kid>-* entries (progress, -qa, -logs; not another day or key id), refuses any other prefix before a call and deletes nothing when the list fails; the forget job alone (with continue) holds actions: write, needs the scan job's prefix, which is set only after the read-back passed; the guard refuses an extra step, another command in it, or actions: write in the scan job; the tree as it is arms" || no "OF-4 forget:$bad"
 bad=""
 
 echo "$pass passed, $fail failed"

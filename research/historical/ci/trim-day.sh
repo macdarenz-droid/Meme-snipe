@@ -10,7 +10,8 @@
 #   1. The day's pinned list: PRIOR_LIST's windows that reach the day + the day's own
 #      migrations read from its K2 units, each from the migration to + 300 min (zeroed-scan
 #      migrations; PM-01 PREREG §3), kept as OUT/list-DAY.txt and copied to the assets (the
-#      next day's prior). --list-only stops here (a day stored at K2).
+#      next day's prior). --list-only stops here (a day stored at K2), after measuring the
+#      day's PM-01 subset into ASSET_DIR/pm01-subset-DAY.txt (OF-4 ruling 2).
 #   2. Per unit: it is trimmed into OUT/units.k3 (zeroed-scan trim); its K2 file hashes are
 #      written to a temp file, appended to OUT/units.log.partial and fsynced; its K2 copy is
 #      renamed to .del and deleted only when that file holds one k2 line per .zst file of it
@@ -83,7 +84,24 @@ fi
 cp "$list" "$assets/list-$day.txt"
 sha=$(sha256sum "$list" | cut -d' ' -f1)
 if [ "$mode" = --list-only ]; then
-  echo "list: $day's pinned list written (sha256 $sha); the day is stored at K2" | tee -a "$summary"
+  # OF-4 ruling 2: the measured PM-01 subset of a K2 day (batches 1 and 2), the per-day
+  # figure of the storage stop until a K3 day is stored. Each K2 unit is trimmed with the
+  # day's list into a scratch copy, its bytes added up and the copy deleted (one unit's
+  # K3 on disk at a time); the K2 units stay as they are. Same time budget as a trim.
+  meas="$out/units.measure"; rm -rf "$meas"; start=$(date +%s) bytes=0
+  for u in "${k2[@]}"; do
+    if [ $(( $(date +%s) - start )) -ge "$ARCHIVE_TRIM_BUDGET_S" ]; then
+      rm -rf "$meas"; echo "measure: time budget ($ARCHIVE_TRIM_BUDGET_S s) spent; the day fails (not resumable)" | tee -a "$summary"; exit 1
+    fi
+    epoch=$(basename "$(dirname "$u")") range=$(basename "$u")
+    mkdir -p "$meas/$epoch"
+    zeroed-scan trim -in "$u" -out "$meas/$epoch/$range" -migration-list "$list" >> "$tlog/trim.log" 2>&1
+    b=$(du -sb "$meas/$epoch/$range" | cut -f1); bytes=$(( bytes + b ))
+    rm -rf "${meas:?}/$epoch/$range"
+  done
+  rm -rf "$meas"
+  echo "$bytes" > "$assets/pm01-subset-$day.txt"
+  echo "list: $day's pinned list written (sha256 $sha); the day is stored at K2; its PM-01 subset measures $bytes bytes" | tee -a "$summary"
   exit 0
 fi
 # 2. Per unit: trim, log the K2 hashes durably, delete the K2 copy.

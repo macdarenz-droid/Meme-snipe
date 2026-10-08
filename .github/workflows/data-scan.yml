@@ -208,6 +208,9 @@ jobs:
     needs: plan
     if: inputs.mode == 'scan'
     runs-on: ubuntu-24.04
+    # OF-4 ruling 1: the stored day's cache prefix, set only after its read-back passed
+    outputs:
+      forget: ${{ steps.forgetmark.outputs.prefix }}
     timeout-minutes: 355
     # OF-3 round 3, ruling 23: the day before's pinned list and its SHA256SUMS, declared once
     # for the whole job so the scan (scan-day.sh) and the trim see the same value. Empty
@@ -695,6 +698,15 @@ jobs:
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" GITHUB_OUTPUT="$GITHUB_OUTPUT"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/work/assets"
+      - name: Mark the stored day for the cache clean-up
+        id: forgetmark
+        if: steps.published.outputs.complete != 'true' && steps.store.outputs.readback == 'true' && inputs.source != 'helius'
+        env:
+          DAY: ${{ matrix.day }}
+          KID: ${{ steps.cachekid.outputs.kid }}
+        run: |
+          [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$KID" =~ ^[0-9a-f]{12}$ ]] || { echo "bad day or key id"; exit 1; }
+          echo "prefix=data-scan-$DAY-k$KID-" >> "$GITHUB_OUTPUT"
       - name: Log the store duration
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
         env:
@@ -798,6 +810,29 @@ jobs:
           next=$((CHAIN + 1))
           gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS" -f expect_units="$EXPECT_UNITS"
           echo "resumable stop ($resume): dispatched chained run $next of at most $MAX_CHAIN" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # OF-4 ruling 1: once a day is stored and every file read back, its sealed progress cache
+  # entries (data-scan-DAY-k<key id>-*) are deleted here, in a job that holds actions: write
+  # and runs nothing but a checkout and cache-forget.sh (archive-guard.sh checks both). A
+  # read-back mismatch sets no prefix, so the entry is kept.
+  forget:
+    needs: scan
+    if: always() && inputs.mode == 'scan' && needs.scan.outputs.forget != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # the checkout
+      actions: write # delete the stored day's progress cache entries
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Delete the stored day's progress cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREFIX: ${{ needs.scan.outputs.forget }}
+        run: research/historical/ci/cache-forget.sh "$PREFIX"
 
   # Back-fill of data-volume-DAY for days already stored (DATA-1c): rebuilt from each
   # day's own units in data-day-DAY (no archive access), cross-checked, then stored, all in
