@@ -276,7 +276,7 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | The code-deploy re-run of every passed gate on its own window | A-M13-06, A-M11-01 | The host's side only, against fake decision events |
 | The `size_not_profitable` and `admission_not_profitable` entry blocks; the M21 replay comparing admission keys on trades and running raise what-ifs | B-M21-02, B-M25-02 | A fake M21 (round 7 ruling 76; round 8 ruling 77) |
 | `registerTrial` and the re-run trial budget (k, a PREREG field); the `whatif` trial kind and the raise budget | A-M13-02 | A fake registry (round 7 ruling 76; round 8 ruling 77) |
-| The private location of owner strategies and the server's fetch path | The owner (pending, round 5 ruling 54) | No owner strategy is merged anywhere public; tests use an agent-origin fixture and a fake commitment |
+| The private location of owner strategies and the server's fetch path | The owner: location answered 8 Oct (`macdarenz-droid/Snipe-solana`); fetch path pending (round 5 ruling 54) | No owner strategy is merged anywhere public; tests use an agent-origin fixture and a fake commitment |
 | `canonicalJson()` | Z01, B-M19-01 (`@bot/types` `canon.ts`, merged #287) | Available |
 | Lint and dependency policy | Z01, B-M30-01 | Available; add the allow-list lint and the pin checks |
 
@@ -763,6 +763,6 @@ Reviewer and red team round 16 at `e57e9394`; rulings 114–115 in the review lo
    - B-M26-04 and A-M13-05: the restart drop with no cooldown for cause, which keeps any existing `cooldown_until`; the `W_LS` restart at `live_small`; the fresh-window state.
    - A-M13-02 step 4: MinBTL on configurations + k; the `whatif`, `recost` and `applycheck` trial kinds and a separate raise budget.
    - B-M21-02: the `admission_not_profitable` entry block and the raise what-if replay.
-7. **Where owner strategies live (owner, pending; round 5 ruling 54).** A private repository (the existing private `zeroed-data` or a new private strategies repository) with a server fetch path, or this whole repository becoming private. Until the owner answers, no owner-strategy work starts at all and nothing about one is pushed here (round 6 ruling 61).
+7. **Where owner strategies live (location answered; fetch path pending; round 5 ruling 54).** The owner answered the location on 8 Oct about 5:03 PM: the private repository `macdarenz-droid/Snipe-solana` (CLAUDE.md "Owner strategies live in Snipe-solana"). The server's fetch path is still the owner's choice; card Z-STRAT proposes one. Until the owner answers it, no owner strategy is fetched by the server and nothing about one is pushed here (round 6 ruling 61).
 8. **k against the MinBTL table (resolved).** Ruling 69's example conflicted with ARCH 3.4 (N = 4 at 30 days, where the table allows N = 2 at Sharpe 2). The supervisor withdrew the example (8 Oct 3:10 PM): ARCH 3.4 wins, k is a PREREG field (k ≥ 0) chosen so that configurations + k fits the table for the planned `W_B`, and AC-50 follows the table.
 9. **Raise budget size (resolved).** Ruled 8 Oct about 3:14 PM: r is a required PREREG field (r ≥ 0); `preRegister` refuses a PREREG without it; the template suggests r = 2; `whatif` trials are listed in the gate report beside the k trials (section 3, "Raises").
