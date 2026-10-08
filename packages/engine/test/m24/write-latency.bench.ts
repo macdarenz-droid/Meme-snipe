@@ -15,7 +15,7 @@ function at(sorted: number[], q: number): number {
 export function measureWriteLatency(path: string, n: number): LatencyResult {
   let tick = 0;
   const db = openDb({ create: true, path, clock: { kind: 'sim', nowMs: () => tick++ } });
-  db.withTx((tx) => tx.run('CREATE TABLE bench (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, c TEXT NOT NULL)'));
+  db.withSchemaTx((tx) => tx.run('CREATE TABLE bench (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, c TEXT NOT NULL)'));
   const samples: number[] = [];
   let id = 0;
   for (let i = 0; i < n; i++) {

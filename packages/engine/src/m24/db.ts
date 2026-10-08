@@ -40,8 +40,14 @@ export interface TxHandle extends ReaderHandle {
 export interface OutboxRow { seq: bigint; topic: string; payloadJson: string; createdAtMs: UnixMs; publishedAtMs: UnixMs | null }
 
 export interface Db {
-  /** Runs `fn` in one write transaction; a throw rolls back and is rethrown. The body must be synchronous. */
+  /** Runs `fn` in one write transaction; a throw rolls back and is rethrown. The body must be synchronous. No DDL. */
   withTx<T>(fn: (tx: TxHandle) => T): T;
+  /**
+   * `withTx` for the migration runner (migrate.ts) and test fixtures: schema statements are allowed (ruling 22). A
+   * statement naming `retention_clock` runs only when its exact text is in `trusted`, the migrations' own statements
+   * (ruling 24), so not even a schema transaction can add a trigger that writes it.
+   */
+  withSchemaTx<T>(fn: (tx: TxHandle) => T, trusted?: ReadonlySet<string>): T;
   /** A read-only connection for API queries (round robin over the reader pool). */
   reader(): ReaderHandle;
   outbox: {
@@ -114,6 +120,7 @@ CREATE INDEX outbox_published_at ON outbox(published_at) WHERE published_at IS N
 
 export const OUTBOX_RETENTION_MS = 7 * 86_400_000;
 const DRAIN_BATCH = 500;
+const NONE: ReadonlySet<string> = new Set();
 const STATEMENT_CACHE = 512;
 const BUSY_TIMEOUT_MS = 5_000;
 
@@ -158,31 +165,49 @@ function toOutboxRow(r: Row): OutboxRow {
 }
 
 const TX_KEYWORD = /(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b/iy;
+/** Schema changes and the statements that can reach the schema by other doors (writable_schema, another file). */
+const DDL_KEYWORD = /(?:CREATE|DROP|ALTER|PRAGMA|ATTACH|DETACH|VACUUM|REINDEX)\b/iy;
 
 /**
- * Transaction control belongs to `withTx` alone: a module cannot commit or roll back half of a transaction. Before the
- * first keyword SQLite skips whitespace, empty statements (`;`), `-- line` and `/* block *\/` comments, and so does this
- * scan, in one pass over the text (no backtracking, red team n1). A comment left open runs to the end: no statement.
+ * Where the first keyword of `sql` starts, or -1 when there is no statement. Before it SQLite skips whitespace, empty
+ * statements (`;`), `-- line` and `/* block *\/` comments, and so does this scan, in one pass over the text (no
+ * backtracking, red team n1). A comment left open runs to the end: no statement.
  */
-export function isTxControl(sql: string): boolean {
+function statementStart(sql: string): number {
   let i = 0;
   while (i < sql.length) {
     if (sql[i] === ';' || /\s/.test(sql[i] as string)) {
       i += 1;
     } else if (sql.startsWith('--', i)) {
       const end = sql.indexOf('\n', i + 2);
-      if (end === -1) return false;
+      if (end === -1) return -1;
       i = end + 1;
     } else if (sql.startsWith('/*', i)) {
       const end = sql.indexOf('*/', i + 2);
-      if (end === -1) return false;
+      if (end === -1) return -1;
       i = end + 2;
     } else {
       break;
     }
   }
-  TX_KEYWORD.lastIndex = i;
-  return TX_KEYWORD.test(sql);
+  return i;
+}
+
+const startsWith = (re: RegExp, sql: string): boolean => {
+  const i = statementStart(sql);
+  if (i < 0) return false;
+  re.lastIndex = i;
+  return re.test(sql);
+};
+
+/** Transaction control belongs to `withTx` alone: a module cannot commit or roll back half of a transaction. */
+export function isTxControl(sql: string): boolean {
+  return startsWith(TX_KEYWORD, sql);
+}
+
+/** Schema statements belong to the migration runner alone (`withSchemaTx`; Z02 round 4 ruling 22). */
+export function isDdl(sql: string): boolean {
+  return startsWith(DDL_KEYWORD, sql);
 }
 
 /** Restricts the database file and its WAL and shared-memory files to the owner (ARCH B-M24-01 security notes). */
@@ -296,13 +321,15 @@ export function openDb(opts: DbOptions): Db {
   const stillOpen = (): void => {
     if (!writer.isTransaction) throw new Error('m24: the transaction ended inside withTx; nothing more runs in it');
   };
-  const handleFor = (active: () => boolean): TxHandle => {
+  const handleFor = (active: () => boolean, schema: boolean, trusted: ReadonlySet<string>): TxHandle => {
     const guard = (sql: string): void => {
       if (!active()) throw new Error('m24: transaction handle used outside its withTx');
       if (isTxControl(sql)) throw new Error('m24: transaction control is withTx\'s alone');
-      // Only the schema (CREATE, from the migrations) and the retention job name it (ruling 14); a young row also needs
-      // SQLite's wall clock to agree, so even a statement that got past this check cannot delete it.
-      if (/retention_clock/i.test(sql) && !/^\s*CREATE\s/i.test(sql)) throw new Error('m24: retention_clock is the retention job\'s alone (retention.ts, withRetentionClock)');
+      // Ruling 22: a trigger, table or view is changed only by the migration runner (withSchemaTx), so no module can
+      // drop the append-only triggers. Rulings 14 and 24: only the retention job (withRetentionClock) writes
+      // retention_clock, and only the migrations' own text may name it in a schema transaction.
+      if (!schema && isDdl(sql)) throw new Error('m24: schema statements (CREATE, DROP, ALTER, PRAGMA, ATTACH) are the migration runner\'s alone (withSchemaTx)');
+      if (/retention_clock/i.test(sql) && !trusted.has(sql)) throw new Error('m24: retention_clock is the retention job\'s alone (retention.ts, withRetentionClock)');
       stillOpen();
     };
     return {
@@ -330,37 +357,45 @@ export function openDb(opts: DbOptions): Db {
   let currentTx: TxHandle | null = null;
   let appended = 0;
 
+  const runTx = <T>(fn: (tx: TxHandle) => T, schema: boolean, trusted: ReadonlySet<string> = NONE): T => {
+    if (inTx) throw new Error('m24: withTx cannot be nested');
+    const started = opts.clock.nowMs();
+    let open = true;
+    const tx = handleFor(() => open, schema, trusted);
+    const end = (): void => {
+      open = false;
+      inTx = false;
+      currentTx = null;
+      opts.metrics?.writeLatencyMs.observe(opts.clock.nowMs() - started);
+    };
+    writer.exec('BEGIN IMMEDIATE');
+    inTx = true;
+    currentTx = tx;
+    appended = 0;
+    let result: T;
+    try {
+      result = fn(tx);
+      if (isThenable(result)) throw new TypeError('m24: a withTx callback must be synchronous (ARCH 7.1); it returned a promise');
+      stillOpen();
+      writer.exec('COMMIT');
+    } catch (e) {
+      if (writer.isTransaction) writer.exec('ROLLBACK');   // SQLite may already have rolled back (RAISE(ROLLBACK), SQLITE_FULL)
+      end();
+      throw e;
+    }
+    end();
+    backlog += appended;
+    opts.metrics?.outboxBacklog.set(backlog);
+    return result;
+  };
+
   const db: Db = {
     withTx<T>(fn: (tx: TxHandle) => T): T {
-      if (inTx) throw new Error('m24: withTx cannot be nested');
-      const started = opts.clock.nowMs();
-      let open = true;
-      const tx = handleFor(() => open);
-      const end = (): void => {
-        open = false;
-        inTx = false;
-        currentTx = null;
-        opts.metrics?.writeLatencyMs.observe(opts.clock.nowMs() - started);
-      };
-      writer.exec('BEGIN IMMEDIATE');
-      inTx = true;
-      currentTx = tx;
-      appended = 0;
-      let result: T;
-      try {
-        result = fn(tx);
-        if (isThenable(result)) throw new TypeError('m24: a withTx callback must be synchronous (ARCH 7.1); it returned a promise');
-        stillOpen();
-        writer.exec('COMMIT');
-      } catch (e) {
-        if (writer.isTransaction) writer.exec('ROLLBACK');   // SQLite may already have rolled back (RAISE(ROLLBACK), SQLITE_FULL)
-        end();
-        throw e;
-      }
-      end();
-      backlog += appended;
-      opts.metrics?.outboxBacklog.set(backlog);
-      return result;
+      return runTx(fn, false);
+    },
+
+    withSchemaTx<T>(fn: (tx: TxHandle) => T, trusted: ReadonlySet<string> = NONE): T {
+      return runTx(fn, true, trusted);
     },
 
     withRetentionClock<T>(nowMs: number, fn: (tx: TxHandle) => T): T {

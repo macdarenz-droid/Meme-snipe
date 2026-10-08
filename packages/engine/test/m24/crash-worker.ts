@@ -11,7 +11,7 @@ let tick = 0;
 const db = openDb({ create: true, path: dbPath, clock: { kind: 'sim', nowMs: () => tick++ } });
 const exists = db.withTx((tx) => tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name = 'state'")) !== undefined;
 if (!exists) {
-  db.withTx((tx) => {
+  db.withSchemaTx((tx) => {
     for (const stmt of `${OUTBOX_DDL}\nCREATE TABLE state (id INTEGER PRIMARY KEY, v TEXT NOT NULL);`.split(';').map((s) => s.trim()).filter(Boolean)) tx.run(stmt);
   });
 }
