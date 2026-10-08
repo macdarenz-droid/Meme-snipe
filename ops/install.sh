@@ -1761,10 +1761,13 @@ case "${1:-}" in
     mountpoint -q "$MNT" && exit 0
     install -d -m 0700 -o root -g root "$IMG_DIR"
     if [ ! -s "$IMG" ]; then
-      # Ruling 26: the whole 64 MiB is allocated now (fallocate, and mkfs without discard, which would free it again),
-      # so the image always takes exactly its budgeted space and can never fail later for lack of disk.
+      # Ruling 26: the whole 64 MiB is allocated now and stays so: fallocate; mkfs without discard (which frees it
+      # again); and the inode tables and journal written by mkfs itself, because the kernel's background init after the
+      # first mount zeroes them through the loop device, which punches holes in this file (measured: 131,080 -> 114,768
+      # 512-byte blocks within 20 s of mounting). So the image always takes its budgeted space and never fails later
+      # for lack of disk.
       fallocate -l "$SIZE" "$IMG.new"
-      mkfs.ext4 -q -F -E nodiscard -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"
+      mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"
       chmod 0600 "$IMG.new"
       mv -f "$IMG.new" "$IMG"
     fi

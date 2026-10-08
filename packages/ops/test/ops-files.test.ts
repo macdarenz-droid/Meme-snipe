@@ -688,7 +688,9 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     expect(script).toContain('fallocate -l "$SIZE" "$IMG.new"');
     expect(script).not.toContain('truncate');
     // nodiscard: mkfs would otherwise free the preallocated blocks again (measured: 131,072 -> 8,960 512-byte blocks).
-    expect(script).toContain('mkfs.ext4 -q -F -E nodiscard -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"');
+    // lazy_*_init=0: the kernel's background init after mounting would punch holes through the loop device (measured:
+    // 131,080 -> 114,768 within 20 s; the ops e2e caught it).
+    expect(script).toContain('mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"');
     expect(script).toContain('mount -o loop,nodev,nosuid,noexec "$IMG" "$MNT"');
     expect(script).toMatch(/^IMG_DIR=\/var\/lib\/zeroed-receipts$/m);
     // mkfs.ext4 and e2fsck come from e2fsprogs, installed like every other tool the host scripts use.
