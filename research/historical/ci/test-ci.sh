@@ -282,13 +282,16 @@ case "$1 $2" in
       repos/o/r/actions/workflows/*/runs*)
         [[ -n "${GD_RUNS_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
         wf=${path#repos/o/r/actions/workflows/}; wf=${wf%%/*}; q=${path#*runs?}
-        cr=; st=; [[ "$q" == created=* ]] && { cr=${q#created=>=}; cr=${cr%%&*}; }; [[ "$q" == status=* ]] && { st=${q#status=}; st=${st%%&*}; }
+        cr=; ce=; st=; [[ "$q" == created=* ]] && { cr=${q#created=}; cr=${cr%%&*}; cr=${cr#>=}; [[ "$cr" == *..* ]] && { ce=${cr#*..}; cr=${cr%%..*}; }; }
+        [[ "$q" == status=* ]] && { st=${q#status=}; st=${st%%&*}; }
         if [[ "$wf" == archive-check.yml ]]; then f="$GD/ac.json"; else f="$GD/ds.json"; fi
         if [[ -f "$f" ]]; then all=$(cat "$f"); elif [[ "$wf" == archive-check.yml ]]; then
           all="[{\"databaseId\": 900, \"status\": \"in_progress\", \"conclusion\": null, \"createdAt\": \"$(date -u +%FT%TZ)\", \"updatedAt\": \"$(date -u +%FT%TZ)\", \"attempt\": 1, \"headBranch\": \"main\", \"displayTitle\": \"archive-check\"}]"
         else all='[]'; fi
-        out "$(jq --arg cr "$cr" --arg st "$st" '{workflow_runs: [.[] | select(($cr == "" or .createdAt >= $cr) and ($st == "" or .status == $st))
-          | {id: .databaseId, status, conclusion, created_at: .createdAt, updated_at: .updatedAt, run_attempt: .attempt, head_branch: .headBranch, head_sha: .headSha, display_title: .displayTitle}]}' <<< "$all")" ;;
+        # like GitHub: total_count is the whole match, but a search returns at most 1,000 rows (ruling 55)
+        out "$(jq --arg cr "$cr" --arg ce "$ce" --arg st "$st" '[.[] | select(($cr == "" or .createdAt >= $cr) and ($ce == "" or .createdAt <= $ce) and ($st == "" or .status == $st))
+          | {id: .databaseId, status, conclusion, created_at: .createdAt, updated_at: .updatedAt, run_attempt: .attempt, head_branch: .headBranch, head_sha: .headSha, display_title: .displayTitle}]
+          | {total_count: length, workflow_runs: .[:1000]}' <<< "$all")" ;;
       repos/o/r/actions/runs/*/artifacts) out '{"artifacts": [{"name": "resume-2026-07-22"}]}' ;;
       repos/o/r/actions/runs/*/attempts/*/jobs*)
         x=${path#repos/o/r/actions/runs/}; id=${x%%/*}; k=${x#*/attempts/}; k=${k%%/*}
@@ -909,7 +912,7 @@ for set in "$H" "queued|data-scan scan source=helius" "$H;queued|data-scan scan 
   IFS=';' read -ra a <<< "$set"
   acruns "${a[@]}" "completed|data-scan scan source=archive"; ac env AC_STATUS=206
   [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$GD/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "served; dispatched data-scan for" "$A/summary.md" || bad+=" [$set]"
-  grep -q 'gh api --paginate repos/o/r/actions/workflows/data-scan.yml/runs?created=>=[0-9TZ:-]*&per_page=100 --jq .workflow_runs' "$GD/gh.log" || bad+=" [list-call]"
+  grep -q 'gh api --paginate repos/o/r/actions/workflows/data-scan.yml/runs?created=[0-9TZ:-]*\.\.[0-9TZ:-]*&per_page=100 --jq' "$GD/gh.log" || bad+=" [list-call]"
 done
 acruns "$H"; ac env AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$GD/dispatch.log" ]] && grep -q "not served" "$A/summary.md" || bad+=" [429]"
@@ -2253,12 +2256,12 @@ PY
 }
 mkfx "$T/fx43" ARCHIVE_REARM_AT="$(iso $(( now - 3 * 86400 )))"
 rN 40 500; FXG=$T/fx43/research/historical/ci guard full 2026-07-22 || bad+=" outside-window:$(tail -1 "$T/gout.txt")"
-grep -q "workflows/data-scan.yml/runs?created=>=$(date -u -d "@$(( now - 35 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-35d"
+grep -q "workflows/data-scan.yml/runs?created=$(date -u -d "@$(( now - 35 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-35d"
 for st in queued in_progress waiting requested pending; do grep -q "runs?status=$st&per_page=100" "$GD/gh.log" || bad+=" status-$st"; done
 grep -q "^run history: gh version" "$T/gout.txt" || bad+=" version-logged"
 mkfx "$T/fx49" ARCHIVE_REARM_AT="$(iso $(( now - 70 * 86400 )))"
 rN 20 600; FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || bad+=" 600-after-70d:$(tail -1 "$T/gout.txt")"
-grep -q "runs?created=>=$(date -u -d "@$(( now - 70 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-from-rearm"
+grep -q "runs?created=$(date -u -d "@$(( now - 70 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-from-rearm"
 rN 20 5001; rc=0; FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" over-5000:$rc"
 rN 20 10; rc=0; GD_RUNS_FAIL=1 FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" api-error:$rc"
 [[ -z "$bad" ]] && ok "OF-2 r6/r7 rulings 43, 49: runs are read page by page from the runs API, created since the earlier of 35 days ago and ARCHIVE_REARM_AT, plus every queued, in-progress, waiting, requested or pending run; 500 runs outside the window and 600 runs 70 days after a re-arm pass; more than 5,000 or an API error fail closed; the gh version is logged" || no "OF-2 r6 run window:$bad"
@@ -2287,7 +2290,7 @@ assert ids.index("cachekid") < ids.index("pickprogress") < ids.index("restore") 
 assert ids.index("shrink") < ids.index("seal") < ids.index("save") and ids.index("sealqa") == ids.index("Save progress after QA") - 1, ids
 for s in steps:
     if "actions/cache" in s.get("uses", "") and "data-scan-backoff" not in str(s) and "archive-backoff" not in str(s) and "data-rpc-assets" not in str(s):
-        assert s["with"]["path"] == "${{ runner.temp }}/work/sealed" and "-k${{ steps.cachekid.outputs.kid }}-" in s["with"]["key"] or "pickprogress" in s["with"]["key"], s
+        assert s["with"]["path"] == "${{ runner.temp }}/work/sealed" + ("-logs" if str(s["with"]["key"]).endswith("-logs") else "") and "-k${{ steps.cachekid.outputs.kid }}-" in s["with"]["key"] or "pickprogress" in s["with"]["key"], s
 # the token reaches only clean guard, crypt and store steps, never scan, trim or QA
 for s in steps:
     if "DATA_STORE_TOKEN" in str(s.get("env", "")):
@@ -2430,6 +2433,87 @@ for v in other-var qlog-elsewhere via-var via-lookup; do
 done
 [[ -z "$bad" ]] && ok "OF-2 r7 ruling 53: arming refuses a scanner redirect to any directory but \$qlog, \$slog or \$tlog, a log directory assigned outside \$out or \$RUNNER_TEMP, and a scanner binary held in a variable or looked up with command -v" || no "OF-2 r7 redirect targets:$bad"
 bad=""; gdreset
+
+# ---- OF-2 round 8 (docs/reviews/OF2.md rulings 55-61; OF-3 rulings 26, 27) ----
+gdreset; bad=""; now=$(date -u +%s); touch "$GD/noguard-$NG"
+# 55, 61. A search returns at most 1,000 rows: 1,001 runs in one slice (or one status) fail closed; 1,200 across slices are all read.
+rM() { python3 - "$GD/ds.json" "$now" "$1" "$2" "$3" <<'PY'
+import json, sys, datetime
+out, now, n, days, st = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), [int(d) for d in sys.argv[4].split(",")], sys.argv[5]
+iso = lambda t: datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+runs = [{"databaseId": 3000 + i, "status": st, "conclusion": "success" if st == "completed" else None, "createdAt": iso(now - days[i % len(days)] * 86400), "updatedAt": iso(now - days[i % len(days)] * 86400),
+         "attempt": 1, "headBranch": "main", "headSha": "a" * 40, "displayTitle": "data-scan volume"} for i in range(n)]
+# the oldest run is an unguarded scan from another branch: seen only if every row is read
+runs.append({"databaseId": 2999, "status": "completed", "conclusion": "success", "createdAt": iso(now - max(days) * 86400 - 60), "updatedAt": iso(now - max(days) * 86400 - 60),
+             "attempt": 1, "headBranch": "old", "headSha": "b" * 40, "displayTitle": "data-scan"})
+json.dump(runs, open(out, "w"))
+PY
+}
+mkfx "$T/fx55" ARCHIVE_REARM_AT="$(iso $(( now - 30 * 86400 )))"
+rM 1200 2,10 completed; rc=0; FXG=$T/fx55/research/historical/ci guard full 2026-07-22 || rc=$?
+[[ $rc == 2 ]] && grep -q "may have read the archive unguarded" "$T/gout.txt" || bad+=" sliced-1200:$rc:$(tail -1 "$T/gout.txt")"
+rM 1001 2 completed; rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" slice-1001:$rc"
+rM 998 2 completed; guard full 2026-07-22 2>/dev/null; grep -q "may have read the archive unguarded" "$T/gout.txt" || bad+=" slice-999"
+rM 1001 2 queued; rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" status-1001:$rc"
+[[ -z "$bad" ]] && ok "OF-2 r8 rulings 55, 61: the window is read in created slices; 1,200 runs across two slices are all read (the oldest, an unguarded scan, stops the chain); a slice or a status query of 1,001 runs (GitHub returns 1,000) fails closed" || no "OF-2 r8 search cap:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 56. Only the default branch's cache entries count.
+echo '{"actions_caches": [{"key": "data-scan-2026-07-22-1-1", "ref": "refs/pull/7/merge"}]}' > "$GD/caches.json"
+KEEPCACHE=1 ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" pr-ref:$(cat "$A/summary.md")"
+echo '{"actions_caches": [{"key": "data-scan-2026-07-22-1-1", "ref": "refs/heads/main"}]}' > "$GD/caches.json"
+KEEPCACHE=1 ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "hold progress or assets unsealed" "$A/summary.md" || bad+=" default-ref"
+grep -q "actions/caches?key=data-&ref=refs/heads/main&" "$GD/gh.log" || bad+=" ref-query"
+[[ -z "$bad" ]] && ok "OF-2 r8 ruling 56: an unsealed entry on a PR ref does not halt arming; the same key on the default branch does; the list asks for the default branch's ref" || no "OF-2 r8 cache ref:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 57 (with OF-3 26). One case per form.
+f57() { mkfx "$T/fx57"; c="$T/fx57/research/historical/ci"; printf '%s\n' "$1" >> "$c/scan-day.sh"
+  ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "scan-day.sh line [0-9]* prints scanner or QA output to the job log: $2" "$A/summary.md" || bad+=" [$1]"; }
+f57 'ln -sf /dev/stdout "$slog/run.log"' "log directory linked or read out"
+f57 'cat "$slog/run.log"' "log directory linked or read out"
+f57 'tee -a "$slog/run.log" < x' "log directory linked or read out"
+f57 'head -50 "$slog/run.log"' "log directory linked or read out"
+f57 'tail "$slog/run.log"' "log directory linked or read out"
+f57 'printf -v slog %s /dev' "log directory written other than by a plain assignment"
+f57 ': "${slog:=/dev}"' "log directory written other than by a plain assignment"
+f57 'for slog in /dev; do :; done' "log directory written other than by a plain assignment"
+f57 'read -r slog < x' "log directory written other than by a plain assignment"
+f57 'declare slog=/dev' "log directory"
+mkfx "$T/fx57"; python3 - "$T/fx57/.github/workflows/data-scan.yml" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read(); i = s.index("\n  assemble:"); j = s.index("    steps:\n", i) + len("    steps:\n")
+open(p, "w").write(s[:j] + "      - run: echo x\n        env:\n          ZS: zeroed-scan\n" + s[j:])
+PY
+ACFX=$T/fx57/research/historical/ci ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "env ZS names a scanner binary" "$A/summary.md" || bad+=" [workflow-env]"
+[[ -z "$bad" ]] && ok "OF-2 r8 ruling 57 (OF-3 26): arming refuses ln, cat, tee, head and tail on the log directories, printf -v, :=, for, read and declare writes to them, and a scanner binary named in a workflow env" || no "OF-2 r8 log directory writes:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 59. Archive workflows run on a pinned image.
+python3 - "$here/../../../.github/workflows/data-scan.yml" "$here/../../../.github/workflows/archive-check.yml" <<'PY' || bad+=" pinned"
+import sys, yaml
+for f in sys.argv[1:]:
+    for j, job in yaml.safe_load(open(f))["jobs"].items():
+        assert job["runs-on"] == "ubuntu-24.04", (f, j, job["runs-on"])
+PY
+mkfx "$T/fx59"; sed -i '0,/runs-on: ubuntu-24.04/s//runs-on: ubuntu-latest/' "$T/fx59/.github/workflows/data-scan.yml"
+ACFX=$T/fx59/research/historical/ci ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "runs on ubuntu-latest, not a pinned ubuntu-NN.NN image" "$A/summary.md" || bad+=" arm-latest"
+[[ -z "$bad" ]] && ok "OF-2 r8 ruling 59: every job of data-scan.yml and archive-check.yml runs on ubuntu-24.04, and arming refuses an archive workflow on ubuntu-latest" || no "OF-2 r8 runner image:$bad"
+bad=""; gdreset
+# OF-3 27. When the full save is skipped or fails, the logs alone are sealed and saved.
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' || bad+=" workflow"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+ids = [s.get("id") or s.get("name") for s in steps]
+sl, sv = steps[ids.index("seallogs")], steps[ids.index("Save the logs alone")]
+assert "steps.save.outcome != 'success'" in sl["if"] and sl["if"].startswith("always()") and 'cache-crypt.sh" seal "$RUNNER_TEMP/work/data/logs" "$RUNNER_TEMP/work/sealed-logs" "$PREFIX"' in sl["run"], sl
+assert sv["with"]["path"] == "${{ runner.temp }}/work/sealed-logs" and sv["with"]["key"].endswith("-logs") and "-k${{ steps.cachekid.outputs.kid }}-" in sv["with"]["key"] and "steps.seallogs.outcome == 'success'" in sv["if"], sv
+assert ids.index("seallogs") > ids.index("save"), ids
+PY
+lg="$T/lg"; rm -rf "$lg"; mkdir -p "$lg/data/logs" "$lg/data/units/1/2"; echo "run reason curve=5" > "$lg/data/logs/run.log"; echo unit > "$lg/data/units/1/2/a.zst"
+DATA_STORE_TOKEN=tlg bash "$here/cache-crypt.sh" seal "$lg/data/logs" "$lg/sealed-logs" data-scan-2026-07-22- >/dev/null 2>&1 && ! grep -rq "curve=5" "$lg/sealed-logs" &&
+  DATA_STORE_TOKEN=tlg bash "$here/cache-crypt.sh" open "$lg/sealed-logs" "$lg/o" data-scan-2026-07-22- >/dev/null 2>&1 && grep -q "curve=5" "$lg/o/run.log" && [[ ! -e "$lg/o/units" ]] || bad+=" logs-only"
+printf '{"actions_caches": [{"key": "data-scan-2026-07-22-k0123456789ab-5-1-logs", "size_in_bytes": 9, "created_at": "2026-10-05T03:00:00Z", "ref": "refs/heads/ccr-x"}, {"key": "data-scan-2026-07-22-k0123456789ab-4-1", "size_in_bytes": 5, "created_at": "2026-10-05T01:00:00Z", "ref": "refs/heads/ccr-x"}]}' > "$PP/caches.json"
+pp data-scan-2026-07-22- >/dev/null && grep -qx "key=data-scan-2026-07-22-k0123456789ab-4-1" "$PP/out" || bad+=" pick-ignores-logs"
+[[ -z "$bad" ]] && ok "OF-3 r8 ruling 27: when the full save is skipped or fails, the logs alone are sealed (no units, no plaintext) and saved as PREFIXk<id>-RUN-ATTEMPT-logs from work/sealed-logs; progress-pick never resumes from a -logs entry" || no "OF-3 r8 logs-only save:$bad"
+bad=""
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

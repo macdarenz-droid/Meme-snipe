@@ -123,7 +123,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -201,7 +201,7 @@ jobs:
   scan:
     needs: plan
     if: inputs.mode == 'scan'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 355
     permissions:
       contents: write # used only by the "Publish this day" step
@@ -525,6 +525,29 @@ jobs:
       - name: Remove the sealed copy after QA
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
         run: rm -rf "$RUNNER_TEMP/work/sealed"
+      # OF-3 ruling 27: when the full progress save was skipped or failed, the day's reasons
+      # (logs/: scanner, unitlog, trim, QA output) are still kept, sealed alone as a small
+      # entry (PREFIXk<key id>-RUN-ATTEMPT-logs), which progress-pick never resumes from.
+      - name: Seal the logs alone
+        id: seallogs
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome != 'success'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data/logs" "$RUNNER_TEMP/work/sealed-logs" "$PREFIX"
+      - name: Save the logs alone
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome != 'success' && steps.seallogs.outcome == 'success'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/work/sealed-logs
+          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-k${{ steps.cachekid.outputs.kid }}-${{ github.run_id }}-${{ github.run_attempt }}-logs
       # Chained only when this run's progress was saved; a failed save stops for review.
       - name: Mark the day resumable for the next chained run
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
@@ -671,7 +694,7 @@ jobs:
   continue:
     needs: [plan, scan]
     if: always() && inputs.mode == 'scan' && needs.scan.result == 'failure'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read # the checkout (archive-guard.sh restarts)
@@ -731,7 +754,7 @@ jobs:
   volume:
     needs: plan
     if: inputs.mode == 'volume'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: write # read data-day-DAY and create data-volume-DAY, in the two token steps only
@@ -789,7 +812,7 @@ jobs:
   assemble:
     needs: plan
     if: inputs.mode == 'assemble'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     permissions:
       contents: write
