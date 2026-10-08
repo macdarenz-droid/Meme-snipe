@@ -133,8 +133,8 @@ ag_private_storage() {
     # Round 4, ruling 23: finalize and the QA tools write their output to the dataset
     # directory ("$qlog/NAME.log"), never to a public log or step summary.
     bad=$(sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$f" |
-      grep -nE '^[[:space:]]*(phase[[:space:]]+[a-z]+[[:space:]]+)?(node[[:space:]].*qa/(check\.mjs|parity\.ts|volume\.ts)|zeroed-scan[[:space:]]+finalize([[:space:]]|$))' |
-      grep -vE '> "\$qlog/[a-z-]+\.log" 2>&1([[:space:]]|$)' || true)
+      grep -nE '(^|[[:space:]])(node[[:space:]].*qa/(check\.mjs|parity\.ts|volume\.ts)|zeroed-scan[[:space:]]+finalize([[:space:]]|$))' |
+      grep -vE '^[0-9]+:[[:space:]]*#' | grep -vE '> "\$qlog/[a-z-]+\.log" 2>&1([[:space:]]|$)' || true)
     [[ -z "$bad" ]] ||
       { ag_refuse "the archive chain is not armed: $(basename "$f") line $(head -1 <<< "$bad" | cut -d: -f1) prints finalize or QA output to the job log, not to \$qlog in the dataset directory"; return 2; }
   done

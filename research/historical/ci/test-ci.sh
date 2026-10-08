@@ -2015,9 +2015,10 @@ rc=0; cd23 || rc=$?
 rc=0; QA_FAIL_ON=check.mjs cd23 || rc=$?
 l=$(ls "$T"/cd-ds/*-log/qa.log 2>/dev/null | head -1)
 [[ $rc != 0 ]] && ! grep -q "QA-REPORT" "$T/out.txt" "$T/summary.md" && grep -q "^phase qa (2026-07-22): failed (exit 1)" "$T/summary.md" && [[ -n "$l" ]] && grep -q "QA-REPORT blocks=123" "$l" && grep -q "QA-REPORT stderr" "$l" || bad+=" fail:$rc"
-for v in plain phase-no-redirect; do
+for v in plain phase-no-redirect wrapper; do
   mkfx "$T/fxq"; c="$T/fxq/research/historical/ci"
-  case $v in plain) echo 'node "$here/../qa/parity.ts" "$ds"' >> "$c/check-day.sh" ;; phase-no-redirect) sed -i 's| > "\$qlog/qa.log" 2>&1||' "$c/check-day.sh" ;; esac
+  case $v in plain) echo 'node "$here/../qa/parity.ts" "$ds"' >> "$c/check-day.sh" ;; phase-no-redirect) sed -i 's| > "\$qlog/qa.log" 2>&1||' "$c/check-day.sh" ;;
+    wrapper) echo 'run zeroed-scan finalize -out "$out" -dataset "$ds"' >> "$c/volume-day.sh" ;; esac
   ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "prints finalize or QA output to the job log" "$A/summary.md" || bad+=" arm-$v"
 done
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' || bad+=" workflow-prints"
@@ -2027,7 +2028,7 @@ for job in yaml.safe_load(open(sys.argv[1]))["jobs"].values():
         r = st.get("run", "")
         assert not re.search(r"report\.(md|json)|parity\.json|qa-log|-log/|qa/check\.mjs|parity\.ts", r), st
 PY
-[[ -z "$bad" ]] && ok "OF-2 r4 ruling 23: check-day's finalize and QA output (stdout and stderr) goes to the log directory next to the dataset, and the job log and summary carry only pass or fail and durations; arming refuses a QA call that prints to the job log; no data-scan step prints a QA report" || no "OF-2 r4 QA output:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 23: check-day's finalize and QA output (stdout and stderr) goes to the log directory next to the dataset, and the job log and summary carry only pass or fail and durations; arming refuses a QA call that prints to the job log (bare, through phase, or behind any wrapper); no data-scan step prints a QA report" || no "OF-2 r4 QA output:$bad"
 bad=""; gdreset; touch "$GD/noguard-$NG"
 # 24. Another branch: only a run whose scan job started, or a commit without the guard, is foreign.
 BRANCH=old dsrun 701 "data-scan scan source=archive" failure 120 110 | dsjson
