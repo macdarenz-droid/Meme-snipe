@@ -1,0 +1,26 @@
+{
+ "checks": {
+  "coins_with_600h": [
+   20,
+   true
+  ],
+  "median_event_funding": [
+   6.74319e-05,
+   true
+  ],
+  "oi_mechanism": [
+   {
+    "control_share": 0.032,
+    "event_share": 0.096,
+    "events_used": 375,
+    "lb95_boot": 0.03631556195965418,
+    "lb95_t": 0.035495137640235826,
+    "mean_diff": 0.064
+   },
+   true
+  ]
+ },
+ "events_dropped_oi": 1,
+ "n_events": 376,
+ "verdict": "PASS"
+}

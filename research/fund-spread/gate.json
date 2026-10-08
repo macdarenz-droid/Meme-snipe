@@ -1,0 +1,195 @@
+{
+ "checks": {
+  "coins": [
+   20,
+   true
+  ],
+  "signal_coin_days_after_cap": [
+   27,
+   false
+  ],
+  "step0": [
+   47,
+   true
+  ],
+  "tail_share": [
+   0.02957572003716321,
+   false
+  ]
+ },
+ "coins": {
+  "AI16Z": {
+   "first_day": 20092,
+   "last_day": 20398,
+   "overlap_days": 307,
+   "signal_entries": 1,
+   "tail_windows": 12,
+   "windows": 307
+  },
+  "BOME": {
+   "first_day": 19799,
+   "last_day": 20717,
+   "overlap_days": 919,
+   "signal_entries": 0,
+   "tail_windows": 19,
+   "windows": 917
+  },
+  "CHILLGUY": {
+   "first_day": 20056,
+   "last_day": 20598,
+   "overlap_days": 543,
+   "signal_entries": 0,
+   "tail_windows": 15,
+   "windows": 543
+  },
+  "DOOD": {
+   "first_day": 20219,
+   "last_day": 20629,
+   "overlap_days": 411,
+   "signal_entries": 1,
+   "tail_windows": 14,
+   "windows": 411
+  },
+  "FARTCOIN": {
+   "first_day": 20079,
+   "last_day": 20717,
+   "overlap_days": 639,
+   "signal_entries": 2,
+   "tail_windows": 26,
+   "windows": 638
+  },
+  "GOAT": {
+   "first_day": 20022,
+   "last_day": 20717,
+   "overlap_days": 696,
+   "signal_entries": 0,
+   "tail_windows": 17,
+   "windows": 695
+  },
+  "GRIFFAIN": {
+   "first_day": 20097,
+   "last_day": 20717,
+   "overlap_days": 621,
+   "signal_entries": 1,
+   "tail_windows": 24,
+   "windows": 625
+  },
+  "MELANIA": {
+   "first_day": 20110,
+   "last_day": 20717,
+   "overlap_days": 608,
+   "signal_entries": 2,
+   "tail_windows": 13,
+   "windows": 607
+  },
+  "MEW": {
+   "first_day": 19929,
+   "last_day": 20578,
+   "overlap_days": 650,
+   "signal_entries": 0,
+   "tail_windows": 7,
+   "windows": 686
+  },
+  "MOODENG": {
+   "first_day": 20023,
+   "last_day": 20717,
+   "overlap_days": 695,
+   "signal_entries": 0,
+   "tail_windows": 35,
+   "windows": 694
+  },
+  "MYRO": {
+   "first_day": 19789,
+   "last_day": 20176,
+   "overlap_days": 388,
+   "signal_entries": 0,
+   "tail_windows": 6,
+   "windows": 388
+  },
+  "PENGU": {
+   "first_day": 20076,
+   "last_day": 20717,
+   "overlap_days": 642,
+   "signal_entries": 0,
+   "tail_windows": 18,
+   "windows": 641
+  },
+  "PNUT": {
+   "first_day": 20043,
+   "last_day": 20717,
+   "overlap_days": 675,
+   "signal_entries": 0,
+   "tail_windows": 18,
+   "windows": 677
+  },
+  "POPCAT": {
+   "first_day": 19959,
+   "last_day": 20717,
+   "overlap_days": 759,
+   "signal_entries": 0,
+   "tail_windows": 13,
+   "windows": 758
+  },
+  "SPX": {
+   "first_day": 20097,
+   "last_day": 20717,
+   "overlap_days": 621,
+   "signal_entries": 0,
+   "tail_windows": 7,
+   "windows": 648
+  },
+  "TRUMP": {
+   "first_day": 20108,
+   "last_day": 20717,
+   "overlap_days": 610,
+   "signal_entries": 1,
+   "tail_windows": 17,
+   "windows": 609
+  },
+  "VINE": {
+   "first_day": 20114,
+   "last_day": 20571,
+   "overlap_days": 458,
+   "signal_entries": 3,
+   "tail_windows": 35,
+   "windows": 578
+  },
+  "WIF": {
+   "first_day": 19742,
+   "last_day": 20717,
+   "overlap_days": 976,
+   "signal_entries": 3,
+   "tail_windows": 27,
+   "windows": 975
+  },
+  "ZEREBRO": {
+   "first_day": 20092,
+   "last_day": 20578,
+   "overlap_days": 487,
+   "signal_entries": 7,
+   "tail_windows": 31,
+   "windows": 487
+  },
+  "kBONK": {
+   "first_day": 19685,
+   "last_day": 20717,
+   "overlap_days": 1033,
+   "signal_entries": 6,
+   "tail_windows": 28,
+   "windows": 1032
+  }
+ },
+ "excluded": {
+  "JELLY": "0 overlapping signal days (< 180)",
+  "LAUNCHCOIN": "missing bf, bd",
+  "USELESS": "12 overlapping signal days (< 180)",
+  "YZY": "missing bf, bd"
+ },
+ "step0": {
+  "max_offset_ms": 47,
+  "ok": true,
+  "rows_off_interval_grid": 0,
+  "symbols_with_funding": 23
+ },
+ "verdict": "CLOSED"
+}
