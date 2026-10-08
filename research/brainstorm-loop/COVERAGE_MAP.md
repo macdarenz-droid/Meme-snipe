@@ -1,6 +1,6 @@
 # Coverage map of the research programme (2026-10-08)
 
-Made at the end of sweep 5 by two agents (a mapper and a completeness critic), 23:24–23:52 Melbourne. They read the repo only; no market data. Every chance is judgement. Part 1 is the map, verbatim. Part 2 is the critic, verbatim. The critic corrects the map where they differ.
+Made at the end of sweep 5 by two agents (a mapper and a completeness critic), 23:23–23:51 Melbourne. They read the repo only; no market data. Every chance is judgement. Part 1 is the map, verbatim. Part 2 is the critic, verbatim. The critic corrects the map where they differ.
 
 ## Part 1: map
 
