@@ -41,7 +41,7 @@ Review PASS (rulings 7–10 applied; the SQLite ATTACH quote matches). Red team 
 
 Rulings 11, 12, 14 applied correctly; 13 applied but its route breaks the process split. Red team 0 BLOCKER, 1 MAJOR, 1 MINOR.
 
-### Supervisor rulings for round 5 (9 Oct 2026, about 12:15 AM)
+### Supervisor rulings for round 5 (9 Oct 2026, about 12:22 AM)
 
 15. **MAJOR, botops.** The worker never joins botops (it owns `/run/signer/ops.sock`; under SPEC-B:668 fallback (b) membership would carry sentinel or operator identity). Use the dedicated group `zeroed-spool` = {operator, zeroed-worker}: folder 2730, owner zeroed-worker, group zeroed-spool, made by the installer; botctl writes 0640. PATHS-FIX changes SPEC-B:2539's "group botops" to this, with the reason.
 16. **MINOR, pull account.** Sftp-only Match block with no shell and a ChrootDirectory (ForceCommand internal-sftp already named), and the pull account is added to B-M30-02's host user list (SPEC-B:2584) by PATHS-FIX.
