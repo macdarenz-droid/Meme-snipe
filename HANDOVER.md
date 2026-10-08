@@ -135,6 +135,11 @@
 - **8 Oct 3:12 PM: docs branches.** Every push to `claude/supervisor-docs` restarts #298's CI (one concurrency group). The log now goes to `claude/supervisor-docs-2` until #298 merges at `d2ba7204` (reviewer PASS at `f0220a00`; the delta to `d2ba7204` is one review-log commit, records only). After the merge, `claude/supervisor-docs-2` merges the base and becomes the next docs PR.
   - #293: round 7 reviewer PASS at `5be4b143`; red team 2 MAJOR (T1 what-if vs re-validation; T2 fill sets); round 8 rulings 77–81 sent.
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
+- **8 Oct 3:45 PM:**
+  - **#298 merged at `4e2dd840`** (3:41 PM; reviewer PASS at `f0220a00`, delta to `d2ba7204` records only; check and historical-data green). Docs only, so the deploy gate's `e2e_commit` stays `106d14ec`. `claude/supervisor-docs-2` has the base merged (`3f4061d7`); its docs PR waits for a quiet spell, since every push restarts a PR's CI. Every open PR now needs a base merge before it merges; each builder was told to include it in its next push.
+  - #293: base merged, head `07d1825e` (delta equals the base delta, checked); CI running. Merge on green.
+  - **#297 Z05** ready (head `7534191b`, base merged; 7,859 tests; label `deps-reviewed:d1c02219d84ab1a8c060f373f86baa12`). Reviewer `session_01Uz7LUxeANqtZ4pFkvQhmkT`, red team `session_01XwXThurxJrZ4e9C91T5nsT`. Rulings: vite 8.3.2 devDependency fine; cells dated 2026-10-08; coverage not measured for now (no new dependency); screenshot baselines only from CI's Chrome.
+  - #294 PM-01: round 13 head `a2d9a02f` (block `1ca7e8cc…`); review and red team round 13/11 running.
 - **8 Oct 3:40 PM:**
   - **#293 STRATEGY-INTAKE done reviewing**: round 17 head `a6b33d16`, reviewer PASS, red team 0 MAJOR (1 MINOR, d1, carried into Z-STRAT's acceptance, ruling 116). Merge on green CI (run 37728478823 queued).
   - #294 PM-01: round 12 rulings 81–88 sent (part 6 replaced by role mapping; part 7 on normalised ratios with KS + 10% median; fallback coverage; blob-sha check; start item 8 choice to the owner if no forward source).
