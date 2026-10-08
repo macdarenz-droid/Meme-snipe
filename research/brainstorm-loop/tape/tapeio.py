@@ -235,14 +235,18 @@ class Tape:
         self.boosts = pd.DataFrame(boost, columns=["slot", "block_time", "day", "mint", "pool"])
 
     def mayhem_of_mint(self, mint):
-        """1/0 if known from CreateEvent, the pool's CreatePoolEvent or curve rows; None if unknown."""
+        """COUNT_ROWS_AMENDMENT_3: mayhem is the mint's flag, taken in order from its CreateEvent, then any curve
+        trade of the mint (`mayhem_mode`), then the CreatePoolEvent of a pool with that base mint. None when
+        none is on the tape. A 2B `base_supply` is never used to infer it."""
         r = self.creates.loc[self.creates["mint"] == mint, "mayhem"]
         if len(r) and pd.notna(r.iloc[0]):
             return int(r.iloc[0])
-        r = self.pool_creates.loc[self.pool_creates["base_mint"] == mint, "mayhem"]
-        if len(r) and pd.notna(r.iloc[0]):
+        r = self.swaps.loc[(self.swaps["venue"] == "curve") & (self.swaps["mint"] == mint)
+                           & self.swaps["mayhem"].notna(), "mayhem"]
+        if len(r):
             return int(r.iloc[0])
-        r = self.swaps.loc[(self.swaps["mint"] == mint) & self.swaps["mayhem"].notna(), "mayhem"]
+        r = self.pool_creates.loc[self.pool_creates["base_mint"] == mint, "mayhem"]
+        r = r.dropna()
         if len(r):
             return int(r.iloc[0])
         return None

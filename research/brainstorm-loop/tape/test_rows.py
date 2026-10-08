@@ -560,6 +560,38 @@ class SolUsdDir(unittest.TestCase):
         self.assertEqual(len(sha), 2)
 
 
+class Mayhem(unittest.TestCase):
+    def test_order_create_then_curve_then_pool_create(self):
+        u = Unit()
+        u.event("CreatePoolEvent", 5, {"pool": "P", "base_mint": "M", "quote_mint": WSOL, "is_mayhem_mode": "0",
+                                       "coin_creator": "DEV", "creator": "x"})
+        r = u.cbuy(10, "A", "M")
+        r["mayhem_mode"] = 1                                   # the mint's curve trade says mayhem
+        u.aswap(20, "B", "M", "P")
+        tape, s, _ = load(u)
+        self.assertEqual(tape.mayhem_of_mint("M"), 1)          # curve trade wins over CreatePoolEvent
+        u.event("CreateEvent", 1, {"mint": "M", "creator": "DEV", "user": "DEV", "is_mayhem_mode": "0",
+                                   "quote_mint": SOL_NATIVE, "name": "M", "symbol": "M"})
+        tape, _, _ = load(u)
+        self.assertEqual(tape.mayhem_of_mint("M"), 0)          # CreateEvent first
+
+    def test_pool_hours_take_the_mint_flag(self):
+        u = rebuy_unit()
+        u.ev = [e for e in u.ev if e["event"] != "CreateEvent"]
+        for r in u.curve:
+            r["mayhem_mode"] = 1                               # curve says mayhem; CreatePoolEvent says 0
+        tape, s, _ = load(u)
+        _, _, sm = H8.h8_capacity(tape, s, flat_hourly(200.0))
+        self.assertEqual((sm[DAY]["pool_hours"], sm[DAY]["pool_hours_mayhem_unknown"]), (0, 0))
+
+    def test_2b_supply_does_not_infer_mayhem(self):
+        u = Unit()
+        u.aswap(20, "B", "M", "P")
+        u.amm[-1]["base_supply"] = 2e15                        # 2B tokens: not evidence of mayhem
+        tape, _, _ = load(u)
+        self.assertIsNone(tape.mayhem_of_mint("M"))
+
+
 class ReviewFixes(unittest.TestCase):
     def test_dev_zero_counts_zero_for_loaded_day_without_events(self):
         d = tempfile.mkdtemp()

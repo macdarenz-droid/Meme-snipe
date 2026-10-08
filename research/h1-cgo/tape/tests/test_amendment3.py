@@ -281,7 +281,7 @@ class Amendment4(unittest.TestCase):
             s = H8.load_committed(["2026-09-07"], ok)
             self.assertEqual(s.at(int(pd.Timestamp("2026-09-07T05:30", tz="UTC").timestamp())), 100_000_000)
             self.assertEqual(len(s.files), 4)
-            with self.assertRaisesRegex(ValueError, "missing for 2026-09-07"):
+            with self.assertRaisesRegex(ValueError, "missing for 2026-09-08"):
                 H8.load_committed(["2026-09-08"], ok)  # 09-08 absent (its day before is present)
             with self.assertRaisesRegex(ValueError, "missing for 2026-09-05"):
                 H8.load_committed(["2026-09-06"], ok)  # the day before is needed for the 00:00 decision
