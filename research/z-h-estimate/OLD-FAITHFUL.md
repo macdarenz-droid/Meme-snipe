@@ -195,7 +195,8 @@ saved key starts with, so a re-run never restores it (OF-3 ruling 28). After a f
 cache (`ci/cache-crypt.sh open SEALED DEST PREFIX logs`) with the store token; nothing about them is published.
 In the CI scripts a line may name the log directories only to assign them under `$out` or `$RUNNER_TEMP`, mkdir or rm
 them, redirect output into them, mv `migrations.list` out of them, or echo them to the step summary, and `eval` is
-refused (OF-3 ruling 30, replacing OF-2 ruling 63's deny-list).
+refused (OF-3 ruling 30, replacing OF-2 ruling 63's deny-list); a `logs` part after any spelling of `$out` or `$RUNNER_TEMP`
+(plain, braced, quoted) counts, and read commands on `$out` itself or after a `cd` into it are refused (OF-2 ruling 67).
 
 **Arm checklist (the arming change, OF-2 rounds 3–4).** The supervisor puts each item to the owner, with a
 recommendation, before `ARCHIVE_ARM` is set:
