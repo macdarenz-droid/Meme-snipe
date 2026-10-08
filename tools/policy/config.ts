@@ -102,11 +102,13 @@ export const SCHEMA_TX_IMPORTERS = ['packages/engine/src/m24/db.ts', 'packages/e
 export const SCHEMA_TX_TEST_DIR = 'packages/engine/test/';
 
 /**
- * Package code never imports test code (Z02 round 7 ruling 30): a file under `packages/<name>/src/` may not reach
- * `packages/<name>/test/` by import, dynamic import or re-export, so test-only helpers (a schema fixture) never ship.
+ * Package code never imports test code (Z02 rulings 30–32): a file under `packages/<name>/src/` or `apps/<name>/src/`
+ * that is not itself test code may not reach test code by import, dynamic import or re-export, so test-only helpers
+ * (a schema fixture) never ship. Test code is any path with a `test`, `tests` or `__tests__` directory, and any
+ * `*.test.*` or `*.spec.*` file.
  */
-export const SRC_DIR_RE = /^packages\/[^/]+\/src\//;
-export const TEST_DIR_RE = /^packages\/[^/]+\/test(\/|$)/;
+export const SRC_DIR_RE = /^(packages|apps)\/[^/]+\/src\//;
+export const TEST_DIR_RE = /(^|\/)(test|tests|__tests__)(\/|$)|\.(test|spec)\.[^/]*$/;
 
 /** Internal package scope: always a workspace link, never fetched from a registry. */
 export const INTERNAL_SCOPE = '@bot/';

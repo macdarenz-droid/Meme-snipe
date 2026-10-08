@@ -203,7 +203,7 @@ const trimSlash = (p: string): string => p.replace(/\/+$/, '');
 const MODULE_EXT = /\.(?:ts|mts|cts|tsx|js|mjs|cjs|jsx)$/;
 
 /**
- * The rules on what a file may import by the imported file's repository path (Z02 rulings 29 and 30), whatever package
+ * The rules on what a file may import by the imported file's repository path (Z02 rulings 29–32), whatever package
  * or directory the importing file is in and whatever extension the specifier writes: only the listed files reach
  * M24's schema transaction, and package code never reaches test code.
  */
@@ -211,8 +211,8 @@ function namedRuleFinding(file: string, target: string, where: string): Finding 
   if (target.replace(MODULE_EXT, '') === SCHEMA_TX_FILE.replace(MODULE_EXT, '') && !SCHEMA_TX_IMPORTERS.includes(file) && !file.startsWith(SCHEMA_TX_TEST_DIR)) {
     return finding('E_SCHEMA_TX_IMPORT', where, `${SCHEMA_TX_FILE} is the migration runner's (Z02 ruling 29); only ${SCHEMA_TX_IMPORTERS.join(' and ')} may import it`);
   }
-  if (SRC_DIR_RE.test(file) && TEST_DIR_RE.test(target)) {
-    return finding('E_SRC_IMPORTS_TEST', where, `${target} is test code, reached from package code (Z02 ruling 30); move what both need into src`);
+  if (SRC_DIR_RE.test(file) && !TEST_DIR_RE.test(file) && TEST_DIR_RE.test(target)) {
+    return finding('E_SRC_IMPORTS_TEST', where, `${target} is test code, reached from package code (Z02 rulings 30–32); move what both need into src`);
   }
   return null;
 }
