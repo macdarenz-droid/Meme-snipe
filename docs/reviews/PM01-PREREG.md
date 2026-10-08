@@ -208,3 +208,30 @@ All 19 round 1 findings are closed.
 53. **Kill versus retry (r6).** The kill stands unless the failing gate, recomputed on the same window with the fix, passes. Then the window is burned, and the retry on unseen days counts as a new trial and goes to the owner first.
 54. **whitelist_pda (r7).** Drop the "unless": a change to it is always economic.
 55. **Kill rule 4 (r8).** "By 90 counted days, or 120 calendar days from the first W_B start, whichever comes first."
+
+## Round 7 (head `68476fe9`): reviewer PASS (2 MINOR); red team 0 BLOCKER, 1 MAJOR, 5 MINOR
+
+- Reviewer: m1, kill rule 4's 120 calendar days are not in the block; m2, name the branch that holds rounds 6 and 7 (`claude/supervisor-docs-2`).
+- Red team:
+  - R5-M1: nothing binds the gate evaluator to the hashed `gates` values.
+  - r1: FeeConfig `Fees` includes creator_fee_bps.
+  - r2: the pending period and the test day do not line up.
+  - r3: test part 5 (per-trade accounts) and which decoder applies.
+  - r4: the A-M13-02 key set against the block.
+  - r5: FEEDAY is scaled in the report lines.
+
+### Supervisor rulings for round 8 (8 Oct 2026, 3:18 PM)
+
+56. **R5-M1.**
+    - For PM-01, the gate evaluator loads every `gates.*` value from the merged block at run time; no PM-01 gate constants live in code. Each gate result records pm01FrozenKey.
+    - pm01FrozenKey is compared with the value recorded in the preRegister record (A-M13-02), not only with the hash printed in the file.
+    - AC: on a fixed synthetic window, changing one `gates` value (with the recorded hash updated) changes that gate's verdict; changing it without updating the hash refuses.
+57. **r1.** Fee-only means changes to `lp_fee_bps` and `protocol_fee_bps` inside the FeeConfig tiers and flat fees, to `market_cap_lamports_threshold`, and to the listed Global/GlobalConfig lp and protocol rates. Any change to `creator_fee_bps` or `coin_creator_fee_basis_points` ends the window.
+58. **r2.** Pending runs from the flag's slot to the end of the first full UTC day after it; then the verdict.
+59. **r3.**
+    - Part 5: for each trade, the accounts created and their sizes must equal what the pre-upgrade program creates from the same pre-state.
+    - "Cannot be decoded" refers to the post-upgrade IDL, refreshed and pinned.
+    - A decoder update mid-window must reproduce every decision on the pre-boundary data (a B-9-style check).
+60. **r4.** The run refuses if any key A-M13-02 hashes is missing from the block, or present in the block but not hashed. Write down the mapping table.
+61. **r5.** FEEDAY is not scaled in the report lines, the same as DEPTHPCT.
+62. **Reviewer m1 and m2.** Add `killRule4MaxCalendarDays: 120` to the block. Cite `docs/reviews/PM01-PREREG.md` on `claude/supervisor-docs` for rounds 1–5 and on `claude/supervisor-docs-2` for rounds 6 and later.

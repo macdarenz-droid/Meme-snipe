@@ -304,3 +304,20 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
 84. **U2.** On entering the fresh-window state, the stage record is re-frozen to the new configKey by an audited A2 with actor `system`, recording the old key, the deploy, and "fresh window". Gates R and P then run on the new key. AC: after a fresh-window entry and a passing W_R, paper emission resumes under the new configKey.
 85. **u1.** A null CI (fewer than 30 trades, A-M13-04) counts as ≤ 0: entries are blocked, or the raise is refused.
 86. **u2.** A difference in the fill or rejection sets counts as "changes trades", so AC-61's path runs end to end through the re-run rule.
+
+## Round 9 (head `6c8a730c`): reviewer PASS (no findings); red team 0 BLOCKER, 3 MAJOR, 1 MINOR
+
+- V1: the free revert never applies, because an A1 change re-freezes first.
+- V2: r never refills at paper_passed, live_small or live.
+- V3: any fill-value change counts as "changes trades", so a more conservative model demotes live strategies.
+- v1: a cancelled A3 raise as a probe.
+
+### Supervisor rulings for round 10 (8 Oct 2026, 3:18 PM)
+
+87. **V1.** The "evidence-backed setting" is the setting frozen at the last gate pass or the last passing what-if raise; an A1 re-freeze never moves it. A return to the evidence-backed setting, or to any value between it and the current one, uses no r and needs no what-if. AC: lower MAXPOS (A1 re-freeze, `size_not_profitable`), then at r = 0 raise it back to the gate-pass value; it applies with no trial.
+88. **V2.** At paper_passed, live_small and live, a rolling forward block refills r: each block of ≥ 100 closed trades and ≥ 14 days at the current setting, counting only real paper or live fills, net in SOL after costs. When the block's CI lower bound is above 0, r refills. AC: at `live`, a passing block refills r, and a failing one does not.
+89. **V3.** "Changes trades" means a trade is added or removed, or a proposal's fill or reject outcome flips; only that restarts W_P. When membership is identical and only values change:
+    - if the change is "not more favourable" (the SOL test), it re-freezes by an audited A2 with no restart;
+    - if it is more favourable, the B, R and P statistics are recomputed on the same real trades with the new model, as registered trials inside k, and the strategy is demoted only if a gate fails.
+    - AC: a more conservative model that changes every W_P fill value, with no flips, re-freezes with no restart.
+90. **v1.** A cancelled A3 raise keeps its `whatif` trial and its r use, so cancelling is never a free probe.
