@@ -103,6 +103,7 @@ managed() {
   case "$p" in
     /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /etc/systemd/system/srv-zeroed_pull-*.mount) return 0 ;;
     /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
@@ -208,6 +209,12 @@ getent passwd zeroed-signer >/dev/null || useradd --system --gid zeroed-signer -
 getent group zeroed-worker >/dev/null || groupadd --system zeroed-worker
 # The worker may reach the signer's socket through the zeroed-signer group; nothing else is in that group.
 getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --groups zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
+# PATHS-FIX: the worker reads pull receipts through zeroed-pull and import bundles through zeroed-spool (never botops,
+# which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
+getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
+getent group zeroed-spool >/dev/null || groupadd --system zeroed-spool
+getent passwd zeroed-pull >/dev/null || useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull
+usermod -aG zeroed-pull,zeroed-spool zeroed-worker
 
 say "Files"
 # The SSH state of the running firewall, read before nftables.conf is replaced (an update keeps it).
@@ -278,12 +285,65 @@ table inet zeroed {
   }
 }
 __ZEROED_FILE__
+install_file /etc/ssh/sshd_config.d/20-zeroed-pull.conf 0644 <<'__ZEROED_FILE__'
+# PATHS-FIX (DISK-BUDGET.md §2.9; rulings 9, 12, 14, 16): the market-data pull account. sftp only, chrooted to a
+# root-owned folder holding a read-only bind of /var/lib/zeroed-md with a writable receipts/ bind; no shell, no
+# forwarding. Its key is read from /etc/zeroed/pull-keys/zeroed-pull (root-owned). None is installed, so the account
+# cannot log in until the operator's key is put there. SSH itself stays as the installer left it (off unless
+# --ssh-key).
+Match User zeroed-pull
+    ChrootDirectory /srv/zeroed_pull
+    ForceCommand internal-sftp -u 0027
+    AuthorizedKeysFile /etc/zeroed/pull-keys/%u
+    AllowTcpForwarding no
+    AllowAgentForwarding no
+    AllowStreamLocalForwarding no
+    PermitTunnel no
+    X11Forwarding no
+    PermitTTY no
+# Ends the Match block. Ubuntu includes this folder at the top of sshd_config, and no later line may become the pull
+# account's only. OpenSSH 9.6 (Ubuntu 24.04) already ends it with the file (checked with sshd -T); this keeps it so.
+Match all
+__ZEROED_FILE__
 install_file /etc/systemd/journald.conf.d/zeroed-journal.conf 0644 <<'__ZEROED_FILE__'
 # HOST-CAPS: the system journal never takes the room the worker's state, ledger and journal need. At most 500 MB,
 # and it leaves at least 2 GB free (systemd's defaults on a 25 GB disk are 2.5 GB and 15%).
 [Journal]
 SystemMaxUse=500M
 SystemKeepFree=2G
+__ZEROED_FILE__
+install_file /etc/systemd/system/srv-zeroed_pull-md-receipts.mount 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: pull receipts, the one folder the pull account may write (PATHS-FIX)
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+Requires=srv-zeroed_pull-md.mount
+After=srv-zeroed_pull-md.mount
+Before=ssh.service ssh.socket
+
+[Mount]
+What=/var/lib/zeroed-md/receipts
+Where=/srv/zeroed_pull/md/receipts
+Type=none
+Options=bind,rw,nodev,nosuid,noexec
+
+[Install]
+WantedBy=multi-user.target
+__ZEROED_FILE__
+install_file /etc/systemd/system/srv-zeroed_pull-md.mount 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: market data, read-only, inside the pull account's sftp chroot (PATHS-FIX)
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+# Mounted before SSH can let the pull account in, so it never sees an empty folder.
+Before=ssh.service ssh.socket
+
+[Mount]
+What=/var/lib/zeroed-md
+Where=/srv/zeroed_pull/md
+Type=none
+Options=bind,ro,nodev,nosuid,noexec
+
+[Install]
+WantedBy=multi-user.target
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup-offsite.service 0644 <<'__ZEROED_FILE__'
 [Unit]
@@ -578,6 +638,9 @@ Type=simple
 User=zeroed-worker
 Group=zeroed-worker
 SupplementaryGroups=zeroed-signer
+# PATHS-FIX: read the pull account's receipts (zeroed-pull) and the operator's import bundles (zeroed-spool). Never
+# botops: that group reaches the signer's ops socket (DISK-BUDGET.md ruling 15).
+SupplementaryGroups=zeroed-pull zeroed-spool
 EnvironmentFile=/etc/zeroed/worker.env
 Environment=NODE_ENV=production
 # Reconcile first: every start and restart settles open intents against the chain before trading.
@@ -595,6 +658,9 @@ LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_
 ImportCredential=heartbeat_hmac_key
 StateDirectory=zeroed
 StateDirectoryMode=0700
+# PATHS-FIX: one StateDirectoryMode per unit, so the market-data folder (2750, group zeroed-pull) and the import spool
+# (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here.
+ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-spool
 UMask=0077
 MemoryMax=800M
 # The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
@@ -11732,6 +11798,15 @@ install -d -m 0700 -o root -g root /etc/zeroed/age /etc/credstore.encrypted /var
 # Dry-run evidence stays on the host (RUN-1 writes it there); its index is readable by the worker API.
 install -d -m 0700 -o root -g root /var/lib/zeroed-dryrun /var/lib/zeroed-dryrun/evidence
 install -d -m 0755 -o root -g root /var/lib/zeroed-index
+# PATHS-FIX: the engine's two folders outside its 0700 state (one StateDirectoryMode per unit, so they are made here).
+# Market data: readable by the pull group, setgid so new files keep that group; receipts/ is the only folder the pull
+# account writes. Import spool: its group may write and enter but not list. The pull account's chroot is root-owned
+# 0755 (sshd requires it); md and md/receipts in it are bind mounts, never touched while mounted.
+install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md
+install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts
+install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool
+install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys
+mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md
 
 say "Host key"
 # The host's own age key: backups are encrypted to it (the owner's key can be added later).
@@ -11784,6 +11859,13 @@ elif [ -n "$SSH_KEY" ]; then
 else
   for u in ssh.socket ssh.service; do systemctl disable --now "$u" >/dev/null 2>&1 || true; done
 fi
+# PATHS-FIX: the pull account's Match block (sshd_config.d/20-zeroed-pull.conf) is checked whenever sshd is installed,
+# and applied at once to a running SSH; a broken file stops the install before SSH ever reads it.
+if [ -x /usr/sbin/sshd ]; then
+  install -d -m 0755 /run/sshd
+  /usr/sbin/sshd -t || die "sshd refuses the SSH settings"
+  systemctl try-reload-or-restart ssh.service >/dev/null 2>&1 || true
+fi
 systemctl enable nftables >/dev/null 2>&1
 nft -f /etc/nftables.conf
 # The ruleset flush also drops Tailscale's own rules; its daemon puts them back on restart (live view, opt-in).
@@ -11826,6 +11908,8 @@ say "Services"
 systemctl daemon-reload
 # HOST-CAPS: journald reads its size limits only when it starts.
 [[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
+# PATHS-FIX: the chroot's binds, before SSH (srv-zeroed_pull-*.mount).
+systemctl enable --now srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount >/dev/null
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

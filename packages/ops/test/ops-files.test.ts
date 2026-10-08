@@ -630,3 +630,51 @@ describe('daily summary deploy step (OPS-SUMMARY, ops/deploy/reports.sh)', () =>
     }
   });
 });
+
+describe('PATHS-FIX: the engine folders, the pull account and its chroot', () => {
+  const main = read('ops/host/install-main.sh');
+  const worker = read('ops/host/files/etc/systemd/system/zeroed-worker.service');
+
+  it('the installer makes each folder with its owner, group and mode, and the worker unit may write exactly those', () => {
+    for (const line of [
+      'install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md',
+      'install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts',
+      'install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool',
+      'install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys',
+      // Never chmod the read-only bind while it is mounted (an update would stop on EROFS).
+      'mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md',
+    ]) expect(main.split('\n'), line).toContain(line);
+    expect(worker).toMatch(/^ReadWritePaths=\/var\/lib\/zeroed-md \/var\/lib\/zeroed-spool$/m);
+    expect(worker).toMatch(/^SupplementaryGroups=zeroed-pull zeroed-spool$/m);
+    expect(worker.split('\n').filter((l) => !l.startsWith('#')).join('\n')).not.toContain('botops');
+    expect(worker).toMatch(/^StateDirectoryMode=0700$/m);
+    // The groups exist before any unit names them.
+    expect(main.indexOf('groupadd --system zeroed-pull')).toBeLessThan(main.indexOf('# @@FILES@@'));
+    expect(main.indexOf('groupadd --system zeroed-spool')).toBeLessThan(main.indexOf('# @@FILES@@'));
+    expect(main).toContain('useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull');
+  });
+
+  it('md is bound read-only and receipts read-write into the chroot, both before SSH', () => {
+    const md = read('ops/host/files/etc/systemd/system/srv-zeroed_pull-md.mount');
+    const rc = read('ops/host/files/etc/systemd/system/srv-zeroed_pull-md-receipts.mount');
+    expect(md).toMatch(/^What=\/var\/lib\/zeroed-md$/m);
+    expect(md).toMatch(/^Where=\/srv\/zeroed_pull\/md$/m);
+    expect(md).toMatch(/^Options=bind,ro,/m);
+    expect(rc).toMatch(/^What=\/var\/lib\/zeroed-md\/receipts$/m);
+    expect(rc).toMatch(/^Where=\/srv\/zeroed_pull\/md\/receipts$/m);
+    expect(rc).toMatch(/^Options=bind,rw,/m);
+    expect(rc).toMatch(/^Requires=srv-zeroed_pull-md\.mount$/m);
+    for (const u of [md, rc]) expect(u).toMatch(/^Before=ssh\.service ssh\.socket$/m);
+    expect(main).toContain('systemctl enable --now srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount');
+  });
+
+  it('the pull account is sftp only, chrooted, with no key until the operator adds one, and its Match block ends', () => {
+    const conf = read('ops/host/files/etc/ssh/sshd_config.d/20-zeroed-pull.conf');
+    const lines = conf.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+    expect(lines).toEqual(['Match User zeroed-pull', 'ChrootDirectory /srv/zeroed_pull', 'ForceCommand internal-sftp -u 0027',
+      'AuthorizedKeysFile /etc/zeroed/pull-keys/%u', 'AllowTcpForwarding no', 'AllowAgentForwarding no', 'AllowStreamLocalForwarding no',
+      'PermitTunnel no', 'X11Forwarding no', 'PermitTTY no', 'Match all']);
+    expect(walk('ops/host/files/etc/zeroed').filter((p) => p.includes('pull-keys'))).toEqual([]);
+    expect(main).toContain('/usr/sbin/sshd -t || die "sshd refuses the SSH settings"');
+  });
+});

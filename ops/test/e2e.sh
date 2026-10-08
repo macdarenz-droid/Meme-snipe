@@ -174,6 +174,22 @@ in_c "nft list ruleset" >"$LOGS/nft.txt"
 grep -q 'hook input priority filter; policy drop;' "$LOGS/nft.txt" && ! grep -q 'dport 22' "$LOGS/nft.txt" || fail "inbound not closed"
 in_c "systemctl is-enabled unattended-upgrades && grep -q 'Unattended-Upgrade \"1\"' /etc/apt/apt.conf.d/20auto-upgrades" >/dev/null || fail "unattended security updates not on"
 pass "install: 6-word EFF deploy code shown (root-only 0400 on disk), signer up, worker waiting, timers on, inbound policy drop with no SSH, unattended upgrades on"
+# PATHS-FIX: the engine's folders outside its state, the pull account and its chroot, and the systemd it runs under.
+in_c "systemctl --version | head -1" >"$LOGS/systemd-version.txt"
+[ "$(in_c "stat -c '%a %U %G %n' /var/lib/zeroed-md /var/lib/zeroed-md/receipts /var/lib/zeroed-spool /srv/zeroed_pull")" = "$(printf '%s\n' \
+  '2750 zeroed-worker zeroed-pull /var/lib/zeroed-md' '2770 zeroed-worker zeroed-pull /var/lib/zeroed-md/receipts' \
+  '2730 zeroed-worker zeroed-spool /var/lib/zeroed-spool' '755 root root /srv/zeroed_pull')" ] || fail "PATHS-FIX: folder owner, group or mode"
+in_c "id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-pull && id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-spool && ! id -nG zeroed-worker | tr ' ' '\n' | grep -qx botops" || fail "PATHS-FIX: worker groups"
+[ "$(in_c "getent passwd zeroed-pull | cut -d: -f7")" = /usr/sbin/nologin ] || fail "PATHS-FIX: the pull account has a shell"
+in_c "systemctl is-active srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount" >/dev/null || fail "PATHS-FIX: chroot binds not mounted"
+in_c "! touch /srv/zeroed_pull/md/x 2>/dev/null && touch /srv/zeroed_pull/md/receipts/x && test -e /var/lib/zeroed-md/receipts/x && rm /var/lib/zeroed-md/receipts/x" || fail "PATHS-FIX: md must be read-only and receipts writable through the chroot"
+in_c "sshd -t && sshd -T -C user=zeroed-pull,host=h,addr=127.0.0.1" >"$LOGS/sshd-pull.txt" || fail "PATHS-FIX: sshd refuses its settings"
+for l in 'chrootdirectory /srv/zeroed_pull' 'forcecommand internal-sftp -u 0027' 'authorizedkeysfile /etc/zeroed/pull-keys/%u' 'allowtcpforwarding no' 'permittty no' 'passwordauthentication no'; do
+  grep -qx "$l" "$LOGS/sshd-pull.txt" || fail "PATHS-FIX: pull account sshd setting missing: $l"
+done
+in_c "sshd -T -C user=root,host=h,addr=127.0.0.1" | grep -qx 'chrootdirectory none' || fail "PATHS-FIX: the pull account's Match block reaches other users"
+in_c "! systemctl is-active ssh.service ssh.socket" >/dev/null || fail "PATHS-FIX: SSH must stay off on a default install"
+pass "PATHS-FIX: md 2750 and receipts 2770 (group zeroed-pull), spool 2730 (group zeroed-spool), worker in both and not botops; pull account sftp-only and chrooted with md read-only and receipts writable; SSH still off; $(cat "$LOGS/systemd-version.txt")"
 
 # ---------- 3. Deploy with a wrong code fails cleanly ----------
 publish() { # issued log code [extra env...]
