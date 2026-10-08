@@ -36,6 +36,10 @@ seen="$(recorder_first_seen "$now" /var/lib/zeroed/recorder "$STATE_DIR/recorder
 while IFS='|' read -r what key text; do
   if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
 done < <(printf '%s' "$rec" | record_alerts "$now" /var/lib/zeroed/recorder "$seen")
+# PATHS-FIX ruling 23: the pull account's filesystem and binds; one alert while any is down, a CLEARED line after.
+while IFS='|' read -r what key text; do
+  if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
+done < <(systemctl is-active "${PULL_MOUNT_UNITS[@]}" 2>/dev/null | pull_mount_alerts "${PULL_MOUNT_UNITS[@]}")
 
 # 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
 # it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.

@@ -1,8 +1,10 @@
 [Unit]
 Description=Zeroed worker
 Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
-After=network-online.target zeroed-signer.service
-Wants=network-online.target
+After=network-online.target zeroed-signer.service zeroed-receipts-fs.service
+# PATHS-FIX ruling 32: the worker starts after the receipts' own filesystem is mounted (Wants, so a failed mount never
+# keeps the worker down; zeroed-check alerts on it instead).
+Wants=network-online.target zeroed-receipts-fs.service
 # Starts only after the keys arrived and the owner's Telegram chat is paired.
 ConditionPathExists=/etc/credstore.encrypted/helius_api_key
 ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id
@@ -14,6 +16,9 @@ Type=simple
 User=zeroed-worker
 Group=zeroed-worker
 SupplementaryGroups=zeroed-signer
+# PATHS-FIX: read the pull account's receipts (zeroed-pull) and the operator's import bundles (zeroed-spool). Never
+# botops: that group reaches the signer's ops socket (DISK-BUDGET.md ruling 15).
+SupplementaryGroups=zeroed-pull zeroed-spool
 EnvironmentFile=/etc/zeroed/worker.env
 Environment=NODE_ENV=production
 # Reconcile first: every start and restart settles open intents against the chain before trading.
@@ -31,6 +36,10 @@ LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_
 ImportCredential=heartbeat_hmac_key
 StateDirectory=zeroed
 StateDirectoryMode=0700
+# PATHS-FIX: one StateDirectoryMode per unit, so the market-data folder (2750, group zeroed-pull) and the import spool
+# (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here; so is the
+# provider usage ledger's folder (2770, group zeroed-sentinel), which the sentinel writes too (ruling 21).
+ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-spool /var/lib/zeroed-usage
 UMask=0077
 MemoryMax=800M
 # The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
