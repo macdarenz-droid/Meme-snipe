@@ -282,3 +282,8 @@ Red team round 7: 0 BLOCKER, 2 MAJOR, 3 MINOR.
 79. **t1.** A bug fix that touches trading safety (wrong data, wrong side, wrong size) ships at once and accepts the fresh-window state; it is never held back to protect a stage. A PREREG that wants room for deploys plans a longer W_B.
 80. **t2.** In the fresh-window state, R-1's `n_80` stays computed from the old W_B (the conservative choice).
 81. **t3.** Add the AC: 2 configurations + k = 0 on 30 days is accepted, and the first proposal-changing deploy goes straight to the fresh-window state.
+82. **Open point 9 (8 Oct 2026, 3:14 PM).** The raise budget r is a required PREREG field (r ≥ 0), stated like k. preRegister refuses a PREREG without it (E_BUDGET). The template suggests r = 2. Once r is used up, raises are refused. Every `whatif` trial is listed in the gate report beside the k trials. Ruling 77 replaces ruling 70's W_P path for raises: an approved raise keeps its stage, bounded by r and by the what-if on W_B and W_R with the size table (the owner raises limits after proof, "Capital and trade size scale").
+
+## Round 8 (head `94d24c06`)
+
+Reviewer: PASS (1 optional MINOR: record ruling 82 here, now done). Red team round 8 pending.
