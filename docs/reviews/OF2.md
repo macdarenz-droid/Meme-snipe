@@ -207,3 +207,18 @@ Same M1 as the red team's MAJOR 1. The reviewer confirmed the 1,000-result limit
 - **58. m1.** Update the stale "500 cap" wording in the DECISIONS:126 row to ruling 49 and ruling 55.
 
 Round 8 = rulings 54, 55, 56, 57 (as extended by OF-3 ruling 26) and 58, plus OF-3 rulings 25 and 26.
+
+## #306 OF-ARM-VERIFY (head `c371835a`, base `claude/of2-holds`): reviewer + red team `session_01NB8S68CiqKHECmiN3trwS7`
+
+REVIEW PASS with fixes. Red team 0 BLOCKER, 1 MAJOR, 4 MINOR. Every verified claim matches its official page (fetched 8 Oct).
+
+### Supervisor rulings (9 Oct 2026, about 1:10 AM)
+
+59. **MAJOR, runner label.** `ubuntu-latest` moves to Ubuntu 26.04 in November 2026 (actions/runner-images README, issue 14748), which can fall inside the chain's run. The OF chain pins `runs-on: ubuntu-24.04` in `data-scan.yml` and `archive-check.yml`, as part of round 8; the guard keeps logging the versions and failing closed. #306 records the label move.
+60. **#306 MINORs** (researcher `session_01A6P7TJYP1XZYZ7bAoBQsEe` applies them):
+    - the retention fields are documented (`days`, `maximum_allowed_days`), and the arm check compares `days` ≥ 35;
+    - PyYAML and cryptography read "not installed per the toolset (not listed)";
+    - quote the runs-API 1,000-per-search limit;
+    - Triton: "no archive-specific limit published";
+    - note the API read of the fork-PR approval setting for the arm card.
+61. **Ruling 55 extended.** The `status=` listings (queued, in progress, waiting) are also capped at 1,000 per search. The guard fails closed when any `created` slice or status query returns 1,000 results. `gh run list` is never used uncapped for counts (its default is `--limit 20`).
