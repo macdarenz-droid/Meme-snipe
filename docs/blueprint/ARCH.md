@@ -652,7 +652,7 @@ Research (M11 backtests and replays, M13 batch statistics, Parquet conversion) r
 
 - SQLite file `bot.db`: orders, attempts, fills, positions, journal, costs, cash flows, limits, breakers, alerts, audit (hash-chained), commands, config versions, sessions, preferences, token metadata, strategy stages, trial registry, imported runs, 1-minute bars and equity points (section 15). One writer connection in the engine (all writes serialised on the event loop), readers for the API.
 - **SQLite library (CA-33).** Default: Node's built-in `node:sqlite`, which needs no install scripts and no downloaded binaries, provided that on the chosen LTS it supports transactions, WAL and an online backup (VERIFY each at build time; record the result in `DEPENDENCIES.md`). Fallback, only if a requirement fails: an established native binding **built from pinned source in CI** (no prebuilt binary download at install time), with the compiled addon's SHA-256 recorded in the SBOM and checked at deploy. Install scripts stay disabled in both cases (section 12.3).
-- Market data: hourly segments of zstd-compressed newline-delimited JSON (`/data/md/YYYY-MM-DD/HH/<stream>.ndjson.zst`) with a manifest per segment (record count, slot range, SHA-256, gaps). Pool snapshots are written only when the pool's slot-stamped state changes, as deltas against the last written state (M07). Converted to Parquet offline by research tooling (DuckDB; VERIFY version and licence) so the engine needs no Parquet writer.
+- Market data: hourly segments of zstd-compressed newline-delimited JSON (`/var/lib/zeroed-md/YYYY-MM-DD/HH/<stream>.ndjson.zst`; was `/data/md`, PATHS-FIX, `docs/research/DISK-BUDGET.md` §2.9: the engine's unit can write only its state folder and its `ReadWritePaths`) with a manifest per segment (record count, slot range, SHA-256, gaps). Pool snapshots are written only when the pool's slot-stamped state changes, as deltas against the last written state (M07). Converted to Parquet offline by research tooling (DuckDB; VERIFY version and licence) so the engine needs no Parquet writer.
 - Postgres is the switch target (D06 triggers) if more than one host or writer is ever needed.
 - The chain is the source of truth for balances and fills; the database is the source of truth for intent, decisions, configuration and audit. If the database is lost or corrupted, positions and fills are rebuilt from the chain (section 7.6).
 
@@ -1063,7 +1063,7 @@ interface Screener {
 ### M07 Market data recorder (group A)
 
 - **Responsibility.** Persist everything needed to replay a day exactly: discoveries, pool snapshots, screen results, signals, decisions, and our own order/fill events, with coverage statistics.
-- **Exclusively owns.** Segment files and manifests under `/data/md`.
+- **Exclusively owns.** Segment files and manifests under `/var/lib/zeroed-md` (was `/data/md`; PATHS-FIX). Pull receipts sit on their own 64 MiB filesystem at `/var/lib/zeroed-md/receipts`, the only folder the pull account writes.
 - **Interface.**
 
 ```ts
@@ -2715,7 +2715,7 @@ SQLite; all monetary columns are INTEGER (SQLite integers are 64-bit signed; u64
 | `metric_rollup_1m` | (`metric`, `labels_hash`, `minute`) | count, sum, p50, p95, p99 | yes | 1 year |
 | `outbox` | `seq` (INTEGER autoincrement) | topic, payload_json, created_at, published_at | no | 7 days |
 
-Files: `/data/md/YYYY-MM-DD/HH/<stream>.ndjson.zst` + manifests and the daily universe manifest and `CoverageReport` (30 days on host, then pulled, verified by SHA-256 and deleted); `/data/backups/bot-YYYYMMDD-HH.db.enc` hourly, 48 kept on host; daily copies pulled to the operator's machine (keep 90 days of dailies, all month-ends); signer state under `/var/lib/signer/` (signer-owned, never backed up with the key material in plain form); sentinel fill journal `/var/lib/sentinel/fills.ndjson`; recovery journal written in `exits_only` mode.
+Files: `/var/lib/zeroed-md/YYYY-MM-DD/HH/<stream>.ndjson.zst` + manifests and the daily universe manifest and `CoverageReport` (30 days on host, then pulled, verified by SHA-256 and deleted; was `/data/md`, PATHS-FIX); backups: `zeroed-backup` is the one backup owner (was M24's `/data/backups/bot-YYYYMMDD-HH.db.enc`, not built; DISK-BUDGET §2.6): hourly, every database under `/var/lib/zeroed` and `/var/lib/zeroed-usage`, encrypted with age, 72 kept on host, a daily copy re-encrypted to the owner's code off the server (`ops/README.md` "Backups"), of which the operator keeps 90 days of dailies and all month-ends; signer state under `/var/lib/signer/` (signer-owned, never backed up with the key material in plain form); sentinel fill journal `/var/lib/sentinel/fills.ndjson`; recovery journal written in `exits_only` mode.
 
 ## 16. Test strategy
 
