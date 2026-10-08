@@ -1333,5 +1333,26 @@ class PayerMassRebuy(unittest.TestCase):
         self.assertEqual(float(pts[pts["hour"] == 1].iloc[0]["supply"]), SUPPLY)   # the state at or before t
 
 
+class DevZeroRuledR1_25(unittest.TestCase):
+    """COUNT_ROWS_AMENDMENT_9 confirms the Q-tercile cut: an arm meeting its own thresholds and its bar can earn, in the
+    fixed order (CODE_REDTEAM.md R1-25)."""
+
+    def _decide(self, bars):
+        import run_step_a
+        from unittest import mock
+        with mock.patch.object(R, "dev_zero_decide", lambda s: {"le5": True, "zero": True, "le3": True}), \
+                mock.patch.object(R, "seat_drift_decide", lambda s: False), \
+                mock.patch.object(RB, "rebuy_decide", lambda s: False):
+            return run_step_a.decision({}, {}, {}, {"1_dev_zero": {"by_arm": {a: {"passed": p} for a, p in bars.items()}}})
+
+    def test_an_arm_meeting_its_bar_earns_in_the_fixed_order(self):
+        self.assertEqual(self._decide({"le5": True, "zero": True, "le3": True})["1_dev_zero_prereg_by_arm"],
+                         {"le5": True, "zero": True, "le3": True})
+        self.assertEqual(self._decide({"le5": True, "zero": False, "le3": True})["1_dev_zero_prereg_by_arm"],
+                         {"le5": True, "zero": False, "le3": False})
+        self.assertEqual(self._decide({"le5": None, "zero": True, "le3": True})["1_dev_zero_prereg_by_arm"],
+                         {"le5": False, "zero": False, "le3": False})   # a bar not computed never earns
+
+
 if __name__ == "__main__":
     unittest.main()

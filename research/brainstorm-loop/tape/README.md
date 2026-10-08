@@ -15,7 +15,7 @@ nice -n 19 python3 -m unittest -v        # from this folder
 - Needs pandas, numpy, zstandard. Two units of 09-11 take about 7 minutes with the H8 rows and about 3 GB of RAM.
 
 ## Outputs (in OUTDIR)
-- `stepa_summary.json`: one block per row (`1_dev_zero` … `6_round_usd`). It also gives the loader counts: swaps, BOOST rows excluded, first-time buys, and rows labelled as fake demand. With `--decide`, a `decision` block is added: each row's own thresholds (`own_thresholds`; DEV-ZERO's arms in the frozen order, each only after the earlier ones pass), the `PAYER_MASS.md` bar per row as defined by `../COUNT_ROWS_AMENDMENT_7.md` (`payer.py`: computed for SEAT-DRIFT; DEV-ZERO and REBUY-ANCHOR stay "not computed" pending `../CODE_REDTEAM.md` R1-17, so they never earn), and the result per row. `--decide` refuses any `--boot` other than 10,000.
+- `stepa_summary.json`: one block per row (`1_dev_zero` … `6_round_usd`). It also gives the loader counts: swaps, BOOST rows excluded, first-time buys, and rows labelled as fake demand. With `--decide`, a `decision` block is added: each row's own thresholds (`own_thresholds`; DEV-ZERO's arms in the frozen order, each only after the earlier ones pass), the `PAYER_MASS.md` bar per row as defined by `../COUNT_ROWS_AMENDMENT_7.md` (`payer.py`: computed for SEAT-DRIFT, DEV-ZERO (per arm, Q terciles per `../COUNT_ROWS_AMENDMENT_9.md`) and REBUY-ANCHOR, in shares of each event's own Q per `../COUNT_ROWS_AMENDMENT_8.md`), and the result per row. `--decide` refuses any `--boot` other than 10,000.
 - One CSV per row:
   - `stepa_dev_zero.csv`: events and controls per arm, with the drop reason.
   - `stepa_rebuy_exits.csv`: per exit, proceeds, exit VWAP, gain and readable.

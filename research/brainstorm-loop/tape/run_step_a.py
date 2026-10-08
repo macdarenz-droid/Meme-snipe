@@ -121,9 +121,9 @@ NOT_COMPUTED = {
     "2_rebuy_anchor": {"passed": None, "status": "not computed"},
     "3_seat_drift": {"passed": None, "status": "not computed"},
 }
-# AMENDMENT_8 leaves open over which set DEV-ZERO's Q terciles are cut (CODE_REDTEAM.md Q-R1-i). Until it is ruled, the
-# DEV-ZERO bar is computed and reported but no arm earns.
-DEV_ZERO_Q_TERCILE_RULED = False
+# DEV-ZERO's Q terciles are cut per arm and day over its events and controls together (payer.dev_zero_bar), as
+# COUNT_ROWS_AMENDMENT_9 confirms (Q-R1-i). Arms can earn, in the fixed order.
+DEV_ZERO_Q_TERCILE_RULED = True   # COUNT_ROWS_AMENDMENT_9 confirms the cut (red team R1-25)
 
 
 def _strip(v):
