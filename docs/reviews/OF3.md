@@ -49,3 +49,16 @@ Card OF-3, `research/z-h-estimate/OLD-FAITHFUL.md` §5. Builder: the data builde
 15. **m8 / reviewer m1.** Before deleting a unit's K2 copy, append its k2 lines to `units.log.partial` and fsync; the trim resumes from `units.k3` plus that file. Give the trim its own time budget, measured on batch 1 (**VERIFY**).
 16. **Reviewer m3.** Keep pool deposits and withdrawals, and any other reserve-changing pool instruction (PM-01 part 7 names `boost_buy_and_burn` and buybacks), as canonical-pool transactions in K2 and K3: PM-01 depends on depth. Fixture tests per discriminator. The scanner revision is not frozen before batch 1, so this is in time.
 17. **Reviewer m4.** Batch 1 records the runner's free disk on the volume that holds `$RUNNER_TEMP` (**VERIFY**), beside the sizes.
+
+## Round 2 (head `48ac220c`): reviewer PASS (2 MINOR); red team PASS, 0 MAJOR, 4 MINOR
+
+- Both: rulings 7–17 applied; test-ci 217/0, 7 new cases fail on the old code; the reserve-changing set comes from the pinned IDL with a fixture per discriminator; the disk watcher cannot hit the wrong process.
+- Minors: the trim step always passes "-" as the prior list, so once OF-5 wires it, a day could pass scan-day and fail at the trim (red team m1; reviewer m2: until then every day after 07-22 is refused before any read, batch 2 included); a trim stopped by its budget is chained and re-trims from scratch (m2); a torn k2 append can lose a unit's hashes before its K2 copy is deleted (m3); the read-done path copies a list without checking its sha256 against the units (m4); a disk stop exits 75 (resumable) instead of failing the day (reviewer m1).
+
+### Supervisor rulings for round 3 (8 Oct 2026, 5:17 PM)
+
+18. **m1.** Both trim calls take `${ARCHIVE_PRIOR_LIST:--}` (and the sums); a test-ci case where the same prior inputs pass scan-day and trim-day.
+19. **Reviewer m2.** The OF-5 row states that until the prior list is wired, only 07-22 can be read; batch 2 (07-23) waits for OF-5.
+20. **m2 and reviewer m1.** A disk stop and a trim out of budget are not resumable: exit 1 with the reason, the day counts as failed, the chain holds (ruling 7). Tests.
+21. **m3.** Write a unit's k2 lines to a temp file, then append and sync; on resume, require the unit's k2 line count to equal its `.zst` count before deleting the K2 copy. Test with a torn line.
+22. **m4.** The read-done path checks the list's sha256 against every unit's `migration_list_sha256` before copying it. Test.
