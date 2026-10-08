@@ -11,7 +11,7 @@
 import type { Clock, Result } from '@bot/types';
 import type { RequestOptions, RpcClient, TooLargeInfo } from './client.ts';
 import { methodSpec, type MethodClass } from './methods.ts';
-import type { ProviderRegistry } from './providers.ts';
+import { floorProblems, type ProviderRegistry } from './providers.ts';
 import { DeadlineHeap, FifoList, type QueueEntry } from './queue.ts';
 import { MAX_TIMER_MS } from './timers.ts';
 import type {
@@ -340,6 +340,13 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
     if (budgets.length > 0 && emptyRoom(budgets, overshoot0) < 1) {
       throw new RangeError(`overshootBytes leaves no room in an empty byte window of provider ${p.config.label}`);
     }
+  }
+  // Z03 ruling 31: a provider loaded under an allocation share keeps one request a minute below this gateway's own P0
+  // reserve, which may differ from the reserve the registry was checked with.
+  for (const p of deps.registry.providers) {
+    if (p.config.budgetShareBps === undefined) continue;
+    const problems = floorProblems(p.config.limits, reserveBps);
+    if (problems.length > 0) throw new RangeError(`provider ${p.config.label}: with rpc.p0_reserve_bps ${reserveBps} its share leaves ${problems.join('; ')}`);
   }
   const modeOf = deps.mode ?? ((): GatewayMode => 'normal');
   const over80 = (c: ResolvedProvider['config']): boolean => c.metering !== null && (deps.usage?.projectedOver80(c.label) ?? true);

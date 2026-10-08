@@ -4,7 +4,6 @@
 // Ported from Snipe-solana card C03 (#6 @ 6ae4d62), review fixes C03 R4 and N2 included. Z03 adds `limits.ownerMaxRps`
 // (SPEC-A A-M14-02: the bucket runs at the lower of the configured rate and the owner's cap).
 import type { Result } from '@bot/types';
-import { DEFAULT_P0_RESERVE_BPS } from './gateway.ts';
 import { methodSpec } from './methods.ts';
 import type { DocumentedLimit, GatewayContext, LogPort, ProviderConfig, ResolvedProvider, SecretSource } from './types.ts';
 
@@ -23,8 +22,11 @@ export interface RegistryOptions {
    * `Allocation`.
    */
   allocation?: Allocation;
-  /** `rpc.p0_reserve_bps` (default DEFAULT_P0_RESERVE_BPS): the part of each rate only P0 may use (ruling 25). */
-  p0ReserveBps?: number;
+  /**
+   * `rpc.p0_reserve_bps`: the part of each rate only P0 may use (rulings 25, 31). Required, with no default, so the floor
+   * is checked against the reserve the gateway will run with; `createRpcGateway` checks it again with its own.
+   */
+  p0ReserveBps: number;
 }
 
 /**
@@ -66,10 +68,28 @@ export const PUBLIC_MAINNET_LIMITS: readonly DocumentedLimit[] = Object.freeze([
  * vault and wallet reads, fill and expiry proofs, blockhash and slot. A provider counts toward the engine's two live
  * readers only when it serves all of them.
  */
-export const P0_READ_METHODS: readonly string[] = Object.freeze(['getAccountInfo', 'getMultipleAccounts', 'getTransaction', 'getSlot', 'getSignatureStatuses', 'getLatestBlockhash']);
+export const P0_READ_METHODS: readonly string[] = Object.freeze([
+  'getAccountInfo', 'getMultipleAccounts', 'getTransaction', 'getSlot', 'getSignatureStatuses', 'getLatestBlockhash',
+  'getTokenAccountBalance',                       // ruling 30: the sell amount at exit and the 1-2 s evidence poll (ARCH M19, M20)
+]);
 
 /** The least rate a nonzero allocation share may leave a process: one request a minute (Z03 ruling 24). */
 export const MIN_SHARED_RPS = 1 / 60;
+
+/**
+ * The rates of `limits` below one request a minute, each in full and in the part below the P0 reserve (every bucket
+ * keeps `reserveBps` for P0; gateway.ts `Bucket`), as messages; empty when none (Z03 rulings 24, 25, 31).
+ */
+export function floorProblems(limits: ProviderConfig['limits'], reserveBps: number): string[] {
+  const out: string[] = [];
+  const { rps, heavyRps, perMethodRps, sendRps } = limits;
+  for (const [name, rate] of [['rps', rps], ['heavyRps', heavyRps], ['perMethodRps', perMethodRps], ['sendRps', sendRps]] as const) {
+    if (rate === undefined) continue;
+    if (rate < MIN_SHARED_RPS) out.push(`${name} at ${rate} req/s, below one request a minute`);
+    else if ((rate * (10_000 - reserveBps)) / 10_000 < MIN_SHARED_RPS) out.push(`${name} below P0 at ${(rate * (10_000 - reserveBps)) / 10_000} req/s, below one request a minute`);
+  }
+  return out;
+}
 
 /** Owner rule (2026-10-06): configured rates stay at or below this share of every documented limit. */
 export const MAX_SHARE_OF_DOCUMENTED = 0.5;
@@ -231,7 +251,7 @@ function checkOne(raw: unknown, i: number, problems: ConfigProblem[]): ProviderC
 }
 
 /** Static validation of `rpc.providers` (no secrets read). Returned configs carry the owner's cap (`withOwnerCap`). */
-export function validateProviderConfigs(raw: unknown, opts: RegistryOptions): Result<ProviderConfig[], ConfigError> {
+export function validateProviderConfigs(raw: unknown, opts: Pick<RegistryOptions, 'context'>): Result<ProviderConfig[], ConfigError> {
   const problems: ConfigProblem[] = [];
   if (!Array.isArray(raw)) return { ok: false, error: { code: 'E_CONFIG', problems: [{ key: 'rpc.providers', message: 'must be a list' }] } };
   const checked = raw.map((p, i) => checkOne(p, i, problems));
@@ -270,21 +290,16 @@ export function loadProviders(raw: unknown, secrets: SecretSource, opts: Registr
     return { ok: false, error: { code: 'E_CONFIG', problems: [{ key: 'rpc.allocation', message: 'the provider allocation is required (each process reads under its share of every budget; ARCH D04)' }] } };
   }
   const shares = sharesOf(opts.allocation, valid.value.map((c) => c.label), problems);
-  const reserveBps = opts.p0ReserveBps ?? DEFAULT_P0_RESERVE_BPS;
+  if (!Number.isInteger(opts.p0ReserveBps) || opts.p0ReserveBps < 1_000 || opts.p0ReserveBps > 5_000) {
+    return { ok: false, error: { code: 'E_CONFIG', problems: [{ key: 'rpc.p0_reserve_bps', message: 'must be 1,000-5,000' }] } };
+  }
   for (const c of valid.value) {
     const share = shares.get(c.label) ?? 0;
     if (share === 0) continue;
-    // Z03 rulings 24 and 25: a share that is on leaves every rate of the provider at least one request a minute (its
-    // total, heavy, per-method and send rates, and the part of the total below P0); 0 is the only way to turn it off.
-    const { rps, heavyRps, perMethodRps, sendRps } = c.limits;
-    const rates: Array<[string, number | undefined]> = [
-      ['rps', rps], ['heavyRps', heavyRps], ['perMethodRps', perMethodRps], ['sendRps', sendRps],
-      ['rps below P0', (rps * (10_000 - reserveBps)) / 10_000],
-    ];
-    for (const [name, rate] of rates) {
-      if (rate !== undefined && (rate * share) / 10_000 < MIN_SHARED_RPS) {
-        problems.push({ key: `rpc.allocation[${c.label}]`, message: `a share of ${share} bps leaves ${name} at ${(rate * share) / 10_000} req/s, below one request a minute; use 0 to turn it off` });
-      }
+    // Z03 rulings 24, 25 and 31: a share that is on leaves every rate of the provider at least one request a minute,
+    // also below the P0 reserve; 0 is the only way to turn it off.
+    for (const problem of floorProblems(mapRates(c, (v) => (v * share) / 10_000).limits, opts.p0ReserveBps)) {
+      problems.push({ key: `rpc.allocation[${c.label}]`, message: `a share of ${share} bps leaves ${problem}; use 0 to turn it off` });
     }
   }
   // Z03 ruling 23 (ARCH D04: a primary and a backup): the engine starts only with two live read providers it has a share of.

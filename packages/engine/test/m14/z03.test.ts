@@ -286,17 +286,17 @@ describe('Z03 round 2: gateway pauses, served methods, JSON-RPC rate limits, 503
   it('ruling m12: the engine needs the allocation; shares scale every rate; shares above 10,000 or a share of 0 refuse or disable', () => {
     const secrets = envSecrets({ RPC_SHYFT_URL: 'https://shyft.example/k', RPC_CHAINSTACK_URL: 'https://chainstack.example/k' });
     const log = new RecordingLogPort();
-    const none = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine' }, log);
+    const none = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', p0ReserveBps: 2_000 }, log);
     assert.ok(!none.ok && none.error.problems[0]?.key === 'rpc.allocation');
     const split = { consumer: 'engine', shares: { shyft: { engine: 8_000, sentinel: 2_000 }, chainstack: { engine: 5_000, sentinel: 4_000, signer: 1_000 } } };
-    const ok = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', allocation: split }, log);
+    const ok = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', p0ReserveBps: 2_000, allocation: split }, log);
     assert.ok(ok.ok);
     assert.deepEqual(ok.value.providers.map((p) => [p.config.label, p.config.limits.rps]), [['shyft', 4], ['chainstack', 0.25]]);
     const over = { consumer: 'engine', shares: { shyft: { engine: 8_000, sentinel: 3_000 }, chainstack: { engine: 10_000 } } };
-    const r = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', allocation: over }, log);
+    const r = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', p0ReserveBps: 2_000, allocation: over }, log);
     assert.ok(!r.ok && r.error.problems.some((p) => p.key === 'rpc.allocation[shyft]' && /allocation_exceeds_cap/.test(p.message)));
     const sentinelOnly = { consumer: 'sentinel', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 9_000, sentinel: 1_000 } } };
-    const s = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'research', allocation: sentinelOnly }, log);
+    const s = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'research', p0ReserveBps: 2_000, allocation: sentinelOnly }, log);
     assert.ok(s.ok);
     assert.deepEqual(s.value.disabled, [{ label: 'shyft', reason: 'no_allocation' }]);
     assert.deepEqual(s.value.providers.map((p) => [p.config.label, p.config.limits.rps]), [['chainstack', 0.05]]);
@@ -313,7 +313,7 @@ describe('Z03 round 3, ruling 15: byte budgets are split across processes like r
   };
   const firstByteBudget = async (shareBps: number): Promise<number | undefined> => {
     const secrets = envSecrets({ RPC_PUBLIC_URL: 'https://api.mainnet-beta.solana.com/' });
-    const loaded = loadProviders([publicRpc], secrets, { context: 'research', allocation: { consumer: 'research', shares: { public: { research: shareBps, other: 10_000 - shareBps } } } }, new RecordingLogPort());
+    const loaded = loadProviders([publicRpc], secrets, { context: 'research', p0ReserveBps: 2_000, allocation: { consumer: 'research', shares: { public: { research: shareBps, other: 10_000 - shareBps } } } }, new RecordingLogPort());
     assert.ok(loaded.ok);
     assert.equal(loaded.value.providers[0]?.config.budgetShareBps, shareBps);
     const time = new FakeTime();
@@ -333,9 +333,9 @@ describe('Z03 round 3, ruling 15: byte budgets are split across processes like r
 
   it('shares above 10,000 bps on one provider are refused, research included', () => {
     const secrets = envSecrets({ RPC_PUBLIC_URL: 'https://api.mainnet-beta.solana.com/' });
-    const r = loadProviders([publicRpc], secrets, { context: 'research', allocation: { consumer: 'research', shares: { public: { research: 6_000, engine: 5_000 } } } }, new RecordingLogPort());
+    const r = loadProviders([publicRpc], secrets, { context: 'research', p0ReserveBps: 2_000, allocation: { consumer: 'research', shares: { public: { research: 6_000, engine: 5_000 } } } }, new RecordingLogPort());
     assert.ok(!r.ok && r.error.problems.some((p) => p.key === 'rpc.allocation[public]'));
-    const none = loadProviders([publicRpc], secrets, { context: 'research' }, new RecordingLogPort());
+    const none = loadProviders([publicRpc], secrets, { context: 'research', p0ReserveBps: 2_000 }, new RecordingLogPort());
     assert.ok(!none.ok && none.error.problems[0]?.key === 'rpc.allocation');
   });
 });
@@ -343,7 +343,7 @@ describe('Z03 round 3, ruling 15: byte budgets are split across processes like r
 describe('Z03 round 4: allocation checks (rulings 22, 23, 24)', () => {
   const secrets = envSecrets({ RPC_SHYFT_URL: 'https://shyft.example/k', RPC_CHAINSTACK_URL: 'https://chainstack.example/k' });
   const load = (allocation: unknown, context: 'engine' | 'research' = 'engine') =>
-    loadProviders(DEFAULT_PROVIDERS, secrets, { context, allocation: allocation as never }, new RecordingLogPort());
+    loadProviders(DEFAULT_PROVIDERS, secrets, { context, p0ReserveBps: 2_000, allocation: allocation as never }, new RecordingLogPort());
   const keys = (r: ReturnType<typeof load>): string[] => (r.ok ? [] : r.error.problems.map((p) => p.key));
 
   it('ruling 22: a malformed allocation is E_CONFIG, never a TypeError', () => {
@@ -389,7 +389,7 @@ describe('Z03 round 5: every scaled rate keeps one request a minute (ruling 25);
   const chainstack = DEFAULT_PROVIDERS[1] as ProviderConfig;
   const both = { consumer: 'engine', shares: { shyft: { engine: 5_000 }, chainstack: { engine: 10_000 } } };
   const problems = (configs: ProviderConfig[], allocation = both) => {
-    const r = loadProviders(configs, secrets, { context: 'engine', allocation }, new RecordingLogPort());
+    const r = loadProviders(configs, secrets, { context: 'engine', p0ReserveBps: 2_000, allocation }, new RecordingLogPort());
     return r.ok ? [] : r.error.problems.map((p) => `${p.key} ${p.message}`);
   };
 
@@ -412,7 +412,7 @@ describe('Z03 round 5: every scaled rate keeps one request a minute (ruling 25);
     const p = problems([shyft, { ...chainstack, methods: ['getHealth'] }]);
     assert.deepEqual(p.map((x) => x.split(' ')[0]), ['rpc.allocation']);
     assert.match(p[0] as string, /serving every P0 read method; it has 1/);
-    assert.deepEqual(P0_READ_METHODS, ['getAccountInfo', 'getMultipleAccounts', 'getTransaction', 'getSlot', 'getSignatureStatuses', 'getLatestBlockhash']);
+    assert.deepEqual(P0_READ_METHODS, ['getAccountInfo', 'getMultipleAccounts', 'getTransaction', 'getSlot', 'getSignatureStatuses', 'getLatestBlockhash', 'getTokenAccountBalance']);
     assert.ok(DEFAULT_PROVIDERS.every((c) => P0_READ_METHODS.every((m) => c.methods.includes(m))));
   });
 });
@@ -436,8 +436,37 @@ describe('Z03 round 5 addendum (rulings 27, 28)', () => {
     const secrets = envSecrets({ RPC_SHYFT_URL: 'https://shyft.example/k', RPC_CHAINSTACK_URL: 'https://chainstack.example/k' });
     let r: ReturnType<typeof loadProviders> | undefined;
     assert.doesNotThrow(() => {
-      r = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', allocation: { consumer: 'engine', shares: { shyft: null, chainstack: { engine: 10_000 } } } as never }, new RecordingLogPort());
+      r = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', p0ReserveBps: 2_000, allocation: { consumer: 'engine', shares: { shyft: null, chainstack: { engine: 10_000 } } } as never }, new RecordingLogPort());
     });
     assert.ok(r !== undefined && !r.ok && r.error.problems.some((p) => p.key === 'rpc.allocation[shyft]'));
+  });
+});
+
+describe('Z03 round 6 (rulings 30, 31)', () => {
+  const secrets = envSecrets({ RPC_SHYFT_URL: 'https://shyft.example/k', RPC_CHAINSTACK_URL: 'https://chainstack.example/k' });
+  const shyft = DEFAULT_PROVIDERS[0] as ProviderConfig;
+  const chainstack = DEFAULT_PROVIDERS[1] as ProviderConfig;
+
+  it('ruling 30: a backup that does not serve getTokenAccountBalance does not count', () => {
+    const noBalance = { ...chainstack, methods: chainstack.methods.filter((m) => m !== 'getTokenAccountBalance') };
+    const r = loadProviders([shyft, noBalance], secrets, { context: 'engine', p0ReserveBps: 2_000, allocation: { consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 10_000 } } } }, new RecordingLogPort());
+    assert.ok(!r.ok && r.error.problems.some((p) => p.key === 'rpc.allocation' && /it has 1$/.test(p.message)));
+  });
+
+  it('ruling 31: a registry checked at reserve 2,000 is refused by a gateway at 5,000 when a 417 bps Chainstack share falls below the floor', () => {
+    const allocation = { consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 417 } } };
+    const loaded = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', p0ReserveBps: 2_000, allocation }, new RecordingLogPort());
+    assert.ok(loaded.ok);
+    const time = new FakeTime();
+    const { log, metrics } = m27(time);
+    const make = (p0ReserveBps: number) => createRpcGateway({ registry: loaded.value, context: 'engine', client: new FakeClient(time), clock: time, scheduler: time,
+      log, metrics, stopStore: new MemoryStopStore(), p0ReserveBps });
+    assert.doesNotThrow(() => make(2_000));
+    assert.throws(() => make(5_000), /provider chainstack: with rpc\.p0_reserve_bps 5000/);
+    // At 5,000 the registry itself refuses the same share; the reserve is required, never a default.
+    const at5000 = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', p0ReserveBps: 5_000, allocation }, new RecordingLogPort());
+    assert.ok(!at5000.ok && at5000.error.problems.some((p) => p.key === 'rpc.allocation[chainstack]'));
+    const noReserve = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', allocation } as never, new RecordingLogPort());
+    assert.ok(!noReserve.ok && noReserve.error.problems[0]?.key === 'rpc.p0_reserve_bps');
   });
 });
