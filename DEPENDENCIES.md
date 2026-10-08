@@ -38,6 +38,7 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 
 | Package | Purpose | Licence | Reviewer |
 |---|---|---|---|
+| `@axe-core/playwright` | Automated accessibility checks in the dashboard's Playwright tests (UI-T01) (dev only) | MPL-2.0 | supervisor (Z05 brief, 2026-10-08) |
 | `@cacheable/memory` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@cacheable/utils` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@eslint-community/eslint-utils` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -47,6 +48,12 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `@eslint/core` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | Apache-2.0 | supervisor (Z01 brief, 2026-10-07) |
 | `@eslint/object-schema` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | Apache-2.0 | supervisor (Z01 brief, 2026-10-07) |
 | `@eslint/plugin-kit` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | Apache-2.0 | supervisor (Z01 brief, 2026-10-07) |
+| `@floating-ui/core` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@floating-ui/dom` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@floating-ui/react-dom` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@floating-ui/utils` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@fontsource-variable/inter` | Self-hosted Inter variable font files for the dashboard (UI-T03, D-UI-01) | OFL-1.1 | supervisor (Z05 message, 2026-10-08) |
+| `@fontsource-variable/jetbrains-mono` | Self-hosted JetBrains Mono variable font files for the dashboard (UI-T03, D-UI-01) | OFL-1.1 | supervisor (Z05 message, 2026-10-08) |
 | `@humanfs/core` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | Apache-2.0 | supervisor (Z01 brief, 2026-10-07) |
 | `@humanfs/node` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | Apache-2.0 | supervisor (Z01 brief, 2026-10-07) |
 | `@humanfs/types` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | Apache-2.0 | supervisor (Z01 brief, 2026-10-07) |
@@ -58,6 +65,38 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `@keyv/bigmap` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@keyv/serialize` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@oxc-project/types` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `@playwright/test` | Dashboard end-to-end, visual and accessibility tests (UI-T01) (dev only) | Apache-2.0 | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/primitive` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-arrow` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-collection` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-tabs` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-compose-refs` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-context` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-context-menu` | Accessible context-menu primitive for the dashboard (UI-T04) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-direction` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-tabs` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-dismissable-layer` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-dropdown-menu` | Accessible menu primitive for the dashboard (UI-T04) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-focus-guards` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-focus-scope` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-id` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-menu` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-popover` | Accessible popover primitive for the dashboard (UI-T04) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-popper` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-portal` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-presence` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-primitive` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-roving-focus` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-tabs` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-slot` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-tabs` | Accessible tabs primitive for the dashboard (UI-T04) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-tooltip` | Accessible tooltip primitive for the dashboard (UI-T04) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-use-callback-ref` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-use-controllable-state` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-use-effect-event` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-use-is-hydrated` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-tabs` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-use-layout-effect` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-use-rect` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-use-size` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/react-visually-hidden` | Transitive, required by `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@radix-ui/rect` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover`, `@radix-ui/react-tooltip` | MIT | supervisor (Z05 brief, 2026-10-08) |
 | `@rolldown/binding-android-arm-eabi` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@rolldown/binding-android-arm64` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@rolldown/binding-darwin-arm64` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
@@ -74,12 +113,22 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `@rolldown/binding-win32-arm64-msvc` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@rolldown/binding-win32-x64-msvc` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@rolldown/pluginutils` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `@tanstack/react-store` | Transitive, required by `@tanstack/react-table` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@tanstack/react-table` | DataTable (UI-T06): headless table state (sorting, visibility, sizing, resizing, pinning) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@tanstack/react-virtual` | DataTable (UI-T06): row virtualisation above 200 rows | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@tanstack/store` | Transitive, required by `@tanstack/react-table` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@tanstack/table-core` | Transitive, required by `@tanstack/react-table` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@tanstack/virtual-core` | Transitive, required by `@tanstack/react-virtual` | MIT | supervisor (Z05 brief, 2026-10-08) |
 | `@types/chai` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@types/deep-eql` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@types/esrecurse` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@types/estree` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint`, `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@types/json-schema` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@types/node` | Node.js 22 type definitions for the type checker (dev only) | MIT | supervisor (in the integration branch before Z01) |
+| `@types/react` | React type definitions for the type checker (dev only) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@types/react-dom` | React DOM type definitions for the type checker (dev only) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `@types/whatwg-mimetype` | Transitive (dev only), required by `happy-dom` | MIT | supervisor (Z05 message, 2026-10-08) |
+| `@types/ws` | Transitive (dev only), required by `happy-dom` | MIT | supervisor (Z05 message, 2026-10-08) |
 | `@typescript-eslint/parser` | TypeScript parser for ESLint and the import check (dev only) | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@typescript-eslint/project-service` | Transitive (dev only), required by `@typescript-eslint/parser` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@typescript-eslint/scope-manager` | Transitive (dev only), required by `@typescript-eslint/parser` | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -112,15 +161,21 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `acorn` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `acorn-jsx` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `ajv` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
+| `aria-hidden` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
 | `assertion-error` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `axe-core` | Transitive (dev only), required by `@axe-core/playwright` | MPL-2.0 | supervisor (Z05 brief, 2026-10-08) |
 | `balanced-match` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `brace-expansion` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
+| `buffer-image-size` | Transitive (dev only), required by `happy-dom` | MIT | supervisor (Z05 message, 2026-10-08) |
 | `cacheable` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `chai` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `cross-spawn` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
+| `csstype` | Transitive (dev only), required by `@types/react`, `@types/react-dom` | MIT | supervisor (Z05 brief, 2026-10-08) |
 | `debug` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `deep-is` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `detect-libc` | Transitive (dev only), required by `vitest` | Apache-2.0 | supervisor (in the integration branch before Z01) |
+| `detect-node-es` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `entities` | Transitive (dev only), required by `happy-dom` | BSD-2-Clause | supervisor (Z05 message, 2026-10-08) |
 | `es-module-lexer` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `escape-string-regexp` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `eslint` | Linter for `pnpm lint` and the bot rule package (dev only) | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -143,7 +198,9 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `flat-cache` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `flatted` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | ISC | supervisor (Z01 brief, 2026-10-07) |
 | `fsevents` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `get-nonce` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
 | `glob-parent` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | ISC | supervisor (Z01 brief, 2026-10-07) |
+| `happy-dom` | DOM for the dashboard's Vitest component tests (UI-T01) (dev only) | MIT | supervisor (Z05 message, 2026-10-08) |
 | `hashery` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `hookified` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `ignore` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -168,6 +225,7 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `lightningcss-win32-arm64-msvc` | Transitive (dev only), required by `vitest` | MPL-2.0 | supervisor (in the integration branch before Z01) |
 | `lightningcss-win32-x64-msvc` | Transitive (dev only), required by `vitest` | MPL-2.0 | supervisor (in the integration branch before Z01) |
 | `locate-path` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
+| `lucide-react` | Icons for the dashboard (UI-T04, DS Iconography) | ISC | supervisor (Z05 brief, 2026-10-08) |
 | `magic-string` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `minimatch` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | BlueOak-1.0.0 | supervisor (in the integration branch before Z01) |
 | `ms` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
@@ -181,12 +239,20 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `path-key` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `picocolors` | Transitive (dev only), required by `vitest` | ISC | supervisor (in the integration branch before Z01) |
 | `picomatch` | Transitive (dev only), required by `@typescript-eslint/parser`, `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `playwright` | Transitive (dev only), required by `@playwright/test` | Apache-2.0 | supervisor (Z05 brief, 2026-10-08) |
+| `playwright-core` | Transitive (dev only), required by `@axe-core/playwright`, `@playwright/test` | Apache-2.0 | supervisor (Z05 brief, 2026-10-08) |
 | `postcss` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `prelude-ls` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `punycode` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `pure-rand` | Transitive (dev only), required by `fast-check` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `qified` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
+| `react` | Dashboard UI library (UI-T01, D-UI-04) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `react-dom` | React DOM renderer for the dashboard (UI-T01) | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `react-remove-scroll` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `react-remove-scroll-bar` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `react-style-singleton` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
 | `rolldown` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `scheduler` | Transitive, required by `react-dom` | MIT | supervisor (Z05 brief, 2026-10-08) |
 | `semver` | Transitive (dev only), required by `@typescript-eslint/parser` | ISC | supervisor (in the integration branch before Z01) |
 | `shebang-command` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `shebang-regex` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
@@ -196,15 +262,21 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `tinyexec` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `tinyglobby` | Transitive (dev only), required by `@typescript-eslint/parser`, `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `ts-api-utils` | Transitive (dev only), required by `@typescript-eslint/parser` | MIT | supervisor (Z01 brief, 2026-10-07) |
+| `tslib` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | 0BSD | supervisor (Z05 brief, 2026-10-08) |
 | `type-check` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `typescript` | Type checker: 7.0.2 for `pnpm typecheck` and every package's `tsc` (in the integration branch before Z01). 6.0.3 (published 2026-04-16, Apache-2.0) only in `tools/`, as the TypeScript peer of `@typescript-eslint/parser`: its peer range is below 6.1.0 and TypeScript 7 has no JS compiler API; used only by ESLint and the import-graph check (`tools/eslint/test/typescript6.test.ts`); remove it once typescript-eslint supports TypeScript 7 (dev only) | Apache-2.0 | supervisor (7.0.2 in the integration branch before Z01; 6.0.3 approved 2026-10-07, limited to `tools/`) |
 | `undici-types` | Transitive (dev only), required by `@types/node`, `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `uri-js` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | BSD-2-Clause | supervisor (Z01 brief, 2026-10-07) |
-| `vite` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `use-callback-ref` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `use-sidecar` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `use-sync-external-store` | Transitive, required by `@tanstack/react-table` | MIT | supervisor (Z05 brief, 2026-10-08) |
+| `vite` | Bundler that builds the dashboard to static files (UI-T01, dev only of `@bot/dashboard`); also transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01; as the dashboard bundler, Z05 message, 2026-10-08) |
 | `vitest` | Test runner for `pnpm test` (dev only) | MIT | supervisor (in the integration branch before Z01) |
+| `whatwg-mimetype` | Transitive (dev only), required by `happy-dom` | MIT | supervisor (Z05 message, 2026-10-08) |
 | `which` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | ISC | supervisor (in the integration branch before Z01) |
 | `why-is-node-running` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `word-wrap` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
+| `ws` | Transitive (dev only), required by `happy-dom` | MIT | supervisor (Z05 message, 2026-10-08) |
 | `yocto-queue` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `zod` | Runtime schema check of every dashboard view model in `@bot/contract` (B-M28-01; UI.md UI-F32), imported by the dashboard and the server; production dependency. 4.6.5, published 2026-09-13 (24 days old on 2026-10-07), no dependencies of its own, no install script (npm registry, read 2026-10-07) | MIT | supervisor (Z02 brief, 2026-10-08) |
 
