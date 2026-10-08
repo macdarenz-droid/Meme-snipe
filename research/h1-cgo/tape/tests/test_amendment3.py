@@ -88,6 +88,28 @@ class D60Features(unittest.TestCase):
         self.assertEqual(g.iloc[0].d60, first.d60)
         self.assertEqual(g.iloc[0].d60_habit_holders, first.d60_habit_holders)
 
+    def test_position_emptied_by_transfer_loses_its_open(self):
+        from tests.synth import t_row
+        u, c, amm, rt = d60_world()
+        # A (has a habit) sends every token away, then gets them back: the new position has no recorded open
+        out_back = [t_row(5000, 1, "transfer", "A", "Z", 50 * 10**12), t_row(6000, 1, "transfer", "Z", "A", 50 * 10**12)]
+        f = compute_features(*self._dp(u), build_streams(u, c[c.mint == "M"], amm, frame(out_back, T_COLS), tcov(),
+                                                          habits=HB.Habits(rt)))
+        r = f.iloc[0]
+        self.assertEqual(r.d60_habit_holders, 1)  # A still has a habit
+        self.assertEqual(r.d60_traceable, 0.0)  # but A's tokens are no longer traceable
+        self.assertEqual(r.d60, 0.0)
+        # a burn of everything clears the open too
+        burn = [t_row(5000, 1, "burn", "A", "", 50 * 10**12), t_row(6000, 1, "transfer", "Z2", "A", 1)]
+        st = build_streams(u, c[c.mint == "M"], amm, frame(burn, T_COLS), tcov(), habits=HB.Habits(rt))["M"]
+        st.advance(7000)
+        self.assertNotIn("A", st.open_time)
+
+    @staticmethod
+    def _dp(u, last=60_000):
+        clock = Clock.from_blocks(blocks(last))
+        return (schedule_windows(decision_points(u, clock, [(0, last)]), clock),)
+
     def test_controls(self):
         u, c, amm, rt = d60_world()
         f = feats_of(u, c, amm, rt)

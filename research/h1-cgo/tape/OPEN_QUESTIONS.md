@@ -63,7 +63,7 @@
 **D60** (`habits.py`, `MintStream.snapshot`, `stats.d60_gate`, `stats.d60_arm`)
 - **D1. Round trip.** A position opens on a buy that takes the owner's balance from 0 (`owner_token_pre` = 0, `owner_token_post` > 0). It closes on a sell that leaves 0. The hold time is close time − open time. Round trips on every coin on the tape count. Protocol and BOOST swaps are left out. Positions that open or close by transfer are not seen.
 - **D2. Habit.** The median hold time over the owner's round trips that closed at or before the decision slot.
-- **D3. Due.** A holder is due when that median ≤ the age of their current position + 60 minutes, so an overdue holder counts as due. The position's age is measured from its open on this coin. A holder with no habit, or no recorded open, adds nothing to D60.
+- **D3. Due.** A holder is due when that median ≤ the age of their current position + 60 minutes, so an overdue holder counts as due. The position's age is measured from its open on this coin. A holder with no habit, or no recorded open, adds nothing to D60. A position emptied by a transfer or a burn loses its open, so tokens that come back later are untraceable.
 - **D4. Scale.** D60 = due tokens ÷ all tokens of included holders (the float). Realised sells = every token sold on the pool in (decision slot, last slot before hour + 60 min] ÷ the same float. Sells by holders who bought after the decision also count, which makes ρ harder to reach.
 - **D5. Habit classifier at ≥ 60%.** The pooled share of (decision point, holder) pairs whose holder has a habit, over eligible, in-time Step A points.
 - **D6. ρ lower bound.** A pool-clustered bootstrap stratified by day: 10,000 resamples, the 2.5th percentile.

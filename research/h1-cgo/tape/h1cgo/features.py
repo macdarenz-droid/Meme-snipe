@@ -237,9 +237,13 @@ class MintStream:
             if k == "transfer":
                 if frm and to:  # rows with an empty owner are left out (historical-data.md, holder rebuild)
                     L.transfer(frm, to, amt)
+                    if L.balance(frm) == 0:  # a position emptied by transfer has ended: its open no longer applies
+                        self.open_time.pop(frm, None)
             elif k == "burn":
                 if frm:
                     L.burn(frm, amt)
+                    if L.balance(frm) == 0:
+                        self.open_time.pop(frm, None)
             elif k == "mint":
                 if to:
                     L.mint(to, amt)
