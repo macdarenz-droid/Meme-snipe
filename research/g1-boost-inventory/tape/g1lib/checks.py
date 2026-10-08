@@ -1,6 +1,5 @@
 """PREREG §7 checks 2–5 on the tape (check 1, the planted future marker, is a unit test: tests/test_asof.py).
 Each check returns counts and shares only."""
-import hashlib
 import json
 import os
 from collections import Counter
@@ -81,29 +80,3 @@ def check4_target(tape, mkt: Market) -> dict:
 def token_programs(tape) -> dict:
     ce = tape.events["CreateEvent"]
     return {str(k): int(v) for k, v in ce.get("token_program", pd.Series(dtype=str)).fillna("").value_counts().items()}
-
-
-def input_hashes(units) -> dict:
-    """PREREG §7 check 5: sha256 of every input table read."""
-    out = {}
-    for u in units:
-        for f in sorted(os.listdir(u.path)):
-            h = hashlib.sha256()
-            with open(os.path.join(u.path, f), "rb") as fh:
-                for b in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(b)
-            out[f"{u.day}/{u.from_slot}-{u.to_slot}/{f}"] = h.hexdigest()
-    return out
-
-
-def code_hashes() -> dict:
-    out = {}
-    root = P.HERE
-    for dp, _, fs in os.walk(root):
-        if "__pycache__" in dp or os.sep + "out" in dp:
-            continue
-        for f in sorted(fs):
-            if f.endswith((".py", ".ts", ".json", ".md")):
-                p = os.path.join(dp, f)
-                out[os.path.relpath(p, root)] = hashlib.sha256(open(p, "rb").read()).hexdigest()
-    return out

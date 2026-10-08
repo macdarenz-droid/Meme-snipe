@@ -21,6 +21,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from g1lib import guard  # noqa: E402
 from g1lib import params as P  # noqa: E402
 from g1lib.load import find_units, load  # noqa: E402
 
@@ -45,7 +46,7 @@ def _json(path, obj):
 
 
 def _tape(a, links=True):
-    units = find_units(a.units, a.days)
+    units = find_units(a.units, a.days, allow_subset=getattr(a, "dev_subset", False))
     if not units:
         sys.exit("no units found")
     log(f"{len(units)} units, days {sorted(set(u.day for u in units))}")
@@ -61,6 +62,9 @@ def cmd_decide(a):
     d = compute_features(tape, d, ctx, log=log)
     os.makedirs(a.out, exist_ok=True)
     d.to_csv(os.path.join(a.out, "decisions.csv"), index=False)
+    man = guard.make_manifest(units, guard.PLAN_SHA, dev=bool(a.dev_subset))
+    man["decisions_sha"] = guard.sha_file(os.path.join(a.out, "decisions.csv"))
+    guard.write_manifest(a.out, man)
     _json(os.path.join(a.out, "decisions_summary.json"), summarize_decisions(d, units))
     log(f"wrote {a.out}/decisions.csv")
 
@@ -104,6 +108,8 @@ def cmd_gate(a):
     from g1lib.features import FeatureContext
     from g1lib.market import Market
     units, tape = _tape(a)
+    man = guard.read_manifest(a.out)
+    guard.verify(man, units, allow_dev=True, files={"decisions_sha": os.path.join(a.out, "decisions.csv")})
     d = _remap(_decisions(a), tape)
     ctx = FeatureContext(tape)
     mkt = Market(tape)
@@ -113,6 +119,8 @@ def cmd_gate(a):
     trig.to_csv(os.path.join(a.out, "triggers.csv"), index=False)
     pd.DataFrame([{"mint": tape.names.name(k), **v} for k, v in flows.items()]).to_csv(os.path.join(a.out, "flows.csv"), index=False)
     res.pop("boost_slices").to_csv(os.path.join(a.out, "boost_slices.csv"), index=False)
+    res["dev_subset"] = man["dev_subset"]
+    res["complete_days"] = not man["dev_subset"]
     _json(os.path.join(a.out, "gate.json"), res)
     log(f"wrote {a.out}/gate.json")
 
@@ -124,7 +132,8 @@ def cmd_checks(a):
     mkt = Market(tape)
     res = {"check2_reserves": checks.check2_reserves(tape), "check3_tier": checks.check3_tier(tape, mkt),
            "check4_target": checks.check4_target(tape, mkt), "token_programs": checks.token_programs(tape),
-           "check5_inputs": checks.input_hashes(units), "check5_code": checks.code_hashes(),
+           "check5_inputs": guard.input_hashes(units), "check5_code_hash": guard.code_hash(),
+           "check5_plan_sha": guard.PLAN_SHA,
            "seeds": {"S0": P.S0_SEED, "bootstrap": P.BOOTSTRAP_SEED}}
     os.makedirs(a.out, exist_ok=True)
     _json(os.path.join(a.out, "checks.json"), res)
@@ -133,7 +142,12 @@ def cmd_checks(a):
 
 def cmd_freeze(a):
     from g1lib.score import freeze
+    man = guard.read_manifest(a.out)
+    guard.verify(man, files={"decisions_sha": os.path.join(a.out, "decisions.csv")})
+    if tuple(man["days"]) != guard.DISCOVERY_DAYS:
+        raise guard.GuardError(f"freeze needs exactly the discovery days {guard.DISCOVERY_DAYS}, got {man['days']}")
     fr = freeze(_decisions(a))
+    fr.update({k: man[k] for k in ("plan_sha", "inputs_digest", "code_hash", "decisions_sha", "units")})
     _json(os.path.join(a.out, "frozen.json"), fr)
     log(f"wrote {a.out}/frozen.json: {fr}")
 
@@ -144,6 +158,8 @@ def cmd_outcome(a):
     from g1lib import outcome
     from g1lib.market import Market
     units, tape = _tape(a, links=False)
+    man = guard.read_manifest(a.out)
+    guard.verify(man, units, allow_dev=a.counts_only, files={"decisions_sha": os.path.join(a.out, "decisions.csv")})
     d = _remap(_decisions(a), tape)
     t = outcome.run(Market(tape), d, with_secondary=not a.counts_only, log=log)
     if a.counts_only:
@@ -163,6 +179,8 @@ def cmd_outcome(a):
         log(f"wrote {a.out}/outcome_counts.json (no return columns)")
         return
     t.to_csv(os.path.join(a.out, "trades.csv"), index=False)
+    man["trades_sha"] = guard.sha_file(os.path.join(a.out, "trades.csv"))
+    guard.write_manifest(a.out, man)
     log(f"wrote {a.out}/trades.csv")
 
 
@@ -170,10 +188,14 @@ def cmd_score(a):
     if not a.allow_scoring:
         sys.exit("score computes the registered statistics; pass --allow-scoring only when the order of work allows it")
     from g1lib.score import judge
+    man = guard.read_manifest(a.out)
+    guard.verify(man, files={"decisions_sha": os.path.join(a.out, "decisions.csv"),
+                             "trades_sha": os.path.join(a.out, "trades.csv")})
     t = pd.read_csv(os.path.join(a.out, "trades.csv"))
     d = _decisions(a)
     with open(a.frozen) as f:
         fr = json.load(f)
+    guard.check_score(man, fr, a.role, t["day"].dropna().unique())
     res = judge(t, d, fr, a.role)
     _json(os.path.join(a.out, f"score_{a.role}.json"), res)
     log(f"wrote {a.out}/score_{a.role}.json")
@@ -188,6 +210,8 @@ def main(argv=None):
         if units:
             p.add_argument("--units", nargs="+", required=True)
             p.add_argument("--days", nargs="*")
+            p.add_argument("--dev-subset", action="store_true",
+                           help="development only: accept part of a day; freeze, score and outcome with returns refuse it")
 
     p = sub.add_parser("decide"); common(p); p.add_argument("--no-links", action="store_true"); p.set_defaults(f=cmd_decide)
     p = sub.add_parser("gate"); common(p); p.set_defaults(f=cmd_gate)
