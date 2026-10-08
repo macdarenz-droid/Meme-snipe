@@ -26,3 +26,11 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-4 bullet, plus the OF2.md ruling 73 notes
 10. **Red team m3, required.** The assemble store step creates the release with its files in one call, uploads only the files SHA256SUMS lists, and reads them back as publish-day does.
 11. **Red team m4, recorded.** A DECISIONS row: within one job, the tokenless and clean-shell split limits mistakes, not a compromised earlier step (shared workspace, runner sudo). Accepted as a known limit for the archive lane.
 12. **Red team note outside the diff (deploy.yml "Set up the daily summary" holds `DATA_STORE_TOKEN` in a step that is not clean).** Not this card. Recorded as an identified hardening item (REPORTS-TOKEN: a separate reports token or a clean step) for after the owner's resume.
+
+## Round 2 (head `93140d9d`)
+
+- Red team: PASS, 0 BLOCKER, 0 MAJOR, 1 MINOR. Round 1 m1–m3 are closed; ruling 6 holds and fails closed without the events tar.
+
+### Supervisor ruling for round 3 (9 Oct about 10:06 AM)
+
+13. **Red team MINOR, required.** The store-token checks match the literal `DATA_STORE_TOKEN` case-sensitively, while only the `run:` regex ignores case. GitHub's handling of secret-name case is not verified here, so the guard fails closed: every store-token check matches the secret name case-insensitively (for example `secrets\s*\.\s*data_store_token` with `re.I`). Test: `GH_TOKEN: ${{ secrets.data_store_token }}` in a step that is not clean is refused.
