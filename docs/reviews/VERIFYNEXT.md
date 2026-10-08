@@ -20,3 +20,7 @@ Review PASS, final. Red team 0 BLOCKER, 0 MAJOR, 2 MINOR. `multi_hop_swap` settl
 
 4. **MINOR 1.** RESULTS.md §7: replace "was not checked here" with the settled answer, citing this review and the IDL-REPIN card.
 5. **MINOR 2.** RESULTS.md V22: the "missing trailing fields read as zero" rule is stated for accounts only, not for instruction args (`partial_fill` is a trailing arg).
+
+## Round 3 (head `14ada845`)
+
+The supervisor checked the delta from `dc5d4fe9` itself: one file, two lines. Rulings 4 and 5 are applied as worded. **#308 is approved:** review PASS (final), red team findings closed. It merges once it is out of draft and green on a head that contains the latest base.
