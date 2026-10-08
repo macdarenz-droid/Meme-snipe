@@ -2,6 +2,7 @@
 import ast
 import math
 import os
+import pathlib
 import unittest
 
 import pandas as pd
@@ -129,7 +130,7 @@ class AsOf(unittest.TestCase):
         self.assertNotEqual(nxt.p, base[base.decision_slot > d].iloc[0].p)
 
     def test_feature_module_never_imports_outcomes_or_stats(self):
-        tree = ast.parse(open(os.path.join(HERE, "h1cgo", "features.py")).read())
+        tree = ast.parse(pathlib.Path(HERE, "h1cgo", "features.py").read_text())
         names = set()
         for n in ast.walk(tree):
             if isinstance(n, ast.ImportFrom):

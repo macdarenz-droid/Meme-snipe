@@ -9,13 +9,18 @@ from dataclasses import dataclass
 
 from .constants import FIXED
 
+
+def _load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
 BPS = 10_000
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 FEE_CONFIG_PATH = os.path.join(_REPO, "research", "edge", "snapshot", "fee-configs.json")
 
 
 def load_tiers(path: str = FEE_CONFIG_PATH):
-    raw = json.load(open(path))["amm"]["fee_tiers"]
+    raw = _load_json(path)["amm"]["fee_tiers"]
     tiers = [(int(t["market_cap_lamports_threshold"]),
               (int(t["fees"]["lp_fee_bps"]), int(t["fees"]["protocol_fee_bps"]), int(t["fees"]["creator_fee_bps"])))
              for t in raw]

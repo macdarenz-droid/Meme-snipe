@@ -6,6 +6,11 @@ import unittest
 from h1cgo import pumpswap as ps
 from h1cgo.constants import spend_of
 
+
+def _load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 GOLDEN = os.path.join(REPO, "packages", "core", "test", "amm", "fixtures", "golden.json")
 COSTS = os.path.join(REPO, "research", "edge", "costs.json")
@@ -16,7 +21,7 @@ class Quotes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tiers = ps.load_tiers()
-        g = json.load(open(GOLDEN))["pumpswap"]
+        g = _load_json(GOLDEN)["pumpswap"]
         cls.vec = [v for v in g if v["pool"]["canonical"] and v["pool"]["quote"] == "sol"
                    and int(v["pool"]["creator_fee_bps"]) == 0]
 
@@ -75,11 +80,11 @@ class Quotes(unittest.TestCase):
 
 class FixedCosts(unittest.TestCase):
     def test_equals_edge_costs(self):
-        rows = json.load(open(COSTS))["rows"]
+        rows = _load_json(COSTS)["rows"]
         self.assertEqual(round(ps.expected_fixed()), rows[0]["fixedLamports"])
         self.assertEqual(round(ps.expected_fixed()), 414009)
 
     def test_spend_matches_edge_costs(self):
-        rows = {(r["setup"], r["usd"]): r for r in json.load(open(COSTS))["rows"]}
+        rows = {(r["setup"], r["usd"]): r for r in _load_json(COSTS)["rows"]}
         self.assertEqual(spend_of(50), 419252054)  # floor(50 / 119.26 * 1e9), about 0.4193 SOL
         self.assertIn(("young", 20), rows)

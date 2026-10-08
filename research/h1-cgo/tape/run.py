@@ -21,6 +21,11 @@ from h1cgo import features, outcomes, stats, tapeio  # noqa: E402
 from h1cgo.constants import DISCOVERY_DAYS, VALIDATION_DAYS  # noqa: E402
 
 
+def _load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
 def _units(paths):
     us = [tapeio.parse_unit(p) for p in paths]
     if len({(u.from_slot, u.to_slot) for u in us}) != len(us):
@@ -73,7 +78,7 @@ def main(argv=None):
 
     elif o.stage == "gate0":
         f = _read_feats(o.out)
-        days = json.load(open(os.path.join(o.out, "features_meta.json")))["decision_days"]
+        days = _load_json(os.path.join(o.out, "features_meta.json"))["decision_days"]
         g = stats.gate0(f, days)
         _dump(os.path.join(o.out, "gate0.json"), g)
         print("gate H1-CGO-0:", "pass" if g["passed"] else "closed", f"(a {g['a_pass']}, b {g['b_pass']}, c {g['c_pass']})")
@@ -91,12 +96,12 @@ def main(argv=None):
 
     elif o.stage == "freeze":
         gp = os.path.join(o.out, "gate0.json")
-        if not os.path.exists(gp) or not json.load(open(gp))["passed"]:
+        if not os.path.exists(gp) or not _load_json(gp)["passed"]:
             sys.exit("freeze runs only after gate H1-CGO-0 passed (run gate0 first)")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
         res = stats.sign_and_futility(f, out)
-        meta = json.load(open(os.path.join(o.out, "features_meta.json")))
+        meta = _load_json(os.path.join(o.out, "features_meta.json"))
         res.update(code=tapeio.code_hash(), feature_inputs=meta.get("inputs"), discovery_days=meta["decision_days"])
         _dump(os.path.join(o.out, "frozen.json"), res)
         print("frozen:", res["verdict"], "sign", res["sign"])
@@ -104,7 +109,7 @@ def main(argv=None):
     elif o.stage == "score":
         if not o.frozen:
             sys.exit("score needs --frozen (the committed discovery freeze)")
-        frozen = json.load(open(o.frozen))
+        frozen = _load_json(o.frozen)
         if frozen.get("verdict") != "continue":
             sys.exit(f"discovery closed H1-CGO ({frozen.get('verdict')}); nothing to score")
         f = _read_feats(o.out)
