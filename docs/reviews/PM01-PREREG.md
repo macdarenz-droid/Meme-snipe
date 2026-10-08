@@ -235,3 +235,23 @@ All 19 round 1 findings are closed.
 60. **r4.** The run refuses if any key A-M13-02 hashes is missing from the block, or present in the block but not hashed. Write down the mapping table.
 61. **r5.** FEEDAY is not scaled in the report lines, the same as DEPTHPCT.
 62. **Reviewer m1 and m2.** Add `killRule4MaxCalendarDays: 120` to the block. Cite `docs/reviews/PM01-PREREG.md` on `claude/supervisor-docs` for rounds 1–5 and on `claude/supervisor-docs-2` for rounds 6 and later.
+
+## Round 8 (head `c0bdb04a`): reviewer PASS (1 MINOR); red team 0 BLOCKER, 0 MAJOR, 5 MINOR
+
+- Block sha256 recomputed by both: `c410f1b5…86b9`, matches the file.
+- Reviewer m1 = red team r2: FeeConfig also holds `stable_fee_tiers` and `exotic_flat_fees` (type `Fees`, pinned IDL); ruling 57 does not name them.
+- Red team:
+  - r1: preRegister is written once, but amendments fill the nulls and change pm01FrozenKey, so every run would be refused (or the check gets dropped).
+  - r3: part 5 needs the pre-upgrade program itself.
+  - r4: where the refreshed IDL comes from.
+  - r5: kill-rule and pending_data logic is not tested against the block.
+
+### Supervisor rulings for round 9 (8 Oct 2026, 3:23 PM)
+
+No MAJOR is open, so these are the last text changes before merge (merge still waits on the owner's keep-or-undo answer, 3:10 PM).
+
+63. **r1.** preRegister is append-only. Each amendment merged before the first run appends an entry with its merge sha and pm01FrozenKey; nothing is overwritten. A run compares against the latest entry and refuses if any entry is dated after the first run's start.
+64. **m1 / r2.** Name `stable_fee_tiers` and `exotic_flat_fees`. They are the same `Fees` type, so the ruling 57 split applies to them: `lp_fee_bps` and `protocol_fee_bps` changes are fee-only, and a `creator_fee_bps` change ends the window. Each trade is costed at the higher of the old and new fee of the schedule it pays under, per side, as the PREREG already says for the other tiers (L221 at `c0bdb04a`). Why not the stricter reading: ending the window on fee-level changes that this costing already covers would stop the study for no proven reason.
+65. **r3.** Part 5 runs the pre-upgrade program bytes (its program-data at the slot before the upgrade) on the post-upgrade pre-state in a local simulator. Pin that binary's sha256 in the boundary record. Name the simulator only after checking it exists and runs those bytes (**VERIFY**). If it cannot be run, part 5 fails and the upgrade is economic (fail closed).
+66. **r4.** The refreshed IDL comes from, in order: (1) the program's on-chain IDL account read at a slot after the upgrade, if the program has one (**VERIFY**); (2) the IDL file the program's owner publishes, at a commit dated after the upgrade. Pin its sha256. A hand-edited IDL never counts. If neither exists by the end of the pending day, the upgrade is economic.
+67. **r5.** Add acceptance cases: one synthetic fixture per kill rule 1–7 and one per pending_data path (side floor, n_b, the 100-trade floors), each asserting kill, pass or pending from the block's values.
