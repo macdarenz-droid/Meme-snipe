@@ -1,6 +1,6 @@
 # Step A count rows: tape code
 
-Implements `../STEP_A_COUNT_ROWS.md` with `../COUNT_ROWS_AMENDMENT_1.md`, `../COUNT_ROWS_AMENDMENT_2.md` and the count-row parts of `../H8_AMENDMENT.md` (all frozen). The code reads flows, counts and timing, and computes no strategy return or outcome. Under the amendment's Q14 rule, rows may read as-of price levels and as-of past returns. After a decision or event point, they read flows only, never a price. The registered thresholds run only with `--decide`, after Step A is complete and a reviewer has passed this code.
+Implements `../STEP_A_COUNT_ROWS.md` with `../COUNT_ROWS_AMENDMENT_1.md`, `../COUNT_ROWS_AMENDMENT_2.md` `_4` to `_6`, and the count-row parts of `../H8_AMENDMENT.md` and `../H8_AMENDMENT_2.md` (all frozen). The code reads flows, counts and timing, and computes no strategy return or outcome. Under the amendment's Q14 rule, rows may read as-of price levels and as-of past returns. After a decision or event point, they read flows only, never a price. The registered thresholds run only with `--decide`, after Step A is complete and a reviewer has passed this code.
 
 ## Run
 ```
@@ -25,7 +25,9 @@ nice -n 19 python3 -m unittest -v        # from this folder
   - `stepa_age_gate.csv`: one step per coin, age and class.
   - `stepa_two_sided_labels.csv`: rule, mint, owner.
   - `stepa_round_usd.csv`.
-  - `stepa_h8_pool_hours.csv`, `stepa_h8_graduates.csv`: H8 eligibility per pool-hour and per graduate.
+  - `stepa_h8_pool_hours.csv`, `stepa_h8_graduates.csv`: H8 eligibility per pool-hour and per graduate, with the failing check per size.
+  - `stepa_slicer_events.csv`, `stepa_slicer_low_b_placebo.csv`, `stepa_slicer_controls.csv`, `stepa_mig_seat.csv`, `stepa_mayhem_snap_down_steps.csv`.
+- The summary adds `8_slicer_ride`, `9_mig_seat` and `10_mayhem_snap`.
 - The summary also carries `h8_stratum_rows_1_3` (rows 1–3 recomputed per size) and `7_h8_capacity` (per day).
 
 ## Files
@@ -34,7 +36,9 @@ nice -n 19 python3 -m unittest -v        # from this folder
   - Reads BOOST, create, migration and pool-create events from E, and T/W links, CF and B.
   - Checks that windows are covered by contiguous loaded units.
 - `rows.py`: rows 1 and 3–6 and their helpers.
-- `h8.py`: rows 1–3 on the H8-eligible stratum at $5, $20 and $50, and the H8 capacity count row (`../H8_AMENDMENT.md`).
+- `h8.py`: rows 1–3 on the H8-eligible stratum and the H8 capacity count row (`../H8_AMENDMENT.md`, `../H8_AMENDMENT_2.md`). Each point is checked under its universe tag (U2, U1, not tradable), with H6, dust at migration and H11, at $5 (the trial line) through $10,000; the capacity row also counts canonical pools whose creator fee is 0.
+- `slicer.py`: the slicer-ride count rows (`../COUNT_ROWS_AMENDMENT_4.md`). Counts only; when every row passes, the counts go to the owner and no PREREG is written.
+- `migseat.py`: the MIG-SEAT rows G1–G8 with the kill row, and the MAYHEM-SNAP rows (a)–(e) (`../COUNT_ROWS_AMENDMENT_5.md`, `_6.md`).
 - `rebuy.py`: row 2. It uses H1-CGO's ledger (`research/h1-cgo/tape/h1cgo/ledger.py`), loaded read-only.
 - `run_step_a.py`: the entry point.
 - `test_rows.py`: unit tests on synthetic units written to a temporary folder.
@@ -68,6 +72,10 @@ nice -n 19 python3 -m unittest -v        # from this folder
 | H8: floor max($15,000, 1,000 × size) at the hour's SOL/USD | `h8.hourly_px`, `h8.eligible` |
 | H8 item 1: rows 1–3 on the H8-eligible stratum at $5, $20, $50 | `h8.dev_zero_stratum`, `h8.rebuy_stratum`, `h8.seat_drift_stratum` |
 | H8 item 4: H8-eligible pool-hours and graduates per day | `h8.h8_capacity` |
+| H8_AMENDMENT_2: universe-tagged floors, H6, dust, H11, sizes $5–$10,000, creator-fee-0 pools | `h8.universe`, `h8.floor_usd`, `h8.GateCtx.check`, `h8.h8_capacity` |
+| Amendment 4: slicer event, exclusions, rows (a)–(i), dispersed control, low-B placebo | `slicer.find_events`, `slicer.measure`, `slicer.dispersed_controls`, `slicer.slicer_rows` |
+| Amendment 5: MIG-SEAT G1–G8 and the kill row, by gradual/instant arm | `migseat.graduations`, `migseat.w_group`, `migseat.mig_seat`, `migseat.arm_rows` |
+| Amendments 5–6: MAYHEM-SNAP (a)–(e), placebos, the re-price rule invariants, `prereg_may_be_written` | `migseat.reprice_steps`, `migseat.mayhem_snap`, `migseat.non_agent_sell_placebo` |
 | 6 Gate 3 descriptive split: focused vs spread creators, with CF collections | `gate3_split` |
 
 Choices the frozen text leaves open are in `OPEN_QUESTIONS.md` (Q1–Q22, each marked with the amendment's ruling), each with the conservative reading the code uses.
