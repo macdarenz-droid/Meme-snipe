@@ -97,6 +97,7 @@ if [ ! -s "$plan" ]; then
   s11=$(first_at_or_after "$t11") || exit 1
   s10=$(first_at_or_after "$t10") || exit 1
   stop_tee
+  rm -rf "$work/units/plan/spool" # planning reads block times only: nothing spooled
   log "boundaries: first slot at/after 09-12 $s12, 09-11 $s11, 09-10 $s10"
   last=$(( s12 - 1 )) # nothing at or after 2026-09-12T00:00Z
   u11=$(( s11 / 4500 * 4500 )) u10=$(( s10 / 4500 * 4500 ))
