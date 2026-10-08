@@ -30,6 +30,11 @@ if [ "${SOURCE:-archive}" != helius ]; then
   # ARCHIVE_RETENTION.
   rec=$("$here/archive-guard.sh" recorded "$out") || exit 2
   [ -n "$rec" ] || { echo "refused: the units of $day record no retention" | tee -a "$summary"; exit 2; }
+  # A K3 day was read at K2 and trimmed (trim-day.sh): its rescan reads the unit at K2
+  # and is compared with the K2 file hashes the per-unit log ($out/units.log) kept.
+  if [ "$rec" = K3 ]; then
+    [ -f "$out/units.log" ] || { echo "refused: the trimmed day $day has no per-unit log with its K2 hashes" | tee -a "$summary"; exit 2; }
+  fi
 fi
 # phase NAME CMD...: runs CMD and logs pass or fail and its duration to the summary
 # (sizes the 45 min QA-phase budget in data-scan.yml from real days). OF-2 round 4,
@@ -90,7 +95,7 @@ if [ "${SOURCE:-archive}" = helius ]; then
     -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" > "$qlog/determinism.log" 2>&1 || rc=$?
   "$here/rpc-credits.sh" add "$out" "$again/rpc-usage.json"
 else
-  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -retention "$rec" -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" > "$qlog/determinism.log" 2>&1 || rc=$?
+  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -retention K2 -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" > "$qlog/determinism.log" 2>&1 || rc=$?
 fi
 if [ "$rc" -eq 75 ] && [ "${SOURCE:-archive}" = helius ]; then
   echo "RPC rate-limit back-off ran out during the determinism rescan: stopping resumably; the next run redoes QA" | tee -a "$summary"
@@ -106,10 +111,23 @@ elif [ "$rc" -ne 0 ]; then
   echo "determinism rescan failed (scanner exit $rc)" | tee -a "$summary"
   exit 1
 fi
-for f in "$first"/*.zst; do
-  a=$(sha256sum "$f" | cut -d' ' -f1)
-  b=$(sha256sum "$again/units/$epoch/$range/$(basename "$f")" | cut -d' ' -f1)
-  if [ "$a" != "$b" ]; then echo "determinism check failed for $range/$(basename "$f")"; exit 1; fi
-done
+if [ "${rec:-}" = K3 ]; then
+  # Trimmed day: the rescan (K2) must equal the K2 hashes logged before the trim.
+  want=$(sed -n "s#^k2 \([0-9a-f]\{64\}\) $epoch/$range/\([^/]*\.zst\)\$#\1  $epoch/$range/\2#p" "$out/units.log" | LC_ALL=C sort)
+  have=$(cd "$again/units" && sha256sum -- "$epoch/$range"/*.zst | LC_ALL=C sort)
+  if [ -z "$want" ] || [ "$want" != "$have" ]; then echo "determinism check failed for $range: the K2 rescan differs from the logged K2 hashes"; exit 1; fi
+else
+  for f in "$first"/*.zst; do
+    a=$(sha256sum "$f" | cut -d' ' -f1)
+    b=$(sha256sum "$again/units/$epoch/$range/$(basename "$f")" | cut -d' ' -f1)
+    if [ "$a" != "$b" ]; then echo "determinism check failed for $range/$(basename "$f")"; exit 1; fi
+  done
+fi
 echo "determinism: unit $epoch/$range rescanned, every file identical" | tee -a "$summary"
+if [ "${SOURCE:-archive}" != helius ]; then
+  # OF-3: the release keeps the rescan unit's file hashes (equal to the day's unit, just
+  # checked) and the per-unit log (revision, retention, migration list sha256 a unit).
+  (cd "$again/units/$epoch/$range" && sha256sum -- *.zst | sed "s#  #  $epoch/$range/#") > "$assets/rescan-$day.sha256"
+  if [ -f "$out/units.log" ]; then cp "$out/units.log" "$assets/units-$day.log"; else units=$(zeroed-scan unitlog -out "$out" 2>> "$qlog/unitlog.log"); printf '%s\n' "$units" > "$assets/units-$day.log"; fi
+fi
 rm -rf "$ds" "$qlog" "$again"
