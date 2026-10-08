@@ -4,11 +4,12 @@
 // rejects an unknown key; a test also scans the sources for every `configValue` call (static key-usage check).
 // A module built later adds its field list to FIELD_LISTS, in review.
 import type { Config, ConfigFieldSchema } from '@bot/types';
+import { M14_CONFIG } from '../m14/config.ts';
 import { M24_CONFIG } from '../m24/config.ts';
 import { M27_CONFIG } from '../m27/config.ts';
 import { fieldProblem, type ConfigFieldDef } from './fields.ts';
 
-const FIELD_LISTS = [M24_CONFIG, M27_CONFIG] as const;
+const FIELD_LISTS = [M14_CONFIG, M24_CONFIG, M27_CONFIG] as const;
 type Field = (typeof FIELD_LISTS)[number][number];
 
 /** Every registered key. */

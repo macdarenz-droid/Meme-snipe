@@ -189,7 +189,7 @@ describe('checkLockfile', () => {
     s.manifests = s.manifests.filter((m) => m.json.name !== '@bot/sentinel');
     assert.deepEqual(codes(checkLockfile(s)), ['E_LOCK_IMPORTER', 'E_PACKAGE_MISSING']);
     s.manifests = s.manifests.filter((m) => m.dir === '');
-    assert.deepEqual(checkLockfile(s).filter((f) => f.code === 'E_PACKAGE_MISSING').map((f) => f.message), ['@bot/types', '@bot/signer', '@bot/engine', '@bot/signer', '@bot/sentinel']
+    assert.deepEqual(checkLockfile(s).filter((f) => f.code === 'E_PACKAGE_MISSING').map((f) => f.message), ['@bot/types', '@bot/signer', '@bot/decoders', '@bot/engine', '@bot/signer', '@bot/sentinel']
       .map((n) => `workspace package ${n} is missing`));
     const t = goodSnapshot();
     const venue = lockOf(t).importers['packages/venue'];
