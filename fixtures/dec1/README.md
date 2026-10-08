@@ -8,7 +8,7 @@ Card Z03 (docs/MIGRATION.md): "DEC-1's mainnet goldens added as tests". Public o
 |---|---|---|
 | `accounts.json` | 29 mainnet accounts read by DEC-1 on 2026-10-03 (public RPC; runs listed in its `meta`): pump `Global`, both `FeeConfig`s, PumpSwap `GlobalConfig`, SPL and Token-2022 mints, a 2024-layout bonding curve (150 bytes), current curves, a mayhem coin's curve, canonical and non-canonical PumpSwap pools, a pool with negative `virtual_quote_reserves`, pool vaults, an address lookup table | `9bd58ceb4fc5c5cd28cdef4b60f88b9f0320008b2c62a3ef24bef7504c7c1dab` |
 | `transactions.json` | 22 mainnet transactions read by DEC-1 (legacy, v0 with a lookup table, v1; pump `TradeEvent`, `CreateEvent` with its first buy, a mayhem create, `CompleteEvent`; PumpSwap `BuyEvent`/`SellEvent`, two with negative virtual quote reserves; a migration with `CreatePoolEvent`, `InitBoostEvent`, `CompletePumpAmmMigrationEvent` and a buy; `BoostBuyAndBurnEvent`; a failed transaction). Each keeps the `getTransaction` base64 result DEC-1 stored and its JSON message | `bd6e07a18d97d38654963210d91f73be982995efb6c837c5d0b7cfed5ec7ef15` |
-| `goldens.json` | DEC-1's decoded values for every account and transaction above, in the Z03 decoders' vocabulary (`DecodedAccount`, `DecodedEvent`, each event with `layoutExtended`), with the events DEC-1 decodes that A-M02-03 has no variant for listed under `skipped`, and the trades that are not SOL-quoted under `refused` (Z03 round 2, ruling 3) | `c72e3b0abc0c04a317e0fb071154d494439e9c5d6bc5abc0c5a838e35c41ca89` |
+| `goldens.json` | DEC-1's decoded values for every account and transaction above, in the Z03 decoders' vocabulary (`DecodedAccount`, `DecodedEvent`, each event with `layoutExtended`), with the events DEC-1 decodes that A-M02-03 has no variant for listed under `skipped`, and the trades that are not SOL-quoted under `refused` (Z03 round 2, ruling 3) | `5124fdaf1fa144263b1dd378d3807ea55d6ac6a2a59407f7a01673da76b05056` |
 
 `accounts.json` and `transactions.json` are byte copies of `packages/core/test/chain/fixtures/` at `7fac908` (same sha256), so the Blueprint tests do not depend on Zeroed's folders.
 
@@ -32,3 +32,10 @@ Two adaptations, both in the test:
 - DEC-1 accepts any pump or PumpSwap event-CPI instruction; Z03 accepts one only when its direct invoker is the same program (A-M02-03 logic 3, supervisor ruling of 2026-10-07). Every event in this sample passes both rules.
 - `CreateEvent`, `CreatePoolEvent` and `BoostBuyAndBurnEvent` have no `DecodedEvent` variant in A-M02-03 logic 4, so Z03 does not return them (listed as `skipped`).
 - Since pump's unannounced upgrade of 2026-10-02 (DECISIONS 2026-10-03), `TradeEvent`, `BuyEvent` and `SellEvent` carry 8 trailing bytes the pinned IDL does not describe. DEC-1 keeps them as `extra`; Z03 reads the documented fields and flags the rest as `layoutExtended` (round 2, ruling 2). Every documented field agrees.
+
+## IDL-REPIN (2026-10-08, pin `8cda1fa`)
+
+The decoders now read the pump-public-docs `8cda1fa` IDLs. No decoded DEC-1 value changed; 22 Z03-vocabulary values in `goldens.json` did, applied from a full diff of the decoders' output against the goldens:
+- `layoutExtended` is `false` on the 14 trade events: the 8 bytes DEC-1 keeps as `extra` are `creator_fee_unclaimed` in the pin.
+- 7 account flags: the pump `Global` (1 byte short of the new layout, `max_curve_depth`), the 2024-layout curve, the three current-layout curves and the mayhem curve read the appended fields as 0 (`shortLegacy: true`); the pool with negative `virtual_quote_reserves` is no longer `layoutExtended`, because its bytes past the old layout are `protocol_fees` and `creator_fees`.
+- `Global`'s `expected.raw` gains `max_curve_depth: 0`, a field DEC-1 did not decode.

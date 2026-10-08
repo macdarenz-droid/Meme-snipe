@@ -35,7 +35,7 @@ describe('DEC-1 mainnet goldens (Z03)', () => {
     const sha = (n: string): string => createHash('sha256').update(raw(n)).digest('hex');
     assert.equal(sha('accounts.json'), '9bd58ceb4fc5c5cd28cdef4b60f88b9f0320008b2c62a3ef24bef7504c7c1dab');
     assert.equal(sha('transactions.json'), 'bd6e07a18d97d38654963210d91f73be982995efb6c837c5d0b7cfed5ec7ef15');
-    assert.equal(sha('goldens.json'), 'c72e3b0abc0c04a317e0fb071154d494439e9c5d6bc5abc0c5a838e35c41ca89');
+    assert.equal(sha('goldens.json'), '5124fdaf1fa144263b1dd378d3807ea55d6ac6a2a59407f7a01673da76b05056');
     assert.equal(GOLDENS.accounts.length, 29);
     assert.equal(GOLDENS.transactions.length, 22);
   });
@@ -57,7 +57,7 @@ describe('DEC-1 mainnet goldens (Z03)', () => {
     assert.ok(GOLDENS.accounts.every((g) => g.kind === 'unknown' || g.expected !== null));
     const negative = GOLDENS.accounts.find((g) => g.label.startsWith('PumpSwap pool with negative'));
     assert.equal(negative?.expected?.virtualQuoteReserves, '-184915875');
-    assert.equal(negative?.flags.layoutExtended, true);
+    assert.equal(negative?.flags.layoutExtended, false);        // its bytes past cb188ce are protocol_fees and creator_fees at 8cda1fa (IDL-REPIN)
   });
 
   for (const [i, t] of TXS.entries()) {
@@ -93,8 +93,9 @@ describe('DEC-1 mainnet goldens (Z03)', () => {
   it('Z03 ruling 3 on mainnet: 5 trades in this sample are not SOL-quoted and are refused (before Z03 round 2 they were reported as Lamports)', () => {
     const refused = GOLDENS.transactions.flatMap((t) => t.refused.map((r) => r.name));
     assert.deepEqual(refused.sort(), ['BuyEvent', 'BuyEvent', 'BuyEvent', 'SellEvent', 'TradeEvent']);
-    // Every TradeEvent, BuyEvent and SellEvent of this sample carries the 8 bytes appended on 2026-10-02 (ruling 2).
+    // Every TradeEvent, BuyEvent and SellEvent of this sample carries the 8 bytes appended on 2026-10-02 (ruling 2); the
+    // 8cda1fa pin describes them as creator_fee_unclaimed, so none is layoutExtended any more (IDL-REPIN).
     const trades = GOLDENS.transactions.flatMap((t) => t.expected.filter((e) => ['pump_trade', 'pumpswap_buy', 'pumpswap_sell'].includes(e.kind as string)));
-    assert.ok(trades.length > 0 && trades.every((e) => e.layoutExtended === true));
+    assert.ok(trades.length > 0 && trades.every((e) => e.layoutExtended === false));
   });
 });

@@ -4,7 +4,7 @@
 // stays free of every dependency but @bot/types (C-02).
 import type { DecodedEvent, Pubkey, RawTransaction } from '@bot/types';
 import { createAccountDecoder, type DecodedAccount, type DecodeFlags, type TokenPrograms } from './accounts.ts';
-import { decodeEventsLocated, type EventHooks, type LocatedEvent } from './events.ts';
+import { decodedOnly, decodeEventsLocated, decodeEventsWithGaps, type DecodedTransactionEvents, type EventHooks, type LocatedEvent } from './events.ts';
 import type { PinnedIdl } from './idl.ts';
 
 export class UnknownProgramError extends Error {
@@ -29,9 +29,12 @@ export interface Decoders {
   idlVersion(program: Pubkey): { commit: string; sha256: string };
   decodeAccount(owner: Pubkey, data: Uint8Array): DecodedAccount;
   decodeAccountWithFlags(owner: Pubkey, data: Uint8Array): { account: DecodedAccount; flags: DecodeFlags };
+  /** The `DecodedEvent`s; `pump_post_complete_buy` only comes from the located form (card IDL-REPIN). */
   decodeTransactionEvents(tx: RawTransaction): DecodedEvent[];
   /** The events with their place in the transaction and the layout flag (Z03 rulings m11 and 2). */
   decodeTransactionEventsLocated(tx: RawTransaction): LocatedEvent[];
+  /** The located events and the gaps with their places, from one decode: the input of `pumpBuyTotals` (ruling 43). */
+  decodeTransactionEventsWithGaps(tx: RawTransaction): DecodedTransactionEvents;
 }
 
 export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions = {}): Decoders {
@@ -63,7 +66,8 @@ export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions
     },
     decodeAccount: accounts.decodeAccount,
     decodeAccountWithFlags: accounts.decodeAccountWithFlags,
-    decodeTransactionEvents: (tx) => decodeEventsLocated(tx, idls, hooks, quote).map((e) => e.event),
+    decodeTransactionEvents: (tx) => decodedOnly(decodeEventsLocated(tx, idls, hooks, quote)),
     decodeTransactionEventsLocated: (tx) => decodeEventsLocated(tx, idls, hooks, quote),
+    decodeTransactionEventsWithGaps: (tx) => decodeEventsWithGaps(tx, idls, hooks, quote),
   };
 }
