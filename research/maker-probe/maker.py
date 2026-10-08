@@ -136,6 +136,10 @@ def sha(path):
 
 def main(elig, ddir, bdir, outp):
     pools = [ab_pool(p) for p in json.load(open(elig))]
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'deep-pool-probe')
+    um = {u['mint']: u['pool'] for u in json.load(open(os.path.join(here, 'universe.json')))}
+    frozen = {um[c['mint']] for c in json.load(open(os.path.join(here, 'dlmm_gate0.json')))['coins'] if c['passes_50_sol']}
+    assert len(frozen) == 12 and {p['pool'] for p in pools} == frozen, 'eligibility file is not the 12 frozen pools'
     maker, s0, mra, manifest = [], [], [], []
     for p in pools:
         path = os.path.join(bdir, p['pool'] + '.json')
@@ -172,7 +176,7 @@ def main(elig, ddir, bdir, outp):
         return 'pass' if ok else 'not supported'
     out = {'verdict': {'99.58 (judged)': verdict('99.58'), '95 (shown)': verdict('95')},
            'lift_over_s0_points': lift * 100 if lift is not None else None,
-           'q_sol': Q, 'results': res, 'manifest': manifest,
+           'q_sol': Q, 'results': res, 'manifest': manifest, 'elig_sha256': sha(elig),
            'val_fills': [{k: t[k] for k in ('sym', 't', 'g', 'net', 'mcap', 'exit_bars')} for t in sel(maker, 'val')]}
     json.dump(out, open(outp, 'w'), indent=1)
     print(json.dumps({'verdict': out['verdict'], 'lift_points': out['lift_over_s0_points'], 'val_n': m['n']}))

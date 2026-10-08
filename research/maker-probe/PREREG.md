@@ -32,3 +32,7 @@ Paper research only. Written and pushed on 2026-10-08 before any 5-minute or dai
 - Proxy: a PumpSwap low that trades through the bid stands in for a DLMM fill; real DLMM depth near the price and bin steps are unread.
 - Survivorship: the 12 coins are today's list.
 - No DLMM fee is credited and no maker-side cost (order placement, rent) is charged on entry, as frozen.
+
+## Amendments before scoring (2026-10-08, from the fresh-context code review; no return computed)
+- Choice 7 wording: the 99.58% quantiles are taken at exactly α/2 = 0.05/12/2 = 0.0020833 (code `maker.py` `LEVELS`), not the rounded 0.0021. Slightly more conservative; the code was already this way.
+- `maker.py` now asserts that the eligibility file holds exactly the 12 frozen pools (from `dlmm_gate0.json` via `universe.json`) and records that file's SHA-256. No rule changes.
