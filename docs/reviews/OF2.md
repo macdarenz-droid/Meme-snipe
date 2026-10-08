@@ -19,7 +19,7 @@ test-ci re-run gives 186/0 at the head and 143/44 on the base. Go, lint and the 
 - M6: the one-restart rule follows `inputs.chain`, not the day.
 - m7: the `-retention` flag (OF-3). m8: a check cut short after the probe is not counted. m9: the storage-stop form. m10: the guard pass is not bound to retention, run or attempt. m11: if armed before OF-4, data reaches the artifact and this repo's releases.
 
-### Supervisor rulings for round 2 (8 Oct 2026, 3:05 PM)
+### Supervisor rulings for round 2 (8 Oct 2026, 3:04 PM)
 
 1. **B1, B2: re-runs.** archive-check.sh, and the guard's `attest` and `full` modes, refuse when `GITHUB_RUN_ATTEMPT` is not 1. Failures are counted across every attempt of a run (`actions/runs/{id}/attempts/{n}`), not only the latest, so a green re-run never erases an F. Add test-ci cases: a re-run of a failed check, and a re-run of failed batch #3.
 2. **M3: manual dispatch.** In archive scan mode, `ag_full` applies the same back-off and 60-min gap as archive-check. DAY must be the oldest allow-listed day not read done (`ag_read_done`), so out-of-order and done days are refused. Add test-ci cases for (a)–(d) of the report.
