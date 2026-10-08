@@ -67,12 +67,8 @@ while IFS=$'\t' read -r id date chat kind text; do
     webhook_try || true
     if [ "$was_paired" = false ]; then
       start_worker || true
-    elif worker_busy; then
-      # The worker reads the chat at start; it moves at the next safe moment (zeroed-check).
-      : > "$STATE_DIR/worker_restart_pending"
-      log "Worker restart for the new chat waits for the dry run to end and open intents to settle."
     else
-      systemctl try-restart zeroed-worker.service || true
+      restart_for_chat
     fi
   else
     rm -f "$PAIR_CODE_FILE"

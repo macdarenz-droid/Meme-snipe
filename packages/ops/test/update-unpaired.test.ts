@@ -35,8 +35,11 @@ afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true
 
 /**
  * A host on release A with the given credentials, the deploy tag on B. Flags in sd/: active (the worker runs), crash
- * (the release's worker dies at once with credentials), pair_on_smoke and pair_on_notify (the owner's /pair lands
- * during the trial start, before the start decision, or with the closing notice, after it).
+ * (the release's worker dies at once with credentials), pair_on_smoke, pair_on_notify and pair_on_fetch (the owner's
+ * /pair lands during the trial start, before the start decision, with the closing notice, after it, or during the
+ * fetch of a run with nothing to deploy), lock_busy (the host lock stays taken), kill_on_timers and kill_on_ln (the run
+ * is killed after current moved, or just before), repair_on_sleep (a re-pair of the chat lands during the hold). Each
+ * release's installer records the release whose host files it applied in sd/applied.
  */
 const host = (creds: string[]) => {
   const root = mkdtempSync(join(tmpdir(), 'update-unpaired-'));
@@ -46,6 +49,7 @@ const host = (creds: string[]) => {
   for (const c of [A, B, C]) {
     mkdirSync(join(root, `opt/zeroed/releases/${c}/ops`), { recursive: true });
     writeFileSync(join(root, `opt/zeroed/releases/${c}/ops/host-config.json`), '{"worker":"release"}');
+    writeFileSync(join(root, `opt/zeroed/releases/${c}/ops/install.sh`), `# --update) UPDATE=1\nbasename "$ZEROED_RELEASE_DIR" >> ${root}/sd/applied\n`);
   }
   symlinkSync(join(root, `opt/zeroed/releases/${A}`), join(root, 'opt/zeroed/current'));
   writeFileSync(join(root, 'state/deployed'), `${A}\n`);
@@ -54,6 +58,13 @@ const host = (creds: string[]) => {
   writeFileSync(join(root, 'sd/nrestarts'), '0');
   writeFileSync(join(root, 'sd/tag'), B);
   for (const c of creds) writeFileSync(join(root, `cred/${c}`), 'x');
+  const relocate = (text: string) => text
+    .replace('. /usr/local/lib/zeroed/common.sh', `. "${root}/common.sh"`)
+    .replaceAll('/usr/local/lib/zeroed/worker-smoke', `${bin}/worker-smoke`)
+    .replaceAll('/opt/zeroed', `${root}/opt/zeroed`)
+    .replaceAll('/var/lib/zeroed-record-upload', `${root}/var/lib/zeroed-record-upload`)
+    .replaceAll('/var/lib/zeroed/', `${root}/var/lib/zeroed/`)
+    .replaceAll('GNUPGHOME=/etc/zeroed/gnupg ', '');
   const pair = `printf x > ${root}/cred/telegram_chat_id`;
   writeFileSync(join(root, 'common.sh'), `
 . "${FILES}/usr/local/lib/zeroed/logic.sh"
@@ -62,7 +73,7 @@ EVIDENCE_ROOT="${root}/ev"; EVIDENCE_INDEX="${root}/ev-index/evidence.json"
 ZEROED_BRANCH=main; ZEROED_REPO=o/r; ZEROED_API_URL=http://127.0.0.1:9; WEB_FLOW_FPR=FPR
 ${real('API_NAMES')}
 log() { printf '%s\\n' "$*" >> "${root}/log"; }
-lock() { echo lock >> "${root}/sd/calls"; }
+lock() { [ ! -e "${root}/sd/lock_busy" ] || return 1; echo lock >> "${root}/sd/calls"; }
 notify() { printf '%s\\n' "$1" >> "${root}/notify"; if [ -e "${root}/sd/pair_on_notify" ]; then ${pair}; fi; }
 ${real('alert')}
 ${real('alert_clear')}
@@ -70,6 +81,9 @@ ${real('keys_stored')}
 ${real('paired')}
 ${real('worker_ready')}
 ${real('start_worker')}
+${relocate(real('worker_busy'))}
+${real('restart_for_chat')}
+${real('pending_restart')}
 commit_verdict() { cat >/dev/null; echo green; }
 e2e_commit() { echo "$2"; }
 `);
@@ -78,12 +92,14 @@ e2e_commit() { echo "$2"; }
     chmodSync(join(bin, name), 0o755);
   };
   exe('git', `case "$*" in
+  *fetch*) if [ -e ${root}/sd/pair_on_fetch ]; then ${pair}; fi ;;
   *rev-parse*) cat ${root}/sd/tag ;;
   *verify-commit*) echo '[GNUPG:] GOODSIG x'; echo '[GNUPG:] VALIDSIG a b c d e f g h i FPR' ;;
   *) exit 0 ;;
 esac`);
   exe('worker-smoke', `if [ -e ${root}/sd/pair_on_smoke ]; then ${pair}; fi`);
-  exe('sleep', 'exit 0');
+  exe('sleep', `if [ -e ${root}/sd/repair_on_sleep ]; then rm -f ${root}/sd/repair_on_sleep; bash -c '. "${root}/common.sh"; restart_for_chat'; fi`);
+  exe('ln', `if [ -e ${root}/sd/kill_on_ln ]; then rm -f ${root}/sd/kill_on_ln; kill -9 $PPID; fi; exec /bin/ln "$@"`);
   // The worker answers its health route as the release current points at, only while the unit is active.
   exe('curl', `[ -e ${root}/sd/active ] || exit 7; printf '{"mode":"paper","git_sha":"%s"}' "$(basename "$(readlink -f ${root}/opt/zeroed/current)")"`);
   // systemd: a worker start or restart whose ConditionPathExists fails is skipped (exit 0, unit not active), as on the
@@ -91,9 +107,11 @@ esac`);
   exe('systemctl', `printf '%s\\n' "$*" >> ${root}/sd/calls
 case "$*" in
   *zeroed-worker*) ;;
+  *backup-offsite.timer*) if [ -e ${root}/sd/kill_on_timers ]; then rm -f ${root}/sd/kill_on_timers; kill -9 $PPID; fi; exit 0 ;;
   *) case "$1" in show) cat ${root}/sd/nrestarts ;; esac; exit 0 ;;
 esac
 case "$1" in
+  try-restart) [ -e ${root}/sd/active ] && rm -f ${root}/sd/active ;;
   restart|start)
     rm -f ${root}/sd/active
     for c in ${conditions.join(' ')}; do [ -e ${root}/cred/$c ] || exit 0; done
@@ -102,13 +120,6 @@ case "$1" in
   show) cat ${root}/sd/nrestarts ;;
   *) exit 0 ;;
 esac`);
-  const relocate = (text: string) => text
-    .replace('. /usr/local/lib/zeroed/common.sh', `. "${root}/common.sh"`)
-    .replaceAll('/usr/local/lib/zeroed/worker-smoke', `${bin}/worker-smoke`)
-    .replaceAll('/opt/zeroed', `${root}/opt/zeroed`)
-    .replaceAll('/var/lib/zeroed-record-upload', `${root}/var/lib/zeroed-record-upload`)
-    .replaceAll('/var/lib/zeroed/', `${root}/var/lib/zeroed/`)
-    .replaceAll('GNUPGHOME=/etc/zeroed/gnupg ', '');
   const read = (f: string) => (existsSync(join(root, f)) ? readFileSync(join(root, f), 'utf8') : '');
   const set = (f: string, v = '') => writeFileSync(join(root, f), v);
   const bash = (script: string) => {
@@ -118,10 +129,11 @@ esac`);
   const update = () => bash(relocate(readFileSync(join(FILES, 'usr/local/sbin/zeroed-update'), 'utf8')));
   /** What zeroed-telegram-pair does on a first pairing: store the chat, then start_worker. */
   const pairNow = () => { set('cred/telegram_chat_id', 'x'); return bash(`set -euo pipefail; . "${root}/common.sh"; start_worker`); };
+  const pendingRestart = () => bash(`set -euo pipefail; . "${root}/common.sh"; pending_restart`);
   const current = () => spawnSync('readlink', ['-f', join(root, 'opt/zeroed/current')], { encoding: 'utf8' }).stdout.trim();
   const rel = (c: string) => join(root, `opt/zeroed/releases/${c}`);
   const workerStarts = () => read('sd/calls').split('\n').filter((l) => /^(re)?start zeroed-worker/.test(l)).length;
-  return { root, read, set, update, pairNow, current, rel, workerStarts };
+  return { root, read, set, update, pairNow, pendingRestart, current, rel, workerStarts };
 };
 type Host = ReturnType<typeof host>;
 
@@ -247,17 +259,85 @@ describe('the first start of a release switched to before the pairing is held (O
     expect(h.read('log')).toContain('Worker: restarted and up.');
   });
 
-  it('/pair landing just after the start decision: the marker stays, and the next run holds the first start', () => {
+  it('/pair landing just after the start decision: the same run gives B its held start on its way out (m3)', () => {
     const h = host(KEYS);
     h.set('sd/pair_on_notify');
-    expect(h.update().status).toBe(0);
-    expect(h.read('state/switch_unheld')).toBe(`${B}|${h.rel(A)}|${A}\n`);
-    expect(h.workerStarts()).toBe(0);
     const r = h.update();
     expect(r.status, r.out).toBe(0);
     expect(h.workerStarts()).toBe(1);
     expect(h.read('state/switch_unheld')).toBe('');
     expect(h.read('state/probation')).toMatch(new RegExp(`^${B}\\|${h.rel(A)}\\|${A}\\|`));
+    expect(h.read('log')).toContain(`Started ${B.slice(0, 12)} under the hold`);
+  });
+
+  it('/pair during a later run with nothing to deploy: the held start comes in that run (m3)', () => {
+    const h = unpairedSwitch();
+    h.set('sd/pair_on_fetch');
+    const r = h.update();
+    expect(r.status, r.out).toBe(0);
+    expect(h.workerStarts()).toBe(1);
+    expect(h.read('state/switch_unheld')).toBe('');
+    expect(h.read('state/probation')).toMatch(new RegExp(`^${B}\\|${h.rel(A)}\\|${A}\\|`));
+  });
+
+  it('killed after current moved: the marker is already down, and the next run holds the first start behind A (m1)', () => {
+    const h = host(KEYS);
+    h.set('sd/kill_on_timers');
+    const r = h.update();
+    expect(r.status, r.out).not.toBe(0);
+    expect(h.current()).toBe(h.rel(B));
+    expect(h.read('state/deployed').trim()).toBe(B);
+    expect(h.read('state/switch_unheld')).toBe(`${B}|${h.rel(A)}|${A}\n`);
+    h.pairNow();
+    const n = h.update();
+    expect(n.status, n.out).toBe(0);
+    expect(h.workerStarts()).toBe(1);
+    expect(h.read('state/probation')).toMatch(new RegExp(`^${B}\\|${h.rel(A)}\\|${A}\\|`));
+  });
+
+  it('killed after the marker for C but before current moved: B, never started, keeps its marker behind A (m1)', () => {
+    const h = unpairedSwitch();
+    h.set('sd/tag', C);
+    h.set('sd/kill_on_ln');
+    expect(h.update().status).not.toBe(0);
+    expect(h.current()).toBe(h.rel(B));
+    expect(h.read('state/deployed').trim()).toBe(B);
+    h.set('sd/tag', B);
+    h.pairNow();
+    const n = h.update();
+    expect(n.status, n.out).toBe(0);
+    expect(h.workerStarts()).toBe(1);
+    expect(h.read('state/switch_unheld')).toBe('');
+    expect(h.read('state/probation')).toMatch(new RegExp(`^${B}\\|${h.rel(A)}\\|${A}\\|`));
+  });
+
+  it("a busy host lock: one log line, the running release's host files back, exit 0, nothing switched (m2)", () => {
+    const h = host(KEYS);
+    h.set('sd/lock_busy');
+    const r = h.update();
+    expect(r.status, r.out).toBe(0);
+    expect(h.read('log')).toContain(`Waiting on ${B.slice(0, 12)}: the host lock is busy.`);
+    expect(h.read('sd/applied').trim().split('\n')).toEqual([B, A]);
+    expect(h.current()).toBe(h.rel(A));
+    expect(h.read('state/deployed').trim()).toBe(A);
+    expect(h.read('state/switch_unheld')).toBe('');
+  });
+
+  it('a re-pair during the hold waits: no restart mid-hold, the hold passes, the owed restart runs after (m4)', () => {
+    const h = host([...KEYS, 'telegram_chat_id']);
+    h.set('sd/repair_on_sleep');
+    const r = h.update();
+    expect(r.status, r.out).toBe(0);
+    expect(h.read('sd/calls')).not.toMatch(/^try-restart zeroed-worker/m);
+    expect(h.read('state/failed_release')).toBe('');
+    expect(h.read('state/probation')).toMatch(new RegExp(`^${B}\\|`));
+    expect(h.read('state/holding')).toBe('');
+    expect(existsSync(join(h.root, 'state/worker_restart_pending'))).toBe(true);
+    // zeroed-check's pending restart, once the hold is over.
+    const q = h.pendingRestart();
+    expect(q.status, q.out).toBe(0);
+    expect(h.read('sd/calls')).toMatch(/^try-restart zeroed-worker\.service$/m);
+    expect(existsSync(join(h.root, 'state/worker_restart_pending'))).toBe(false);
   });
 
   it('a newer release while B was never started: the marker keeps A as the rollback target', () => {

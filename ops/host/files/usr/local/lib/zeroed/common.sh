@@ -146,8 +146,10 @@ webhook_off() {
   printf 'none\n' > "$STATE_DIR/webhook_expected"
 }
 
-# worker_busy: true while a qualifying dry run is active or the worker reports open intents (or cannot say).
+# worker_busy: true while a qualifying dry run is active, the worker reports open intents (or cannot say), or zeroed-update
+# is holding a new release's start ($STATE_DIR/holding, OPS-CLEAN m4: a restart then would fail a good release's hold).
 worker_busy() {
+  [ ! -e "$STATE_DIR/holding" ] || return 0
   [ -z "$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")" ] || return 0
   systemctl is-active --quiet zeroed-worker.service || return 1
   [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]
@@ -157,6 +159,24 @@ keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || retu
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
 # worker_ready: the worker may start: every key stored and the owner's chat paired (its unit's ConditionPathExists, and more).
 worker_ready() { keys_stored && paired; }
+# restart_for_chat: the worker reads the chat at start, so a re-paired chat restarts it now, or at the next safe moment
+# (pending_restart, from zeroed-check) while it is busy.
+restart_for_chat() {
+  if worker_busy; then
+    : > "$STATE_DIR/worker_restart_pending"
+    log "Worker restart for the new chat waits for the dry run to end, open intents to settle and any held start to pass."
+  else
+    systemctl try-restart zeroed-worker.service || true
+  fi
+}
+# pending_restart: a worker restart that waited for a safe moment.
+pending_restart() {
+  if [ -e "$STATE_DIR/worker_restart_pending" ] && ! worker_busy; then
+    rm -f "$STATE_DIR/worker_restart_pending"
+    systemctl try-restart zeroed-worker.service || true
+    log "Restarted the worker for the new Telegram chat."
+  fi
+}
 # start_worker: starts the worker, or, while a switched release has never run under the hold (switch_unheld, OPS-CLEAN
 # M1), starts zeroed-update for its held first start. --no-block: the caller may hold the host lock.
 start_worker() {

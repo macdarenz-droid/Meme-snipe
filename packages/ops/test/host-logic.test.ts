@@ -386,7 +386,7 @@ describe('worker start and API address', () => {
     expect(after).toMatch(/if worker_ready; then\n\s+flock -u 9 2>\/dev\/null \|\| true\n\s+held_restart\n/);
     // RC-FIXES-2b (red team C R3-2): a due rollback goes through probation_check's gate, which ends in rollback().
     const due = upd.slice(upd.indexOf('due_rollback() {'));
-    expect(due.slice(0, due.indexOf('\n}\n'))).toMatch(/> "\$STATE_DIR\/probation"\n\s+rm -f "\$STATE_DIR\/switch_unheld"\n\s+probation_check\n\s+exit 1$/);
+    expect(due.slice(0, due.indexOf('\n}\n'))).toMatch(/> "\$STATE_DIR\/probation"\n\s+rm -f "\$STATE_DIR\/switch_unheld" "\$STATE_DIR\/holding"\n\s+probation_check\n\s+exit 1$/);
     const rb = upd.slice(upd.indexOf('rollback() {'), upd.indexOf('# Restart with reconcile first'));
     for (const want of ['printf \'%s\\n\' "$commit" > "$STATE_DIR/failed_release"', 'ln -sfn "$prev" /opt/zeroed/current.new', 'printf \'%s\\n\' "$current" > "$STATE_DIR/deployed"', 'apply_host', 'systemctl restart zeroed-worker.service', 'alert worker-switch "ALERT']) expect(rb, want).toContain(want);
     expect(upd).toContain('[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0');
@@ -758,10 +758,14 @@ describe('install.sh --update', () => {
     // After every gate: a retry next run goes through the same gates (deployed is not moved on failure).
     for (const gate of ['run="$(active_run)"', 'open="$(cat /var/lib/zeroed/open_intents', 'if [ "$verdict" != green ]']) expect(s.indexOf(gate), gate).toBeLessThan(apply);
     expect(file.match(/apply_host "\$commit"/g)).toHaveLength(1);
-    // OPS-CLEAN M1: the one restart before it is the held first start of the release already deployed (switch_unheld).
+    // OPS-CLEAN M1: the one start before it is the held first start of the release already deployed (switch_unheld),
+    // checked again on the way out of every run that ends well (m3).
     const early = s.slice(0, apply);
-    expect(early.match(/held_restart/g)).toHaveLength(1);
-    expect(early).toContain('if [ "$commit" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ]; then\n    rm -f "$STATE_DIR/switch_unheld"');
+    expect(early).not.toContain('held_restart');
+    expect(early).toMatch(/^\nprobation_check\nunheld_start\ntrap at_exit EXIT\n/);
+    const unheld = file.slice(file.indexOf('unheld_start() {'), file.indexOf('\n}\n', file.indexOf('unheld_start() {')));
+    expect(unheld.match(/held_restart/g)).toHaveLength(1);
+    expect(unheld).toContain('if [ "$commit" != "$deployed" ]; then');
     expect(file).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
     expect(file).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
     // The new release's RUN-1 units, not the running one's.
