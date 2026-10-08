@@ -206,7 +206,7 @@ def h8_stratum(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_da
     validation trades and a positive mean at $5, the trial maximum; $20 and $50 are research lines."""
     from . import h8 as H8
     bp, side = _frozen_rule(feats, frozen, decision_days)
-    f = H8.flags(feats, sol)
+    f = H8.flags(feats, sol, universes=H8.STRATUM_UNIVERSES)  # AMENDMENT_5: U2 only
     ok = out[out.status.isin(["ok", "exit_refused"]) & (out.hold == HOLD_S)]
     res = {}
     for s in H8.SIZES_USD:
@@ -224,6 +224,8 @@ def h8_stratum(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_da
     res["tradable_as_bot_stands"] = tradable
     res["note"] = None if tradable else "this works only in pools below H8's floor"
     res["sol_usd_files"] = sol.files
+    res["universes"] = list(H8.STRATUM_UNIVERSES)
+    res["limitations"] = H8.LP_LIMITATION
     return res
 
 

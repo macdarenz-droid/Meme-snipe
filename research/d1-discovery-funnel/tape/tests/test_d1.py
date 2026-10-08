@@ -1228,5 +1228,50 @@ class BotGates(unittest.TestCase):
         self.assertFalse([r for r in run_d1.REQUIRED_RULINGS if r not in run_d1.FROZEN_AMENDMENTS])
 
 
+class Amendment45(unittest.TestCase):
+    """AMENDMENT_4 (H13 tape proxy, labelled; universe-exit secondary dropped) and AMENDMENT_5 (creation-slot window)."""
+
+    def test_rulings_listed(self):
+        import run_d1
+        for r in ("AMENDMENT_4", "AMENDMENT_5"):
+            self.assertIn(r, run_d1.FROZEN_AMENDMENTS)
+            self.assertIn(r, run_d1.REQUIRED_RULINGS)
+
+    def test_search_and_counts_carry_the_proxy_label(self):
+        from d1 import h8
+        df = H8Amendment._bot_ok(synthetic_search_frame(planted=True))
+        df["effective_quote_sol"] = 500.0
+        for h in C.HOLDS_S:
+            for sz in C.H8_SIZES_USD:
+                df[f"net_ret_{h // 60}_s{sz}"] = df[f"net_ret_{h // 60}"]
+        d0 = C.epoch(C.DISCOVERY_DAYS[0]) - 3600
+        hrs = np.arange(d0, d0 + 50 * 3600, 3600)
+        df = h8.add_h8(df, hrs, np.full(len(hrs), 119.26))
+        res = run_search(df)
+        self.assertTrue((res["table"].h8_basis == C.H13_PROXY_LABEL).all())
+        self.assertTrue(all(a["h8_basis"] == C.H13_PROXY_LABEL for a in res["advanced"]))
+        self.assertEqual(res["h8_basis"], C.H13_PROXY_LABEL)
+        df["day"] = C.DISCOVERY_DAYS[0]
+        c = h8.h8_counts(df)
+        self.assertEqual(c["h8_basis"], C.H13_PROXY_LABEL)
+
+    def test_creation_window_is_create_slot_to_plus_2(self):
+        # AMENDMENT_5: curve buys from the create slot through create slot + 2, keyed on the curve user
+        from d1.holders import LinkIndex, h13_proxy_sets
+        curve = pd.DataFrame({"slot": [99, 100, 102, 103], "mint": 7, "is_buy": 1, "owner": [1, 2, 3, 4],
+                              "user": [11, 12, 13, 14]})
+        t = type("T", (), {"curve": curve})()
+        L = LinkIndex(np.array([], int), np.array([], int), np.array([], int))
+        ins, _ = h13_proxy_sets(t, L, 7, 100, (9,), 500)
+        self.assertEqual(ins, {9, 12, 13})
+
+    def test_funder_path_keys_creation_buyers_on_user(self):
+        from d1.holders import insider_sets
+        curve = pd.DataFrame({"slot": [100, 101], "mint": 7, "is_buy": 1, "owner": [1, 2], "user": [11, -1]})
+        t = type("T", (), {"curve": curve})()
+        ins, _ = insider_sets(t, 7, 100, 9, {9: 50, 11: 66, 2: 66})
+        self.assertEqual(ins, {11, 2})                              # user, with user_token_owner as the fallback
+
+
 if __name__ == "__main__":
     unittest.main()

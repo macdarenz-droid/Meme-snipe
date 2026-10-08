@@ -93,7 +93,12 @@
 - **H3.** For each size, the stratum keeps the entries of the frozen rule whose pool passes H8 at that size, priced at that size and held 60 min. Its baseline for lift is the H8-eligible eligible points at the same size. It is tradable as the bot stands only if some size has at least 300 trades and a mean above 0. Otherwise the note reads "this works only in pools below H8's floor".
 - **H4. Count row** (in `gate0.json`). H8-eligible pool-hours and graduates per day at each size, on two bases: decision points with a pool state, and H1-CGO-eligible points. `--sol-usd` defaults to the committed folder.
 
-## Readings for H8_AMENDMENT_2 (open until the design owner confirms; each is the conservative one)
+## Readings for H8_AMENDMENT_2 (confirmed by AMENDMENT_5)
+`../AMENDMENT_5.md` confirms H5–H9 as written, with two changes:
+- H1-CGO's tradable stratum is the U2 window only (`h8.STRATUM_UNIVERSES`, used by `stats.h8_stratum`). U1 can occur only at exactly 24 h, and is left out. The count row keeps both universes, as H9.
+- The LP-burn limitation of H7 is reported in `h8_stratum` and the count row (`limitations`).
+
+`../AMENDMENT_6.md` sets the $5 tradable sample: H8 first, then the first entry per coin per day. It was built by the red team (R1-19, `tests/test_amendment3.py` Amendment6).
 Code: `h8.universe_tag/floor_micro_usd/tradable/count_rows`, `MintStream._candle/h11`, `features.lp_events_of`, `stats.h8_stratum`.
 - **H5. Universe tag by age.** Age is the decision hour − the migration time.
   - U2: 60 ≤ age < 240 min. The end is excluded, which gives fewer tradable points.
