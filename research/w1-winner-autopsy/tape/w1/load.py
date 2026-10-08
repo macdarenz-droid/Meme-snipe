@@ -155,7 +155,7 @@ def read_table(path, cols, int_cols=(), nrows=None):
 CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "signer", "tx_fee", "jito_tip", "mint", "is_buy", "sol_amount",
               "token_amount", "user", "virtual_sol_reserves", "virtual_token_reserves", "real_sol_reserves",
               "real_token_reserves", "fee_basis_points", "fee", "creator_fee_basis_points", "creator_fee",
-              "cashback_fee_basis_points", "cashback", "quote_mint", "ix_name", "user_token_owner", "owner_token_pre",
+              "cashback_fee_basis_points", "cashback", "quote_mint", "ix_name", "user_token_account", "user_token_owner", "owner_token_pre",
               "owner_token_post", "signer_sol_pre", "signer_sol_post", "protocol"]
 CURVE_INTS = ["slot", "block_time", "tx_idx", "ev_idx", "tx_fee", "jito_tip", "is_buy", "sol_amount", "token_amount",
               "virtual_sol_reserves", "virtual_token_reserves", "real_sol_reserves", "real_token_reserves",
@@ -165,7 +165,8 @@ AMM_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "signer", "tx_fee", "jito_
             "side", "base_amount", "quote_amount", "user", "pool_base_token_reserves", "pool_quote_token_reserves",
             "lp_fee_basis_points", "protocol_fee_basis_points", "coin_creator_fee_basis_points",
             "cashback_fee_basis_points", "quote_amount_lp_adjusted", "user_quote_amount", "virtual_quote_reserves",
-            "ix_name", "user_token_owner", "owner_token_pre", "owner_token_post", "signer_sol_pre", "signer_sol_post",
+            "ix_name", "user_token_account", "user_token_owner", "owner_token_pre", "owner_token_post",
+            "signer_sol_pre", "signer_sol_post",
             "canonical", "protocol"]
 AMM_INTS = ["slot", "block_time", "tx_idx", "ev_idx", "tx_fee", "jito_tip", "base_amount", "quote_amount",
             "pool_base_token_reserves", "pool_quote_token_reserves", "lp_fee_basis_points",
@@ -190,7 +191,7 @@ def key_slot(key):
 def swaps(unit: Unit, vocab: Vocab, mints=None):
     """The unit's curve and PumpSwap trades as one table, in key order.
 
-    Columns: key, txk (key of the transaction), slot, bt, owner, signer, user, mint, venue (0 curve, 1 pool),
+    Columns: key, txk (key of the transaction), slot, bt, owner, acct (user_token_account), signer, user, mint, venue (0 curve, 1 pool),
     pool, canonical, sol (SOL-quoted), is_buy, tokens, cash (signed lamports, venue fees included, tx costs not),
     tx_fee, jito, tx_fee_na, pre, post, spre, spost, protocol, boost, s1..s4, bps (venue state after the trade,
     see venue.py), n_tx (swaps in the transaction, any venue or quote)."""
@@ -205,7 +206,7 @@ def swaps(unit: Unit, vocab: Vocab, mints=None):
         sol = c["sol_amount"].to_numpy()
         parts.append(pd.DataFrame({
             "slot": c["slot"], "bt": c["block_time"], "tx_idx": c["tx_idx"], "ev_idx": c["ev_idx"],
-            "owner_s": c["user_token_owner"], "signer_s": c["signer"].where(c["signer"] != "", c["user"]),
+            "owner_s": c["user_token_owner"], "acct_s": c["user_token_account"], "signer_s": c["signer"].where(c["signer"] != "", c["user"]),
             "user_s": c["user"], "mint_s": c["mint"], "pool_s": "", "venue": 0, "canonical": 0,
             "sol": c["quote_mint"].isin(SOL_CURVE_QUOTES).to_numpy(), "is_buy": isb,
             "tokens": c["token_amount"], "cash": np.where(isb, -(sol + fees), sol - fees).astype(np.float64),
@@ -226,7 +227,7 @@ def swaps(unit: Unit, vocab: Vocab, mints=None):
         uq = a["user_quote_amount"].to_numpy()
         parts.append(pd.DataFrame({
             "slot": a["slot"], "bt": a["block_time"], "tx_idx": a["tx_idx"], "ev_idx": a["ev_idx"],
-            "owner_s": a["user_token_owner"], "signer_s": a["signer"].where(a["signer"] != "", a["user"]),
+            "owner_s": a["user_token_owner"], "acct_s": a["user_token_account"], "signer_s": a["signer"].where(a["signer"] != "", a["user"]),
             "user_s": a["user"], "mint_s": a["base_mint"], "pool_s": a["pool"], "venue": 1,
             "canonical": a["canonical"],
             "sol": ((a["quote_mint"] == WSOL) & (a["base_mint"] != WSOL)).to_numpy(), "is_buy": isb,
@@ -248,7 +249,7 @@ def swaps(unit: Unit, vocab: Vocab, mints=None):
     df["txk"] = make_key(df["slot"], df["tx_idx"], 0) >> KEY_TX_SHIFT
     df = df.sort_values("key", kind="stable").reset_index(drop=True)
     df["n_tx"] = df.groupby("txk")["key"].transform("size").astype(np.int32)
-    for col in ("owner", "signer", "user", "mint", "pool"):
+    for col in ("owner", "acct", "signer", "user", "mint", "pool"):
         df[col] = vocab.ids(df.pop(col + "_s"))
     for col in ("tokens", "tx_fee", "jito", "pre", "post", "spre", "spost", "s1", "s2", "s3", "s4", "bps", "slot",
                 "bt", "protocol", "canonical"):
@@ -257,11 +258,14 @@ def swaps(unit: Unit, vocab: Vocab, mints=None):
 
 
 def movements(unit: Unit, vocab: Vocab, mints=None):
-    """T rows: key (after the transaction's swaps), slot, bt, mint, kind (0 transfer, 1 burn, 2 mint), frm, to, amount."""
+    """T rows: key (after the transaction's swaps), slot, bt, mint, kind (0 transfer, 1 burn, 2 mint), frm, to,
+    facct, tacct (token accounts), amount."""
     p = os.path.join(unit.path, "T.csv.zst")
     if not os.path.exists(p):
-        return pd.DataFrame(columns=["key", "slot", "bt", "mint", "kind", "frm", "to", "amount", "txk"])
-    t = read_table(p, ["slot", "block_time", "tx_idx", "mint", "kind", "from_owner", "to_owner", "amount"],
+        return pd.DataFrame(columns=["key", "slot", "bt", "mint", "kind", "frm", "to", "facct", "tacct", "amount",
+                                     "txk"])
+    t = read_table(p, ["slot", "block_time", "tx_idx", "mint", "kind", "from_owner", "to_owner", "amount",
+                       "from_account", "to_account"],
                    ["slot", "block_time", "tx_idx", "amount"])
     if mints is not None:
         t = t[t["mint"].isin(mints)].reset_index(drop=True)
@@ -269,6 +273,7 @@ def movements(unit: Unit, vocab: Vocab, mints=None):
     out = pd.DataFrame({"key": make_key(t["slot"], t["tx_idx"], 255), "slot": t["slot"].astype(np.int64),
                         "bt": t["block_time"].astype(np.int64), "mint": vocab.ids(t["mint"]), "kind": kind,
                         "frm": vocab.ids(t["from_owner"]), "to": vocab.ids(t["to_owner"]),
+                        "facct": vocab.ids(t["from_account"]), "tacct": vocab.ids(t["to_account"]),
                         "amount": t["amount"].astype(np.int64)})
     out["txk"] = out["key"].to_numpy(np.int64) >> KEY_TX_SHIFT
     return out.sort_values("key", kind="stable").reset_index(drop=True)
