@@ -263,3 +263,12 @@ Slice paging is sound: inclusive UTC slices leave no gaps, and every query fails
 68. **Red team MINOR 2, declined.** `[ -s "$qlog/…" ]` is refused, which fails closed, and no line uses it.
 69. **Reviewer m1.** Rename the test at `test-ci.sh:2223` to "each search fails closed at 1,000".
 - Merge the new base `455739ae` with round 10.
+
+### Round 10 (heads: of2-holds `bc540ac7`, archive-safe-b `dc46a442`, of3-scanner `5b64b2a9`; base `455739ae` merged)
+
+- Red team: final, 0 BLOCKER, 0 MAJOR, 2 MINOR. Every round 9 and OF-3 probe is now refused; no legitimate CI line is refused. MINOR 1: an aliased `$out` passes (`d="$out"; cat "$d/logs/run.log"`), a plausible honest spelling. MINOR 2: deliberate disguises pass (`find … -print0 | while read …; cat`, `tar -cf - -C "$out" . | cat`, `python3 -c "open(…)"`).
+
+### Supervisor rulings for round 11 (9 Oct about 5:35 AM)
+
+70. **Red team MINOR 1, required.** A read command (cat, grep, sed, awk, head, tail, cp, tar, `find -exec`, `xargs`) is refused when any argument has a `logs` path part (`/logs/`, `/logs"`, `logs/` at the start), whatever variable comes before it, so an alias of `$out` is caught. Tests: the red team's `d="$out"` probe and one alias of `$RUNNER_TEMP`, each failing on `bc540ac7`; every legitimate line the red team listed still passes.
+71. **Red team MINOR 2, declined.** These need deliberate disguise and are caught by review; every change to the CI scripts gets a reviewer and a red team. The guard is a lint, not a sandbox.
