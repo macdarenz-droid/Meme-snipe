@@ -24,10 +24,10 @@ sys.path.insert(0, HERE)
 from d1 import config as C  # noqa: E402
 
 # Frozen rulings this code implements; written into frozen_rules.json, and validate refuses rules without H8_AMENDMENT.
-FROZEN_AMENDMENTS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT")
+FROZEN_AMENDMENTS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2")
 # Every frozen ruling that governs D1 (red team R2-9). search and validate refuse while any is missing from
-# FROZEN_AMENDMENTS: AMENDMENT_3 (rank H8-tradable rules first) and research/brainstorm-loop/H8_AMENDMENT_2.md
-# (universe-aware floor, H6/H9/H11/H12/H13/H17 and dust, tradable at $5) are frozen but not implemented yet.
+# FROZEN_AMENDMENTS. AMENDMENT_3 (d1/search.py h8_first ranking) and research/brainstorm-loop/H8_AMENDMENT_2.md
+# (d1/gates.py, holders.gate_h12/gate_h13, h8.add_h8 universe floors, validate.h8_report at $5) are implemented.
 REQUIRED_RULINGS = ("AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2")
 
 
@@ -76,6 +76,8 @@ def stage1(args):
     pts.to_pickle(os.path.join(args.out, "points.pkl"))
     feats.to_pickle(os.path.join(args.out, "features.pkl"))
     migs.to_pickle(os.path.join(args.out, "migrations.pkl"))
+    from d1.h8 import pool_days
+    pool_days(book).to_pickle(os.path.join(args.out, "pool_days.pkl"))
     m = manifest(tape)
     m.update({"stage": "stage1", "dev": dev, "code_sha256": code_hash(), "unit_dirs": units,
               "stepa_plan": plan, "clock_nonmonotone_blocks": clock.nonmonotone,
@@ -150,9 +152,12 @@ def summary(args):
                                          for f in C.FEATURES} if len(feats) else {}}
     if len(feats):
         from d1.h8 import h8_counts
-        el = pts[pts.eligible].merge(feats[["pool", "tau", "effective_quote_sol"]], on=["pool", "tau"])
+        el = pts[pts.eligible].merge(feats.drop(columns=[c for c in feats if c in pts and c not in ("pool", "tau")]),
+                                     on=["pool", "tau"])
         df, px_sha = with_h8(el, args.solusd)
-        rep["h8_counts"] = {"solusd_sha256": px_sha, "per_day": h8_counts(df)}
+        pdp = os.path.join(args.run, "pool_days.pkl")
+        rep["h8_counts"] = {"solusd_sha256": px_sha,
+                            "per_day": h8_counts(df, pd.read_pickle(pdp) if os.path.exists(pdp) else None)}
     p = os.path.join(args.run, "outcomes.pkl")
     if os.path.exists(p):
         o = pd.read_pickle(p)

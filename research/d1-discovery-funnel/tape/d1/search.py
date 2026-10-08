@@ -15,9 +15,11 @@
   reported only.
 - Binary features (config.BINARY_FEATURES): top = 1, bottom = 0. A feature whose training q20 equals its q80 gives no
   rule in that fold (AMENDMENT_1 item 23).
-- H8_AMENDMENT (reporting only, never used to qualify or rank): each rule's pooled out-of-fold trades and mean on the
-  H8-eligible stratum at $5, $20 and $50 (`h8_s<usd>_n`, `h8_s<usd>_mean`), at that size's own fills, throttled
-  inside the stratum.
+- H8 stratum (H8_AMENDMENT, H8_AMENDMENT_2): each rule's out-of-fold trades and mean on the H8-tradable subset (the
+  point's universe floor plus the bot's gates as of d, h8.add_h8) at $5, $20 and $50, at that size's own fills,
+  throttled inside the subset (`h8_s<usd>_n`, `h8_s<usd>_mean`; per fold for $5).
+- AMENDMENT_3: among rules that qualify, those whose $5 H8-tradable subset has >= 30 trades and a positive mean in
+  every fold (`h8_first`) are ranked first; the budget of 5 is unchanged and the subset never makes a rule qualify.
 - Advance at most 5 rules (over both holds) by score; freeze their definitions and full-discovery quintile edges.
 """
 import itertools
@@ -121,7 +123,7 @@ def run_search(df: pd.DataFrame) -> Dict:
                 rs = d.get(f"net_ret_{hm}_s{sz}", pd.Series(np.nan, index=d.index)).to_numpy(dtype=float)
                 h8_arr[sz] = (d[f"h8_s{sz}"].to_numpy(dtype=bool) & ~np.isnan(rs), rs)
                 for r in rules:
-                    h8_stats[(rule_id(r), sz)] = [0, 0.0]
+                    h8_stats[(rule_id(r), sz)] = [[0, 0.0] for _ in range(C.N_BLOCKS)]   # per fold: n, sum
         for j in range(C.N_BLOCKS):
             train, test = fold_masks(d, j, hm)
             masks = {}
@@ -138,8 +140,8 @@ def run_search(df: pd.DataFrame) -> Dict:
                 if h8:
                     for sz, (hm8, rs) in h8_arr.items():   # the bot enters only H8-eligible pools: throttle inside
                         k8 = throttle(pool, tau, m & hm8)
-                        h8_stats[(rule_id(r), sz)][0] += int(k8.sum())
-                        h8_stats[(rule_id(r), sz)][1] += float(rs[k8].sum())
+                        h8_stats[(rule_id(r), sz)][j][0] += int(k8.sum())
+                        h8_stats[(rule_id(r), sz)][j][1] += float(rs[k8].sum())
         for r in rules:
             st = stats[rule_id(r)]
             n = np.array([s[0] for s in st])
@@ -150,16 +152,30 @@ def run_search(df: pd.DataFrame) -> Dict:
             same = bool(np.all(n > 0) and np.all(signs == signs[0]) and signs[0] != 0)
             # AMENDMENT_1 item 24: out-of-fold mean NET return above 0 in every fold, same sign in all four folds
             ok = bool(np.all(n >= C.MIN_TRADES_PER_FOLD) and same and np.all(means > 0))
-            table.append({"rule": rule_id(r), "hold_min": hm, "n_total": int(n.sum()),
-                          **{f"n_f{j}": int(n[j]) for j in range(C.N_BLOCKS)},
-                          **{f"mean_f{j}": float(means[j]) for j in range(C.N_BLOCKS)},
-                          "score": float(score), "same_sign": same, "qualifies": ok,
-                          **({f"h8_s{sz}_{k}": v for sz in C.H8_SIZES_USD for k, v in (
-                              ("n", h8_stats[(rule_id(r), sz)][0]),
-                              ("mean", h8_stats[(rule_id(r), sz)][1] / h8_stats[(rule_id(r), sz)][0]
-                               if h8_stats[(rule_id(r), sz)][0] else float("nan")))} if h8 else {})})
+            row = {"rule": rule_id(r), "hold_min": hm, "n_total": int(n.sum()),
+                   **{f"n_f{j}": int(n[j]) for j in range(C.N_BLOCKS)},
+                   **{f"mean_f{j}": float(means[j]) for j in range(C.N_BLOCKS)},
+                   "score": float(score), "same_sign": same, "qualifies": ok, "h8_first": False}
+            if h8:
+                for sz in C.H8_SIZES_USD:
+                    fs = h8_stats[(rule_id(r), sz)]
+                    n8 = np.array([x[0] for x in fs])
+                    s8 = np.array([x[1] for x in fs])
+                    row[f"h8_s{sz}_n"] = int(n8.sum())
+                    row[f"h8_s{sz}_mean"] = float(s8.sum() / n8.sum()) if n8.sum() else float("nan")
+                    if sz == C.H8_TRADABLE_SIZE_USD:
+                        m8 = np.where(n8 > 0, s8 / np.maximum(n8, 1), np.nan)
+                        row.update({f"h8_s{sz}_n_f{j}": int(n8[j]) for j in range(C.N_BLOCKS)})
+                        row.update({f"h8_s{sz}_mean_f{j}": float(m8[j]) for j in range(C.N_BLOCKS)})
+                        # AMENDMENT_3: the H8-tradable subset ($5, H8_AMENDMENT_2) has >= 30 trades and a positive
+                        # out-of-fold mean in every fold
+                        row["h8_first"] = bool(np.all(n8 >= C.MIN_TRADES_PER_FOLD) and np.all(m8 > 0))
+            table.append(row)
     tab = pd.DataFrame(table)
-    q = tab[tab.qualifies].sort_values(["score", "rule", "hold_min"], ascending=[False, True, True], kind="mergesort")
+    # AMENDMENT_3: among rules that pass the screen, those whose H8-tradable subset passes it too are ranked first;
+    # the budget of 5 is unchanged
+    q = tab[tab.qualifies].sort_values(["h8_first", "score", "rule", "hold_min"], ascending=[False, False, True, True],
+                                       kind="mergesort")
     adv = q.head(C.N_ADVANCE)
     frozen = []
     for row in adv.itertuples(index=False):
@@ -170,6 +186,6 @@ def run_search(df: pd.DataFrame) -> Dict:
                        "terms": [{"feature": f, "side": s, "binary": f in C.BINARY_FEATURES,
                                   "edges_q20_q80": list(edges_of(d[f].to_numpy(dtype=float)))}
                                  for f, s in parts],
-                       "discovery_score": float(row.score)})
+                       "discovery_score": float(row.score), "h8_first": bool(row.h8_first)})
     return {"median_rt_cost": median_cost, "table": tab, "advanced": frozen,
             "outcome": "advance" if frozen else "nothing found"}
