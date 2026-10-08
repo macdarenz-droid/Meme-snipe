@@ -234,3 +234,18 @@ REVIEW PASS with fixes. Red team 0 BLOCKER, 1 MAJOR, 4 MINOR. Every verified cla
 ### #306 round 3 (head `99996584`)
 
 The supervisor checked the delta from `a2981261` itself: one file, ruling 62 applied as worded. **#306 is approved.** It waits for OF-2 (#296) to merge, then is retargeted to `ccr-14987baf-i6lrsl` (its own diff is then the one doc), merges the base and merges on green CI. Researcher `session_01A6P7TJYP1XZYZ7bAoBQsEe` stays parked until then.
+
+## Round 8 (heads: of2-holds `8aa5c131`, archive-safe-b `4ca9d41a`, of3-scanner `024399cb`; base `e99e61af`)
+
+### Round 8 red team: final, no MAJOR (2 MINOR)
+
+Slice paging is sound: inclusive UTC slices leave no gaps, and every query fails closed at ≥ 1,000 or when rows < total_count. The runner pin is sound. The `-logs` entry is never resumed. The cache ref is fixed.
+- MINOR 1: a status race; a brand-new run can be missed, but the next guard read sees it.
+- MINOR 2: reads of the private logs into the public log are not refused (`grep`, `sed`, `cp` to `$GITHUB_STEP_SUMMARY`, `while read < $qlog/...`, full `*/logs/` paths).
+- Not checked: `container:` and `services:` images, and reusable-workflow jobs.
+
+### Supervisor rulings for round 9 (9 Oct, about 3:40 AM; sent together with the round 8 reviewer's findings)
+
+63. **MINOR 2.** Refuse any command argument or input redirect that names `$qlog`, `$slog`, `$tlog`, or a `*/logs/` path under `$out` or `$RUNNER_TEMP`, unless it is a write target of the allowed calls. One test per form above.
+64. **MINOR 1.** Run the status queries before the slices. Test the order.
+65. **Pin scope.** Arming also refuses archive-workflow jobs that use `container:` or `services:`, or that call a reusable workflow. Test it.
