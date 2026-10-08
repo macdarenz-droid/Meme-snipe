@@ -355,13 +355,17 @@ def dev_summary(df, days):
 
 
 def dev_zero_decide(summ):
-    out = {}
+    """Per arm, in the frozen order (le5, zero, le3; STEP_A_COUNT_ROWS §1 "then, in a fixed order", SWEEP_2
+    "arm order, frozen before Step A"): fixed-sequence testing, so an arm earns only if every earlier arm earned.
+    This is the conservative reading (red team R1-6, open question in CODE_REDTEAM.md)."""
+    out, open_ = {}, True
     for arm, _, _ in DEV_ARMS:
         x = summ[arm]
-        out[arm] = bool(x["median_net_excess"] is not None and x["median_net_excess"] >= EFFECT
+        out[arm] = open_ and bool(x["median_net_excess"] is not None and x["median_net_excess"] >= EFFECT
                         and x["lb95"] is not None and x["lb95"] > 0
                         and x["late_share_of_ftb"] is not None and x["late_share_of_ftb"] >= 0.5
                         and x["events_per_day"] and min(x["events_per_day"].values()) >= 11)
+        open_ = out[arm]
     return out
 
 

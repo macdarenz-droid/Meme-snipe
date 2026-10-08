@@ -787,6 +787,15 @@ class RedTeamR1(unittest.TestCase):
         df, _ = R.seat_drift(tape, s, adj)
         self.assertEqual(set(df["dropped"]), {"theme_wave_name_match"})
 
+    def test_dev_zero_arms_are_tested_in_the_frozen_order(self):
+        # R1-6: "then, in a fixed order": an arm earns only if every earlier arm earned (fixed-sequence)
+        good = {"median_net_excess": 0.05, "lb95": 0.01, "late_share_of_ftb": 0.6, "events_per_day": {DAY: 12}}
+        bad = {**good, "lb95": -0.01}
+        out = R.dev_zero_decide({"le5": bad, "zero": good, "le3": good})
+        self.assertEqual(out, {"le5": False, "zero": False, "le3": False})
+        out = R.dev_zero_decide({"le5": good, "zero": bad, "le3": good})
+        self.assertEqual(out, {"le5": True, "zero": False, "le3": False})
+
     def test_events_a_day_count_only_events_with_a_net_value(self):
         # R1-7: an event whose net is undefined (no effective quote) is not an eligible event
         df = pd.DataFrame({"arm": ["le5"] * 3, "kind": ["event", "event", "control"], "pool": ["P1", "P2", "P3"],
