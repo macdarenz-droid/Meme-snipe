@@ -12,6 +12,7 @@ import zstandard
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import h8 as H8  # noqa: E402
 import rebuy as RB  # noqa: E402
+import slicer as SL  # noqa: E402
 import rows as R  # noqa: E402
 from tapeio import AMM_COLS, CURVE_COLS, SOL_NATIVE, WSOL, Tape  # noqa: E402
 
@@ -35,18 +36,20 @@ class Unit:
     def cbuy(self, slot, owner, mint, sol=1e9, buy=True, pre=0, post=0, creator="DEV", tokens=1, protocol=0):
         r = self._base(slot, owner)
         r.update({"mint": mint, "is_buy": int(buy), "sol_amount": sol, "token_amount": tokens,
-                  "quote_mint": SOL_NATIVE, "protocol": protocol, "mayhem_mode": 0, "creator": creator, "owner_token_pre": pre, "owner_token_post": post})
+                  "quote_mint": SOL_NATIVE, "protocol": protocol, "top_program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "mayhem_mode": 0, "creator": creator, "owner_token_pre": pre, "owner_token_post": post})
         self.curve.append(r)
         return r
 
     def aswap(self, slot, owner, mint, pool, sol=1e9, buy=True, pre=0, post=0, creator="DEV", signer=None,
-              sig=None, quote=80e9, virtual=20e9, base=1e14, tokens=1, chain=True):
+              sig=None, quote=80e9, virtual=20e9, base=1e14, tokens=1, chain=True, fee_bps=5):
         r = self._base(slot, owner, signer)
         r.update({"base_mint": mint, "pool": pool, "side": "buy" if buy else "sell", "quote_amount": sol,
                   "base_amount": tokens, "quote_mint": WSOL, "protocol": 0, "canonical": 1, "coin_creator": creator,
                   "pool_base_token_reserves": base, "pool_quote_token_reserves": quote, "chain_pool_base": base,
                   "chain_pool_quote": quote, "virtual_quote_reserves": virtual, "base_supply": SUPPLY,
-                  "owner_token_pre": pre, "owner_token_post": post})
+                  "owner_token_pre": pre, "owner_token_post": post, "quote_amount_lp_adjusted": sol,
+                  "coin_creator_fee_basis_points": fee_bps,
+                  "top_program": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"})
         if sig:
             r["signature"] = sig
         if not chain:
@@ -63,10 +66,12 @@ class Unit:
         self.event("CreateEvent", slot, {"mint": mint, "creator": creator, "user": creator, "is_mayhem_mode": "0",
                                          "quote_mint": SOL_NATIVE, "name": name or mint, "symbol": name or mint})
 
-    def migrate(self, slot, mint, pool, creator="DEV"):
+    def migrate(self, slot, mint, pool, creator="DEV", pool_quote=85e9, pool_base=2e13):
         self.event("CompletePumpAmmMigrationEvent", slot, {"mint": mint, "pool": pool, "quote_mint": SOL_NATIVE})
         self.event("CreatePoolEvent", slot, {"pool": pool, "base_mint": mint, "quote_mint": WSOL,
-                                             "is_mayhem_mode": "0", "coin_creator": creator, "creator": "x"})
+                                             "is_mayhem_mode": "0", "coin_creator": creator, "creator": "x",
+                                             "pool_quote_amount": str(int(pool_quote)),
+                                             "pool_base_amount": str(int(pool_base))})
 
     def write(self, root, day=DAY):
         p = os.path.join(root, day, f"{self.lo}-{self.hi}", "research")
@@ -482,22 +487,26 @@ class H8Stratum(unittest.TestCase):
     def test_dev_zero_stratum(self):
         tape, s, adj = load(dev_unit())
         dz, _ = R.dev_zero(tape, s, adj)
-        out = H8.dev_zero_stratum(dz, [DAY], flat_hourly(200.0))   # 100 SOL x $200 = $20,000
+        ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+        out = H8.dev_zero_stratum(dz, [DAY], flat_hourly(200.0), ctx)   # 100 SOL x $200 = $20,000, U2 (65 min)
         self.assertEqual(out["$5"]["le5"]["events_used"], 1)
         self.assertEqual(out["$20"]["le5"]["events_used"], 1)
         self.assertEqual(out["$50"]["le5"]["events_used"], 0)
         self.assertEqual(out["$50"]["le5"]["events_per_day"], {DAY: 0})
+        self.assertEqual(out["$5"]["h8_checks"].get("h11_not_covered"), 1)   # pool Q has no candle by m + 5 min
 
     def test_rebuy_and_seat_drift_strata(self):
         tape, s, _ = load(rebuy_unit())
         ex, pts, prs, _ = RB.rebuy_anchor(tape, s)
-        out = H8.rebuy_stratum(tape, ex, pts, prs, flat_hourly(200.0))
-        self.assertEqual(out["$5"]["decision_points"], len(pts))
+        ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+        out = H8.rebuy_stratum(tape, ex, pts, prs, flat_hourly(200.0), ctx)
+        self.assertEqual(out["$5"]["decision_points"], len(pts))           # hours 1-2: U2
         self.assertEqual(out["$50"]["decision_points"], 0)
         self.assertEqual(out["$50"]["ex_holder_point_pairs"], 0)
         tape, s, adj = load(SeatDrift()._unit())
         sd, _ = R.seat_drift(tape, s, adj)
-        o = H8.seat_drift_stratum(sd, flat_hourly(200.0))
+        ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+        o = H8.seat_drift_stratum(sd, flat_hourly(200.0), ctx)
         self.assertEqual(o["$5"]["used"], 3)
         self.assertEqual(o["$50"]["used"], 0)
 
@@ -507,7 +516,9 @@ class H8Stratum(unittest.TestCase):
         x = summ[DAY]
         self.assertEqual(x["pool_hours"], 4)                  # hour starts T0+800 ... T0+11600
         self.assertEqual(x["pool_hours_mayhem_unknown"], 0)
-        self.assertEqual((x["$5"]["h8_pool_hours"], x["$50"]["h8_pool_hours"]), (4, 0))
+        # H8_AMENDMENT_2: T0+800 is 12 min after migration (H10: not tradable); the other three are U2
+        self.assertEqual((x["$5"]["h8_pool_hours"], x["$50"]["h8_pool_hours"]), (3, 0))
+        self.assertEqual(x["$5"]["pool_hour_checks"], {"under_60min": 1, "ok": 3})
         self.assertEqual((x["graduates"], x["$20"]["h8_graduates"], x["$50"]["h8_graduates"]), (1, 1, 0))
         u = rebuy_unit()
         u.ev = [e for e in u.ev if e["event"] not in ("CreateEvent", "CreatePoolEvent")]
@@ -515,9 +526,171 @@ class H8Stratum(unittest.TestCase):
         tape2, s2, _ = load(u)
         _, _, sm = H8.h8_capacity(tape2, s2, flat_hourly(200.0))
         self.assertEqual((sm[DAY]["pool_hours"], sm[DAY]["pool_hours_mayhem_unknown"]), (0, 4))
-        self.assertEqual(sm[DAY]["$5"]["h8_pool_hours_mayhem_unknown"], 4)
+        self.assertEqual(sm[DAY]["$5"]["h8_pool_hours_mayhem_unknown"], 0)   # no CreatePoolEvent: dust unknown
         _, _, summ = H8.h8_capacity(tape, s, {})
         self.assertEqual(summ[DAY]["$5"]["h8_pool_hours"], 0)   # no price: nothing is eligible
+
+
+class H8Amendment2(unittest.TestCase):
+    def test_universe_tags_and_floors(self):
+        self.assertEqual([H8.universe(a) for a in (3599, 3600, 14400, 14401, 86399, 86400, 14 * 86400, 14 * 86400 + 1)],
+                         ["under_60min", "U2", "U2", "4_24h", "4_24h", "U1", "U1", "over_14d"])
+        self.assertEqual(H8.floor_usd(5, "U2"), 15_000)
+        self.assertEqual(H8.floor_usd(5, "U1"), 50_000)
+        self.assertEqual(H8.floor_usd(50, "U1"), 50_000)
+        self.assertEqual(H8.floor_usd(100, "U1"), 100_000)
+        self.assertIsNone(H8.floor_usd(5, "4_24h"))
+        self.assertEqual(H8.SIZES_USD, (5, 20, 50, 100, 200, 500, 1000, 10000))
+        self.assertTrue(H8.SIZE_NOTES["$5"].startswith("trial maximum"))
+        self.assertTrue(H8.SIZE_NOTES["$20"].startswith("research line"))
+
+    def _ctx(self, u, px=200.0):
+        tape, s, _ = load(u)
+        return H8.GateCtx(tape, s, flat_hourly(px, T0 - 7200, T0 + 4 * 86400)), tape
+
+    def test_checks_at_a_point(self):
+        m = 100
+        u = Unit(0, 15000)
+        u.create(10, "M"); u.migrate(m, "M", "P")
+        u.aswap(150, "o", "M", "P")
+        ctx, tape = self._ctx(u)
+        t = T0 + m + 3700
+        self.assertEqual(ctx.check("P", t, m + 3700, 100e9, 5), "ok")
+        self.assertEqual(ctx.check("P", t, m + 3700, 100e9, 50), "below_U2_floor")
+        self.assertEqual(ctx.check("P", T0 + m + 5 * 3600, m + 3700, 100e9, 5), "4_24h")
+        self.assertEqual(ctx.check("P", T0 + m + 2 * 86400, m + 3700, 249e9, 5), "below_U1_floor")   # $49,800 < $50k
+        self.assertEqual(ctx.check("P", T0 + m + 2 * 86400, m + 3700, 251e9, 5), "ok")    # 251 SOL x $200 >= $50k
+        self.assertEqual(ctx.check("Q", t, m + 3700, 100e9, 5), "age_unknown")
+
+    def test_dust_h6_spike_and_chase(self):
+        m = 100
+        def unit():
+            u = Unit(0, 15000)
+            u.create(10, "M")
+            return u
+        u = unit(); u.migrate(m, "M", "P", pool_quote=4e9); u.aswap(150, "o", "M", "P")
+        ctx, _ = self._ctx(u)
+        self.assertEqual(ctx.check("P", T0 + m + 3700, m + 3700, 100e9, 5), "dust_at_migration")
+        u = unit(); u.migrate(m, "M", "P"); u.aswap(150, "o", "M", "P")
+        u.event("DepositEvent", 300, {"pool": "P", "lp_token_amount_out": "10"})
+        ctx, _ = self._ctx(u)
+        self.assertEqual(ctx.check("P", T0 + m + 3700, m + 3700, 100e9, 5), "h6_lp_outstanding")
+        u.event("WithdrawEvent", 400, {"pool": "P", "lp_token_amount_in": "10"})
+        ctx, _ = self._ctx(u)
+        self.assertEqual(ctx.check("P", T0 + m + 3700, m + 3700, 100e9, 5), "ok")
+        u = unit(); u.migrate(m, "M", "P"); u.aswap(150, "o", "M", "P")
+        u.aswap(m + 3650, "big", "M", "P", sol=50e9)            # +50% within one candle, 50 s before the point
+        ctx, _ = self._ctx(u)
+        self.assertEqual(ctx.check("P", T0 + m + 3700, m + 3700, 100e9, 5), "h11_spike")
+        self.assertEqual(ctx.check("P", T0 + m + 3700 + 400, m + 4100, 100e9, 5), "ok")   # out of the 3-min window
+        u = unit(); u.migrate(m, "M", "P", pool_base=1e15); u.aswap(150, "o", "M", "P")   # migration price 8.5e-5
+        ctx, _ = self._ctx(u)
+        self.assertEqual(ctx.check("P", T0 + m + 3700, m + 3700, 100e9, 5), "h11_chase")
+        self.assertEqual(ctx.check("P", T0 + m + 2 * 86400, m + 3700, 300e9, 5), "ok")      # U1: no chase check
+
+    def test_creator_fee_zero_pools_counted(self):
+        u = rebuy_unit()
+        u.aswap(160, "o", "N2", "P2", fee_bps=0)
+        tape, s, _ = load(u)
+        _, _, summ = H8.h8_capacity(tape, s, flat_hourly(200.0))
+        self.assertEqual(summ[DAY]["canonical_pools_creator_fee_0"], 1)
+
+
+def slicer_unit():
+    u = Unit(0, 20000)
+    u.create(10, "M"); u.migrate(100, "M", "P")
+    u.aswap(150, "o", "M", "P")
+
+    def slices(owner, slots, sols, b_last, **kw):
+        rows = []
+        for i, (sl, so) in enumerate(zip(slots, sols)):
+            r = u.aswap(sl, owner, "M", "P", sol=so, **kw)
+            r["signer_sol_pre"] = 100e9 + i * 7e9          # never equal to the previous slice's post balance
+            r["signer_sol_post"] = 50e9 + i * 3e9
+            rows.append(r)
+        rows[-1]["signer_sol_post"] = b_last
+        return rows
+    slices("X", [1000, 1100, 1300], [0.5e9, 0.4e9, 0.7e9], 5e9)            # the event: B = 5 SOL >= 2.2% of Q
+    u.aswap(1400, "X", "M", "P", sol=3e9)                                    # continuation after t + 23 slots
+    u.aswap(5000, "X", "M", "P", sol=1e9, buy=False, tokens=5)              # sells all its tokens after the hour: bait
+    slices("Y", [1000, 1150, 1450], [0.5e9, 0.4e9, 0.7e9], 0.3e9)           # B under 0.5% of Q: placebo
+    rz = slices("Z", [1000, 1120, 1330], [0.5e9, 0.4e9, 0.7e9], 5e9)
+    for r in rz:
+        r["top_program"] = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"     # routed
+    slices("R", [1000, 1100, 1200], [0.5e9, 0.5e9, 0.5e9], 5e9)              # regular cadence
+    rv = slices("V", [1000, 1110, 1290], [0.5e9, 0.4e9, 0.7e9], 5e9)
+    rv[1]["signer"] = "relay"                                                # signer is not the owner
+    u.aswap(500, "S", "M", "P", sol=0.1e9, buy=False)                        # S sold within the prior 24 h
+    slices("S", [1000, 1130, 1310], [0.5e9, 0.4e9, 0.7e9], 5e9)
+    u.cbuy(11, "F", "M", sol=0.1e9)                                          # F: fast class (2 slots after create)
+    u.aswap(1310, "F", "M", "P", sol=1e9)                                    # fast buy in [t, t + 23 slots]
+    return u
+
+
+class Slicer(unittest.TestCase):
+    def _run(self, u):
+        tape, s, adj = load(u)
+        fast = R.w1_fast_class(tape, s)
+        ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+        maps, _ = R.cluster_maps(tape)
+        return SL.slicer_rows(tape, s, adj, fast, ctx, maps["hub_cap_50"])
+
+    def test_event_definition_and_exclusions(self):
+        ev, plc, ctl, summ = self._run(slicer_unit())
+        self.assertEqual(list(ev["owner"]), ["X"])
+        self.assertEqual(list(plc["owner"]), ["Y"])
+        d = summ["drops"]
+        for k in ("routed_or_app", "regular_cadence", "signer_not_owner", "sold_in_prior_24h"):
+            self.assertEqual(d.get(k), 1, k)
+        e = ev.iloc[0]
+        self.assertEqual((e["t"], e["slot"], e["B"]), (T0 + 1300, 1300, 5e9))
+        self.assertAlmostEqual(e["Q"], 100e9)
+
+    def test_rows(self):
+        ev, plc, ctl, summ = self._run(slicer_unit())
+        e = ev.iloc[0]
+        self.assertEqual(e["cont"], 3e9)                       # X's net buy in (t + 23 slots, t + 60 min]
+        self.assertTrue(e["a_hit"])                            # >= 50% of B
+        self.assertAlmostEqual(e["fast_ratio"], 0.2)           # F's 1 SOL / B
+        self.assertTrue(e["bait"])
+        self.assertEqual(summ["a_budget_realisation"]["share"], 1.0)
+        self.assertIsNone(summ["b_payer_mass"]["passed"])      # PAYER_MASS bar not computed: never passes
+        self.assertTrue(summ["d_low_b_placebo"]["passed"])     # Y's continuation 0 <= half of X's
+        self.assertTrue(summ["f_fast_class"]["passed"])
+        self.assertFalse(summ["g_bait"]["passed"])
+        self.assertEqual(summ["i_count_u1_5usd"]["per_day"], {DAY: 0})   # 20 min after migration: not U1
+        self.assertFalse(summ["all_rows_pass"])
+        self.assertIn("not every row", summ["next_step"])
+
+    def test_creator_group_and_fast_wallets_are_not_slicers(self):
+        u = slicer_unit()
+        u.w.append({"slot": 5, "from": "DEV", "to": "X"})      # X is in the creator group
+        ev, _, _, summ = self._run(u)
+        self.assertEqual(len(ev), 0)
+        self.assertEqual(summ["drops"].get("creator_group"), 1)
+
+
+class SlicerControl(unittest.TestCase):
+    def _ctl(self, link):
+        u = Unit(0, 20000)
+        u.create(10, "M"); u.migrate(100, "M", "P")
+        u.aswap(150, "o", "M", "P", sol=0.1e9)
+        for sl, w in ((1000, "A"), (1100, "B"), (1200, "C")):
+            u.aswap(sl, w, "M", "P", sol=0.5e9)
+        u.aswap(1300, "A", "M", "P", sol=0.5e9)
+        if link:
+            u.w.append({"slot": 1, "from": "A", "to": "B"})
+        tape, s, _ = load(u)
+        ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+        maps, _ = R.cluster_maps(tape)
+        return SL.dispersed_controls(tape, s, ctx, maps["hub_cap_50"])
+
+    def test_three_unlinked_single_buyers(self):
+        c = self._ctl(False)
+        self.assertEqual(list(c["t"]), [T0 + 1100])              # o, A, B: 1.1 SOL >= 1% of Q
+        self.assertEqual(c.iloc[0]["cont"], 0.5e9)               # A's later buy, after t' + 23 slots
+        c = self._ctl(True)
+        self.assertEqual(list(c["t"]), [T0 + 1200])              # A and B linked: C completes three
 
 
 class SolUsdDir(unittest.TestCase):

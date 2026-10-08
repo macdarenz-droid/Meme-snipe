@@ -67,13 +67,16 @@ def judge(df: pd.DataFrame, frozen: Dict, days: Sequence[str]) -> Dict:
     res["verdict"] = "pass" if passed else ("unresolved" if n < C.MIN_TRADES_VALIDATION else "not supported")
     res.update(h8_report(df, frozen))
     if res["verdict"] == "pass" and not res["tradable_as_bot_stands"]:
+        # H8_AMENDMENT item 3; the unknown share says how much of it is missing evidence rather than the floor
         res["owner_note"] = "this works only in pools below H8's floor"
     return res
 
 
 def h8_report(df: pd.DataFrame, frozen: Dict) -> Dict:
-    """H8_AMENDMENT items 1-3: the rule on the H8-eligible stratum at $5, $20 and $50, each at its own fills.
-    Tradable as the bot stands only if some size has >= 300 stratum trades and a positive point mean."""
+    """H8_AMENDMENT_2 item 3 (AMENDMENT_3 last item): the rule on the H8-tradable subset (universe floor and the bot's
+    gates, h8.add_h8) at $5, $20 and $50, each at its own fills. Tradable as the bot stands only at $5, the trial
+    maximum: >= 300 subset trades and a positive point mean. $20 and $50 are research lines that need the owner to
+    raise maxNotional. `unknown_share`: of the rule's trades, the share whose gates the tape could not judge."""
     hm = frozen["hold_min"]
     if not all(f"h8_s{s}" in df.columns for s in C.H8_SIZES_USD):
         return {"h8": None, "tradable_as_bot_stands": False}
@@ -82,6 +85,8 @@ def h8_report(df: pd.DataFrame, frozen: Dict) -> Dict:
     for t in frozen["terms"]:
         m &= side_mask(d[t["feature"]].to_numpy(dtype=float), tuple(t["edges_q20_q80"]), t["side"],
                        bool(t.get("binary", t["feature"] in C.BINARY_FEATURES)))
+    rule_k = throttle(d.pool.to_numpy(), d.tau.to_numpy(), m)
+    unk = d["h8_gate_unknown"].to_numpy(dtype=bool) if "h8_gate_unknown" in d else np.ones(len(d), dtype=bool)
     out, tradable = {}, False
     for s in C.H8_SIZES_USD:
         col = f"net_ret_{hm}_s{s}"
@@ -89,6 +94,9 @@ def h8_report(df: pd.DataFrame, frozen: Dict) -> Dict:
         k = throttle(d.pool.to_numpy(), d.tau.to_numpy(), m & d[f"h8_s{s}"].to_numpy(dtype=bool) & ~np.isnan(rs))
         n = int(k.sum())
         mean = float(rs[k].mean()) if n else float("nan")
-        out[f"${s}"] = {"n_trades": n, "mean": mean}
-        tradable |= n >= C.MIN_TRADES_VALIDATION and mean > 0
-    return {"h8": out, "tradable_as_bot_stands": bool(tradable)}
+        out[f"${s}"] = {"n_trades": n, "mean": mean,
+                        "role": "bot as it stands" if s == C.H8_TRADABLE_SIZE_USD else "research line (owner: maxNotional)"}
+        if s == C.H8_TRADABLE_SIZE_USD:
+            tradable = n >= C.MIN_TRADES_VALIDATION and mean > 0
+    return {"h8": out, "tradable_as_bot_stands": bool(tradable),
+            "unknown_share": float(unk[rule_k].mean()) if rule_k.any() else float("nan")}

@@ -884,20 +884,52 @@ class H8Amendment(unittest.TestCase):
         cl = np.delete(close, 5)
         self.assertTrue(np.isnan(self.h8.price_asof(hrs, cl, [t])[0]))           # missing hour -> no price
 
+    @staticmethod
+    def _bot_ok(df, age_min=120.0, mcap_sol=500.0):
+        """Every gate passes, and the point is in U2 (60-240 min)."""
+        from d1.gates import GATES
+        df = df.copy()
+        df["age_since_mig_min"] = age_min
+        df["mcap_rel_420"] = mcap_sol / 420
+        for g in GATES:
+            df[g] = 1
+        return df
+
     def test_flags_and_counts(self):
+        # H8_AMENDMENT_2: the floor follows the universe tag; 4-24 h is never tradable
         tau0 = C.epoch(C.DISCOVERY_DAYS[0]) + 3600
-        df = pd.DataFrame({"pool": [1, 1, 2, 3], "tau": [tau0, tau0 + 300, tau0, tau0 + 7200], "eligible": True,
-                           "day": C.DISCOVERY_DAYS[0], "effective_quote_sol": [130.0, 500.0, 60.0, 170.0]})
+        df = pd.DataFrame({"pool": [1, 1, 2, 3, 4, 5], "tau": [tau0, tau0 + 300, tau0, tau0 + 7200, tau0, tau0],
+                           "eligible": True, "day": C.DISCOVERY_DAYS[0],
+                           "effective_quote_sol": [130.0, 500.0, 60.0, 170.0, 500.0, 900.0]})
+        df = self._bot_ok(df)
+        df.loc[4, "age_since_mig_min"] = 300.0          # 5 h: no universe tag
+        df.loc[5, "age_since_mig_min"] = 1440.0         # 24 h, cap 2,000 SOL: U1 ($50k = 419 SOL)
+        df.loc[5, "mcap_rel_420"] = 2000 / 420
         out = self.h8.add_h8(df, self.hours, self.close)
-        self.assertEqual(out.h8_s5.tolist(), [True, True, False, True])     # 126 SOL floor
-        self.assertEqual(out.h8_s20.tolist(), [False, True, False, True])   # 168 SOL
-        self.assertEqual(out.h8_s50.tolist(), [False, True, False, False])  # 419 SOL
-        c = self.h8.h8_counts(out)[C.DISCOVERY_DAYS[0]]
-        self.assertEqual(c["$5"], {"pool_hours": 2, "graduates": 2})
-        self.assertEqual(c["$50"], {"pool_hours": 1, "graduates": 1})
+        self.assertEqual(out.u_tag.tolist(), ["U2", "U2", "U2", "U2", "none", "U1"])
+        self.assertEqual(out.h8_s5.tolist(), [True, True, False, True, False, True])      # U2: 126 SOL
+        self.assertEqual(out.h8_s20.tolist(), [False, True, False, True, False, True])    # U2: 168 SOL
+        self.assertEqual(out.h8_s50.tolist(), [False, True, False, False, False, True])   # U2 419; U1 419
+        self.assertEqual(out.h8_s100.tolist(), [False, False, False, False, False, True])  # U1 $100k = 839 SOL
+        df.loc[5, "mcap_rel_420"] = 1000 / 420          # U1 needs a 1,470 SOL market cap
+        self.assertEqual(self.h8.add_h8(df, self.hours, self.close).u_tag.iloc[5], "none")
+        df2 = df.copy()
+        df2.loc[0, "gate_h13"] = -1                     # an unknown gate is never a pass
+        df2.loc[1, "gate_h11_chase"] = 0                # the chase check binds in U2
+        o2 = self.h8.add_h8(df2, self.hours, self.close)
+        self.assertEqual(o2.h8_s5.tolist()[:2], [False, False])
+        self.assertTrue(o2.h8_gate_unknown.iloc[0])
+        self.assertTrue(o2.h8floor_s5.iloc[0])
+        pdays = pd.DataFrame({"pool": [1, 2, 3], "day": C.DISCOVERY_DAYS[0], "creator_fee_zero": [True, False, True]})
+        c = self.h8.h8_counts(out, pdays)[C.DISCOVERY_DAYS[0]]
+        self.assertEqual(c["$5"]["tradable"], {"pool_hours": 3, "graduates": 3})
+        self.assertEqual(c["$50"]["tradable"], {"pool_hours": 2, "graduates": 2})
+        self.assertEqual(set(k for k in c if k.startswith("$")), {f"${s}" for s in C.H8_COUNT_SIZES_USD})
+        self.assertEqual(c["canonical_pools_creator_fee_0"], 2)
+        self.assertEqual(c["points_by_universe"], {"U2": 4, "none": 1, "U1": 1})
 
     def test_search_reports_stratum(self):
-        df = synthetic_search_frame(planted=True)
+        df = self._bot_ok(synthetic_search_frame(planted=True))
         df["effective_quote_sol"] = np.where(df.pool % 2 == 0, 500.0, 60.0)
         for h in C.HOLDS_S:
             df[f"net_ret_{h // 60}_s50"] = df[f"net_ret_{h // 60}"]
@@ -913,30 +945,191 @@ class H8Amendment(unittest.TestCase):
         self.assertGreater(r.h8_s50_mean, 0)
         self.assertGreater(r.h8_s50_n, 0)
         self.assertLess(r.h8_s50_n, r.n_total)          # only the even (deep) pools
-        self.assertEqual(res["advanced"][0]["rule"], run_search(df.drop(columns=[c for c in df if c.startswith("h8_")]))["advanced"][0]["rule"])
+        self.assertFalse(r.h8_first)                    # its $5 subset loses money
+        self.assertEqual(sum(r[f"h8_s5_n_f{j}"] for j in range(4)), r.h8_s5_n)
 
-    def test_validation_tradable(self):
+    def test_amendment3_ranks_h8_tradable_rules_first(self):
+        # rule A (rv_15m top) scores higher, but only in pools below the floor; rule B (net_sol_5m top) is weaker
+        # overall and holds in the H8-tradable subset at $5 -> B is ranked first
+        df = self._bot_ok(synthetic_search_frame(planted=False))
+        deep = (df.pool % 2 == 0).to_numpy()
+        df["effective_quote_sol"] = np.where(deep, 500.0, 60.0)
+        a = (df.rv_15m > np.quantile(df.rv_15m, 0.8)).to_numpy()
+        b = (df.net_sol_5m > np.quantile(df.net_sol_5m, 0.8)).to_numpy()
+        df.loc[a & ~deep, "net_ret_60"] += 0.6
+        df.loc[b, "net_ret_60"] += 0.15
+        for h in C.HOLDS_S:
+            for sz in C.H8_SIZES_USD:
+                df[f"net_ret_{h // 60}_s{sz}"] = df[f"net_ret_{h // 60}"]
+        df = self.h8.add_h8(df, self.hours, self.close)
+        res = run_search(df)
+        t = res["table"].set_index(["rule", "hold_min"])
+        self.assertTrue(t.loc[("rv_15m:top", 60)].qualifies)
+        self.assertFalse(t.loc[("rv_15m:top", 60)].h8_first)
+        self.assertTrue(t.loc[("net_sol_5m:top", 60)].h8_first)
+        self.assertGreater(t.loc[("rv_15m:top", 60)].score, t.loc[("net_sol_5m:top", 60)].score)
+        ranks = [x["rule"] for x in res["advanced"]]
+        self.assertTrue(all(x["h8_first"] for x in res["advanced"][:1]))
+        self.assertLess(ranks.index("net_sol_5m:top") if "net_sol_5m:top" in ranks else 99,
+                        ranks.index("rv_15m:top") if "rv_15m:top" in ranks else 100)
+        self.assertLessEqual(len(res["advanced"]), C.N_ADVANCE)
+        self.assertNotIn("rv_15m:top", ranks[:1])
+
+    def test_validation_tradable_at_5_only(self):
         v = Validation()
-        df = v._with_control(v._df(0.05))
+        df = self._bot_ok(v._with_control(v._df(0.05)))
         df["effective_quote_sol"] = 500.0
         for sz in C.H8_SIZES_USD:
             df[f"net_ret_60_s{sz}"] = df["net_ret_60"]
-        df = self.h8.add_h8(df.assign(tau=df.tau), np.arange(C.epoch("2026-09-06"), C.epoch("2026-09-11"), 3600),
-                            np.full(len(range(C.epoch("2026-09-06"), C.epoch("2026-09-11"), 3600)), 119.26))
+        hrs = np.arange(C.epoch("2026-09-06"), C.epoch("2026-09-11"), 3600)
+        df = self.h8.add_h8(df, hrs, np.full(len(hrs), 119.26))
         fr = v._frozen()
         r = judge(df, fr, C.VALIDATION_DAYS_STEP_B)
         self.assertEqual(r["verdict"], "pass")
         self.assertTrue(r["tradable_as_bot_stands"])
         self.assertNotIn("owner_note", r)
+        self.assertEqual(r["h8"]["$20"]["role"], "research line (owner: maxNotional)")
         df2 = df.copy()
         df2["h8_s5"] = df2["h8_s20"] = df2["h8_s50"] = df2.pool < 20     # too few H8 trades at every size
         r = judge(df2, fr, C.VALIDATION_DAYS_STEP_B)
-        self.assertEqual(r["verdict"], "pass")
         self.assertFalse(r["tradable_as_bot_stands"])
         self.assertEqual(r["owner_note"], "this works only in pools below H8's floor")
         df3 = df.copy()
-        df3["net_ret_60_s5"] = -0.1                                       # $5 negative; $20 still tradable
-        self.assertTrue(judge(df3, fr, C.VALIDATION_DAYS_STEP_B)["tradable_as_bot_stands"])
+        df3["net_ret_60_s5"] = -0.1                    # $5 negative: $20 and $50 positive do not make it tradable
+        r3 = judge(df3, fr, C.VALIDATION_DAYS_STEP_B)
+        self.assertFalse(r3["tradable_as_bot_stands"])
+        self.assertGreater(r3["h8"]["$20"]["mean"], 0)
+        df4 = df.copy()
+        df4["gate_h13"] = -1                           # evidence missing: not tradable, and the share is reported
+        r4 = judge(self.h8.add_h8(df4, hrs, np.full(len(hrs), 119.26)), fr, C.VALIDATION_DAYS_STEP_B)
+        self.assertFalse(r4["tradable_as_bot_stands"])
+        self.assertEqual(r4["unknown_share"], 1.0)
+
+
+class BotGates(unittest.TestCase):
+    """H8_AMENDMENT_2 item 1-2: universe tags and the bot's gates as of the decision (d1/gates.py, holders.py)."""
+
+    def test_universe_and_floor(self):
+        from d1.gates import floor_for, universe_tag
+        self.assertEqual(universe_tag(3600, 10), "U2")
+        self.assertEqual(universe_tag(240 * 60, 10), "U2")
+        self.assertEqual(universe_tag(240 * 60 + 1, 10**6), "none")
+        self.assertEqual(universe_tag(86400, 1470), "U1")
+        self.assertEqual(universe_tag(86400, 1469), "none")
+        self.assertEqual(floor_for("U2", 5), 15_000)
+        self.assertEqual(floor_for("U2", 50), 50_000)
+        self.assertEqual(floor_for("U1", 5), 50_000)
+        self.assertEqual(floor_for("U1", 100), 100_000)
+        self.assertEqual(floor_for("none", 5), float("inf"))
+
+    def _pool(self):
+        sim = S.AmmSim(S.POOL, S.MINT, base=206_900_000_000_000, vault=85 * 10**9)
+        mig = int(S.slot_at(S.T0 + 60))
+        return sim, mig
+
+    def test_spike_and_chase(self):
+        from d1.gates import PASS, REJECT, UNKNOWN, chase, spike
+        sim, mig = self._pool()
+        t = S.T0 + 60
+        sim.trade(int(S.slot_at(t + 30)), "buy", 10**9)            # small move in the first minutes
+        sim.trade(int(S.slot_at(t + 600)), "buy", 40 * 10**9)      # a +25%+ candle at t+600
+        r = PoolBook(sim.df()).rows[S.POOL]
+        mp = 85 * 10**9 / 206_900_000_000_000
+        self.assertEqual(spike(r, 1, t + 600 + 30), REJECT)
+        self.assertEqual(spike(r, 1, t + 600 + 300), PASS)          # older than 3 minutes
+        self.assertEqual(spike(r, 0, t + 600 + 30), PASS)           # as of before the spike trade
+        self.assertEqual(chase(r, 1, t, mp), REJECT)               # +5 min close above the migration price
+        self.assertEqual(chase(r, 1, t, mp * 2), PASS)
+        self.assertEqual(chase(r, 1, t + 700, mp), UNKNOWN)        # no candle ends between migration and +5 min
+
+    def _gates(self, creates=(), extra=None, dep=None):
+        from d1.gates import gate_frame
+        sim, amm, migs, mig_slot, lo, hi = S.standard()
+        ev = {"ExtendAccountEvent": pd.DataFrame({"slot": [mig_slot], "signature": ["m"], "account": [S.POOL], "new_size": [301]}),
+              "CompleteEvent": pd.DataFrame({"slot": [mig_slot - 2], "signature": ["c"], "mint": [S.MINT]})}
+        ev.update(extra or {})
+        tape = S.make_tape(amm, lo, hi, migs=migs, creates=creates, extra_ev=ev)
+        book, clock = PoolBook(tape.amm), Clock(tape)
+        pts = decision_points(tape, book, migrations(tape, book), clock)
+        el = pts[pts.eligible]
+        return gate_frame(tape, book, el, clock), el, mig_slot
+
+    def test_pool_gates(self):
+        sim, amm, migs, mig_slot, lo, hi = S.standard()
+        old = int(S.slot_at(S.T0 - 600))                           # created 10 min before migration
+        g, el, mig = self._gates(creates=[(lo, "c", S.MINT, 90, 90, S.CURVE, 0, C.SYSTEM_PROGRAM)])
+        self.assertTrue((g.gate_dust == 1).all())
+        self.assertTrue((g.gate_h6 == 1).all())
+        self.assertTrue((g.gate_h17 == 1).all())
+        self.assertTrue((g.gate_h9 == 0).all())                    # created at lo, graduated ~30 s later: instant
+        g2, _, _ = self._gates()                                   # no create row: H9 and H17 unknown
+        self.assertTrue((g2.gate_h9 == -1).all() and (g2.gate_h17 == -1).all())
+        cr = [(lo, "c", S.MINT, 90, 90, S.CURVE, 0, C.SYSTEM_PROGRAM, C.TOKEN_2022_PROGRAM, 1)]
+        g3, _, _ = self._gates(creates=cr)                         # cashback coin
+        self.assertTrue((g3.gate_h17 == 0).all())
+        d_mid = int(el.d.iloc[len(el) // 2])
+        dep = {"DepositEvent": pd.DataFrame({"slot": [d_mid], "signature": ["d"], "pool": [S.POOL], "lp_token_amount_out": [5]})}
+        g4, el4, _ = self._gates(extra=dep)
+        self.assertTrue((g4.gate_h6[el4.d >= d_mid] == 0).all())
+        self.assertTrue((g4.gate_h6[el4.d < d_mid] == 1).all())    # as of d
+        ext = {"ExtendAccountEvent": pd.DataFrame({"slot": [mig_slot], "signature": ["m"], "account": [S.POOL], "new_size": [270]})}
+        cr0 = [(lo, "c", S.MINT, 90, 90, S.CURVE, 0, C.SYSTEM_PROGRAM)]
+        g5, _, _ = self._gates(creates=cr0, extra=ext)
+        self.assertTrue((g5.gate_h17 == 0).all())                  # pool account below 300 bytes
+        no_ext = {"ExtendAccountEvent": pd.DataFrame({"slot": [], "signature": [], "account": [], "new_size": []})}
+        g6, _, _ = self._gates(creates=cr0, extra=no_ext)
+        self.assertTrue((g6.gate_h17 == -1).all())                 # pool account size not on the tape
+
+    def test_holder_gates_in_features(self):
+        sim, amm, migs, mig_slot, lo, hi = S.standard()
+        cr = [(lo, "c", S.MINT, 90, 90, S.CURVE, 0, C.SYSTEM_PROGRAM)]
+        for creates, h12_known in (([], False), (cr, True)):
+            tape = S.make_tape(amm, lo, hi, migs=migs, creates=creates)
+            book, clock = PoolBook(tape.amm), Clock(tape)
+            pts = decision_points(tape, book, migrations(tape, book), clock)
+            f = compute_features(tape, book, pts, clock)
+            self.assertTrue((f.gate_h13 == -1).all())              # no funder reads on the tape
+            self.assertEqual(bool((f.gate_h12 != -1).any()), h12_known)
+            if creates:
+                buyers = sorted(set(tape.amm.owner))
+                funders = {o: 5 for o in buyers + [90]}            # complete reads: every wallet funded by 5
+                f2 = compute_features(tape, book, pts, clock, funders=funders)
+                self.assertTrue((f2.gate_h13 != -1).any())
+
+    def test_h12_h13(self):
+        from d1.holders import Holders, gate_h12, gate_h13
+        H = Holders({-1})
+        for o in range(1, 41):
+            H.add_known(o, 25.0, 1.0)                             # 40 holders of 2.5%: top10 25%
+        self.assertEqual(gate_h12(H, 1000.0, 99), 1)               # nothing unaccounted
+        self.assertEqual(gate_h12(H, 2000.0, 99), -1)              # 1,000 unaccounted could be one holder
+        H.add_known(50, 150.0, 1.0)
+        self.assertEqual(gate_h12(H, 1150.0, 99), 0)               # 13% > 10%: single holder
+        self.assertEqual(gate_h12(H, 100.0, 99), -1)               # the book holds more than circulating
+        H3 = Holders({-1})
+        for o in range(1, 41):
+            H3.add_known(o, 25.0, 1.0)
+        H3.add_known(99, 0.0, 0.0)
+        self.assertEqual(gate_h12(H3, 1000.0, 1), 1)
+        H2 = Holders({-1})
+        H2.add_known(9, 30.0, 1.0)
+        H2.add_known(5, 970.0, 1.0)
+        self.assertEqual(gate_h13(H2, 1000.0, 9, None), -1)        # no funder reads: unknown, never a pass
+        self.assertEqual(gate_h13(H2, 1000.0, 9, (set(), set())), 1)
+        self.assertEqual(gate_h13(H2, 1000.0, 9, (set(), {4})), 1)  # 3% dev cluster
+        H2.add_known(4, 30.0, 1.0)
+        self.assertEqual(gate_h13(H2, 1030.0, 9, (set(), {4})), 0)  # dev + cluster 5.8% > 5%
+
+    def test_insider_sets_need_funders(self):
+        from d1.holders import insider_sets
+        curve = pd.DataFrame({"slot": [100, 101, 110, 120], "mint": 7, "is_buy": 1, "owner": [11, 12, 13, 14]})
+        t = type("T", (), {"curve": curve})()
+        self.assertIsNone(insider_sets(t, 7, 100, 9, None))
+        f = {9: 50, 11: 9, 12: 77, 13: 50, 14: 66}
+        ins, cl = insider_sets(t, 7, 100, 9, f)
+        self.assertEqual(cl, {11, 13})                              # funded by the dev, or by the dev's funder
+        self.assertEqual(ins, {11, 12, 13})                         # creation slots 100..102, plus the cluster
+
 
     def test_outcomes_sized_and_cli_requires_prices(self):
         tape, book, clock, pts, _ = build()
@@ -946,7 +1139,9 @@ class H8Amendment(unittest.TestCase):
         self.assertEqual(o["net_ret_15_s50"], o["net_ret_15"])
         self.assertLess(o["net_ret_15_s5"], o["net_ret_15_s50"])          # fixed costs weigh more at $5
         import run_d1
-        self.assertIn("H8_AMENDMENT", run_d1.FROZEN_AMENDMENTS)
+        for r in ("H8_AMENDMENT", "AMENDMENT_3", "H8_AMENDMENT_2"):
+            self.assertIn(r, run_d1.FROZEN_AMENDMENTS)
+        self.assertFalse([r for r in run_d1.REQUIRED_RULINGS if r not in run_d1.FROZEN_AMENDMENTS])
 
 
 if __name__ == "__main__":
