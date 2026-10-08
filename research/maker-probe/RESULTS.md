@@ -30,7 +30,7 @@ Shown, not judged:
 - This is adverse selection, the doubt the design named at the start: a resting bid fills exactly when the price is running through it.
 
 ## Limits
-- Proxy fills: a PumpSwap 5-minute low under the bid stands in for a DLMM fill. Real DLMM depth, bin steps and fees were not read. No DLMM fee is credited, which is optimistic for C.
+- Proxy fills: a PumpSwap 5-minute low under the bid stands in for a DLMM fill. Real DLMM depth, bin steps and fees were not read. No DLMM fee is credited, which is conservative for C: a resting bid would earn the swap fee on each fill. (Parent-session correction, 2026-10-08: the original text said "optimistic". The verdict holds anyway, because the 99.58% lower bound of −2.68% stays below 0 unless the fee earned on a fill were above about 2.7%.)
 - Survivorship: the 12 coins are today's list, which favours buying dips. A null under that bias is stronger, not weaker.
 - About 21 validation days. Pool coverage is uneven: PAID has 6 eligible days, OTC 13, fone 19 and TOAD 20.
 
