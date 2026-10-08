@@ -124,7 +124,7 @@ describe('C1 and RB-14 (red teams C and B): the M24 backup carries every piece o
 });
 
 describe('M3 pattern (red team C): a clock that ran far ahead and came back locks nothing until that date', () => {
-  it('outbox: published rows are pruned again within the hour after the clock comes back, those stamped ahead included', () => {
+  it('outbox: published rows are pruned again within the hour after the clock comes back (a row stamped ahead keeps its 7 days)', () => {
     const clock = fakeClock(T0);
     const db = openDb({ path: fresh(), clock });
     db.withTx((tx) => { for (const s of OUTBOX_DDL.split(';').map((x) => x.trim()).filter(Boolean)) tx.run(s); });
@@ -140,7 +140,7 @@ describe('M3 pattern (red team C): a clock that ran far ahead and came back lock
     clock.set(T0 + 8 * 86_400_000 + 2 * 3_600_000);                    // past the 7-day retention of that row
     publishOne();
     const left = db.reader().all('SELECT published_at FROM outbox ORDER BY seq').map((r) => Number(r.published_at));
-    assert.deepEqual(left, [T0 + 8 * 86_400_000 + 2 * 3_600_000]);
+    assert.deepEqual(left, [T0 + YEAR, T0 + 8 * 86_400_000 + 2 * 3_600_000]);
     db.close();
   });
 

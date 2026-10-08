@@ -1,6 +1,6 @@
 // The engine-facing ledger API cannot read labels, trials or gate results. Outcomes live in a separate
 // scoring file that the ledger code never opens, attaches or imports.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as engineApi from '../../src/ledger/index.ts';
@@ -121,7 +121,13 @@ describe('labels are out of the engine\'s reach', () => {
     put('packages/core/src/stats/index.ts', "import { x } from '../ledger/scoring/index.ts';\n");
     put('packages/core/src/engine/ok.ts', "import { openLedger } from '@meme-snipe/core/ledger';\nimport { y } from '../units/index.ts';\n");
     put('packages/core/src/units/index.ts', 'export const y = 1;\n');
+    put('packages/engine/package.json', '{ "name": "@bot/engine" }\n');           // a Blueprint package: out of scope
+    put('packages/engine/src/m24/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");
     expect(importViolations(root)).toEqual([]);
+    put('packages/worker/package.json', '{ "name": "@meme-snipe/worker" }\n');    // a Zeroed package: still checked
+    put('packages/worker/src/db.ts', "import { DatabaseSync } from 'node:sqlite';\n");
+    expect(importViolations(root)).toContain('packages/worker/src/db.ts (imports node:sqlite)');
+    rmSync(join(root, 'packages/worker'), { recursive: true });
 
     const probes: Record<string, string> = {
       'sqlite.ts': "import { DatabaseSync } from 'node:sqlite';",

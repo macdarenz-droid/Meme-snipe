@@ -26,6 +26,10 @@ const sources = (root: string): string[] => {
     for (const pkg of readdirSync(base)) {
       const src = join(base, pkg, 'src');
       if (!existsSync(src)) continue;
+      // The Blueprint packages (@bot/*) are outside Zeroed's label isolation: B-M24-01 makes @bot/engine's M24 the
+      // owner of its own SQLite file, and tools/policy checks their imports.
+      const manifest = join(base, pkg, 'package.json');
+      if (existsSync(manifest) && String((JSON.parse(readFileSync(manifest, 'utf8')) as { name?: unknown }).name).startsWith('@bot/')) continue;
       for (const f of readdirSync(src, { recursive: true, encoding: 'utf8' })) {
         const full = join(src, f);
         if (SOURCE.test(f) && !f.includes('node_modules') && statSync(full).isFile()) out.push(full);

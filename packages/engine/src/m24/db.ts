@@ -313,8 +313,7 @@ export function openDb(opts: DbOptions): Db {
         // A clock that ran ahead and came back must not stop pruning until that date (red team C M3 pattern).
         if (now - lastPruneMs >= 3_600_000 || now < lastPruneMs) {
           lastPruneMs = now;
-          // A row stamped ahead of `now` was published under a clock that came back; it is delivered, so it goes too.
-          db.withTx((tx) => tx.run('DELETE FROM outbox WHERE published_at IS NOT NULL AND (published_at < ? OR published_at > ?)', now - OUTBOX_RETENTION_MS, now));
+          db.withTx((tx) => tx.run('DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < ?', now - OUTBOX_RETENTION_MS));
         }
       },
       backlog: () => backlog,
