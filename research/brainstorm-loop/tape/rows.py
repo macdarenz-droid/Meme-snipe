@@ -348,7 +348,8 @@ def dev_summary(df, days):
             "dropped": a["dropped"].value_counts().to_dict() if len(a) else {},
             "median_net_excess": med, "lb95": lb,
             "late_share_of_ftb": (float(e["ftb_sol_late"].sum()) / fa) if fa else None,
-            "events_per_day": {d: int((e["day"] == d).sum()) if len(e) else 0 for d in days},
+            # eligible events: used, with a defined net (red team R1-7)
+            "events_per_day": {d: int(((e["day"] == d) & e["net"].notna()).sum()) if len(e) else 0 for d in days},
         }
     return summ
 

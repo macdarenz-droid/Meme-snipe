@@ -787,6 +787,15 @@ class RedTeamR1(unittest.TestCase):
         df, _ = R.seat_drift(tape, s, adj)
         self.assertEqual(set(df["dropped"]), {"theme_wave_name_match"})
 
+    def test_events_a_day_count_only_events_with_a_net_value(self):
+        # R1-7: an event whose net is undefined (no effective quote) is not an eligible event
+        df = pd.DataFrame({"arm": ["le5"] * 3, "kind": ["event", "event", "control"], "pool": ["P1", "P2", "P3"],
+                           "day": [DAY] * 3, "dropped": [""] * 3, "net": [0.05, np.nan, 0.0],
+                           "ftb_sol_all": [1.0, 1.0, 0.0], "ftb_sol_late": [1.0, 1.0, 0.0]})
+        x = R.dev_summary(df, [DAY])["le5"]
+        self.assertEqual(x["events_used"], 1)
+        self.assertEqual(x["events_per_day"], {DAY: 1})
+
 
 if __name__ == "__main__":
     unittest.main()
