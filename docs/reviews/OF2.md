@@ -160,3 +160,18 @@ Round 4 repros are closed. From current code, no archive request is possible whi
   - The cache seal is AES-256-CTR, then HMAC-SHA256 (encrypt-then-MAC). Both keys come from HMAC(`DATA_STORE_TOKEN`, labels). The key id is in the entry name. A wrong key, a changed byte or an extra file is refused, and the day does not start again.
 - Accepted risk, with a DECISIONS row: the AES key reaches openssl as a command-line argument. Only processes on the same short-lived runner can see it, and those are the job's own steps.
 - Follow-up on the OF-4 row, not this PR: keep-check.sh / data-keep do not refresh sealed `data-rpc` progress entries yet. Helius is not in use (its headroom stays unused), so nothing breaks now.
+
+### Round 6 red team (delta `89f99393..4fc50e38`): 1 MAJOR, 4 MINOR
+
+Closed: checker bypasses, composites and the upload-* actions, the sha cache, branch/tag names, and the fork-PR restore of sealed progress. The seal is sound: a fresh random IV each time, encrypt-then-MAC over version, kid, IV and ciphertext, a constant-time check before decrypt, and no plaintext left in saved paths.
+
+### Supervisor rulings for round 7 (8 Oct 2026, 9:52 PM)
+
+49. **MAJOR, run window.** `from = min(ARCHIVE_REARM_AT, now − 35 d)` still grows past 500 runs about two months after a re-arm. Page the runs API fully (`created>=FROM`, `per_page=100`) instead of capping at 500. Fail closed on an API error, or above a hard limit of 5,000 runs. Test: rearm + 70 days with 600 runs passes; an API error fails closed.
+50. **m2.** The MAC header binds the cache key prefix (source and day, e.g. `data-scan-DAY`), and `open` checks it against the prefix being resumed. Test: day A's sealed entry restored under day B's name is refused.
+51. **m3.**
+    - `data-rpc-assets` is sealed the same way; `ag_permissions_py` drops its exemption.
+    - data-keep / keep-check refresh only sealed entries, so the old plaintext entries (including 09-21) expire unused. This matches DECISIONS "drop the cache", and it closes the OF-4 follow-up from round 6.
+    - Arm check: list the caches and assert that no unsealed `data-scan-` / `data-rpc-` entry remains. If one is still there at arm time, deleting it goes to the owner.
+52. **m4.** Keep the AES key out of argv where the runner allows it: an in-process cipher (python `cryptography`, if present on the runner; VERIFY, print its version), or pass the key through a file descriptor. If neither works without weakening the scheme, the accepted-risk DECISIONS row stays, naming the background-process case.
+53. **m5.** Redirect targets must be one of the named log variables (`$qlog`, `$slog`, `$tlog`, `$out-log`), and each one's assignment is checked to be a path under `$RUNNER_TEMP` or `$out`. A scanner binary called through a variable is refused.
