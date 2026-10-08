@@ -149,6 +149,10 @@ def main(argv=None):
         res = stats.sign_and_futility(f, out)
         fl = pd.read_csv(os.path.join(o.out, "flows.csv"), dtype={"decision_day": str})
         res["d60"] = stats.d60_gate(f, fl)  # AMENDMENT_3 gate rows; freezes D60's P20
+        try:
+            res["sol_usd_sums_sha256"] = H8.check_pin(o.sol_usd)
+        except (ValueError, OSError) as e:
+            sys.exit(f"freeze: SOL/USD input refused: {e}")
         res.update(code=tapeio.code_hash(), feature_inputs=meta.get("inputs"), discovery_days=meta["decision_days"])
         _dump(os.path.join(o.out, "frozen.json"), res)
         print("frozen:", res["verdict"], "sign", res["sign"])
@@ -166,6 +170,8 @@ def main(argv=None):
             sys.exit(f"score needs decision days exactly {VALIDATION_DAYS}; got {meta['decision_days']}")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
+        if frozen.get("sol_usd_sums_sha256") != H8.SOL_USD_SUMS_SHA256:
+            sys.exit("score: frozen.json's SOL/USD SHA256SUMS hash differs from the pinned one")
         try:
             sol = H8.load_committed(meta["decision_days"], o.sol_usd)
         except (ValueError, OSError) as e:

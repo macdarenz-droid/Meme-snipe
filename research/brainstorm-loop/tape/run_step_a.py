@@ -59,19 +59,27 @@ def read_sol_usd(paths):
 DEFAULT_SOL_USD_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sol-usd"))
 
 
+# sha256 of the committed sol-usd/SHA256SUMS, pinned so that a zip and its SHA256SUMS line cannot be edited together
+SOL_USD_SUMS_SHA256 = "02083908d386a53c07acd1663bdd74f102053f12bcd92856cf09670fcf3da964"
+
+
 class SolUsdError(Exception):
     pass
 
 
-def load_sol_usd_dir(days, folder=DEFAULT_SOL_USD_DIR):
+def load_sol_usd_dir(days, folder=DEFAULT_SOL_USD_DIR, sums_sha256=SOL_USD_SUMS_SHA256):
     """The committed Binance SOLUSDT 1-minute klines for each tape day (`SOLUSDT-1m-<day>.zip`), each checked
-    against the folder's SHA256SUMS, plus the previous day's file when SHA256SUMS lists it (for the 00:00 hour's
+    against the folder's SHA256SUMS (itself pinned by sha256), plus the previous day's file when SHA256SUMS lists it (for the 00:00 hour's
     close). Refuses (SolUsdError) on a missing day, a file not listed, or a mismatch."""
     import hashlib
 
     sums_path = os.path.join(folder, "SHA256SUMS")
     if not os.path.exists(sums_path):
         raise SolUsdError(f"no SHA256SUMS in {folder}")
+    with open(sums_path, "rb") as fh:
+        sums_got = hashlib.sha256(fh.read()).hexdigest()
+    if sums_got != sums_sha256:
+        raise SolUsdError(f"SHA256SUMS sha256 {sums_got} is not the pinned {sums_sha256}")
     sums = {}
     for line in open(sums_path):
         f = line.split()

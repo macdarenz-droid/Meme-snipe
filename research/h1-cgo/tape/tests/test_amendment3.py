@@ -251,7 +251,22 @@ def write_sol_dir(folder, days, price="100.0", tamper=None, minute_price=None):
             f.write(b"\0")
 
 
+def _pin(folder):
+    import hashlib
+    with open(os.path.join(folder, "SHA256SUMS"), "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
 class Amendment4(unittest.TestCase):
+    def test_sums_file_is_pinned(self):
+        self.assertEqual(H8.check_pin(), H8.SOL_USD_SUMS_SHA256)
+        with tempfile.TemporaryDirectory() as t:
+            write_sol_dir(t, ["2026-09-06", "2026-09-07"])  # consistent zips and lines, but not the pinned file
+            with self.assertRaisesRegex(ValueError, "not the pinned"):
+                H8.load_committed(["2026-09-07"], t)
+            with self.assertRaisesRegex(ValueError, "not the pinned"):
+                H8.check_pin(t)
+
     def test_dust_at_migration(self):
         s = H8.SolUsd({DAY0: 119_260_000}, [])
         self.assertTrue(H8.eligible(10**12, DAY0, 5, s, 5 * 10**9))
@@ -278,26 +293,26 @@ class Amendment4(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             ok = os.path.join(t, "ok")
             write_sol_dir(ok, ["2026-09-06", "2026-09-07"])
-            s = H8.load_committed(["2026-09-07"], ok)
+            s = H8.load_committed(["2026-09-07"], ok, pin=_pin(ok))
             self.assertEqual(s.at(int(pd.Timestamp("2026-09-07T05:30", tz="UTC").timestamp())), 100_000_000)
             self.assertEqual(len(s.files), 4)
             with self.assertRaisesRegex(ValueError, "missing for 2026-09-08"):
-                H8.load_committed(["2026-09-08"], ok)  # 09-08 absent (its day before is present)
+                H8.load_committed(["2026-09-08"], ok, pin=_pin(ok))  # 09-08 absent (its day before is present)
             with self.assertRaisesRegex(ValueError, "missing for 2026-09-05"):
-                H8.load_committed(["2026-09-06"], ok)  # the day before is needed for the 00:00 decision
+                H8.load_committed(["2026-09-06"], ok, pin=_pin(ok))  # the day before is needed for the 00:00 decision
             bad = os.path.join(t, "bad")
             write_sol_dir(bad, ["2026-09-06", "2026-09-07"], tamper="SOLUSDT-1m-2026-09-06.zip")
             with self.assertRaisesRegex(ValueError, "does not match SHA256SUMS"):
-                H8.load_committed(["2026-09-07"], bad)
+                H8.load_committed(["2026-09-07"], bad, pin=_pin(bad))
             gone = os.path.join(t, "gone")
             write_sol_dir(gone, ["2026-09-06", "2026-09-07"])
             os.remove(os.path.join(gone, "SOLUSDT-1h-2026-09-07.zip"))
             with self.assertRaisesRegex(ValueError, "listed in SHA256SUMS is missing"):
-                H8.load_committed(["2026-09-07"], gone)
+                H8.load_committed(["2026-09-07"], gone, pin=_pin(gone))
             odd = os.path.join(t, "odd")
             write_sol_dir(odd, ["2026-09-06", "2026-09-07"], minute_price="101.0")
             with self.assertRaisesRegex(ValueError, "differ"):
-                H8.load_committed(["2026-09-07"], odd)
+                H8.load_committed(["2026-09-07"], odd, pin=_pin(odd))
 
     def test_the_committed_folder_covers_both_stages(self):
         self.assertGreater(len(H8.load_committed(list(VALIDATION_DAYS)).t), 0)

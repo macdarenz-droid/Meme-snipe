@@ -100,12 +100,13 @@ class CLI(unittest.TestCase):
     def test_amendment3_stage_outputs(self):
         from tests.test_amendment3 import write_sol_dir
         self.features(self.units)
-        sol = os.path.join(self.tmp.name, "sol")
-        write_sol_dir(sol, ["2026-09-10", "2026-09-11"])
-        R.main(["gate0", "--out", self.out, "--sol-usd", sol])
+        R.main(["gate0", "--out", self.out])  # the committed, pinned folder
         g = read_json(os.path.join(self.out, "gate0.json"))
         self.assertIn("with_state_$5", g["h8_count_rows"])
         self.assertEqual(len(g["h8_count_rows"]["sol_usd_files"]), 4)
+        sol = os.path.join(self.tmp.name, "sol")
+        write_sol_dir(sol, ["2026-09-10", "2026-09-11"])  # self-consistent but not pinned
+        self.refused(lambda: R.main(["gate0", "--out", self.out, "--sol-usd", sol]), "not the pinned")
         bad = os.path.join(self.tmp.name, "solbad")
         write_sol_dir(bad, ["2026-09-11"])  # 09-10 (the day before) is missing
         self.refused(lambda: R.main(["gate0", "--out", self.out, "--sol-usd", bad]), "SOL/USD input refused")
@@ -156,6 +157,15 @@ class CLI(unittest.TestCase):
         with open(os.path.join(self.units[2], "research", "S_amm.csv.zst"), "ab") as f:
             f.write(b"\0")
         self.refused(lambda: R.main(["outcomes", "--units", *self.units, "--out", self.out]), "changed since")
+
+    def test_score_refuses_an_unpinned_freeze(self):
+        self.features(self.units)
+        fz = os.path.join(self.tmp.name, "frozen.json")
+        base = dict(verdict="continue", sign="high", code=R.tapeio.code_hash())
+        pathlib.Path(fz).write_text(json.dumps(dict(base, sol_usd_sums_sha256="0" * 64)))
+        self.refused(lambda: R.main(["score", "--out", self.out, "--frozen", fz]), "SHA256SUMS hash differs")
+        pathlib.Path(fz).write_text(json.dumps(base))  # no hash recorded
+        self.refused(lambda: R.main(["score", "--out", self.out, "--frozen", fz]), "SHA256SUMS hash differs")
 
     # 4. score refuses code that differs from the frozen code
     def test_score_refuses_other_code(self):

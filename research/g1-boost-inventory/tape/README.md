@@ -76,7 +76,7 @@ The gate's per-day counts assume whole days: run it once every unit of a day is 
 | §4 size $50 = 0.4193 SOL | `params.spend_lamports(50)` = 419,252,054 lamports |
 | §4 costs: venue fees, impact, fixed costs as edge-costs.ts, Token-2022 rent check | `costs.expected_fixed`, `costs.token_account_rent`, `costs.rent_log`, `fixed_costs.json` |
 | §5 S0 control: uniform 50–80% progress, one per mint, fixed seed, same delay/exits/costs | `decide.s0_progress`, `decide.decisions` (kind `S0`), `outcome.run` |
-| §6 G1-0 (a) triggers a day; (b) slots t0 → m, median and share > D; (c) BOOST timing, share after m + D, share with BOOST; kills | `gate.g1_0`, `gate.boost_rows`, `gate.graduates` |
+| §6 G1-0 (a) triggers a day; (b) slots t0 → m, median and share > D; (c) BOOST timing, share after m + D, share with BOOST; kills (exactly half of graduates below 25% kills) | `gate.g1_0`, `gate.boost_rows`, `gate.boost_share_kills`, `gate.graduates`; `tests/test_review.py::BoostShareRule` |
 | §7 check 1 as-of with planted future marker | `tests/test_pipeline.py::test_planted_future_marker` |
 | §7 check 2 curve reserves after, pool reserves before | `checks.check2_reserves`; `tests/test_quotes.py::TapeFixtures` |
 | §7 check 3 fee-tier market cap | `checks.check3_tier` (empirical; program not read, OQ-16) |

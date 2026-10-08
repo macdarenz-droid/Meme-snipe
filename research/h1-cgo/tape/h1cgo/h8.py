@@ -16,6 +16,8 @@ import pandas as pd
 FLOOR_USD = 15_000
 FLOOR_NOTIONAL_MULTIPLE = 1_000
 MAX_AGE_S = 2 * 3600
+# The committed SHA256SUMS itself is pinned, so a zip and its line cannot be edited together.
+SOL_USD_SUMS_SHA256 = "02083908d386a53c07acd1663bdd74f102053f12bcd92856cf09670fcf3da964"
 DUST_AT_MIGRATION_LAMPORTS = 5 * 10**9  # policy.ts gates.dustPoolMinAtMigration (AMENDMENT_4)
 SOL_USD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "brainstorm-loop", "sol-usd")
 SIZES_USD = (5, 20, 50)
@@ -107,11 +109,21 @@ def _day_before(d: str) -> str:
     return (pd.Timestamp(d) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
 
-def load_committed(days, folder: str = SOL_USD_DIR) -> SolUsd:
+def check_pin(folder: str = SOL_USD_DIR, pin: str = SOL_USD_SUMS_SHA256) -> str:
+    """sha256 of the folder's SHA256SUMS; ValueError unless it equals the pinned value."""
+    with open(os.path.join(folder, "SHA256SUMS"), "rb") as f:
+        h = hashlib.sha256(f.read()).hexdigest()
+    if h != pin:
+        raise ValueError(f"SHA256SUMS sha256 {h} is not the pinned {pin}")
+    return h
+
+
+def load_committed(days, folder: str = SOL_USD_DIR, pin: str = SOL_USD_SUMS_SHA256) -> SolUsd:
     """The committed SOL/USD input (AMENDMENT_4): every file in SHA256SUMS must match its sha256; every decision day
     and the day before it (the bar that closes at 00:00 belongs to the day before) must have its 1h and 1m files;
     each 1h close must equal the close of that hour's last 1-minute bar. Raises ValueError otherwise. Points come
     from the 1h bars."""
+    check_pin(folder, pin)
     sums = {}
     with open(os.path.join(folder, "SHA256SUMS")) as f:
         for line in f:

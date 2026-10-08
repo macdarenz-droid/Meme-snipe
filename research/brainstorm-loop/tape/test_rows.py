@@ -535,18 +535,40 @@ class SolUsdDir(unittest.TestCase):
             fh.write(f"{sha}  {name}\n")
         return d, name
 
+    @staticmethod
+    def sums_sha(d):
+        import hashlib
+        return hashlib.sha256(open(os.path.join(d, "SHA256SUMS"), "rb").read()).hexdigest()
+
     def test_checked_load_and_refusals(self):
         import run_step_a as RS
         d, name = self._folder()
-        px, sha, minutes = RS.load_sol_usd_dir([DAY], d)
+        pin = self.sums_sha(d)
+        px, sha, minutes = RS.load_sol_usd_dir([DAY], d, pin)
         self.assertEqual(px[DAY], (151.0, 150.0, 152.0))
         self.assertEqual(len(minutes), 3)
         with self.assertRaises(RS.SolUsdError):
-            RS.load_sol_usd_dir([DAY, "2026-09-12"], d)       # missing day
+            RS.load_sol_usd_dir([DAY, "2026-09-12"], d, pin)  # missing day
         with open(os.path.join(d, name), "ab") as fh:
             fh.write(b"x")                                     # tampered file
         with self.assertRaises(RS.SolUsdError):
+            RS.load_sol_usd_dir([DAY], d, pin)
+
+    def test_sums_file_is_pinned(self):
+        import hashlib
+        import run_step_a as RS
+        d, name = self._folder()
+        with self.assertRaises(RS.SolUsdError):                 # default pin: this SHA256SUMS is not the committed one
             RS.load_sol_usd_dir([DAY], d)
+        # edit a zip and its SHA256SUMS line together: the pinned hash of SHA256SUMS no longer matches
+        pin = self.sums_sha(d)
+        with open(os.path.join(d, name), "ab") as fh:
+            fh.write(b"x")
+        new = hashlib.sha256(open(os.path.join(d, name), "rb").read()).hexdigest()
+        with open(os.path.join(d, "SHA256SUMS"), "w") as fh:
+            fh.write(f"{new}  {name}\n")
+        with self.assertRaises(RS.SolUsdError):
+            RS.load_sol_usd_dir([DAY], d, pin)
 
     def test_cli_defaults_to_committed_folder_and_refuses_missing_day(self):
         import run_step_a as RS
@@ -562,7 +584,7 @@ class SolUsdDir(unittest.TestCase):
         if not os.path.isdir(RS.DEFAULT_SOL_USD_DIR):
             self.skipTest("committed SOL/USD folder not present")
         px, sha, _ = RS.load_sol_usd_dir(["2026-09-10", "2026-09-11"])
-        self.assertEqual(len(sha), 2)
+        self.assertEqual(len(sha), 3)                              # 09-09 too, for 09-10's 00:00 hour
 
 
 class Mayhem(unittest.TestCase):
@@ -626,13 +648,14 @@ class ReReview(unittest.TestCase):
             sums.append(f"{hashlib.sha256(open(os.path.join(d, name), 'rb').read()).hexdigest()}  {name}")
         with open(os.path.join(d, "SHA256SUMS"), "w") as fh:
             fh.write("\n".join(sums) + "\n")
-        _, sha, minutes = RS.load_sol_usd_dir([DAY], d)
+        pin = hashlib.sha256(open(os.path.join(d, "SHA256SUMS"), "rb").read()).hexdigest()
+        _, sha, minutes = RS.load_sol_usd_dir([DAY], d, pin)
         self.assertEqual(len(sha), 2)
         self.assertEqual(H8.px_asof(H8.hourly_px(minutes), 1789084800 + 5), 100 + 1439)   # 09-10 23:59 close
         with open(os.path.join(d, "SOLUSDT-1m-2026-09-10.zip"), "ab") as fh:
             fh.write(b"x")
         with self.assertRaises(RS.SolUsdError):                  # a listed previous day is checked too
-            RS.load_sol_usd_dir([DAY], d)
+            RS.load_sol_usd_dir([DAY], d, pin)
 
     def test_rows_without_price_are_reported(self):
         tape, s, adj = load(dev_unit())
