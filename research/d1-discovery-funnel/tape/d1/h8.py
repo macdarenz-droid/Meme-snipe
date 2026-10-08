@@ -9,7 +9,11 @@ valued in USD with the hourly SOL/USD, is at least max($15,000, 1,000 x trade si
 - Effective quote: the as-of feature `effective_quote_sol` at the decision slot.
 """
 import hashlib
-from typing import Dict, Tuple
+import io
+import os
+import zipfile
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Iterable, Tuple
 
 import numpy as np
 import pandas as pd
@@ -38,6 +42,54 @@ def load_solusd(path: str) -> Tuple[np.ndarray, np.ndarray, str]:
     t = np.where(t > 10**15, t // 10**6, np.where(t > 10**12, t // 1000, t))
     o = np.argsort(t)
     return t[o], px[o], sha
+
+
+SOLUSD_DIR_DEFAULT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+                                                   "brainstorm-loop", "sol-usd"))
+
+
+def days_needed(days: Iterable[str]) -> list:
+    """The decision days plus the day before the first one (00:xx decisions use the previous day's 23:00 close)."""
+    days = sorted(set(days))
+    if not days:
+        return []
+    first = datetime.strptime(days[0], "%Y-%m-%d").replace(tzinfo=timezone.utc) - timedelta(days=1)
+    return sorted(set(days) | {first.strftime("%Y-%m-%d")})
+
+
+def load_solusd_dir(path: str, days: Iterable[str]) -> Tuple[np.ndarray, np.ndarray, str]:
+    """research/brainstorm-loop/sol-usd: SOLUSDT-1h-<day>.zip per day, each checked against SHA256SUMS.
+    Raises ValueError on a missing day, a file not listed, or a sha256 mismatch. Returns (hours, close, sha256 of
+    SHA256SUMS)."""
+    sums_p = os.path.join(path, "SHA256SUMS")
+    if not os.path.exists(sums_p):
+        raise ValueError(f"SOL/USD: {sums_p} missing")
+    with open(sums_p, "rb") as fh:
+        raw = fh.read()
+    sums = {}
+    for line in raw.decode().splitlines():
+        p = line.split()
+        if len(p) == 2:
+            sums[p[1].lstrip("*")] = p[0]
+    frames = []
+    for day in days_needed(days):
+        name = f"SOLUSDT-1h-{day}.zip"
+        fp = os.path.join(path, name)
+        if name not in sums or not os.path.exists(fp):
+            raise ValueError(f"SOL/USD: missing day {day} ({name})")
+        with open(fp, "rb") as fh:
+            data = fh.read()
+        if hashlib.sha256(data).hexdigest() != sums[name]:
+            raise ValueError(f"SOL/USD: sha256 mismatch for {name}")
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for n in z.namelist():
+                frames.append(pd.read_csv(io.BytesIO(z.read(n)), header=None, dtype=str))
+    df = pd.concat(frames, ignore_index=True)
+    t = df.iloc[:, 0].astype(np.int64).to_numpy()
+    t = np.where(t > 10**15, t // 10**6, np.where(t > 10**12, t // 1000, t))
+    px = df.iloc[:, 4].astype(float).to_numpy()
+    o = np.argsort(t)
+    return t[o], px[o], hashlib.sha256(raw).hexdigest()
 
 
 def price_asof(hours: np.ndarray, close: np.ndarray, tau) -> np.ndarray:
