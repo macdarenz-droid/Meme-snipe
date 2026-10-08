@@ -116,8 +116,9 @@ describe('ruling 7: per-pool rollups keep 7 days, aggregate 1 year, under a byte
 });
 
 describe('ruling 8: a clock step neither deletes the log history nor overwrites a compressed day', () => {
+  const errors: string[] = [];
   const sinkAt = (logDir: string, clock: ReturnType<typeof fakeClock>) =>
-    new FileLogSink({ dir: logDir, clock, retentionDays: 14, maxBytesPerDay: 1_000_000, queueBytes: 1_000_000 });
+    new FileLogSink({ dir: logDir, clock, retentionDays: 14, maxBytesPerDay: 1_000_000, queueBytes: 1_000_000, onError: (e) => errors.push(`${e.op}: ${e.message}`) });
 
   it('a clock 30 days ahead deletes at most the one oldest day, and the history is still there when it comes back', async () => {
     const logDir = join(dir, `log${n++}`);
@@ -149,6 +150,7 @@ describe('ruling 8: a clock step neither deletes the log history nor overwrites 
     clock.set(Date.UTC(2026, 9, 8, 0, 2, 0));
     s.write('{"later":1}', 'info');                                                      // 10-07 compressed again
     await s.close();
+    assert.deepEqual([errors, readdirSync(logDir).sort()], [[], ['engine-2026-10-07.ndjson.gz', 'engine-2026-10-08.ndjson']]);
     const gz = readFileSync(join(logDir, 'engine-2026-10-07.ndjson.gz'));
     assert.equal(gunzipSync(gz).toString(), '{"first":1}\n{"again":1}\n');
   });

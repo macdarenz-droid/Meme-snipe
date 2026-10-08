@@ -69,6 +69,10 @@ export class FileLogSink implements LogSink {
   private retryAt = 0;
   private dayBytes = 0;
   private readonly pending = new Set<Promise<void>>();
+  /** Days whose earlier streams are still flushing: never compressed until they have ended (ruling 8). */
+  private readonly ending = new Map<string, number>();
+  /** Days being compressed now: their `.gz.tmp` is in use, and a second compression of them waits for the next pass. */
+  private readonly compressing = new Set<string>();
   private readonly opts: FileLogSinkOptions;
 
   constructor(opts: FileLogSinkOptions) {
@@ -116,10 +120,17 @@ export class FileLogSink implements LogSink {
 
   private rotate(day: string): void {
     const old = this.stream;
+    const oldDay = this.day;
     this.stream = null;
     this.day = day;
     this.open();
-    const done = old === null ? Promise.resolve() : new Promise<void>((resolve) => old.end(() => resolve()));
+    if (old !== null) this.ending.set(oldDay, (this.ending.get(oldDay) ?? 0) + 1);
+    const done = old === null ? Promise.resolve() : new Promise<void>((resolve) => old.end(() => {
+      const left = (this.ending.get(oldDay) ?? 1) - 1;
+      if (left === 0) this.ending.delete(oldDay);
+      else this.ending.set(oldDay, left);
+      resolve();
+    }));
     this.track(done.then(() => this.housekeep(day)));
   }
 
@@ -176,12 +187,20 @@ export class FileLogSink implements LogSink {
     const kept = new Set([...new Set(files.map((f) => f.fileDay).filter((d) => d <= day))].sort().reverse().slice(0, this.opts.retentionDays));
     for (const { file, fileDay, suffix } of files) {
       const old = (today - Date.parse(`${fileDay}T00:00:00Z`)) / DAY_MS >= this.opts.retentionDays && !kept.has(fileDay);
+      if (this.compressing.has(fileDay)) continue;
       if (old || suffix === '.gz.tmp') {
         rmSync(file, { force: true, recursive: true });
         continue;
       }
       // Never the file being written: after a clock step back, `day` can be later than the current day (ruling 8).
-      if ((suffix === undefined || suffix === '.compressing') && fileDay < day && fileDay !== this.day) await this.compress(file, suffix);
+      if ((suffix === undefined || suffix === '.compressing') && fileDay < day && fileDay !== this.day && !this.ending.has(fileDay)) {
+        this.compressing.add(fileDay);
+        try {
+          await this.compress(file, suffix);
+        } finally {
+          this.compressing.delete(fileDay);
+        }
+      }
     }
   }
 
