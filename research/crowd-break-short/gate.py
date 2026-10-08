@@ -45,13 +45,13 @@ def main(d, out):
     lb_t = clustered(dlt, dy, lvl=0.90)[0] if len(set(dy)) > 1 else None
     kept = info['kept']
     checks = {
-        'coins_with_600h': [len(kept), len(kept) >= 10],
+        'coins_with_600h': [len(kept), bool(len(kept) >= 10)],
         'median_event_funding': [info['median_event_funding'],
                                  info['median_event_funding'] is not None and info['median_event_funding'] > 0],
         'oi_mechanism': [{'events_used': len(rows), 'event_share': float(np.mean([r['e'] for r in rows])) if rows else None,
                           'control_share': float(np.mean([r['c'] for r in rows])) if rows else None,
                           'mean_diff': float(np.mean(dlt)) if rows else None, 'lb95_boot': lb_boot, 'lb95_t': lb_t},
-                         lb_boot is not None and lb_t is not None and lb_boot > 0 and lb_t > 0]}
+                         bool(lb_boot is not None and lb_t is not None and lb_boot > 0 and lb_t > 0)]}
     res = {'checks': checks, 'verdict': 'PASS' if all(v[1] for v in checks.values()) else 'CLOSED',
            'n_events': len(evs), 'events_dropped_oi': len(evs) - len(rows)}
     json.dump(res, open(os.path.join(out, 'gate.json'), 'w'), indent=1, sort_keys=True)
