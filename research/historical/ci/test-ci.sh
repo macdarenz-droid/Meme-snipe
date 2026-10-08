@@ -250,6 +250,7 @@ case "$1 $2" in
         x=${path#repos/o/r/check-runs/}; id=${x%%/*}
         [[ -f "$GD/ann-$id.json" ]] && out "$(cat "$GD/ann-$id.json")" || out '[]' ;;
       repos/o/r/branches*) out "$(cat "$GD/branches.json")" ;;
+      repos/o/r/tags*) if [[ -f "$GD/tags.json" ]]; then out "$(cat "$GD/tags.json")"; else out '[]'; fi ;;
       repos/o/r/contents/*)
         b=${path##*ref=}; fp=${path#repos/o/r/contents/}; fp=${fp%%\?*}
         [[ -n "${GD_CONTENT_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
@@ -333,6 +334,7 @@ cat > "$S/zeroed-scan" <<'STUB'
 echo scan >> "$T/calls.log"; echo "$*" > "$T/scan.args"
 while (( $# )); do [[ "$1" == -out ]] && out=$2; shift; done
 # SLOW: a scan that outlasts the budget; interrupted (SIGINT) it exits 1 like the scanner
+echo "plan: 12 units curve=5 amm=3" # (ruling 36: archive-derived counts, never in the public log)
 if [[ -n "${SLOW:-}" ]]; then trap 'echo interrupted >> "$T/calls.log"; exit 1' INT; /bin/sleep 30 & wait; exit 0; fi
 if [[ $(grep -c scan "$T/calls.log") == 1 && "${FIRST_RC:-0}" == 75 ]]; then
   now=$(date +%s); echo "$now 10 $((now + 10))" > "$out/archive-429.state"
@@ -1859,8 +1861,8 @@ printf 'jobs:\n  scan:\n    run: research/historical/ci/archive-guard.sh attest\
 printf 'jobs:\n  scan:\n    run: research/historical/ci/scan-day.sh "$DAY"\n' > "$GD/wf-old.yml"
 printf 'jobs:\n  scan:\n    run: research/historical/ci/rpc-day.sh "$DAY"\n' > "$GD/wf-helius-only.yml"
 rc=0; out=$(GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r bash "$here/unguarded-refs.sh" 2>"$T/ur.err") || rc=$?
-[[ $rc == 0 && "$out" == old ]] && grep -q "1 of 4 branches" "$T/ur.err" || bad+=" list:$rc:$out"
-! grep -vE '^gh api (--paginate )?repos/o/r/(branches|contents/)' "$GD/gh.log" | grep -q . || bad+=" non-read-call"
+[[ $rc == 0 && "$out" == old ]] && grep -q "1 of 4 branches and tags" "$T/ur.err" || bad+=" list:$rc:$out"
+! grep -vE '^gh api (--paginate )?repos/o/r/(branches|tags|contents/)' "$GD/gh.log" | grep -q . || bad+=" non-read-call"
 rc=0; GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r GD_CONTENT_FAIL=1 bash "$here/unguarded-refs.sh" >/dev/null 2>&1 || rc=$?; [[ $rc == 1 ]] || bad+=" error:$rc"
 [[ -z "$bad" ]] && ok "OF-2 r3 ruling 12 (c): unguarded-refs.sh lists the branches whose data-scan.yml runs the scan without archive-guard.sh (not the default branch, a Helius-only file or a branch without the file), with read calls only; an API error fails it" || no "OF-2 r3 unguarded refs:$bad"
 bad=""; gdreset
@@ -2019,7 +2021,7 @@ for v in plain phase-no-redirect wrapper; do
   mkfx "$T/fxq"; c="$T/fxq/research/historical/ci"
   case $v in plain) echo 'node "$here/../qa/parity.ts" "$ds"' >> "$c/check-day.sh" ;; phase-no-redirect) sed -i 's| > "\$qlog/qa.log" 2>&1||' "$c/check-day.sh" ;;
     wrapper) echo 'run zeroed-scan finalize -out "$out" -dataset "$ds"' >> "$c/volume-day.sh" ;; esac
-  ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "prints finalize or QA output to the job log" "$A/summary.md" || bad+=" arm-$v"
+  ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "prints scanner or QA output to the job log" "$A/summary.md" || bad+=" arm-$v"
 done
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' || bad+=" workflow-prints"
 import re, sys, yaml
@@ -2045,19 +2047,19 @@ bad=""; gdreset; touch "$GD/noguard-$NG"
 pf() { mkfx "$T/fxp"; c="$T/fxp/research/historical/ci"; printf '%b' "$1" > "$T/fxp/.github/workflows/extra.yml"
   ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "held (1): the archive chain is not armed: extra.yml" "$A/summary.md" || bad+=" check[$2]"
   rc=0; FXG=$c guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] || bad+=" plan[$2]:$rc"; }
-J='jobs:\n  a:\n    runs-on: x\n    steps:\n      - run: zeroed-scan unit\n'
-pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: write\n    steps:\n      - run: zeroed-scan unit\n" block
-pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: \"write\"\n    steps:\n      - run: zeroed-scan unit\n" double-quoted
-pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: 'write'\n    steps:\n      - run: zeroed-scan unit\n" single-quoted
-pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions: { contents: write }\n    steps:\n      - run: zeroed-scan unit\n" flow
+J='jobs:\n  a:\n    runs-on: x\n    steps:\n      - run: research/historical/ci/scan-day.sh x\n'
+pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: write\n    steps:\n      - run: research/historical/ci/scan-day.sh x\n" block
+pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: \"write\"\n    steps:\n      - run: research/historical/ci/scan-day.sh x\n" double-quoted
+pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: 'write'\n    steps:\n      - run: research/historical/ci/scan-day.sh x\n" single-quoted
+pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions: { contents: write }\n    steps:\n      - run: research/historical/ci/scan-day.sh x\n" flow
 pf "permissions: { contents: write }\n$J" top-flow
 pf "$J" removed-block
 pf "permissions: write-all\n$J" write-all
-pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions: write-all\n    steps:\n      - run: zeroed-scan unit\n" job-write-all
+pf "permissions:\n  contents: read\njobs:\n  a:\n    permissions: write-all\n    steps:\n      - run: research/historical/ci/scan-day.sh x\n" job-write-all
 pf "permissions: read-all\n$J" read-all
 pf "permissions:\n  contents: read\n  contents: write\n$J" duplicate-key
 pf "jobs:\n  a:\n    steps:\n      - run: gh release download data-day-2026-07-22\n" day-release
-mkfx "$T/fxp"; printf '%b' "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: zeroed-scan unit\n" > "$T/fxp/.github/workflows/extra.yml"
+mkfx "$T/fxp"; printf '%b' "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: research/historical/ci/scan-day.sh x\n" > "$T/fxp/.github/workflows/extra.yml"
 printf 'permissions:\n  contents: write\njobs:\n  a:\n    steps:\n      - run: gh release delete handoff --yes\n' > "$T/fxp/.github/workflows/unrelated.yml"
 ACFX=$T/fxp/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" control:$(cat "$A/summary.md")"
 # Ruling 32: the repeated permissions key of the volume-write bypass is what refuses it
@@ -2077,8 +2079,8 @@ printf '#!/usr/bin/env bash
 cat > /dev/null; echo a
 ' > "$NP/yq"; chmod +x "$NP"/*
 rc=0; PATH="$NP:$PATH" FXG=$T/fxp/research/historical/ci guard full 2026-07-22 || rc=$?
-[[ $rc == 2 ]] && grep -q "does not refuse a repeated key" "$T/gout.txt" && grep -q "^permissions: parsed with yq (stub) version v0" "$T/gout.txt" || bad+=" yq-keeps-repeated:$rc"
-[[ -z "$bad" ]] && ok "OF-2 r4 ruling 26: arming parses every archive-path workflow's permissions: contents: write in a job (block, double-quoted, single-quoted, flow), at the top level, no top-level block, write-all (top or job), read-all and a repeated key all refuse (the volume-write bypass for that reason, ruling 32), as does a workflow naming a day release; deploy.yml carries no archive-path marker (31); the parser and its version are logged, and a yq that keeps a repeated key fails closed (33); a workflow with explicit contents: read arms, and one that touches no archive path (a key-handoff release) is not checked" || no "OF-2 r4 permissions:$bad"
+[[ $rc == 2 ]] && grep -q "no YAML parser that refuses a repeated key (python3 with yaml)" "$T/gout.txt" || bad+=" no-strict-parser:$rc"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 26: arming parses every archive-path workflow's permissions: contents: write in a job (block, double-quoted, single-quoted, flow), at the top level, no top-level block, write-all (top or job), read-all and a repeated key all refuse (the volume-write bypass for that reason, ruling 32), as does a workflow naming a day release; deploy.yml carries no archive-path marker (31); the parser and its version are logged, and without python3's yaml (yq keeps a repeated key) arming fails closed (33); a workflow with explicit contents: read arms, and one that touches no archive path (a key-handoff release) is not checked" || no "OF-2 r4 permissions:$bad"
 bad=""; gdreset; touch "$GD/noguard-$NG"
 # 27. Whitespace around a Retry-After value is trimmed before the strict parse.
 for v in " 30000" "30000 " "	30000	"; do
@@ -2094,14 +2096,93 @@ printf 'jobs:\n  check:\n    steps:\n      - run: curl -r 0-63 https://files.old
 cp "$GD/acwf-main.yml" "$GD/acwf-acnoguard.yml"; grep -v 'archive-guard.sh' "$here/archive-check.sh" > "$GD/acsh-acnoguard.sh"
 cp "$GD/acwf-main.yml" "$GD/acwf-acnoscript.yml"
 rc=0; out=$(GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r bash "$here/unguarded-refs.sh" 2>"$T/ur.err") || rc=$?
-[[ $rc == 0 && "$out" == $'oldac\nacnoguard\nacnoscript' ]] && grep -q "3 of 4 branches" "$T/ur.err" || bad+=" list:$rc:$out"
-! grep -vE '^gh api (--paginate )?repos/o/r/(branches|contents/)' "$GD/gh.log" | grep -q . || bad+=" non-read-call"
-{ BRANCH=feature acrun 711 success 30; } | acjson; ac env AC_STATUS=206
+[[ $rc == 0 && "$out" == $'oldac\nacnoguard\nacnoscript' ]] && grep -q "3 of 4 branches and tags" "$T/ur.err" || bad+=" list:$rc:$out"
+! grep -vE '^gh api (--paginate )?repos/o/r/(branches|tags|contents/)' "$GD/gh.log" | grep -q . || bad+=" non-read-call"
+{ BRANCH=feature acrun 711 success 30; } | acjson
+jobsfile 711 "Archive probe (a failure unless served)=success"; ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 1 run(s)" "$A/summary.md" || bad+=" foreign-check"
 rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "may have read the archive unguarded" "$T/gout.txt" || bad+=" foreign-plan:$rc"
 mkfx "$T/fxr1m" ARCHIVE_REARM_AT="$(iso $(( now - 60 )))"
 ACFX=$T/fxr1m/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" before-rearm"
 [[ -z "$bad" ]] && ok "OF-2 r4 ruling 29: unguarded-refs.sh also lists branches whose archive-check.yml probes by itself or whose archive-check.sh lacks or does not source archive-guard.sh; a completed archive check from another branch since ARCHIVE_REARM_AT stops the chain (archive-check and a manual dispatch), one before a later re-arm does not" || no "OF-2 r4 archive-check branches:$bad"
+bad=""; gdreset
+
+# ---- OF-2 round 4 red team (docs/reviews/OF2.md rulings 36-42) ----
+gdreset; bad=""; now=$(date -u +%s); touch "$GD/noguard-$NG"
+# 36. The scanner's counts go to a private log next to the data, never the job log or summary.
+o="$T/r36"; rm -rf "$o" "$o-log"; mkdir -p "$o"; : > "$T/summary.md"; rc=0; scan "$o" || rc=$?
+[[ $rc == 0 ]] && ! grep -q "curve=5" "$T/out.txt" "$T/summary.md" && grep -q "curve=5" "$o-log/run.log" || bad+=" scan-log:$rc"
+for v in run unit; do
+  mkfx "$T/fx36"; c="$T/fx36/research/historical/ci"
+  echo "zeroed-scan $v -out \"\$out\" -from 2026-07-22" >> "$c/scan-day.sh"
+  ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "scan-day.sh line [0-9]* prints scanner or QA output to the job log" "$A/summary.md" || bad+=" arm-$v"
+done
+mkfx "$T/fx36"; c="$T/fx36/research/historical/ci"; echo 'zeroed-scan run -out "$out" | tee "$out/x.log"' >> "$c/scan-day.sh"
+ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] || bad+=" arm-tee"
+mkfx "$T/fx36"; c="$T/fx36/research/historical/ci"; echo 'x=$(zeroed-scan unitlog -out "$out" 2>&1)' >> "$c/scan-day.sh"
+ACFX=$c ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" captured-ok"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 36: a zeroed-scan run printing per-unit counts (curve=5) reaches only the private log next to the data, never the job log or summary; arming refuses an unredirected zeroed-scan run or unit line, or one piped to tee; a call captured with its stderr is accepted" || no "OF-2 r4 scanner output:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 37. Tags are walked too.
+echo '[{"name": "main"}]' > "$GD/branches.json"; echo '[{"name": "preview"}, {"name": "deploy"}]' > "$GD/tags.json"
+printf 'jobs:\n  scan:\n    run: research/historical/ci/scan-day.sh "$DAY"\n' > "$GD/wf-preview.yml"
+printf 'jobs:\n  scan:\n    run: research/historical/ci/archive-guard.sh attest\n    run2: research/historical/ci/scan-day.sh\n' > "$GD/wf-deploy.yml"
+rc=0; out=$(GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r bash "$here/unguarded-refs.sh" 2>"$T/ur.err") || rc=$?
+[[ $rc == 0 && "$out" == "tag preview" ]] && grep -q "1 of 3 branches and tags" "$T/ur.err" || bad+=" tags:$rc:$out"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 37: unguarded-refs.sh also walks tags and lists an unguarded one as 'tag NAME' (read only)" || no "OF-2 r4 tags:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 38. An archive check from another branch counts only if its probe ran or its commit lacks the guard.
+{ BRANCH=feature acrun 721 failure 30; } | acjson
+echo '{"jobs": [{"id": 7210, "name": "check", "conclusion": "failure", "steps": [{"name": "Holds", "conclusion": "failure"}, {"name": "Archive probe (a failure unless served)", "conclusion": "skipped"}]}]}' > "$GD/jobs-721.json"
+ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" probe-skipped:$(cat "$A/summary.md")"
+{ BRANCH=feature SHA=$NG acrun 721 failure 30; } | acjson; ac env AC_STATUS=206
+[[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 1 run(s)" "$A/summary.md" || bad+=" unguarded-commit"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 38: an archive check from another branch whose probe step was skipped, on a guarded commit, does not stop the chain; one from a commit without archive-guard.sh does" || no "OF-2 r4 off-branch checks:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 39. Archive workflows: only contents and actions read (actions write where needed); no other scope; artifacts only resume-.
+pw() { mkfx "$T/fx39"; w="$T/fx39/.github/workflows/data-scan.yml"; python3 - "$w" "$1" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+if v == "pages":
+    i = s.index("  volume:"); j = s.index("permissions:", i); k = s.index("\n", j)
+    s = s[:k] + "\n      pages: write" + s[k:]
+elif v == "scan-actions-write":
+    i = s.index("\n  scan:"); j = s.index("actions: read", i); s = s[:j] + "actions: write" + s[j + len("actions: read"):]
+elif v == "assemble-upload":
+    i = s.index("\n  assemble:"); j = s.index("    steps:\n", i) + len("    steps:\n")
+    s = s[:j] + "      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n        with:\n          name: dataset\n          path: x\n" + s[j:]
+elif v == "run-block":
+    i = s.index("\n  assemble:"); j = s.index("    steps:\n", i) + len("    steps:\n")
+    s = s[:j] + "      - run: zeroed-scan finalize -out x -dataset y\n" + s[j:]
+open(p, "w").write(s)
+PY
+  ACFX=$T/fx39/research/historical/ci ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "held (1): the archive chain is not armed: data-scan.yml job $2" "$A/summary.md" || bad+=" [$1]"; }
+pw pages "volume grants pages: write"; pw scan-actions-write "scan grants actions: write"; pw assemble-upload "assemble uploads an artifact (dataset)"; pw run-block "assemble step ? prints scanner or QA output"
+mkfx "$T/fx39"; cp "$here/../../../.github/workflows/archive-check.yml" "$here/../../../.github/workflows/data-keep.yml" "$T/fx39/.github/workflows/"
+ACFX=$T/fx39/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" control:$(cat "$A/summary.md")"
+sed -i 's/^  actions: write$/  actions: write\n  checks: write/' "$T/fx39/.github/workflows/archive-check.yml"
+ACFX=$T/fx39/research/historical/ci ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "archive-check.yml grants checks: write at the top level" "$A/summary.md" || bad+=" checks-write"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 39: in an archive workflow pages: write (volume job), actions: write outside archive-check's dispatch and data-scan's continue job, an upload-artifact in assemble, a scanner call in a run: block and checks: write all refuse to arm; archive-check.yml and data-keep.yml as they are arm" || no "OF-2 r4 scopes:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 41. The volume-title skip holds only for a default-branch run of a guarded commit.
+vol() { python3 - "$GD/ds.json" "$(iso $(( now - 60 )))" "$1" "$2" <<'PY'
+import json, sys
+json.dump([{"databaseId": 731, "status": "queued", "conclusion": None, "createdAt": sys.argv[2], "updatedAt": sys.argv[2], "attempt": 1, "headBranch": sys.argv[3], "headSha": sys.argv[4], "displayTitle": "data-scan volume source=archive"}], open(sys.argv[1], "w"))
+PY
+}
+vol main aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; guard full 2026-07-22 || bad+=" default-guarded"
+vol other aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "other data-scan run(s) outside the Helius lane are not completed" "$T/gout.txt" || bad+=" other-branch:$rc"
+vol main "$NG"; rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "are not completed" "$T/gout.txt" || bad+=" unguarded:$rc"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 41: a queued data-scan volume run is skipped as busy only on the default branch from a guarded commit; from another branch or an unguarded commit it holds the lane" || no "OF-2 r4 volume skip:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 42. A run list at its 500 cap fails closed; in-progress and queued runs are listed on their own.
+guard full 2026-07-22 && grep -q -- "--workflow data-scan.yml --limit 500 --status in_progress" "$GD/gh.log" && grep -q -- "--workflow archive-check.yml --limit 500 --status queued" "$GD/gh.log" || bad+=" status-lists"
+python3 - "$GD/ds.json" "$(iso $(( now - 30 * 86400 )))" <<'PY'
+import json, sys
+json.dump([{"databaseId": 1000 + i, "status": "completed", "conclusion": "success", "createdAt": sys.argv[2], "updatedAt": sys.argv[2], "attempt": 1, "headBranch": "main", "headSha": "a" * 40, "displayTitle": "data-scan volume"} for i in range(500)], open(sys.argv[1], "w"))
+PY
+rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" cap:$rc"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 42: in-progress and queued runs are listed on their own (both workflows); 500 listed runs, even all older than the window, fail closed" || no "OF-2 r4 run list cap:$bad"
 bad=""; gdreset
 
 echo "$pass passed, $fail failed"

@@ -136,8 +136,12 @@ while true; do
   fi
   # Interrupted (SIGINT) at the budget's end; it finishes nothing new after that and
   # exits within 2 min, else it is killed (an unfinished unit is never renamed into place).
+  # OF-2 round 4, ruling 36: the scanner's output (plan and per-unit counts) goes to
+  # $slog next to the data, never to the public log; the log keeps the exit code and the
+  # 429 log (429.log) only.
+  slog="$out-log"; mkdir -p "$slog"
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
-    -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop
+    -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop >> "$slog/run.log" 2>&1
   rc=$?
   if [ $(( deadline - $(date +%s) )) -le 0 ] && [ $rc -ne 0 ] && [ $rc -ne 75 ]; then
     echo "time budget reached while scanning (scanner exit $rc); progress kept for the next run" | tee -a "$summary"
@@ -152,7 +156,7 @@ while true; do
     exit 0
   fi
   if [ $rc -ne 75 ]; then
-    echo "scanner failed with exit $rc" | tee -a "$summary"
+    echo "scanner failed with exit $rc (its output is in $slog/run.log, not in this log)" | tee -a "$summary"
     exit $rc
   fi
   hold_back "$out/archive-429.state" "$ARCHIVE_BACKOFF_S"
