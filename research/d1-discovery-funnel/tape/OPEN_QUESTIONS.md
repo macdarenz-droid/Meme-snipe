@@ -64,4 +64,4 @@ Places where `PREREG.md` is silent or ambiguous. Each one has the reading the co
 34. **Count row 4.** It runs over D1's eligible decision points (from 50 SOL up):
     - pool-hours are distinct (pool, UTC hour) with an H8-eligible point;
     - graduates are distinct pools.
-35. **Price file not in the repo yet.** The Binance hourly file is not committed. search and validate refuse without `--solusd`, and they record the file's sha256.
+35. **Price input.** RESOLVED. `--solusd` defaults to `research/brainstorm-loop/sol-usd` (Binance SOLUSDT 1h, 09-02..09-11). The code checks each needed day's file against `SHA256SUMS`: the decision days, plus the day before the first one. A missing day or a mismatch is refused, and the sha256 of SHA256SUMS is recorded.

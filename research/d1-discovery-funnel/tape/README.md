@@ -10,9 +10,9 @@ U=$(ls -d /home/user/tape-cache/2026-09-1[01]/*-*)        # the unit directories
 nice -n 19 python3 run_d1.py stage1 --units $U --days 2026-09-10 2026-09-11 --out RUN   # points + features
 nice -n 19 python3 run_d1.py stage2 --out RUN          # outcomes; reads exactly stage 1's units and re-checks their sha256
 nice -n 19 python3 run_d1.py summary --run RUN                                          # counts and shapes only
-nice -n 19 python3 run_d1.py summary --run RUN --solusd SOLUSDT-1h.csv                  # + H8 count row
-nice -n 19 python3 run_d1.py search  --run RUN --out RUN/frozen_rules.json --solusd SOLUSDT-1h.csv   # PREREG §5
-nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --solusd SOLUSDT-1h.csv --confirm-validation-read   # §6, later
+nice -n 19 python3 run_d1.py summary --run RUN                  # + H8 count row
+nice -n 19 python3 run_d1.py search  --run RUN --out RUN/frozen_rules.json   # PREREG §5
+nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --confirm-validation-read   # §6, later
 ```
 
 **Inputs.** The inputs are a list of unit directories `<cache>/<day>/<from>-<to>`, each holding `research/*.csv.zst` and `E.jsonl.zst`, and the day(s) they belong to.
@@ -38,7 +38,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
   - stage2 refuses when the unit files differ from stage 1's hashes.
   - `search` and `validate` refuse when hashes are skipped, when the two stages read different units, or when either stage ran on other code.
   - `validate` also refuses frozen rules made by other code.
-- **H8 stratum.** `search` and `validate` refuse without `--solusd`. `validate` refuses frozen rules made before the H8 amendment (`run_d1.FROZEN_AMENDMENTS`).
+- **H8 stratum.** `--solusd` defaults to `research/brainstorm-loop/sol-usd`. Each needed day is checked against `SHA256SUMS`, and a missing day or a mismatch is refused. `validate` refuses frozen rules made before the H8 amendment (`run_d1.FROZEN_AMENDMENTS`).
 - `search` refuses dev runs and any day that is not a discovery day.
 - `validate` refuses unless `--confirm-validation-read` is passed, and refuses when its days overlap the discovery days.
 - `--dev-unknown-migration` exists only for shape checks on the few units cached now. It gives pools that migrated before the tape a pseudo migration. Its runs are marked `dev` and can never be searched or validated.
@@ -49,7 +49,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - **Future-marker test.** `test_planted_future_marker` plants extreme rows of every table one slot after a decision and requires every earlier decision's features to be unchanged. The test was mutation-checked: a one-slot leak in features, clusters or holders makes it fail.
 
 ## Tests
-`cd tape && python3 -m unittest -v` runs 43 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
+`cd tape && python3 -m unittest -v` runs 44 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
 - costs;
 - pool state;
 - universe and timing;
