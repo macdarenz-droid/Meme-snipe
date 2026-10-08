@@ -62,6 +62,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 23:22 | Count rows amendment 5, G1 amendment 6, W1 amendment 7 committed (85fd4e3) and sent to the lead |
 | 2026-10-08 23:24 | Lead: sweep 5 files frozen from 85fd4e3 (19b8546c). The survivorship-free list was already ruled: owner 2026-10-07 about 20:15, "Yes keep what we collected as is" (research/hype/RESEARCH.md line 143); the daily download uses GeckoTerminal only |
 | 2026-10-08 23:24 | MAYHEM-SNAP question put to the owner |
+| 2026-10-08 23:29 | Owner on MAYHEM-SNAP: "Its hard to answer unless we test them. Only i approve where we have high chance of being profitable. Which is ourpose of this research. Where i can build the bots logic." Reading: test first; he approves bot use only on results. Count rows amendment 6 records it |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
