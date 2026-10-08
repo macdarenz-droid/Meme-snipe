@@ -126,6 +126,9 @@ def normalise_swaps(curve: pd.DataFrame, amm: pd.DataFrame, boost: set, day: str
         "is_buy": curve["is_buy"].astype(str) == "1", "sol": curve["sol_amount"],
         "quote_mint": curve.get("quote_mint", pd.Series(SOL_NATIVE, index=curve.index)).fillna(SOL_NATIVE),
         "protocol": curve.get("protocol", pd.Series("0", index=curve.index)),
+        # AMENDMENT_8: Q on the curve is its virtual SOL reserve at the buy; the fee is the row's own fee fields
+        "q": _col(curve, "virtual_sol_reserves"),
+        "fee_bps": _col(curve, "fee_basis_points") + _col(curve, "creator_fee_basis_points"),
     })
     a = pd.DataFrame({
         "slot": amm["slot"], "tx_idx": amm["tx_idx"], "ev_idx": amm["ev_idx"],
@@ -133,6 +136,10 @@ def normalise_swaps(curve: pd.DataFrame, amm: pd.DataFrame, boost: set, day: str
         "is_buy": amm["side"].astype(str) == "buy", "sol": amm["quote_amount"],
         "quote_mint": amm["quote_mint"],
         "protocol": amm.get("protocol", pd.Series("0", index=amm.index)),
+        # on a pool, Q is the effective quote (vault + signed virtual reserves) after the buy (its own chain reading)
+        "q": _col(amm, "chain_pool_quote") + _col(amm, "virtual_quote_reserves"),
+        "fee_bps": _col(amm, "lp_fee_basis_points") + _col(amm, "protocol_fee_basis_points")
+        + _col(amm, "coin_creator_fee_basis_points"),
     })
     s = pd.concat([c, a], ignore_index=True)
     s = s[s["quote_mint"].isin([SOL_NATIVE, WSOL])]
@@ -143,7 +150,14 @@ def normalise_swaps(curve: pd.DataFrame, amm: pd.DataFrame, boost: set, day: str
         s[col] = s[col].astype(np.int64)
     s["sol"] = pd.to_numeric(s["sol"], errors="coerce").fillna(0).astype(np.int64)
     s["day"] = day
-    return s[["day", "slot", "tx_idx", "ev_idx", "owner", "mint", "is_buy", "sol"]]
+    return s[["day", "slot", "tx_idx", "ev_idx", "owner", "mint", "is_buy", "sol", "q", "fee_bps"]]
+
+
+def _col(df, name):
+    """A numeric column, NaN where missing (an unknown Q or fee never helps the payer bar)."""
+    if name not in df.columns:
+        return pd.Series(np.nan, index=df.index, dtype=float)
+    return pd.to_numeric(df[name], errors="coerce").astype(float)
 
 
 def load_units(paths):
@@ -152,9 +166,12 @@ def load_units(paths):
         p, day, lo, hi = unit_info(path)
         boost = boost_signatures(p)
         curve = _read(p, "S_curve", ["slot", "tx_idx", "ev_idx", "signature", "user_token_owner", "mint", "is_buy",
-                                     "sol_amount", "quote_mint", "protocol"])
+                                     "sol_amount", "quote_mint", "protocol", "virtual_sol_reserves",
+                                     "fee_basis_points", "creator_fee_basis_points"])
         amm = _read(p, "S_amm", ["slot", "tx_idx", "ev_idx", "signature", "user_token_owner", "base_mint", "side",
-                                 "quote_amount", "quote_mint", "protocol"])
+                                 "quote_amount", "quote_mint", "protocol", "chain_pool_quote", "virtual_quote_reserves",
+                                 "lp_fee_basis_points", "protocol_fee_basis_points",
+                                 "coin_creator_fee_basis_points"])
         swaps.append(normalise_swaps(curve, amm, boost, day))
         t = _read(p, "T", ["mint", "kind", "from_owner", "to_owner"])
         tlinks.append(t[t["kind"] == "transfer"][["mint", "from_owner", "to_owner"]])
@@ -241,7 +258,7 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
     (kept as rows with a reason)."""
     candidates = leaders if candidates is None else candidates
     buys = swaps[(swaps["day"] == day) & swaps["is_buy"]].sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort")
-    buys_by_mint = {m: {c: g[c].to_numpy() for c in ("slot", "tx_idx", "ev_idx", "owner", "sol")}
+    buys_by_mint = {m: {c: g[c].to_numpy() for c in ("slot", "tx_idx", "ev_idx", "owner", "sol", "q", "fee_bps")}
                     for m, g in buys.groupby("mint", sort=False)}
     rng = np.random.default_rng(seed)
     rows = []
@@ -265,12 +282,16 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
         pick = {"mint": ev["mint"], "owner": mb["owner"][j], "slot": int(mb["slot"][j]),
                 "tx_idx": int(mb["tx_idx"][j]), "ev_idx": int(mb["ev_idx"][j])}
         f, v, late = follow_stats(buys_by_mint, ev, sol_pairs, mint_pairs)
-        pf, _, _ = follow_stats(buys_by_mint, pick, sol_pairs, mint_pairs)
+        pf, _, plate = follow_stats(buys_by_mint, pick, sol_pairs, mint_pairs)
         out.update({"dropped": "", "follow": f, "follower_sol": v, "follower_sol_late": late,
-                    "placebo_owner": pick["owner"], "placebo_slot": pick["slot"], "placebo_follow": pf})
+                    "placebo_owner": pick["owner"], "placebo_slot": pick["slot"], "placebo_follow": pf,
+                    # AMENDMENT_8: each buy's own Q and fee fields, and the placebo's late follower SOL
+                    "q": float(ev["q"]), "fee_bps": float(ev["fee_bps"]), "placebo_late": plate,
+                    "placebo_q": float(mb["q"][j])})
         rows.append(out)
     cols = ["day", "leader", "mint", "slot", "tx_idx", "ev_idx", "dropped", "follow", "follower_sol",
-            "follower_sol_late", "placebo_owner", "placebo_slot", "placebo_follow"]
+            "follower_sol_late", "placebo_owner", "placebo_slot", "placebo_follow", "q", "fee_bps", "placebo_late",
+            "placebo_q"]
     return pd.DataFrame(rows, columns=cols)
 
 
@@ -330,14 +351,53 @@ def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2):
         "day2_persistent_leader_buys": int(len(e2p)),
         "day2_follower_sol": vol, "day2_follower_sol_late": late,
         "late_share": (late / vol) if vol else None,
+        "payer_mass_bar": f1_payer_bar(e2p),   # COUNT_ROWS_AMENDMENT_8
     }
     return summary, {"events_day1": ev1, "leaders_day1": lt1, "events_day2": ev2, "leaders_day2": lt2}
 
 
+SPEND_5USD = 41_925_205   # $5 at $119.26 (COUNT_ROWS_AMENDMENT_7)
+FIXED_LAMPORTS = 414_009
+PAYER_MEDIAN_MIN = 1.0
+PAYER_EVENTS_AT_2X_PER_DAY = 11
+
+
+def round_trip_share(q, fee_bps, x=SPEND_5USD) -> float:
+    """s* = sqrt(1 + c) - 1, with c = 2 x the trade's own fee + the constant-product impact of a $5 buy and its sell
+    on Q (x^2 / (Q + x) + x^2 / Q, against spot) + 414,009 / x (COUNT_ROWS_AMENDMENT_7 and 8)."""
+    if not (np.isfinite(q) and np.isfinite(fee_bps)) or q <= 0:
+        return float("nan")
+    c = 2 * fee_bps / 1e4 + (x * x / (q + x) + x * x / q) / x + FIXED_LAMPORTS / x
+    return float(np.sqrt(1 + c) - 1)
+
+
+def f1_payer_bar(ev: pd.DataFrame) -> dict:
+    """AMENDMENT_8 Q-R1-g on the day-2 buys of persistent leaders with a valid placebo: excess share = late follower SOL
+    / Q - the placebo's late follower SOL / the placebo's Q; passes if median(excess / s*) >= 1 and on average at least
+    11 events a day reach 2 s* (both ties pass; an undefined value never helps)."""
+    n = len(ev)
+    days = sorted(set(ev["day"])) if n else []
+    if not n:
+        return {"passed": None, "status": "not computed: no events", "events": 0}
+    with np.errstate(divide="ignore", invalid="ignore"):
+        exc = ev["follower_sol_late"].astype(float) / ev["q"].astype(float) \
+            - ev["placebo_late"].astype(float) / ev["placebo_q"].astype(float)
+    ss = np.array([round_trip_share(q, f) for q, f in zip(ev["q"].astype(float), ev["fee_bps"].astype(float))])
+    exc = exc.to_numpy(float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = exc / ss
+    ok = np.isfinite(ratio) & (ss > 0)
+    med = float(np.median(np.where(ok, ratio, -np.inf)))
+    at2 = int((ok & (exc >= 2 * ss)).sum())
+    per_day = at2 / len(days)
+    return {"passed": bool(med >= PAYER_MEDIAN_MIN and per_day >= PAYER_EVENTS_AT_2X_PER_DAY), "events": int(n),
+            "events_undefined": int((~ok).sum()), "median_ratio": med, "events_at_2x": at2,
+            "events_at_2x_per_day": per_day, "days": days}
+
+
 # PAYER_MASS.md (frozen) names F1: a necessary bar before any return. F1 has no hold window and no payer attribution
 # yet, so the bar is not computed (open question, research/brainstorm-loop/CODE_REDTEAM.md R1-9).
-PAYER_MASS_BAR = {"passed": None, "status": "not computed: PAYER_MASS.md's hold window, payer attribution, Q and cost "
-                                            "are not defined for F1 (open question, CODE_REDTEAM.md R1-9)"}
+PAYER_MASS_BAR = {"passed": None, "status": "not computed (run() computes it per COUNT_ROWS_AMENDMENT_8)"}
 
 
 def decide(s, payer=PAYER_MASS_BAR):
@@ -373,7 +433,7 @@ def main(argv=None):
     summary, tables = run(a.unit, a.boot)
     if a.decide:
         summary["plan"] = {"path": a.plan, "sha256": plan_sha}
-        summary["decision"] = decide(summary)
+        summary["decision"] = decide(summary, payer=summary["payer_mass_bar"])
     os.makedirs(a.out, exist_ok=True)
     for k, df in tables.items():
         df.to_csv(os.path.join(a.out, f"f1_{k}.csv"), index=False)
