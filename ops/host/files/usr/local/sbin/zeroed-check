@@ -142,8 +142,4 @@ elif [ "$webhook_pending" = false ] && [ ! -s "$PAIR_CODE_FILE" ]; then
 fi
 
 # 3. A worker restart that waited for a safe moment.
-if [ -e "$STATE_DIR/worker_restart_pending" ] && ! worker_busy; then
-  rm -f "$STATE_DIR/worker_restart_pending"
-  systemctl try-restart zeroed-worker.service || true
-  log "Restarted the worker for the new Telegram chat."
-fi
+pending_restart
