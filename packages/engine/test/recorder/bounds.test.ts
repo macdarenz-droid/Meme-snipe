@@ -210,7 +210,9 @@ describe('idle by elapsed time (round 4, rulings 17-20)', () => {
     let st = q.stats();
     assert.equal(st.capUnwatched, 1);
     assert.deepEqual(q.append(snap('a', 2, T0 + 62_500)), { rejected: 'E_POOL_CAP' }, 'a was the one evicted');
-    // Five minutes later b and new1 are idle, the position pool is not: two new pools take b's and new1's places.
+    // Five minutes later b and new1 are idle, the position pool is not: two new pools take b's and new1's places. The
+    // writer's tick shows the clock moved on (else a 5-minute jump in producer time is a clock step, ruling 27).
+    q.tick(ms(T0 + 399_000));
     assert.equal(q.append(snap('new2', 1, T0 + 400_000)), 'queued');
     assert.equal(q.append(snap('new3', 1, T0 + 400_001)), 'queued');
     assert.deepEqual(q.append(snap('new4', 1, T0 + 400_002)), { rejected: 'E_POOL_CAP' });
@@ -234,7 +236,8 @@ describe('idle by elapsed time (round 4, rulings 17-20)', () => {
     q.append(snap('a', 1, T0 + 1_000));
     q.unwatch('a', ms(T0 + 2_000));
     q.append(snap('a', 1, T0 + 3_000));
-    // Data reaches minute 3, so the tick may write minutes 0-2 (ruling 25).
+    // The writer ticks at minute 2; data reaches minute 3, so the tick may write minutes 0-2 (rulings 25 and 27).
+    q.tick(ms(T0 + 120_000));
     q.append(rec('decision', T0 + 180_000));
     q.tick(ms(T0 + 180_000));
     const keys = pollCounts(q).filter((p) => p.poolId === 'a').map((p) => p.minuteStartMs);
@@ -401,5 +404,61 @@ describe('round 6 (ruling 26): polls moved late are never lost when the pool is 
     const keys = rows.map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
     assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
     assert.equal(rows.reduce((a, p) => a + (p.successfulPolls as number), 0), 3);
+  });
+});
+
+describe('round 7 (rulings 27-29): producer clock steps, forward and backward', () => {
+  const perMinute = (q: RecorderQueue, pool: string): Array<Record<string, unknown>> =>
+    q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf).filter((p) => p.poolId === pool);
+
+  it('a rejected record at +1 day does not move maxRecvMinute (ruling 27)', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0 + 1_000));
+    assert.equal(q.stats().maxRecvMinute, T0 / 60_000);
+    assert.deepEqual(q.append(rec('decision', T0 + 86_400_000, new Map())), { rejected: 'E_PAYLOAD' });
+    assert.deepEqual(q.append(rec('pool_snapshot', T0 + 86_400_000, { poolId: 'x', rawHash: 'h', priorityClass: 'n', fields: {}, extra: 1 })), { rejected: 'E_PAYLOAD' });
+    assert.equal(q.stats().maxRecvMinute, T0 / 60_000);
+  });
+
+  it('one discovery record at +1 day, then a bad tick and normal polls: a new pool still gets per-minute records', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0 + 1_000));
+    q.tick(ms(T0 + 2_000));
+    assert.equal(q.append(rec('discovery', T0 + 86_400_000)), 'queued', 'the record itself is kept');
+    // With maxRecvMinute at +1 day, a tick 1 h ahead would no longer be capped.
+    q.tick(ms(T0 + 3_600_000));
+    for (let sec = 60; sec < 360; sec++) {
+      q.append(snap('fresh', 1, T0 + sec * 1_000));
+      q.tick(ms(T0 + sec * 1_000));
+    }
+    q.tick(ms(T0 + 360_000));
+    assert.deepEqual(perMinute(q, 'fresh').map((p) => [p.minuteStartMs, p.successfulPolls, p.skippedMinutes]),
+      [1, 2, 3, 4, 5].map((m) => [T0 + m * 60_000, 60, undefined]));
+    assert.equal(q.stats().maxRecvMinute, (T0 + 359_000 - ((T0 + 359_000) % 60_000)) / 60_000);
+    assert.ok(q.stats().clockSteps >= 2, 'the forward record and the forward tick each opened an episode');
+  });
+
+  it("the red team's backward step: +1 h for 2 min, then corrected for 8 min: logged once, and a clock_step gap covers the late minutes (ruling 28)", () => {
+    const logs: string[] = [];
+    const q = new RecorderQueue({ log: (l, c) => logs.push(`${l}:${c}`) });
+    const gaps: Array<{ fromMs: number; toMs: number; reason: string }> = [];
+    const step = (t: number, pools: string[]): void => {
+      for (const p of pools) q.append(snap(p, 1, t));
+      q.tick(ms(t));
+      gaps.push(...(q.drainGaps().poll_counts ?? []));
+    };
+    for (let s = 0; s < 120; s++) step(T0 + s * 1_000, ['a']);
+    for (let s = 120; s < 240; s++) step(T0 + 3_600_000 + s * 1_000, ['a']);
+    for (let s = 240; s < 720; s++) step(T0 + s * 1_000, ['a', 'n']);
+    q.take(Number.MAX_SAFE_INTEGER, SEG);
+    assert.ok(q.stats().clockSteps >= 1);
+    // Logged once per episode, not once per poll.
+    assert.ok(logs.filter((l) => l === 'warning:M07.clock_step').length <= 3, `${logs.length} logs`);
+    const stepGaps = gaps.filter((g) => g.reason === 'clock_step');
+    // Every corrected minute (4 to 11) is inside a clock_step gap.
+    for (let m = 4; m < 12; m++) {
+      const at = T0 + m * 60_000;
+      assert.ok(stepGaps.some((g) => g.fromMs <= at && g.toMs >= at + 59_999), `minute ${m} not covered`);
+    }
   });
 });

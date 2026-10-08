@@ -268,19 +268,28 @@ describe('poll counts (logic 3)', () => {
     assert.equal(q.stats().acceptedHashes, 0);
   });
 
-  it('a pause longer than pollCatchUpMaxMinutes is one record per pool with skippedMinutes and the summed counts', () => {
+  it('a silent feed (an outage) longer than pollCatchUpMaxMinutes resumes as one skippedMinutes record per pool', () => {
     const q = new RecorderQueue();
     q.append(snap('a', 1, T0 + 5_000));
     q.append(snap('a', 2, T0 + 125_000));
-    q.append(rec('decision', T0 + 30 * 60_000));
-    q.tick(ms(T0 + 30 * 60_000));
-    const counts = q.take(10_000, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
-    assert.deepEqual(counts, [{ poolId: 'a', minuteStartMs: T0, successfulPolls: 2, changedPolls: 1, failedPolls: 0, priorityClass: 'normal', skippedMinutes: 30 }]);
-    assert.equal(q.stats().skippedPollMinutes, 30);
-    // Within pollCatchUpMaxMinutes, minute by minute as before.
+    // The writer ticks every minute; the feed is silent from minute 3 to minute 30.
+    for (let m = 0; m < 30; m++) q.tick(ms(T0 + m * 60_000 + 500));
+    let counts = q.take(10_000, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
+    // Minutes 0-2 one by one; nothing past the newest received minute + 1 while the feed is silent (ruling 25).
+    assert.deepEqual(counts.map((c) => [c.minuteStartMs, c.successfulPolls, c.skippedMinutes]), [[T0, 1, undefined], [T0 + 60_000, 0, undefined], [T0 + 120_000, 1, undefined]]);
+    assert.equal(q.stats().outages, 1, 'named an outage, not a clock step (ruling 29)');
+    assert.equal(q.stats().clockSteps, 0);
+    // The feed resumes at minute 30: the silent minutes 3-29 arrive as one record.
     q.append(snap('a', 3, T0 + 30 * 60_000 + 1));
-    q.append(rec('decision', T0 + 33 * 60_000));
-    q.tick(ms(T0 + 33 * 60_000));
+    q.tick(ms(T0 + 30 * 60_000 + 500));
+    counts = q.take(10_000, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
+    assert.deepEqual(counts, [{ poolId: 'a', minuteStartMs: T0 + 180_000, successfulPolls: 0, changedPolls: 0, failedPolls: 0, priorityClass: 'normal', skippedMinutes: 27 }]);
+    assert.equal(q.stats().skippedPollMinutes, 27);
+    // Then minute by minute again.
+    for (let m = 31; m <= 33; m++) {
+      q.append(snap('a', 3, T0 + m * 60_000 + 1));
+      q.tick(ms(T0 + m * 60_000 + 500));
+    }
     assert.equal(q.take(100, SEG).filter((r) => r.stream === 'poll_counts').length, 3);
   });
 });

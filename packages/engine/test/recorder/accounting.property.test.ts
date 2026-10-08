@@ -1,11 +1,13 @@
-// Rulings 25 and 26 (docs/reviews/Z04.md): every counted poll ends in exactly one (pool, minute) poll_counts record,
-// through random polls, failed polls, unwatches, ticks and forward clock steps on tick() and unwatch(). Fixed seed so
-// a run is reproducible for the exact commit it ran on.
+// Rulings 25, 26 and 30 (docs/reviews/Z04.md): every counted poll ends in exactly one (pool, minute) poll_counts
+// record, and every pool-minute whose count differs from the polls stamped in it is explained by a gap on poll_counts
+// (clock_step or late) or by a skippedMinutes record. Random polls, failed polls, unwatches, ticks, forward and
+// backward clock steps, forward recvMs on any stream, and rejected records. Fixed seed so a run is reproducible for
+// the exact commit it ran on.
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import fc from 'fast-check';
 import type { UnixMs } from '@bot/types';
-import { RecorderQueue, type EncodedRecord } from '../../src/index.ts';
+import { MINUTE_MS, RecorderQueue, type EncodedRecord, type Gap } from '../../src/index.ts';
 import { SEG, T0, payloadOf, snap } from './helpers.ts';
 
 const ms = (n: number): UnixMs => n as UnixMs;
@@ -17,13 +19,30 @@ const op = fc.oneof(
   fc.record({ kind: fc.constant('unwatch' as const), pool: fc.integer({ min: 0, max: 4 }), ahead: fc.oneof(fc.constant(0), fc.integer({ min: 0, max: 86_400_000 })) }),
   fc.record({ kind: fc.constant('tick' as const), ahead: fc.oneof(fc.constant(0), fc.integer({ min: 0, max: 7_200_000 })) }),
   fc.record({ kind: fc.constant('advance' as const), by: fc.integer({ min: 1, max: 150_000 }) }),
+  // Ruling 30: a backward step of the shared clock, a forward recvMs on another stream, and rejected records.
+  fc.record({ kind: fc.constant('back' as const), by: fc.integer({ min: 1, max: 7_200_000 }) }),
+  fc.record({ kind: fc.constant('forwardRecord' as const), ahead: fc.integer({ min: 0, max: 86_400_000 }) }),
+  fc.record({ kind: fc.constant('rejected' as const), ahead: fc.integer({ min: 0, max: 86_400_000 }) }),
 );
 
-describe('poll accounting across clock steps and unwatches (rulings 25 and 26)', () => {
-  it('the polls counted equal the polls appended, and no (pool, minute) record appears twice', () => {
+describe('poll accounting across clock steps and unwatches (rulings 25, 26 and 30)', () => {
+  it('polls counted equal polls appended, no (pool, minute) twice, and every differing pool-minute is explained', () => {
     fc.assert(fc.property(fc.array(op, { minLength: 1, maxLength: 300 }), (ops) => {
       const q = new RecorderQueue({ config: { maxWatchedPools: 3 } });
       const out: EncodedRecord[] = [];
+      const gaps: Gap[] = [];
+      // Polls stamped per (pool, minute), from the accepted ones.
+      const stamped = new Map<string, { s: number; f: number }>();
+      const stamp = (pool: string, recvMs: number, kind: 's' | 'f'): void => {
+        const k = `${pool}@${Math.floor(recvMs / MINUTE_MS) * MINUTE_MS}`;
+        const c = stamped.get(k) ?? { s: 0, f: 0 };
+        c[kind]++;
+        stamped.set(k, c);
+      };
+      const drain = (): void => {
+        out.push(...q.take(Number.MAX_SAFE_INTEGER, SEG));
+        for (const g of q.drainGaps().poll_counts ?? []) gaps.push(g);
+      };
       let clock: number = T0;
       let polls = 0;
       let failed = 0;
@@ -31,25 +50,40 @@ describe('poll accounting across clock steps and unwatches (rulings 25 and 26)',
         if (o.kind === 'poll') {
           // recvMs up to 90 s behind the clock: late polls into minutes already written.
           const stream = o.position ? 'pool_snapshot_position' : 'pool_snapshot';
-          const r = q.append(snap(`p${o.pool}`, o.state, clock - o.back, stream, o.position ? 'position' : 'normal'));
-          if (typeof r !== 'object') polls++;
+          const t = clock - o.back;
+          const r = q.append(snap(`p${o.pool}`, o.state, t, stream, o.position ? 'position' : 'normal'));
+          if (typeof r !== 'object') {
+            polls++;
+            stamp(`p${o.pool}`, t, 's');
+          }
         } else if (o.kind === 'fail') {
-          if (q.notePollFailed(`p${o.pool}`, 'normal', ms(clock), o.position)) failed++;
+          if (q.notePollFailed(`p${o.pool}`, 'normal', ms(clock), o.position)) {
+            failed++;
+            stamp(`p${o.pool}`, clock, 'f');
+          }
         } else if (o.kind === 'unwatch') {
           q.unwatch(`p${o.pool}`, ms(clock + o.ahead));
         } else if (o.kind === 'tick') {
           q.tick(ms(clock + o.ahead));
-        } else {
+        } else if (o.kind === 'advance') {
           clock += o.by;
+        } else if (o.kind === 'back') {
+          clock -= o.by;
+        } else if (o.kind === 'forwardRecord') {
+          q.append({ stream: 'discovery', recvMs: ms(clock + o.ahead), slot: null, commitment: null, source: 'prop', payload: {} });
+        } else {
+          const r = q.append({ stream: 'discovery', recvMs: ms(clock + o.ahead), slot: null, commitment: null, source: 'prop', payload: new Map() });
+          assert.deepEqual(r, { rejected: 'E_PAYLOAD' });
         }
-        out.push(...q.take(Number.MAX_SAFE_INTEGER, SEG));
+        drain();
       }
-      // Close out: the feed reaches a later minute, every pool is unwatched, and a last tick.
-      clock += 120_000;
+      // Close out: the writer and the feed reach a later minute, every pool is unwatched, and a last tick.
+      clock = Math.max(clock, ...out.map((r) => r.recvMs)) + 180_000;
+      q.tick(ms(clock - 60_000));
       q.append({ stream: 'decision', recvMs: ms(clock), slot: null, commitment: null, source: 'prop', payload: {} });
       for (let i = 0; i < 5; i++) q.unwatch(`p${i}`, ms(clock));
       q.tick(ms(clock));
-      out.push(...q.take(Number.MAX_SAFE_INTEGER, SEG));
+      drain();
 
       const counts = out.filter((r) => r.stream === 'poll_counts').map(payloadOf);
       const keys = counts.map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
@@ -57,6 +91,22 @@ describe('poll accounting across clock steps and unwatches (rulings 25 and 26)',
       assert.equal(counts.reduce((a, p) => a + (p.successfulPolls as number), 0), polls, 'successful polls lost or double counted');
       assert.equal(counts.reduce((a, p) => a + (p.failedPolls as number), 0), failed, 'failed polls lost or double counted');
       assert.equal(q.stats().droppedTotal.poll_counts, 0);
+
+      // Per-minute resolution: a pool-minute whose count differs from the polls stamped in it lies in a poll_counts
+      // gap or in a skippedMinutes record's span.
+      const covered = (pool: string, minuteMs: number): boolean =>
+        gaps.some((g) => g.fromMs <= minuteMs && g.toMs >= minuteMs + MINUTE_MS - 1)
+        || counts.some((c) => c.poolId === pool && typeof c.skippedMinutes === 'number'
+          && (c.minuteStartMs as number) <= minuteMs && minuteMs < (c.minuteStartMs as number) + (c.skippedMinutes) * MINUTE_MS);
+      const recorded = new Map(counts.filter((c) => c.skippedMinutes === undefined)
+        .map((c) => [`${String(c.poolId)}@${String(c.minuteStartMs)}`, { s: c.successfulPolls as number, f: c.failedPolls as number }]));
+      for (const k of new Set([...stamped.keys(), ...recorded.keys()])) {
+        const [pool, minute] = k.split('@') as [string, string];
+        const a = stamped.get(k) ?? { s: 0, f: 0 };
+        const b = recorded.get(k) ?? { s: 0, f: 0 };
+        if (a.s === b.s && a.f === b.f) continue;
+        assert.ok(covered(pool, Number(minute)), `${k}: stamped ${a.s}/${a.f}, recorded ${b.s}/${b.f}, no gap explains it`);
+      }
     }), params);
   });
 });
