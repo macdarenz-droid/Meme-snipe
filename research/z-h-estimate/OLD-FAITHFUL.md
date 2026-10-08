@@ -264,7 +264,7 @@ migration raw record. Today's retention already keeps every curve and canonical-
 |---|---|---|---|
 | K1 today's units (rows + 5% sampled raw + creates and migrations) | 6.4 to 8.5 GB (`historical-data.md:230`) | 0.20 to 0.26 TB | The engine's decoder sees raw records only for sampled mints |
 | **K3: K1 + raw records for PM-01's universe** (chosen for batches 2 onward if it fits, below) | K1 + PM-01 raw (not estimated: **VERIFY**, measured on batch 1) | between K1 and K2 | Raw records for the canonical pools of mints that migrate inside the lead-in or window, from migration to the end of PM-01's holding horizon, taken from the pinned migration list (below) |
-| K2 RESULTS P11: raw for **every** canonical-pool transaction | about 17 to 45 GB (RESULTS:348) | 0.53 to 1.40 TB | **Batch 1 only**, to measure both sizes; not kept for 31 days (above the owner's approved size) |
+| K2 RESULTS P11: raw for **every** canonical-pool transaction | about 17 to 45 GB (RESULTS:348) | 0.53 to 1.40 TB | **Batch 1 only**, to measure both sizes; not kept for the 31 read days (30 days; 31 with the 07-22 lead-in; above the owner's approved size) |
 
 - **Full range for the 31 read days (30 days; 31 with the 07-22 lead-in): about 0.1 to 1.4 TB.** Low end: K1's 0.20 TB with July activity at half of October's
   (the sizes come from October activity, ±2×, RESULTS line 341, so July is **VERIFY**). High end: K2's 1.40 TB, the
