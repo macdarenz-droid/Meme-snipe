@@ -321,3 +321,18 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
     - if it is more favourable, the B, R and P statistics are recomputed on the same real trades with the new model, as registered trials inside k, and the strategy is demoted only if a gate fails.
     - AC: a more conservative model that changes every W_P fill value, with no flips, re-freezes with no restart.
 90. **v1.** A cancelled A3 raise keeps its `whatif` trial and its r use, so cancelling is never a free probe.
+
+## Round 10 (head `0d5b01e2`): reviewer PASS (1 optional MINOR); red team 0 BLOCKER, 2 MAJOR, 2 MINOR
+
+- W1: a value between the current one and the evidence-backed one skips the size check.
+- W2: a more conservative model re-freezes without recomputing the gates.
+- w1: rolling refill blocks can reuse trades. w2: the evidence-backed setting must be the whole configuration.
+- Reviewer n1: AC-71 should say "what-if or replay trades are not counted".
+
+### Supervisor rulings for round 11 (8 Oct 2026, 3:20 PM)
+
+91. **W1.** Only a return to exactly the evidence-backed setting is free. An intermediate value uses no r and no holdout what-if, but runs the same apply-time checks as an A1 change: the size table, or the admission trade set on W_B and W_R. If the CI lower bound is ≤ 0 or null, the block stays or is raised. Non-numeric keys have no "between". AC: from 0.05 (blocked), a raise to 0.10 where the size table fails keeps `size_not_profitable`; a raise to 0.50 clears it with no trial.
+92. **W2.** A not-more-favourable value change still recomputes B, R and P (and LS, and the size table at the current size) on the same real trades with the new model. It uses no k and no r, and is recorded as a `recost` trial listed in the gate report. If every gate passes, it is re-frozen by an audited A2 and the stage stands. If any fails, the strategy is demoted through B-M26-04 to the last stage whose gate still passes. AC: a conservative model that turns P-2's CI lower bound negative on the same W_P trades demotes the strategy, with no k used.
+93. **w1.** Refill blocks are disjoint and consecutive, and each trade is in one block only. A block lies wholly at one setting and starts after the last raise or A1 change. r refills to its PREREG value at most.
+94. **w2.** The evidence-backed setting is the whole configuration (all group S and admission keys) as frozen at the last gate pass or passing raise.
+95. **Reviewer n1.** AC-71: "what-if or replay trades are not counted" (real paper fills count at paper_passed).
