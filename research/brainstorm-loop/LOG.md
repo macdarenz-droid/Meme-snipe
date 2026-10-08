@@ -29,6 +29,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 18:18 | Error: partner relayed "Hugging Face approval pending" without checking. The owner had approved at 17:51 (builder transcript, human message 06:51:50Z). Corrected with the owner and the lead |
 | 2026-10-08 19:22 | Sweep 2 finished (13 ideas, 8 agents, 70 min): nothing beats G1-HC; best new G1-CAP about 0.5%; corrections: BOOST limit is a price cap, 420 SOL ≈ $50k, tape v2 has the columns. Report `SWEEP_2.md` |
 | 2026-10-08 19:25 | G1 amendment 2 (cap fix, G1-CAP, quote strata) and STEP_A_COUNT_ROWS (DEV-ZERO, REBUY-ANCHOR, SEAT-DRIFT, AGE-GATE, cluster label, A round-USD check) committed |
+| 2026-10-08 19:27 | Round 14: D1 discovery funnel proposed (f9b9aef), and an early start of the tape worker on stored 09-11 units. Error caught and corrected: a commit hash typed from memory (88f3cc9) instead of the real a8d5872; hashes are now copied from git output only |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
@@ -48,3 +49,4 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | FLUSH-BUY | Buy after forced perp long liquidations | Liquidated longs | about 1% | **Closed by the owner** ("Yes no hyperliquid", 18:16) |
 | G1-CAP | G1 only when few rival curves and graduates split the opening buyers | BOOST, snipers | about 0.5% | `research/g1-boost-inventory/AMENDMENT_2.md` |
 | DEV-ZERO, REBUY-ANCHOR, SEAT-DRIFT, AGE-GATE | Count rows only on Step A | various | 0.1–0.3% | `STEP_A_COUNT_ROWS.md`; a PREREG only if a row clears its threshold |
+| D1 | Discovery funnel: 28 tape features, at most 5 rules advance to validation | found by the data | about 2–4% | Proposed (round 14) |
