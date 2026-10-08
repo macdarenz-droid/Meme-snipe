@@ -213,6 +213,8 @@ getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker -
 # which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
 getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
 getent group zeroed-spool >/dev/null || groupadd --system zeroed-spool
+# PATHS-FIX ruling 21: the provider usage ledger is written by the engine and the sentinel; the sentinel joins this group.
+getent group zeroed-sentinel >/dev/null || groupadd --system zeroed-sentinel
 getent passwd zeroed-pull >/dev/null || useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull
 usermod -aG zeroed-pull,zeroed-spool zeroed-worker
 
@@ -677,8 +679,9 @@ ImportCredential=heartbeat_hmac_key
 StateDirectory=zeroed
 StateDirectoryMode=0700
 # PATHS-FIX: one StateDirectoryMode per unit, so the market-data folder (2750, group zeroed-pull) and the import spool
-# (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here.
-ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-spool
+# (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here; so is the
+# provider usage ledger's folder (2770, group zeroed-sentinel), which the sentinel writes too (ruling 21).
+ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-spool /var/lib/zeroed-usage
 UMask=0077
 MemoryMax=800M
 # The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
@@ -11918,6 +11921,7 @@ install -d -m 0755 -o root -g root /var/lib/zeroed-index
 install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md
 install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts
 install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool
+install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage
 install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys
 mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md
 

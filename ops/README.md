@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7bf8e57bb37fea7310c7e86f22337d1e27db8cf7/ops/install.sh -o i && echo 'a498f89398c805842217d9fc6eca6d10809f9241be53e9bd7f87f39628e7a509  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7bf8e57bb37fea7310c7e86f22337d1e27db8cf7/ops/install.sh -o i && echo '1f14fe6096bb77d4fbacccc7914cf72bc444eeafb641f3c7a09979e1af5ae9d9  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -23,7 +23,7 @@ The console screen can be left at any time (Ctrl+C); setup carries on in the bac
 
 The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
 
-SHA-256 of `install.sh`: `a498f89398c805842217d9fc6eca6d10809f9241be53e9bd7f87f39628e7a509`
+SHA-256 of `install.sh`: `1f14fe6096bb77d4fbacccc7914cf72bc444eeafb641f3c7a09979e1af5ae9d9`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -192,6 +192,7 @@ The engine writes only inside what its unit allows under `ProtectSystem=strict` 
 - `/var/lib/zeroed` (`StateDirectory`, 0700): ledger `bot.db`, logs, recovery journal, first-start marker, disk reserve, provider usage.
 - `/var/lib/zeroed-md` (2750, group `zeroed-pull`) with `receipts/` (2770): market-data segments and pull receipts.
 - `/var/lib/zeroed-spool` (2730, group `zeroed-spool`): import bundles.
+- `/var/lib/zeroed-usage` (2770, group `zeroed-sentinel`): the provider usage ledger, which the sentinel writes too.
 
 The installer makes the last two folders itself, because systemd gives one unit only one `StateDirectoryMode` (systemd.exec). The worker reads through the groups `zeroed-pull` and `zeroed-spool`, never `botops`. Anything in `receipts/` that is not a valid receipt is deleted, with an alert (`packages/engine/src/m07/receipts.ts`).
 

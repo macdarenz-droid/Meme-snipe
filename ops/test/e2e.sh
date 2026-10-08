@@ -176,9 +176,9 @@ in_c "systemctl is-enabled unattended-upgrades && grep -q 'Unattended-Upgrade \"
 pass "install: 6-word EFF deploy code shown (root-only 0400 on disk), signer up, worker waiting, timers on, inbound policy drop with no SSH, unattended upgrades on"
 # PATHS-FIX: the engine's folders outside its state, the pull account and its chroot, and the systemd it runs under.
 in_c "systemctl --version | head -1" >"$LOGS/systemd-version.txt"
-[ "$(in_c "stat -c '%a %U %G %n' /var/lib/zeroed-md /var/lib/zeroed-md/receipts /var/lib/zeroed-spool /srv/zeroed_pull")" = "$(printf '%s\n' \
+[ "$(in_c "stat -c '%a %U %G %n' /var/lib/zeroed-md /var/lib/zeroed-md/receipts /var/lib/zeroed-spool /var/lib/zeroed-usage /srv/zeroed_pull")" = "$(printf '%s\n' \
   '2750 zeroed-worker zeroed-pull /var/lib/zeroed-md' '2770 zeroed-worker zeroed-pull /var/lib/zeroed-md/receipts' \
-  '2730 zeroed-worker zeroed-spool /var/lib/zeroed-spool' '755 root root /srv/zeroed_pull')" ] || fail "PATHS-FIX: folder owner, group or mode"
+  '2730 zeroed-worker zeroed-spool /var/lib/zeroed-spool' '2770 zeroed-worker zeroed-sentinel /var/lib/zeroed-usage' '755 root root /srv/zeroed_pull')" ] || fail "PATHS-FIX: folder owner, group or mode"
 in_c "id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-pull && id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-spool && ! id -nG zeroed-worker | tr ' ' '\n' | grep -qx botops" || fail "PATHS-FIX: worker groups"
 [ "$(in_c "getent passwd zeroed-pull | cut -d: -f7")" = /usr/sbin/nologin ] || fail "PATHS-FIX: the pull account has a shell"
 in_c "systemctl is-active srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount" >/dev/null || fail "PATHS-FIX: chroot binds not mounted"

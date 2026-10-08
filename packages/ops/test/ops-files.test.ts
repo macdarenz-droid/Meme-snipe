@@ -640,17 +640,19 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
       'install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md',
       'install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts',
       'install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool',
+      'install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage',
       'install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys',
       // Never chmod the read-only bind while it is mounted (an update would stop on EROFS).
       'mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md',
     ]) expect(main.split('\n'), line).toContain(line);
-    expect(worker).toMatch(/^ReadWritePaths=\/var\/lib\/zeroed-md \/var\/lib\/zeroed-spool$/m);
+    expect(worker).toMatch(/^ReadWritePaths=\/var\/lib\/zeroed-md \/var\/lib\/zeroed-spool \/var\/lib\/zeroed-usage$/m);
     expect(worker).toMatch(/^SupplementaryGroups=zeroed-pull zeroed-spool$/m);
     expect(worker.split('\n').filter((l) => !l.startsWith('#')).join('\n')).not.toContain('botops');
     expect(worker).toMatch(/^StateDirectoryMode=0700$/m);
     // The groups exist before any unit names them.
     expect(main.indexOf('groupadd --system zeroed-pull')).toBeLessThan(main.indexOf('# @@FILES@@'));
     expect(main.indexOf('groupadd --system zeroed-spool')).toBeLessThan(main.indexOf('# @@FILES@@'));
+    expect(main.indexOf('groupadd --system zeroed-sentinel')).toBeLessThan(main.indexOf('# @@FILES@@'));
     expect(main).toContain('useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull');
   });
 

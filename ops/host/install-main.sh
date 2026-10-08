@@ -213,6 +213,8 @@ getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker -
 # which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
 getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
 getent group zeroed-spool >/dev/null || groupadd --system zeroed-spool
+# PATHS-FIX ruling 21: the provider usage ledger is written by the engine and the sentinel; the sentinel joins this group.
+getent group zeroed-sentinel >/dev/null || groupadd --system zeroed-sentinel
 getent passwd zeroed-pull >/dev/null || useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull
 usermod -aG zeroed-pull,zeroed-spool zeroed-worker
 
@@ -243,6 +245,7 @@ install -d -m 0755 -o root -g root /var/lib/zeroed-index
 install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md
 install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts
 install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool
+install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage
 install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys
 mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md
 
