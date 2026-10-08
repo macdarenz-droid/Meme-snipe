@@ -91,13 +91,13 @@ class Synth:
                          "pool_quote_token_reserves": q, "virtual_quote_reserves": v, "lp_fee_basis_points": bps[0],
                          "protocol_fee_basis_points": bps[1], "coin_creator_fee_basis_points": bps[2], "lp_fee": lp,
                          "protocol_fee": -(-quote * bps[1] // 10_000), "coin_creator_fee": -(-quote * bps[2] // 10_000),
-                         "min_base_amount_out": 1 if boost else 0, "ix_name": side, "base_supply": 10 ** 15,
+                         "min_base_amount_out": base if boost else 0, "ix_name": side, "base_supply": 10 ** 15,
                          "chain_pool_base": nb, "chain_pool_quote": nq, "user": owner, "user_token_owner": owner,
                          "canonical": 1, "protocol": 0, "signer": owner})
         self.pool[pool] = [nb, nq, v]
         if boost:
             self.E.append({"event": "BoostBuyAndBurnEvent", "slot": slot, "block_time": bt(slot), "tx_idx": tx, "ev_idx": 1,
-                           "fields": {"pool": pool, "mint": mint, "quote_amount_in_used": str(quote),
+                           "fields": {"pool": pool, "mint": mint, "quote_amount_in_used": str(quote), "quote_amount_in_requested": str(quote),
                                       "boost_vault_remaining": "1000", "base_amount_burned": str(base)}})
         return base
 

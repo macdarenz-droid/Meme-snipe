@@ -7,7 +7,8 @@ For each eligible decision point and hold arm whose window is inside the tape (u
 - Fees from the fee fields of the pool row whose state is used; impact on effective reserves; the sell capped by the
   real vault.
 - net_ret = (SOL received - SOL paid - fixed costs) / SOL paid; fixed costs as edge-costs.ts with the rent of the
-  account the mint needs (AMENDMENT_1 item 11: Token-2022 2,074,080 lamports; SPL Token 2,039,280; unknown 2,074,080).
+  account the mint needs at the rate in force at the entry slot (AMENDMENT_1 item 11, AMENDMENT_2: (128 + 170 or 165
+  bytes) x 6,960 / 6,333 / 5,080 lamports per byte; a mint without a create row on the tape counts as 170 bytes).
 - rt_cost = the zero-move round trip at entry (buy, then sell the same tokens into the post-buy pool, plus fixed
   costs) / SOL paid, as edge-costs.ts `costRow`. Its median over the discovery trades is PREREG §5's cost hurdle.
 """
@@ -45,7 +46,7 @@ def compute_outcomes(book: PoolBook, pts: pd.DataFrame, token_programs: dict = N
     rows = []
     for ix, p in zip(el.index, el.itertuples(index=False)):
         rec = {"pool": p.pool, "tau": p.tau}
-        fixed = fixed_for(token_programs.get(int(p.mint)))
+        fixed = fixed_for(token_programs.get(int(p.mint)), int(p.entry_slot), int(p.entry_time))
         rec["fixed"] = fixed
         buy = _worse_buy(book, p.pool, int(p.entry_slot), spend)
         if buy is None:

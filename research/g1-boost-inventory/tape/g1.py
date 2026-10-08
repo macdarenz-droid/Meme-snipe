@@ -112,6 +112,7 @@ def cmd_gate(a):
     grads.to_csv(os.path.join(a.out, "graduates.csv"), index=False)
     trig.to_csv(os.path.join(a.out, "triggers.csv"), index=False)
     pd.DataFrame([{"mint": tape.names.name(k), **v} for k, v in flows.items()]).to_csv(os.path.join(a.out, "flows.csv"), index=False)
+    res.pop("boost_slices").to_csv(os.path.join(a.out, "boost_slices.csv"), index=False)
     _json(os.path.join(a.out, "gate.json"), res)
     log(f"wrote {a.out}/gate.json")
 

@@ -115,7 +115,9 @@ def run(decisions: pd.DataFrame, books: dict, tiers=None) -> pd.DataFrame:
     dec = decisions[decisions.eligible]
     for r in dec.itertuples(index=False):
         book = books.get(r.pool)
-        fixed = expected_fixed(token_account_rent(getattr(r, "token_program", "") or ""))  # AMENDMENT_1 rent
+        tp = getattr(r, "token_program", "")
+        tp = tp if isinstance(tp, str) else ""
+        fixed = expected_fixed(token_account_rent(tp, r.decision_slot + D_SLOTS))  # AMENDMENT_2: rate at the entry slot
         for hold, usd in plan:
             if not getattr(r, f"in_time_{hold}"):
                 continue

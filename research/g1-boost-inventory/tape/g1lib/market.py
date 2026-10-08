@@ -13,7 +13,33 @@ from . import params as P
 from .load import Tape
 from .quotes import CurveState, Fees, PoolState
 
-FALLBACK_POOL_FEES = Fees(2, 93, 30)   # highest-rate tier in fee-configs.json; used only when no trade shows the rate
+
+
+def _load_tiers():
+    import json
+    import os
+    with open(os.path.join(P.HERE, "..", "..", "edge", "snapshot", "fee-configs.json")) as f:
+        tiers = json.load(f)["amm"]["fee_tiers"]
+    return [(int(t["market_cap_lamports_threshold"]),
+             Fees(int(t["fees"]["lp_fee_bps"]), int(t["fees"]["protocol_fee_bps"]), int(t["fees"]["creator_fee_bps"])))
+            for t in tiers]
+
+
+AMM_TIERS = _load_tiers()
+
+
+def fallback_tier(state: Optional[PoolState], base_supply: int) -> Fees:
+    """Amendment 3 (OQ-16): when no trade shows the rate, the snapshot tier at market cap
+    effective quote × base_supply ÷ base (pump-fees calculate_fee_tier: below the first threshold the first tier,
+    otherwise the last tier whose threshold is <= the market cap)."""
+    if state is None or state.base <= 0:
+        return AMM_TIERS[0][1]
+    mc = state.effective_quote * base_supply // state.base
+    chosen = AMM_TIERS[0][1]
+    for th, f in AMM_TIERS:
+        if mc >= th:
+            chosen = f
+    return chosen
 
 
 class Market:
@@ -111,7 +137,10 @@ class Market:
         b = np.searchsorted(sl, slot, "right")
         cand = rows.iloc[max(a - 1, 0):b] if len(rows) else rows
         if not len(cand):
-            return FALLBACK_POOL_FEES, "fallback"
+            allr = self.tape.pool_of(pool)
+            sup = allr[allr["slot"] <= slot]["base_supply"] if len(allr) else []
+            supply = int(sup.iloc[-1]) if len(sup) and int(sup.iloc[-1]) > 0 else P.TOKEN_TOTAL_SUPPLY
+            return fallback_tier(self.pool_state(pool, slot, end=False), supply), "fallback"
         tot = (cand["lp_fee_basis_points"].clip(lower=0) + cand["protocol_fee_basis_points"].clip(lower=0)
                + cand["coin_creator_fee_basis_points"].clip(lower=0))
         r = cand.iloc[int(np.argmax(tot.to_numpy()))]

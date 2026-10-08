@@ -179,6 +179,12 @@ class Pipeline(unittest.TestCase):
         ga = grads[grads["mint"] == "A"].iloc[0]
         self.assertEqual(int(ga["first_boost_slots"]), 5)
         self.assertTrue(ga["any_boost"])
+        h = res["boost_slices"]
+        ha = h[h["pool"] == "poolA"]
+        self.assertEqual(list(ha["slice"]), [1, 2])
+        self.assertEqual(list(ha["slots_after_m"]), [5, 30])
+        self.assertTrue((ha["headroom"] > 0).all())        # cap at the slice's own average price sits above spot
+        self.assertEqual(g["desc_cap_headroom"]["n"], 2)
         fa = flows[tape.names.get("A")]
         self.assertGreater(fa["share_pre_sold"], 0)                      # o2 sold in slot m
         self.assertGreater(fa["first_time_buy_sol"], 0)                  # n1, n2

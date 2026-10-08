@@ -49,13 +49,20 @@ LADDER_PRIORITY_FEES = (20_000, 60_000, 150_000, 500_000)
 LADDER_MAX_ATTEMPTS = 5
 LAND_PPM_PUMPSWAP_CONSERVATIVE = 560_000
 TOKEN_ACCOUNT_RENT = 1_513_840        # edge-costs.ts value; kept only to reproduce its 414,009 (tests)
-# AMENDMENT_1 item 11: the rent of the token account the mint actually needs, with RENT-1's refund model.
-# rent-exempt minimum = (bytes + 128) * 6,960 lamports.
+# AMENDMENT_1 item 11 as corrected by AMENDMENT_2: rent of the token account the mint needs, with RENT-1's refund model.
+# rent = (128 + account bytes) x lamports_per_byte in force at the entry slot (SIMD-0437).
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-RENT_TOKEN_2022_ATA = 2_074_080       # 170-byte Token-2022 associated account with extensions
-RENT_SPL_TOKEN_ATA = 2_039_280        # 165-byte SPL Token account
-RENT_UNKNOWN_PROGRAM = RENT_TOKEN_2022_ATA  # token program not on the tape: the larger rent (CONSERVATIVE)
+ACCOUNT_BYTES_TOKEN_2022 = 170       # Token-2022 associated account with extensions
+ACCOUNT_BYTES_SPL_TOKEN = 165
+ACCOUNT_OVERHEAD_BYTES = 128
+RENT_RATE_BEFORE_0903 = 6_960        # before 2026-09-03
+RENT_RATE_FROM_0903 = 6_333          # from 2026-09-03
+RENT_RATE_FROM_EPOCH_1033 = 5_080    # from epoch 1033 (2026-09-11 21:12 UTC)
+RENT_DATE_0903 = epoch("2026-09-03")
+SLOTS_PER_EPOCH = 432_000
+EPOCH_1033_FIRST_SLOT = 1033 * SLOTS_PER_EPOCH   # 446,256,000
+UNKNOWN_PROGRAM_BYTES = ACCOUNT_BYTES_TOKEN_2022  # token program not on the tape: the larger account (CONSERVATIVE)
 CLOSE_SUCCESS_PPM = 900_000
 DUST_PPM = 50_000
 EXPECTED_FIXED_LAMPORTS_REPO = 414_009  # research/edge/costs.json fixedLamports (rounded)

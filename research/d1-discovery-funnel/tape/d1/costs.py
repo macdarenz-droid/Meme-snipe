@@ -87,13 +87,24 @@ def expected_failed_exits() -> float:
     return sum(f ** k for k in range(1, C.LADDER_MAX_ATTEMPTS + 1))
 
 
-def rent_for(token_program) -> int:
-    """AMENDMENT_1 item 11: rent of the account the mint needs."""
+def rent_rate(entry_slot: int, entry_time: int) -> int:
+    """AMENDMENT_2: lamports per byte in force at the entry slot."""
+    if entry_slot >= C.EPOCH_1033_FIRST_SLOT:
+        return C.RENT_RATE_FROM_EPOCH_1033
+    if entry_time >= C.RENT_DATE_0903:
+        return C.RENT_RATE_FROM_0903
+    return C.RENT_RATE_BEFORE_0903
+
+
+def rent_for(token_program, entry_slot: int, entry_time: int) -> int:
+    """AMENDMENT_1 item 11 / AMENDMENT_2: (128 + bytes of the account the mint needs) x the rate at the entry slot."""
     if token_program == C.TOKEN_2022_PROGRAM:
-        return C.RENT_TOKEN_2022_ATA
-    if token_program == C.SPL_TOKEN_PROGRAM:
-        return C.RENT_SPL_TOKEN_ATA
-    return C.RENT_UNKNOWN_PROGRAM
+        size = C.ACCOUNT_BYTES_TOKEN_2022
+    elif token_program == C.SPL_TOKEN_PROGRAM:
+        size = C.ACCOUNT_BYTES_SPL_TOKEN
+    else:
+        size = C.UNKNOWN_PROGRAM_BYTES
+    return (C.ACCOUNT_OVERHEAD_BYTES + size) * rent_rate(entry_slot, entry_time)
 
 
 def expected_fixed(rent: int = C.TOKEN_ACCOUNT_RENT) -> float:
@@ -112,5 +123,5 @@ def expected_fixed(rent: int = C.TOKEN_ACCOUNT_RENT) -> float:
 FIXED_EDGE_COSTS = expected_fixed()  # 414,009: the repo's value, reproduced to check the formula
 
 
-def fixed_for(token_program) -> float:
-    return expected_fixed(rent_for(token_program))
+def fixed_for(token_program, entry_slot: int, entry_time: int) -> float:
+    return expected_fixed(rent_for(token_program, entry_slot, entry_time))

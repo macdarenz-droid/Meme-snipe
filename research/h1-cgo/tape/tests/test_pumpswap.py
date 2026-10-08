@@ -91,16 +91,25 @@ class FixedCosts(unittest.TestCase):
 
 
 class Rent(unittest.TestCase):
-    """AMENDMENT_1: rent of the account the mint needs, with RENT-1's refund model."""
+    """AMENDMENT_2: (128 + size) x lamports_per_byte at the entry slot, with RENT-1's refund model."""
+    E1028, E1033 = 1028 * 432_000, 1033 * 432_000
 
-    def test_rent_by_program(self):
-        self.assertEqual(ps.token_account_rent(ps.TOKEN_2022), 2_074_080)
-        self.assertEqual(ps.token_account_rent(ps.SPL_TOKEN), 2_039_280)
-        self.assertEqual(ps.token_account_rent(""), 2_074_080)
+    def test_before_epoch_1028(self):
+        self.assertEqual(ps.token_account_rent(ps.TOKEN_2022, self.E1028 - 1), 2_074_080)
+
+    def test_from_epoch_1028(self):
+        self.assertEqual(ps.token_account_rent(ps.TOKEN_2022, self.E1028), 1_887_234)
+        self.assertEqual(ps.token_account_rent(ps.TOKEN_2022, self.E1033 - 1), 1_887_234)
+
+    def test_from_epoch_1033(self):
+        self.assertEqual(ps.token_account_rent(ps.TOKEN_2022, self.E1033), 1_513_840)
+        self.assertEqual(ps.token_account_rent(ps.TOKEN_2022, 446_265_000), 1_513_840)  # a 09-11 unit after 21:12 UTC
+
+    def test_account_size(self):
+        self.assertEqual(ps.token_account_rent(ps.SPL_TOKEN, self.E1033), 1_488_440)  # execution.md F1, live RPC
+        self.assertEqual(ps.token_account_rent("", self.E1028), 1_887_234)  # unknown program: the larger account
 
     def test_fixed_with_amended_rent(self):
-        # only the rent terms change: (1 - rent_back) x rent, rent_back = 0.9 x 0.95
-        delta = (1 - 0.9 * 0.95) * (2_074_080 - 1_513_840)
-        self.assertAlmostEqual(ps.expected_fixed(2_074_080), ps.expected_fixed() + delta, places=6)
-        self.assertEqual(round(ps.expected_fixed(2_074_080)), 495244)
-
+        delta = (1 - 0.9 * 0.95) * (1_887_234 - 1_513_840)  # only (1 - rent_back) x rent changes
+        self.assertAlmostEqual(ps.expected_fixed(1_887_234), ps.expected_fixed() + delta, places=6)
+        self.assertEqual(round(ps.expected_fixed(1_513_840)), 414009)

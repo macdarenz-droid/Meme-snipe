@@ -1,14 +1,14 @@
 # H1-CGO scoring: open questions
 
-**Resolved by `../AMENDMENT_1.md` (2026-10-08): all 25 readings below are confirmed as written.** The amendment also changes the rent and BOOST handling (below). Each item was a point where `../PREREG.md` is silent or ambiguous; the code uses the reading marked **Used**, the more conservative one.
+**Resolved by `../AMENDMENT_1.md` (2026-10-08): all 25 readings below are confirmed as written.** `../AMENDMENT_2.md` sets the rent by date. Both changes are listed below, with the BOOST handling for decoder v3. Each item was a point where `../PREREG.md` is silent or ambiguous; the code uses the reading marked **Used**, the more conservative one.
 
-## Changes from AMENDMENT_1 and decoder v3
-- **Rent.** The fixed costs charge the rent of the token account the mint actually needs, with RENT-1's refund model (`pumpswap.token_account_rent`, `expected_fixed(rent)`, applied per trade in `outcomes.run`):
-  - Token-2022: 2,074,080 lamports, as ruled, so the fixed cost is about 495,244 lamports;
-  - legacy SPL Token: 2,039,280, from the same 6,960 lamports a byte × (165 + 128);
-  - an unknown program pays the Token-2022 amount.
-
-  The repo's 1,513,840 is used only for the parity check with `research/edge/costs.json`. Item 15's fixed cost changes accordingly.
+## Changes from the amendments and decoder v3
+- **Rent (AMENDMENT_2, replacing amendment 1's flat figure).** Rent = (128 + account size) × the lamports a byte in force at the trade's entry slot, with RENT-1's refund model (`pumpswap.token_account_rent(program, slot)`, applied per trade in `outcomes.run`).
+  - Rates: 6,960 before epoch 1028; 6,333 from epoch 1028; 5,080 from epoch 1033.
+  - Account sizes: Token-2022 170 bytes, SPL Token 165; an unknown program is charged 170.
+  - Token-2022 rent is 2,074,080, 1,887,234 or 1,513,840 lamports.
+  - **Reading used:** the band comes from the slot's epoch (slot ÷ 432,000), because the rate changes at epoch boundaries. Epoch 1028 began 2026-09-03 23:24 UTC (`docs/research/execution.md` F1), so from 00:00 to 23:24 on 09-03 the dearer 6,960 applies. No day in this design's sets is affected.
+  - The repo's 1,513,840 remains only in the parity check with `research/edge/costs.json`. Item 15's fixed cost follows this rule.
 - **Other protocol addresses (item 10).** None is added, because none held tokens. One is to be added if an address appears whose tokens come only from protocol instructions.
 - **BOOST swaps.** Decoder v3 sets `protocol=1` on BOOST swaps. Older units leave it 0, so an S_amm row also counts as protocol flow when its (signature, outer_ix, pool) matches a `BoostBuyAndBurnEvent` in E (`features.boost_keys`). On 09-11 unit 446265000-446269499, 651 of 651 events matched exactly one row each. Protocol rows never enter the holder ledger, and their owner is excluded as `protocol`.
 
@@ -44,7 +44,7 @@
     - round-trip cost = (fees + impact on both legs + fixed) ÷ SOL paid;
     - net = (SOL received − SOL paid − fixed) ÷ SOL paid.
 
-    Fixed = edge-costs `expectedFixed()` (414,009 lamports with the repo's rent, checked against `research/edge/costs.json`), with the rent as set by AMENDMENT_1 (see above).
+    Fixed = edge-costs `expectedFixed()` (414,009 lamports with the repo's rent, checked against `research/edge/costs.json`), with the rent as set by AMENDMENT_2 (see above).
 
 ## Statistics
 16. **Gate (a) count.** "Eligible decision points" could mean every point or one per coin per day. **Used:** the first eligible point per coin per UTC day, which is stricter. Both counts are reported.

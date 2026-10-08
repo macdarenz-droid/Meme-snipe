@@ -49,6 +49,8 @@ def boost_rows(mkt: Market, tape, mint: int, mig: dict) -> dict:
     out["slices_on_s_amm"] = len(br)
     out["share_slices_capped"] = float((cap > 0).mean()) if len(cap) else np.nan
     out["capped"] = bool((cap > 1).any()) if len(cap) else False
+    hr = cap_headroom(tape, pool, m)
+    out["cap_headroom_median"] = float(hr["headroom"].median()) if len(hr) else np.nan
     out["slice_quote_per_base_median"] = float(np.median(bb["used"].to_numpy() / np.maximum(bb["base_amount_burned"].astype(np.int64).to_numpy(), 1))) if "base_amount_burned" in bb else np.nan
     # slices with a non-BOOST trade between them
     if len(pr) and len(bb) > 1:
@@ -66,6 +68,41 @@ def boost_rows(mkt: Market, tape, mint: int, mig: dict) -> dict:
     else:
         out["boost_slippage_failures"] = 0
     return out
+
+
+def cap_headroom(tape, pool: int, m: int) -> pd.DataFrame:
+    """Amendment 3 (OQ-14) descriptive row: per BOOST slice, (cap price ÷ pool price just before the slice) − 1, with
+    the slice's order and its slot after m. Cap price = quote_amount_in ÷ min_base_amount_burned, where
+    min_base_amount_burned is read as the inner buy's min_base_amount_out (UNVERIFIED mapping)."""
+    pr = tape.pool_of(pool)
+    br = pr[pr["is_boost"]] if len(pr) else pr
+    bb = tape.events["BoostBuyAndBurnEvent"]
+    if not len(br) or not len(bb):
+        return pd.DataFrame(columns=["pool", "slice", "slots_after_m", "headroom"])
+    ev = bb[bb["pool_c"] == pool][["slot", "tx_idx", "quote_amount_in_requested"]].astype(np.int64)
+    j = br.merge(ev, on=["slot", "tx_idx"], how="inner").sort_values(["slot", "tx_idx", "ev_idx"])
+    j = j.drop_duplicates(["slot", "tx_idx"])
+    cap_base = j["min_base_amount_out"].to_numpy().astype(float)
+    eff = (j["pool_quote_token_reserves"] + j["virtual_quote_reserves"]).to_numpy().astype(float)
+    price = eff / j["pool_base_token_reserves"].to_numpy().astype(float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cap_price = j["quote_amount_in_requested"].to_numpy() / cap_base
+        head = np.where(cap_base > 0, cap_price / price - 1, np.nan)
+    return pd.DataFrame({"pool": tape.names.name(pool), "slice": np.arange(1, len(j) + 1),
+                         "slots_after_m": j["slot"].to_numpy() - m, "headroom": head})
+
+
+def headroom_summary(slices: pd.DataFrame) -> dict:
+    """Median cap headroom by slice order and by slot after m (amendment 3; descriptive, never judged)."""
+    h = slices.dropna(subset=["headroom"]) if len(slices) else slices
+    if not len(h):
+        return {"n": 0}
+    band = pd.cut(h["slots_after_m"], [-1, P.D, 150, 300, 750, 10 ** 9],
+                  labels=["0..D", "D+1..150", "151..300", "301..750", ">750"])
+    return {"n": int(len(h)), "median": float(h["headroom"].median()),
+            "share_negative": float((h["headroom"] < 0).mean()),
+            "median_by_slice": {str(k): float(v) for k, v in h.groupby("slice")["headroom"].median().items()},
+            "median_by_slots_after_m": {str(k): float(v) for k, v in h.groupby(band, observed=True)["headroom"].median().items()}}
 
 
 def graduates(tape, mkt: Market) -> pd.DataFrame:
@@ -124,7 +161,7 @@ def g1_0(d: pd.DataFrame, grads: pd.DataFrame, mkt: Market, days) -> dict:
             out[f"desc_median_{col}"] = float(g[col].median())
             out[f"desc_median_{col}_capped"] = float(g.loc[g["capped"] == True, col].median()) if "capped" in g else math.nan
             out[f"desc_median_{col}_uncapped"] = float(g.loc[g["capped"] != True, col].median()) if "capped" in g else math.nan
-    for col in ("share_slices_with_trade_between", "share_slices_capped", "slice_quote_per_base_median"):
+    for col in ("share_slices_with_trade_between", "share_slices_capped", "slice_quote_per_base_median", "cap_headroom_median"):
         if col in g:
             out["desc_median_" + col] = float(g[col].median())
     out["desc_boost_slippage_failures"] = int(g["boost_slippage_failures"].sum()) if "boost_slippage_failures" in g else 0
@@ -245,6 +282,11 @@ def run(tape, d: pd.DataFrame, ctx: FeatureContext, mkt: Market, days, log=print
             flows[mint] = migration_flows(ctx, mkt, mint, fo)
     log(f"  gate: {len(trig)} triggers, {len(grads)} graduates, {len(flows)} flow rows")
     out = {"G1_0": g10, "strata": strata_rows(d, grads, flows)}
+    sol = grads[(grads["stratum"] == "sol") & (grads["reason"] == "")]
+    tabs = [cap_headroom(tape, tape.names.get(p), int(m)) for p, m in zip(sol["pool"], sol["m"])] if len(sol) else []
+    slices = pd.concat(tabs, ignore_index=True) if tabs else pd.DataFrame(columns=["pool", "slice", "slots_after_m", "headroom"])
+    out["G1_0"]["desc_cap_headroom"] = headroom_summary(slices)
+    out["boost_slices"] = slices
     if "R" in trig:
         out["G1_HC"] = hc_gate(trig, flows, days)
     if "Z" in trig:

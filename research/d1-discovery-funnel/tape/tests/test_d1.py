@@ -367,10 +367,10 @@ class Outcomes(unittest.TestCase):
             self.assertEqual(o.recv_15, min(xs))
             self.assertAlmostEqual(o.net_ret_15, (min(xs) - o.paid - o.fixed) / o.paid)
         self.assertGreater(o.rt_cost, o.fixed / o.paid)
-        # AMENDMENT_1 item 11: no create row on the tape -> the larger (Token-2022) rent
-        self.assertEqual(o.fixed, expected_fixed(2_074_080))
+        # AMENDMENT_1/2: synthetic entries are on 2026-09-10 (after 09-03, before epoch 1033); no create row -> 170 bytes
+        self.assertEqual(o.fixed, expected_fixed(298 * 6_333))
         o2 = compute_outcomes(book, pts, {S.MINT: C.SPL_TOKEN_PROGRAM}).loc[el.index[0]]
-        self.assertEqual(o2.fixed, expected_fixed(2_039_280))
+        self.assertEqual(o2.fixed, expected_fixed(293 * 6_333))
 
 
 def synthetic_search_frame(seed=1, planted=True, n_pools=60):
@@ -492,13 +492,20 @@ class Validation(unittest.TestCase):
 
 
 class Amendment1(unittest.TestCase):
-    def test_rent_item_11(self):
-        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM), 2_074_080)
-        self.assertEqual(rent_for(C.SPL_TOKEN_PROGRAM), 2_039_280)
-        self.assertEqual(rent_for(None), 2_074_080)
-        f = fixed_for(C.TOKEN_2022_PROGRAM)
-        # RENT-1's refund model applied to 2,074,080: (1 - 0.9 * 0.95) of it is lost
+    def test_rent_by_date_amendment_2(self):
+        before = (440_000_000, C.epoch("2026-09-02") + 3600)
+        mid = (445_000_000, C.epoch("2026-09-03"))
+        e1033 = (C.EPOCH_1033_FIRST_SLOT, C.epoch("2026-09-11") + 21 * 3600 + 13 * 60)
+        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM, *before), 2_074_080)
+        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM, *mid), 1_887_234)
+        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM, *e1033), 1_513_840)
+        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM, C.EPOCH_1033_FIRST_SLOT - 1, e1033[1]), 1_887_234)
+        self.assertEqual(rent_for(C.SPL_TOKEN_PROGRAM, *before), 293 * 6_960)
+        self.assertEqual(rent_for(None, *mid), 1_887_234)              # unknown program: the larger account
+        f = fixed_for(C.TOKEN_2022_PROGRAM, *before)
+        # RENT-1's refund model on the rent: (1 - 0.9 * 0.95) of it is lost
         self.assertAlmostEqual(f - FIXED_EDGE_COSTS, (1 - 0.855) * (2_074_080 - 1_513_840), places=6)
+        self.assertAlmostEqual(fixed_for(C.TOKEN_2022_PROGRAM, *e1033), FIXED_EDGE_COSTS, places=6)
 
     def test_binary_and_degenerate_item_23(self):
         x = np.array([1.0, 0.0, np.nan, 1.0])
@@ -528,7 +535,7 @@ class Amendment1(unittest.TestCase):
         r = res["table"].set_index(["rule", "hold_min"]).loc[("rv_15m:top", 60)]
         self.assertLess(r.score, res["median_rt_cost"])
         self.assertTrue(r.qualifies)
-        self.assertEqual(res["advanced"][0]["rule"], "rv_15m:top")
+        self.assertTrue(any(a["rule"].startswith("rv_15m:top") for a in res["advanced"]))
 
 
 def _write_unit(root, day, lo, hi, amm_rows, boost_sigs=(), extra_e=()):

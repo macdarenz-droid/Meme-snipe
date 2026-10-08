@@ -69,8 +69,21 @@ class Pricing(unittest.TestCase):
                           for tp in (ps.TOKEN_2022, ps.SPL_TOKEN)])
         out = O.run(d, books)
         reg = out[(out.hold == 3600) & (out.usd == 50.0)]
+        # entry slot 173 is in epoch 0: 6,960 lamports a byte; 170 and 165 bytes
         self.assertEqual(list(reg.fixed), [ps.expected_fixed(2_074_080), ps.expected_fixed(2_039_280)])
         self.assertTrue((out.fixed != ps.expected_fixed()).all())
+
+    def test_run_takes_the_rate_at_the_entry_slot(self):
+        e = 1033 * 432_000
+        r1 = amm_row(e - 100, 1, "X", "buy", 10**12, 200 * 10**12, 80 * 10**9)
+        books = O.books_from_rows(frame([r1], AMM_COLS), e - 1000, e + 10_000)
+        d = pd.DataFrame([dict(mint="M", pool="P", hour=0, decision_slot=ds, decision_day="2026-09-11", eligible=True,
+                               token_program=ps.TOKEN_2022, exit_slot_3600=e + 5000, in_time_3600=True, exit_slot_900=0,
+                               in_time_900=False, exit_slot_14400=0, in_time_14400=False)
+                          for ds in (e - 24, e - 23)])  # entry slots e - 1 (epoch 1032) and e (epoch 1033)
+        reg = O.run(d, books)
+        reg = reg[reg.usd == 50.0]
+        self.assertEqual(list(reg.fixed), [ps.expected_fixed(1_887_234), ps.expected_fixed(1_513_840)])
 
     def test_refusals(self):
         r1 = amm_row(100, 1, "X", "buy", 10**12, 200 * 10**12, 80 * 10**9)

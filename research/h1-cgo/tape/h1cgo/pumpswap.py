@@ -142,20 +142,33 @@ def amm_post_state(r) -> tuple:
 
 TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 SPL_TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-# AMENDMENT_1 (rent): the rent of the token account the mint actually needs. Token-2022 with extensions (170 bytes):
-# 2,074,080 lamports, as ruled. Legacy SPL Token (165 bytes) on the same 6,960 lamports-a-byte basis: (165 + 128) x
-# 6,960 = 2,039,280. An unknown program is charged the larger, Token-2022 amount.
-RENT_BY_PROGRAM = {TOKEN_2022: 2_074_080, SPL_TOKEN: 2_039_280}
-RENT_DEFAULT = 2_074_080
+# AMENDMENT_2 (replaces amendment 1's flat rent): rent = (128 + account size) x lamports_per_byte in force at the
+# trade's entry slot (docs/research/execution.md F1, SIMD-0437): 6,960; 6,333 from epoch 1028 (began 2026-09-03
+# 23:24 UTC); 5,080 from epoch 1033 (began 2026-09-11 21:12 UTC). The rate changes at epoch boundaries, so the band
+# is taken from the slot's epoch (OPEN_QUESTIONS: before 1028 the dearer 6,960 applies for all of 09-03 up to 23:24).
+# Token-2022 accounts are 170 bytes, SPL Token 165; an unknown program is charged the larger.
+SLOTS_PER_EPOCH = 432_000
+ACCOUNT_OVERHEAD = 128
+ACCOUNT_BYTES = {TOKEN_2022: 170, SPL_TOKEN: 165}
+LAMPORTS_PER_BYTE = ((1033, 5_080), (1028, 6_333), (0, 6_960))  # (first epoch, rate), newest first
 
 
-def token_account_rent(token_program: str) -> int:
-    return RENT_BY_PROGRAM.get(token_program, RENT_DEFAULT)
+def lamports_per_byte(slot: int) -> int:
+    epoch = int(slot) // SLOTS_PER_EPOCH
+    for first, rate in LAMPORTS_PER_BYTE:
+        if epoch >= first:
+            return rate
+    raise ValueError(slot)
+
+
+def token_account_rent(token_program: str, slot: int) -> int:
+    size = ACCOUNT_BYTES.get(token_program, max(ACCOUNT_BYTES.values()))
+    return (ACCOUNT_OVERHEAD + size) * lamports_per_byte(slot)
 
 
 def expected_fixed(rent: int = None) -> float:
     """edge-costs.ts expectedFixed(): entry landed + exit fixed + expected failed exits + rent not returned + a close
-    that fails without dust, lamports per filled round trip. `rent` replaces the repo's tokenAccountRent (AMENDMENT_1);
+    that fails without dust, lamports per filled round trip. `rent` replaces the repo's tokenAccountRent (AMENDMENT_2);
     left out, the repo's value is used (only for the parity check with research/edge/costs.json)."""
     f = dict(FIXED)
     if rent is not None:

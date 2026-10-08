@@ -1,6 +1,6 @@
 # H1-CGO scoring on the shared tape
 
-This code scores the frozen design in `../PREREG.md` on the shared on-chain tape (`research/shared-tape/README.md`). Where the prereg is silent, the reading used is in `OPEN_QUESTIONS.md`; `../AMENDMENT_1.md` confirms those readings and sets the rent. Python 3 with pandas, numpy and zstandard. No network, no git.
+This code scores the frozen design in `../PREREG.md` on the shared on-chain tape (`research/shared-tape/README.md`). Where the prereg is silent, the reading used is in `OPEN_QUESTIONS.md`; `../AMENDMENT_1.md` confirms those readings, and `../AMENDMENT_2.md` sets the rent by date. Python 3 with pandas, numpy and zstandard. No network, no git.
 
 ## Entry point
 `run.py`, one stage per call. Each stage reads the files the previous stage wrote to `--out`. Run every data command with `nice -n 19`. A unit is `/home/user/tape-cache/<day>/<from>-<to>` (the `research/` subfolder is optional).
@@ -31,7 +31,7 @@ nice -n 19 python3 run.py features --units /home/user/tape-cache/2026-09-11/4462
   /home/user/tape-cache/2026-09-11/446278500-446282999 --decision-days 2026-09-11 --out /tmp/h1   # now refused: 09-11 is incomplete (Step A guard)
 ```
 
-Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 58 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
+Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 62 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
 
 ## Look-ahead
 - `h1cgo/features.py` builds one stream per coin. `MintStream.advance(d)` applies exactly the rows with slot ≤ d, and every feature reads only what has been applied:
@@ -62,7 +62,7 @@ Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 58 tests on synthet
 | §5 gate (a), (b), (c) | `stats.gate0`, `stats.r2` |
 | §6 breakpoints P20 and P80 | `stats.breakpoints` |
 | §6 entry ($50, D = 23, worse of slot start and end, fee tier) and exit (60 min + D) | `outcomes.price_trade`, `outcomes.Book.start/end`, `pumpswap.buy_exact_quote_in/sell/pool_fees` |
-| §6 costs (fees and impact on both legs, fixed costs as edge-costs; rent per AMENDMENT_1) | `pumpswap.expected_fixed(rent)`, `pumpswap.token_account_rent`, `outcomes.run`, `outcomes.price_trade` |
+| §6 costs (fees and impact on both legs, fixed costs as edge-costs; rent per AMENDMENT_2, at the entry slot) | `pumpswap.expected_fixed(rent)`, `pumpswap.token_account_rent`, `outcomes.run`, `outcomes.price_trade` |
 | §7 lift, sign, futility | `stats.sign_and_futility` |
 | §8 primary, bootstrap (10,000, fixed seed, 99.5% and 95%), pass conditions, verdicts | `stats.primary`, `stats.cluster_bootstrap`, `stats.interval` |
 | §9.1 as-of test with a planted future marker | `tests/test_features.py` (`AsOf`) |

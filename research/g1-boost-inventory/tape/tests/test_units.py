@@ -26,6 +26,16 @@ class Costs(unittest.TestCase):
         self.assertEqual(token_account_rent(P.SPL_TOKEN_PROGRAM, 1033 * 432_000), 1_488_440)
         self.assertEqual(token_account_rent(P.TOKEN_2022_PROGRAM, 1030 * 432_000), 298 * 6_333)
         self.assertEqual(token_account_rent("", 1033 * 432_000), 1_513_840)   # unknown: the larger account
+        # amendment 3: 6,960 before 2026-09-03 (epoch 1028), 6,333 from it, 5,080 from epoch 1033
+        self.assertEqual(token_account_rent(P.TOKEN_2022_PROGRAM, 1028 * 432_000 - 1), 2_074_080)
+        self.assertEqual(token_account_rent(P.TOKEN_2022_PROGRAM, 1028 * 432_000), 1_887_234)
+
+    def test_fallback_tier_uses_base_supply(self):
+        from g1lib.market import fallback_tier
+        from g1lib.quotes import PoolState
+        st = PoolState(200_000_000_000_000, 67_000_000_000, 17_600_000_000)   # ~423 SOL cap at 1B supply
+        self.assertEqual(fallback_tier(st, 10 ** 15).total, 120)             # 420 SOL tier
+        self.assertEqual(fallback_tier(st, 990_000_000_000_000).total, 125)  # burned supply: below 420 SOL
 
     def test_spend(self):
         self.assertEqual(P.spend_lamports(50), 419_252_054)
