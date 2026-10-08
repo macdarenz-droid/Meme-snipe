@@ -75,7 +75,7 @@ def main(argv=None):
     a.add_argument("--out", required=True)
     a.add_argument("--frozen")
     a.add_argument("--counts-only", action="store_true", help="outcomes: print status counts, write no returns")
-    a.add_argument("--sol-usd", nargs="*", default=[], help="Binance SOLUSDT kline CSVs (H8 stratum and count rows)")
+    a.add_argument("--sol-usd", default=H8.SOL_USD_DIR, help="committed SOL/USD folder with SHA256SUMS (AMENDMENT_4)")
     a.add_argument("--plan", default=tapeio.PLAN_PATH, help="committed unit plan (DAY EPOCH FROM TO per unit)")
     o = a.parse_args(argv)
     os.makedirs(o.out, exist_ok=True)
@@ -111,7 +111,10 @@ def main(argv=None):
             sys.exit("gate0: features.csv holds no decision points; nothing to judge")
         g = stats.gate0(f, meta["decision_days"])
         # H8_AMENDMENT item 4: count row (reads no forward return)
-        g["h8_count_rows"] = H8.count_rows(f, H8.SolUsd.from_klines(o.sol_usd)) if o.sol_usd else "needs --sol-usd"
+        try:
+            g["h8_count_rows"] = H8.count_rows(f, H8.load_committed(meta["decision_days"], o.sol_usd))
+        except (ValueError, OSError) as e:
+            sys.exit(f"gate0: SOL/USD input refused: {e}")
         _dump(os.path.join(o.out, "gate0.json"), g)
         print("gate H1-CGO-0:", "pass" if g["passed"] else "closed", f"(a {g['a_pass']}, b {g['b_pass']}, c {g['c_pass']})")
 
@@ -158,15 +161,17 @@ def main(argv=None):
             sys.exit(f"discovery closed H1-CGO ({frozen.get('verdict')}); nothing to score")
         if frozen.get("code") != tapeio.code_hash():
             sys.exit("score: the code differs from the code that froze the discovery result")
-        if not o.sol_usd:
-            sys.exit("score needs --sol-usd (H8_AMENDMENT: the H8-eligible stratum)")
         meta = _verify_meta(o.out)
         if list(meta["decision_days"]) != list(VALIDATION_DAYS):
             sys.exit(f"score needs decision days exactly {VALIDATION_DAYS}; got {meta['decision_days']}")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
+        try:
+            sol = H8.load_committed(meta["decision_days"], o.sol_usd)
+        except (ValueError, OSError) as e:
+            sys.exit(f"score: SOL/USD input refused: {e}")
         p = stats.primary(f, out, frozen, meta["decision_days"])
-        p["h8_stratum"] = stats.h8_stratum(f, out, frozen, meta["decision_days"], H8.SolUsd.from_klines(o.sol_usd))
+        p["h8_stratum"] = stats.h8_stratum(f, out, frozen, meta["decision_days"], sol)
         p["d60_arm"] = stats.d60_arm(f, out, frozen, meta["decision_days"], p)
         s = stats.secondary(f, out, frozen)
         p.update(code=tapeio.code_hash())

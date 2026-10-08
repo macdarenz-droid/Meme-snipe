@@ -5,11 +5,11 @@ Implements `../STEP_A_COUNT_ROWS.md` with `../COUNT_ROWS_AMENDMENT_1.md`, `../CO
 ## Run
 ```
 nice -n 19 python3 run_step_a.py --unit <cache>/<day>/<from>-<to> [--unit ...] --out OUTDIR \
-    [--sol-usd SOLUSDT-1m-<day>.csv ...] [--boot 10000] [--decide] [--plan FILE]
+    [--sol-usd FOLDER] [--boot 10000] [--decide] [--plan FILE]
 nice -n 19 python3 -m unittest -v        # from this folder
 ```
 - `--unit`: a unit directory (`<day>/<from>-<to>`, or its `research/` folder), repeated. The day comes from the path. Windows must lie inside contiguous loaded units.
-- `--sol-usd`: the Binance public archive's SOLUSDT 1-minute kline CSVs, one per tape day and repeatable. A `day,sol_usd` CSV is also accepted. Each file's sha256 goes into the summary. The code makes no network request, so row 6 reports "needs SOL/USD" until the files are supplied.
+- `--sol-usd`: a folder of Binance `SOLUSDT-1m-<day>.zip` files with `SHA256SUMS`. The default is the committed `research/brainstorm-loop/sol-usd/`. Every loaded tape day's file is checked against `SHA256SUMS`, and the run stops with an error on a missing day or a mismatch (`load_sol_usd_dir`). The shas go into the summary. Row 6 and the H8 rows read this input. The code makes no network request.
 - `--decide` stops with an error unless the loaded units equal the plan rows for 09-11 and 09-10 exactly, with contiguous slots. The plan is `--plan`, by default `research/shared-tape/stepa-plan.txt`, and its sha256 goes into the summary (`tapeio.check_plan`).
 - DEV-ZERO's events per day list every loaded day, with 0 for a day that has no events. Row 6 reports `None` (not `False`) for "not separable" when any day lacks a SOL/USD price. Gate 3 counts only the creator's swaps inside the pool's window (end of BOOST or m + 5 min, up to hour 72 or the end of the tape).
 - Needs pandas, numpy, zstandard. Two units of 09-11 take about 7 minutes with the H8 rows and about 3 GB of RAM.

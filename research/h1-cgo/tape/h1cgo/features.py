@@ -42,7 +42,7 @@ def utc_day(t: int) -> str:
 
 # ---------------------------------------------------------------- universe (§3)
 
-def build_universe(creates: list, migrations: list, creation_days) -> tuple:
+def build_universe(creates: list, migrations: list, creation_days, pools_created: list = ()) -> tuple:
     """Pump coins created on a listed tape day (C row), SOL quote, not mayhem, not cashback, migrated to PumpSwap
     (G row). Returns (DataFrame, exclusion counts). Canonical/WSOL is checked later on the pool's own rows."""
     mig = {}
@@ -50,6 +50,12 @@ def build_universe(creates: list, migrations: list, creation_days) -> tuple:
         f = e["fields"]
         if f.get("mint") and f.get("pool") and f["mint"] not in mig:
             mig[f["mint"]] = (int(e["slot"]), int(e["block_time"]), f["pool"])
+    # AMENDMENT_4 (H8 dust check): the bot's quoteAtMigration is the migration pool's CreatePoolEvent pool_quote_amount
+    qmig = {}
+    for e in pools_created:
+        f = e["fields"]
+        if f.get("pool") and f.get("quote_mint") == WSOL and f["pool"] not in qmig:
+            qmig[f["pool"]] = int(f["pool_quote_amount"])
     rows, why = [], {"created": 0, "not_creation_day": 0, "not_sol_quote": 0, "mayhem": 0, "cashback": 0,
                      "not_migrated": 0, "kept": 0}
     seen = set()
@@ -77,8 +83,9 @@ def build_universe(creates: list, migrations: list, creation_days) -> tuple:
             ms, mt, pool = mig[m]
             rows.append(dict(mint=m, create_slot=int(e["slot"]), create_time=int(e["block_time"]),
                              bonding_curve=f.get("bonding_curve", ""), mig_slot=ms, mig_time=mt, pool=pool,
-                             token_program=f.get("token_program", "")))
-    cols = ["mint", "create_slot", "create_time", "bonding_curve", "mig_slot", "mig_time", "pool", "token_program"]
+                             token_program=f.get("token_program", ""), quote_at_migration=qmig.get(pool, float("nan"))))
+    cols = ["mint", "create_slot", "create_time", "bonding_curve", "mig_slot", "mig_time", "pool", "token_program",
+            "quote_at_migration"]
     return pd.DataFrame(rows, columns=cols), why
 
 
@@ -129,8 +136,9 @@ def decision_points(u: pd.DataFrame, clock: Clock, intervals) -> pd.DataFrame:
             if d is None:
                 continue
             rows.append(dict(mint=r.mint, pool=r.pool, hour=h, decision_slot=d, decision_day=utc_day(h),
-                             interval_end=iv[1], token_program=getattr(r, "token_program", "")))
-    cols = ["mint", "pool", "hour", "decision_slot", "decision_day", "interval_end", "token_program"]
+                             interval_end=iv[1], token_program=getattr(r, "token_program", ""),
+                             quote_at_migration=getattr(r, "quote_at_migration", float("nan"))))
+    cols = ["mint", "pool", "hour", "decision_slot", "decision_day", "interval_end", "token_program", "quote_at_migration"]
     return pd.DataFrame(rows, columns=cols)
 
 
@@ -397,15 +405,16 @@ def compute_features(dp: pd.DataFrame, streams: dict) -> pd.DataFrame:
 def load(units, creation_days, log=print):
     """Read the tables the features need, filtered to the universe. Returns a dict of frames and diagnostics."""
     units = sorted(units, key=lambda x: x.from_slot)
-    creates, migs, blocks, tcov, boosts = [], [], [], [], set()
+    creates, migs, blocks, tcov, boosts, pcreated = [], [], [], [], set(), []
     for un in units:
-        e = tapeio.read_events(un, {"CreateEvent", "CompletePumpAmmMigrationEvent", "BoostBuyAndBurnEvent"})
+        e = tapeio.read_events(un, {"CreateEvent", "CompletePumpAmmMigrationEvent", "BoostBuyAndBurnEvent", "CreatePoolEvent"})
+        pcreated += [x for x in e if x["event"] == "CreatePoolEvent"]
         boosts |= boost_keys(e)
         creates += [x for x in e if x["event"] == "CreateEvent"]
         migs += [x for x in e if x["event"] == "CompletePumpAmmMigrationEvent"]
         blocks.append(tapeio.read_table(un, "B", ["slot", "block_time"]))
         tcov.append(tapeio.read_table(un, "T_coverage", TCOV_COLS))
-    u, why = build_universe(creates, migs, set(creation_days))
+    u, why = build_universe(creates, migs, set(creation_days), pcreated)
     mints, pools = set(u.mint), set(u.pool)
     curve, amm, tt, rte = [], [], [], []
     for un in units:
