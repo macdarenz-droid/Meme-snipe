@@ -238,17 +238,43 @@ prunable_releases() {
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
 }
 
+# recorder_first_seen NOW RECORDER STAMP: the time RECORDER was first seen, kept in STAMP (written once, by
+# zeroed-check). Prints it, or nothing while RECORDER does not exist (STAMP is then removed, so a folder that comes
+# back starts a new hold). A STAMP that is not a time is written again; if that write fails nothing is printed. The
+# folder's own mtime is never used: it moves whenever a boot folder is added or removed.
+recorder_first_seen() {
+  if [ ! -e "$2" ]; then rm -f "$3"; return 0; fi
+  local t
+  t="$(head -c 32 "$3" 2>/dev/null || true)"
+  if ! [[ "$t" =~ ^[0-9]{1,12}$ ]]; then
+    t="$1"
+    # Ruling 13: a stamp that could not be written is never trusted; nothing is printed, which counts as old (alert).
+    { printf '%s\n' "$t" > "$3.new" && mv -f "$3.new" "$3"; } 2>/dev/null || { rm -f "$3.new" 2>/dev/null; return 0; }
+  fi
+  printf '%s\n' "$t"
+}
+
 # record_alerts NOW: reads the recording uploader's status.json (RECORD-UPLOAD; it runs as the worker's user, so its
 # alerts are raised here) on stdin and prints one "on|KEY|TEXT" or "off|KEY|TEXT" line per alert: 3 failed runs in a
 # row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
 # (the switch is off) clears them all. RC-M5: with the switch on, a status with no report time (none written: '{}', the
 # uploader never ran) raises the no-report alert and leaves the others as they are; it never clears them. Input that
-# is not JSON prints nothing, so every alert keeps its state.
+# is not JSON prints nothing, so every alert keeps its state. REC-UPLOAD-QUIET: with RECORDER given (zeroed-check passes
+# the upload unit's ConditionPathExists path) and nothing there, the unit is skipped and never writes a status, so the
+# status is read as {"enabled":false}: every alert is cleared, none raised. Once RECORDER exists, the above applies,
+# except that the no-report alert waits until 70 minutes after SEEN, the time zeroed-check first saw RECORDER
+# (recorder_first_seen; the upload timer's first run is 10 minutes after boot or switch-on, the next an hour after a
+# run ends): until then it prints nothing, so no alert changes. No SEEN, or a SEEN in the future, counts as old.
 record_alerts() {
-  jq -r --argjson now "$1" '
+  local status young=false
+  status="$(cat)"
+  if [ -n "${2:-}" ] && [ ! -e "$2" ]; then status='{"enabled":false}'; fi
+  if [ -n "${2:-}" ] && [ -e "$2" ] && [[ "${3:-}" =~ ^[0-9]{1,12}$ ]] && [ "$1" -ge "$3" ] && [ $(($1 - $3)) -lt 4200 ]; then young=true; fi
+  printf '%s' "$status" | jq -r --argjson now "$1" --argjson young "$young" '
     def clean: tostring | gsub("[\r\n|]"; " ") | .[0:300];
     if .enabled != false and (.at | type) != "number" then
-      "on|record-upload-stale|ALERT Zeroed host: the recording upload is on but has never reported (no status written). Recordings may be deleted at the disk cap without being uploaded."
+      if $young then empty else
+      "on|record-upload-stale|ALERT Zeroed host: the recording upload is on but has never reported (no status written). Recordings may be deleted at the disk cap without being uploaded." end
     else
     (.enabled != false) as $on
     | (((.failed_runs // 0) - (if .running == true then 1 else 0 end))) as $failed
