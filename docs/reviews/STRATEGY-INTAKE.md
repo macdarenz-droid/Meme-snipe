@@ -352,3 +352,15 @@ Red team round 8: 0 BLOCKER, 2 MAJOR, 2 MINOR.
 98. **x2.** "Not more favourable" holds only if it holds on the trades of every window the recomputed gates use (W_B, W_R, W_P, W_LS). Otherwise the change is a trial inside k.
 99. **x3.** A refill block starts after the last change to configKey (a raise, an A1 or A2 change, a code-deploy re-freeze or a `recost`).
 100. **Reviewer n1 and n2.** AC-76 states its setup (the key was tightened by A1 before the passing MAXPOS raise, so its old value is not in the new evidence-backed configuration). Add an AC row: an intermediate admission value whose CI lower bound is ≤ 0 raises `admission_not_profitable` where there was no block.
+
+## Round 12 (head `23905ddd`): reviewer PASS (1 optional MINOR); red team 0 BLOCKER, 1 MAJOR, 1 MINOR
+
+- Y1: cost- and fill-model inputs set through config (assumed priority fee, slippage coefficients, sandwich probability, fixed-cost line) take the limit paths A1/A2/A3 from a human-set riskDirection tag, so an optimistic model can freeze through A1 with no k trial, and a more conservative one can be refused at r = 0.
+- y1: `applycheck` trials are unlimited and count in the DSR, so system-initiated A1 changes (breakers, demotions) could fail B-3 through housekeeping.
+- Reviewer n1: AC-78 should say "that reads W_R".
+
+### Supervisor rulings for round 13 (8 Oct 2026, 3:28 PM)
+
+101. **Y1.** Cost- and fill-model config inputs get their own tag, group M, set in B-M25-01 and enforced by the CI tag test. Their changes never take the limit paths, whatever the key's riskDirection: they follow the "Code deploys" value rule (the four-window SOL test). Not more favourable → `recost` (no k, no r; demote through B-M26-04 if a gate fails). More favourable → a trial inside k, or the fresh-window state at k = 0. A flipped fill or reject outcome → the re-run rule. The operator sees A2 (it changes money state); the server picks the path from the SOL test, never from the class. ACs: (a) lowering an assumed fee in config is more favourable, a k trial, never an A1 re-freeze; (b) raising it at r = 0 is a `recost`, not refused.
+102. **y1.** Only operator or owner changes create `applycheck` trials. System-initiated tightenings (breakers, demotions) are not searches and create none. The DSR counts trials by distinct configKey evaluated, so the same value checked twice counts once.
+103. **Reviewer n1.** AC-78: "an intermediate value and an A1 change each register one `applycheck` trial when the check reads W_R".
