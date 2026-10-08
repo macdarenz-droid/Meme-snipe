@@ -103,3 +103,7 @@ REVIEW PASS, final. Red team 0 BLOCKER, 0 MAJOR, 2 MINOR. The send is refused un
 ### #312 round 2 (head `deeb0e66`)
 
 The supervisor checked the delta itself: one README line, ruling 14 applied as worded. **#312 is approved.** It merges after #311, with #311's rebuild and re-pin carried forward.
+
+## #312 merged (9 Oct 2026, 5:44 AM)
+
+**#312 OFFSITE-ON merged at `430ea35c`** (the new base). Head `d500af7a` = the approved change + a merge of base `455739ae`; only ops/host-config.json (`"offsite_backup": true`), ops/README.md and ops-files.test.ts differ from base. CI incl. ops e2e green. It takes effect on the next Deploy, which is held until the owner is at the console to run `zeroed-backup-code` once. After the Deploy: a probation check-in about 2 h 5 min later.
