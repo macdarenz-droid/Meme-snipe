@@ -187,6 +187,29 @@ class Replay(unittest.TestCase):
         self.assertEqual(int(st["s2"][0]), 2 * 10**10)       # the trade in slot 123 is seen at the end of slot 123
         self.assertEqual(int(st["s2"][1]), 10**10)
 
+    def test_fee_free_rows_never_set_the_fee_R2_8(self):
+        """R2-8: BOOST slices and protocol swaps carry fee fields of 0. A state after one keeps its reserves but the
+        fee rate of the venue's last fee-paying row (or, before the first one, the next one), so replays and marks
+        never trade fee-free; carried states from earlier units count as fee-paying rows."""
+        from w1 import replay
+        from w1.ledger import States
+        from w1.load import make_key
+        rows = pd.DataFrame({"mint": [1, 1, 1, 2, 2], "cls": [1, 1, 1, 1, 1],
+                             "key": make_key([100, 110, 120, 100, 110], [0] * 5, [0] * 5),
+                             "kind": [1] * 5, "s1": [10**14] * 5, "s2": [10**10, 2 * 10**10, 3 * 10**10, 10**10, 10**10],
+                             "s3": [0] * 5, "s4": [0] * 5, "bps": [125, 0, 0, 0, 125]})
+        q = make_key([110, 120, 100], [replay.END_OF_SLOT] * 3, [255] * 3)
+        st = States().asof(rows, [1, 1, 2], q)
+        self.assertEqual([int(x) for x in st["bps"]], [125, 125, 125])
+        self.assertEqual([int(x) for x in st["s2"]], [2 * 10**10, 3 * 10**10, 10**10])   # reserves still move
+        h = States()
+        h.advance(rows.iloc[:1])                                 # an earlier unit's last fee-paying state
+        st = h.asof(rows.iloc[1:3].reset_index(drop=True), [1], make_key([120], [replay.END_OF_SLOT], [255]))
+        self.assertEqual(int(st["bps"][0]), 125)
+        tok_free, _ = venue.buy_exact_in(("a", 10**14, 10**10, 0, 0), 4 * 10**8)
+        tok, _ = venue.buy_exact_in(("a", 10**14, 10**10, 0, int(st["bps"][0])), 4 * 10**8)
+        self.assertLess(tok, tok_free)
+
 
 if __name__ == "__main__":
     unittest.main()

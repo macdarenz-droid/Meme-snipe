@@ -112,3 +112,6 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
   - AMENDMENT_2 does not have the cap: an implied app fee below 0 or above 5% of the SOL traded + 0.01 SOL keeps the venue method.
   - It is kept. Every row also carries the signer method without the cap (`*_nc`).
   - The scored stages report the share of positions the cap moved, and the top decile's mean with the cap, without it, and under the venue method alone.
+
+## Red team R2-8 (2026-10-08)
+- **Fee-free rows.** BOOST slices and protocol swaps carry fee fields of 0. A venue state after one keeps its reserves but takes the fee rate of the venue's last fee-paying row (same mint and class), or, before the first such row, of the next one (`ledger._paid_bps`, used by `States.asof` and `States.advance`). Replays, rule-test fills and marks therefore never trade fee-free. Borrowing the next row's rate reads a later row's fee field only, never its reserves or a price; it touches marks and outcome quotes, not ranking features.

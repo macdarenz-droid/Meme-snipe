@@ -69,6 +69,23 @@ def mark(st, tokens):
     return v, ok
 
 
+def _paid_bps(rows):
+    """Red team R2-8: BOOST slices and protocol swaps carry fee fields of 0 (they pay no venue fee), so they never set
+    the fee rate a quote on that venue pays. Per (mint, class), a row with bps 0 takes the bps of the last earlier row
+    with bps > 0, or, before the first such row, of the next one. Reserves are untouched. No curve or PumpSwap trade
+    that pays fees has a total rate of 0, so bps 0 marks a fee-free row."""
+    if len(rows) == 0:
+        return rows
+    r = rows.sort_values(["mint", "cls", "key"], kind="stable")
+    b = r["bps"].where(r["bps"] > 0)
+    g = b.groupby([r["mint"], r["cls"]])
+    filled = g.ffill()
+    filled = filled.fillna(filled.groupby([r["mint"], r["cls"]]).bfill()).fillna(0)
+    out = rows.copy()
+    out.loc[r.index, "bps"] = filled.astype(np.int64).to_numpy()
+    return out
+
+
 class States:
     """Venue states per mint, as of any key: the last carried state per class plus the unit's own rows."""
     CLS = (0, 1, 2)  # 0 curve, 1 canonical SOL pool, 2 other SOL pool
@@ -92,7 +109,7 @@ class States:
                           "_i": np.arange(len(mint))})
         if len(q) == 0:
             return {c: np.zeros(0, np.int64) for c in STATE_COLS}
-        allrows = pd.concat([self.last.assign(key=-1), unit_rows], ignore_index=True)
+        allrows = _paid_bps(pd.concat([self.last.assign(key=-1), unit_rows], ignore_index=True))
         got = []
         qs = q.sort_values("key", kind="stable")
         for c in self.CLS:
@@ -110,9 +127,9 @@ class States:
     def advance(self, unit_rows):
         if len(unit_rows) == 0:
             return
-        tail = unit_rows.sort_values("key", kind="stable").groupby(["mint", "cls"], as_index=False).tail(1)
-        self.last = pd.concat([self.last, tail], ignore_index=True).sort_values("key", kind="stable") \
-            .groupby(["mint", "cls"], as_index=False).tail(1).reset_index(drop=True)
+        rows = _paid_bps(pd.concat([self.last, unit_rows], ignore_index=True))
+        self.last = rows.sort_values("key", kind="stable").groupby(["mint", "cls"], as_index=False).tail(1) \
+            .reset_index(drop=True)
 
     def at_end(self, mint):
         return self.asof(self.last.iloc[:0], mint, np.full(len(mint), np.iinfo(np.int64).max))
