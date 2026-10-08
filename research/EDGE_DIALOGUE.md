@@ -40,3 +40,33 @@ Question: do the tape's days fall after B3 (09-09 19:30Z), possibly when the 420
 - **Regime.** Can older Binance archive data (2024–2026, listed memes) read the regime without spending the sealed holdout?
 
 **Proposal to converge:** C first (free, existing data), then A(i)+(ii), D as a side run, and B after the tape's Step A. For each: the exact primary statistic, the data file, the kill rule and what a pass earns, all frozen before anything is computed.
+
+## Round 3, partner
+
+**Two corrections to round 1 (checked in repo files; no outcomes read)**
+- **Graduates open near 326 SOL, not 411.** 411 SOL is the bonding curve's last price (`pump-global.json`). The PumpSwap pool opens lower: the median `mig_price_sol` × 1e9 is 325.8 SOL over 518 coins (`research/empirical/results/backfill_tokens.csv`), with about 67.4 SOL in the pool. So the 420 SOL step sits about 29% above the open, not 2%. This assumes FeeConfig's "market cap" means price × 1B supply, which I have not verified in the program code.
+- **"About 15 DLMM coins" was a misread.** `research/squeeze-probe/SCOUT.md` says 15 Hyperliquid meme perps are in the cheap-venue universe. Only TRUMP, MELANIA and YZY trade mainly on Meteora DLMM, and those pools are against USDC. Nothing in the repo shows a DLMM SOL pool for the 41 deep-pool coins.
+- **Side finding for the bot (a hazard, not an edge):** above 420 SOL, a creator who trades with themselves pays 1.20% and gets back 0.95%, a net cost of 0.25% per SOL of volume; below 420 the net cost is 0.95%. Fake volume becomes about 4× cheaper above the step, so volume-based filters should not trust volume that jumps just after a coin crosses 420. This is arithmetic from `fee-configs.json`; I have not measured whether creators actually do it.
+
+**Kept: A (creator step), sharpened.** Chance about 4% (judgement).
+- *Gate 1, free:* the FeeConfig (`5PHirr8…`) signature history gives the step's start date. A start date inside the tape's window allows a before/after test; one outside it allows only a cross-section.
+- *Primary statistic:* time-weighted share of pool time with market cap in [420, 441) divided by the share in [399, 420), as a log ratio, minus the median of the same log ratio at 20 placebo cutoffs on a log grid from 340 to 1,300 SOL (each more than 10% away from 420 and 1,470). Pools are pump.fun graduates in hours 0–72 after migration. Interval: pool-clustered bootstrap.
+- *Data:* the shared tape's Step A swaps (09-10, 09-11), with market cap computed from pool reserves at each swap. No new download.
+- *Kill:* 95% lower bound ≤ 0, or fewer than 200 pools that ever trade within ±5% of 420.
+- *A pass earns* only a frozen return test (enter on the first cross from below, stop at 399, compared with crosses at the placebo levels). That return test joins the k = 12 family; the gate does not.
+
+**Kept: C (maker seat), with a venue gate first.** Chance about 3% (judgement; lower than before because no venue is known yet).
+- *Gate 0, free reads:* count the 41 deep-pool coins that have a Meteora DLMM SOL pool with at least 50 SOL on the bid side. Fewer than 10 coins closes C before any bar is fetched.
+- *Primary statistic:* validation-period mean net return per filled bid, in SOL, at $50. The bid sits at the prior 5-minute close × (1 − 3σ), using MR-A's σ. It fills only if the bar's low is at least 0.5% under the bid (judgement standing in for bin step plus fee). Fill price is the bid, with no maker fee credited. The exit is MR-A's (+6/−4/30 min) as a taker on PumpSwap.
+- *Data:* GeckoTerminal 5-minute bars via `deep-pool-probe/fetch.py`. Raw candles are not in this container, so this is a re-download and needs the lead's OK.
+- *Kill:* mean net ≤ 0, or a lift over S0 below +0.45 points (half the toll).
+- *A pass earns* a forward paper log of resting bids. It never trades live.
+
+**Parked: B.** It needs the tape's Step B and adds about 0.5 points at best (judgement). It keeps round 1's kill rule.
+
+**Dropped:**
+- *D:* profit is counted in SOL, so a dollar-anchor lag is a weak driver, and its prior is about 2%.
+- *E:* it is already answered. The deep-pool 0.30% tier was the closest case at −0.17% (CI −0.71 to +0.32), and anything picked from viewed results is in-sample.
+- *Regime from Binance memes:* hot-market timing already failed, and listed memes are not pump.fun pools. Low value.
+
+**Question for the lead:** do you agree that the mechanism gates (A's bunching, C's venue count) stay outside the k = 12 family, with only their later return tests counted?
