@@ -182,6 +182,7 @@ class Ledger:
         self.acc = []
         self.buys, self.big, self.xfers, self.wedges, self.tedges = [], [], [], [], []
         self.trips = []
+        self.fees = []
         self.owners_day = set()
         self.ex_seen = {}
         self.day_start = self.carry.copy()
@@ -310,6 +311,8 @@ class Ledger:
             lag = (o["slot"] - prev).reindex(solsw.index)
             last = o.groupby("mint")["slot"].last()
             self.last_swap_slot = pd.concat([self.last_swap_slot[~self.last_swap_slot.index.isin(last.index)], last])
+            # AMENDMENT_7 seat tag: dense rank of the buy's transaction among the slot's SOL swaps of that mint
+            srank = solsw.groupby(["slot", "mint"])["txk"].rank(method="dense").to_numpy()
             tb = tracked[solsw.index] & solsw["is_buy"].to_numpy(bool)
             b = solsw[tb]
             self.buys.append(pd.DataFrame({"owner": b["owner"].to_numpy(np.int32), "mint": b["mint"].to_numpy(np.int32),
@@ -317,7 +320,8 @@ class Ledger:
                                            "bt": b["bt"].to_numpy(), "paid": -b["net"].to_numpy(),
                                            "jito": b["jito"].to_numpy() > 0, "lag": lag[tb].to_numpy(),
                                            "opening": b["pre"].to_numpy() == 0,
-                                           "venue": b["venue"].to_numpy(np.int8)}))
+                                           "venue": b["venue"].to_numpy(np.int8),
+                                           "slot_rank": srank[tb].astype(np.int32)}))
             bb = solsw[solsw["is_buy"].to_numpy(bool) & (solsw["owner"].to_numpy() >= 0)
                        & (-solsw["cash"].to_numpy() >= BIG_BUY)]
             self.big.append(pd.DataFrame({"owner": bb["owner"].to_numpy(np.int32), "mint": bb["mint"].to_numpy(np.int32),
@@ -325,6 +329,10 @@ class Ledger:
 
         # swap events of tracked owners
         t = sw[tracked]
+        # AMENDMENT_7: the transaction's whole tx_fee + jito_tip, per trade (as MIG-SEAT's G2 toll)
+        self.fees.append(pd.DataFrame({"owner": t["owner"].to_numpy(np.int32),
+                                       "seat": (t["tx_fee"] + t["jito"]).to_numpy(np.int64),
+                                       "fee_na": t["tx_fee_na"].to_numpy(bool)}))
         isb = t["is_buy"].to_numpy(bool)
         pr = pair_of(t["owner"], t["mint"])
         sev = pd.DataFrame({"pair": pr, "acct": _acct(t["acct"].to_numpy(), pr), "key": t["key"].to_numpy(),
@@ -722,6 +730,8 @@ class Ledger:
             "xfers": pd.concat(self.xfers, ignore_index=True) if self.xfers else pd.DataFrame(
                 columns=["frm", "to", "mint", "value", "key"]),
             "cg": cg,
+            "fees": pd.concat(self.fees, ignore_index=True) if self.fees else pd.DataFrame(
+                columns=["owner", "seat", "fee_na"]),
             "trips": pd.concat(self.trips, ignore_index=True) if self.trips else pd.DataFrame(
                 columns=["owner", "mint", "open_bt", "close_bt", "open_key", "close_key", "broken"]),
             "wedges": _uniq_edges(self.wedges, 2),

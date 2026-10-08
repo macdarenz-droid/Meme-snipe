@@ -19,7 +19,7 @@ import pandas as pd
 from . import params as P
 
 E_KINDS = ("CreateEvent", "CompleteEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent",
-           "InitBoostEvent", "BoostBuyAndBurnEvent")
+           "InitBoostEvent", "BoostBuyAndBurnEvent", "PostCompleteBuyEvent")
 
 CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "mint", "is_buy", "sol_amount",
               "token_amount", "virtual_sol_reserves", "virtual_token_reserves", "real_sol_reserves",
