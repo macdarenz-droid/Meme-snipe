@@ -211,7 +211,9 @@ class Pipeline(unittest.TestCase):
         pr = tape.pool_rows
         own = [tape.names.get(x) for x in ("n1", "n2")]
         want = pr[pr["owner"].isin(own) & (pr["slot"] <= S + 300 + P.D)]["quote_amount_lp_adjusted"].sum()
-        self.assertEqual(fa["first_time_buy_sol"], float(want))         # n1, n2; not the buyback authority
+        cr = tape.curve_of(tape.names.get("A"))
+        want += cr[(cr["slot"] == S + 300) & (cr["is_buy"] == 1)]["sol_amount"].sum()   # the completing buy in slot m
+        self.assertEqual(fa["first_time_buy_sol"], float(want))         # not the buyback authority's 3 SOL
 
     def test_z_counts_rows_by_slot(self):
         """Review finding 2: a rival crossing 68 SOL in slot cutoff + 1, with the cutoff's block time, must not count."""
