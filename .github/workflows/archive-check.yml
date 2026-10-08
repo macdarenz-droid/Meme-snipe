@@ -4,10 +4,12 @@ name: archive-check
 # hours, after every hold of research/historical/ci/archive-check.sh (arm, back-off,
 # 3-failure stop, private store, request cap, one lane and the dispatch marker, 60 min
 # pause, queue), one 64-byte request to the Old Faithful archive with the scanner's own
-# User-Agent. If it is served, the dispatch marker is saved to the Actions cache and then
-# the next allow-listed day is dispatched; if not, the step "Not served (counted
-# failure)" fails, which is the countable record of that failure. Never another agent,
-# host, address, proxy or client, and no retries inside a check.
+# User-Agent, in its own step "Archive probe (a failure unless served)". If it is served,
+# the dispatch marker is saved to the Actions cache and then the next allow-listed day is
+# dispatched; otherwise that step fails, which is the countable record of the failure,
+# and a Retry-After is saved as cache key archive-backoff-<end>. A re-run (attempt 2 or
+# later) and a run off the default branch never probe. Never another agent, host,
+# address, proxy or client, and no retries inside a check.
 #
 # The checkout sets persist-credentials: false; the tokens reach only the check and
 # dispatch steps.
@@ -38,7 +40,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: Holds, then one archive request
+      # Every hold of research/historical/ci/archive-check.sh; no request.
+      - name: Holds
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,24 +51,38 @@ jobs:
           DATA_REPO: ${{ vars.DATA_REPO }}
           DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
         run: research/historical/ci/archive-check.sh
+      # The one request. This step starting is the probe-sent mark: it succeeds only when
+      # served, so any other end (not served, cancelled, timed out) is a counted failure
+      # (archive-guard.sh reads this step by name, on every attempt of every run).
+      - name: Archive probe (a failure unless served)
+        id: probe
+        if: steps.check.outputs.ready == 'true'
+        env:
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          DAY: ${{ steps.check.outputs.day }}
+        run: research/historical/ci/archive-check.sh --probe "$DAY"
+      # A Retry-After from the archive becomes cache key archive-backoff-<end>-<run id>;
+      # every later hold 2 waits for max(3 h, that end).
+      - name: Record the archive's Retry-After
+        if: failure() && steps.probe.outputs.backoff_end != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/archive-backoff
+          key: archive-backoff-${{ steps.probe.outputs.backoff_end }}-${{ github.run_id }}
       # The marker (UTC time and day only) is saved before the dispatch, so a later check
       # holds until the dispatched run is listed. A failed save skips the dispatch.
       - name: Save the dispatch marker
-        if: steps.check.outputs.served == 'true'
+        if: steps.probe.outputs.served == 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/archive-dispatch
-          key: ${{ steps.check.outputs.marker }}
+          key: ${{ steps.probe.outputs.marker }}
       - name: Dispatch the day
-        if: steps.check.outputs.served == 'true'
+        if: steps.probe.outputs.served == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           REF: ${{ github.ref_name }}
           DAY: ${{ steps.check.outputs.day }}
         run: research/historical/ci/archive-check.sh --dispatch "$DAY"
-      - name: Not served (counted failure)
-        if: steps.check.outputs.served == 'false'
-        run: |
-          echo "the archive did not serve the check: one failure counted (archive-guard.sh); the back-off holds every request for 3 h"
-          exit 1
