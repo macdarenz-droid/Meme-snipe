@@ -416,3 +416,28 @@ describe('Z03 round 5: every scaled rate keeps one request a minute (ruling 25);
     assert.ok(DEFAULT_PROVIDERS.every((c) => P0_READ_METHODS.every((m) => c.methods.includes(m))));
   });
 });
+
+describe('Z03 round 5 addendum (rulings 27, 28)', () => {
+  it('ruling 27: a listed rate-limit code with a different message is not a rate limit', async () => {
+    const time = new FakeTime();
+    const client = new FakeClient(time);
+    client.answer = () => ({ ok: false, error: { code: 'E_RPC', message: 'Node is behind by 3 slots', rpcCode: -32099 } });
+    const listed = { ...(DEFAULT_PROVIDERS[0] as ProviderConfig), rateLimitRpcErrors: [{ code: -32099, message: 'rate limited' }] };
+    const { log, metrics, lines } = m27(time);
+    const gw = createRpcGateway({ registry: registryOf([listed, DEFAULT_PROVIDERS[1] as ProviderConfig]), context: 'engine', client, clock: time, scheduler: time, log, metrics,
+      stopStore: new MemoryStopStore(), usage: { projectedOver80: () => false } });
+    const r = await settle(time, gw.call('getSlot', [], { priority: 2, role: 'read', commitment: 'confirmed', timeoutMs: 60_000 }));
+    assert.deepEqual(r, { ok: false, error: { code: 'E_RPC', message: 'Node is behind by 3 slots', rpcCode: -32099 } });
+    assert.equal(gw.status()[0]?.recentLimited, 0);
+    assert.ok(!lines.some((l) => l.code === 'm14.provider_paused'));
+  });
+
+  it('ruling 28: shares: { shyft: null } is E_CONFIG, never a TypeError', () => {
+    const secrets = envSecrets({ RPC_SHYFT_URL: 'https://shyft.example/k', RPC_CHAINSTACK_URL: 'https://chainstack.example/k' });
+    let r: ReturnType<typeof loadProviders> | undefined;
+    assert.doesNotThrow(() => {
+      r = loadProviders(DEFAULT_PROVIDERS, secrets, { context: 'engine', allocation: { consumer: 'engine', shares: { shyft: null, chainstack: { engine: 10_000 } } } as never }, new RecordingLogPort());
+    });
+    assert.ok(r !== undefined && !r.ok && r.error.problems.some((p) => p.key === 'rpc.allocation[shyft]'));
+  });
+});
