@@ -650,13 +650,15 @@ class Guards(unittest.TestCase):
 
     def test_validate_guard(self):
         val = C.VALIDATION_DAYS_STEP_B
-        frozen = {"code_sha256": self.R.code_hash(), "discovery_days": list(C.DISCOVERY_DAYS)}
+        frozen = {"code_sha256": self.R.code_hash(), "discovery_days": list(C.DISCOVERY_DAYS),
+                  "amendments": ["AMENDMENT_1", "AMENDMENT_2", "H8_AMENDMENT"]}
         self.R.validate_guard(self._run(val), frozen, True, self.plan)
         self.refuses(self.R.validate_guard, self._run(val), frozen, False, self.plan)
         self.refuses(self.R.validate_guard, self._run(val, dev=True), frozen, True, self.plan)
         self.refuses(self.R.validate_guard, self._run(val + (C.DISCOVERY_DAYS[0],)), frozen, True, self.plan)
         self.refuses(self.R.validate_guard, self._run(val), dict(frozen, code_sha256="0" * 64), True, self.plan)
         self.refuses(self.R.validate_guard, self._run(val, hashes="skipped"), frozen, True, self.plan)
+        self.refuses(self.R.validate_guard, self._run(val), dict(frozen, amendments=["AMENDMENT_1"]), True, self.plan)
         bad = os.path.join(self.dir, "plan2.txt")
         with open(bad, "w") as fh:
             fh.write("2026-09-11 1 2 3\n")
@@ -697,6 +699,97 @@ class Guards(unittest.TestCase):
         extra = units + [Unit("/x/e", C.DISCOVERY_DAYS[0], 1, 2)]
         self.assertFalse(plan_check(extra, C.DISCOVERY_DAYS, self.plan)["complete"])          # a unit not in the plan
         self.assertFalse(plan_check(units, C.DISCOVERY_DAYS, self.plan, expected="0" * 64)["complete"])
+
+
+class H8Amendment(unittest.TestCase):
+    def setUp(self):
+        from d1 import h8
+        self.h8 = h8
+        # hourly closes for the two discovery days at $119.26
+        d0 = C.epoch(C.DISCOVERY_DAYS[0]) - 3600
+        self.hours = np.arange(d0, d0 + 50 * 3600, 3600)
+        self.close = np.full(len(self.hours), 119.26)
+
+    def test_floor(self):
+        self.assertEqual(self.h8.floor_usd(5), 15_000)
+        self.assertEqual(self.h8.floor_usd(20), 20_000)
+        self.assertEqual(self.h8.floor_usd(50), 50_000)
+        self.assertAlmostEqual(self.h8.floor_usd(50) / 119.26, 419.25, places=1)
+
+    def test_price_asof_and_gap(self):
+        close = self.close.copy()
+        close[5] = 200.0                                # hour index 5 = [h5, h5+3600)
+        t = self.hours[6] + 10                          # inside hour 6: the last complete hour is 5
+        self.assertEqual(self.h8.price_asof(self.hours, close, [t])[0], 200.0)
+        self.assertEqual(self.h8.price_asof(self.hours, close, [self.hours[6] - 1])[0], 119.26)  # hour 5 not yet closed
+        hrs = np.delete(self.hours, 5)
+        cl = np.delete(close, 5)
+        self.assertTrue(np.isnan(self.h8.price_asof(hrs, cl, [t])[0]))           # missing hour -> no price
+
+    def test_flags_and_counts(self):
+        tau0 = C.epoch(C.DISCOVERY_DAYS[0]) + 3600
+        df = pd.DataFrame({"pool": [1, 1, 2, 3], "tau": [tau0, tau0 + 300, tau0, tau0 + 7200], "eligible": True,
+                           "day": C.DISCOVERY_DAYS[0], "effective_quote_sol": [130.0, 500.0, 60.0, 170.0]})
+        out = self.h8.add_h8(df, self.hours, self.close)
+        self.assertEqual(out.h8_s5.tolist(), [True, True, False, True])     # 126 SOL floor
+        self.assertEqual(out.h8_s20.tolist(), [False, True, False, True])   # 168 SOL
+        self.assertEqual(out.h8_s50.tolist(), [False, True, False, False])  # 419 SOL
+        c = self.h8.h8_counts(out)[C.DISCOVERY_DAYS[0]]
+        self.assertEqual(c["$5"], {"pool_hours": 2, "graduates": 2})
+        self.assertEqual(c["$50"], {"pool_hours": 1, "graduates": 1})
+
+    def test_search_reports_stratum(self):
+        df = synthetic_search_frame(planted=True)
+        df["effective_quote_sol"] = np.where(df.pool % 2 == 0, 500.0, 60.0)
+        for h in C.HOLDS_S:
+            for sz in C.H8_SIZES_USD:
+                df[f"net_ret_{h // 60}_s{sz}"] = df[f"net_ret_{h // 60}"]
+        df = self.h8.add_h8(df, self.hours, self.close)
+        res = run_search(df)
+        t = res["table"].set_index(["rule", "hold_min"])
+        r = t.loc[("rv_15m:top", 60)]
+        self.assertGreater(r.h8_s50_n, 0)
+        self.assertLess(r.h8_s50_n, r.n_total)          # only the even (deep) pools
+        self.assertEqual(res["advanced"][0]["rule"], run_search(df.drop(columns=[c for c in df if c.startswith("h8_")]))["advanced"][0]["rule"])
+
+    def test_validation_tradable(self):
+        v = Validation()
+        df = v._with_control(v._df(0.05))
+        df["effective_quote_sol"] = 500.0
+        for sz in C.H8_SIZES_USD:
+            df[f"net_ret_60_s{sz}"] = df["net_ret_60"]
+        df = self.h8.add_h8(df.assign(tau=df.tau), np.arange(C.epoch("2026-09-06"), C.epoch("2026-09-11"), 3600),
+                            np.full(len(range(C.epoch("2026-09-06"), C.epoch("2026-09-11"), 3600)), 119.26))
+        fr = v._frozen()
+        r = judge(df, fr, C.VALIDATION_DAYS_STEP_B)
+        self.assertEqual(r["verdict"], "pass")
+        self.assertTrue(r["tradable_as_bot_stands"])
+        self.assertNotIn("owner_note", r)
+        df2 = df.copy()
+        df2["h8_s5"] = df2["h8_s20"] = df2["h8_s50"] = df2.pool < 20     # too few H8 trades at every size
+        r = judge(df2, fr, C.VALIDATION_DAYS_STEP_B)
+        self.assertEqual(r["verdict"], "pass")
+        self.assertFalse(r["tradable_as_bot_stands"])
+        self.assertEqual(r["owner_note"], "this works only in pools below H8's floor")
+        df3 = df.copy()
+        df3["net_ret_60_s5"] = -0.1                                       # $5 negative; $20 still tradable
+        self.assertTrue(judge(df3, fr, C.VALIDATION_DAYS_STEP_B)["tradable_as_bot_stands"])
+
+    def test_outcomes_sized_and_cli_requires_prices(self):
+        tape, book, clock, pts, _ = build()
+        out = compute_outcomes(book, pts)
+        el = pts[pts.eligible & pts.valid_15]
+        o = out.loc[el.index[0]]
+        self.assertEqual(o["net_ret_15_s50"], o["net_ret_15"])
+        self.assertLess(o["net_ret_15_s5"], o["net_ret_15_s50"])          # fixed costs weigh more at $5
+        import run_d1
+        for argv in (["search", "--run", "x", "--out", "y"], ["validate", "--run", "x", "--frozen", "y",
+                                                              "--confirm-validation-read"]):
+            with self.assertRaises(SystemExit) as cm:
+                run_d1.main(argv)
+            self.assertIn("--solusd", str(cm.exception.code))
+        with open(os.path.join(HERE, "run_d1.py")) as fh:
+            self.assertIn('"H8_AMENDMENT"', fh.read())
 
 
 if __name__ == "__main__":

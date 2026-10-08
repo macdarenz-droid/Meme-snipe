@@ -209,6 +209,8 @@ def validate_guard(run, frozen, confirm, plan_path=None):
 
 def search(args):
     from d1.search import run_search
+    if not args.solusd:
+        sys.exit("refusing: --solusd (hourly SOL/USD, Binance public archive) is required for the H8 stratum")
     search_guard(args.run, args.plan)
     df, px_sha = with_h8(joined(args.run), args.solusd)
     res = run_search(df)
@@ -225,6 +227,8 @@ def search(args):
 
 def validate(args):
     from d1.validate import judge
+    if not args.solusd:
+        sys.exit("refusing: --solusd (hourly SOL/USD, Binance public archive) is required for the H8 stratum")
     with open(args.frozen) as fh:
         frozen = json.load(fh)
     ms = validate_guard(args.run, frozen, args.confirm_validation_read, args.plan)
