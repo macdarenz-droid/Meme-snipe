@@ -304,3 +304,20 @@ No MAJOR is open, so these are the last text changes before merge (merge still w
 86. **r4.** With no refreshed IDL pinned, the baseline stays the previous pinned IDL; every later boundary is judged against it, new instructions per ruling 81.
 87. **Reviewer m1.** Add `gates.boundary.fallbackSwapCap` (the N) to the block before the first run.
 88. **Reviewer m2.** Reword: "W_B would usually restart, and kill rule 4's 120-day clock would then send PM-01 to the owner; inside W_R or W_P, R4-3's one-restart limit does".
+
+## Round 12 (head `8d4c3e3d`): reviewer PASS (3 MINOR); red team 0 BLOCKER, 1 MAJOR, 4 MINOR
+
+- Block sha256 `6531852e…5dc6`, recomputed by both. The reviewer accepts B5's label "not yet tested, counted economic until tested".
+- R10-M1: part 7's 100-event minimum, read per pool or even pooled, will rarely be met; 0 events against 0 also fails; so honest upgrades become economic after two days.
+- r1: "KS and median" misses tail changes. r2: the 7-day look-back can cross an earlier boundary. r3 = reviewer m3: no curve-trade cap in the block. r4: role mapping by seeds alone misses a change of owner program.
+- Reviewer m1: testing B5 needs 10-03 data, outside the Old Faithful allow-list. m2: part 7's VERIFY is not in the start item 5 list.
+
+### Supervisor rulings for round 13 (8 Oct 2026, 3:42 PM)
+
+89. **R10-M1.** Part 7 pools events across universe pools: one KS test per ratio type, Bonferroni α = 0.01 ÷ the number of types. For a type below the minimum on either side: 0 against 0 passes for that type; absent before and present after is economic; otherwise compare event rates per unit of swap volume with an exact Poisson rate-ratio test at the same α. Economic only if a test rejects (with ruling 90's size rule) or an exact pinned rule fails. Put the method in `gates.boundary`. Measure each type's daily count on the B-10 days when they are read (counting events only, not a PM-01 signal) and record it in DECISIONS before the first run.
+90. **r1.** Economic if KS rejects and any of the median, the mean or the 90th percentile of the ratio moves by more than 10%. Mean and p90 go in `gates.boundary`.
+91. **r2.** The look-back starts at the later of (boundary − 7 days) and the previous boundary's slot plus its pending period; too few events → ruling 89's path.
+92. **r3 / reviewer m3.** Add `gates.boundary.fallbackCurveTradeCap` (null until set; the start refuses while null), stratified per hour.
+93. **r4.** Map by PDA seeds and deriving program id, or by ATA owner, mint and token program; anything else is unmapped, so economic.
+94. **Reviewer m1.** B5 stays counted economic and is not tested: no read outside the allow-list, and it affects no window.
+95. **Reviewer m2.** Add part 7's pinned-rule VERIFY as start item 5.9.
