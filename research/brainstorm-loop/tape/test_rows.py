@@ -838,5 +838,24 @@ class RedTeamR1(unittest.TestCase):
         self.assertTrue(all(dec["own_thresholds"]["1_dev_zero_by_arm"].values()))
         self.assertIsNone(dec["payer_mass_bar"]["passed"])
 
+
+    def test_round_usd_bound_counts_undefined_draws_against_it(self):
+        # R1-10: Q1 counts an undefined bootstrap draw as minus infinity; row 6 dropped such draws (nanquantile)
+        from types import SimpleNamespace
+        from unittest import mock
+        grid = R.placebo_grid(day_ranges=[(u / 125.0, u / 125.0) for u in R.USD_LEVELS])
+        rows = [("P1", 410.0), ("P1", 390.0), ("P2", 410.0)]
+        rows += [("P1", c * f) for c in grid for f in (1.01, 0.99)]
+        seg = pd.DataFrame([{"pool": p, "mint": p, "day": DAY, "t0": 100 * i, "t1": 100 * i + 100, "mcap": m,
+                             "w_start": 0, "w_end": 10 ** 6} for i, (p, m) in enumerate(rows)])
+        tape = SimpleNamespace(ranges=[(DAY, 0, 1)])
+        with mock.patch.object(R, "mcap_segments", lambda t, s: seg), \
+                mock.patch.object(R, "gate3_split", lambda *a: {}):
+            df, _ = R.round_usd(tape, None, {DAY: 125.0}, None, n_boot=400)
+        r = df.set_index("usd_level").loc[50_000.0]
+        self.assertAlmostEqual(r["bunching_logratio_minus_placebo"], np.log(2))
+        self.assertIsNone(r["lb95"])            # a quarter of the draws hold only P2: undefined
+
+
 if __name__ == "__main__":
     unittest.main()

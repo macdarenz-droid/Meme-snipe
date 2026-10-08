@@ -660,8 +660,11 @@ def round_usd(tape: Tape, s: pd.DataFrame, sol_usd: dict | None, adj, n_boot=BOO
             lb = None
             if plist and n_boot:
                 rng = np.random.default_rng(SEED)
-                vals = [stat([plist[i] for i in rng.integers(0, len(plist), len(plist))]) for _ in range(n_boot)]
-                lb = float(np.nanquantile(vals, 0.025)) if np.isfinite(vals).any() else None
+                vals = np.array([stat([plist[i] for i in rng.integers(0, len(plist), len(plist))])
+                                 for _ in range(n_boot)], float)
+                vals[np.isnan(vals)] = -np.inf      # Q1: an undefined draw counts against the bound (red team R1-10)
+                q = float(np.quantile(vals, 0.025))
+                lb = q if np.isfinite(q) else None
             out.append({"day": d, "sol_usd": px, "usd_level": usd, "sol_level": L, "pools": len(plist),
                         "placebos": len(grid), "bunching_logratio_minus_placebo": point, "lb95": lb})
     gate3 = gate3_split(tape, s, seg, adj)
