@@ -111,17 +111,16 @@ def stage2(args):
     print(json.dumps({"outcome_rows": len(out), "entry_ok": int(out.entry_ok.sum()) if len(out) else 0}, indent=1))
 
 
-def with_h8(df: pd.DataFrame, solusd: str):
-    """H8_AMENDMENT: H8-eligible flags at $5, $20, $50 from the committed hourly SOL/USD (as-of). A directory (default
-    research/brainstorm-loop/sol-usd) is checked file by file against its SHA256SUMS; a missing day or a mismatch is
-    refused."""
-    from d1.h8 import SOLUSD_DIR_DEFAULT, add_h8, load_solusd, load_solusd_dir
+def with_h8(df: pd.DataFrame, solusd: str = None):
+    """H8_AMENDMENT: H8-eligible flags at $5, $20, $50 from the committed hourly SOL/USD (as-of). Only the pinned
+    directory form is accepted (default research/brainstorm-loop/sol-usd): its SHA256SUMS must have the sha256 in
+    config.SOLUSD_SUMS_SHA256 and every needed day's file must match it."""
+    from d1.h8 import SOLUSD_DIR_DEFAULT, add_h8, load_solusd_dir
     solusd = solusd or SOLUSD_DIR_DEFAULT
+    if not os.path.isdir(solusd):
+        sys.exit("refusing: --solusd must be the pinned SOL/USD directory (single files are not accepted)")
     try:
-        if os.path.isdir(solusd):
-            hours, close, sha = load_solusd_dir(solusd, df.day.unique() if len(df) else [])
-        else:
-            hours, close, sha = load_solusd(solusd)
+        hours, close, sha = load_solusd_dir(solusd, df.day.unique() if len(df) else [])
     except (ValueError, OSError) as e:
         sys.exit(f"refusing: {e}")
     return add_h8(df, hours, close), sha
@@ -200,7 +199,8 @@ def search_guard(run, plan_path=None):
     return ms
 
 
-def validate_guard(run, frozen, confirm, plan_path=None):
+def validate_guard(run, frozen, confirm, plan_path=None, solusd=None):
+    from d1.h8 import SOLUSD_DIR_DEFAULT, sums_sha
     from d1.stepa import PLAN_DEFAULT
     if not confirm:
         sys.exit("refusing: validation is scored only after Step A, a frozen-rules commit and a reviewer pass "
@@ -211,6 +211,10 @@ def validate_guard(run, frozen, confirm, plan_path=None):
         sys.exit("refusing: the frozen rules came from different code")
     if "H8_AMENDMENT" not in frozen.get("amendments", []):
         sys.exit("refusing: the frozen rules predate the H8 amendment")
+    px_dir = solusd or SOLUSD_DIR_DEFAULT
+    px_sha = sums_sha(px_dir) if os.path.isdir(px_dir) else "missing"
+    if px_sha != frozen.get("solusd_sha256") or px_sha != C.SOLUSD_SUMS_SHA256:
+        sys.exit("refusing: the SOL/USD input differs from the one the frozen rules were made with")
     days = ms["stage1"]["days"]
     if set(days) & set(frozen["discovery_days"]) or set(days) & set(C.DISCOVERY_DAYS):
         sys.exit("refusing: validation days overlap the discovery days")
@@ -237,7 +241,7 @@ def validate(args):
     from d1.validate import judge
     with open(args.frozen) as fh:
         frozen = json.load(fh)
-    ms = validate_guard(args.run, frozen, args.confirm_validation_read, args.plan)
+    ms = validate_guard(args.run, frozen, args.confirm_validation_read, args.plan, args.solusd)
     df, px_sha = with_h8(joined(args.run), args.solusd)
     res = [dict(judge(df, r, ms["stage1"]["days"]), solusd_sha256=px_sha) for r in frozen["advanced"]]
     with open(os.path.join(args.run, "validation_result.json"), "w") as fh:
@@ -261,16 +265,16 @@ def main(argv=None):
     p.add_argument("--out", required=True, help="run directory of stage 1")
     p = sub.add_parser("summary")
     p.add_argument("--run", required=True)
-    p.add_argument("--solusd", help="SOL/USD dir or file for the H8 count row (default research/brainstorm-loop/sol-usd)")
+    p.add_argument("--solusd", help="pinned SOL/USD directory for the H8 count row (default research/brainstorm-loop/sol-usd)")
     p = sub.add_parser("search")
     p.add_argument("--run", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--plan", default=None)
-    p.add_argument("--solusd", help="SOL/USD dir or file (default research/brainstorm-loop/sol-usd, checked against SHA256SUMS)")
+    p.add_argument("--solusd", help="pinned SOL/USD directory (default research/brainstorm-loop/sol-usd, checked against SHA256SUMS)")
     p = sub.add_parser("validate")
     p.add_argument("--run", required=True)
     p.add_argument("--plan", default=None)
-    p.add_argument("--solusd", help="SOL/USD dir or file (default research/brainstorm-loop/sol-usd, checked against SHA256SUMS)")
+    p.add_argument("--solusd", help="pinned SOL/USD directory (default research/brainstorm-loop/sol-usd, checked against SHA256SUMS)")
     p.add_argument("--frozen", required=True)
     p.add_argument("--confirm-validation-read", action="store_true")
     a = ap.parse_args(argv)

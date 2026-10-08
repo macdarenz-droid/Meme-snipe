@@ -60,8 +60,13 @@ Places where `PREREG.md` is silent or ambiguous. Each one has the reading the co
 
 ## H8 at trade size (research/brainstorm-loop/H8_AMENDMENT.md; reporting only)
 32. **"That hour's SOL/USD".** The code uses the close of the last complete UTC hour before tau (as-of). A missing hour in the price file means no price, so the point is not H8-eligible. CONSERVATIVE.
-33. **Stratum trades.** The stratum at $5 and $20 uses fills at that size: same slots, own impact and fees, the same fixed costs. Entries are throttled inside the stratum, because the bot can enter only H8-eligible pools. Effective quote is the as-of feature at d.
+33. **Stratum trades.**
+    - The stratum at $5 and $20 uses fills at that size: same slots, own impact and fees, the same fixed costs.
+    - The $5 and $20 sizes convert to SOL at the frozen $119.26, as the primary does. Only the H8 floor uses the hourly SOL/USD.
+    - The $50 stratum uses the primary's own fills (`net_ret_<h>_s50` = `net_ret_<h>`).
+    - Entries are throttled inside the stratum, because the bot can enter only H8-eligible pools.
+    - Effective quote is the as-of feature at d.
 34. **Count row 4.** It runs over D1's eligible decision points (from 50 SOL up):
     - pool-hours are distinct (pool, UTC hour) with an H8-eligible point;
     - graduates are distinct pools.
-35. **Price input.** RESOLVED. `--solusd` defaults to `research/brainstorm-loop/sol-usd` (Binance SOLUSDT 1h, 09-02..09-11). The code checks each needed day's file against `SHA256SUMS`: the decision days, plus the day before the first one. A missing day or a mismatch is refused, and the sha256 of SHA256SUMS is recorded.
+35. **Price input.** RESOLVED. `--solusd` defaults to `research/brainstorm-loop/sol-usd` (Binance SOLUSDT 1h, 09-02..09-11), and only that directory form is accepted. Its SHA256SUMS is pinned by `config.SOLUSD_SUMS_SHA256`, and validate refuses an input whose sha differs from `frozen["solusd_sha256"]`. The code checks each needed day's file against `SHA256SUMS`: the decision days, plus the day before the first one. A missing day or a mismatch is refused, and the sha256 of SHA256SUMS is recorded.

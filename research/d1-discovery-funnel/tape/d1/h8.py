@@ -3,8 +3,8 @@
 H8 (packages/core/src/gates/hard.ts:286-315, policy.ts:205) rejects a pool unless its effective quote (vault + virtual),
 valued in USD with the hourly SOL/USD, is at least max($15,000, 1,000 x trade size).
 
-- Price: the close of the last COMPLETE hour before the decision time tau, from the Binance public archive file passed
-  in (its sha256 is recorded). CONSERVATIVE as-of reading of "that hour's SOL/USD" (OPEN_QUESTIONS #32). A decision
+- Price: the close of the last COMPLETE hour before the decision time tau, from the committed Binance public archive
+  (research/brainstorm-loop/sol-usd), pinned by config.SOLUSD_SUMS_SHA256 and checked file by file. CONSERVATIVE as-of reading of "that hour's SOL/USD" (OPEN_QUESTIONS #32). A decision
   with no price is not H8-eligible.
 - Effective quote: the as-of feature `effective_quote_sol` at the decision slot.
 """
@@ -25,25 +25,6 @@ def floor_usd(size_usd: float) -> float:
     return max(C.H8_MIN_QUOTE_USD, C.H8_SIZE_MULTIPLE * size_usd)
 
 
-def load_solusd(path: str) -> Tuple[np.ndarray, np.ndarray, str]:
-    """Hourly klines: Binance archive CSV (open_time, open, high, low, close, ...; ms or us) or a CSV with header
-    `hour,close` (hour = open time in seconds). Returns (hour open seconds, close, sha256 of the file)."""
-    with open(path, "rb") as fh:
-        sha = hashlib.sha256(fh.read()).hexdigest()
-    raw = pd.read_csv(path, header=None, dtype=str)
-    if not raw.iloc[0, 0].strip().isdigit():
-        hdr = [c.strip() for c in raw.iloc[0]]
-        raw = raw.iloc[1:]
-        t = raw.iloc[:, hdr.index("hour")].astype(np.int64).to_numpy()
-        px = raw.iloc[:, hdr.index("close")].astype(float).to_numpy()
-    else:
-        t = raw.iloc[:, 0].astype(np.int64).to_numpy()
-        px = raw.iloc[:, 4].astype(float).to_numpy()
-    t = np.where(t > 10**15, t // 10**6, np.where(t > 10**12, t // 1000, t))
-    o = np.argsort(t)
-    return t[o], px[o], sha
-
-
 SOLUSD_DIR_DEFAULT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
                                                    "brainstorm-loop", "sol-usd"))
 
@@ -57,7 +38,13 @@ def days_needed(days: Iterable[str]) -> list:
     return sorted(set(days) | {first.strftime("%Y-%m-%d")})
 
 
-def load_solusd_dir(path: str, days: Iterable[str]) -> Tuple[np.ndarray, np.ndarray, str]:
+def sums_sha(path: str) -> str:
+    with open(os.path.join(path, "SHA256SUMS"), "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def load_solusd_dir(path: str, days: Iterable[str],
+                    expected_sums: str = C.SOLUSD_SUMS_SHA256) -> Tuple[np.ndarray, np.ndarray, str]:
     """research/brainstorm-loop/sol-usd: SOLUSDT-1h-<day>.zip per day, each checked against SHA256SUMS.
     Raises ValueError on a missing day, a file not listed, or a sha256 mismatch. Returns (hours, close, sha256 of
     SHA256SUMS)."""
@@ -66,6 +53,8 @@ def load_solusd_dir(path: str, days: Iterable[str]) -> Tuple[np.ndarray, np.ndar
         raise ValueError(f"SOL/USD: {sums_p} missing")
     with open(sums_p, "rb") as fh:
         raw = fh.read()
+    if hashlib.sha256(raw).hexdigest() != expected_sums:
+        raise ValueError(f"SOL/USD: SHA256SUMS sha256 differs from the pinned {expected_sums}")
     sums = {}
     for line in raw.decode().splitlines():
         p = line.split()

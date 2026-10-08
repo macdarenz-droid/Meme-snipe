@@ -119,6 +119,8 @@ N_ADVANCE = 5
 H8_MIN_QUOTE_USD = 15_000          # policy.ts:205
 H8_SIZE_MULTIPLE = 1_000           # floor = max($15,000, 1,000 x trade size)
 H8_SIZES_USD = (5, 20, 50)
+# sha256 of research/brainstorm-loop/sol-usd/SHA256SUMS (Binance SOLUSDT 1h/1m, 09-02..09-11): the pinned price input
+SOLUSD_SUMS_SHA256 = "02083908d386a53c07acd1663bdd74f102053f12bcd92856cf09670fcf3da964"
 
 # ---- Validation (PREREG §6; bootstrap size and seed as H1-CGO §8 / G1 §9) ---------------------------------------
 ALPHA = 0.005
