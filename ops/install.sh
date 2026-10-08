@@ -1267,7 +1267,7 @@ pending_restart() {
   if [ -e "$STATE_DIR/worker_restart_pending" ] && ! worker_busy; then
     rm -f "$STATE_DIR/worker_restart_pending"
     systemctl try-restart zeroed-worker.service || true
-    log "Restarted the worker for the new Telegram chat."
+    log "Restarted the worker (a restart for a new chat or new keys waited for a safe moment)."
   fi
 }
 # start_worker: starts the worker, or, while a switched release has never run under the hold (switch_unheld, OPS-CLEAN
@@ -3062,8 +3062,12 @@ log "Stored ${#API_NAMES[@]} keys from the handoff (issue $issued); deploy code 
 
 if paired; then
   # Rotation: restart the worker (reconcile first) and tell the owner.
-  # A release never started under the hold (switch_unheld) gets its held first start from zeroed-update (OPS-CLEAN M1).
-  if [ -s "$STATE_DIR/switch_unheld" ]; then
+  # During a held start (OPS-CLEAN round 4) the restart waits for it (pending_restart, zeroed-check); a release never
+  # started under the hold (switch_unheld) gets its held first start from zeroed-update (OPS-CLEAN M1).
+  if [ -e "$STATE_DIR/holding" ]; then
+    : > "$STATE_DIR/worker_restart_pending"
+    w="restarts once the held start of the new release is over"
+  elif [ -s "$STATE_DIR/switch_unheld" ]; then
     systemctl start --no-block zeroed-update.service || true
     w="starting under the hold"
   elif systemctl restart zeroed-worker.service; then w=restarted; else w="failed to start"; fi
@@ -3500,6 +3504,8 @@ REPO_DIR=/opt/zeroed/repo
 apply_host() {
   local c="$1" installer="$2/ops/install.sh"
   if ! grep -q -- '--update) UPDATE=1' "$installer" 2>/dev/null; then
+    # OPS-CLEAN round 4 (accepted, DECISIONS): a release from before --update has no host files to apply this way.
+    log "Host files from ${c:0:12} not applied: its installer has no --update."
     return 0
   fi
   if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then
@@ -3672,6 +3678,8 @@ due_rollback() {
 # of restarting the worker mid-hold (OPS-CLEAN m4); the restart they owe runs after (pending_restart).
 held_restart() {
   : > "$STATE_DIR/holding"
+  # OPS-CLEAN round 4: released only once holding is down, so no re-pair or check slips in between.
+  flock -u 9 2>/dev/null || true
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
   systemctl restart zeroed-worker.service || due_rollback "it failed to start"
   if ! why="$(holds)"; then due_rollback "$why"; fi
@@ -3682,6 +3690,19 @@ held_restart() {
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
 
+# realign_current (OPS-CLEAN round 4): current and the deployed record name the same release. A run killed between moving
+# current and writing deployed leaves them apart; current goes back to the deployed release, the one the record and any
+# rollback target are built on, and the next switch is made again from there.
+realign_current() {
+  local d c
+  d="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
+  c="$(basename "$(readlink -f /opt/zeroed/current 2>/dev/null || true)")"
+  [ -n "$d" ] && [ "$c" != "$d" ] && [ -d "/opt/zeroed/releases/$d" ] || return 0
+  ln -sfn "/opt/zeroed/releases/$d" /opt/zeroed/current.new
+  mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+  log "Put current back to the deployed release ${d:0:12} (it pointed at ${c:0:12})."
+}
+
 # OPS-CLEAN M1: a release switched to while the worker could not start (keys or pairing missing) left switch_unheld
 # (commit|prev|current). Its first start is held like any switch, as soon as the worker can start: zeroed-telegram-pair,
 # zeroed-pair and the installer start this unit instead of the worker while the marker exists. A worker that systemd
@@ -3690,6 +3711,7 @@ active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-d
 unheld_start() {
   [ -s "$STATE_DIR/switch_unheld" ] && worker_ready || return 0
   lock || return 0
+  realign_current
   if [ ! -s "$STATE_DIR/switch_unheld" ] || ! worker_ready; then flock -u 9 2>/dev/null || true; return 0; fi
   IFS='|' read -r commit prev current < "$STATE_DIR/switch_unheld" || true
   local deployed
@@ -3701,9 +3723,10 @@ unheld_start() {
     flock -u 9 2>/dev/null || true
   elif systemctl is-active --quiet zeroed-worker.service && { [ -n "$(active_run)" ] || [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]; }; then
     flock -u 9 2>/dev/null || true
-    log "Waiting on the first held start of ${commit:0:12}: a qualifying dry run is active or the worker has open intents."
+    # Once per run: the check on the way out would say it again.
+    [ -n "${held_wait_logged:-}" ] || log "Waiting on the first held start of ${commit:0:12}: a qualifying dry run is active or the worker has open intents."
+    held_wait_logged=1
   else
-    flock -u 9 2>/dev/null || true
     dest="/opt/zeroed/releases/$commit"
     held_restart
     log "Started ${commit:0:12} under the hold (switched to before the keys or the pairing). Worker: restarted and up."
@@ -3825,15 +3848,18 @@ if ! lock; then
   lock_busy=1
   exit 0
 fi
-prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
-# A release switched to but never started (switch_unheld) is not a rollback target: the release that ran before it stays.
+realign_current
+# The rollback target is the deployed release (OPS-CLEAN round 4: never what current points at, which a killed run can
+# leave elsewhere). A release switched to but never started (switch_unheld) is not one: the release that ran before it
+# stays.
+prev="/opt/zeroed/releases/$current"
 if [ -s "$STATE_DIR/switch_unheld" ]; then IFS='|' read -r _ prev current < "$STATE_DIR/switch_unheld" || true; fi
-# No current yet (a first deploy): readlink -f prints /opt/zeroed/current itself, and a rollback to it would point
-# current at itself. Only a real release folder is a rollback target.
-{ [ -d "$prev" ] && [ ! -L "$prev" ]; } || prev=""
-# OPS-CLEAN m1: the marker goes down before current moves, so no crash point leaves a switched release without it (a
-# marker for a commit that never became deployed is dropped by the next run).
-worker_ready || printf '%s|%s|%s\n' "$commit" "$prev" "$current" > "$STATE_DIR/switch_unheld"
+# No deployed release yet (a first deploy): nothing to go back to. Only a real release folder is a rollback target.
+{ [ -n "$current" ] && [ -d "$prev" ] && [ ! -L "$prev" ]; } || prev=""
+# OPS-CLEAN m1 and round 4: the marker goes down before current moves, whether or not the worker can start now, so no
+# crash or reboot between the switch and its hold leaves the release unheld; held_restart removes it. A marker for a
+# commit that never became deployed is dropped or rewritten by the next run (unheld_start).
+printf '%s|%s|%s\n' "$commit" "$prev" "$current" > "$STATE_DIR/switch_unheld"
 # RC-R2-3: a new switch ends the probation of the release before it; RC-FIXES-2b (R3-4): kept aside, so a rollback to
 # that release puts it back.
 if [ -s "$STATE_DIR/probation" ]; then mv -f "$STATE_DIR/probation" "$STATE_DIR/probation.prev"; else rm -f "$STATE_DIR/probation.prev"; fi
@@ -3861,11 +3887,9 @@ fi
 worker="not started (no keys yet)"
 if keys_stored && ! paired; then worker="not started (not paired yet)"; fi
 if worker_ready; then
-  flock -u 9 2>/dev/null || true
   held_restart
   worker="restarted and up"
 else
-  printf '%s|%s|%s\n' "$commit" "$prev" "$current" > "$STATE_DIR/switch_unheld"
   flock -u 9 2>/dev/null || true
 fi
 # HOST-CAPS: old releases go once the new one runs; it, the one before it (the roll-back target) and the 3 newest stay.

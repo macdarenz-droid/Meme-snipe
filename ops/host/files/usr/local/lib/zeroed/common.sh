@@ -174,7 +174,7 @@ pending_restart() {
   if [ -e "$STATE_DIR/worker_restart_pending" ] && ! worker_busy; then
     rm -f "$STATE_DIR/worker_restart_pending"
     systemctl try-restart zeroed-worker.service || true
-    log "Restarted the worker for the new Telegram chat."
+    log "Restarted the worker (a restart for a new chat or new keys waited for a safe moment)."
   fi
 }
 # start_worker: starts the worker, or, while a switched release has never run under the hold (switch_unheld, OPS-CLEAN

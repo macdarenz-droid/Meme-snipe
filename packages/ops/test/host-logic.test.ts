@@ -379,11 +379,18 @@ describe('worker start and API address', () => {
     expect(sandbox.length).toBeGreaterThan(25);
     // After the switch: the new worker must stay up, else back to the release that ran, not tried again, one alert.
     const after = upd.slice(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
-    expect(upd.indexOf('prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"')).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    // OPS-CLEAN round 4: the rollback target comes from the deployed record, before current moves, with the marker down first.
+    const prevAt = upd.indexOf('prev="/opt/zeroed/releases/$current"');
+    expect(prevAt).toBeGreaterThan(0);
+    expect(prevAt).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(upd.indexOf(`printf '%s|%s|%s\\n' "$commit" "$prev" "$current" > "$STATE_DIR/switch_unheld"`)).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
+    expect(upd).not.toContain('readlink -f /opt/zeroed/current 2>/dev/null || true)"\nprev');
     // OPS-CLEAN M1: the restart and hold live in held_restart, which the switch and the held first start both call.
     const held = upd.slice(upd.indexOf('held_restart() {'));
     expect(held.slice(0, held.indexOf('\n}\n'))).toMatch(/systemctl restart zeroed-worker\.service \|\| due_rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then due_rollback "\$why"; fi/);
-    expect(after).toMatch(/if worker_ready; then\n\s+flock -u 9 2>\/dev\/null \|\| true\n\s+held_restart\n/);
+    expect(after).toMatch(/if worker_ready; then\n\s+held_restart\n/);
+    // held_restart releases the host lock itself, once holding is down.
+    expect(held.slice(0, held.indexOf('\n}\n'))).toMatch(/: > "\$STATE_DIR\/holding"\n(\s*#[^\n]*\n)*\s+flock -u 9 2>\/dev\/null \|\| true\n/);
     // RC-FIXES-2b (red team C R3-2): a due rollback goes through probation_check's gate, which ends in rollback().
     const due = upd.slice(upd.indexOf('due_rollback() {'));
     expect(due.slice(0, due.indexOf('\n}\n'))).toMatch(/> "\$STATE_DIR\/probation"\n\s+rm -f "\$STATE_DIR\/switch_unheld" "\$STATE_DIR\/holding"\n\s+probation_check\n\s+exit 1$/);
