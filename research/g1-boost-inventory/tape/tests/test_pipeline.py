@@ -205,6 +205,11 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(list(ha["slice"]), [1, 2])
         self.assertEqual(list(ha["slots_after_m"]), [5, 30])
         self.assertTrue((ha["headroom"] > 0).all())        # cap at the slice's own average price sits above spot
+        r1 = tape.pool_rows[tape.pool_rows["is_boost"]].iloc[0]                  # slice 1, before-state on the row
+        spot = (r1["pool_quote_token_reserves"] + r1["virtual_quote_reserves"]) / r1["pool_base_token_reserves"]
+        cap = r1["quote_amount"] / r1["min_base_amount_out"]                     # synth: quote requested ÷ base cap
+        self.assertAlmostEqual(ha["headroom"].iloc[0], cap / spot - 1, places=12)
+        self.assertAlmostEqual(ha["headroom"].iloc[0], 0.00591, places=5)   # ≈ the impact of 0.5 SOL on ~84.6 SOL
         self.assertEqual(g["desc_cap_headroom"]["n"], 2)
         fa = flows[tape.names.get("A")]
         self.assertGreater(fa["share_pre_sold"], 0)                      # o2 sold in slot m

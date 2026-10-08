@@ -65,7 +65,8 @@ class SolUsdError(Exception):
 
 def load_sol_usd_dir(days, folder=DEFAULT_SOL_USD_DIR):
     """The committed Binance SOLUSDT 1-minute klines for each tape day (`SOLUSDT-1m-<day>.zip`), each checked
-    against the folder's SHA256SUMS. Refuses (SolUsdError) on a missing day, a file not listed, or a mismatch."""
+    against the folder's SHA256SUMS, plus the previous day's file when SHA256SUMS lists it (for the 00:00 hour's
+    close). Refuses (SolUsdError) on a missing day, a file not listed, or a mismatch."""
     import hashlib
 
     sums_path = os.path.join(folder, "SHA256SUMS")
@@ -76,8 +77,16 @@ def load_sol_usd_dir(days, folder=DEFAULT_SOL_USD_DIR):
         f = line.split()
         if len(f) == 2:
             sums[f[1].lstrip("*")] = f[0].lower()
-    paths = []
+    import datetime as _dt
+
+    need = [(d, True) for d in sorted(days)]
+    # a day's 00:00 hour needs the previous day's 23:59 bar: load that day too when SHA256SUMS lists it
     for d in sorted(days):
+        prev = (_dt.date.fromisoformat(d) - _dt.timedelta(days=1)).isoformat()
+        if prev not in days and f"SOLUSDT-1m-{prev}.zip" in sums:
+            need.append((prev, False))
+    paths = []
+    for d, required in need:
         name = f"SOLUSDT-1m-{d}.zip"
         p = os.path.join(folder, name)
         if name not in sums or not os.path.exists(p):

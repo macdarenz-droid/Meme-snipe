@@ -49,8 +49,13 @@ def eligible(eq_lamports, t, size, hourly) -> bool:
 
 
 # ------------------------------------------------------------------ stratum reports for rows 1-3
+def no_price(times, hourly):
+    return int(sum(1 for t in times if not np.isfinite(px_asof(hourly, t))))
+
+
 def dev_zero_stratum(dz: pd.DataFrame, days, hourly):
-    out = {}
+    used = dz[dz["dropped"] == ""] if len(dz) else dz
+    out = {"rows_without_sol_usd": no_price(used["block_time"], hourly) if len(used) else 0}
     for size in SIZES_USD:
         if not len(dz) or "eff_quote" not in dz:
             out[f"${size}"] = R.dev_summary(dz.iloc[:0] if len(dz) else dz, days)
@@ -64,7 +69,8 @@ def dev_zero_stratum(dz: pd.DataFrame, days, hourly):
 def seat_drift_stratum(sd: pd.DataFrame, hourly):
     """Graduates whose effective quote at the entry point (m + 60 min) meets the floor. Lone/busy keep the
     terciles of the full row (Q24)."""
-    out = {}
+    used = sd[sd["dropped"] == ""] if len(sd) else sd
+    out = {"rows_without_sol_usd": no_price(used["m_time"] + 3600, hourly) if len(used) else 0}
     for size in SIZES_USD:
         if not len(sd) or "w1_eff_quote" not in sd:
             out[f"${size}"] = R.seat_summary(sd.iloc[:0] if len(sd) else sd, sd.iloc[:0] if len(sd) else sd)
@@ -78,7 +84,7 @@ def seat_drift_stratum(sd: pd.DataFrame, hourly):
 
 
 def rebuy_stratum(tape: Tape, exits, pts, prs, hourly):
-    out = {}
+    out = {"rows_without_sol_usd": no_price(pts["t"], hourly) if len(pts) else 0}
     for size in SIZES_USD:
         el = [eligible(q, t, size, hourly) for q, t in zip(pts["eff_quote"], pts["t"])] if len(pts) else []
         p = pts[np.asarray(el, bool)] if len(pts) else pts
@@ -106,6 +112,7 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
             hours.append((d, h))
             h += 3600
     rows = []
+    stale = {}
     mayhem_cache = {}
     for pool, g in amm.groupby("pool", sort=False):
         mint = g["mint"].iloc[0]
@@ -123,6 +130,9 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
                 continue
             i, mid, eq = RB.state_asof(ps, h, st)
             if i < 0 or not np.isfinite(eq[i]):
+                continue
+            if not tape.covered(int(ps["slot"][i]), h):
+                stale[d] = stale.get(d, 0) + 1     # last state lies before a tape gap: not as-of the hour
                 continue
             rows.append({"day": d, "hour": h, "pool": pool, "mayhem_known": known, "eff_quote": float(eq[i]),
                          **{f"ok_{z}": eligible(eq[i], h, z, hourly) for z in SIZES_USD}})
@@ -146,7 +156,8 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly):
         xa, y = ph[ph["day"] == d], gr[gr["day"] == d]
         x = xa[xa["mayhem_known"].astype(bool)] if len(xa) else xa
         xu = xa[~xa["mayhem_known"].astype(bool)] if len(xa) else xa
-        summ[d] = {"pool_hours": int(len(x)), "pool_hours_mayhem_unknown": int(len(xu)), "graduates": int(len(y)),
+        summ[d] = {"pool_hours": int(len(x)), "pool_hours_mayhem_unknown": int(len(xu)),
+                   "pool_hours_state_not_on_tape": int(stale.get(d, 0)), "graduates": int(len(y)),
                    "graduates_assessable_at_m_plus_60": int(y["assessable"].sum()) if len(y) else 0,
                    "hours_without_sol_usd": int(sum(1 for dd, h in hours if dd == d and not np.isfinite(px_asof(hourly, h))))}
         for z in SIZES_USD:

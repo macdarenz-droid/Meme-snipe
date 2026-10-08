@@ -264,15 +264,20 @@ class SeatDrift(unittest.TestCase):
         self.assertAlmostEqual(ties["c2"], 1.0)
 
     def test_q9_cut_ties_go_to_lower_bin(self):
-        ok = pd.DataFrame({"day": [DAY] * 6, "N_m": [0, 1, 2, 2, 3, 5]})
+        ok = pd.DataFrame({"day": [DAY] * 6, "N_m": [0, 1, 2, 3, 4, 5]})       # c1 = 5/3, c2 = 10/3: no tie
         out, ties = R.assign_terciles(ok)
-        c1, c2 = np.quantile([0, 1, 2, 2, 3, 5], [1 / 3, 2 / 3])
-        n = ok["N_m"].to_numpy(float)
-        self.assertEqual(list(out["tercile"]), list(np.where(n <= c1, 0, np.where(n <= c2, 1, 2))))
+        self.assertEqual(list(out["tercile"]), [0, 0, 1, 1, 2, 2])
+        ok = pd.DataFrame({"day": [DAY] * 6, "N_m": [0, 1, 1, 2, 3, 4]})       # c1 = 1.0 exactly, c2 = 7/3
+        out, ties = R.assign_terciles(ok)
+        self.assertEqual(ties[DAY]["c1"], 1.0)
+        self.assertEqual(ties[DAY]["tied_at_c1"], 2)
+        self.assertEqual(list(out["tercile"]), [0, 0, 0, 1, 2, 2])             # values on c1 go to the lower bin
         ok2 = pd.DataFrame({"day": [DAY] * 3, "N_m": [1, 1, 1]})
         out2, ties2 = R.assign_terciles(ok2)
-        self.assertEqual(list(out2["tercile"]), [0, 0, 0])             # all equal to c1: lower bin, none dropped
+        self.assertEqual(list(out2["tercile"]), [0, 0, 0])
         self.assertEqual(ties2[DAY]["tied_at_c1"], 3)
+
+    def test_seat_drift_creator_cluster_not_counted(self):
         tape, s, adj = load(self._unit(link=True))
         df, _ = R.seat_drift(tape, s, adj)
         self.assertEqual(df.set_index("pool").at["PA", "N_m"], 0)   # same creator cluster: not counted
@@ -590,6 +595,53 @@ class Mayhem(unittest.TestCase):
         u.amm[-1]["base_supply"] = 2e15                        # 2B tokens: not evidence of mayhem
         tape, _, _ = load(u)
         self.assertIsNone(tape.mayhem_of_mint("M"))
+
+
+class ReReview(unittest.TestCase):
+    def test_pool_hour_state_before_a_tape_gap_is_skipped(self):
+        d = tempfile.mkdtemp()
+        a = Unit(0, 999)
+        a.create(10, "M"); a.migrate(100, "M", "P")
+        a.aswap(500, "o", "M", "P")
+        b = Unit(5000, 9999)
+        tape = Tape([a.write(d), b.write(d)])
+        labels, _ = R.two_sided_clusters(tape)
+        s = R.prepare(tape, labels)
+        _, _, sm = H8.h8_capacity(tape, s, flat_hourly(200.0))
+        x = sm[DAY]
+        self.assertEqual(x["pool_hours"], 1)                    # T0+800 only; T0+8000's last state is before the gap
+        self.assertEqual(x["pool_hours_state_not_on_tape"], 1)
+
+    def test_previous_day_file_loaded_for_midnight(self):
+        import hashlib
+        import zipfile
+        import run_step_a as RS
+        d = tempfile.mkdtemp()
+        sums = []
+        for day, t0 in (("2026-09-10", 1788998400), (DAY, 1789084800)):
+            name = f"SOLUSDT-1m-{day}.zip"
+            with zipfile.ZipFile(os.path.join(d, name), "w") as z:
+                z.writestr(name.replace(".zip", ".csv"), "".join(
+                    f"{(t0 + 60 * i) * 1000},0,0,0,{100 + i},0,0,0,0,0,0,0\n" for i in range(1440)))
+            sums.append(f"{hashlib.sha256(open(os.path.join(d, name), 'rb').read()).hexdigest()}  {name}")
+        with open(os.path.join(d, "SHA256SUMS"), "w") as fh:
+            fh.write("\n".join(sums) + "\n")
+        _, sha, minutes = RS.load_sol_usd_dir([DAY], d)
+        self.assertEqual(len(sha), 2)
+        self.assertEqual(H8.px_asof(H8.hourly_px(minutes), 1789084800 + 5), 100 + 1439)   # 09-10 23:59 close
+        with open(os.path.join(d, "SOLUSDT-1m-2026-09-10.zip"), "ab") as fh:
+            fh.write(b"x")
+        with self.assertRaises(RS.SolUsdError):                  # a listed previous day is checked too
+            RS.load_sol_usd_dir([DAY], d)
+
+    def test_rows_without_price_are_reported(self):
+        tape, s, adj = load(dev_unit())
+        dz, _ = R.dev_zero(tape, s, adj)
+        out = H8.dev_zero_stratum(dz, [DAY], {})
+        self.assertEqual(out["rows_without_sol_usd"], 2)       # event and control, no price for their hour
+        tape, s, _ = load(rebuy_unit())
+        ex, pts, prs, _ = RB.rebuy_anchor(tape, s)
+        self.assertEqual(H8.rebuy_stratum(tape, ex, pts, prs, {})["rows_without_sol_usd"], len(pts))
 
 
 class ReviewFixes(unittest.TestCase):

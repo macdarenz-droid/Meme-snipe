@@ -158,14 +158,41 @@ class PerDayMinimum(unittest.TestCase):
 class PartialDays(unittest.TestCase):
     def test_no_verdict_anywhere(self):
         import g1
-        res = {"G1_0": {"passes": False, "kills": ["x"]}, "G1_HC": {"c_pass": True, "c_count_gate": {"passes": True}},
+        res = {"G1_0": {"passes": False, "kills": ["x"]},
+               "G1_HC": {"c_pass": True, "c_count_gate": {"passes": True, "days_ok": {"2026-09-10": True}}},
                "G1_CAP": {"d_pass": True, "passes": True}}
         out = g1.strip_verdict(res)
         self.assertIsNone(out["G1_0"]["passes"])
         self.assertIsNone(out["G1_0"]["kills"])
         self.assertIsNone(out["G1_HC"]["c_count_gate"]["passes"])
+        self.assertIsNone(out["G1_HC"]["c_count_gate"]["days_ok"])
         self.assertIsNone(out["G1_CAP"]["passes"])
         self.assertTrue(out["verdict"].startswith("none"))
+
+
+
+class BoostShareRule(unittest.TestCase):
+    def test_exactly_half_below_25pct_kills(self):
+        from g1lib.gate import boost_share_kills
+        self.assertTrue(boost_share_kills(0.5, 0.2))
+        self.assertTrue(boost_share_kills(0.1, 0.5))
+        self.assertFalse(boost_share_kills(0.49, 0.2))
+        self.assertFalse(boost_share_kills(float("nan"), float("nan")))
+
+    def test_spent_after_m_plus_d_is_strict(self):
+        from types import SimpleNamespace
+        from g1lib import params as P
+        from g1lib.gate import boost_rows
+        m, pool = 1000, 7
+        bb = pd.DataFrame({"slot": [m + P.D, m + P.D + 1], "tx_idx": [1, 1], "used": [400, 100], "remaining": [600, 0],
+                           "base_amount_burned": [10, 10]})
+        mkt = SimpleNamespace(boosts=lambda p: bb, boost_budget={pool: 1000})
+        tape = SimpleNamespace(segment_of=lambda s: (0, 10 ** 9), names=SimpleNamespace(name=lambda c: str(c)),
+                               pool_of=lambda p: pd.DataFrame(columns=["slot", "tx_idx", "is_boost", "min_base_amount_out"]),
+                               F_boost=pd.DataFrame(), events={"BoostBuyAndBurnEvent": pd.DataFrame()})
+        r = boost_rows(mkt, tape, 1, {"slot": m, "pool_c": pool})
+        self.assertAlmostEqual(r["share_after_mD"], 0.1)          # the slice in slot m + D does not count
+        self.assertEqual(r[f"unspent_at_m+{P.D}"], 600)
 
 
 if __name__ == "__main__":

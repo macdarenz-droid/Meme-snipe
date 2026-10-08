@@ -87,7 +87,7 @@ def cap_headroom(tape, pool: int, m: int) -> pd.DataFrame:
     price = eff / j["pool_base_token_reserves"].to_numpy().astype(float)
     with np.errstate(divide="ignore", invalid="ignore"):
         cap_price = j["quote_amount_in_requested"].to_numpy() / cap_base
-        head = np.where(cap_base > 0, cap_price / price - 1, np.nan)
+        head = np.where(cap_base > 0, cap_price / price, np.nan)
     return pd.DataFrame({"pool": tape.names.name(pool), "slice": np.arange(1, len(j) + 1),
                          "slots_after_m": j["slot"].to_numpy() - m, "headroom": head})
 
@@ -174,8 +174,7 @@ def g1_0(d: pd.DataFrame, grads: pd.DataFrame, mkt: Market, days) -> dict:
     kills = []
     if not math.isnan(out["b_median_slots_t0_to_m"]) and out["b_median_slots_t0_to_m"] <= P.D:
         kills.append("median slots t0 to m <= D")
-    worst = max([x for x in (out["c_fraction_below_25pct_all"], out["c_fraction_below_25pct_triggered"]) if not math.isnan(x)] or [math.nan])
-    if not math.isnan(worst) and worst > 0.5:
+    if boost_share_kills(out["c_fraction_below_25pct_all"], out["c_fraction_below_25pct_triggered"]):
         kills.append("BOOST quote after m + D under 25% on most graduates")
     if avg_catch < P.GATE_MIN_CATCHABLE_PER_DAY:
         kills.append("fewer than 100 catchable triggers a day")
@@ -199,6 +198,13 @@ def strata_rows(d: pd.DataFrame, grads: pd.DataFrame, flows: Dict[int, dict]) ->
             "median_distinct_buyers_m_to_mD": float(np.median([flows[m]["distinct_buyers"] for m in g["mint_c"] if m in flows and "distinct_buyers" in flows[m]])) if len(g) else math.nan,
         }
     return out
+
+
+def boost_share_kills(*fractions_below) -> bool:
+    """PREREG §6 / amendment 3: G1 needs >= 25% of BOOST quote after m + D on MORE than half of graduates, so a
+    fraction below 25% of exactly one half already kills. Evaluated on every graduate set given (OQ-7)."""
+    vals = [x for x in fractions_below if x is not None and not math.isnan(x)]
+    return bool(vals) and max(vals) >= 0.5
 
 
 def count_gate(per_day: dict, days, threshold: int) -> dict:
