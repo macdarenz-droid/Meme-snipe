@@ -1,6 +1,6 @@
 # G1 amendment 2: BOOST's price cap, the G1-CAP arm, quote-mint strata
 
-Drafted 2026-10-08 19:30 Melbourne by the brainstorm partner, from idea sweep 2 (`research/brainstorm-loop/SWEEP_2.md`). It must be frozen before any Step A row is read for G1. G1's own primary is unchanged.
+Drafted 2026-10-08 19:25 Melbourne by the brainstorm partner, from idea sweep 2 (`research/brainstorm-loop/SWEEP_2.md`). It must be frozen before any Step A row is read for G1. G1's own primary is unchanged.
 
 ## 1. Correction to amendment 1 (BOOST limit)
 - `boost_buy_and_burn` takes `quote_amount_in` and `min_base_amount_burned` (checked in `research/shared-tape/tapedec/idl/pump_amm.json`; the program code was not read).

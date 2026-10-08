@@ -1,6 +1,6 @@
 # Step A count rows from sweeps 1–2, and a Design A amendment
 
-Drafted 2026-10-08 19:30 Melbourne by the brainstorm partner. Every row below reads flows, counts and timing on the Step A days. **None reads a strategy return**, so they sit outside the loop family. An idea earns its own pre-registration only if its row clears the threshold given. Each threshold is fixed now, before any Step A row is read. Chances are judgement.
+Drafted 2026-10-08 19:25 Melbourne by the brainstorm partner. Every row below reads flows, counts and timing on the Step A days. **None reads a strategy return**, so they sit outside the loop family. An idea earns its own pre-registration only if its row clears the threshold given. Each threshold is fixed now, before any Step A row is read. Chances are judgement.
 
 ## 1. DEV-ZERO: the creator's exit releases screen-filtered buyers (about 0.15%)
 - Event: in a canonical non-mayhem SOL pool at least 60 minutes after migration, a sell by the creator (`creator` / `coin_creator`, which matches H12) that crosses their share below 5% of supply. Placebo cutoff: 4.2%. Then, in a fixed order, the zero flag (control: near-full exits that leave 0–10%) and below 3% (placebo 2.4%).
