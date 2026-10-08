@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **9 Oct about 4:05 AM: merge queue.**
+  - Z04 #300 at `3686b6a5` (`9f23d462` + a merge of base `f0ce7284`). The re-made merge conflicts only in docs/DECISIONS.md, and the union check is lossless; no guarded file changes. Label `deps-reviewed:856910671f721edd12d01e2ed7b71d56` added at 17:00 UTC; it merges on green labelled CI.
+  - #313 IDL-REPIN round 3 (`6731f59a`): reviewer PASS final and red team final, 0 BLOCKER, 0 MAJOR. Round 4 rulings 45–47 (one fail-open MINOR, two test gaps) went to the Z03 builder; then a delta review and red team, base merge, CI, merge.
+  - #311 PATHS-FIX at `68c5764d`: e2e fix 3 (step 9 ran the base's backup scripts, so the usage ledger was missing) + base `f0ce7284`. CI running. The delta goes to red team `session_01HLmKT9VCuhF4Pzd2B7LXxW`. #312 `a76fe3cd` follows #311.
 - **9 Oct 3:36 AM: hourly back-check.**
   - Heads: base `f0ce7284`; #300 Z04 `9f23d462`, approved, waiting for its base merge with f0ce7284.
   - #311 `53774d90`: e2e red at the usage-ledger backup check, with the builder.
