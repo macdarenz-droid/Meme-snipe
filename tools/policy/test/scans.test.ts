@@ -565,7 +565,7 @@ describe('secrets scan', () => {
   it('does not flag public chain data: signatures, pubkeys, hashes and 63-byte arrays', () => {
     const sig = `"signature": "${'5Kd3'.repeat(22)}"`;
     const bytes = `[${Array.from({ length: 63 }, () => 1).join(',')}]`;
-    const text = [sig, '"pubkey": "11111111111111111111111111111111"', '"integrity": "sha512-abc"', bytes, 'api-key header is redacted'].join('\n');
+    const text = [sig, `"pubkey": "${'1'.repeat(32)}"`, '"integrity": "sha512-abc"', bytes, 'api-key header is redacted'].join('\n');
     assert.deepEqual(scanText(text, 'fixture.json'), []);
   });
 

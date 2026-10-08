@@ -1,0 +1,51 @@
+{
+  "schema": "snipe-solana.decoder-fixture.v1",
+  "kind": "account_set",
+  "found_via": "base mints of the active C11 curve fixtures (curve_586AJyoo, curve_BRe3zx83)",
+  "method": "getMultipleAccounts {encoding: base64, commitment: confirmed} via the M14 gateway (A-M14-02): public RPC, P4, at most 0.5/s per method and 1/s in all (below the 50% cap after a 429 from the shared egress IP), one request in flight",
+  "accounts": [
+    {
+      "role": "mint",
+      "pubkey": "3f9FEVeeRzzypxYqQLPNL8P5sEMgW8AaR1NZw2igpump",
+      "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+      "lamports": 2682240,
+      "space": 400,
+      "data_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIDGpH6NAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACd8xIdcAURSHcjP9BOkyKZGFvip+cn57z6Ku3oGS4YfEwCiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJ3zEh1wBRFIdyM/0E6TIpkYW+Kn5yfnvPoq7egZLhh8JAAAATmFzZmFtUGF5CQAAAE5BU0ZBTVBBWUAAAABodHRwczovL21ldGEudXhlbnRvLmlvL2RhdGEvZDkyYzhmYjItNjhhZS00NDIzLTlhZWQtMzI3MDg5NDE1Mjg4AAAAAA==",
+      "context_slot": 454132728,
+      "fetched_at": "2026-10-07T05:45:28.708Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "create_signature": "56HeNYK5XcpHCuXPBf3zFVyaLvR6851rzjbDciPpoMj7168opySrXz66GeX7iVnLWx4C9LSEnvdvrGK3aBAHj4sK",
+      "create_slot": 454132691,
+      "method": "getMultipleAccounts {encoding: base64, commitment: confirmed} via the M14 gateway (A-M14-02): public RPC, P4, at most 0.2/s per method and 0.25/s in all, one request in flight",
+      "found_via": "the CreateEvent of 56HeNYK5XcpHCuXPBf3zFVyaLvR6851rzjbDciPpoMj7168opySrXz66GeX7iVnLWx4C9LSEnvdvrGK3aBAHj4sK (slot 454132691), found by getSignaturesForAddress(pump mint-authority PDA TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM, limit 5), successful only",
+      "reason": "just-created pump.fun mint, read in the request after its create transaction: supply as created (A-M02-02, TH-V01)"
+    },
+    {
+      "role": "mint",
+      "pubkey": "H8Nd2bv1u5ejnN3ZGowVHw7KLg67TdRttZ4kJam6pump",
+      "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+      "lamports": 2819400,
+      "space": 427,
+      "data_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJiYGjH6NAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAO+egOzvakVUKz9Bj+2b5po1huwN6HsLAimW1Gvmwp1fEwC9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA756A7O9qRVQrP0GP7ZvmmjWG7A3oewsCKZbUa+bCnV8TAAAAU3RvbmtzaGlyZSBIYXRoYXdheQoAAABTVE9OS1NISVJFUAAAAGh0dHBzOi8vaXBmcy5pby9pcGZzL2JhZmtyZWlnazV2Mms1ZXdrMmp4NWg3bml4eGQ2bXM3dWtzNXFyYTdneHB3bHFnYWR1cDVsZDd2cXF1AAAAAA==",
+      "context_slot": 454122647,
+      "fetched_at": "2026-10-07T05:00:20.606Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "fresh pump.fun mint still on its bonding curve (A-M02-02, TH-V01)"
+    },
+    {
+      "role": "mint",
+      "pubkey": "A5ZmchE1XKvdLEQmg7njFHfPTnNveVL7z6eHWZaapump",
+      "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+      "lamports": 2733040,
+      "space": 410,
+      "data_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK6tUseNxAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIbkjs/+cN1PWZdGW1kkOXA3HL4tZcAgh624OCxS9IH/EwCsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAhuSOz/5w3U9Zl0ZbWSQ5cDccvi1lwCCHrbg4LFL0gf8IAAAAVG9rciBCb3QEAAAAVE9LUlAAAABodHRwczovL2lwZnMuaW8vaXBmcy9iYWZrcmVpZ25nZ3J5MjI0aHBmbHdlcm1hNTN2N2hjdDVydWlidXlvYXRoNWlseHJ6a2kzdzNzNTRuNAAAAAA=",
+      "context_slot": 454122647,
+      "fetched_at": "2026-10-07T05:00:20.606Z",
+      "rpc_url": "https://api.mainnet-beta.solana.com",
+      "commitment": "confirmed",
+      "reason": "fresh pump.fun mint still on its bonding curve (A-M02-02, TH-V01)"
+    }
+  ]
+}
