@@ -443,7 +443,7 @@ jobs:
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
           GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
           GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
-          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard" qa
       - name: QA and determinism
         id: qa
         if: steps.published.outputs.complete != 'true'
@@ -501,21 +501,23 @@ jobs:
       - name: Collect the back-off for the next day and run
         id: backoff
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
-        env:
-          SOURCE: ${{ inputs.source }}
         run: |
           research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/work/data/archive-429.state" "$RUNNER_TEMP/backoff/archive-429.state"
           if [ -f "$RUNNER_TEMP/backoff/archive-429.state" ]; then
             echo "back-off state: $(cat "$RUNNER_TEMP/backoff/archive-429.state")"
             echo "has=true" >> "$GITHUB_OUTPUT"
             end=$(awk 'NF >= 3 && $3 ~ /^[0-9]+$/ {print $3; exit}' "$RUNNER_TEMP/backoff/archive-429.state")
-            if [ -n "$end" ]; then
-              echo "end=$end" >> "$GITHUB_OUTPUT"
-              # OF-2 ruling 14: the durable record of the back-off end, a check-run annotation
-              # the guard reads for every counted failure (ag_annotated_end).
-              if [ "${SOURCE:-archive}" != helius ]; then echo "::warning title=archive-backoff::end=$end"; fi
-            fi
+            if [ -n "$end" ]; then echo "end=$end" >> "$GITHUB_OUTPUT"; fi
           fi
+      # OF-2 ruling 14, round 4 ruling 25: the durable record of the back-off end, a
+      # check-run annotation the guard reads for every counted failure (ag_annotated_end),
+      # as the one annotation of its own step.
+      - name: Record the back-off annotation
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.backoff.outputs.end != '' && inputs.source != 'helius'
+        env:
+          END: ${{ steps.backoff.outputs.end }}
+        run: |
+          if [[ "$END" =~ ^[0-9]{9,11}$ ]]; then echo "::warning title=archive-backoff::end=$END"; fi
       - name: Save the shared archive back-off
         if: always() && steps.published.outcome == 'success' && steps.backoff.outputs.has == 'true' && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

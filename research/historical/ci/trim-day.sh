@@ -113,14 +113,18 @@ cp "$log" "$assets/units-$day.log"
 echo "trim: $day trimmed to K3 (list sha256 $sha); K2 hashes in the per-unit log" | tee -a "$summary"
 [ "$mode" = --qa ] || exit 0
 ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
-zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json"
-node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0
-node --no-warnings "$here/../qa/parity.ts" "$ds"
-node --no-warnings "$here/../qa/volume.ts" "$ds" "$out/units" "$day"
+# OF-2 round 4, ruling 23: finalize and QA output go to $qlog next to the dataset, never
+# to the public job log or summary.
+qlog="$ds-log"; mkdir -p "$qlog"
+qa() { "$@" || { echo "trim: $1 failed for $day (exit $?); its output is in $qlog" | tee -a "$summary"; exit 1; }; }
+qa zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json" > "$qlog/finalize.log" 2>&1
+qa node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0 > "$qlog/qa.log" 2>&1
+qa node --no-warnings "$here/../qa/parity.ts" "$ds" > "$qlog/parity.log" 2>&1
+qa node --no-warnings "$here/../qa/volume.ts" "$ds" "$out/units" "$day" > "$qlog/volume.log" 2>&1
 "$here/volume-asset.sh" "$ds" "$day" "$assets"
 cp "$ds/qa/report.md" "$assets/qa-$day.md"
 cp "$ds/qa/report.json" "$assets/qa-$day.json"
 cp "$ds/qa/parity.json" "$assets/parity-$day.json"
 cp "$ds/manifest.json" "$assets/manifest-$day.json"
-rm -rf "$ds"
+rm -rf "$ds" "$qlog"
 echo "trim: finalize, strict QA, parity and volume passed on the trimmed $day" | tee -a "$summary"
