@@ -81,7 +81,7 @@ rc=0; run || rc=$?
 [[ $rc == 1 ]] && grep -q "unit $nf: read but not verified" "$T/work/stepa.log" && ok "an unverified unit stops the run" || no "unverified rc=$rc"
 rm -rf "$T/work/day/units/$ep/$nf-$nt" "$T/work/units/$nf"
 # released() needs the three distinct assets, not three rows.
-eval "$(sed -n '/^released() {/,/^}/p' "$here/stepa.sh")"; work="$T/rr"; mkdir -p "$work"
+store=release; eval "$(sed -n '/^released() {/,/^}/p' "$here/stepa.sh")"; work="$T/rr"; mkdir -p "$work"
 printf 'd\t1-2\tcore-1-2.tar\ts\t1\nd\t1-2\tresearch-1-2.tar\ts\t1\nd\t1-2\tcore-1-2.tar\ts\t1\nd\t1-2\tresearch-1-2.tar\ts\t1\n' > "$work/released.tsv"
 released d 1 2 && no "a half-released unit counted as released" || ok "a half-released unit is not counted as released"
 printf 'd\t1-2\trecords-1-2.tar\ts\t1\n' >> "$work/released.tsv"
