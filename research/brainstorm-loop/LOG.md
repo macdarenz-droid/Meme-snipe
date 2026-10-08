@@ -8,6 +8,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 - Each idea names who pays us, a gate that reads no returns, and a primary test frozen before any outcome.
 - Every confirmatory test from this loop is judged at a fixed 0.005 (99.5% intervals; agreed with the lead 2026-10-08). A pass counts only after it holds on data it never touched (forward tape, or the sealed window after 21 Oct).
 - Messages to the lead are at most 10 lines (owner rule "Lean manager context", 2026-10-08, CLAUDE.md on the lead's branch, verified): status, result in one line with key numbers, files and commit, what is needed next. Details go in repo files. Heavy reading runs in subagents with an explicit model (sonnet medium for mechanical work, opus for judgement).
+- Before telling the owner anything, check it at its source (owner, 2026-10-08 18:18: "Before u say something always fact check or verify"). A claim relayed from another session is checked in that session's own record first.
 - Tests run in visible Auto worker sessions with a fresh reviewer before scoring. The lead holds the credit ledger and starts every worker ("AGREED <id>, cap <credits>").
 
 ## Timeline (Melbourne)
@@ -25,6 +26,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 18:10 | Sweep 1 finished (16 ideas, 9 agents, 87 min): survivors G1-HC, APP-TOLL, MAYHEM-24, CREATOR-BUY, FLUSH-BUY, each about 1–2% (judgement); report `SWEEP_1.md`. G1 amendment 1 (G1-HC arm, BOOST floor check) and W1 amendment 1 (S has no tx_fee column) drafted |
 | 2026-10-08 18:14 | Sweep 1 handed to the lead (time-critical: G1 amendment 1, S columns, fee-claim events); sweep 2 started (thresholds and alerts, other bots' habits, cross-coin state, other launchpads, research gaps) |
 | 2026-10-08 18:16 | Owner, asked "Does P2 No mean no Hyperliquid or futures trading at all?": "Yes no hyperliquid". H1-PERP and FLUSH-BUY closed; no perp or futures designs from this loop |
+| 2026-10-08 18:18 | Error: partner relayed "Hugging Face approval pending" without checking. The owner had approved at 17:51 (builder transcript, human message 06:51:50Z). Corrected with the owner and the lead |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
