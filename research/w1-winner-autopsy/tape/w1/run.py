@@ -246,6 +246,9 @@ def cmd_ruletest(a):
         cands.append(pd.DataFrame({"mint": s["mint"], "slot": s["slot"], "bt": s["bt"], "key": s["key"],
                                    "paid": -s["cash"], "day": u.day}))
     cands = pd.concat(cands, ignore_index=True)
+    if len(cands) == 0:
+        print(json.dumps({"pass": False, "trades": 0, "reason": "no candidate entries"}))
+        return
     info = {"create": led.create, "migr": led.migr, "boost_done": led.boost_done}
     tapes = rules.tapes_for(units, vocab, set(cands["mint"].astype(int)), info, _excluder(_load_days(a.work)))
     X = rules.entry_features(cands, tapes, info).to_numpy()

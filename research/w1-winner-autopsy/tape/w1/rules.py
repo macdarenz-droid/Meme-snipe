@@ -122,6 +122,8 @@ def tapes_for(units, vocab, mint_ids, ledger_info, excluded):
     names = {vocab.strs[m] for m in mint_ids}
     sws = [load.swaps(u, vocab, mints=names) for u in units]
     mvs = [load.movements(u, vocab, mints=names) for u in units]
+    if not any(len(s) for s in sws):
+        return {}
     sw = pd.concat([s for s in sws if len(s)], ignore_index=True)
     sw = sw[sw["sol"].astype(bool) & ~sw["overflow"].astype(bool)]
     mv = pd.concat(mvs, ignore_index=True)
@@ -270,7 +272,7 @@ def rule_test_trades(fires, controls, rows_states, hold_slots):
             e = int(s) + REPLAY_DELAY_SLOTS
             out.append({"arm": name, "day": d, "mint": int(m), "entry_slot": e,
                         "ret": replay_entry(rows_states, int(m), e, e + int(round(hold_slots)))})
-    return pd.DataFrame(out)
+    return pd.DataFrame(out, columns=["arm", "day", "mint", "entry_slot", "ret"])
 
 
 def rule_test_verdict(trades, b=10_000, seed=SEED):
