@@ -24,6 +24,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 17:15 | Owner: "P2 No". P2 closed; told the lead |
 | 2026-10-08 18:10 | Sweep 1 finished (16 ideas, 9 agents, 87 min): survivors G1-HC, APP-TOLL, MAYHEM-24, CREATOR-BUY, FLUSH-BUY, each about 1–2% (judgement); report `SWEEP_1.md`. G1 amendment 1 (G1-HC arm, BOOST floor check) and W1 amendment 1 (S has no tx_fee column) drafted |
 | 2026-10-08 18:14 | Sweep 1 handed to the lead (time-critical: G1 amendment 1, S columns, fee-claim events); sweep 2 started (thresholds and alerts, other bots' habits, cross-coin state, other launchpads, research gaps) |
+| 2026-10-08 18:16 | Owner, asked "Does P2 No mean no Hyperliquid or futures trading at all?": "Yes no hyperliquid". H1-PERP and FLUSH-BUY closed; no perp or futures designs from this loop |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
@@ -40,4 +41,4 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | APP-TOLL | Retail-app buying wave into a float without mechanical sellers | Late app buyers | about 1% | Needs S columns (top_program, app-fee transfer, CU price) before Step A |
 | MAYHEM-24 | Surviving mayhem coins after the agent's 24 h burn | Screen-bound buyers | about 1% | Counts only; core change and owner needed |
 | CREATOR-BUY | Creator group's own open-market buying after migration | Sellers into it | about 1% | Fee claims are dropped by the decoder; ethics ruling needed |
-| FLUSH-BUY | Buy after forced perp long liquidations | Liquidated longs | about 1% | Needs the owner on perps (P2 was closed) |
+| FLUSH-BUY | Buy after forced perp long liquidations | Liquidated longs | about 1% | **Closed by the owner** ("Yes no hyperliquid", 18:16) |
