@@ -23,6 +23,12 @@ import features as F  # noqa: E402
 import gates as G  # noqa: E402
 import load as L  # noqa: E402
 
+# Count row 6 (research/brainstorm-loop/tape, frozen) is read for Design A's verdict (AMENDMENT_2 Q11).
+BL_TAPE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "brainstorm-loop",
+                                       "tape"))
+if BL_TAPE not in sys.path:
+    sys.path.append(BL_TAPE)
+
 CONFIRM = "REVIEW-PASSED-AND-STEP-A-COMPLETE"
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 FEE_CONFIG = os.path.join(REPO, "research", "edge", "snapshot", "fee-configs.json")
@@ -31,6 +37,23 @@ SUPPLY_RULE_MIN_AGREEMENT = 0.999  # on rows where live and fixed supply pick di
 
 def supply_verified(t: dict) -> bool:
     return bool(t["n_diff"] > 0 and t["base_supply"] / t["n_diff"] >= SUPPLY_RULE_MIN_AGREEMENT)
+
+
+def usd_separability(sol_usd: dict) -> dict:
+    """AMENDMENT_2 Q11: count row 6's round-USD flag per tape day, and whether 420 SOL is within 5% of a round USD
+    level on every day (then a gate pass is "not separable from a USD level")."""
+    import rows as R6
+    flags, ns = R6.usd_level_flags(sol_usd, sorted(sol_usd))
+    return {"flags": flags, "not_separable": ns}
+
+
+def load_usd_separability(days) -> dict:
+    """Row 6 on the scored days, from the committed sha-pinned Binance SOL/USD files (refuses a missing day)."""
+    import run_step_a as RS
+    px, shas, _ = RS.load_sol_usd_dir(sorted(days))
+    out = usd_separability({d: px[d] for d in days})
+    out["sol_usd_files"] = shas
+    return out
 
 
 def earlier_step_met(units: list[L.Unit], steps: tuple[str, ...], fee_config: str = FEE_CONFIG):
@@ -170,7 +193,15 @@ def main(argv=None) -> int:
     if a.score_primary:
         if not s["supply_rule_check"]["verified"]:
             raise SystemExit("supply rule not verified on this data; not scoring")
-        res = G.score_gates(b["up"], b["dn"], b["net"], s["count_rule"]["n"], steps, a.n_boot)
+        try:
+            usd = load_usd_separability(sorted({u.day for u in units}))
+        except Exception as e:  # noqa: BLE001 - any failure to read row 6 refuses the verdict
+            raise SystemExit(f"count row 6 (round USD) could not be read: {e}; not scoring")
+        if usd["not_separable"] is None:
+            raise SystemExit("count row 6 has a day without SOL/USD; not scoring")
+        res = G.score_gates(b["up"], b["dn"], b["net"], s["count_rule"]["n"], steps, a.n_boot,
+                            usd_not_separable=usd["not_separable"])
+        res["count_row_6"] = usd
         np.savez(os.path.join(a.out, "features.npz"), up=b["up"], dn=b["dn"], net=b["net"], cuts=b["cuts"],
                  pools=b["pools"].pool[b["pools"].eligible].to_numpy())
         with open(os.path.join(a.out, "gates.json"), "w") as f:

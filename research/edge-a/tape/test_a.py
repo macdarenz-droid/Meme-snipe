@@ -334,7 +334,7 @@ class TestGates(unittest.TestCase):
         self.assertEqual(G.count_rule(199, ("A", "B"))["status"], "short: add Step C days")
         self.assertEqual(G.count_rule(199, ("A", "B", "C"))["status"], "unresolved: A closes")
         z = np.ones((3, 21))
-        self.assertEqual(G.score_gates(z, z, z, 150, ("A",))["decision"], "not scored: count rule not met")
+        self.assertEqual(G.score_gates(z, z, z, 150, ("A",), usd_not_separable=False)["decision"], "not scored: count rule not met")
 
     def test_both_gates_needed(self):
         P = 250
@@ -342,7 +342,7 @@ class TestGates(unittest.TestCase):
         up = dn.copy()
         up[:, 0] = 300.0  # strong bunching
         net = np.zeros((P, 21))  # no creator buying: Gate 3 fails
-        r = G.score_gates(up, dn, net, 250, ("A",), n_boot=200)
+        r = G.score_gates(up, dn, net, 250, ("A",), n_boot=200, usd_not_separable=False)
         self.assertTrue(r["gate2_bunching"]["pass"])
         self.assertFalse(r["gate3_creator"]["pass"])
         self.assertEqual(r["decision"], "A closes: no return is read")
@@ -470,11 +470,33 @@ class TestAmendment2(unittest.TestCase):
         P = 40
         up, dn = rng.uniform(50, 150, (P, 21)), rng.uniform(50, 150, (P, 21))
         net = rng.normal(0, 1, (P, 21))
-        r = G.score_gates(up, dn, net, 250, ("A",), n_boot=300)
+        r = G.score_gates(up, dn, net, 250, ("A",), n_boot=300, usd_not_separable=False)
         g2 = G.pool_bootstrap(G.gate2_stat, [up, dn], 300, 20261009)
         g3 = G.pool_bootstrap(G.gate3_stat, [net, up + dn], 300, 20261009)
         self.assertEqual(r["gate2_bunching"]["lo"], g2["lo"])
         self.assertEqual(r["gate3_creator"]["lo"], g3["lo"])
+
+    def test_q11_verdict_reads_count_row_6(self):
+        # R1-15: a gate pass is recorded "not separable from a USD level" when count row 6 flags 420 SOL within 5% of
+        # $50k or $100k on every tape day, and then no return test runs
+        flags = run_a.usd_separability({"2026-09-10": 119.26, "2026-09-11": (119.0, 118.0, 120.0)})
+        self.assertTrue(flags["not_separable"])
+        self.assertFalse(run_a.usd_separability({"2026-09-10": 119.26, "2026-09-11": 150.0})["not_separable"])
+        P = 250
+        dn = np.full((P, 21), 100.0)
+        up = dn.copy()
+        up[:, 0] = 300.0
+        net = np.zeros((P, 21))
+        net[:, 0] = 50.0
+        ok = G.score_gates(up, dn, net, 250, ("A",), n_boot=200, usd_not_separable=False)
+        self.assertTrue(ok["gate2_bunching"]["pass"] and ok["gate3_creator"]["pass"])
+        self.assertTrue(ok["return_test_may_run"])
+        ns = G.score_gates(up, dn, net, 250, ("A",), n_boot=200, usd_not_separable=True)
+        self.assertFalse(ns["return_test_may_run"])
+        self.assertIn("not separable from a USD level", ns["decision"])
+        for missing in ({}, {"usd_not_separable": None}):   # row 6 not read: the verdict is never given
+            with self.assertRaises((TypeError, ValueError)):
+                G.score_gates(up, dn, net, 250, ("A",), n_boot=200, **missing)
 
 
 if __name__ == "__main__":
