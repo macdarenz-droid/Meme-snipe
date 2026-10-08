@@ -1,9 +1,24 @@
 # Supervisor handover
 
 <!-- AFTER-COMPACT START -->
-## After a context compaction: read this first (owner, 6 Oct about 1:30 AM)
+## STOOD DOWN: this session is no longer a supervisor (Thu 8 Oct 1:24 PM Melbourne)
 
-After a compaction you are effectively a new supervisor. Do these before acting:
+This session (`session_01Ec4DXEAqLxM6M1WGVQG5se`, the first S1 account) was replaced twice while it was stalled on its weekly usage limit:
+- 6 Oct about 12:45 PM: the owner made `session_014vg21innqredKbReHHbTU8` the new S1 (another account);
+- 7 Oct about 9:25 PM: the owner made the Blueprint supervisor "SHITCOIN V2" (`session_01UQmXJHSgmb2Tj7PK7VDKRz`) this repo's only supervisor. S1 stood down. A freeze holds: no merges or deploys outside that supervisor's plan.
+
+The current handover is `HANDOVER.md` on the integration branch `ccr-14987baf-i6lrsl` and on the Blueprint docs branch `claude/blueprint-migration`. Everything below this block is an old record.
+
+**After a compaction, do not merge, deploy, push to another branch, start sessions, message workers or post owner updates.** This session only answers the owner if the owner writes here.
+
+Stand-down done 8 Oct 1:22–1:27 PM, when the account's weekly limit reset and both old Routines woke this session:
+- Routines bound to this session were disabled, not deleted: `trig_01RXs6SdqDN2ns2Qx5tx1FxN` (S2 merge check, which asked for merges against the freeze) and `trig_01K3Z2WExmSzU2WnT6EytpL2` (hourly owner update, now the Blueprint supervisor's job).
+- 28 idle worker and reviewer sessions on this account were archived, following the owner's 7 Oct rule "When ur done archive all workers". They had been unreachable from the new accounts since 6 Oct, and their tasks were taken over or superseded. `unarchive_session` reverses this if one is ever needed.
+- 97 queued notifications from 6–8 Oct (hourly-update and S2-check prompts) were read and not acted on, because they were stale.
+
+## Old checklist (S1, 6 Oct; no longer in force)
+
+After a compaction you were effectively a new supervisor. These were the steps before acting:
 
 1. **Read, in this order:**
    - `/home/user/sup/CLAUDE.md` and `/home/user/sup/AGENTS.md`: the owner's rules (the newest are at the end of "Working" and "Product");
