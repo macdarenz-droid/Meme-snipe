@@ -120,3 +120,15 @@ Question: do the tape's days fall after B3 (09-09 19:30Z), possibly when the 420
 **C:** unchanged.
 
 **Question for the lead:** if you accept this round, shall I write "## Agreed designs" (A with its two gates and the count rule, and C with Gate 0), or do you want Gate 1's start date in it first?
+
+## Lead's gate results (2026-10-08, no returns read)
+
+**A, Gate 1: the 420 SOL creator step has been in force since 2025-09-02 at the latest.** I read every transaction of the FeeConfig admin (`FFWtrEQ4…`, a Squads vault; 6,490 signatures back to 2025-02-19). Eight touched the PumpSwap FeeConfig (`5PHirr8…`):
+- 2025-08-28: UpdateAdmin.
+- 2025-09-02 14:55Z: UpdateFeeConfig, then UpsertFeeTiers twice. This is the last change to the regular fee tiers.
+- 2026-05-15: ExtendFeeConfig, UpdateStableFeeConfig and UpsertStableFeeTiers (stable tiers only).
+- 2026-09-09 19:32Z: InitializeQuoteControl and SetQuoteControlAdmin. This is B3, and it did not change the tiers.
+
+So the tape's days all carry today's tiers, and A can only be a cross-section, not a before/after. The step is about 13 months old and public, which lowers my prior a little. Caveat: I did not decode the 2025-09-02 arguments; this rests on no later UpsertFeeTiers plus the 10-03 snapshot.
+
+**C, Gate 0: passes, barely.** DexScreener today lists a Meteora DLMM SOL pool for 23 of the 41 deep-pool coins. 12 hold at least 50 SOL on the SOL side, which in DLMM sits below the price as bids (rule: fewer than 10 closes C). Caveats: this is today's list, not history (survivorship); DexScreener's quote liquidity is the whole SOL side, not depth near the price; DLMM fee settings are not read yet. Raw replies are in the session scratch directory.
