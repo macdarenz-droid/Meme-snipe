@@ -30,7 +30,7 @@ What the owner gives the supervisor when a piece of research looks usable. Plain
 - a private repository, either the existing private `zeroed-data` or a new private strategies repository, with a fetch path for the server; or
 - this whole repository becoming private.
 
-Until the owner answers, no owner strategy is merged anywhere public. Agent-origin strategies may stay public.
+Owner-strategy work (building, review and red team) happens only in the private location, and nothing about it is pushed to any branch of this repository (round 6 ruling 61). The public repo, PR text, review logs and DECISIONS refer to an owner strategy only by an opaque id (`o-<n>`) and hashes; the DECISIONS citation points to where the owner's message is and does not quote it. The private location runs the same pin CI; public CI compares only the commitment hash with the pin entry (round 6 ruling 66). Until the owner chooses the location, no owner-strategy work starts at all. Agent-origin strategies may stay public.
 
 **The data the idea came from cannot prove it.** A strategy is tested on data it was not tuned on (`CLAUDE.md` "MR-01 parked"; ARCH D08: no further search on the same data). The owner's own data shapes the rules; the gates run on days recorded after the rules are fixed (section 5).
 
@@ -38,7 +38,7 @@ Until the owner answers, no owner strategy is merged anywhere public. Agent-orig
 
 Turning the handover into a pre-registration (PREREG): the rules written down and pushed before any test data is seen. This is owner item 6 ("rules fixed in advance") and SPEC-A A-M13-02.
 
-**Document.** One file per strategy version, `research/<id>/PREREG.md` (PROPOSED path; the on-hold Phase 0 file `research/phase0/PREREG.md` on `claude/research-phase0-prereg` @ `df7d75da` is the format example). Discipline from MIGRATION A16: pushed before the data exists and checked with `git ls-remote`; a stated data wall; stress costs; seeds; a random-entry benchmark; a realistic cost line; amendments only before the first run; a fresh reviewer.
+**Document.** One file per strategy version. For agent-origin strategies only, the file is `research/<id>/PREREG.md` in this repository (PROPOSED path); owner-origin ones use the private location, with only the commitment here (section 1; round 6 ruling 68). The format example is the on-hold Phase 0 file `research/phase0/PREREG.md` on `claude/research-phase0-prereg` @ `df7d75da`. Discipline from MIGRATION A16: pushed before the data exists and checked with `git ls-remote`; a stated data wall; stress costs; seeds; a random-entry benchmark; a realistic cost line; amendments only before the first run; a fresh reviewer.
 
 **What it fixes**
 
@@ -61,7 +61,7 @@ Turning the handover into a pre-registration (PREREG): the rules written down an
 
 **Registration.** `TrialIdentity.preRegister({ strategyId, strategyVersion, configs, config, costModelVersion, fillModelVersion, atMs })` records the set and returns the `configKeys` (A-M13-02). The strategy's stage becomes `research` (A-M13-05 step 1). `W_B` begins only after this (C-26).
 
-**Order** (round 4 ruling 48). The PREREG is pushed first; then the plugin is built and its pin merged on main; then `preRegister` records the configurations with the pinned source hash; only then does `W_B` begin. Because the PREREG comes before the code, the CI pin check reads the registry export, not the PREREG file. The runner refuses a second `preRegister`, or a registration, of the same `id@version` until its export entry is on main (round 5 ruling 58).
+**Order** (round 4 ruling 48; round 6 ruling 68). The PREREG is pushed first (in this repository for agent-origin strategies; in the private location, with the commitment here, for owner-origin ones); then the plugin is built and its pin merged on main; then `preRegister` records the configurations with the pinned source hash; only then does `W_B` begin. Because the PREREG comes before the code, the CI pin check reads the registry export, not the PREREG file. The runner refuses a second `preRegister`, or a registration, of the same `id@version` until its export entry is on main (round 5 ruling 58).
 
 **Optional early stop.** A coarse screen on vendor price bars (gate CS-1) can stop a strategy whose every configuration loses with a 95% CI upper bound below zero. It can never pass one (ARCH 3.4 "Coarse screens can only kill").
 
@@ -110,17 +110,18 @@ The runner, on the research host too, refuses to register an `id@version` whose 
 - A violation that belongs to one strategy (a staging mismatch, `failed` or `archived`, the agent stop, a missing PREREG) disables only that strategy, at start as at run time, with a critical alert and the audited A1 removal; its open positions keep their exits. The other strategies keep running.
 
 **Changes after freezing** (round 3 ruling 26; round 4 rulings 43 and 49; round 5 rulings 52, 53, 56 and 59). Every `affectsReturns` key in the B-M25-01 schema carries a group tag; a CI test fails any key without one, and until it is tagged the key counts as group P. `configKey` has two groups:
-- **Group P, which changes which trades happen:** `runtimeDepsHash()`, the universe, the registered configuration, and every admission key (exit ladder, cooldown, entry rate, regime, dump window, maximum open positions, the per-token rule). When a group P config change alters the `configKey` of a strategy in paper or live, a B-9 replay on its `W_B` data decides:
-  - the proposals are byte-identical and the change is A1: re-freeze by an audited A1 action, and the stage stands;
-  - the proposals differ and the change is A1: drop one stage and restart that window;
-  - the change is A2 or A3: back to `research`.
+- **Group P, which changes which trades happen.** Two kinds:
+  - *Proposal keys:* `runtimeDepsHash()`, the plugin, the universe and the registered configuration. When a config change of this kind alters the `configKey` of a strategy in paper or live, a B-9 replay on its `W_B` data decides: the proposals are byte-identical and the change is A1 → re-freeze by an audited A1 action, and the stage stands; the proposals differ and the change is A1 → drop one stage and restart that window; the change is A2 or A3 → back to `research`. Only these keys can send a strategy back to `research` (round 6 ruling 64). A code deploy of `runtimeDepsHash()` follows "Code deploys" below.
+  - *Admission keys:* exit ladder, cooldown, entry rate, regime, dump window, maximum open positions and the per-token rule. They are compared on trades, not proposals: the recorded proposals are replayed through M21 with the old and the new setting (round 6 ruling 64). An A1 change with identical trades is re-frozen; with different trades, the passed gates' statistics are re-run on the new trade set, registered as trials (as for code deploys), and the strategy keeps its stage or is demoted one. An A3 raise follows the group S raise rule below, and the stage stands.
 - **Group S, which changes only a trade's size or cost, never which trades happen:** sizing, caps, and the cost and fill model.
-  - An A1 lowering carries its own re-freeze in the same `apply_config`, at the same class, so a live strategy never goes dark waiting for a second action.
+  - An A1 change always applies, with its own re-freeze in the same `apply_config` at the same class, so a live strategy never goes dark waiting for a second action. The same apply checks the size table at the new size; if the CI lower bound there is ≤ 0, the strategy stays enabled but entries are blocked with reason `size_not_profitable` (PROPOSED code, named by the ruling) until the size is raised back or the gate passes; exits are kept and a critical alert goes out (round 6 ruling 62).
   - A raise (A3) is applied only if the re-run gate statistics, and the size table at the new size ($5 to $10,000, with price impact; "Capital and trade size scale"), still pass with the CI lower bound above 0. Otherwise the server refuses the A3, at preview or at `effective_at`, with the blocking reason, and the stage and limit stay as they were. When it passes, it is re-frozen by the same audited action, and the stage stands.
 
-**Code deploys** (round 5 ruling 53). A deploy that changes `configKey` (new runtime dependencies, or new cost- or fill-model code) has its own rule:
-- B-9 is byte-identical and the model outputs are not more favourable: re-frozen by an audited A2 with actor `system`.
-- Otherwise every gate already passed is re-run on its own recorded window with the new code. If all still pass, it is re-frozen by an audited A2; if not, the strategy is demoted through B-M26-04 to the last stage whose gate still passes.
+**Code deploys** (round 5 ruling 53; round 6 rulings 63, 65 and 67). A deploy that changes `configKey` (new runtime dependencies, or new cost- or fill-model code) has its own rule:
+- B-9 is byte-identical and the model outputs are not more favourable: re-frozen by an audited A2 with actor `system`. "Not more favourable" means that on the window's trades, every modelled cost is ≥ and every modelled fill is ≤ the old model's, per trade.
+- Otherwise every gate already passed is re-run on its own recorded window with the new code. If all still pass, it is re-frozen by an audited A2; if not, the strategy is demoted through B-M26-04 to the last stage whose gate still passes. If gate B fails on a re-run with sufficient data, the stage is `failed` (A-M13-05 step 3); with insufficient data, the strategy goes to `research`.
+- Every re-run is a registered trial (A-M13-02 `registerTrial`, kind `gate`), counted in the DSR (B-3) and in B-5. Re-runs on `W_B` and `W_R` are allowed only within the trial budget; when it is used up, the strategy needs a fresh forward window.
+- P and LS are not re-run on recorded data: if the differing proposals change any trade in `W_P`, the strategy drops to `replay_passed` through B-M26-04 and starts a fresh `W_P`, with no cooldown, since this is not a demotion for cause.
 - An open window continues under the new key from the deploy time, and the reset is recorded.
 
 Rules for every change:
@@ -296,9 +297,16 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | AC-43 | Code deploy, byte-identical: B-9 identical and model outputs not more favourable → a fake audited A2 `system` re-freeze, stage unchanged | Round 5 ruling 53 |
 | AC-44 | Code deploy, differing but still passing: every passed gate re-run on its own window passes (fake) → audited A2 re-freeze, stage unchanged, the open window continuing under the new key with the reset recorded | Round 5 ruling 53 |
 | AC-45 | Code deploy, differing and failing: the fake re-run fails gate R → the strategy is demoted through a fake B-M26-04 to `backtest_passed`, the last stage whose gate still passes | Round 5 ruling 53 |
-| AC-46 | CI fails an `origin: owner` strategy whose PREREG or plugin source is in the public tree; a public commitment whose sha256 does not match the fixture's private copy fails | Round 5 ruling 54 |
+| AC-46 | Public CI fails an `origin: owner` strategy whose PREREG, evidence or plugin source is in the public tree, and fails a public commitment whose hash does not match its pin entry; public CI checks only the commitment against the pin entry, and the private location runs the full pin CI (fixtures stand in for the private copy). Public text names an owner strategy only as `o-<n>` | Round 5 ruling 54; round 6 rulings 61 and 66 |
 | AC-47 | A scheduled A3 enable named for X@1 is cancelled at `effective_at` when X@2 is running (fake B-M26-03 re-validation) | Round 5 ruling 55 |
 | AC-48 | The runner refuses a second `preRegister`, or a registration, of an `id@version` whose export entry is not on main | Round 5 ruling 58 |
+| AC-49 | Group S A1 lowering with a fixed-cost fixture that makes the size table's CI lower bound ≤ 0 at the new size: the change applies and re-freezes in the same apply; the strategy stays enabled with entries blocked (`size_not_profitable`), exits kept and a critical alert; raising the size back clears the block | Round 6 ruling 62 |
+| AC-50 | A code-deploy re-run is registered as a trial (fake registry, kind `gate`); with the trial budget used up, no `W_B` or `W_R` re-run starts and the strategy is marked as needing a fresh forward window | Round 6 ruling 63 |
+| AC-51 | A differing deploy that changes a trade in `W_P`: no P re-run; a fake B-M26-04 demotion to `replay_passed`, a fresh `W_P`, and no cooldown | Round 6 ruling 63 |
+| AC-52 | An A3 `MAXOPEN` raise whose fake gate re-run and size table pass keeps the stage; one that fails is refused, with the stage and the limit unchanged | Round 6 ruling 64 |
+| AC-53 | An A1 admission-key change: identical trades in the fake M21 replay → re-freeze; different trades → the passed gates' re-runs are requested as trials, and the stage stays or drops one on the fake result; it never goes to `research` | Round 6 ruling 64 |
+| AC-54 | "Not more favourable": a new model with one trade's modelled cost lower, or one fill higher, than the old model's is not re-frozen by the byte-identical rule | Round 6 ruling 65 |
+| AC-55 | Gate B fails on a code-deploy re-run: with sufficient data the fake stage store shows `failed`; with insufficient data, `research` | Round 6 ruling 67 |
 
 ### Tests
 
@@ -344,6 +352,12 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | CI fixtures: owner strategy in the public tree; matching and mismatching commitments | AC-46 |
 | Unit with a fake B-M26-03: version-bound A3 cancelled | AC-47 |
 | Runner unit: export entry missing from main | AC-48 |
+| Validator and host unit with a fixed-cost fixture: A1 lowering below profitability | AC-49 |
+| Host unit with a fake registry and fake B-M26-04: trial registration, budget used up, `W_P` restart | AC-50, AC-51 |
+| Validator unit with fake gate and size-table results: `MAXOPEN` raise | AC-52 |
+| Host unit with a fake M21 replay: admission A1 change | AC-53 |
+| Unit: per-trade "not more favourable" check | AC-54 |
+| Host unit with a fake stage store: B failing on a re-run, sufficient and insufficient data | AC-55 |
 | Metrics: `signals_total{strategy}`, `proposal_dropped_total{reason}`, `strategy_onbar_ms{strategy}`; log `M09.strategy_disabled` | A-M09-01 observability |
 
 Every bug-fix test must fail before and pass after (AGENTS.md "Builders"). MIGRATION row A-M09-01 marks `core/src/engine/engine.ts:17-40` and `core/test/purity.test.ts` as adapt; under "No bugs migrate" its B1 and B5 probes are AC-27 and AC-28.
@@ -497,6 +511,19 @@ Reviewer at `5d1ec4c4` (PASS, one optional MINOR) and red team round 4 at `5d1ec
 59. q5: the alert repeats daily after 24 h; a DECISIONS ruling within 2 days (section 3; AC-37).
 60. Reviewer n1: the "Live only after the gates" paragraph is split from the sandbox and upgrade paragraphs (section 6).
 
+### Round 6
+
+Reviewer at `79aba2c1` (PASS, 2 optional MINOR) and red team round 5 at `79aba2c1` (0 BLOCKER, 4 MAJOR, 3 MINOR), rulings about 9:49 AM:
+
+61. R1: owner-strategy work happens only in the private location, nothing pushed here; public text uses `o-<n>` and hashes; DECISIONS points to the owner's message without quoting it; no owner-strategy work until the owner chooses (section 1; AC-46).
+62. R2: an A1 change always applies; the size table at the new size is checked in the same apply, and a lower bound ≤ 0 blocks entries with `size_not_profitable`, exits kept, critical alert (section 3; AC-49).
+63. R3: every code-deploy re-run is a registered trial within the budget; a differing deploy that touches `W_P` trades starts a fresh `W_P` from `replay_passed`, with no cooldown (section 3; AC-50, AC-51).
+64. R4: admission keys compared on trades through an M21 replay; A1 re-freezes or re-runs as trials; an A3 raise follows the group S rule; `research` only for plugin, universe and configuration changes (section 3; AC-52, AC-53).
+65. m1: "not more favourable" per trade (section 3; AC-54).
+66. m2 and reviewer n2: the private location runs the pin CI; public CI checks only the commitment (section 1; AC-46).
+67. m3: gate B failing on a re-run: `failed` with sufficient data, `research` without (section 3; AC-55).
+68. Reviewer n1: section 2's "Document" and "Order" say the in-repo path is for agent-origin strategies only.
+
 ## Open points
 
 1. **Owner's evidence and the windows.** Gate B uses only days recorded after the PREREG (C-26). The owner's research data may serve a CS-1 kill-only screen, never a pass. This is a confirmed reading; no change is proposed.
@@ -520,4 +547,5 @@ Reviewer at `5d1ec4c4` (PASS, one optional MINOR) and red team round 4 at `5d1ec
    - B-M25-01: the group tag on every `affectsReturns` key.
    - B-M26-03: the A3 enable bound to `id@version` and re-validated at `effective_at`.
    - VM-03 (UI.md): `version` in `strategies[]`.
-7. **Where owner strategies live (owner, pending; round 5 ruling 54).** A private repository (the existing private `zeroed-data` or a new private strategies repository) with a server fetch path, or this whole repository becoming private. Until the owner answers, no owner strategy is merged anywhere public.
+   - B-M21-02 and B-M25-02: the `size_not_profitable` entry block after a group S A1 lowering; the M21 replay that compares admission keys on trades.
+7. **Where owner strategies live (owner, pending; round 5 ruling 54).** A private repository (the existing private `zeroed-data` or a new private strategies repository) with a server fetch path, or this whole repository becoming private. Until the owner answers, no owner-strategy work starts at all and nothing about one is pushed here (round 6 ruling 61).
