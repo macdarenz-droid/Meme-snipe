@@ -78,3 +78,14 @@ Rulings 18, 20, 21 and 22 are closed. There is no path to a K2 or K3 day counted
 Ruling 23 is in, and OF-2 36–42 are merged forward along with of3's own redirects. test-ci passes 233/0. No scanner or trim output reaches a public log, every step sees the same ARCHIVE_PRIOR value, and the done logic is unchanged. Next comes the OF-2 round 6 merge-forward (43–48) as a delta.
 
 24. **Reviewer m1 (8:46 PM).** A failed day's scanner, trim and unitlog reasons (`$out-log`, `$qlog`) are lost when the runner ends. Keep them with the encrypted cache from OF-2 ruling 44, so they stay private and can be read. Until that lands, OLD-FAITHFUL §2 says the reasons are not kept. Merged forward with OF-2 round 6.
+
+## Round 5 (of3-scanner `8db8b0bf`, on OF-2 round 7)
+
+### Round 5 red team `session_01Uoe1pFxvHNzq9yCieDicqQ`: PASS (0 BLOCKER, 0 MAJOR, 2 MINOR)
+
+test-ci 245/0. `$out/logs` reaches no clear-text path. m1 (`data-scan.yml:533-535`): when trim-day exits 1, the QA step is skipped, and the trim, migration and unitlog reasons are lost with the runner. m2: the redirect lint sees only plain `qlog=` assignments. It misses `for`, `read`, `:=`, `printf -v`, `ln -sf` and a later `cat` (a lint gap, not a live leak).
+
+### Supervisor rulings for round 6 (9 Oct 2026, about 12:36 AM; sent together with the reviewer's findings)
+
+25. **m1.** When the trim step fails, seal only `$out/logs` under its own key (`data-scan-DAY-k<kid>-RUN-ATTEMPT-logs`). Never seal half-trimmed units. Test: a forced trim failure leaves a sealed logs entry and no units entry.
+26. **m2.** Merged into OF-2 ruling 57, which now also covers: any write to qlog, slog or tlog other than a plain assignment (`for`, `read`, `printf -v`, `declare`, `:=`), and `ln`, `cat`, `tee`, `head` or `tail` on `"$qlog|$slog|$tlog/..."` in the CI scripts. One test per form.
