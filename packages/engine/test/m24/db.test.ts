@@ -8,7 +8,7 @@ import { runInNewContext } from 'node:vm';
 import { isTxControl, M24_LOG_CODES, OUTBOX_DDL, OUTBOX_RETENTION_MS, openDb, OutboxConsumer, type Db, type OutboxRow, type TxHandle } from '../../src/m24/db.ts';
 import { createLogger, M27_LOG_CODES, mergeLogCodes } from '../../src/m27/log.ts';
 import { MetricsRegistry } from '../../src/m27/metrics.ts';
-import { fakeClock, tempDir } from '../helpers.ts';
+import { fakeClock, tempDir, schemaFixture } from '../helpers.ts';
 
 const dir = tempDir('db');
 let n = 0;
@@ -22,7 +22,7 @@ function setup(over: { path?: string; withOutbox?: boolean; observed?: boolean }
   const db = openDb({ create: true, path, clock, ...(over.observed === false ? {} : {
     metrics: { writeLatencyMs: metrics.histogram('db_write_latency_ms', {}), outboxBacklog: metrics.gauge('outbox_backlog', {}) }, log,
   }) });
-  if (over.withOutbox !== false) db.withSchemaTx((tx) => { for (const stmt of `${OUTBOX_DDL}\nCREATE TABLE state (id INTEGER PRIMARY KEY, v TEXT);`.split(';').map((x) => x.trim()).filter(Boolean)) tx.run(stmt); });
+  if (over.withOutbox !== false) schemaFixture(db, (tx) => { for (const stmt of `${OUTBOX_DDL}\nCREATE TABLE state (id INTEGER PRIMARY KEY, v TEXT);`.split(';').map((x) => x.trim()).filter(Boolean)) tx.run(stmt); });
   return { db, clock, path, lines, metrics };
 }
 
@@ -43,8 +43,8 @@ describe('openDb: PRAGMAs, file mode and connections (B-M24-01 logic 2-3)', () =
   it('refuses a database that cannot use WAL, and an in-memory database has no readers', () => {
     assert.throws(() => openDb({ path: '', clock: fakeClock() }), /journal_mode is delete, not wal/);
     const mem = openDb({ path: ':memory:', clock: fakeClock() });
-    assert.equal(mem.withSchemaTx((tx) => tx.get('PRAGMA foreign_keys')?.foreign_keys), 1n);
-    assert.equal(mem.withSchemaTx((tx) => tx.get('PRAGMA synchronous')?.synchronous), 2n);   // 2 = FULL
+    assert.equal(schemaFixture(mem, (tx) => tx.get('PRAGMA foreign_keys')?.foreign_keys), 1n);
+    assert.equal(schemaFixture(mem, (tx) => tx.get('PRAGMA synchronous')?.synchronous), 2n);   // 2 = FULL
     assert.throws(() => mem.reader(), /no reader connections/);
     mem.close();
   });
@@ -126,7 +126,7 @@ describe('withTx (B-M24-01 logic 3; ARCH 7.1)', () => {
 
   it('runs nothing outside the transaction after SQLite ended it inside withTx (review m1)', () => {
     const { db } = setup();
-    db.withSchemaTx((tx) => tx.run("CREATE TRIGGER no_x BEFORE INSERT ON state WHEN NEW.v = 'x' BEGIN SELECT RAISE(ROLLBACK, 'no x'); END"));
+    schemaFixture(db, (tx) => tx.run("CREATE TRIGGER no_x BEFORE INSERT ON state WHEN NEW.v = 'x' BEGIN SELECT RAISE(ROLLBACK, 'no x'); END"));
     const swallow = (f: () => void): void => {
       try { f(); } catch { /* the body catches the rollback and carries on */ }
     };
@@ -143,7 +143,7 @@ describe('withTx (B-M24-01 logic 3; ARCH 7.1)', () => {
 
   it('rethrows when SQLite itself already rolled the transaction back (RAISE(ROLLBACK))', () => {
     const { db } = setup();
-    db.withSchemaTx((tx) => tx.run("CREATE TRIGGER no_x BEFORE INSERT ON state WHEN NEW.v = 'x' BEGIN SELECT RAISE(ROLLBACK, 'no x'); END"));
+    schemaFixture(db, (tx) => tx.run("CREATE TRIGGER no_x BEFORE INSERT ON state WHEN NEW.v = 'x' BEGIN SELECT RAISE(ROLLBACK, 'no x'); END"));
     assert.throws(() => db.withTx((tx) => { tx.run('INSERT INTO state (id, v) VALUES (1, ?)', 'a'); tx.run('INSERT INTO state (id, v) VALUES (2, ?)', 'x'); }), /no x/);
     assert.equal(count(db, 'SELECT count(*) AS n FROM state'), 0n);
     db.close();
@@ -288,7 +288,7 @@ describe('integrity checks and online backup', () => {
 
   it('reports a corrupt index', () => {
     const { db, path } = setup();
-    db.withSchemaTx((tx) => { tx.run('CREATE INDEX state_v ON state(v)'); tx.run('INSERT INTO state (id, v) VALUES (1, ?)', 'a'); });
+    schemaFixture(db, (tx) => { tx.run('CREATE INDEX state_v ON state(v)'); tx.run('INSERT INTO state (id, v) VALUES (1, ?)', 'a'); });
     db.close();
     const raw = new DatabaseSync(path);
     raw.exec('PRAGMA writable_schema=ON');

@@ -22,7 +22,7 @@ import { renameSync, rmSync } from 'node:fs';
 import type { Clock, Result } from '@bot/types';
 import type { Logger } from '../m27/log.ts';
 import { DatabaseSync } from 'node:sqlite';
-import { isCorruptionError, type Db } from './db.ts';
+import { isCorruptionError, schemaTx, type Db } from './db.ts';
 import { tableStatements } from './ddl.ts';
 import { M0001_INITIAL } from './migrations/0001_initial.ts';
 import { TABLES } from './schema.ts';
@@ -63,7 +63,7 @@ const MIGRATION_COLUMNS = ['version', 'sha256', 'applied_at'];
 
 /** Why the database is not this schema's (null when it is, or when it is empty). */
 export function foreignDatabase(db: Db): string | null {
-  return db.withTx((tx) => {
+  return schemaTx(db, (tx) => {
     if (tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'") === undefined) return null;
     const columns = tx.all("SELECT name FROM pragma_table_info('schema_migrations') ORDER BY cid").map((r) => r.name as string);
     if (columns.length === 0) return 'it holds tables but no schema_migrations';
@@ -73,7 +73,7 @@ export function foreignDatabase(db: Db): string | null {
 
 /** Applied migrations as recorded in the database (empty when the table does not exist yet). */
 export function appliedMigrations(db: Db): Array<{ version: number; sha256: string }> {
-  return db.withTx((tx) => {
+  return schemaTx(db, (tx) => {
     if (tx.get("SELECT 1 AS x FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations'") === undefined) return [];
     return tx.all('SELECT version, sha256 FROM schema_migrations ORDER BY version').map((r) => ({ version: Number(r.version), sha256: r.sha256 as string }));
   });
@@ -142,7 +142,7 @@ export async function prepareDatabase(db: Db, opts: PrepareOptions): Promise<Res
   }
   let current: Migration = pending[0] as Migration;
   try {
-    db.withSchemaTx((tx) => {
+    schemaTx(db, (tx) => {
       tx.run(SCHEMA_MIGRATIONS_STATEMENT);
       for (const m of pending) {
         current = m;

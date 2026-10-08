@@ -15,7 +15,7 @@ import { deleteExpired } from '../../src/m24/retention.ts';
 import { createLogger, M27_LOG_CODES, mergeLogCodes } from '../../src/m27/log.ts';
 import { FileLogSink } from '../../src/m27/logfile.ts';
 import { MetricsRegistry, type RollupRow } from '../../src/m27/metrics.ts';
-import { fakeClock, tempDir } from '../helpers.ts';
+import { fakeClock, tempDir, schemaFixture } from '../helpers.ts';
 import { sampleRow } from './samples.ts';
 
 const dir = tempDir('round2');
@@ -192,7 +192,7 @@ describe('ruling 9: a damaged database or backup is named, not thrown raw or tru
   it('quick_check runs before the start backup: a damaged table page refuses the migration with E_DATABASE_CORRUPT and takes no backup', async () => {
     const path = fresh();
     const db0 = openDb({ create: true, path, clock: fakeClock(T0) });
-    db0.withSchemaTx((tx) => { tx.run('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'); for (let i = 0; i < 200; i++) tx.run('INSERT INTO t VALUES (?, ?)', i, 'x'.repeat(100)); });
+    schemaFixture(db0, (tx) => { tx.run('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'); for (let i = 0; i < 200; i++) tx.run('INSERT INTO t VALUES (?, ?)', i, 'x'.repeat(100)); });
     db0.close();                                                                          // checkpointed into the file
     const raw = new DatabaseSync(path, { readOnly: true });
     const root = (raw.prepare("SELECT rootpage FROM sqlite_schema WHERE name = 't'").get() as { rootpage: number }).rootpage;
@@ -258,7 +258,7 @@ describe('ruling 14: only the retention job writes retention_clock', () => {
     db.withTx((tx) => repos.fill.insert(tx, { ...sampleRow('fill', 1), createdAt: wall - DAY }));
     const forge = 'CREATE TRIGGER forge AFTER INSERT ON trade BEGIN UPDATE retention_clock SET now_ms = 99999999999999; END';
     assert.throws(() => db.withTx((tx) => tx.run(forge)), /migration runner's alone/);    // ruling 22: no DDL outside the runner
-    assert.throws(() => db.withSchemaTx((tx) => tx.run(forge)), /retention job's alone/); // ruling 24: not even in a schema transaction
+    assert.throws(() => schemaFixture(db, (tx) => tx.run(forge)), /retention job's alone/); // ruling 24: not even in a schema transaction
     const raw = new DatabaseSync(path);                                                   // a writer outside the engine adds it anyway
     raw.exec(forge);
     raw.close();
@@ -354,7 +354,7 @@ describe('round 4 ruling 22: only the migration runner changes the schema', () =
     db.close();
   });
 
-  it('no source file but db.ts and migrate.ts calls withSchemaTx', () => {
+  it('no source file but db.ts and migrate.ts calls schemaTx; Db has no schema method (ruling 26)', () => {
     const src = fileURLToPath(new URL('../../../', import.meta.url));
     const found: string[] = [];
     for (const pkg of readdirSync(src)) {
@@ -363,9 +363,32 @@ describe('round 4 ruling 22: only the migration runner changes the schema', () =
       for (const f of readdirSync(dirPath, { recursive: true, encoding: 'utf8' })) {
         const rel = `${pkg}/src/${f}`;
         if (!f.endsWith('.ts') || rel === 'engine/src/m24/db.ts' || rel === 'engine/src/m24/migrate.ts') continue;
-        if (/withSchemaTx/.test(readFileSync(join(dirPath, f), 'utf8'))) found.push(rel);
+        if (/schemaTx|withSchemaTx|SCHEMA_TX/.test(readFileSync(join(dirPath, f), 'utf8'))) found.push(rel);
       }
     }
     assert.deepEqual(found, []);
+  });
+});
+
+describe('round 5 rulings 26 and 27: the schema door is not on Db, and SQLite\'s own tables are the runner\'s', () => {
+  it('Db has no withSchemaTx; the old repro (drop the trigger, then delete a young quarantine row) fails', async () => {
+    const db = await migrated();
+    assert.equal((db as unknown as Record<string, unknown>)['withSchema' + 'Tx'], undefined);
+    assert.equal(Object.keys(db).some((k) => /schema/i.test(k)), false);
+    const wall = Number(db.reader().get("SELECT unixepoch('now') * 1000 AS now")?.now);
+    db.withTx((tx) => repos.quarantine.insert(tx, { ...sampleRow('quarantine', 1), createdAt: wall - DAY }));
+    assert.throws(() => db.withTx((tx) => tx.run('DROP TRIGGER "quarantine_no_delete"')), /migration runner's alone/);
+    assert.throws(() => db.withTx((tx) => tx.run('DELETE FROM quarantine')), /append_only/);
+    assert.equal(repos.quarantine.find(db.reader()).length, 1);
+    db.close();
+  });
+
+  it('withTx refuses any statement naming a sqlite_* table, sqlite_sequence included', async () => {
+    const db = await migrated();
+    for (const sql of ["UPDATE sqlite_sequence SET seq = 0 WHERE name = 'outbox'", 'DELETE FROM SQLITE_SEQUENCE', "SELECT sql FROM sqlite_schema WHERE name = 'fill'",
+      'SELECT * FROM sqlite_master', 'INSERT INTO sqlite_stat1 VALUES (1, 2, 3)']) {
+      assert.throws(() => db.withTx((tx) => tx.run(sql)), /sqlite_\* tables are the migration runner's alone|migration runner's alone/, sql);
+    }
+    db.close();
   });
 });
