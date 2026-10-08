@@ -92,3 +92,9 @@ The BLOCKER is closed: 0 of 10 plain-rename races and 0 deletions in 255k atomic
 
 26. **MINOR 1.** Preallocate the receipts image (`fallocate -l 64M`, or `truncate` followed by `fallocate`) so a full host disk cannot leave it half-written, and count the 64 MiB in the disk budget. Test: the installed image has 64 MiB of allocated blocks.
 27. **MINOR 2.** No change now; it is a card note for B-M30-02 and M14, recorded in the PR's DECISIONS row. The sentinel opens `rpc-usage.db` and its -wal/-shm only after an lstat check (each must be a regular file, never a link), or with O_NOFOLLOW where the driver allows it. A root-owned 3770 folder stays a fallback, to be decided once SQLite's WAL deletion under a sticky folder is checked.
+
+### #311 round 3 red team (delta `c4d5d6db..d5d2932f`): 0 BLOCKER, 0 MAJOR, 1 MINOR. Final.
+
+The backup unit's new path opens nothing: links are skipped and SQLite refuses a symlinked -wal or -shm. `.backup` of a live WAL database is a consistent snapshot. fallocate plus nodiscard keeps the space reserved after mount. MINOR: the ruling 24 test needs the `sqlite3` CLI; it fails in containers that don't have it.
+
+28. **MINOR (9 Oct, about 1:55 AM).** Cite the runner image's toolset or readme for sqlite3 on ubuntu-24.04 (the builder reported 3.45.1). Make the test fail with a clear "sqlite3 missing" message when the CLI is absent. Never skip it. CI's `check` job on the ready PR is the proof.
