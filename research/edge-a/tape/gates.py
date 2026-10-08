@@ -11,7 +11,7 @@ COUNT_BAR = 200  # never lowered
 STEPS = ("A", "B", "C")
 LEVEL = 0.95
 DEFAULT_B = 10_000
-DEFAULT_SEED = 20261008
+DEFAULT_SEED = 20261009  # AMENDMENT_2 Q5: registered seed, the same for both gates
 
 
 def count_rule(n_pools: int, steps_read: tuple[str, ...]) -> dict:
@@ -79,7 +79,7 @@ def score_gates(up, dn, net, n_count: int, steps_read: tuple[str, ...], n_boot: 
         return {"count_rule": cr, "decision": "not scored: count rule not met"}
     secs = up + dn
     g2 = pool_bootstrap(gate2_stat, [up, dn], n_boot, seed)
-    g3 = pool_bootstrap(gate3_stat, [net, secs], n_boot, seed + 1)
+    g3 = pool_bootstrap(gate3_stat, [net, secs], n_boot, seed)
     g2["pass"] = bool(np.isfinite(g2["point"]) and g2["lo"] > 0)
     g3["pass"] = bool(np.isfinite(g3["point"]) and g3["lo"] > 0)
     ok = g2["pass"] and g3["pass"]

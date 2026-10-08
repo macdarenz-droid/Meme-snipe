@@ -459,5 +459,23 @@ class TestRedTeamR1(unittest.TestCase):
                 run_a.main(self._args(r, plan, self.A, ["--n-boot", "200"]))
             self.assertFalse(os.path.exists(os.path.join(r, "o", "gates.json")))
 
+
+class TestAmendment2(unittest.TestCase):
+    """research/edge-a/AMENDMENT_2.md rulings (CODE_REDTEAM.md R1-14 onward)."""
+
+    def test_q5_registered_resamples_and_seed_for_both_gates(self):
+        # R1-14: Q5 registers 10,000 pool resamples with seed 20261009; Gate 3 used seed + 1
+        self.assertEqual((G.DEFAULT_B, G.DEFAULT_SEED), (10_000, 20261009))
+        rng = np.random.default_rng(0)
+        P = 40
+        up, dn = rng.uniform(50, 150, (P, 21)), rng.uniform(50, 150, (P, 21))
+        net = rng.normal(0, 1, (P, 21))
+        r = G.score_gates(up, dn, net, 250, ("A",), n_boot=300)
+        g2 = G.pool_bootstrap(G.gate2_stat, [up, dn], 300, 20261009)
+        g3 = G.pool_bootstrap(G.gate3_stat, [net, up + dn], 300, 20261009)
+        self.assertEqual(r["gate2_bunching"]["lo"], g2["lo"])
+        self.assertEqual(r["gate3_creator"]["lo"], g3["lo"])
+
+
 if __name__ == "__main__":
     unittest.main()
