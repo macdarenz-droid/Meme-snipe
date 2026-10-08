@@ -1,6 +1,6 @@
 # G1 scoring code (shared tape)
 
-Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md`, `../AMENDMENT_2.md`, `../AMENDMENT_3.md`, `../AMENDMENT_4.md` and `../AMENDMENT_5.md`. It reads the shared tape (`research/shared-tape/README.md`) and nothing else. Where the design is silent, the most conservative reading is used and listed in `OPEN_QUESTIONS.md` (OQ-n in the code).
+Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md`, `../AMENDMENT_2.md`, `../AMENDMENT_3.md`, `../AMENDMENT_4.md`, `../AMENDMENT_5.md` and `../AMENDMENT_6.md`. It reads the shared tape (`research/shared-tape/README.md`) and nothing else. Where the design is silent, the most conservative reading is used and listed in `OPEN_QUESTIONS.md` (OQ-n in the code).
 
 ## Entry point
 
@@ -118,3 +118,4 @@ The gate's per-day counts assume whole days: run it once every unit of a day is 
 | Review 5: catchable excludes dropped-by-time | `gate.g1_0`; `tests/test_pipeline.py::test_gate` |
 | Review 6: BOOST and buyback rows without the protocol column | `market.Market.__init__` (`is_boost`, `is_buyback`, `is_protocol`), `flows.migration_flows`; `tests/test_pipeline.py::test_gate` |
 | A5: G1-0 kills on pooled Step A events; no day alone may kill (counts ≥ 40% a day, time and share at full threshold each day) | `gate.g1_0_kills`, `gate._time_share_kills`; `tests/test_review.py::G10PooledAndDays` |
+| A6: PostCompleteBuyEvent count ("not checkable" until the decoder's pump IDL has the v3 items); opening reserves vs a plain migrate deposit; catchable share as a post-v3 upper bound; v3 completer pool part per graduation; BOOST accounting row per slice | `gate.v3_rows`, `gate.decoder_has_v3`, `gate.v3_pool_part`, `gate.g1_0` (`catchable_share_upper_bound_for_post_v3`), `gate.cap_headroom` (`boost_slices.csv`); `tests/test_amendment6.py` |
