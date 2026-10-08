@@ -1019,6 +1019,12 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     // A stamp that is not a time is written again.
     writeFileSync(stamp, 'junk');
     expect(seen(now).out).toBe(String(now));
+    // Ruling 13: a stamp that cannot be written prints nothing, which counts as old, so the alert is raised.
+    const noDir = join(tmp, 'rec-stamp', 'missing-dir', 'first_seen');
+    const unwritable = sh(`recorder_first_seen ${now} "${dir}" "${noDir}"`);
+    expect(unwritable.status).toBe(0);
+    expect(unwritable.out).toBe('');
+    expect(sh(`record_alerts ${now} "${dir}" "${unwritable.out}"`, '{}').out.split('|').slice(0, 2).join(' ')).toBe('on record-upload-stale');
     // The folder gone: the stamp goes too, so a folder that comes back starts a new hold.
     rmSync(dir, { recursive: true });
     expect(seen(now).out).toBe('');

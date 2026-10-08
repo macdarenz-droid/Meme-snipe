@@ -1575,15 +1575,16 @@ prunable_releases() {
 
 # recorder_first_seen NOW RECORDER STAMP: the time RECORDER was first seen, kept in STAMP (written once, by
 # zeroed-check). Prints it, or nothing while RECORDER does not exist (STAMP is then removed, so a folder that comes
-# back starts a new hold). A STAMP that is not a time is written again. The folder's own mtime is never used: it moves
-# whenever a boot folder is added or removed.
+# back starts a new hold). A STAMP that is not a time is written again; if that write fails nothing is printed. The
+# folder's own mtime is never used: it moves whenever a boot folder is added or removed.
 recorder_first_seen() {
   if [ ! -e "$2" ]; then rm -f "$3"; return 0; fi
   local t
   t="$(head -c 32 "$3" 2>/dev/null || true)"
   if ! [[ "$t" =~ ^[0-9]{1,12}$ ]]; then
     t="$1"
-    printf '%s\n' "$t" > "$3.new" && mv -f "$3.new" "$3"
+    # Ruling 13: a stamp that could not be written is never trusted; nothing is printed, which counts as old (alert).
+    { printf '%s\n' "$t" > "$3.new" && mv -f "$3.new" "$3"; } 2>/dev/null || { rm -f "$3.new" 2>/dev/null; return 0; }
   fi
   printf '%s\n' "$t"
 }
