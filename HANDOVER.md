@@ -132,6 +132,11 @@
 - **8 Oct about 9:12 AM: #287 Z01 merged at `106d14ec`** (the new base). Labeled CI run `37691424817` is green (`check` 28 min 8 s, historical-data); ops e2e and the Android build are green on `334569cd`. The builder, reviewer and red team are archived. Push runs on `106d14ec` are being watched: `check`, ops `e2e` and the Android `release`. Z01 touches `E2E_PATHS`, so once all are green the base is deployable again.
   - Deploy is not to be run while `DEPLOY_CODE` exists (its words were exposed in chat). The owner was asked to delete it. A code-only Deploy is fine after that, but not needed while only the stand-in runs.
   - Ultracode: the owner answered "Agents.md". No in-chat workflows or helper agents (CLAUDE.md, the "Parallel work" bullet).
+- **8 Oct about 3:10 PM:**
+  - **#298** supervisor docs → base (head `8b3335c1`, base merged in): CLAUDE.md 8 Oct rules, HANDOVER and review logs. Workers branch from the base and did not see the 8 Oct rules. Reviewer: the #295 reviewer `session_01DtJhuG6jJN4bmPrYeyvbRn`. No red team: this is records only, with no code. Merge on PASS and green CI.
+  - #295 OPS-CLEAN: reviewer PASS at `85a3d9b1` (4 MINOR). Red team pending. Label `deps-reviewed:20110027218dc2ef3d7c00fa86c73d57` to add after the red team, then a green labeled run with e2e.
+  - #296 OF-2: reviewer PASS; red team 2 BLOCKER, 4 MAJOR (re-run attempts, manual dispatch holds, no-op success, refs, per-day exit 75). Rulings in `docs/reviews/OF2.md` went to the data builder, who pauses OF-3.
+  - #293: round 7 rulings 69–76 sent. #294: round 6 rulings 36–45 sent.
 - **8 Oct about 3:03 PM:**
   - **#295 OPS-CLEAN** ready (head `7c6acecc`): worker_ready() = keys_stored && paired; update-unpaired test fails 2 of 5 on the old code and passes 5 of 5 on the new; README-LOGIN; APK-REMOVE; full vitest 7,309 tests pass; label `deps-reviewed:20110027218dc2ef3d7c00fa86c73d57` at `7c6acecc`.
     - The builder's Auto check refused to write the owner's "A" (it could not verify the owner's words). The supervisor, who received the answer, recorded it in `85a3d9b1` on `claude/ops-clean`: O4 resolved, and DECISIONS "Phone access".
