@@ -228,10 +228,7 @@
   - Read: the workflow changes (audit-schedule: `contents: read`, `issues: write`, every step continue-on-error; sbom on `v*` tags, `contents: read`; ci.yml labeled/unlabeled events), and the `logic.sh` change (it ignores `zeroed-advisories`).
   - The unlabeled `check` failed only on `E_LOCK_DRIFT` (as designed). The label was added at 21:43:39Z, and labeled CI run `37691424817` is running. Ops e2e `37690903536` is running on `334569cd`.
 - **Follow-ups (identified, not yet carded):**
-  1. Z0D-2 docs:
-     - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
-     - exclusivity wording "nothing outside the bot's own spend ledger";
-     - SPEC-A:2498 still cites the db3050b3 estimate (95–255 GB, 7.7M, cap 8.6M). Point it at #288 instead.
+  1. Z0D-2 docs: done or already in the base (checked by Z0D-3, 8 Oct 4:13 PM): replay mode at SPEC-A:1777 and C-78; exclusivity at SPEC-A:2518; the estimate already cites #288. Z0D-3 (#302) adds the VF-08 Node note and fixes the C-78 citation.
   2. Z00: the stale "at least 50 GB" comment in `install.sh:53`, at the next install.sh change.
   3. #283 follow-ups:
      - re-merge the 10 newer research commits (`609cffc0`);
