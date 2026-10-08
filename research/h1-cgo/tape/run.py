@@ -58,6 +58,10 @@ def _verify_meta(out):
             sys.exit(f"features_meta.json lacks {k}: rerun the features stage")
     if tapeio.sha256_file(meta["plan"]) != meta["plan_sha256"]:
         sys.exit("the unit plan changed since the features stage")
+    try:
+        tapeio.check_plan_registered(meta["plan"], meta["days_used"])
+    except ValueError as e:
+        sys.exit(f"incomplete input: {e}")
     us = [tapeio.Unit(r["day"], r["from_slot"], r["to_slot"], r["dir"]) for r in meta["unit_records"]]
     try:
         tapeio.check_complete(us, meta["days_used"], tapeio.load_plan(meta["plan"]))
@@ -99,6 +103,7 @@ def main(argv=None):
             sys.exit("decision and creation days must be all discovery or all validation days")
         days = sorted(set(o.decision_days) | set(o.creation_days or []))
         try:
+            tapeio.check_plan_registered(o.plan, days)
             tapeio.check_complete(us, days, tapeio.load_plan(o.plan))
         except ValueError as e:
             sys.exit(f"features: {e}")

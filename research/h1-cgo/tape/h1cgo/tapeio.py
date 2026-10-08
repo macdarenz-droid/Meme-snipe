@@ -119,6 +119,12 @@ def code_hash() -> dict:
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 PLAN_PATH = os.path.join(REPO, "research", "shared-tape", "stepa-plan.txt")
+# R2-5: the only unit plans a stage may be checked against, by sha256, with the days each is registered for
+# (research/shared-tape/stepa-plan.txt and stepb-plan.txt with its stepb-plan.sha256; the same shas W1 and D1 fix).
+REGISTERED_PLANS = {
+    "fa99c8788f845a7d9f4a5c967d7cce18c0a7f476082c1969fc35cf4f57f38fc7": ("2026-09-10", "2026-09-11"),
+    "44f133a5b825876b8ca29bb9b807e3d75e2d2fb375780e26f3570fdab03058d5": ("2026-09-07", "2026-09-08", "2026-09-09"),
+}
 REQUIRED_TABLES = ("E.jsonl.zst", "B.csv.zst", "S_curve.csv.zst", "S_amm.csv.zst", "T.csv.zst", "T_coverage.csv.zst")
 
 
@@ -134,6 +140,19 @@ def load_plan(path: str = PLAN_PATH) -> dict:
                 raise ValueError(f"{path}:{n}: expected 'DAY EPOCH FROM TO'")
             plan.setdefault(parts[0], []).append((int(parts[2]), int(parts[3])))
     return {d: sorted(v) for d, v in plan.items()}
+
+
+def check_plan_registered(path: str, days) -> str:
+    """R2-5: the plan must be a registered one (sha256 in REGISTERED_PLANS) and registered for every day used.
+    Returns its sha256; raises ValueError otherwise."""
+    sha = sha256_file(path)
+    reg = REGISTERED_PLANS.get(sha)
+    if reg is None:
+        raise ValueError(f"{path} (sha256 {sha}) is not a registered unit plan")
+    bad = sorted(set(days) - set(reg))
+    if bad:
+        raise ValueError(f"the plan {path} is not registered for {bad}")
+    return sha
 
 
 def check_complete(units, days, plan: dict) -> None:

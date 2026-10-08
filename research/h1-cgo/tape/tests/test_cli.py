@@ -60,8 +60,16 @@ class CLI(unittest.TestCase):
         self.plan = os.path.join(self.tmp.name, "plan.txt")
         pathlib.Path(self.plan).write_text("".join(f"{DAY} 1 {a} {b}\n" for a, b in reversed(self.RANGES)))
         self.out = os.path.join(self.tmp.name, "out")
+        self._registered = dict(R.tapeio.REGISTERED_PLANS)
+        self.register(self.plan)
+
+    def register(self, plan, days=(DAY,)):
+        """The synthetic plans stand in for the registered Step A / Step B plans (R2-5)."""
+        R.tapeio.REGISTERED_PLANS[R.tapeio.sha256_file(plan)] = tuple(days)
 
     def tearDown(self):
+        R.tapeio.REGISTERED_PLANS.clear()
+        R.tapeio.REGISTERED_PLANS.update(self._registered)
         self.tmp.cleanup()
 
     def features(self, units, days=(DAY,), extra=()):
@@ -131,6 +139,7 @@ class CLI(unittest.TestCase):
         self.refused(lambda: self.features(self.units + [other]), "outside this stage's days")
 
     def test_day_without_a_plan(self):
+        self.register(self.plan, days=(DAY, "2026-09-10"))      # registered for both, but lists no 09-10 unit
         self.refused(lambda: self.features(self.units, days=(DAY, "2026-09-10")), "2026-09-10 has no planned units")
 
     def test_later_stages_recheck_completeness(self):
@@ -147,8 +156,31 @@ class CLI(unittest.TestCase):
         tmp2 = os.path.join(self.tmp.name, "short")
         u = write_unit(tmp2, DAY, 0, 120_000, last_block=5_000)  # no hour closes after migration + 60 min
         pathlib.Path(self.plan).write_text(f"{DAY} 1 0 120000\n")
+        self.register(self.plan)
         self.features([u])
         self.refused(lambda: R.main(["gate0", "--out", self.out]), "no decision points")
+
+    def test_unregistered_plan_refused_R2_5(self):
+        """R2-5: completeness is checked against a plan, so the plan itself must be a registered one (pinned sha256)
+        and cover the stage's days; a hand-written plan listing only some units would otherwise make a partial day
+        look complete."""
+        own = os.path.join(self.tmp.name, "own-plan.txt")
+        pathlib.Path(own).write_text(f"{DAY} 1 0 39999\n")
+        self.refused(lambda: R.main(["features", "--units", self.units[0], "--decision-days", DAY, "--out", self.out,
+                                     "--plan", own]), "not a registered unit plan")
+        self.register(own, days=("2026-09-10",))                 # registered, but for another day
+        self.refused(lambda: R.main(["features", "--units", self.units[0], "--decision-days", DAY, "--out", self.out,
+                                     "--plan", own]), "not registered for")
+        self.assertEqual(R.tapeio.REGISTERED_PLANS[R.tapeio.sha256_file(R.tapeio.PLAN_PATH)],
+                         ("2026-09-10", "2026-09-11"))
+        self.features(self.units)                                # the registered synthetic plan still runs
+        meta_p = os.path.join(self.out, "features_meta.json")
+        meta = read_json(meta_p)
+        meta["plan"], meta["plan_sha256"] = own, R.tapeio.sha256_file(own)
+        meta["unit_records"] = meta["unit_records"][:1]
+        pathlib.Path(meta_p).write_text(json.dumps(meta))
+        R.tapeio.REGISTERED_PLANS.pop(R.tapeio.sha256_file(own))
+        self.refused(lambda: R.main(["gate0", "--out", self.out]), "not a registered unit plan")
 
     # 2. outcomes read the same units, with the same hashes
     def test_outcomes_require_the_feature_units(self):

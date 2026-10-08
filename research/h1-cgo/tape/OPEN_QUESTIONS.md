@@ -12,6 +12,7 @@
 - **Other protocol addresses (item 10).** None is added, because none held tokens. One is to be added if an address appears whose tokens come only from protocol instructions.
 - **BOOST swaps.** Decoder v3 sets `protocol=1` on BOOST swaps. Older units leave it 0, so an S_amm row also counts as protocol flow when its (signature, outer_ix, pool) matches a `BoostBuyAndBurnEvent` in E (`features.boost_keys`). On 09-11 unit 446265000-446269499, 651 of 651 events matched exactly one row each. Protocol rows never enter the holder ledger, and their owner is excluded as `protocol`.
 
+- **Registered plans (red team R2-5).** `--plan` must be a registered plan (`tapeio.REGISTERED_PLANS`: Step A `fa99c878…` for 09-10 and 09-11, Step B `44f133a5…` for 09-07..09-09), registered for every day used; `features` and every later stage refuse any other plan. This answers item 24's wait for Step B's plan.
 - **Whole discovery (red team R2-4).** `gate0` passes only on both Step A days (`whole_discovery`); `freeze` and `score` refuse breakpoints, sign and futility made from a subset of the discovery days or of their creation days.
 
 ## Timing
