@@ -90,3 +90,12 @@ The restart-loop MAJOR is closed: only `zeroed-check` writes the stamp. MINOR: w
 ### #309 round 4 (head `de6632a5`): REVIEW PASS, final; red team 0/0/0
 
 **#309 is approved.** It was marked ready at about 12:52 AM so CI (including ops-e2e) runs. It merges once it is green on a head that contains the latest base.
+
+## OFFSITE-ON #312 (head `92d7bf0f`, stacked on #311): reviewer + red team `session_01PmY8SJe37nxiYu5WU7HpHs`
+
+REVIEW PASS, final. Red team 0 BLOCKER, 0 MAJOR, 2 MINOR. The send is refused until the switch is on, a valid owner recipient exists and Telegram is paired. The copy is encrypted only to the owner, with one document and no other data. The 50 MB cap fails loud. Times are right in both AEST and AEDT. Tests fail before and pass after.
+
+### Supervisor rulings (9 Oct 2026, about 1:28 AM)
+
+14. **MINOR 1, README step 3.** Write: "The first copy arrives at the next 17:20 UTC (04:20 Melbourne in daylight time, 03:20 otherwise), up to 5 minutes later."
+15. **MINOR 2, no alert when the owner step is never done.** No new alert now ("Bot first", and the owner's pause). Instead, the supervisor tracks the owner's `zeroed-backup-code` step in HANDOVER owner waits, and checks the `zeroed-status` backup line after the deploy.
