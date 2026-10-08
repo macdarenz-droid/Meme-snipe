@@ -1279,7 +1279,7 @@ type StreamName = 'order_event' | 'fill' | 'universe_manifest' | 'coverage' | 'v
   5. Payload size cap 64 KB per record (`pumpportal_notice` raw capped earlier by M03).
 - **Shared resources and concurrency:** M07 owns segments and manifests (ARCH 7.2: single writer queue, `(stream, seq)` identity). The queue is drained by one writer loop.
 - **Config:** `recorder.queue_max` (count, 50,000, 1,000-500,000); `recorder.record_max_bytes` (bytes, 65,536).
-- **Edge cases and failure handling:** 1. Unserialisable payload → rejected with `E_PAYLOAD` (producer bug), counted. 2. Clock going backwards (NTP step) → `recvMs` recorded as is; `seq` remains the ordering key. 3. Restart → keyframes re-emitted for every pool on first change.
+- **Edge cases and failure handling:** 1. Unserialisable payload → rejected with `E_PAYLOAD` (producer bug), counted. 2. Clock going backwards (NTP step) → `recvMs` recorded as is; `seq` remains the ordering key. 3. Restart → keyframes re-emitted for every pool on first change. 4. Queue full of records that are never dropped (`order_event`, `fill`, `universe_manifest`, `coverage`, `venue_config`) when another such record arrives → `append` throws `E_QUEUE_FULL` and logs `M07.queue_full` (critical); the record is never lost silently and the queue never grows past its bound. The caller treats it as a failed record: fail closed, block new entries, alert (B-M19-02).
 - **Acceptance criteria:**
   - Given a pool polled 3,600 times in an hour with 40 state changes, then 40 snapshot records (1 keyframe + 39 deltas) and 60 `poll_counts` records are written.
   - Given a full queue with mixed streams, then no `order_event` or `fill` record is ever dropped and every dropped stream has a `backpressure` gap.
