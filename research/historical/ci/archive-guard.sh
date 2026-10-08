@@ -147,14 +147,21 @@ ag_private_storage() {
 # release (data-day-, data-volume-) has an explicit top-level permissions mapping with contents: read, no write-all, and no
 # job granting write-all or contents: write in any form (block, quoted, flow). Parsed as
 # YAML (python3's yaml, else yq; VERIFY which the runner has), never matched as text.
-# Prints the first problem and fails; fails when nothing can parse. (A release that holds
+# Prints the first problem and fails; fails when nothing can parse. Round 4, ruling 33:
+# the parser must refuse a repeated key (else arming fails closed); the parser used and
+# its version go to stderr (the job log). (A release that holds
 # no archive data, such as deploy.yml's key handoff, is not an archive path; release calls
 # in research/historical/ci/*.sh are checked above.)
 ag_permissions() {
   if /usr/bin/env python3 -c 'import yaml' 2>/dev/null; then
+    echo "permissions: parsed with python3 $(/usr/bin/env python3 -c 'import sys, yaml; print(sys.version.split()[0], "yaml", yaml.__version__)' 2>/dev/null)" >&2
     /usr/bin/env python3 -c "$ag_permissions_py" "$1"
   elif command -v yq > /dev/null 2>&1; then
     local f n
+    echo "permissions: parsed with $(yq --version 2>&1 | head -1)" >&2
+    if printf 'a: 1\na: 2\n' | yq '.' > /dev/null 2>&1; then
+      echo "the runner's yq ($(yq --version 2>&1 | head -1)) does not refuse a repeated key"; return 1
+    fi
     for f in "$1"/*.yml "$1"/*.yaml; do
       [[ -f "$f" ]] && grep -qE "$ag_wf_marks" "$f" || continue
       n=$(basename "$f")
@@ -165,7 +172,7 @@ ag_permissions() {
         { echo "$n has a job granting write-all or contents: write"; return 1; }
     done
   else
-    return 1
+    echo "no YAML parser (python3 with yaml, or yq) to check the workflows' permissions"; return 1
   fi
 }
 ag_wf_marks='scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-'

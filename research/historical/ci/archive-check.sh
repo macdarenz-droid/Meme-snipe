@@ -71,7 +71,7 @@ fi
 # again (allow-list, arm, retention) before the dispatch.
 if [[ "${1:-}" == --dispatch ]]; then
   [[ $# -eq 2 ]] || { echo "usage: archive-check.sh --dispatch DAY" >&2; exit 2; }
-  msg=$(ag_local "$2" 2>&1 >/dev/null) || { echo "archive-check: $msg; nothing dispatched" | tee -a "$summary"; exit 1; }
+  msg=$(ag_local "$2" 2>&1 >/dev/null) || { msg=$(grep -v '^permissions: parsed with' <<< "$msg" || true); echo "archive-check: $msg; nothing dispatched" | tee -a "$summary"; exit 1; }
   "$gh" workflow run data-scan.yml --repo "$GH_REPO" --ref "$REF" -f mode=scan -f days="$2" -f max_mbps="$ARCHIVE_MAX_MBPS"
   echo "archive-check: served; dispatched data-scan for $2" | tee -a "$summary"
   exit 0
@@ -91,7 +91,7 @@ if [[ "${1:-}" == --probe ]]; then
   [[ $# -eq 2 ]] || { echo "usage: archive-check.sh --probe DAY" >&2; exit 2; }
   next=$2 now=$(ag_now)
   # Ruling 20: the probe checks the day itself (allow-list, arm, retention) first.
-  msg=$(ag_local "$next" 2>&1 >/dev/null) || { echo "archive-check: $msg; no request made" | tee -a "$summary"; exit 2; }
+  msg=$(ag_local "$next" 2>&1 >/dev/null) || { msg=$(grep -v '^permissions: parsed with' <<< "$msg" || true); echo "archive-check: $msg; no request made" | tee -a "$summary"; exit 2; }
   echo "archive-check $(iso "$now"): probe sent for $next" | tee -a "$summary"
   hdr=$(mktemp)
   body=$(mktemp)
@@ -168,8 +168,11 @@ fi
 hold() { echo "archive-check $(date -u -d "@$(ag_now)" +%FT%TZ): held ($1): $2; no request made" | tee -a "$summary"; exit 0; }
 now=$(ag_now)
 
-# 1. armed
-msg=$(ag_armed 2>&1) || hold 1 "${msg#refused: }"
+# 1. armed (the permissions check's parser line goes to the log, not into the hold)
+armed=1; msg=$(ag_armed 2>&1) || armed=0
+grep '^permissions: parsed with' <<< "$msg" | tee -a "$summary" || true
+msg=$(grep -v '^permissions: parsed with' <<< "$msg" || true)
+(( armed )) || hold 1 "${msg#refused: }"
 # 2. back-off, 3. the 3-failure stop and the store
 ag_history || hold 2 "the run history cannot be read (fail closed)"
 # Ruling 4: only the default branch probes (failures count from every branch, above).
@@ -226,7 +229,7 @@ if [[ -z "$next" ]]; then
   echo "archive-check: every allow-listed day is read done; no request made" | tee -a "$summary"
   exit 0
 fi
-msg=$(ag_local "$next" 2>&1 >/dev/null) || hold 7 "${msg#refused: }"
+msg=$(ag_local "$next" 2>&1 >/dev/null) || { msg=$(grep -v '^permissions: parsed with' <<< "$msg" || true); hold 7 "${msg#refused: }"; }
 echo "ready=true" >> "$output"
 echo "day=$next" >> "$output"
 echo "archive-check: every hold passed; the probe step asks the archive for $next" | tee -a "$summary"

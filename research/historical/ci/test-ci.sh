@@ -1567,10 +1567,10 @@ rc=0; FXG=$T/fxrearm/research/historical/ci guard full 2026-07-22 || rc=$?
 bad=""
 # Retention: unset → 07-22 only (K2); K2 → 07-22 and 07-23; K3 → every day.
 mkfx "$T/fxret0" ARCHIVE_RETENTION=
-FXG=$T/fxret0/research/historical/ci guard full 2026-07-22 && [[ $(cat "$T/gout.txt") == K2 ]] || bad+=" unset-07-22"
+FXG=$T/fxret0/research/historical/ci guard full 2026-07-22 && [[ $(grep -v "^permissions: parsed with" "$T/gout.txt") == K2 ]] || bad+=" unset-07-22"
 rc=0; FXG=$T/fxret0/research/historical/ci guard full 2026-07-23 || rc=$?
 [[ $rc == 2 ]] && grep -q "2026-07-23 has no retention value" "$T/gout.txt" || bad+=" unset-07-23:$rc"
-echo 2026-07-22 > "$GD/published"; guard full 2026-07-23 && [[ $(cat "$T/gout.txt") == K2 ]] || bad+=" K2-07-23"; rm -f "$GD/published"
+echo 2026-07-22 > "$GD/published"; guard full 2026-07-23 && [[ $(grep -v "^permissions: parsed with" "$T/gout.txt") == K2 ]] || bad+=" K2-07-23"; rm -f "$GD/published"
 rc=0; guard full 2026-07-24 || rc=$?
 [[ $rc == 2 ]] && grep -q "2026-07-24 has no retention value" "$T/gout.txt" || bad+=" K2-07-24:$rc"
 rc=0; sd 2026-07-24 || rc=$?
@@ -1578,14 +1578,14 @@ rc=0; sd 2026-07-24 || rc=$?
 rc=0; CDAY=2026-07-24 cdrun of2 0 || rc=$?
 [[ $rc == 2 && ! -s "$T/zs.args" ]] || bad+=" check-day-K2-07-24:$rc"
 d=2026-07-22; while [[ "$d" < 2026-08-21 ]]; do echo "$d"; d=$(date -u -d "$d + 1 day" +%F); done > "$GD/published"
-FXG=$T/fxk3/research/historical/ci guard full 2026-08-21 && [[ $(cat "$T/gout.txt") == K3 ]] || bad+=" K3-08-21"; rm -f "$GD/published"
+FXG=$T/fxk3/research/historical/ci guard full 2026-08-21 && [[ $(grep -v "^permissions: parsed with" "$T/gout.txt") == K3 ]] || bad+=" K3-08-21"; rm -f "$GD/published"
 mkfx "$T/fxretx" ARCHIVE_RETENTION=K1
 rc=0; FXG=$T/fxretx/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] || bad+=" K1:$rc"
 [[ -z "$bad" ]] && ok "OF-2 retention: 07-23 with no retention value refused (unset allows only 07-22, K2); 07-24 with K2 refused at the plan job, scan-day.sh and check-day.sh; K3 allows 08-21; an unknown value allows no day" || no "OF-2 retention:$bad"
 bad=""
 # The store and the 3-failure stop at the plan job, and through the guard pass at
 # scan-day.sh and check-day.sh.
-rc=0; guard full 2026-07-22 && [[ $(cat "$T/gout.txt") == K2 ]] || bad+=" control"
+rc=0; guard full 2026-07-22 && [[ $(grep -v "^permissions: parsed with" "$T/gout.txt") == K2 ]] || bad+=" control"
 rc=0; GD_STOP=1 guard full 2026-07-22 || rc=$?
 [[ $rc == 2 ]] && grep -q "the storage-stop marker is present in o/data" "$T/gout.txt" || bad+=" plan-stop:$rc"
 rm -rf "$GP"; rc=0; GD_STOP=1 guard attest 2026-07-22 "$GP" || rc=$?
@@ -2296,7 +2296,25 @@ pf "jobs:\n  a:\n    steps:\n      - run: gh release download data-day-2026-07-2
 mkfx "$T/fxp"; printf '%b' "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: zeroed-scan unit\n" > "$T/fxp/.github/workflows/extra.yml"
 printf 'permissions:\n  contents: write\njobs:\n  a:\n    steps:\n      - run: gh release delete handoff --yes\n' > "$T/fxp/.github/workflows/unrelated.yml"
 ACFX=$T/fxp/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" control:$(cat "$A/summary.md")"
-[[ -z "$bad" ]] && ok "OF-2 r4 ruling 26: arming parses every archive-path workflow's permissions: contents: write in a job (block, double-quoted, single-quoted, flow), at the top level, no top-level block, write-all (top or job), read-all and a repeated key all refuse, as does a workflow naming a day release; a workflow with explicit contents: read arms, and one that touches no archive path (a key-handoff release) is not checked" || no "OF-2 r4 permissions:$bad"
+# Ruling 32: the repeated permissions key of the volume-write bypass is what refuses it
+byp 'python3 -c "import sys; p=sys.argv[1]; s=open(p).read(); i=s.index(\"  volume:\"); j=s.index(\"permissions:\", i); open(p,\"w\").write(s[:j] + \"permissions:\\n      contents: write\\n    \" + s[j:])" "$w"' volume-write-r32
+grep -q "data-scan.yml does not parse as YAML (or repeats a key)" "$A/summary.md" || bad+=" repeated-key-reason"
+# Ruling 31: deploy.yml (a key-handoff release) carries none of the archive-path markers
+(. "$here/archive-guard.sh"; ! grep -qE "$ag_wf_marks" "$here/../../../.github/workflows/deploy.yml" && grep -qE "$ag_wf_marks" "$here/../../../.github/workflows/data-scan.yml") || bad+=" deploy-marked"
+# Ruling 33: the parser used is logged; a parser that keeps a repeated key fails closed
+mkfx "$T/fxp"; rc=0; FXG=$T/fxp/research/historical/ci guard full 2026-07-22 || rc=$?
+[[ $rc == 0 ]] && grep -q "^permissions: parsed with python3 [0-9.]* yaml [0-9.]*" "$T/gout.txt" || bad+=" parser-logged:$rc"
+NP="$T/noyaml"; mkdir -p "$NP"; printf '#!/usr/bin/env bash
+[[ "$*" == *"import yaml"* ]] && exit 1
+exec /usr/bin/python3 "$@"
+' > "$NP/python3"
+printf '#!/usr/bin/env bash
+[[ "$1" == --version ]] && { echo "yq (stub) version v0"; exit 0; }
+cat > /dev/null; echo a
+' > "$NP/yq"; chmod +x "$NP"/*
+rc=0; PATH="$NP:$PATH" FXG=$T/fxp/research/historical/ci guard full 2026-07-22 || rc=$?
+[[ $rc == 2 ]] && grep -q "does not refuse a repeated key" "$T/gout.txt" && grep -q "^permissions: parsed with yq (stub) version v0" "$T/gout.txt" || bad+=" yq-keeps-repeated:$rc"
+[[ -z "$bad" ]] && ok "OF-2 r4 ruling 26: arming parses every archive-path workflow's permissions: contents: write in a job (block, double-quoted, single-quoted, flow), at the top level, no top-level block, write-all (top or job), read-all and a repeated key all refuse (the volume-write bypass for that reason, ruling 32), as does a workflow naming a day release; deploy.yml carries no archive-path marker (31); the parser and its version are logged, and a yq that keeps a repeated key fails closed (33); a workflow with explicit contents: read arms, and one that touches no archive path (a key-handoff release) is not checked" || no "OF-2 r4 permissions:$bad"
 bad=""; gdreset; touch "$GD/noguard-$NG"
 # 27. Whitespace around a Retry-After value is trimmed before the strict parse.
 for v in " 30000" "30000 " "	30000	"; do
