@@ -2546,6 +2546,49 @@ PY
   ACFX=$T/fx65/research/historical/ci ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "data-scan.yml job assemble uses $v:" "$A/summary.md" || bad+=" [$v]"
 done
 [[ -z "$bad" ]] && ok "OF-2 r9 ruling 65: arming refuses an archive job with a container, service containers or a reusable workflow" || no "OF-2 r9 job kinds:$bad"
+# ---- OF-3 round 9, ruling 30 (replaces OF-2 63's deny-list): the log directories only by an allow-list; no eval ----
+bad=""
+c30() { # c30 accept|refuse LINE: the checker's verdict on one line of a CI script
+  local got; got=$( (. "$here/archive-limits.conf"; . "$here/archive-guard.sh"; printf '%s\n' "$2" | python3 -c "$ag_calls_py") >/dev/null 2>&1 && echo accept || echo refuse)
+  [[ $got == "$1" ]] || bad+=" [$1: $2]"; }
+c30 refuse 'cp "$slog/run.log" /dev/stdout'
+c30 refuse 'sed -n p "$slog/run.log"'
+c30 refuse 'awk 1 "$slog/run.log"'
+c30 refuse 'grep . "$slog/run.log"'
+c30 refuse 'while read -r l; do echo "$l"; done < "$slog/run.log"'
+c30 refuse 'cp -s "$slog/run.log" "$RUNNER_TEMP/x"'
+c30 refuse 'eval "x=1"'
+c30 refuse 'cd "$slog"'
+c30 refuse 'x="$slog"; cat "$x/run.log"'
+c30 refuse 'export slog'
+c30 refuse 'local -n r=slog'
+c30 refuse 'for slog in "$out"/logs; do :; done'
+c30 refuse 'read -r slog < "$RUNNER_TEMP/p"'
+c30 refuse 'printf -v slog %s "$out/logs"'
+c30 refuse ': "${slog:=$out/logs}"'
+c30 refuse 'ln -sf "$slog/run.log" "$RUNNER_TEMP/x"'
+c30 refuse 'cat "$slog/run.log"'
+c30 refuse 'cat <<< "$slog"'
+c30 refuse 'exec 3< "$slog/run.log"'
+c30 refuse 'exec 3<> "$slog/run.log"'
+c30 refuse 'slog="$out/logs" cat "$slog/run.log"'
+c30 refuse 'echo "$(cat "$slog/run.log")" >> "$GITHUB_STEP_SUMMARY"'
+c30 refuse 'echo "$(<"$slog/run.log")" >> "$GITHUB_STEP_SUMMARY"'
+c30 refuse 'echo "logs: $slog" > /dev/stdout'
+c30 refuse 'mv "$tlog/migrations.list" "$GITHUB_STEP_SUMMARY"'
+c30 refuse 'mv "$tlog/run.log" "$RUNNER_TEMP/x"'
+c30 refuse 'bash cache-crypt.sh seal "$slog" "$RUNNER_TEMP/s" "$P"'
+c30 accept 'slog="$out/logs"; mkdir -p "$slog"'
+c30 accept 'qlog="${RUNNER_TEMP:?}/volume-log-$day"; rm -rf "$qlog"; mkdir -p "$qlog"'
+c30 accept 'zeroed-scan unit -out "$out" >> "$slog/run.log" 2>&1'
+c30 accept 'lst=$(zeroed-scan migrations -day-start "$dstart" "$out" 2>> "$tlog/migrations.log")'
+c30 accept 'mv "$tlog/migrations.list" "$list.tmp"'
+c30 accept 'echo "logs kept in $slog" >> "$GITHUB_STEP_SUMMARY"'
+c30 accept 'bash cache-crypt.sh seal "$RUNNER_TEMP/work/data/logs" "$RUNNER_TEMP/s" "$P"'
+mkfx "$T/fx30"; c="$T/fx30/research/historical/ci"; printf '%s\n' 'eval "$1"' >> "$c/scan-day.sh"
+ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "scan-day.sh line [0-9]* prints scanner or QA output to the job log: eval in a CI script" "$A/summary.md" || bad+=" [arming eval]"
+[[ -z "$bad" ]] && ok "OF-3 ruling 30: a line naming qlog, slog or tlog may only assign it under \$out or \$RUNNER_TEMP, mkdir or rm it, redirect output into it, mv migrations.list out of it, or echo it to the summary (each red-team form refused: cp to /dev/stdout, sed, awk, grep, while read <, cp -s, eval, cd, aliasing, for, read, printf -v, :=, ln, cat, <<<, exec <, env prefix, \$(cat), \$(<), mv elsewhere); arming refuses eval" || no "OF-3 r9 log allow-list:$bad"
+bad=""
 bad=""; gdreset
 
 echo "$pass passed, $fail failed"
