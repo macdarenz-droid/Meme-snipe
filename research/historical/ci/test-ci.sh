@@ -1242,7 +1242,7 @@ caches = [s for s in steps if "actions/cache" in s.get("uses", "") and s["with"]
 saves = [s for s in caches if "cache/save" in s["uses"]]
 assert saves and all(s["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-") for s in saves), saves
 res = next(s for s in caches if "cache/restore" in s["uses"])
-assert res["with"]["key"] == "${{ steps.pickprogress.outputs.key || format('{0}-{1}-k{2}-{3}', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, steps.cachekid.outputs.kid, github.run_id) }}" and "restore-keys" not in res["with"], res
+assert res["with"]["key"] == "${{ steps.pickprogress.outputs.key || format('{0}-{1}-k{2}-{3}-fresh', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, steps.cachekid.outputs.kid, github.run_id) }}" and "restore-keys" not in res["with"], res
 pick = next(s for s in steps if s.get("id") == "pickprogress")
 assert pick["env"]["PREFIX"] == "${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-", pick
 r = wf["jobs"]["continue"]["steps"][-1]["run"]
