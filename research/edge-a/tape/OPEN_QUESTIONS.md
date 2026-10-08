@@ -1,5 +1,7 @@
 # Design A on the tape: open questions
 
+**Ruled.** Q2 by `../AMENDMENT_1.md`; Q1 and Q3–Q12 by `../AMENDMENT_2.md` (Q5 seed 20261009, Q11 the verdict reads count row 6, Q9 the return test frozen and built in `outcomes.py`). Readings the code takes inside the return test are listed as Q-R1-h in `research/brainstorm-loop/CODE_REDTEAM.md`.
+
 Where the frozen design (`research/EDGE_DIALOGUE.md` "Design A", `research/brainstorm-loop/A_AMENDMENTS_ROUND7.md`) is silent or ambiguous. Each item names the reading the code uses; "conservative" marks the one picked because it makes a pass harder or keeps unknown data out. The lead or a reviewer can change any of them before the primary is scored.
 
 1. **Placebo grid.** "20 placebo cutoffs on a log grid from 340 to 1,300 SOL, each more than 10% away from 420 and 1,470" does not say how the grid is built. Code: the smallest evenly log-spaced grid with both ends that leaves exactly 20 points after the exclusion (24 points, 4 dropped). A ratio and a log-distance reading of "10% away" give the same 20. Bands at the nearest placebos (360.4 and 482.4) do not overlap 420's bands.

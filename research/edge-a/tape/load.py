@@ -28,6 +28,7 @@ S_AMM_COLS = [
     "base_amount", "quote_amount", "lp_fee", "pool_base_token_reserves", "pool_quote_token_reserves",
     "virtual_quote_reserves", "base_supply", "coin_creator", "coin_creator_fee_basis_points",
     "user_token_owner", "canonical", "can_boost",
+    "chain_pool_base", "chain_pool_quote",   # post-swap reserves, for the return test's as-of states (AMENDMENT_2 Q9)
 ]
 
 
@@ -139,7 +140,8 @@ def load_events(u: Unit) -> pd.DataFrame:
 def iter_swaps(u: Unit, chunksize: int = 500_000):
     """S_amm rows with Design A's columns; numbers that can exceed int64 are read as float64."""
     dtypes = {c: "float64" for c in ("base_amount", "quote_amount", "lp_fee", "pool_base_token_reserves",
-                                     "pool_quote_token_reserves", "virtual_quote_reserves", "base_supply")}
+                                     "pool_quote_token_reserves", "virtual_quote_reserves", "base_supply",
+                                     "chain_pool_base", "chain_pool_quote")}
     dtypes.update({c: "object" for c in ("signature", "signer", "pool", "quote_mint", "side", "coin_creator",
                                          "user_token_owner")})
     for ch in pd.read_csv(os.path.join(u.path, "S_amm.csv.zst"), compression="zstd", usecols=S_AMM_COLS,

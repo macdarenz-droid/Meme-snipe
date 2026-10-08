@@ -161,6 +161,9 @@ def compact_swaps(ch: pd.DataFrame, pool_codes: dict, boost_sigs: set) -> pd.Dat
         "is_creator": is_creator,
         "is_boost": s.signature.isin(boost_sigs).to_numpy(),
         "canon_sol": ((s.canonical == 1) & (s.quote_mint == WSOL)).to_numpy(),
+        # the swap's own post-swap chain reading (states for the outcome stage; never a later row's reserves)
+        "base_post": s.chain_pool_base.to_numpy(float), "vault_post": s.chain_pool_quote.to_numpy(float),
+        "virt": s.virtual_quote_reserves.to_numpy(float), "supply": s.base_supply.to_numpy(float),
     })
 
 
