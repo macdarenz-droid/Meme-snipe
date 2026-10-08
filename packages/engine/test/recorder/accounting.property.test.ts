@@ -88,6 +88,17 @@ describe('poll accounting across clock steps and unwatches (rulings 25, 26 and 3
       const counts = out.filter((r) => r.stream === 'poll_counts').map(payloadOf);
       const keys = counts.map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
       assert.equal(new Set(keys).size, keys.length, 'a (pool, minute) record appears twice');
+      // Ruling 32: every record expanded into the minutes it covers (a skippedMinutes record covers its whole span):
+      // no pool's minute is covered twice.
+      const minutesCovered = new Set<string>();
+      for (const c of counts) {
+        const span = typeof c.skippedMinutes === 'number' ? c.skippedMinutes : 1;
+        for (let i = 0; i < span; i++) {
+          const k = `${String(c.poolId)}@${(c.minuteStartMs as number) + i * MINUTE_MS}`;
+          assert.ok(!minutesCovered.has(k), `${k} covered twice`);
+          minutesCovered.add(k);
+        }
+      }
       assert.equal(counts.reduce((a, p) => a + (p.successfulPolls as number), 0), polls, 'successful polls lost or double counted');
       assert.equal(counts.reduce((a, p) => a + (p.failedPolls as number), 0), failed, 'failed polls lost or double counted');
       assert.equal(q.stats().droppedTotal.poll_counts, 0);

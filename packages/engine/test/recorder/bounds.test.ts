@@ -462,3 +462,34 @@ describe('round 7 (rulings 27-29): producer clock steps, forward and backward', 
     }
   });
 });
+
+describe('round 7 (ruling 31): the queue\'s own poll_counts never move maxRecvMinute', () => {
+  const freshMinutes = (q: RecorderQueue): unknown[] => {
+    for (let sec = 60; sec < 360; sec++) {
+      q.append(snap('fresh', 1, T0 + sec * 1_000));
+      q.tick(ms(T0 + sec * 1_000));
+    }
+    q.tick(ms(T0 + 360_000));
+    return q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf)
+      .filter((p) => p.poolId === 'fresh').map((p) => [p.minuteStartMs, p.successfulPolls, p.skippedMinutes]);
+  };
+  const want = [1, 2, 3, 4, 5].map((m) => [T0 + m * 60_000, 60, undefined]);
+
+  it('two forward-stepped ticks in a row: a fresh pool still gets per-minute records', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0 + 1_000));
+    // The first bad tick writes a's minute 0 as a poll_counts record stamped with the bad time.
+    q.tick(ms(T0 + 3_600_000));
+    q.tick(ms(T0 + 3_660_000));
+    assert.deepEqual(freshMinutes(q), want);
+    assert.equal(q.stats().maxRecvMinute, T0 / 60_000 + 5);
+  });
+
+  it('a bad tick followed by an unwatch: a fresh pool still gets per-minute records', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0 + 1_000));
+    q.tick(ms(T0 + 3_600_000));
+    q.unwatch('a', ms(T0 + 3_600_000));
+    assert.deepEqual(freshMinutes(q), want);
+  });
+});
