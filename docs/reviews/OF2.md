@@ -89,3 +89,17 @@ Builder: rulings 21–30 done; test-ci 212/0, 213/0 and 224/0; 15 rows fail on `
     - The wrapper-agnostic guard pattern stands.
     - Two VERIFY items go to the arm checklist: the 500-run window with the re-run window length, and the log retention read with an owner fallback.
     - Merge base `3a734e74` with the OF-3 round 3 push.
+
+### Round 4 red team (delta `3b67e97d..dd08171c`): 1 MAJOR, 6 MINOR
+
+Round 3 items A, B and C are closed. No archive request is possible from current code while unarmed, held or backed off. The remaining paths are old code on old refs: detection stops the chain, and prevention is the arm-time cleanup.
+
+### Supervisor rulings (8 Oct 2026, 6:50 PM)
+
+36. **MAJOR 1.** The scanner's output (`zeroed-scan run` and `unit`: plan counts and per-unit counts) goes to the private side, next to the QA output from ruling 35, never to the job log or step summary. The public log keeps only pass or fail, the exit code and 429/back-off lines. The ag_private_storage guard covers every `zeroed-scan` call except an allow-list of subcommands shown to print nothing archive-derived (fail closed). Test: a stub `zeroed-scan run` that prints `curve=5` never reaches the log or the summary, and an unredirected `zeroed-scan run` line in ci/*.sh is refused.
+37. **MINOR 2.** unguarded-refs.sh also walks tags, and the arm checklist covers them. Today `preview` (13cdf32) carries an unguarded data-scan.yml. `deploy` moves forward with each deploy, so after OF-2 merges and the next deploy it is guarded. Deleting or moving a tag is hard to undo, so at arm time the supervisor puts each unguarded tag to the owner.
+38. **MINOR 3.** An archive-check run off the default branch counts as AG_FOREIGN only if its head SHA lacks archive-guard.sh or its "Archive probe" step was not skipped.
+39. **MINOR 4.** Archive workflows allow only `contents: read` and `actions: read`; `actions: write` is allowed only where the builder shows it is needed. Every other scope must be absent or `none`. upload-artifact is checked in every job of an archive workflow, and `run:` blocks are scanned for qa and scanner calls under ruling 36. test-ci cases: a volume job with `pages: write` refuses, and an assemble step with upload-artifact refuses.
+40. **MINOR 5.** OLD-FAITHFUL §2 states that one cancelled or timed-out check stops the chain until a reviewed re-arm. Whether `always()` steps run after a job-level timeout is VERIFY; the chain fails closed either way.
+41. **MINOR 6.** The "data-scan volume" title skip applies only to default-branch runs whose head SHA is guarded.
+42. **MINOR 7.** If the run list reaches its cap (500), the guard fails closed. It also lists `status=in_progress` runs explicitly.
