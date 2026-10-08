@@ -243,7 +243,7 @@ describe('poll counts (logic 3)', () => {
     q.watch('quiet', 'normal', ms(T0));
     q.append(snap('busy', 1, T0 + 1_000));
     q.append(snap('busy', 1, T0 + 2_000));
-    q.notePollFailed('busy', 'normal', ms(T0 + 3_000));
+    q.notePollFailed('busy', 'normal', ms(T0 + 3_000), false);
     q.tick(ms(T0 + 60_000));
     // A poll stamped in the minute already written is counted in the next one.
     q.append(snap('busy', 2, T0 + 59_000));

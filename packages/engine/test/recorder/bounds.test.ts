@@ -18,7 +18,7 @@ describe('watched pools (ruling 1)', () => {
     const q = new RecorderQueue({ config: { maxWatchedPools: 3 } });
     for (const p of ['a', 'b', 'c']) assert.equal(q.append(snap(p, 1, T0)), 'queued');
     assert.deepEqual(q.append(snap('d', 1, T0)), { rejected: 'E_POOL_CAP' });
-    assert.equal(q.notePollFailed('e', 'normal', ms(T0)), false);
+    assert.equal(q.notePollFailed('e', 'normal', ms(T0), false), false);
     assert.equal(q.watch('f', 'normal', ms(T0)), false);
     assert.equal(q.append(snap('a', 2, T0 + 1)), 'queued');
     const st = q.stats();
@@ -220,7 +220,7 @@ describe('idle by elapsed time (round 4, rulings 17-20)', () => {
   it('a failed poll of a position pool is counted at a full cap (ruling 19)', () => {
     const q = new RecorderQueue({ config: { maxWatchedPools: 3 } });
     for (const id of ['a', 'b', 'c']) q.append(snap(id, 1, T0 + 1_000));
-    assert.equal(q.notePollFailed('pos', 'position', ms(T0 + 2_000)), false, 'without the flag: refused');
+    assert.equal(q.notePollFailed('pos', 'position', ms(T0 + 2_000), false), false, 'without the flag: refused');
     assert.equal(q.notePollFailed('pos', 'position', ms(T0 + 2_000), true), true);
     q.tick(ms(T0 + 60_000));
     const pos = pollCounts(q).filter((p) => p.poolId === 'pos');
@@ -270,5 +270,32 @@ describe('ruling 21: the no-repeat rule covers unwatch() too', () => {
     q.tick(ms(T0 + 240_000));
     const keys = pollCounts(q).map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
     assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
+  });
+});
+
+describe('round 5 (rulings 22 and 23)', () => {
+  it('the tick race: a poll stamped in a written minute but appended after the tick writes no minute twice', () => {
+    const q = new RecorderQueue();
+    q.append(snap('p', 1, T0 + 10_000));
+    q.unwatch('p', ms(T0 + 30_000));
+    q.tick(ms(T0 + 60_100));
+    q.append(snap('p', 1, T0 + 59_990));
+    q.tick(ms(T0 + 120_100));
+    const keys = q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf)
+      .map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+    assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
+    assert.deepEqual(keys, [`p@${T0}`, `p@${T0 + 60_000}`]);
+    assert.equal(q.stats().latePolls, 1);
+  });
+
+  it('a failed poll never clears the position mark: the position pool is not evicted', () => {
+    const q = new RecorderQueue({ config: { maxWatchedPools: 2 } });
+    q.append(snap('pos', 1, T0, 'pool_snapshot_position', 'position'));
+    q.notePollFailed('pos', 'position', ms(T0 + 500), false);
+    q.append(snap('a', 1, T0 + 1_000));
+    assert.equal(q.append(snap('b', 1, T0 + 62_000)), 'queued');
+    // a made way, not pos.
+    assert.equal(q.append(snap('pos', 1, T0 + 62_100, 'pool_snapshot_position', 'position')), 'unchanged');
+    assert.equal(q.stats().capUnwatched, 1);
   });
 });

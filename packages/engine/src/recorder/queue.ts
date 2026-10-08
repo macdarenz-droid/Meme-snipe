@@ -238,6 +238,11 @@ export class RecorderQueue {
   private readonly watched = new Map<string, WatchedPool>();
   /** Pools forgotten within the current minute: the minute their poll counts were written up to (ruling 18). */
   private readonly flushedUntil = new Map<string, number>();
+  /**
+   * The minute of the latest tick(): every minute before it may already be written for some pool, so a new watch
+   * never starts before it (ruling 22). Null before the first tick.
+   */
+  private lastTickMinute: number | null = null;
 
   private readonly openGaps = new Map<StreamName, { fromMs: number; toMs: number }>();
   private readonly closedGaps = perStream<Gap[]>(() => []);
@@ -369,11 +374,12 @@ export class RecorderQueue {
   }
 
   /**
-   * A poll of a watched pool that failed (A-M07-01 logic 3, `failedPolls`). `position` marks a poll of a pool with an
-   * open position (M04's position class): such a pool is always admitted, past the cap (ruling 19). False when the
+   * A poll of a watched pool that failed (A-M07-01 logic 3, `failedPolls`). `position` (required, ruling 23) marks a
+   * poll of a pool with an open position (M04's position class): such a pool is always admitted, past the cap (ruling
+   * 19). A failed poll never clears a pool's position mark; only a successful non-position poll does. False when the
    * pool is new, not a position pool, and no watched pool is idle (counted as E_POOL_CAP).
    */
-  notePollFailed(poolId: string, priorityClass: string, recvMs: UnixMs, position = false): boolean {
+  notePollFailed(poolId: string, priorityClass: string, recvMs: UnixMs, position: boolean): boolean {
     const w = this.admit(poolId, priorityClass, recvMs, position);
     if (w === null) {
       this.reject('poll_counts', 'E_POOL_CAP', 'watched pool cap reached');
@@ -414,6 +420,7 @@ export class RecorderQueue {
    */
   tick(nowMs: UnixMs): void {
     const nowMinute = Math.floor(nowMs / MINUTE_MS);
+    this.lastTickMinute = this.lastTickMinute === null ? nowMinute : Math.max(this.lastTickMinute, nowMinute);
     for (const [poolId, w] of this.watched) {
       this.flushPool(poolId, w, nowMinute, nowMs);
       if (nowMinute - Math.floor(w.seenMs / MINUTE_MS) > this.cfg.idleUnwatchMinutes) {
@@ -630,8 +637,11 @@ export class RecorderQueue {
     }
     const from = this.flushedUntil.get(poolId);
     this.flushedUntil.delete(poolId);
+    // Never before a minute already written for this pool, nor before the last tick's minute (a poll stamped earlier
+    // but appended after that tick counts as late).
+    const nextMinute = Math.max(minute, from ?? minute, this.lastTickMinute ?? minute);
     const w: WatchedPool = {
-      priorityClass, nextMinute: Math.max(minute, from ?? minute), seenMs: nowMs, lastPollMs: null, intervalMs: null,
+      priorityClass, nextMinute, seenMs: nowMs, lastPollMs: null, intervalMs: null,
       position: false, lastRawHash: null, buckets: new Map(),
     };
     this.watched.set(poolId, w);
@@ -641,7 +651,8 @@ export class RecorderQueue {
   /** Counts one poll of a watched pool. */
   private countPoll(w: WatchedPool, priorityClass: string, recvMs: number, kind: 'successful' | 'changed' | 'failed', position: boolean): void {
     w.priorityClass = priorityClass;
-    w.position = position;
+    // A failed poll can set the position mark but never clears it (ruling 23).
+    w.position = kind === 'failed' ? w.position || position : position;
     if (w.lastPollMs !== null && recvMs > w.lastPollMs) w.intervalMs = recvMs - w.lastPollMs;
     if (w.lastPollMs === null || recvMs > w.lastPollMs) w.lastPollMs = recvMs;
     w.seenMs = Math.max(w.seenMs, recvMs);
