@@ -1178,6 +1178,19 @@ class BotGates(unittest.TestCase):
         H3.add_known(77, 990.0, 1.0)
         self.assertEqual(gate_h13(H3, 1000.0, 9, (ins, cl)), 1)
 
+    def test_h13_proxy_links_use_every_t_transfer_R2_18(self):
+        """R2-18 (AMENDMENT_4 item 37: "linked to the dev by a W or T transfer on the tape"): the proxy's links are
+        every W transfer and every T transfer of any mint (WSOL included), not only pump mints as the fast-class
+        clusters use; more links can only add insiders."""
+        from d1.holders import h13_link_pairs
+        w = pd.DataFrame({"slot": [10], "src": [9], "dst": [40]})
+        t = pd.DataFrame({"slot": [20, 30, 40], "mint": [1, 2, 3], "pump_mint": [0, 1, 0], "kind": [0, 0, 1],
+                          "src": [9, 9, 9], "dst": [41, 42, 43]})
+        tape = type("T", (), {"w": w, "t": t})()
+        u, v, sl = h13_link_pairs(tape)
+        pairs = set(zip(u.tolist(), v.tolist()))
+        self.assertEqual(pairs, {(9, 40), (9, 41), (9, 42)})          # 41: a non-pump (e.g. WSOL) transfer; 43: a burn
+
     def test_h13_proxy_in_features_and_label_R2_15(self):
         """R2-15: with the CreateEvent on the tape the proxy judges H13 without funder reads; without it H13 stays
         unknown. A tradable result carries the label "H8-tradable by tape proxy for H13"."""

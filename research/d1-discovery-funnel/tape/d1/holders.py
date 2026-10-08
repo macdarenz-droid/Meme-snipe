@@ -25,7 +25,6 @@ import numpy as np
 import pandas as pd
 
 from . import config as C
-from .clusters import link_pairs
 from .load import Tape
 from .pool_state import PoolBook
 
@@ -179,8 +178,22 @@ def insider_sets(tape: Tape, mint: int, create_slot: int, creator: int, funders)
     return (creation | cluster) - {creator}, cluster
 
 
+def h13_link_pairs(tape: Tape):
+    """AMENDMENT_4 item 37 (red team R2-18): the H13 proxy links the dev by "a W or T transfer on the tape": every W
+    transfer and every T transfer of any mint (not only pump mints, as the fast-class clusters use). Each pair is
+    dated by its first link."""
+    t = tape.t[tape.t.kind == 0]
+    src = np.r_[tape.w.src.to_numpy(), t.src.to_numpy()].astype(np.int64)
+    dst = np.r_[tape.w.dst.to_numpy(), t.dst.to_numpy()].astype(np.int64)
+    slot = np.r_[tape.w.slot.to_numpy(), t.slot.to_numpy()].astype(np.int64)
+    ok = (src >= 0) & (dst >= 0) & (src != dst)
+    u, v = np.minimum(src[ok], dst[ok]), np.maximum(src[ok], dst[ok])
+    df = pd.DataFrame({"u": u, "v": v, "slot": slot[ok]}).groupby(["u", "v"], sort=False).slot.min().reset_index()
+    return df.u.to_numpy(), df.v.to_numpy(), df.slot.to_numpy()
+
+
 class LinkIndex:
-    """W and T links (clusters.link_pairs: each pair dated by its first link) for the H13 tape proxy, read as of a slot:
+    """W and T links (h13_link_pairs: each pair dated by its first link) for the H13 tape proxy, read as of a slot:
     an address's degree and its neighbours count only links on or before that slot."""
 
     def __init__(self, u, v, slot):
@@ -246,7 +259,7 @@ def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame, funders: dict 
                                                         "gate_h12", "gate_h13"])
     ce = tape.ev["CreateEvent"].drop_duplicates("mint").set_index("mint")
     mg = tape.ev["CompletePumpAmmMigrationEvent"]
-    links = LinkIndex(*link_pairs(tape)) if funders is None else None
+    links = LinkIndex(*h13_link_pairs(tape)) if funders is None else None
     for (pool, mint), g in el.groupby(["pool", "mint"], sort=False):
         curves = set(mg[mg.mint == mint].bonding_curve.tolist())
         if mint in ce.index:
