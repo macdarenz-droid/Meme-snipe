@@ -185,6 +185,11 @@ next day only on a 206 of at most 64 bytes. Chained runs never resume after a bl
 which counts as a failure, and with no back-off annotation it reads as `end=hold`, which holds until a reviewed
 re-arm. Whether `always()` steps still run after a job-level timeout is **VERIFY**; the chain fails closed either way.
 
+**A failed day's reasons are kept, privately** (OF-3 ruling 24): the scanner's output and the trim, unitlog,
+finalize and QA output go to `logs/` inside the day's progress directory, never to the public log, and are saved with
+the progress in the sealed cache (OF-2 ruling 44). After a failure they are read by opening that cache
+(`ci/cache-crypt.sh open`) with the store token; nothing about them is published.
+
 **Arm checklist (the arming change, OF-2 rounds 3–4).** The supervisor puts each item to the owner, with a
 recommendation, before `ARCHIVE_ARM` is set:
 1. `research/historical/ci/unguarded-refs.sh` (read only): the branches and tags whose `data-scan.yml` or
