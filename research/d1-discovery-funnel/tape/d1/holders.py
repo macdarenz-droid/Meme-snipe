@@ -163,9 +163,13 @@ def insider_sets(tape: Tape, mint: int, create_slot: int, creator: int, funders)
     """facts/producer.ts #insiders + facts/funding.ts insiderLinks: creation-slot buyers (create slot .. +2) and the
     dev's linked cluster among the first 20 curve buyers (funded by the dev or by the dev's own funder). Returns
     (insiders, dev_cluster) or None when a funder read is missing (incomplete: never "not linked")."""
-    cb = tape.curve[(tape.curve.mint == mint) & (tape.curve.is_buy == 1) & (tape.curve.owner >= 0)]
-    creation = set(cb.loc[(cb.slot >= create_slot) & (cb.slot <= create_slot + C.H13_INSIDER_SLOTS), "owner"].tolist())
-    first = cb.drop_duplicates("owner").sort_values(["slot", "owner"], kind="mergesort").owner.tolist()[:C.H13_FIRST_BUYERS]
+    cb = tape.curve[(tape.curve.mint == mint) & (tape.curve.is_buy == 1)].copy()
+    # keyed on the curve `user`, as the bot does, with `user_token_owner` as the fallback (AMENDMENT_4/5)
+    usr = cb["user"].to_numpy() if "user" in cb.columns else np.full(len(cb), -1)
+    cb["who"] = np.where(usr >= 0, usr, cb.owner.to_numpy())
+    cb = cb[cb.who >= 0]
+    creation = set(cb.loc[(cb.slot >= create_slot) & (cb.slot <= create_slot + C.H13_INSIDER_SLOTS), "who"].tolist())
+    first = cb.drop_duplicates("who").sort_values(["slot", "who"], kind="mergesort").who.tolist()[:C.H13_FIRST_BUYERS]
     funders = funders or {}
     if creator not in funders or any(w not in funders for w in first):
         return None

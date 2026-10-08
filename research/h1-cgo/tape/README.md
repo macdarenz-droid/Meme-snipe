@@ -31,7 +31,7 @@ nice -n 19 python3 run.py features --units /home/user/tape-cache/2026-09-11/4462
   /home/user/tape-cache/2026-09-11/446278500-446282999 --decision-days 2026-09-11 --out /tmp/h1   # now refused: 09-11 is incomplete (Step A guard)
 ```
 
-Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 100 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
+Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 104 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
 
 ## Look-ahead
 - `h1cgo/features.py` builds one stream per coin. `MintStream.advance(d)` applies exactly the rows with slot ≤ d, and every feature reads only what has been applied:
@@ -73,7 +73,7 @@ Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 100 tests on synthe
 | A3: D60 (habits, due supply, traceable float, controls) | `habits.events_from/round_trips/Habits/d60`, `MintStream.snapshot` (`d60`, `vol_1h`, `volume_1h`) |
 | A3: D60 gate rows (Step A) and the arm | `outcomes.flows`, `stats.d60_gate`, `stats.d60_arm`, `stats.spearman/partial_spearman/cluster_bootstrap_stat` |
 | H8_AMENDMENT 1–4, H8_AMENDMENT_2 and AMENDMENT_4: H8 stratum with the dust check, tradable flag, count row, committed SOL/USD | `h8.SolUsd/eligible/flags/count_rows/load_committed`, `stats.h8_stratum`, `features.build_universe` (`quote_at_migration`) |
-| H8_AMENDMENT_2: universe tag by age, H6, H11, $5-only tradable, count sizes to $10,000, creator-fee-0 pools | `h8.universe_tag/floor_micro_usd/tradable`, `MintStream._candle/h11`, `features.lp_events_of`, `stats.h8_stratum`; tests in `tests/test_h8_amendment2.py` |
+| H8_AMENDMENT_2, AMENDMENT_5 (U2-only stratum, LP limitation reported) and AMENDMENT_6 (H8 first): universe tag by age, H6, H11, $5-only tradable, count sizes to $10,000, creator-fee-0 pools | `h8.universe_tag/floor_micro_usd/tradable`, `MintStream._candle/h11`, `features.lp_events_of`, `stats.h8_stratum`; tests in `tests/test_h8_amendment2.py` |
 | Tests for the amendments | `tests/test_amendment3.py`, `tests/test_cli.py` |
 
 ## Checks on real data (2 units of 2026-09-11, counts only)

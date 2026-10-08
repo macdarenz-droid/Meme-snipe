@@ -1309,5 +1309,29 @@ class PayerMassAmendment8(unittest.TestCase):
                                                          "le3": False})
 
 
+class PayerMassRebuy(unittest.TestCase):
+    """COUNT_ROWS_AMENDMENT_8 Q-R1-f: REBUY-ANCHOR's bar (CODE_REDTEAM.md R1-22)."""
+
+    def test_rebuy_bar_top_quintile_against_the_median_band(self):
+        import payer as PM
+        n = 30
+        k = np.arange(n)
+        pts = pd.DataFrame({"pool": [f"p{i}" for i in k], "mint": "m", "day": DAY, "t": k, "hour": 1,
+                            "RB": (k % 10).astype(float), "net_rebuy_flow": (k % 10) * 0.01, "drawdown": k / 100,
+                            "eff_quote": 100e9, "mid": 100e9 / 1e15, "supply": 1e15})
+        r = PM.rebuy_bar(pts, [DAY])
+        ev = r["events"]
+        self.assertEqual(len(ev), 6)                                  # RB 8 and 9 in each of 3 drawdown terciles
+        top9 = ev[np.isclose(ev["net_rebuy_share"], 0.09)]
+        self.assertTrue(np.allclose(top9["excess_share"], 0.09 - 0.04))   # minus the median of RB 3, 4, 5
+        c = PM.round_trip_cost(100e9, 100e9, 1e15, 1e15)
+        self.assertTrue(np.allclose(ev["s_star"], np.sqrt(1 + c) - 1))
+
+    def test_rebuy_points_carry_supply_as_of_t(self):
+        tape, s, _ = load(rebuy_unit())
+        _, pts, _, _ = RB.rebuy_anchor(tape, s)
+        self.assertEqual(float(pts[pts["hour"] == 1].iloc[0]["supply"]), SUPPLY)   # the state at or before t
+
+
 if __name__ == "__main__":
     unittest.main()

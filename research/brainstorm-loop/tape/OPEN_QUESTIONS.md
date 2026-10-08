@@ -84,7 +84,13 @@
 - **Q21 USDC-quoted pools.** These are excluded from row 6 (SOL pools only, as Design A states).
 
 ## H8 stratum and capacity row (`../H8_AMENDMENT.md`)
-- **Rule.** H8 holds when the effective quote (SOL) × that hour's SOL/USD ≥ max($15,000, 1,000 × size), at sizes $5, $20 and $50 (`h8.eligible`). A missing price or effective quote makes the row not eligible.
+- **Rule [`../H8_AMENDMENT_2.md`].** Each point is checked under the universe the bot would tag it with (`h8.GateCtx.check`).
+  - U2 (60–240 min after migration): max($15,000, 1,000 × size), plus H11.
+  - U1 (1–14 days): max($50,000, 1,000 × size).
+  - 4–24 h, under 60 min and over 14 days are not tradable.
+  - H6 (no outstanding LP) and dust at migration (≥ 5 SOL) always apply.
+  - Sizes run $5 to $10,000; $5 is the trial line and the rest are research lines.
+  - A missing price, effective quote or universe makes the point not eligible. A missing price or effective quote makes the row not eligible.
 - **Q23 "That hour's SOL/USD" [confirmed by `../COUNT_ROWS_AMENDMENT_3.md`].**
   - *Used:* the close of the Binance 1-minute bar that ends at the hour start, which is the last value known when the hour begins (no look-ahead). It is read from the same `--sol-usd` kline files, whose sha256 are recorded.
   - Without minute files, the stratum and the capacity row report "needs SOL/USD 1-minute closes".
@@ -100,4 +106,61 @@
   - A pool-hour whose last state lies before a gap in the loaded tape is skipped and counted as `pool_hours_state_not_on_tape`.
   - Each stratum reports `rows_without_sol_usd`, the rows whose hour has no price; those rows are never eligible.
   - Graduates (migration on the tape) count when their effective quote at m + 60 min (H10's earliest entry) meets the floor. A graduate whose m + 60 min is not on the tape is reported as not assessable.
+
+## H8 amendment 2 readings (`../H8_AMENDMENT_2.md`)
+- **Q26 [open] H11 in U1.** The amendment names H11 for U2 only. The core's H11 also runs its candle-spike check for every universe (`hard.ts` h11), so U1 points get the spike check too; only the chase check is U2-only. This is the stricter reading.
+- **Candles.** These follow `facts/producer.ts`:
+  - 1-minute buckets of pool trades at or before the point, BOOST rows included.
+  - open = the first trade's pre-trade mid, high = the max of pre and post, close = the last post. The post-trade state comes from the event (base ± base amount, quote ± lp-adjusted quote) on effective reserves.
+  - A trade without a price fails H11 (the core flags such candles partial and refuses them).
+  - The migration price is CreatePoolEvent quote ÷ base, without virtual reserves, as the core.
+- **Universe bounds.** U2 runs [60, 240] min and U1 [1, 14] days after migration, both inclusive. A pool whose migration is not on the tape has no age, so it is never eligible (`age_unknown`). On Step A that excludes every pool that predates the loaded units, and so in practice all U1 pools older than the tape.
+- **H6.** Outstanding LP = DepositEvent LP out − WithdrawEvent LP in since migration, as of the point (migration LP is burned, as the core assumes).
+- **Creator fee 0.** A canonical WSOL pool counts on a day when every one of its rows that day has `coin_creator_fee_basis_points` = 0.
+
+## Slicer ride (`../COUNT_ROWS_AMENDMENT_4.md`; details from `SWEEP_4.md` survivor 1)
+- **Q27 [open] Event.**
+  - One event per (mint, owner): the first buy at which the owner has at least 3 buys of the mint within the past 30 min, spanning at least 3 slots and 60 s.
+  - Slices are counted on canonical WSOL pools only, where Q (the effective quote) exists.
+  - "Not a PDA" follows from signer = owner, since a PDA cannot sign.
+  - Routed slices: on v2+ units, every slice's `top_program` must be pump or PumpSwap; an empty one counts as routed. On v1 units only the signer test applies. App-fee transfers are not detected, since there is no listed fee-wallet set.
+  - Regular cadence uses the CV with the population SD; a zero mean counts as regular.
+- **Rows.**
+  - Continuation = X's own net buy SOL of the mint in (t + 23 slots, t + 60 min].
+  - (a) is a one-sided 95% bound, pool-clustered within day.
+  - (b) waits for the payer-mass bar (`COUNT_ROWS_AMENDMENT_7` names only DEV-ZERO, REBUY-ANCHOR, SEAT-DRIFT and F1), so it is "not computed" and the rows never all pass.
+  - (d) uses events with B < 0.5% of Q.
+  - (e) regresses continuation ÷ Q on 5, 15 and 60-min past returns, 15-min volatility (SD of 1-minute log closes), 15-min SOL volume and buy count.
+  - (f) uses the median of fast-class buy SOL ÷ B.
+  - (g): X sells at least half of the tokens bought through t + 60 min, within 4 h of its last buy.
+  - (i) counts U1 events that pass the $5 checks.
+  - Rows use all universes; the counts by universe are reported.
+- **Q28 [open] Dispersed-flow control.**
+  - It fires at the first time per pool and 2-h block at which at least 3 wallets, each with exactly one buy in the past 30 min and in different hub-cap-50 clusters, sum to at least 1% of Q.
+  - Its continuation is those wallets' net buy in (t' + 23 slots, t' + 60 min].
+  - Matching keeps controls in the events' (day, 2-h block, age tercile, Q tercile) cells, with terciles cut on the events.
+
+## MIG-SEAT and MAYHEM-SNAP (`../COUNT_ROWS_AMENDMENT_5.md`, `_6.md`)
+- **Q29 [open] Creator group.** The group is the LAUNCHER-ID set (create `creator`, `user` and pool `coin_creator`) plus every address within 2 W links on or before s0. No hub cap is applied, since none is named.
+  - Non-linked rows also exclude BOOST, the mayhem agent (top program, or the mayhem vault owner) and the buyback authority (signer or owner starting `GmFrDZT2`, as the tape README abbreviates it).
+- **Q30 [open] Graduations.**
+  - A graduation is a CreatePoolEvent of a pool that a pump migration created, with a SOL quote and mayhem known to be 0.
+  - Gradual = CreateEvent to CompleteEvent more than 5 s. Without both on the tape the speed is "unknown", which is neither arm.
+  - The window must lie on the tape up to the slot time of s0 + 2 plus 300 s.
+- **Q31 [open] G-rows.**
+  - G2 uses the median over all seat buys on v2+ units; v1 buys are counted apart.
+  - G3 counts distinct failed signatures on the pool in s0..s0+3.
+  - G4 counts creator-group sells of the pool from s0, as a share of `base_supply`.
+  - G5 is normalised per graduation (payer SOL ÷ X*_g, with Q_g the as-of effective quote at the end of s0 + 2). It needs a median ≥ 2 and a day-clustered 95% bound ≥ 1, resampling days as clusters.
+  - G6 is per graduation, Σ used ÷ Σ requested within t0 + 300 s.
+  - The kill row pools first-minute SOL over graduations.
+  - G8 always reads "not checkable", so MIG-SEAT earns no PREREG until the decoder has the v3 items.
+- **MAYHEM-SNAP readings [open].**
+  - (a): a re-price is attributed when an S row in the same transaction has `top_program` = the mayhem program. Re-prices in transactions without an S row count as not attributed, and their share is reported.
+  - (b): a later re-price on the same mint within 120 s with step ≥ |j|/2. The up-step placebo mirrors it. The non-agent-sell placebo uses curve sells on mayhem curves with a price step ≤ −6.2%, followed within 120 s by a curve price ≥ (1 + |j|/2) × the post-sell price.
+  - (c): the median seconds to the up step, and the share with a non-agent curve buy in the down step's slot.
+  - (d): real SOL in the up-step event ≥ 2 × $100 at that hour's SOL/USD.
+  - (e): qualifying down steps (j ≤ −6.2%, real SOL ≥ 5) on SOL-quoted mayhem curves, per loaded day.
+  - The re-price rule is written down as invariants (k, vSOL or vToken unchanged); fitting the full rule is left to the reader of those shares.
+  - Amendment 6: `prereg_may_be_written` once (a), (b), (d) and (e) pass. The owner rules before any bot use, and a legal check comes before any real use.
 

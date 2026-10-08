@@ -115,7 +115,8 @@ def pool_state(g: pd.DataFrame):
     qn = g["pool_quote_pre"].shift(-1) + v
     bn = g["pool_base_pre"].shift(-1)
     return {"mid": (q / b).to_numpy(float), "eq": q.to_numpy(float), "mid_next": (qn / bn).to_numpy(float),
-            "eq_next": qn.to_numpy(float), "bt": g["block_time"].to_numpy(), "slot": g["slot"].to_numpy()}
+            "eq_next": qn.to_numpy(float), "bt": g["block_time"].to_numpy(), "slot": g["slot"].to_numpy(),
+            "supply": g["supply"].to_numpy(float)}
 
 
 def state_asof(ps, t, st):
@@ -202,12 +203,13 @@ def rebuy_anchor(tape: Tape, s: pd.DataFrame, require_history=True, Ledger=None)
                            "mid": mid_t, "eff_quote": eq_t, "RB": float(rb_set["proceeds"].sum()) / eq_t,
                            "net_rebuy_flow": (ex_buy - other_sell) / eq_t,
                            "past_return_1h": past, "drawdown": float(1 - mid_t / peak) if peak > 0 else np.nan,
-                           "age_h": k, "depth_sol": eq_t / R.LAMPORTS})
+                           "age_h": k, "depth_sol": eq_t / R.LAMPORTS,
+                           "supply": float(ps["supply"][i])})   # the swap at or before t (payer bar's tier, AMENDMENT_8)
     exits = pd.concat(exits_all, ignore_index=True) if exits_all else pd.DataFrame(
         columns=["owner", "slot", "block_time", "day", "proceeds", "tokens_sold", "exit_vwap", "gain", "readable",
                  "pool", "mint", "next_buy_slot"])
     pts = pd.DataFrame(points, columns=["pool", "mint", "day", "t", "hour", "decision_slot", "mid", "eff_quote", "RB",
-                                        "net_rebuy_flow", "past_return_1h", "drawdown", "age_h", "depth_sol"])
+                                        "net_rebuy_flow", "past_return_1h", "drawdown", "age_h", "depth_sol", "supply"])
     prs = pd.DataFrame(pairs, columns=["pool", "mint", "day", "t", "hour", "owner", "exit_slot", "proceeds", "gain",
                                        "readable", "below", "rebuy_2h"])
     return exits, pts, prs, summarise(tape, exits, pts, prs)

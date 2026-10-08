@@ -68,6 +68,9 @@ U2_WINDOW_S = (60 * 60, 240 * 60)  # research.ts s0.u2WindowFromMs / u2WindowToM
 U1_WINDOW_S = (24 * 3600, 14 * 86_400)  # ARCHITECTURE §3.2: pools aged 24 h to 14 days
 COUNT_SIZES_USD = (5, 20, 50, 100, 200, 500, 1_000, 10_000)  # H8_AMENDMENT_2 item 4
 TRADABLE_SIZE_USD = 5  # H8_AMENDMENT_2 item 3: the trial maximum (policy.ts capital.maxNotional)
+STRATUM_UNIVERSES = ("U2",)  # AMENDMENT_5 H5: decision points run to + 24 h, so the tradable stratum is U2 only
+LP_LIMITATION = ("H6 reads LP outstanding as deposits - withdrawals since migration (AMENDMENT_5 H7); LP burns outside "
+                 "a withdrawal are not seen on the tape")
 
 
 def universe_tag(age_s) -> str:
@@ -102,21 +105,21 @@ def eligible(eff_quote_lamports, hour: int, size_usd: float, sol: SolUsd, quote_
     return usd >= floor_micro_usd(size_usd, tag)
 
 
-def tradable(r, size_usd: float, sol: SolUsd) -> bool:
+def tradable(r, size_usd: float, sol: SolUsd, universes=("U1", "U2")) -> bool:
     """H8_AMENDMENT_2 items 1-2 for one decision point: the universe tag by age (4-24 h: not tradable without a new
     tag), H6 (no LP outstanding), H11 (no candle spike; for U2 also the chase check), then H8 with the dust check on
     that universe's floor."""
     tag = universe_tag(r["hour"] - r["mig_time"])
-    if tag is None or r["h6_lp_outstanding"] != 0 or r["h11_spike"] or (tag == "U2" and r["h11_chase_reject"]):
+    if tag not in universes or r["h6_lp_outstanding"] != 0 or r["h11_spike"] or (tag == "U2" and r["h11_chase_reject"]):
         return False
     return eligible(r["eff_quote"], r["hour"], size_usd, sol, r["quote_at_migration"], tag)
 
 
-def flags(feats: pd.DataFrame, sol: SolUsd, sizes=SIZES_USD) -> pd.DataFrame:
-    """h8_<size> columns: tradable under H8_AMENDMENT_2 at each size."""
+def flags(feats: pd.DataFrame, sol: SolUsd, sizes=SIZES_USD, universes=("U1", "U2")) -> pd.DataFrame:
+    """h8_<size> columns: tradable under H8_AMENDMENT_2 at each size, in the given universes."""
     out = feats.copy()
     for s in sizes:
-        out[f"h8_{s}"] = [tradable(r, s, sol) for _, r in out.iterrows()] if len(out) else []
+        out[f"h8_{s}"] = [tradable(r, s, sol, universes) for _, r in out.iterrows()] if len(out) else []
     return out
 
 
@@ -135,6 +138,7 @@ def count_rows(feats: pd.DataFrame, sol: SolUsd) -> dict:
     z = f[f.has_state & f.creator_fee_zero.astype(bool)]
     res["creator_fee_zero_pools"] = {d: int(z[z.decision_day == d].pool.nunique()) for d in days}
     res["sol_usd_files"] = sol.files
+    res["limitations"] = LP_LIMITATION
     return res
 
 

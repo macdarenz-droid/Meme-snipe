@@ -51,7 +51,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - **Future-marker test.** `test_planted_future_marker` plants extreme rows of every table one slot after a decision and requires every earlier decision's features to be unchanged. The test was mutation-checked: a one-slot leak in features, clusters or holders makes it fail.
 
 ## Tests
-`cd tape && python3 -m unittest -v` runs 57 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
+`cd tape && python3 -m unittest -v` runs 64 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
 - costs;
 - pool state;
 - universe and timing;
@@ -88,6 +88,7 @@ Every review and amendment fix was mutation-checked: undoing it makes a test fai
 | Step A complete and inputs pinned (review fixes) | `stepa.plan_check`, `run_d1.search_guard`, `run_d1.validate_guard`, `run_d1.stage2` |
 | AMENDMENT_3: rank rules whose $5 H8-tradable subset holds in every fold first | `search.run_search` (`h8_first`, `h8_s5_*_f<j>`) |
 | H8_AMENDMENT_2: universe tag and floor, dust, H6, H9, H11, H12, H13, H17 as of d; tradable at $5 only; count row sizes to $10,000 and creator-fee-0 pools | `gates.universe_tag`, `gates.floor_for`, `gates.gate_frame`, `holders.gate_h12`, `holders.gate_h13`, `holders.insider_sets`, `h8.add_h8`, `h8.h8_counts`, `h8.pool_days`, `validate.h8_report` |
+| AMENDMENT_4/5: H13 by a tape proxy (creation slot .. +2 by curve user, W/T links to the dev as of d, hub cap 50), results labelled "H8-tradable by tape proxy for H13"; universe-exit secondary dropped | `holders.h13_proxy_sets`, `holders.LinkIndex`, `config.H13_PROXY_LABEL` (search table, frozen rules, count row, `validate.h8_report`) |
 | H8_AMENDMENT: H8-eligible stratum at $5/$20/$50 (search table, validation), "tradable as the bot stands", count row | `h8.add_h8`, `h8.price_asof`, `h8.h8_counts`, `search.run_search` (`h8_s*` columns), `validate.h8_report`, `outcomes._sized` |
 | BOOST and protocol swaps flagged and left out of flow (OPEN_QUESTIONS #21) | `load.load` (`boost`, `protocol`, `signature`), `pool_state.flow_rows` |
 | §6 99.5% pool-clustered bootstrap by day, ≥ 300 trades, positive each day, lift, verdicts | `validate.judge`, `validate.cluster_bootstrap`, `validate.rule_trades` |

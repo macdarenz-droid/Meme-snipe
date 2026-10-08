@@ -165,3 +165,21 @@ class CountRow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Amendment5(unittest.TestCase):
+    """AMENDMENT_5: H1-CGO's tradable stratum is the U2 window only, and the LP-burn limitation is reported.
+    (AMENDMENT_6 is covered by tests/test_amendment3.py Amendment6, the red team's R1-19.)"""
+
+    def test_u1_aged_point_is_not_in_the_stratum(self):
+        f = val_feats2(240, 86_400).assign(eff_quote=10**6 * 10**9)  # exactly 24 h: U1, and far above every floor
+        r = S.h8_stratum(f, outs(f), FROZEN, VDAYS, SOL100)
+        self.assertEqual(r["$5"]["n_trades"], 0)
+        self.assertEqual(r["universes"], ["U2"])
+
+    def test_lp_burn_limitation_reported(self):
+        f = val_feats2(10, 2 * 3600)
+        r = S.h8_stratum(f, outs(f), FROZEN, VDAYS, SOL100)
+        self.assertIn("burns outside a withdrawal", r["limitations"])
+        c = H8.count_rows(f.assign(decision_day="2026-09-11"), SOL100)
+        self.assertIn("burns outside a withdrawal", c["limitations"])

@@ -137,15 +137,26 @@ class Book:
         return int(sl[j[0]]) if len(j) else None
 
 
+def _states(book, pool, slot):
+    """The slot's start and end states, or [] when either has no chain reading: the worse of the two cannot be known,
+    so the trade is dropped and counted (AMENDMENT_3 item 5). The cross swap precedes the entry, so both exist."""
+    sts = [book.state(pool, slot, b) for b in (True, False)]
+    return [] if any(st is None for st in sts) else sts
+
+
 def _worse_buy(book, pool, slot, spend, tiers):
-    got = [buy(book.state(pool, slot, b), spend, tiers) for b in (True, False)]
+    got = [buy(st, spend, tiers) for st in _states(book, pool, slot)]
     got = [g for g in got if g is not None]
     return min(got) if got else None
 
 
 def _worse_sell(book, pool, slot, tokens, tiers):
-    """Worse of start and end; a state missing or a vault that cannot pay is a total loss (0 SOL)."""
-    got = [sell(book.state(pool, slot, b), tokens, tiers) for b in (True, False)]
+    """Worse of start and end. None when no state with a chain reading exists (the trade is dropped, AMENDMENT_3
+    item 5); 0 SOL (a total loss) when a state with a reading cannot pay the sell (AMENDMENT_2)."""
+    sts = _states(book, pool, slot)
+    if not sts:
+        return None
+    got = [sell(st, tokens, tiers) for st in sts]
     return 0 if any(g is None for g in got) else min(got)
 
 
@@ -174,6 +185,9 @@ def trades(sw, entries, blocks, segs, tiers, spend=SPEND_50USD, seg_of=None) -> 
         if seg < 0 or segment(es) != seg or eb is None:
             rows.append({**r, "dropped": "entry_not_on_tape"})
             continue
+        if not _states(book, e.pool, es):
+            rows.append({**r, "dropped": "entry_no_chain_reading"})
+            continue
         tok = _worse_buy(book, e.pool, es, spend, tiers)
         if tok is None:
             rows.append({**r, "dropped": "entry_unquotable"})
@@ -191,6 +205,9 @@ def trades(sw, entries, blocks, segs, tiers, spend=SPEND_50USD, seg_of=None) -> 
             rows.append({**r, "dropped": "exit_not_on_tape"})
             continue
         proceeds = _worse_sell(book, e.pool, xs, tok, tiers)
+        if proceeds is None:
+            rows.append({**r, "dropped": "exit_no_chain_reading"})
+            continue
         fixed = fixed_for(es)
         day = datetime.fromtimestamp(et, tz=timezone.utc).strftime("%Y-%m-%d")
         rows.append({**r, "day": day, "exit_kind": kind, "exit_slot": xs, "tokens": tok, "proceeds": proceeds,
