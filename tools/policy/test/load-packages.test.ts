@@ -49,10 +49,17 @@ function tree(files: Record<string, string>): string {
 
 const manifest = (name: string, dependencies: Record<string, string> = {}): string => JSON.stringify({ name, type: 'module', dependencies });
 
+/**
+ * The one warning Node 22 prints when a module loads the built-in `node:sqlite` (CA-33, B-M24-01: the persistence
+ * library is that built-in, "Stability: 1.1"). Only these exact two lines are removed before stderr must be empty;
+ * any other output, including any other warning, still fails.
+ */
+const SQLITE_WARNING = /^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n/;
+
 describe('runtime import check (C01 review finding R2)', () => {
   it('every module of every package in this repository loads with nothing refused', () => {
     const r = loadPackages(REPO_ROOT);
-    assert.equal(r.stderr, '');
+    assert.equal(r.stderr.replace(SQLITE_WARNING, ''), '');
     assert.equal(r.status, 0);
     assert.match(r.stdout, /^load-packages: (\d+) of \1 modules loaded\n$/);
   });
