@@ -375,6 +375,12 @@ pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e
 
 # ---------- 9. Backup and restore drill ----------
 # PATHS-FIX ruling 24: the provider usage ledger (its own shared folder) is in every backup and the drill checks it.
+# Section 8 applied the deployed release's host files (right for a release); until this branch merges, that release's
+# backup and drill predate the usage ledger, so put this branch's back, as 9c and 10b do, and test those.
+in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-branch-files-9.txt" 2>&1 || { cat "$LOGS/console/update-branch-files-9.txt"; fail "install --update (this branch's host files, 9)"; }
+for f in usr/local/sbin/zeroed-backup usr/local/sbin/zeroed-restore-drill etc/systemd/system/zeroed-backup.service; do
+  docker exec -i "$C" cmp -s "/$f" - <"$ROOT/ops/host/files/$f" || fail "test setup: this branch's /$f not in place"
+done
 in_c "sqlite3 /var/lib/zeroed-usage/rpc-usage.db 'PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS reservations(x); INSERT INTO reservations VALUES (1);' >/dev/null" || fail "PATHS-FIX: test usage ledger"
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
 bk="$(in_c "ls -1 /var/backups/zeroed/ | tail -1")"
