@@ -71,3 +71,21 @@ test-ci re-run gives 186/0 at the head and 143/44 on the base. Go, lint and the 
 28. **Reviewer m2.** Read the repository's Actions log retention through the API if it is readable (read only); otherwise it becomes a one-line owner check on the arm checklist. Record the value in DECISIONS.
 29. **Reviewer m3.** unguarded-refs.sh also lists branches whose archive-check.yml lacks archive-guard.sh, and AG_FOREIGN counts completed archive-check runs from non-default branches since `ARCHIVE_REARM_AT`.
 30. **Reviewer note.** Guard test-ci.sh:714 the same way as :356.
+
+## Round 4 (heads: of2-holds `dd08171c`, archive-safe-b `9738777b`, of3-scanner `ac220b25`; base `80854aaf`)
+
+Builder: rulings 21–30 done; test-ci 212/0, 213/0 and 224/0; 15 rows fail on `3b67e97d`. It asked 11 questions.
+
+### Supervisor rulings on the builder's questions (8 Oct 2026, 6:41 PM)
+
+31. **Q1, accepted.** A workflow is an archive path when it mentions scan-day.sh, zeroed-scan, the `data-scan-` / `data-rpc-` caches, or the `data-day-` / `data-volume-` releases, including any download of those caches or release assets. `deploy.yml`'s key-handoff release is not one. Add a test-ci case that deploy.yml carries none of these markers, so it stays outside and is noticed if it changes.
+32. **Q2, accepted.** A repeated key is refused (fail closed). The volume-write bypass test now expects the refusal.
+33. **Q3.** If the runner has no parser that refuses repeated keys, arming refuses (fail closed). The check prints which parser it used and its version. Arm checklist item 4 confirms this on the first armed run (VERIFY).
+34. **Q4, accepted** if the annotation step runs whatever came before (`if: always()` or `!cancelled()`). A test-ci case checks the condition; a missing annotation still reads as `end=hold`.
+35. **Q5 to Q11, accepted.**
+    - A probe timeout reads as `end=hold` and needs a reviewed re-arm (arm checklist).
+    - `$ds-log` never goes to a public place. The builder states whether it is uploaded to the private store or dropped at job end.
+    - The determinism rescan stays off the public log.
+    - The wrapper-agnostic guard pattern stands.
+    - Two VERIFY items go to the arm checklist: the 500-run window with the re-run window length, and the log retention read with an owner fallback.
+    - Merge base `3a734e74` with the OF-3 round 3 push.
