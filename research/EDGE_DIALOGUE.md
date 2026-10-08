@@ -132,3 +132,60 @@ Question: do the tape's days fall after B3 (09-09 19:30Z), possibly when the 420
 So the tape's days all carry today's tiers, and A can only be a cross-section, not a before/after. The step is about 13 months old and public, which lowers my prior a little. Caveat: I did not decode the 2025-09-02 arguments; this rests on no later UpsertFeeTiers plus the 10-03 snapshot.
 
 **C, Gate 0: passes, barely.** DexScreener today lists a Meteora DLMM SOL pool for 23 of the 41 deep-pool coins. 12 hold at least 50 SOL on the SOL side, which in DLMM sits below the price as bids (rule: fewer than 10 closes C). Caveats: this is today's list, not history (survivorship); DexScreener's quote liquidity is the whole SOL side, not depth near the price; DLMM fee settings are not read yet. Raw replies are in the session scratch directory.
+
+## Agreed designs
+
+Frozen 2026-10-08 by the lead and the partner, before any return in either design is computed. Changes after this point are logged as amendments with a reason, never edited in place. The mechanism gates read no returns and sit outside the k = 12 family. Each return test counts in the family at 0.05/12 (99.58% intervals, with 95% shown beside them). Chances are judgement.
+
+### Design A: creator fee step at 420 SOL (cross-section only)
+- **Gate 1 result:** the step has been in force since 2025-09-02 at the latest (lead's read above), so there is no before/after comparison. Chance about 3%, lowered because the step is 13 months old and public.
+- **Data:** the shared tape's swaps, with market cap = pool SOL reserve ÷ pool token reserve × 1B. Whether the fee program uses this same formula is unverified, and a mismatch is recorded as a limitation.
+- **Pools:** canonical PumpSwap SOL pools of pump.fun graduates, not mayhem, in hours 0–72 after migration. Each swap's market cap holds until the next swap, or until hour 72.
+- **Count rule:**
+  - At least 200 pools must trade within ±5% of 420. If Step A falls short, Step B's days are added, then Step C's.
+  - Still under 200 after all tape days means A closes as unresolved. The 200 bar is never lowered.
+- **Gate 2 (bunching):** time-weighted share of pool time in [420, 441) ÷ the share in [399, 420), as a log ratio, minus the median of the same log ratio at 20 placebo cutoffs on a log grid from 340 to 1,300 SOL. Each placebo is more than 10% away from 420 and from 1,470. Interval: pool-clustered bootstrap.
+- **Gate 3 (creator):**
+  - Measure the coin creator's net SOL buying per hour inside [399, 441), counting only the pool's `coin_creator` as signer or token owner, with no linked wallets.
+  - Subtract the median of the same measure in the ±5% bands around each placebo cutoff. Interval: pool-clustered bootstrap.
+- **Rule:** both gates need a 95% lower bound above 0. Otherwise A closes and no return is read.
+- **A pass earns** a return test, written and frozen here before it runs:
+  - Entry on the first cross of 420 from below. The stop sits under 399.
+  - The control is crosses at the placebo levels.
+  - Costs in SOL at $50, with the young-pool toll (about 3.5%).
+  - The test counts in the family.
+
+### Design C: maker seat (resting bid) on the 12 Gate 0 coins
+- **Gate 0 result:** passed with 12 of 41 coins. Each has a DLMM SOL pool holding at least 50 SOL on the SOL side (DexScreener, read 2026-10-08).
+- **Gate 0 caveats:**
+  - The list is today's, so it carries survivorship.
+  - Liquidity is the whole SOL side, not depth near the price.
+  - DLMM fee settings are unread.
+  - The 12 mints are committed to `research/deep-pool-probe/` before any bar is downloaded.
+- **Data:** GeckoTerminal 5-minute bars via `research/deep-pool-probe/fetch.py` (re-download approved). The study uses the deep-pool PREREG's dates, its wall (2026-09-21T14:00Z) and its discovery/validation split.
+- **Proxy assumption:** a DLMM bid fills when arbitrage moves the DLMM pool in line with PumpSwap, so a PumpSwap low that trades through the bid stands in for a fill.
+- **Rule:**
+  - The bid is the previous bar's close × exp(−3σ), with σ as in MR-A (3 days, at least 500 bars with volume). It is renewed every bar.
+  - A bid fills if the bar's low is at or under bid × 0.995, at the bid price.
+  - One open position per pool, and at most one fill per pool per UTC day.
+  - Exits are +6% / −4% / 30 min from the bid, as a PumpSwap taker. A stop fills at the lower of the stop level and that bar's close, and that includes the fill bar itself.
+- **Costs:**
+  - Entry: no fee and no impact, with the DLMM fee not credited.
+  - Exit: the coin's PumpSwap tier fee plus impact from the deep-pool depth model, plus 0.001 SOL priority fee.
+  - Size: $50, everything counted in SOL.
+- **Primary statistic:** mean net return per fill in the validation period, judged by a day-bootstrap 99.58% interval.
+- **Pass** (all three needed):
+  - the lower bound is above 0;
+  - the point lift over S0 is at least +0.45 points (S0: deep-pool random-bar taker entries with the same exits and costs, on the 12 coins);
+  - there are at least 30 validation fills.
+- **Outcomes short of a pass:**
+  - Fewer than 30 fills means unresolved.
+  - Anything else means not supported.
+- **Secondary (not judged):** MR-A as a taker on the same bars, to show what the maker seat adds.
+- **A pass earns** a forward paper log of resting bids, never live trading. Even a pass is far below the 300-trade funding gate.
+
+### Further angles
+None strong enough to add. The ones I considered:
+- **Fee-claim timing by creators:** it predicts selling. That makes it a reject filter for the bot, not an edge.
+- **The 1,470+ SOL creator-fee ladder steps:** each step is only 5 bps.
+- **Placebo-level crosses as a momentum entry:** momentum already lost to random entries (deep-pool MOM-C).
