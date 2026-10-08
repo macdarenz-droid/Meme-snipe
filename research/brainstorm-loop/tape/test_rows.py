@@ -673,6 +673,25 @@ class Slicer(unittest.TestCase):
         self.assertEqual(summ["drops"].get("creator_group"), 1)
 
 
+class SlicerAsOfR2_17(unittest.TestCase):
+    def test_fast_class_exclusion_reads_only_buys_up_to_the_event(self):
+        """R2-17: the slicer's exclusions read rows at or before the event slot (slicer.py Q14, SWEEP_4 "as of the
+        decision slot t"). W1's fast class built from X's whole day used X's own later buys, the very flow row (a)
+        measures; X must be classified from its buys of the day up to t."""
+        u = slicer_unit()
+        for k, sl in enumerate((6000, 6100, 6200, 6300, 6400)):            # after t + 60 min, same day
+            u.aswap(sl, f"W{k}", "M", "P", sol=1.5e9)                        # another trader's >= 1 SOL buy
+            u.aswap(sl + 1, "X", "M", "P", sol=0.2e9)                        # X buys 1 slot later: "follows"
+        tape, s, adj = load(u)
+        fast = R.w1_fast_class(tape, s)
+        self.assertTrue(bool(fast.get((DAY, "X"), False)))                   # whole-day label: fast
+        ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+        maps, _ = R.cluster_maps(tape)
+        ev, _, _, summ = SL.slicer_rows(tape, s, adj, fast, ctx, maps["hub_cap_50"])
+        self.assertEqual(list(ev["owner"]), ["X"])                            # as of t: slow, still an event
+        self.assertIsNone(summ["drops"].get("w1_fast_class"))
+
+
 class SlicerControl(unittest.TestCase):
     def _ctl(self, link):
         u = Unit(0, 20000)
