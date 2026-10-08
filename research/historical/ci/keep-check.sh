@@ -4,20 +4,19 @@
 # newest data-rpc-DAY-RUN-ATTEMPT entry per day, so an unfinished day resumes instead of
 # being read again). Called by .github/workflows/data-keep.yml.
 #   keep-check.sh list
-#       lists every default-branch cache entry data-rpc-assets-DAY-RUN-ATTEMPT (kind
-#       assets) and, per day without an assets entry, the newest data-rpc-DAY-RUN-ATTEMPT
+#       lists every default-branch cache entry data-rpc-assets-DAY-k<KID>-RUN-ATTEMPT (kind
+#       assets) and, per day without an assets entry, the newest data-rpc-DAY-k<KID>-RUN-ATTEMPT
 #       (kind progress; the -qa copies are not kept) from the cache API (read only) into $GITHUB_OUTPUT:
 #       entries=<JSON list of {key, day, before, kind}> and count=N;
 #       writes key, size and the total against 10 GB to the step summary (a warning above
-#       7 GB). No entry: count=0, and the job does nothing else.
+#       7 GB). No entry: count=0, and the job does nothing else. OF-2 round 7, ruling 51:
+#       only sealed entries (cache-crypt.sh) are kept; unsealed ones, 09-21's included,
+#       are left to expire after 7 days unused.
 #   keep-check.sh verify DAY DIR
-#       checks a restored entry: SHA256SUMS-DAY and manifest-DAY.json present, every
-#       file listed in the sums and every listed file intact, nothing unlisted. Prints
-#       file names and counts only, never file contents.
 #   keep-check.sh progress DAY DIR
-#       checks a restored progress entry is not empty: at least one finished unit
-#       (units/*/*/stats.json); rpc-credits-used, when present, must be a whole number
-#       (days read after DATA-4 book credits in the ledger and have none). Counts only.
+#       checks a restored entry is a sealed one (cache-crypt.sh check: only progress.enc,
+#       .iv, .kid and .mac) and not empty. Without the store token (this workflow has no
+#       secret) its contents cannot be read; their MAC is checked when data-scan opens it.
 #   keep-check.sh touched KEY BEFORE
 #       proof that the restore refreshed the entry's 7-day clock: polls the cache API
 #       until its last_accessed_at is later than BEFORE (the API refreshes about every
@@ -53,14 +52,14 @@ for row in open(rows).read().splitlines():
         continue
     key, size, before, created = row.split("\t")
     if key.startswith("data-rpc-assets-"):
-        m = re.fullmatch(r"data-rpc-assets-(\d{4}-\d{2}-\d{2})-\d+-\d+", key)
+        m = re.fullmatch(r"data-rpc-assets-(\d{4}-\d{2}-\d{2})-k[0-9a-f]{12}-\d+-\d+", key)
         if not m:
-            sys.exit(f"keep-check: unexpected key {key!r}")
+            continue  # unsealed (ruling 51): left to expire
         entries.append({"key": key, "day": m.group(1), "before": before, "kind": "assets"})
         total += int(size)
         lines.append(f"| `{key}` | assets | {int(size) / 1e9:.2f} GB |")
         continue
-    m = re.fullmatch(r"data-rpc-(\d{4}-\d{2}-\d{2})-\d+-\d+", key)
+    m = re.fullmatch(r"data-rpc-(\d{4}-\d{2}-\d{2})-k[0-9a-f]{12}-\d+-\d+", key)
     if m and (m.group(1) not in progress or (created, key) > progress[m.group(1)][0]):
         progress[m.group(1)] = ((created, key), key, size, before)
 assets_days = {e["day"] for e in entries}
@@ -86,32 +85,13 @@ with open(out, "a") as f:
 print(f"keep-check: {len(entries)} entries")
 PY
     ;;
-  verify)
+  verify|progress)
     day=$1 dir=$2
     [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "keep-check: bad day $day" >&2; exit 1; }
-    sums="SHA256SUMS-$day"
-    [ -f "$dir/$sums" ] || { echo "keep-check: $sums missing" >&2; exit 1; }
-    [ -f "$dir/manifest-$day.json" ] || { echo "keep-check: manifest-$day.json missing" >&2; exit 1; }
-    listed=$(awk '{print $2}' "$dir/$sums" | LC_ALL=C sort)
-    have=$(cd "$dir" && find . -maxdepth 1 -type f ! -name "$sums" -printf '%f\n' | LC_ALL=C sort)
-    [ "$listed" = "$have" ] || { echo "keep-check: files differ from $sums: $(diff <(echo "$listed") <(echo "$have") | grep '^[<>]' | tr '\n' ' ')" >&2; exit 1; }
-    (cd "$dir" && sha256sum -c --strict --quiet "$sums") || { echo "keep-check: a file of $day does not match $sums" >&2; exit 1; }
-    n=$(wc -l <<<"$listed")
-    echo "| $day | $n files + $sums | intact |" | tee -a "$summary"
-    ;;
-  progress)
-    day=$1 dir=$2
-    [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "keep-check: bad day $day" >&2; exit 1; }
-    units=$(find "$dir/units" -mindepth 3 -maxdepth 3 -name stats.json 2>/dev/null | wc -l)
-    used=$(cat "$dir/rpc-credits-used" 2>/dev/null || true)
-    [ "$units" -gt 0 ] || { echo "keep-check: progress of $day holds no finished unit" >&2; exit 1; }
-    if [ -e "$dir/rpc-credits-used" ]; then
-      [[ "$used" =~ ^[0-9]+$ ]] || { echo "keep-check: progress of $day has an unreadable rpc-credits-used" >&2; exit 1; }
-      booked="$used credits booked"
-    else
-      booked="credits in the ledger"
-    fi
-    echo "| $day | progress: $units finished units, $booked |" | tee -a "$summary"
+    "$(dirname "$0")/cache-crypt.sh" check "$dir" || { echo "keep-check: the $cmd entry of $day is not a sealed one" >&2; exit 1; }
+    size=$(stat -c %s "$dir/progress.enc")
+    [ "$size" -gt 0 ] || { echo "keep-check: the $cmd entry of $day is empty" >&2; exit 1; }
+    echo "| $day | $cmd: sealed, $size bytes |" | tee -a "$summary"
     ;;
   touched)
     key=$1 before=$2 waited=0

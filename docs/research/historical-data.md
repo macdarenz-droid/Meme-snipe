@@ -205,8 +205,8 @@ The backtest replays rows strictly in `(slot, tx_idx, outer_ix, inner_ix)` order
 - **ARCHIVE-SAFE (owner order, 2026-10-05).** After the block of 3–4 Oct, the archive is read carefully, one day per block. The limits live in one file, `ci/archive-limits.conf`; a rate published by Triton replaces them there:
   - at most 40 MB/s, refused above that by data-scan's plan, `scan-day.sh` and `check-day.sh`;
   - at most 1 unit × 4 chunk downloads, so 4 connections (before: 2 × 6 = 12);
-  - at most 10 requests/s. The scanner's request cap is still 40/s in Go (`scanner/archive.go`), so until that change lands, archive-check logs a served answer and dispatches nothing (fail closed). The Go change also moves the scanner revision, so it merges only after the 09-21 Helius chain has ended;
-  - any 429 (or 503 with Retry-After) holds a back-off of at least 3 h and exits 4 (not resumable), so no chained run resumes the archive; only a later served archive-check does;
+  - at most 10 requests/s: the scanner's request cap (`scanner/archive.go` `reqLimiter`), which archive-check reads; above 10/s it logs a served answer and dispatches nothing (fail closed). The scanner itself also refuses more than 40 MB/s. These Go limits moved the scanner revision, so they merged only after the 09-21 Helius chain had ended;
+  - any 429, 403 or 503 (with or without Retry-After) stops the scanner (never retried), holds a back-off of at least 3 h and exits 4 (not resumable), so no chained run resumes the archive; only a later served archive-check does;
   - archive-check dispatches 1 day per served check (every 3 h).
   The 80 MB/s figures below are history.
 - Manual dispatch only, one concurrency group and `max-parallel: 1`, newest day first, at most 80 MB/s (refused in code above that).

@@ -34,8 +34,12 @@ have=$(cd "$dl" && ls units-"$day".tar.part* 2>/dev/null | sort)
 # shellcheck disable=SC2086 # part names have no spaces (checked above)
 (cd "$dl" && cat $listed) | tar -x -C "$data"
 rm -rf "$dl"
-zeroed-scan finalize -out "$data" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json"
-node --no-warnings "$here/../qa/volume.ts" "$ds" "$data/units" "$day"
+# OF-2 round 4, ruling 23: finalize and QA output go to $qlog, not the public log.
+qlog="${RUNNER_TEMP:?}/volume-log-$day"; rm -rf "$qlog"; mkdir -p "$qlog"
+zeroed-scan finalize -out "$data" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json" > "$qlog/finalize.log" 2>&1 ||
+  { echo "volume: finalize failed for $day; its output is kept in the private log next to the data" | tee -a "$summary"; exit 1; }
+node --no-warnings "$here/../qa/volume.ts" "$ds" "$data/units" "$day" > "$qlog/volume.log" 2>&1 ||
+  { echo "volume: the volume check failed for $day; its output is kept in the private log next to the data" | tee -a "$summary"; exit 1; }
 "$here/volume-asset.sh" "$ds" "$day" "$assets"
-rm -rf "$data" "$ds"
+rm -rf "$data" "$ds" "$qlog"
 echo "volume hours of $day rebuilt from data-day-$day" | tee -a "$summary"

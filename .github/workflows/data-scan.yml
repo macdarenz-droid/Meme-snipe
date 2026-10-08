@@ -123,11 +123,17 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # the archive guard reads the run history (3-failure stop)
     outputs:
       days: ${{ steps.days.outputs.days }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - id: days
         env:
           MODE: ${{ inputs.mode }}
@@ -162,15 +168,40 @@ jobs:
                   days.append(d)
               if not days:
                   sys.exit(os.environ["MODE"] + " mode needs at least one day")
+              if os.environ["MODE"] == "scan" and os.environ["SOURCE"] == "archive":
+                  if len(days) != 1:
+                      sys.exit("an archive scan reads one UTC day per batch (OF-2)")
+                  print("archive_day=" + days[0])
           else:
               days = ["none"]  # the scan and volume jobs are skipped; a matrix may not be empty
           print("days=" + json.dumps(days))
           EOF
+      # OF-2: an archive day is refused here, before any job reads the archive, unless it
+      # is allow-listed and not a Helius day, the chain is armed, the day has a retention
+      # value, the private store is readable with no storage-stop marker, and the
+      # 3-failure stop is not active (research/historical/ci/archive-guard.sh full).
+      - name: Archive guard
+        if: inputs.mode == 'scan' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ steps.days.outputs.archive_day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" full "$DAY"
 
   scan:
     needs: plan
     if: inputs.mode == 'scan'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 355
     permissions:
       contents: write # used only by the "Publish this day" step
@@ -251,6 +282,24 @@ jobs:
           mkdir -p "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets" "$RUNNER_TEMP/work/qa"
           df -h / "$RUNNER_TEMP/work/" | tee -a "$GITHUB_STEP_SUMMARY"
           research/historical/ci/disk-guard.sh "$RUNNER_TEMP/work/" 24000000000 "the day's scan, QA dataset and headroom"
+      # OF-2 round 6, rulings 44 and 44a: the progress cache holds only sealed files
+      # (research/historical/ci/cache-crypt.sh: AES-256-CTR then HMAC-SHA256, keys derived
+      # from DATA_STORE_TOKEN, which fork PRs never get). The key id names the entries.
+      # The token reaches only the crypt steps (and the guard and store steps), each in a
+      # clean shell; never the scan or QA steps.
+      - name: Derive the progress cache key id
+        id: cachekid
+        if: steps.published.outputs.complete != 'true'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" kid
       # HISTORY-RESUME: resume from the saved progress with the most finished units, never
       # simply the newest (a run cancelled during its restore once saved a near-empty copy
       # that shadowed the full one). An API error fails the job before any read.
@@ -261,21 +310,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
+          KID: ${{ steps.cachekid.outputs.kid }}
           BASH_ENV: ""
           LD_PRELOAD: ""
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
-          GITHUB_REF="$GITHUB_REF" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          GITHUB_REF="$GITHUB_REF" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" KID="$KID"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/progress-pick.sh" "$PREFIX"
       - name: Restore progress for this day
         id: restore
         if: steps.published.outputs.complete != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/work/data
-          key: ${{ steps.pickprogress.outputs.key || format('{0}-{1}-{2}', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, github.run_id) }}
+          path: ${{ runner.temp }}/work/sealed
+          key: ${{ steps.pickprogress.outputs.key || format('{0}-{1}-k{2}-{3}', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, steps.cachekid.outputs.kid, github.run_id) }}
+      # A restored progress that cannot be opened (another key, a changed byte) fails the
+      # job here: nothing is read and the day never starts fresh (ruling 44a).
+      - name: Open the progress cache
+        id: openprogress
+        if: steps.published.outputs.complete != 'true' && steps.restore.outputs.cache-matched-key != ''
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" open "$RUNNER_TEMP/work/sealed" "$RUNNER_TEMP/work/data" "$PREFIX"
       # expect_units: fail closed before any read when the picked progress holds fewer
       # finished units than the dispatcher expects (e.g. the fuller entry was evicted).
       - name: Record the restored progress
@@ -296,6 +362,27 @@ jobs:
       - name: Apply the shared back-off (the later end wins)
         if: steps.published.outputs.complete != 'true'
         run: research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/backoff/archive-429.state" "$RUNNER_TEMP/work/data/archive-429.state"
+      # OF-2: the same guard as the plan job, just before the scan, in a clean shell; its
+      # pass (a file in $RUNNER_TEMP/archive-guard) is what scan-day.sh requires, so the
+      # scan step itself never holds a token.
+      - name: Archive guard before the scan
+        id: guardscan
+        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard"
       # Exit 75 (the 300 min budget ran out, or a back-off did not fit it) is resumable:
       # progress is saved below and the `continue` job dispatches the next chained run.
       - name: Scan (one lane, stops on 429)
@@ -309,6 +396,7 @@ jobs:
           RPC_RPS: ${{ inputs.rpc_rps }}
           # Only a helius day gets the key; the archive scan never sees it.
           HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
+          ARCHIVE_GUARD_DIR: ${{ runner.temp }}/archive-guard
         # source helius: rpc-day.sh exits 75 like a back-off (resumable) and 3 when the
         # day's credit cap is spent (not resumable: the chain stops).
         run: |
@@ -326,19 +414,36 @@ jobs:
         id: shrink
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.restore.outcome == 'success' && steps.record.outcome == 'success'
         run: research/historical/ci/progress-guard.sh check "$RUNNER_TEMP/work/data"
+      - name: Seal the progress
+        id: seal
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.shrink.outputs.ok == 'true'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/sealed" "$PREFIX"
       - name: Log the progress entry size
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
         env:
           DAY: ${{ matrix.day }}
         run: |
-          echo "progress cache entry for $DAY: $(du -sb "$RUNNER_TEMP/work/data" | cut -f1) bytes (repository cap 10 GB)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "progress cache entry for $DAY: $(du -sb "$RUNNER_TEMP/work/sealed" 2>/dev/null | cut -f1) bytes sealed (repository cap 10 GB)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Save progress
         id: save
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.shrink.outputs.ok == 'true'
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.shrink.outputs.ok == 'true' && steps.seal.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/work/data
-          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/work/sealed
+          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-k${{ steps.cachekid.outputs.kid }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Remove the sealed copy
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
+        run: rm -rf "$RUNNER_TEMP/work/sealed"
       # QA, determinism, packaging and publishing take up to about 45 min (finalize, QA and
       # parity of a day, one unit rescanned, about 4 GB uploaded twice). If they would not
       # fit before the 355 min job timeout, stop resumably now instead of being cancelled:
@@ -351,6 +456,24 @@ jobs:
           research/historical/ci/time-left.sh "$JOB_START" 355 45 || rc=$?
           if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
           exit "$rc"
+      - name: Archive guard before QA
+        id: guardqa
+        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard" qa
       - name: QA and determinism
         id: qa
         if: steps.published.outputs.complete != 'true'
@@ -361,6 +484,7 @@ jobs:
           RPC_CREDIT_CAP: ${{ inputs.max_credits }}
           RPC_RPS: ${{ inputs.rpc_rps }}
           HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
+          ARCHIVE_GUARD_DIR: ${{ runner.temp }}/archive-guard
         # rc 75: the determinism rescan met a 429 (back-off persisted): resumable.
         run: |
           export DATASET_PARENT="$RUNNER_TEMP/work/qa"
@@ -378,12 +502,52 @@ jobs:
         id: shrinkqa
         if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true' && steps.restore.outcome == 'success' && steps.record.outcome == 'success'
         run: research/historical/ci/progress-guard.sh check "$RUNNER_TEMP/work/data"
-      - name: Save progress after QA
+      - name: Seal the progress after QA
+        id: sealqa
         if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true' && steps.shrinkqa.outputs.ok == 'true'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/sealed" "$PREFIX"
+      - name: Save progress after QA
+        if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true' && steps.shrinkqa.outputs.ok == 'true' && steps.sealqa.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/work/data
-          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
+          path: ${{ runner.temp }}/work/sealed
+          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-k${{ steps.cachekid.outputs.kid }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
+      - name: Remove the sealed copy after QA
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
+        run: rm -rf "$RUNNER_TEMP/work/sealed"
+      # OF-3 ruling 27: when the full progress save was skipped or failed, the day's reasons
+      # (logs/: scanner, unitlog, trim, QA output) are still kept, sealed alone as a small
+      # entry (PREFIXk<key id>-RUN-ATTEMPT-logs), which progress-pick never resumes from.
+      - name: Seal the logs alone
+        id: seallogs
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome != 'success'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/data/logs" "$RUNNER_TEMP/work/sealed-logs" "$PREFIX"
+      - name: Save the logs alone
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome != 'success' && steps.seallogs.outcome == 'success'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/work/sealed-logs
+          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-k${{ steps.cachekid.outputs.kid }}-${{ github.run_id }}-${{ github.run_attempt }}-logs
       # Chained only when this run's progress was saved; a failed save stops for review.
       - name: Mark the day resumable for the next chained run
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
@@ -412,24 +576,58 @@ jobs:
           if [ -f "$RUNNER_TEMP/backoff/archive-429.state" ]; then
             echo "back-off state: $(cat "$RUNNER_TEMP/backoff/archive-429.state")"
             echo "has=true" >> "$GITHUB_OUTPUT"
+            end=$(awk 'NF >= 3 && $3 ~ /^[0-9]+$/ {print $3; exit}' "$RUNNER_TEMP/backoff/archive-429.state")
+            if [ -n "$end" ]; then echo "end=$end" >> "$GITHUB_OUTPUT"; fi
           fi
+      # OF-2 ruling 14, round 4 ruling 25: the durable record of the back-off end, a
+      # check-run annotation the guard reads for every counted failure (ag_annotated_end),
+      # as the one annotation of its own step.
+      - name: Record the back-off annotation
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.backoff.outputs.end != '' && inputs.source != 'helius'
+        env:
+          END: ${{ steps.backoff.outputs.end }}
+        run: |
+          if [[ "$END" =~ ^[0-9]{9,11}$ ]]; then echo "::warning title=archive-backoff::end=$END"; fi
       - name: Save the shared archive back-off
         if: always() && steps.published.outcome == 'success' && steps.backoff.outputs.has == 'true' && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/backoff
           key: data-scan-backoff-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
+      # OF-2 round 2, ruling 10: the back-off end (the larger of 3 h and Retry-After) as
+      # cache key archive-backoff-<end>, which archive-check and the guard wait for.
+      - name: Record the back-off end for archive-check
+        if: always() && steps.published.outcome == 'success' && steps.backoff.outputs.end != '' && steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/backoff
+          key: archive-backoff-${{ steps.backoff.outputs.end }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
       # source helius (DATA-PUB): RPC units carry raw getBlock responses (raw.jsonl.zst),
       # which may not leave the repository's actions cache until Helius's terms are
       # confirmed. So a helius day is never uploaded as an artifact or published as a
       # release; its packaged assets are kept only in the actions cache, under
       # data-rpc-assets-DAY-*, for a later Actions job (BT-2e) to restore.
-      - name: Keep a helius day's assets in the actions cache only (never published)
+      # OF-2 round 7, ruling 51: sealed like the progress, under its own prefix.
+      - name: Seal a helius day's assets
+        id: sealassets
         if: steps.published.outputs.complete != 'true' && inputs.source == 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          PREFIX: data-rpc-assets-${{ matrix.day }}-
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" PREFIX="$PREFIX"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/cache-crypt.sh" seal "$RUNNER_TEMP/work/assets" "$RUNNER_TEMP/work/sealed-assets" "$PREFIX"
+      - name: Keep a helius day's assets in the actions cache only (never published)
+        if: steps.published.outputs.complete != 'true' && inputs.source == 'helius' && steps.sealassets.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/work/assets
-          key: data-rpc-assets-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/work/sealed-assets
+          key: data-rpc-assets-${{ matrix.day }}-k${{ steps.cachekid.outputs.kid }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Note the upload start
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
         run: echo "T_UPLOAD=$(date +%s)" >> "$GITHUB_ENV"
@@ -496,13 +694,17 @@ jobs:
   continue:
     needs: [plan, scan]
     if: always() && inputs.mode == 'scan' && needs.scan.result == 'failure'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      actions: write # read this run's artifacts, dispatch the next run
+      contents: read # the checkout (archive-guard.sh restarts)
+      actions: write # read this run's artifacts and the run history, dispatch the next run
     env:
       MAX_CHAIN: "12"
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Dispatch the next run if a day stopped resumably
         env:
           GH_TOKEN: ${{ github.token }}
@@ -519,10 +721,25 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$CHAIN" =~ ^[0-9]+$ ]] || { echo "bad chain '$CHAIN'"; exit 1; }
+          # OF-2 ruling 15: a re-run of this job never grants another restart.
+          if [ "$SOURCE" != helius ] && [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
+            echo "run attempt $GITHUB_RUN_ATTEMPT: a re-run never chains an archive day" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           resume=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '[.artifacts[].name | select(startswith("resume-"))] | join(",")')
           if [ -z "$resume" ]; then
             echo "a day failed for a reason other than time or back-off: chain stopped for review" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
+          fi
+          # OF-2: one resumable restart a day for the archive, counted per day from run
+          # history (archive-guard.sh restarts); a second exit 75 on the same day is a
+          # failure (archive-guard.sh counts this run: its continue job failed).
+          if [ "$SOURCE" != helius ]; then
+            before=$(research/historical/ci/archive-guard.sh restarts "$DAYS") || { echo "the run history cannot be read: chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+            if [ "$before" -ge 1 ]; then
+              echo "second resumable stop on $DAYS: counted as a failure (one resumable restart a day for the archive); chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           fi
           if [ "$CHAIN" -ge "$MAX_CHAIN" ]; then
             echo "resumable stop ($resume) but $CHAIN chained runs already: chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -537,7 +754,7 @@ jobs:
   volume:
     needs: plan
     if: inputs.mode == 'volume'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: write # read data-day-DAY and create data-volume-DAY, in the two token steps only
@@ -595,7 +812,7 @@ jobs:
   assemble:
     needs: plan
     if: inputs.mode == 'assemble'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     permissions:
       contents: write

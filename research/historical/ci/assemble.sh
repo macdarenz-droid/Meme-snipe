@@ -226,10 +226,13 @@ main() {
     fetch_day "$day" "$leadin" "$work" "$work/data"
   done
   finalize_guard "$work"
+  # OF-2 round 4, ruling 23: finalize and QA output go to $qlog, not the public log.
+  local qlog="${RUNNER_TEMP:?}/assemble-log"; mkdir -p "$qlog"
   zeroed-scan finalize -out "$work/data" -dataset "$work/dataset" -from "$from" -to "$to" \
-    -part-mb 1900 -lead-in-days "$LEAD_IN_DAYS" -regimes "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../regimes.json" "${extra[@]}"
-  node "$repo_root/research/historical/qa/check.mjs" "$work/dataset" --live 60 --strict
-  node --no-warnings "$repo_root/research/historical/qa/parity.ts" "$work/dataset"
+    -part-mb 1900 -lead-in-days "$LEAD_IN_DAYS" -regimes "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../regimes.json" "${extra[@]}" > "$qlog/finalize.log" 2>&1 ||
+    die "finalize failed; its output is kept in the private log next to the data"
+  node "$repo_root/research/historical/qa/check.mjs" "$work/dataset" --live 60 --strict > "$qlog/qa.log" 2>&1 || die "strict QA failed; its output is kept in the private log next to the data"
+  node --no-warnings "$repo_root/research/historical/qa/parity.ts" "$work/dataset" > "$qlog/parity.log" 2>&1 || die "decoder parity failed; its output is kept in the private log next to the data"
   build_release "$work/dataset" "$work/release"
   tag="data-$from-$to"
   gh release create "$tag" --repo "$GITHUB_REPOSITORY" --prerelease --title "Historical dataset $from to $to" \
