@@ -25,7 +25,7 @@ const isCherokeeCapital = (cp: number): boolean => cp >= 0x13a0 && cp <= 0x13f5;
 /** Every non-ASCII single code point whose confusable skeleton is one Latin letter. */
 function singleLetterSkeletons(confusables: string): Map<number, string> {
   const out = new Map<number, string>();
-  for (const line of confusables.replace(/^﻿/, '').split('\n')) {
+  for (const line of confusables.replace(/^\uFEFF/, '').split('\n')) {
     if (line.startsWith('#') || line.trim() === '') continue;
     const [src, tgt] = line.split(';', 3).map((f) => f.trim().split(/\s+/).map((x) => parseInt(x, 16)));
     if (src?.length !== 1 || tgt?.length !== 1) continue;
