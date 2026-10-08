@@ -112,11 +112,18 @@ def stage2(args):
 
 
 def with_h8(df: pd.DataFrame, solusd: str):
-    """H8_AMENDMENT: H8-eligible flags at $5, $20, $50 from the committed hourly SOL/USD file (as-of)."""
-    from d1.h8 import add_h8, load_solusd
-    if not solusd:
-        sys.exit("refusing: --solusd (hourly SOL/USD, Binance public archive) is required for the H8 stratum")
-    hours, close, sha = load_solusd(solusd)
+    """H8_AMENDMENT: H8-eligible flags at $5, $20, $50 from the committed hourly SOL/USD (as-of). A directory (default
+    research/brainstorm-loop/sol-usd) is checked file by file against its SHA256SUMS; a missing day or a mismatch is
+    refused."""
+    from d1.h8 import SOLUSD_DIR_DEFAULT, add_h8, load_solusd, load_solusd_dir
+    solusd = solusd or SOLUSD_DIR_DEFAULT
+    try:
+        if os.path.isdir(solusd):
+            hours, close, sha = load_solusd_dir(solusd, df.day.unique() if len(df) else [])
+        else:
+            hours, close, sha = load_solusd(solusd)
+    except (ValueError, OSError) as e:
+        sys.exit(f"refusing: {e}")
     return add_h8(df, hours, close), sha
 
 
@@ -138,7 +145,7 @@ def summary(args):
            "feature_non_null": {f: int(feats[f].notna().sum()) for f in C.FEATURES} if len(feats) else {},
            "feature_quantiles_5_50_95": {f: [round(float(x), 6) for x in feats[f].quantile([.05, .5, .95])]
                                          for f in C.FEATURES} if len(feats) else {}}
-    if args.solusd and len(feats):
+    if len(feats):
         from d1.h8 import h8_counts
         el = pts[pts.eligible].merge(feats[["pool", "tau", "effective_quote_sol"]], on=["pool", "tau"])
         df, px_sha = with_h8(el, args.solusd)
@@ -212,8 +219,6 @@ def validate_guard(run, frozen, confirm, plan_path=None):
 
 def search(args):
     from d1.search import run_search
-    if not args.solusd:
-        sys.exit("refusing: --solusd (hourly SOL/USD, Binance public archive) is required for the H8 stratum")
     search_guard(args.run, args.plan)
     df, px_sha = with_h8(joined(args.run), args.solusd)
     res = run_search(df)
@@ -230,8 +235,6 @@ def search(args):
 
 def validate(args):
     from d1.validate import judge
-    if not args.solusd:
-        sys.exit("refusing: --solusd (hourly SOL/USD, Binance public archive) is required for the H8 stratum")
     with open(args.frozen) as fh:
         frozen = json.load(fh)
     ms = validate_guard(args.run, frozen, args.confirm_validation_read, args.plan)
@@ -258,16 +261,16 @@ def main(argv=None):
     p.add_argument("--out", required=True, help="run directory of stage 1")
     p = sub.add_parser("summary")
     p.add_argument("--run", required=True)
-    p.add_argument("--solusd", help="hourly SOL/USD file: adds the H8 count row (H8_AMENDMENT item 4)")
+    p.add_argument("--solusd", help="SOL/USD dir or file for the H8 count row (default research/brainstorm-loop/sol-usd)")
     p = sub.add_parser("search")
     p.add_argument("--run", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--plan", default=None)
-    p.add_argument("--solusd", help="hourly SOL/USD (Binance public archive), required")
+    p.add_argument("--solusd", help="SOL/USD dir or file (default research/brainstorm-loop/sol-usd, checked against SHA256SUMS)")
     p = sub.add_parser("validate")
     p.add_argument("--run", required=True)
     p.add_argument("--plan", default=None)
-    p.add_argument("--solusd", help="hourly SOL/USD (Binance public archive), required")
+    p.add_argument("--solusd", help="SOL/USD dir or file (default research/brainstorm-loop/sol-usd, checked against SHA256SUMS)")
     p.add_argument("--frozen", required=True)
     p.add_argument("--confirm-validation-read", action="store_true")
     a = ap.parse_args(argv)
