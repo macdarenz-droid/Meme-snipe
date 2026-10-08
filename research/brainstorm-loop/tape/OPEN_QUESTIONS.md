@@ -82,3 +82,20 @@
   - The measure is Design A gate 3: the creator's net SOL buying per hour while the pool is in [399, 441), minus the median of the same measure in ±5% bands around the placebo cutoffs.
   - CF names no mint, so CF collections by group members are reported as a count beside the split; they are not attributed to a coin.
 - **Q21 USDC-quoted pools.** These are excluded from row 6 (SOL pools only, as Design A states).
+
+## H8 stratum and capacity row (`../H8_AMENDMENT.md`)
+- **Rule.** H8 holds when the effective quote (SOL) × that hour's SOL/USD ≥ max($15,000, 1,000 × size), at sizes $5, $20 and $50 (`h8.eligible`). A missing price or effective quote makes the row not eligible.
+- **Q23 "That hour's SOL/USD" [open].**
+  - *Used:* the close of the Binance 1-minute bar that ends at the hour start, which is the last value known when the hour begins (no look-ahead). It is read from the same `--sol-usd` kline files, whose sha256 are recorded.
+  - Without minute files, the stratum and the capacity row report "needs SOL/USD 1-minute closes".
+- **Q24 Which state is tested [open].** Each row's own as-of point is used:
+  - DEV-ZERO: the effective quote just after the dev's sale.
+  - REBUY-ANCHOR: the decision point's effective quote. Pairs follow their points, and ex-holder readability uses all exits.
+  - SEAT-DRIFT: the effective quote at m + 60 min.
+  
+  Within the stratum the summaries are recomputed exactly as for the full row. SEAT-DRIFT keeps the lone/busy terciles from the full day, and REBUY's quintiles and terciles are recomputed inside the stratum.
+- **Q25 Capacity row [open].**
+  - Pool-hours are taken at each whole UTC hour inside the loaded tape, for canonical WSOL PumpSwap pools with an as-of state at the hour start.
+  - Non-mayhem is required (Q4). Pools whose mayhem flag is not on the tape (most pools that predate the loaded units) are counted apart as `*_mayhem_unknown` and never in the main count. On two partial units of 09-11, every pool-hour fell in that group.
+  - Graduates (migration on the tape) count when their effective quote at m + 60 min (H10's earliest entry) meets the floor. A graduate whose m + 60 min is not on the tape is reported as not assessable.
+

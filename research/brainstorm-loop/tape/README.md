@@ -1,6 +1,6 @@
 # Step A count rows: tape code
 
-Implements `../STEP_A_COUNT_ROWS.md` with `../COUNT_ROWS_AMENDMENT_1.md` (both frozen). The code reads flows, counts and timing, and computes no strategy return or outcome. Under the amendment's Q14 rule, rows may read as-of price levels and as-of past returns. After a decision or event point, they read flows only, never a price. The registered thresholds run only with `--decide`, after Step A is complete and a reviewer has passed this code.
+Implements `../STEP_A_COUNT_ROWS.md` with `../COUNT_ROWS_AMENDMENT_1.md`, `../COUNT_ROWS_AMENDMENT_2.md` and the count-row parts of `../H8_AMENDMENT.md` (all frozen). The code reads flows, counts and timing, and computes no strategy return or outcome. Under the amendment's Q14 rule, rows may read as-of price levels and as-of past returns. After a decision or event point, they read flows only, never a price. The registered thresholds run only with `--decide`, after Step A is complete and a reviewer has passed this code.
 
 ## Run
 ```
@@ -12,7 +12,7 @@ nice -n 19 python3 -m unittest -v        # from this folder
 - `--sol-usd`: the Binance public archive's SOLUSDT 1-minute kline CSVs, one per tape day and repeatable. A `day,sol_usd` CSV is also accepted. Each file's sha256 goes into the summary. The code makes no network request, so row 6 reports "needs SOL/USD" until the files are supplied.
 - `--decide` stops with an error unless the loaded units equal the plan rows for 09-11 and 09-10 exactly, with contiguous slots. The plan is `--plan`, by default `research/shared-tape/stepa-plan.txt`, and its sha256 goes into the summary (`tapeio.check_plan`).
 - DEV-ZERO's events per day list every loaded day, with 0 for a day that has no events. Row 6 reports `None` (not `False`) for "not separable" when any day lacks a SOL/USD price. Gate 3 counts only the creator's swaps inside the pool's window (end of BOOST or m + 5 min, up to hour 72 or the end of the tape).
-- Needs pandas, numpy, zstandard. Two units of 09-11 take about 3.5 minutes and about 3 GB of RAM.
+- Needs pandas, numpy, zstandard. Two units of 09-11 take about 7 minutes with the H8 rows and about 3 GB of RAM.
 
 ## Outputs (in OUTDIR)
 - `stepa_summary.json`: one block per row (`1_dev_zero` … `6_round_usd`). It also gives the loader counts: swaps, BOOST rows excluded, first-time buys, and rows labelled as fake demand. With `--decide`, a `decision` block is added.
@@ -25,6 +25,8 @@ nice -n 19 python3 -m unittest -v        # from this folder
   - `stepa_age_gate.csv`: one step per coin, age and class.
   - `stepa_two_sided_labels.csv`: rule, mint, owner.
   - `stepa_round_usd.csv`.
+  - `stepa_h8_pool_hours.csv`, `stepa_h8_graduates.csv`: H8 eligibility per pool-hour and per graduate.
+- The summary also carries `h8_stratum_rows_1_3` (rows 1–3 recomputed per size) and `7_h8_capacity` (per day).
 
 ## Files
 - `tapeio.py`: the loader.
@@ -32,6 +34,7 @@ nice -n 19 python3 -m unittest -v        # from this folder
   - Reads BOOST, create, migration and pool-create events from E, and T/W links, CF and B.
   - Checks that windows are covered by contiguous loaded units.
 - `rows.py`: rows 1 and 3–6 and their helpers.
+- `h8.py`: rows 1–3 on the H8-eligible stratum at $5, $20 and $50, and the H8 capacity count row (`../H8_AMENDMENT.md`).
 - `rebuy.py`: row 2. It uses H1-CGO's ledger (`research/h1-cgo/tape/h1cgo/ledger.py`), loaded read-only.
 - `run_step_a.py`: the entry point.
 - `test_rows.py`: unit tests on synthetic units written to a temporary folder.
@@ -55,13 +58,16 @@ nice -n 19 python3 -m unittest -v        # from this folder
 | 2 Materiality: top-quintile RB vs ±10 points of median, within day × drawdown tercile (≥ 3.4%, LB > 0) | `rebuy.materiality_sets`, `rebuy.stratum_diff` |
 | 2 ≥ 80% of proceeds readable; ≥ 30 top-quintile decisions a day; R² < 0.3 | `rebuy.summarise`, `rebuy.rebuy_decide` |
 | 3 SEAT-DRIFT: N_m in [m − 90 s, m + 90 s] with G1-CAP's definitions | `seat_drift` |
-| 3 Lone/busy = bottom/top tercile of N_m per day (A1 Q9) | `seat_drift` |
+| 3 Lone/busy = bottom/top tercile of N_m per day (A1 Q9); a value equal to a cut goes to the lower bin, with ties reported (A2) | `assign_terciles`, `seat_drift` |
 | 3 Busy minus lone first-time buyer SOL in (m + 60 min + 23 slots, m + 120 min] and in [m + 40, m + 60 min] | `seat_drift`, `seat_drift_decide` |
 | 4 AGE-GATE: round ages 5, 10, 15, 30, 60 min (from create and from migration) vs placebo ages ±3, 4, 5, 7, 11 min, by W1 class | `age_gate`, `w1_fast_class` |
 | 5 Two-sided clusters, hub-cap-50 and hub-keyed rules side by side: share of volume, size distribution | `cluster_maps`, `two_sided_clusters` |
 | 5 Used as a label to exclude fake demand; only clusters of 2–50 owners, with the share before and after the cap (A1 Q13) | `two_sided_clusters`, `fake_demand_set`, `prepare` (`fake`) |
 | 6 SOL/USD from 1-minute closes with sha256 (A1) | `run_step_a.read_sol_usd`, `px_range` |
 | 6 Round-USD: SOL levels equal to $50k and $100k per day; bunching; placebos within 10% dropped; 420 within 5% flag | `round_usd`, `placebo_grid`, `mcap_segments`, `log_ratio` |
+| H8: floor max($15,000, 1,000 × size) at the hour's SOL/USD | `h8.hourly_px`, `h8.eligible` |
+| H8 item 1: rows 1–3 on the H8-eligible stratum at $5, $20, $50 | `h8.dev_zero_stratum`, `h8.rebuy_stratum`, `h8.seat_drift_stratum` |
+| H8 item 4: H8-eligible pool-hours and graduates per day | `h8.h8_capacity` |
 | 6 Gate 3 descriptive split: focused vs spread creators, with CF collections | `gate3_split` |
 
 Choices the frozen text leaves open are in `OPEN_QUESTIONS.md` (Q1–Q22, each marked with the amendment's ruling), each with the conservative reading the code uses.
