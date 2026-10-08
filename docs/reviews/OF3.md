@@ -78,3 +78,56 @@ Rulings 18, 20, 21 and 22 are closed. There is no path to a K2 or K3 day counted
 Ruling 23 is in, and OF-2 36–42 are merged forward along with of3's own redirects. test-ci passes 233/0. No scanner or trim output reaches a public log, every step sees the same ARCHIVE_PRIOR value, and the done logic is unchanged. Next comes the OF-2 round 6 merge-forward (43–48) as a delta.
 
 24. **Reviewer m1 (8:46 PM).** A failed day's scanner, trim and unitlog reasons (`$out-log`, `$qlog`) are lost when the runner ends. Keep them with the encrypted cache from OF-2 ruling 44, so they stay private and can be read. Until that lands, OLD-FAITHFUL §2 says the reasons are not kept. Merged forward with OF-2 round 6.
+
+## Round 5 (of3-scanner `8db8b0bf`, on OF-2 round 7)
+
+### Round 5 red team `session_01Uoe1pFxvHNzq9yCieDicqQ`: PASS (0 BLOCKER, 0 MAJOR, 2 MINOR)
+
+test-ci 245/0. `$out/logs` reaches no clear-text path. m1 (`data-scan.yml:533-535`): when trim-day exits 1, the QA step is skipped, and the trim, migration and unitlog reasons are lost with the runner. m2: the redirect lint sees only plain `qlog=` assignments. It misses `for`, `read`, `:=`, `printf -v`, `ln -sf` and a later `cat` (a lint gap, not a live leak).
+
+### Supervisor rulings for round 6 (9 Oct 2026, about 12:36 AM; sent together with the reviewer's findings)
+
+25. **m1.** When the trim step fails, seal only `$out/logs` under its own key (`data-scan-DAY-k<kid>-RUN-ATTEMPT-logs`). Never seal half-trimmed units. Test: a forced trim failure leaves a sealed logs entry and no units entry.
+26. **m2.** Merged into OF-2 ruling 57, which now also covers: any write to qlog, slog or tlog other than a plain assignment (`for`, `read`, `printf -v`, `declare`, `:=`), and `ln`, `cat`, `tee`, `head` or `tail` on `"$qlog|$slog|$tlog/..."` in the CI scripts. One test per form.
+
+### Round 5 reviewer `session_01DK9TU4gHh9V1Accrv4yuPY`: FAIL at `8db8b0bf` (1 MAJOR, 1 MINOR)
+
+MAJOR: the same gap as the red team's m1. "Save progress" (`data-scan.yml:444`) runs before the trim (`:472`). On a trim failure, the QA steps are skipped, and sealqa and the save after QA (`:535`, `:548`) look only at `qa.outcome`, so the trim, migration and unitlog logs are lost. MINOR: a K2 day's progress over the 10 GB cache cannot be saved, so its logs are lost too.
+
+### Ruling 25 refined and ruling 27 (9 Oct 2026, about 12:42 AM)
+
+- **25 (refined).** shrinkqa, sealqa and the save after QA also run when `steps.trim.outcome == 'failure'`. Only `$out/logs` is sealed in that case; half-trimmed units never are. Add a workflow-structure assertion for it, alongside the forced-failure test.
+- **27. MINOR.** Whenever the full progress save is skipped or fails, seal and save `$out/logs` alone as a small separate entry (`if: always()`).
+
+### Round 6 reviewer (head `024399cb`): PASS, final
+
+The builder's reading of ruling 25 is right. After a trim failure, `$out` holds a half-trimmed day, so only the logs are sealed. The pre-trim "Save progress" entry stays as the intact K2 record, and progress-pick never resumes from a `-logs` key. MINOR: rulings 25–27 were not on the base or on `supervisor-docs-2`. They are in this log on `claude/supervisor-docs-3`, which goes to the base in the next supervisor docs PR.
+
+### Round 6 red team (head `024399cb`): final, 0 BLOCKER, 0 MAJOR, 3 MINOR
+
+Trim-failure logs are kept, half-trimmed units are never sealed, and progress-pick never picks a `-logs` key. MINORs:
+- m1: the restore step's prefix match can restore a `-logs` entry on a re-run, and open accepts it because it has the same prefix and a valid MAC.
+- m2: actions/cache/save succeeds with a warning when an entry is over 10 GB, so on a K2 day seallogs does not run and the logs are lost.
+- m3: the redirect guard still lets reads through (cp to /dev/stdout, sed, awk, grep, `while read <`, `cp -s`, eval, cd, aliasing).
+
+### Supervisor rulings for round 9 (9 Oct, about 3:46 AM; sent together with OF-2 63–66)
+
+28. **m1.** The MAC binds the entry type (`progress` or `logs`). Open refuses anything but `progress` when resuming, and the fallback restore key gets a suffix no entry can have. Test: a re-run with only a `-logs` entry starts clean and restores nothing.
+29. **m2.** Seal and save the logs alone whenever the job has failed (`failure()`), whatever the save outcome. Test: a save that "succeeds" with nothing stored still keeps the logs.
+30. **m3, replaces the deny-list in OF-2 ruling 63.** Use an allow-list. A line that mentions qlog, slog or tlog may only:
+    - assign it to a path under `$out` or `$RUNNER_TEMP`;
+    - mkdir or rm it;
+    - redirect a command's output into it;
+    - mv `migrations.list` out of it;
+    - name it in an echo to the summary.
+    Everything else is refused, and `eval` is refused in the CI scripts. One test for each form the red team listed.
+
+### Round 9 (head `84b56c0c`)
+
+- Reviewer: PASS final, 0/0/0. Rulings 25–30 met; with the round 9 files set back, 9 tests fail. Label `deps-reviewed:02ff30afb950a03de09d33ac0a4cf61a`.
+- Red team: final, 0 BLOCKER, 0 MAJOR, 1 MINOR: the same guard gap as OF-2 ruling 67. A logs entry cannot be opened as progress; no restore key prefix-matches the wrong entry; a failed job seals logs before saving.
+31. **Supervisor ruling (9 Oct about 5:20 AM).** OF-2 ruling 67 covers it (the guard lives on of2-holds and flows here). OF-3 takes it with the base merge `455739ae`.
+
+## Merged (9 Oct 2026, about 6:53 AM)
+
+**#299 merged at `3aaee37e`** (the new base). Head `046fb038` has the same tree as the approved `e312997a` and contains base `a1ed5175`. The label was removed and re-added for this head, because the policy accepts only a label added after the head; labelled CI green. `ARCHIVE_ARM` stays empty. Next: OF-4 "nothing public" goes to the data builder from `3aaee37e`, with the ruling 73 notes; this reviewer and red team are kept for it.

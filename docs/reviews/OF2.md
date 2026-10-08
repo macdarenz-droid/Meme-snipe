@@ -179,3 +179,108 @@ Closed: checker bypasses, composites and the upload-* actions, the sha cache, br
 ### Round 6 reviewer: PASS at `4fc50e38` (1 MINOR)
 
 The reviewer exercised the seal directly: a round trip, a wrong key, a flipped byte, a swapped IV and an extra file. The token appears only in clean steps. A failed open stops before the scan, and the day never starts fresh. The m1 run-window concern is the same one the red team reported as MAJOR 1, and ruling 49 covers it. The arm checklist also moves `ARCHIVE_REARM_AT` to the arm time.
+
+### Supervisor ruling 54 (8 Oct 2026, 11:58 PM; from the retro red team, `docs/reviews/SUPDOCS.md` ruling 3)
+
+54. **MINOR, day count.** 2026-07-23 to 08-21 is 30 days, not 31. In the DECISIONS A06 Old Faithful row and any comment, test name or doc that counts that range, write "30 days; 31 with the 07-22 lead-in". Do not change the allow-list itself.
+
+## Round 7 (heads: of2-holds `e67b2a2f`, archive-safe-b `28173341`, of3-scanner `8db8b0bf`)
+
+### Round 7 red team `session_01LQHpKvikNEWAw96tHRnZq3` (delta `4fc50e38..e67b2a2f`): 1 MAJOR, 3 MINOR
+
+MAJOR 1: the runs API returns at most 1,000 results for a search filtered by `created` or `status`, and `--paginate` stops without an error, so the 5,000 cap never trips. About 125 days after a re-arm, the oldest failures drop out and a stopped chain re-opens by itself. MINOR 2: a fork PR can save a `data-` cache on its merge ref, which halts arming (denial of service only). MINOR 3: leftover redirect bypasses (`printf -v`, `:=`, `ln -s` to stdout, a binary named in workflow `env:`). MINOR 4: the token and MAC key in the crypt processes' environment are unchanged and accepted. Sound: MAC binding, no unsealed path to a scan, key off argv.
+
+### Supervisor rulings for round 8 (9 Oct 2026, about 12:30 AM; sent together with the round 7 reviewer's findings)
+
+55. **MAJOR 1.** Fail closed when `.total_count` differs from the rows read. Also slice the window into `created` ranges that each stay under 1,000, so the 1,000 limit is never reached in normal use. VERIFY the 1,000 limit in the GitHub REST docs ("List workflow runs for a workflow") and cite it. Test: a stub with total_count 1,200 and 1,000 rows fails closed; sliced ranges read all 1,200.
+56. **MINOR 2.** `ag_caches_sealed` lists only `ref=refs/heads/<default branch>`; fork and PR caches are never restored by default-branch runs. Test: an unsealed key on a PR ref does not halt arming, and the same key on the default branch does.
+57. **MINOR 3.** Also refuse: `ln` that targets the log directories, `printf -v` and `:=` assignments to qlog, slog and tlog, and `zeroed-*` in workflow `env:` values. One test per form. Extended by OF-3 ruling 26: any non-plain write to qlog, slog or tlog (`for`, `read`, `printf -v`, `declare`, `:=`), and `ln`, `cat`, `tee`, `head` or `tail` on their paths.
+
+### Round 7 reviewer `session_017x89LKh2CEx5Hwkte14btR`: FAIL at `e67b2a2f` (1 MAJOR, 1 MINOR)
+
+Same M1 as the red team's MAJOR 1. The reviewer confirmed the 1,000-result limit on the GitHub REST page "List workflow runs for a workflow", fetched 8 Oct. Ruling 54 is not applied: DECISIONS:123 and :126, OLD-FAITHFUL.md:33, :95, :254 and :263, and test-ci.sh:968, :1707 and :1712 still say 31 days. m1: DECISIONS:126 still says "the 500 cap applies inside that window", which is stale since ruling 49. The key on fd 3 with PBKDF2 at 1 iteration is sound: the input is a 256-bit HMAC output. Ruling 53 checks out.
+
+### Ruling 55 tightened and ruling 58 (9 Oct 2026, about 12:38 AM)
+
+- **55 (tightened).** AG_RUNS_MAX is at most 1,000. For each `created` slice: fail closed when `total_count` is 1,000 or more, or when the rows read are fewer than `total_count`. Add a stub test with 1,001 runs where paging ends at 1,000.
+- **54 (again).** Apply it everywhere the reviewer lists.
+- **58. m1.** Update the stale "500 cap" wording in the DECISIONS:126 row to ruling 49 and ruling 55.
+
+Round 8 = rulings 54, 55, 56, 57 (as extended by OF-3 ruling 26) and 58, plus OF-3 rulings 25 and 26.
+
+## #306 OF-ARM-VERIFY (head `c371835a`, base `claude/of2-holds`): reviewer + red team `session_01NB8S68CiqKHECmiN3trwS7`
+
+REVIEW PASS with fixes. Red team 0 BLOCKER, 1 MAJOR, 4 MINOR. Every verified claim matches its official page (fetched 8 Oct).
+
+### Supervisor rulings (9 Oct 2026, about 1:10 AM)
+
+59. **MAJOR, runner label.** `ubuntu-latest` moves to Ubuntu 26.04 in November 2026 (actions/runner-images README, issue 14748), which can fall inside the chain's run. The OF chain pins `runs-on: ubuntu-24.04` in `data-scan.yml` and `archive-check.yml`, as part of round 8; the guard keeps logging the versions and failing closed. #306 records the label move.
+60. **#306 MINORs** (researcher `session_01A6P7TJYP1XZYZ7bAoBQsEe` applies them):
+    - the retention fields are documented (`days`, `maximum_allowed_days`), and the arm check compares `days` ≥ 35;
+    - PyYAML and cryptography read "not installed per the toolset (not listed)";
+    - quote the runs-API 1,000-per-search limit;
+    - Triton: "no archive-specific limit published";
+    - note the API read of the fork-PR approval setting for the arm card.
+61. **Ruling 55 extended.** The `status=` listings (queued, in progress, waiting) are also capped at 1,000 per search. The guard fails closed when any `created` slice or status query returns 1,000 results. `gh run list` is never used uncapped for counts (its default is `--limit 20`).
+
+### #306 round 2 (head `a2981261`): REVIEW PASS, final; red team 0 BLOCKER, 0 MAJOR, 3 MINOR
+
+62. **Apply all three** (9 Oct, about 1:13 AM):
+    - L42: the fork-PR approval read is documented. It needs Administration (read) on a fine-grained token, or the `repo` scope on a classic token. The field is `approval_policy`. Arming refuses if the field is missing or holds any value other than the required one.
+    - L58: drop "500 cap". Paging has no 500 cap. A `created` slice or status query that returns 1,000 results fails closed, or is split further (rulings 55 and 61).
+    - L46: write "no archive-specific number published; the page says limits apply to all nodes, so the per-IP 429 → 10 s pause may apply to the archive too".
+    - Also add: never use `gh run list` uncapped for counts.
+
+### #306 round 3 (head `99996584`)
+
+The supervisor checked the delta from `a2981261` itself: one file, ruling 62 applied as worded. **#306 is approved.** It waits for OF-2 (#296) to merge, then is retargeted to `ccr-14987baf-i6lrsl` (its own diff is then the one doc), merges the base and merges on green CI. Researcher `session_01A6P7TJYP1XZYZ7bAoBQsEe` stays parked until then.
+
+## Round 8 (heads: of2-holds `8aa5c131`, archive-safe-b `4ca9d41a`, of3-scanner `024399cb`; base `e99e61af`)
+
+### Round 8 red team: final, no MAJOR (2 MINOR)
+
+Slice paging is sound: inclusive UTC slices leave no gaps, and every query fails closed at ≥ 1,000 or when rows < total_count. The runner pin is sound. The `-logs` entry is never resumed. The cache ref is fixed.
+- MINOR 1: a status race; a brand-new run can be missed, but the next guard read sees it.
+- MINOR 2: reads of the private logs into the public log are not refused (`grep`, `sed`, `cp` to `$GITHUB_STEP_SUMMARY`, `while read < $qlog/...`, full `*/logs/` paths).
+- Not checked: `container:` and `services:` images, and reusable-workflow jobs.
+
+### Supervisor rulings for round 9 (9 Oct, about 3:40 AM; sent together with the round 8 reviewer's findings)
+
+63. **MINOR 2.** Refuse any command argument or input redirect that names `$qlog`, `$slog`, `$tlog`, or a `*/logs/` path under `$out` or `$RUNNER_TEMP`, unless it is a write target of the allowed calls. One test per form above. **Replaced by OF-3 ruling 30** (an allow-list instead of a deny-list, and `eval` refused).
+64. **MINOR 1.** Run the status queries before the slices. Test the order.
+65. **Pin scope.** Arming also refuses archive-workflow jobs that use `container:` or `services:`, or that call a reusable workflow. Test it.
+- Round 8 reviewer: PASS, final, at `8aa5c131`; safe-b `4ca9d41a` is consistent. m1: `OLD-FAITHFUL.md:379` and `test-ci.sh:2216` still say "500 cap".
+66. **m1.** Change both to "sliced created searches and status queries each fail closed at total_count ≥ 1,000 or rows < total_count".
+
+### Round 9 (heads: of2-holds `83bc8d01`, archive-safe-b `8c15b41b`; base `0f6f51bc` merged)
+
+- Reviewer: PASS final, 0 BLOCKER, 0 MAJOR, 1 MINOR (m1: test name at `test-ci.sh:2223` still says "more than 5,000 runs"). Rulings 63 (as replaced by OF-3 30) and 64–66 met; every base merge equals `git merge-tree` of its parents.
+- Red team: final, 0 BLOCKER, 0 MAJOR, 3 MINOR. The OF-3 red team found the same MINOR 1 independently.
+
+### Supervisor rulings for round 10 (9 Oct about 5:20 AM)
+
+67. **Red team MINOR 1 (both red teams), required.** The guard misses ordinary spellings of a log read-back: `cat "${out}/logs/…"`, `cat "$out"/logs/…`, `cd "$out" && cat logs/…`, `find "$out" … -exec cat {} +`. Match a `logs` path part after any spelling of `$out` or `$RUNNER_TEMP` (plain, quoted, braced), and refuse read commands (cat, grep, sed, awk, head, tail, cp, `find -exec`) whose path is `$out` itself or that follow a `cd` into it. One test per probe the red teams listed, each failing on `83bc8d01`. Variable indirection (`d=logs; … "$out/$d"`) and scripts sourced from outside `ci/` (red team MINOR 3) are declined as deliberate disguise that review catches; possible later hardening.
+68. **Red team MINOR 2, declined.** `[ -s "$qlog/…" ]` is refused, which fails closed, and no line uses it.
+69. **Reviewer m1.** Rename the test at `test-ci.sh:2223` to "each search fails closed at 1,000".
+- Merge the new base `455739ae` with round 10.
+
+### Round 10 (heads: of2-holds `bc540ac7`, archive-safe-b `dc46a442`, of3-scanner `5b64b2a9`; base `455739ae` merged)
+
+- Red team: final, 0 BLOCKER, 0 MAJOR, 2 MINOR. Every round 9 and OF-3 probe is now refused; no legitimate CI line is refused. MINOR 1: an aliased `$out` passes (`d="$out"; cat "$d/logs/run.log"`), a plausible honest spelling. MINOR 2: deliberate disguises pass (`find … -print0 | while read …; cat`, `tar -cf - -C "$out" . | cat`, `python3 -c "open(…)"`).
+
+### Supervisor rulings for round 11 (9 Oct about 5:35 AM)
+
+70. **Red team MINOR 1, required.** A read command (cat, grep, sed, awk, head, tail, cp, tar, `find -exec`, `xargs`) is refused when any argument has a `logs` path part (`/logs/`, `/logs"`, `logs/` at the start), whatever variable comes before it, so an alias of `$out` is caught. Tests: the red team's `d="$out"` probe and one alias of `$RUNNER_TEMP`, each failing on `bc540ac7`; every legitimate line the red team listed still passes.
+71. **Red team MINOR 2, declined.** These need deliberate disguise and are caught by review; every change to the CI scripts gets a reviewer and a red team. The guard is a lint, not a sandbox.
+
+### Round 11 (heads: of2-holds `4764fe21`, archive-safe-b `9edbb9b2`, of3-scanner `e312997a`; base `430ea35c` merged)
+
+- Round 10 reviewer: PASS at `bc540ac7`, `dc46a442`, `5b64b2a9`; every base merge equals `git merge-tree`; asked to cover the round 11 heads with a test-ci run.
+- Round 11 red team: final, 0 BLOCKER, 0 MAJOR, 2 MINOR. Ruling 70 holds: every alias probe is refused; package-day's tar and the other legitimate lines pass.
+72. **Supervisor ruling (9 Oct about 5:52 AM).** MINOR 1 (`tar -cf - -C "$out" logs | cat`, a wildcard `tar -xO`) is a deliberate form under ruling 71, declined. MINOR 2 (`cat "$out/logs.run"` refused) fails closed and no such file exists, declined.
+73. **Guarded diff read (9 Oct about 5:54 AM; supervisor's Opus read job).** archive-check.yml, data-keep.yml and data-scan.yml (of3 adds only data-scan.yml over of2-holds; safe-b adds no workflow change). No new write scope, no `pull_request_target`; every `uses:` pinned to a full SHA; no secret echoed or in a URL; the only new host is files.old-faithful.net; `ARCHIVE_ARM` empty on all three; caps 10 req/s and 40 MB/s with stop on 429/403/503; every cache save waits for a seal, also on failure(). The data-keep narrowing (sealed entries only) is ruling 51. Notes for OF-4/OF-5, not this batch: archive-check.yml "Holds" step should run in the `env -i` clean shell like data-scan; the public day artifact, "Publish this day" and `contents: write` still exist on data-scan (unchanged from base; `ag_private_storage` refuses to arm while they exist) and the header comment at :21-22 is stale; of2-holds alone keeps the scanner cap at 40 req/s as on base (the rps check refuses it), safe-b and of3 set 10.
+- Labels added at 18:54 UTC: #296 and #214 `deps-reviewed:8b4b1c2af489a8f8d760954385c6d735`, #299 `deps-reviewed:02ff30afb950a03de09d33ac0a4cf61a` (each from `drift.ts --print-label` on its head). Merge plan: #214 (contains of2-holds, so GitHub also marks #296 merged) on green CI; then of3 merges the new base and #299 runs CI and merges; then #306 is retargeted.
+
+## Merged (9 Oct 2026, 6:24 AM)
+
+**#214 merged at `a1ed5175`** (the new base), carrying of2-holds, so GitHub also marked **#296 merged**. Head `9edbb9b2`: OF-2 and OF-1 reviewer PASS final and red team final (rulings through 73); labelled CI green; contains base `430ea35c`. `ARCHIVE_ARM` stays empty: nothing downloads until the arm steps. Next: of3 merges `a1ed5175` and #299 runs CI; #306 is retargeted to the base and merges the base.
