@@ -184,6 +184,7 @@
   4. The owner's research sessions (children of `session_01E7rtEhgN2fF94brNDtps3Z`, e.g. "Shared tape reader 2: day 2026-09-10") store decoded units "on HF" (likely Hugging Face). The owner rule says archive-derived day files go only to the private zeroed-data. Asked whether the owner approved that and whether it is private. Those sessions also read archive days that overlap the OF plan; that is the owner's own work.
   5. OLD-SERVER-COPY steps: to follow once the ops builder has checked them.
 - **Other open items from the audit (logged, not yet carded):**
+  - **Z-H / PM01-KILL decode gap (9 Oct about 2:15 AM, from the #313 review):** B-10 days (07-23..08-21) predate the holder-rewards event layout (docs 2026-09-12). The re-pinned decoder marks those older events `truncated`. Before Z-H or PM01-KILL relies on it, VERIFY the upgrade history for 07-22..10-02 and pin IDL layouts per period (`docs/reviews/Z03.md`, IDL-REPIN). It does not affect the download chain, which stores raw data only.
   - #283 follow-ups: the `__pycache__` files, and `609cffc0` not in base.
   - #261/#267/#143 inherited decisions.
   - S2 status unknown.
