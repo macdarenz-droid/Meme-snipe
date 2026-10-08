@@ -966,7 +966,8 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     const check = read('ops/host/files/usr/local/sbin/zeroed-check');
     expect(check).toContain(`if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then\n  rec="$(cat /var/lib/zeroed-record-upload/status.json 2>/dev/null || echo '{}')"`);
     expect(check).toContain(`if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi`);
-    expect(check).toContain('done < <(printf \'%s\' "$rec" | record_alerts "$(date +%s)" /var/lib/zeroed/recorder)');
+    expect(check).toContain('seen="$(recorder_first_seen "$now" /var/lib/zeroed/recorder "$STATE_DIR/recorder_first_seen")"');
+    expect(check).toContain('done < <(printf \'%s\' "$rec" | record_alerts "$now" /var/lib/zeroed/recorder "$seen")');
     // Before the key check's early exits, so it runs on a server whatever its pairing state.
     expect(check.indexOf('record_alerts')).toBeLessThan(check.indexOf('keys_stored || exit 0'));
   });
@@ -990,18 +991,38 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     expect(sh(`record_alerts ${now} "${recorder}"`, '{}').out).toContain('has never reported (no status written)');
   });
 
-  it('a recorder folder younger than 70 minutes holds only the "never reported" alert (the first upload run is 10 min after boot)', () => {
-    const aged = (name: string, ageS: number) => {
-      const d = join(tmp, 'rec-quiet', name);
-      mkdirSync(d, { recursive: true });
-      expect(sh(`touch -d @${now - ageS} "${d}"`).status).toBe(0);
-      return d;
-    };
-    const young = aged('young', 600);
-    expect(sh(`record_alerts ${now} "${young}"`, '{}').out).toBe('');
-    // The others are not held: a status that reports keeps its alerts.
-    expect(recAlerts({ ...ok, failed_runs: 3 }, young)).toEqual(on(['failed']));
-    expect(recAlerts({}, aged('old', 71 * 60))).toEqual(['on record-upload-stale']);
+  it('"never reported" waits 70 minutes from when the recorder folder was first seen; the others are not held', () => {
+    const hold = (seen: number) => sh(`record_alerts ${now} "${recorder}" ${seen}`, '{}').out;
+    mkdirSync(recorder, { recursive: true });
+    expect(hold(now - 600)).toBe('');
+    expect(sh(`record_alerts ${now} "${recorder}" ${now - 600}`, JSON.stringify({ ...ok, failed_runs: 3 })).out.split('\n').map((l) => l.split('|').slice(0, 2).join(' '))).toEqual(on(['failed']));
+    expect(hold(now - 71 * 60).split('|').slice(0, 2).join(' ')).toBe('on record-upload-stale');
+    // A first-seen time in the future, or none at all, counts as old.
+    expect(hold(now + 600).split('|').slice(0, 2).join(' ')).toBe('on record-upload-stale');
+    expect(sh(`record_alerts ${now} "${recorder}"`, '{}').out.split('|')[0]).toBe('on');
+  });
+
+  it('the first-seen stamp is written once, never follows the folder\'s mtime, and goes when the folder goes', () => {
+    const dir = join(tmp, 'rec-stamp', 'recorder');
+    const stamp = join(tmp, 'rec-stamp', 'first_seen');
+    const seen = (t: number) => sh(`recorder_first_seen ${t} "${dir}" "${stamp}"`);
+    mkdirSync(join(tmp, 'rec-stamp'), { recursive: true });
+    expect(seen(now - 71 * 60).out).toBe('');
+    mkdirSync(dir);
+    expect(seen(now - 71 * 60).out).toBe(String(now - 71 * 60));
+    // Later activity in the folder (touched, a new boot folder) changes nothing.
+    expect(sh(`touch "${dir}"`).status).toBe(0);
+    mkdirSync(join(dir, 'boot-2'));
+    const t = seen(now).out;
+    expect(t).toBe(String(now - 71 * 60));
+    expect(sh(`record_alerts ${now} "${dir}" ${t}`, '{}').out.split('|').slice(0, 2).join(' ')).toBe('on record-upload-stale');
+    // A stamp that is not a time is written again.
+    writeFileSync(stamp, 'junk');
+    expect(seen(now).out).toBe(String(now));
+    // The folder gone: the stamp goes too, so a folder that comes back starts a new hold.
+    rmSync(dir, { recursive: true });
+    expect(seen(now).out).toBe('');
+    expect(sh(`test -e "${stamp}"`).status).not.toBe(0);
   });
 
   it('(c) recorder folder and a status older than 3 hours: the 3-hour alert, as before', () => {
@@ -1014,7 +1035,7 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     const unit = read('ops/host/files/etc/systemd/system/zeroed-record-upload@.service');
     const cond = /^ConditionPathExists=(.+)$/m.exec(unit)?.[1];
     expect(cond).toBe('/var/lib/zeroed/recorder');
-    const call = `done < <(printf '%s' "$rec" | record_alerts "$(date +%s)" ${cond})`;
+    const call = `done < <(printf '%s' "$rec" | record_alerts "$now" ${cond} "$seen")`;
     expect(read('ops/host/files/usr/local/sbin/zeroed-check')).toContain(call);
     const install = read('ops/install.sh');
     expect(install).toContain(call);
