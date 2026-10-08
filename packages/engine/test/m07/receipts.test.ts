@@ -1,8 +1,9 @@
 // PATHS-FIX rulings 17, 19 and 20: the pull account's receipts folder stays bounded; only one valid receipt per segment,
 // under its bound name, stays; nothing is ever deleted outside the folder.
 import { strict as assert } from 'node:assert';
-import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'vitest';
 import { RECEIPT_CAPS, receiptFileName, sweepReceipts } from '../../src/m07/receipts.ts';
 import { tempDir } from '../helpers.ts';
@@ -95,6 +96,16 @@ describe('receipts sweep (PATHS-FIX rulings 17, 19, 20)', () => {
     const byBytes = sweepReceipts(dir, segmentOf, { ...RECEIPT_CAPS, maxBytes: 20 });
     assert.equal(byBytes.overCap, true);
     assert.equal(readdirSync(dir).length, 5);
+  });
+
+  it('the caps alert before receipts/\'s own filesystem is full (ruling 20)', () => {
+    const fs = readFileSync(fileURLToPath(new URL('../../../../ops/host/files/usr/local/lib/zeroed/receipts-fs', import.meta.url)), 'utf8');
+    const inodes = Number(/^INODES=(\d+)$/m.exec(fs)?.[1]);
+    const mib = Number(/^SIZE=(\d+)M$/m.exec(fs)?.[1]);
+    assert.equal(inodes, 32_768);
+    assert.equal(mib, 64);
+    assert.ok(RECEIPT_CAPS.maxCount < inodes);
+    assert.ok(RECEIPT_CAPS.maxBytes < mib * 1_024 * 1_024);
   });
 
   // Root deletes whatever the folder's mode, so this runs only as a normal user (as in CI).

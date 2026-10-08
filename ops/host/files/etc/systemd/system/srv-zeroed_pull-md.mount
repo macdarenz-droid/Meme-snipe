@@ -2,6 +2,7 @@
 Description=Zeroed: market data, read-only, inside the pull account's sftp chroot (PATHS-FIX)
 Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
 # Mounted before SSH can let the pull account in, so it never sees an empty folder.
+After=zeroed-receipts-fs.service
 Before=ssh.service ssh.socket
 
 [Mount]

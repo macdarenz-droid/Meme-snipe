@@ -20,15 +20,16 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, read
 import { join } from 'node:path';
 
 export interface ReceiptCaps {
-  /** At most this many valid receipts are expected (default 100,000: one per segment, about 300 bytes each). */
+  /** At most this many valid receipts are expected (default 30,000: the alert comes before receipts/'s own filesystem,
+   *  32,768 inodes in 64 MiB (ops/host/files/usr/local/lib/zeroed/receipts-fs), is full). */
   maxCount: number;
-  /** At most this many bytes of valid receipts (default 64 MiB). */
+  /** At most this many bytes of valid receipts (default 24 MiB; each receipt is a few hundred bytes in a 1 KiB block). */
   maxBytes: number;
   /** A larger file is not a receipt and is deleted unread (default 4 KiB). */
   maxFileBytes: number;
 }
 
-export const RECEIPT_CAPS: ReceiptCaps = { maxCount: 100_000, maxBytes: 64 * 1_024 * 1_024, maxFileBytes: 4 * 1_024 };
+export const RECEIPT_CAPS: ReceiptCaps = { maxCount: 30_000, maxBytes: 24 * 1_024 * 1_024, maxFileBytes: 4 * 1_024 };
 
 export type ReceiptDrop = 'not_a_file' | 'too_large' | 'invalid' | 'misnamed' | 'duplicate';
 

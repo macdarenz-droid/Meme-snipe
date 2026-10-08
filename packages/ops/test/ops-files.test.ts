@@ -663,9 +663,20 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     expect(rc).toMatch(/^What=\/var\/lib\/zeroed-md\/receipts$/m);
     expect(rc).toMatch(/^Where=\/srv\/zeroed_pull\/md\/receipts$/m);
     expect(rc).toMatch(/^Options=bind,rw,/m);
-    expect(rc).toMatch(/^Requires=srv-zeroed_pull-md\.mount$/m);
     for (const u of [md, rc]) expect(u).toMatch(/^Before=ssh\.service ssh\.socket$/m);
-    expect(main).toContain('systemctl enable --now srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount');
+    expect(main).toContain('systemctl enable --now zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount');
+    // Ruling 20: receipts/ is its own small filesystem, mounted before both binds and SSH.
+    const fsu = read('ops/host/files/etc/systemd/system/zeroed-receipts-fs.service');
+    expect(fsu).toMatch(/^Before=srv-zeroed_pull-md\.mount srv-zeroed_pull-md-receipts\.mount ssh\.service ssh\.socket$/m);
+    expect(fsu).toMatch(/^ExecStart=\/usr\/local\/lib\/zeroed\/receipts-fs start$/m);
+    expect(rc).toMatch(/^Requires=srv-zeroed_pull-md\.mount zeroed-receipts-fs\.service$/m);
+    expect(md).toMatch(/^After=zeroed-receipts-fs\.service$/m);
+    const script = read('ops/host/files/usr/local/lib/zeroed/receipts-fs');
+    expect(script).toContain('mkfs.ext4 -q -F -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"');
+    expect(script).toContain('mount -o loop,nodev,nosuid,noexec "$IMG" "$MNT"');
+    expect(script).toMatch(/^IMG_DIR=\/var\/lib\/zeroed-receipts$/m);
+    // mkfs.ext4 and e2fsck come from e2fsprogs, installed like every other tool the host scripts use.
+    expect(main).toMatch(/^PACKAGES=\(.*\be2fsprogs\b.*\)$/m);
   });
 
   it('the pull account is sftp only, chrooted, with no key until the operator adds one, and its Match block ends', () => {

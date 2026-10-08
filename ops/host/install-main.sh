@@ -183,7 +183,7 @@ fi
 
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
-PACKAGES=(age ca-certificates curl git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
+PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
 # An update only touches apt when a package is missing (and waits for unattended-upgrades' lock).
 if [ "$UPDATE" = 0 ] || ! dpkg -s "${PACKAGES[@]}" >/dev/null 2>&1; then
   apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null
@@ -346,8 +346,8 @@ say "Services"
 systemctl daemon-reload
 # HOST-CAPS: journald reads its size limits only when it starts.
 [[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
-# PATHS-FIX: the chroot's binds, before SSH (srv-zeroed_pull-*.mount).
-systemctl enable --now srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount >/dev/null
+# PATHS-FIX: the receipts' own small filesystem (ruling 20), then the chroot's binds, all before SSH.
+systemctl enable --now zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount >/dev/null
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null
