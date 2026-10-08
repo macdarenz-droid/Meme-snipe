@@ -86,9 +86,13 @@ rollback() {
     refused) note=" The release before, $(basename "$prev" | cut -c1-12), names no worker the host can run, so the worker will not start: the bot is stopped." ;;
   esac
   printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
+  # OPS-CLEAN round 5: resumable. rollback_due stays until the target's worker is restarted and the owner told; a run
+  # killed before that finishes it next time (probation_check). The deployed record moves before current, so no kill
+  # point leaves current on the target with the record on the failed release (realign_current would undo it).
+  printf '%s|%s|%s|%s\n' "$commit" "$prev" "$current" "${why//|/ }" > "$STATE_DIR/rollback_due"
+  printf '%s\n' "$current" > "$STATE_DIR/deployed"
   ln -sfn "$prev" /opt/zeroed/current.new
   mv -Tf /opt/zeroed/current.new /opt/zeroed/current
-  printf '%s\n' "$current" > "$STATE_DIR/deployed"
   apply_host "${current:-$(basename "$prev")}" "$prev" || true
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
   systemctl restart zeroed-worker.service || true
@@ -101,6 +105,7 @@ rollback() {
   rm -f "$STATE_DIR/probation.prev"
   log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
   alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is.$note"
+  rm -f "$STATE_DIR/rollback_due"
   exit 1
 }
 
@@ -117,6 +122,13 @@ rollback() {
 # The probation ends with the window (unless a rollback is due), or when another release is deployed.
 probation_check() {
   local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note="" refused
+  # OPS-CLEAN round 5: a rollback a killed run left half done is finished first (rollback() is safe to run again).
+  if [ -s "$STATE_DIR/rollback_due" ]; then
+    IFS='|' read -r pc pprev pcur why < "$STATE_DIR/rollback_due" || true
+    log "Finishing the rollback of ${pc:0:12} to $(basename "$pprev" | cut -c1-12), which a stopped run left half done."
+    commit="$pc" prev="$pprev" current="$pcur" dest="/opt/zeroed/releases/$pc"
+    rollback "$why"
+  fi
   [ -s "$f" ] || return 0
   IFS='|' read -r pc pprev pcur pstart pbase pdue < "$f" || true
   now="$(date +%s)"
@@ -222,6 +234,13 @@ realign_current() {
   ln -sfn "/opt/zeroed/releases/$d" /opt/zeroed/current.new
   mv -Tf /opt/zeroed/current.new /opt/zeroed/current
   log "Put current back to the deployed release ${d:0:12} (it pointed at ${c:0:12})."
+  # OPS-CLEAN round 5: a worker already running (started by a reboot) runs the other release; it comes back to the
+  # deployed one through a held start (unheld_start), which waits for open intents and dry runs like any. The deployed
+  # release is the last one that ran, so it is its own marker's rollback target: a failed hold of it alerts that there is
+  # no earlier release, and a later switch still goes back to it.
+  if systemctl is-active --quiet zeroed-worker.service && [ "$(cut -d'|' -f1 "$STATE_DIR/switch_unheld" 2>/dev/null || true)" != "$d" ]; then
+    printf '%s|%s|%s\n' "$d" "/opt/zeroed/releases/$d" "$d" > "$STATE_DIR/switch_unheld"
+  fi
 }
 
 # OPS-CLEAN M1: a release switched to while the worker could not start (keys or pairing missing) left switch_unheld
@@ -250,7 +269,7 @@ unheld_start() {
   else
     dest="/opt/zeroed/releases/$commit"
     held_restart
-    log "Started ${commit:0:12} under the hold (switched to before the keys or the pairing). Worker: restarted and up."
+    log "Started ${commit:0:12} under the hold. Worker: restarted and up."
     notify "Zeroed host: started ${commit:0:12}. Worker restarted and up." || true
   fi
 }
@@ -312,6 +331,13 @@ fi
 run="$(active_run)"
 if [ -n "$run" ]; then
   log "Waiting on ${commit:0:12}: the qualifying dry run $run is active."
+  exit 0
+fi
+
+# OPS-CLEAN round 5: a rollback that is due (held by an open intent, position or dry run) goes first; a switch now would
+# make the failed release the next one's rollback target. probation_check has already told the owner.
+if [ -s "$STATE_DIR/probation" ] && [ -n "$(cut -d'|' -f6 "$STATE_DIR/probation")" ]; then
+  log "Waiting on ${commit:0:12}: the rollback of $(cut -c1-12 "$STATE_DIR/probation") is due."
   exit 0
 fi
 

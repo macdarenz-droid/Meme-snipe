@@ -106,7 +106,7 @@ if [ -e ${root}/sd/rotate_on_sleep ]; then rm -f ${root}/sd/rotate_on_sleep; pri
   const pairScript = readFileSync(join(FILES, 'usr/local/sbin/zeroed-pair'), 'utf8');
   const block = pairScript.slice(pairScript.indexOf('\nif paired; then\n'), pairScript.indexOf('\nfi\n', pairScript.indexOf('\nif paired; then\n')) + 4);
   writeFileSync(join(root, 'rotate.sh'), `. "${root}/common.sh"\nwebhook_try() { :; }\nnew_pair_code() { :; }\nissued=1\n${block}`);
-  exe('mv', `/bin/mv "$@"; rc=$?; case "$*" in *current.new*/opt/zeroed/current) if [ -e ${root}/sd/kill_after_mv ]; then rm -f ${root}/sd/kill_after_mv; kill -9 $PPID; fi ;; esac; exit $rc`);
+  exe('mv', `case "$*" in *current.new*/opt/zeroed/current) if [ -e ${root}/sd/kill_before_mv ]; then rm -f ${root}/sd/kill_before_mv; kill -9 $PPID; exit 137; fi ;; esac; /bin/mv "$@"; rc=$?; case "$*" in *current.new*/opt/zeroed/current) if [ -e ${root}/sd/kill_after_mv ]; then rm -f ${root}/sd/kill_after_mv; kill -9 $PPID; fi ;; esac; exit $rc`);
   exe('flock', `if [ "$1" = -u ]; then if [ -e ${root}/state/holding ]; then echo 'unlock holding=yes'; else echo 'unlock holding=no'; fi >> ${root}/sd/calls; fi; exit 0`);
   exe('ln', `if [ -e ${root}/sd/kill_on_ln ]; then rm -f ${root}/sd/kill_on_ln; kill -9 $PPID; fi; exec /bin/ln "$@"`);
   // The worker answers its health route as the release current points at, only while the unit is active.
@@ -225,7 +225,7 @@ describe('the first start of a release switched to before the pairing is held (O
     expect(h.workerStarts()).toBe(1);
     expect(h.read('state/probation')).toMatch(new RegExp(`^${B}\\|${h.rel(A)}\\|${A}\\|\\d+\\|0\\n$`));
     expect(h.read('state/switch_unheld')).toBe('');
-    expect(h.read('log')).toContain(`Started ${B.slice(0, 12)} under the hold (switched to before the keys or the pairing). Worker: restarted and up.`);
+    expect(h.read('log')).toContain(`Started ${B.slice(0, 12)} under the hold. Worker: restarted and up.`);
     // Without a marker, /pair starts the worker itself.
     const q = h.pairNow();
     expect(q.status, q.out).toBe(0);
@@ -481,5 +481,86 @@ describe('OPS-CLEAN round 4: current and deployed agree, no restart mid-hold, on
     expect(h.read('log').match(/Waiting on the first held start of /g)).toHaveLength(1);
     expect(h.workerStarts()).toBe(0);
     expect(h.read('state/switch_unheld')).toBe(`${B}|${h.rel(A)}|${A}\n`);
+  });
+});
+
+describe('OPS-CLEAN round 5: a resumable rollback, no switch over a due one, a reboot-started worker brought back', () => {
+  /** A ready host switched to B and on probation behind A. */
+  const onB = () => {
+    const h = host([...KEYS, 'telegram_chat_id']);
+    expect(h.update().status).toBe(0);
+    expect(h.current()).toBe(h.rel(B));
+    return h;
+  };
+
+  it('a rollback killed just after current moved is finished by the next run: current = deployed = A, A restarted (18)', () => {
+    const h = onB();
+    h.set('sd/nrestarts', '1');
+    h.set('sd/kill_after_mv');
+    expect(h.update().status).not.toBe(0);
+    expect(h.current()).toBe(h.rel(A));
+    expect(h.read('state/deployed').trim()).toBe(A);
+    const starts = h.workerStarts();
+    const r = h.update();
+    expect(r.status, r.out).toBe(1);
+    expect(h.read('log')).toContain(`Finishing the rollback of ${B.slice(0, 12)} to ${A.slice(0, 12)}`);
+    expect(h.current()).toBe(h.rel(A));
+    expect(h.read('state/deployed').trim()).toBe(A);
+    expect(h.read('state/failed_release').trim()).toBe(B);
+    expect(h.workerStarts()).toBe(starts + 1);
+    expect(h.read('state/rollback_due')).toBe('');
+    expect(h.read('notify')).toContain(`so the server went back to ${A.slice(0, 12)}`);
+    // Done: the next run does not roll back again.
+    expect(h.update().status).toBe(0);
+    expect(h.workerStarts()).toBe(starts + 1);
+  });
+
+  it('a rollback killed before current moved is finished by the next run too (18)', () => {
+    const h = onB();
+    h.set('sd/nrestarts', '1');
+    h.set('sd/kill_before_mv');
+    expect(h.update().status).not.toBe(0);
+    expect(h.current()).toBe(h.rel(B));
+    expect(h.read('state/deployed').trim()).toBe(A);
+    expect(h.update().status).toBe(1);
+    expect(h.current()).toBe(h.rel(A));
+    expect(h.read('state/deployed').trim()).toBe(A);
+    expect(h.read('state/rollback_due')).toBe('');
+  });
+
+  it('a newer deploy waits while a rollback is due, even with the failed worker dead (19)', () => {
+    const h = onB();
+    h.set('sd/nrestarts', '1');
+    h.set('var/lib/zeroed/open_positions', '1');
+    expect(h.update().status).toBe(0);
+    expect(h.read('notify')).toContain('ALERT Zeroed host: rollback held: 0 open intents, 1 open positions.');
+    h.set('sd/active', '');
+    spawnSync('rm', ['-f', join(h.root, 'sd/active')]);
+    h.set('sd/tag', C);
+    const r = h.update();
+    expect(r.status, r.out).toBe(0);
+    expect(h.read('log')).toContain(`Waiting on ${C.slice(0, 12)}: the rollback of ${B.slice(0, 12)} is due.`);
+    expect(h.current()).toBe(h.rel(B));
+    expect(h.read('state/deployed').trim()).toBe(B);
+  });
+
+  it('a worker a reboot started on the half-switched release is brought back to the deployed one under the hold (20)', () => {
+    const h = host([...KEYS, 'telegram_chat_id']);
+    h.set('sd/kill_after_mv');
+    expect(h.update().status).not.toBe(0);
+    expect(h.current()).toBe(h.rel(B));
+    expect(h.read('state/deployed').trim()).toBe(A);
+    // The reboot: systemd starts the worker on what current names (B), unheld.
+    h.set('sd/active');
+    h.set('sd/tag', A);
+    const starts = h.workerStarts();
+    const r = h.update();
+    expect(r.status, r.out).toBe(0);
+    expect(h.read('log')).toContain(`Put current back to the deployed release ${A.slice(0, 12)}`);
+    expect(h.read('log')).toContain(`Started ${A.slice(0, 12)} under the hold.`);
+    expect(h.workerStarts()).toBe(starts + 1);
+    expect(h.current()).toBe(h.rel(A));
+    expect(h.read('state/switch_unheld')).toBe('');
+    expect(h.read('state/probation')).toMatch(new RegExp(`^${A}\\|${h.rel(A)}\\|${A}\\|`));
   });
 });
