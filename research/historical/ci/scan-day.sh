@@ -212,7 +212,7 @@ while true; do
     exit 0
   fi
   if [ $rc -ne 75 ]; then
-    echo "scanner failed with exit $rc (its output is in $slog/run.log, not in this log)" | tee -a "$summary"
+    echo "scanner failed with exit $rc (its output is kept in the private log next to the data, not in this log)" | tee -a "$summary"
     exit $rc
   fi
   hold_back "$out/archive-429.state" "$ARCHIVE_BACKOFF_S"

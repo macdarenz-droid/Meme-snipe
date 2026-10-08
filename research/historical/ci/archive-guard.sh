@@ -184,6 +184,18 @@ UNDER = re.compile(r"^\x22(?:\$out|\$RUNNER_TEMP|\$\{RUNNER_TEMP:\?\})/")
 # never linked, read or copied to an output (ln, cat, tee, head, tail on their paths)
 NONPLAIN = re.compile(r"\bfor\s+(?:qlog|slog|tlog)\b|\bread\b[^#;|]*\b(?:qlog|slog|tlog)\b|\bprintf\s+-v\s*(?:qlog|slog|tlog)\b|\b(?:declare|typeset)\b[^#;|]*\b(?:qlog|slog|tlog)\b|\$\{(?:qlog|slog|tlog):?[=?+-]")
 TOUCH = re.compile(r"(?:^|[\s;&|(])(?:ln|cat|tee|head|tail)\b[^#;|]*\$\{?(?:qlog|slog|tlog)\b")
+# ruling 63: the log directories (or any .../logs/ path under $out or $RUNNER_TEMP) appear
+# only as a write target (> or >>), in their plain assignment, to mkdir or rm, or to the
+# sealing call (cache-crypt.sh); never as a command argument or an input redirect
+LOGREF = re.compile(r"\$\{?(?:qlog|slog|tlog)\b|\$(?:out|RUNNER_TEMP|\{RUNNER_TEMP[^}]*\})[\w./${}-]*/logs\b")
+def logref_ok(line, m):
+    seg = re.split(r";|&&|\|\||\|", line[:m.start()])[-1] + line[m.start():]
+    seg = re.split(r";|&&|\|\||\|", seg)[0] if not re.search(r"\$\(", line[:m.start()]) else seg
+    if re.search(r"(?:\d?>>?|&>>?)\s*\x22?$", line[:m.start()]): return True
+    if re.match(r"^\s*(?:local\s+)?(?:qlog|slog|tlog)=", seg): return True
+    if re.match(r"^\s*(?:mkdir|rm)\b", seg): return True
+    if "cache-crypt.sh" in seg: return True
+    return False
 VIA = re.compile(r"(?:^|[\s;])(?:local\s+|export\s+)?\w+=[\x22\x27]?[^\s$(#]*zeroed-(?:scan|rpcscan)|command\s+-v\s+zeroed-|which\s+zeroed-|type\s+-p\s+zeroed-")
 def bad_lines(text):
     for n, line in enumerate(text.split("\n"), 1):
@@ -193,6 +205,10 @@ def bad_lines(text):
         if VIA.search(line): yield n, "scanner binary through a variable: " + line.strip()[:100]
         if NONPLAIN.search(line): yield n, "log directory written other than by a plain assignment: " + line.strip()[:100]
         if TOUCH.search(line): yield n, "log directory linked or read out: " + line.strip()[:100]
+        for m in LOGREF.finditer(line):
+            if not logref_ok(line, m):
+                yield n, "log directory named other than as a write target: " + line.strip()[:100]
+                break
         for m in CALL.finditer(line):
             rest = line[m.start(1):]
             if re.search(r"\$\(\s*(?:[\w./-]+\s+)*[\x22\x27]?[\w./$-]*$", line[:m.start(1)]):
@@ -303,6 +319,9 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
         envcheck(job.get("env"), name + " job " + str(j))
         for st in job.get("steps") or []:
             if isinstance(st, dict): envcheck(st.get("env"), name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))))
+        # ruling 65: no job container, service containers or reusable workflow (none is checked)
+        for k in ("container", "services", "uses"):
+            if k in job: fail(name + " job " + str(j) + " uses " + k + ": (a container, a service or a reusable workflow is not checked)")
         # ruling 59: a pinned runner image (ubuntu-latest moves to 26.04 in Nov 2026)
         ro = job.get("runs-on")
         if ro is not None and (not isinstance(ro, str) or "latest" in ro or not re.fullmatch(r"ubuntu-\d\d\.\d\d", ro)):
@@ -468,12 +487,14 @@ ag_runs() {
   rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
   now=$(ag_now)
   from=$(( now - 35 * 86400 )); (( rearm < from )) && from=$rearm
+  # Ruling 64: the non-completed runs first, so a run that completes between the two reads
+  # is still caught by its created slice.
+  for q in $AG_STATUSES; do all+="$(ag_runs_query "$wf" "status=$q")"$'\n' || return 1; done
   for (( a = from; a <= now; a += AG_SLICE_DAYS * 86400 )); do
     b=$(( a + AG_SLICE_DAYS * 86400 - 1 ))
     q="created=$(date -u -d "@$a" +%FT%TZ)..$(date -u -d "@$b" +%FT%TZ)"
     all+="$(ag_runs_query "$wf" "$q")"$'\n' || return 1
   done
-  for q in $AG_STATUSES; do all+="$(ag_runs_query "$wf" "status=$q")"$'\n' || return 1; done
   awk -F'\t' 'NF && !seen[$1]++' <<< "$all"
 }
 # ag_sha_guarded SHA (round 4, ruling 21): sets AG_G to "yes" when the commit SHA carries

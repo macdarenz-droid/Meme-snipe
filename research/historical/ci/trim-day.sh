@@ -73,8 +73,10 @@ if [ ! -f "$list" ] || [ ! -d "$out/units.k3" ]; then
     prior_args=(-prior "$prior")
   fi
   [ ${#k2[@]} -gt 0 ] || refuse "$out holds no K2 units to build the list from"
-  zeroed-scan migrations -day-start "$(date -u -d "$day" +%s)" "${prior_args[@]}" "$out" > "$tlog/migrations.list" 2>> "$tlog/migrations.log"
-  mv "$tlog/migrations.list" "$list.tmp"
+  # (ruling 63: the list is captured, never read back out of the log directory)
+  dstart=$(date -u -d "$day" +%s)
+  lst=$(zeroed-scan migrations -day-start "$dstart" "${prior_args[@]}" "$out" 2>> "$tlog/migrations.log")
+  if [ -n "$lst" ]; then printf '%s\n' "$lst" > "$list.tmp"; else : > "$list.tmp"; fi
   [ -s "$list.tmp" ] || refuse "the day's pinned list is empty (no migration in the day or the window before it)"
   mv "$list.tmp" "$list"
 fi
@@ -140,7 +142,7 @@ ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
 # OF-2 round 4, ruling 23: finalize and QA output go to $qlog next to the dataset, never
 # to the public job log or summary.
 qlog="$out/logs/qa"; rm -rf "$qlog"; mkdir -p "$qlog"
-qa() { "$@" || { echo "trim: $1 failed for $day (exit $?); its output is in $qlog" | tee -a "$summary"; exit 1; }; }
+qa() { "$@" || { echo "trim: $1 failed for $day (exit $?); its output is kept in the private log next to the data" | tee -a "$summary"; exit 1; }; }
 qa zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json" > "$qlog/finalize.log" 2>&1
 qa node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0 > "$qlog/qa.log" 2>&1
 qa node --no-warnings "$here/../qa/parity.ts" "$ds" > "$qlog/parity.log" 2>&1

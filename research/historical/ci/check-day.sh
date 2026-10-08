@@ -47,7 +47,7 @@ phase() {
   t0=$(date +%s)
   "$@" || rc=$?
   if [ "$rc" -eq 0 ]; then echo "phase $name ($day): passed, $(( $(date +%s) - t0 )) s" | tee -a "$summary" >&2
-  else echo "phase $name ($day): failed (exit $rc), $(( $(date +%s) - t0 )) s; its output is in $qlog" | tee -a "$summary" >&2; fi
+  else echo "phase $name ($day): failed (exit $rc), $(( $(date +%s) - t0 )) s; its output is kept in the private log next to the data" | tee -a "$summary" >&2; fi
   return $rc
 }
 # Disk: the units (about 6.4-8.5 GB a day) and the one-day dataset can live on different
@@ -128,6 +128,6 @@ if [ "${SOURCE:-archive}" != helius ]; then
   # OF-3: the release keeps the rescan unit's file hashes (equal to the day's unit, just
   # checked) and the per-unit log (revision, retention, migration list sha256 a unit).
   (cd "$again/units/$epoch/$range" && sha256sum -- *.zst | sed "s#  #  $epoch/$range/#") > "$assets/rescan-$day.sha256"
-  if [ -f "$out/units.log" ]; then cp "$out/units.log" "$assets/units-$day.log"; else zeroed-scan unitlog -out "$out" > "$qlog/units.log" 2>> "$qlog/unitlog.log"; cp "$qlog/units.log" "$assets/units-$day.log"; fi
+  if [ -f "$out/units.log" ]; then cp "$out/units.log" "$assets/units-$day.log"; else units=$(zeroed-scan unitlog -out "$out" 2>> "$qlog/unitlog.log"); printf '%s\n' "$units" > "$assets/units-$day.log"; fi
 fi
 rm -rf "$ds" "$qlog" "$again"

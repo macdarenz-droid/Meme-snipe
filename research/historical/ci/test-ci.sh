@@ -2485,7 +2485,7 @@ vol other aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; rc=0; guard full 2026-07-22 
 vol main "$NG"; rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "are not completed" "$T/gout.txt" || bad+=" unguarded:$rc"
 [[ -z "$bad" ]] && ok "OF-2 r4 ruling 41: a queued data-scan volume run is skipped as busy only on the default branch from a guarded commit; from another branch or an unguarded commit it holds the lane" || no "OF-2 r4 volume skip:$bad"
 bad=""; gdreset; touch "$GD/noguard-$NG"
-# 42. A run list at its 500 cap fails closed; in-progress and queued runs are listed on their own.
+# 42 (amended by 49, 55, 61). Too many runs for one search fail closed; in-progress and queued runs are listed on their own.
 guard full 2026-07-22 && grep -q "workflows/data-scan.yml/runs?status=in_progress&" "$GD/gh.log" && grep -q "workflows/archive-check.yml/runs?status=queued&" "$GD/gh.log" || bad+=" status-lists"
 python3 - "$GD/ds.json" "$(iso $(( now - 3 * 86400 )))" <<'PY'
 import json, sys
@@ -2498,7 +2498,7 @@ bad=""; gdreset
 # ---- OF-2 round 6 (docs/reviews/OF2.md rulings 43-48, 44a) ----
 gdreset; bad=""; now=$(date -u +%s); touch "$GD/noguard-$NG"
 # 43, 49. Runs created since the earlier of 35 days ago and the re-arm are read page by
-# page from the runs API, with no cap below 5,000.
+# page from the runs API (amended by 55, 61: each search fails closed at 1,000).
 rN() { python3 - "$GD/ds.json" "$(iso $(( now - $1 * 86400 )))" "$2" <<'PY'
 import json, sys
 json.dump([{"databaseId": 2000 + i, "status": "completed", "conclusion": "success", "createdAt": sys.argv[2], "updatedAt": sys.argv[2], "attempt": 1, "headBranch": "main", "headSha": "a" * 40, "displayTitle": "data-scan volume"} for i in range(int(sys.argv[3]))], open(sys.argv[1], "w"))
@@ -2514,7 +2514,7 @@ rN 20 600; FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || bad+=" 60
 grep -q "runs?created=$(date -u -d "@$(( now - 70 * 86400 ))" +%FT%H)" "$GD/gh.log" || bad+=" created-from-rearm"
 rN 20 5001; rc=0; FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" over-5000:$rc"
 rN 20 10; rc=0; GD_RUNS_FAIL=1 FXG=$T/fx49/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "the run history cannot be read" "$T/gout.txt" || bad+=" api-error:$rc"
-[[ -z "$bad" ]] && ok "OF-2 r6/r7 rulings 43, 49: runs are read page by page from the runs API, created since the earlier of 35 days ago and ARCHIVE_REARM_AT, plus every queued, in-progress, waiting, requested or pending run; 500 runs outside the window and 600 runs 70 days after a re-arm pass; more than 5,000 or an API error fail closed; the gh version is logged" || no "OF-2 r6 run window:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r6/r7 rulings 43, 49: runs are read page by page from the runs API, created since the earlier of 35 days ago and ARCHIVE_REARM_AT, plus every queued, in-progress, waiting, requested or pending run; 500 runs outside the window and 600 runs 70 days after a re-arm pass; more runs than one search returns (5,001 in one slice) or an API error fail closed; the gh version is logged" || no "OF-2 r6 run window:$bad"
 bad=""; gdreset; touch "$GD/noguard-$NG"
 # 44, 44a. The progress cache is sealed: no plaintext saved, a wrong key or a changed byte refused with nothing read.
 CC="$here/cache-crypt.sh"; cr="$T/cc"; rm -rf "$cr"; mkdir -p "$cr/data/units/1046/1-2"; echo "curve=5 secret-unit-bytes" > "$cr/data/units/1046/1-2/a.zst"
@@ -2785,6 +2785,38 @@ rm -rf "$T/r25s" "$T/r25o"; DATA_STORE_TOKEN=t25 bash "$here/cache-crypt.sh" sea
   DATA_STORE_TOKEN=t25 bash "$here/cache-crypt.sh" open "$T/r25s" "$T/r25o" data-scan-2026-07-22- >/dev/null 2>&1 &&
   [[ $rc != 0 && -f "$T/r25o/trim.log" && ! -e "$T/r25o/units" && ! -e "$T/r25o/units.k3" ]] || bad+=" logs-only:$rc"
 [[ -z "$bad" ]] && ok "OF-3 ruling 25: after a forced trim failure the logs alone are sealed (trim.log inside, no units or units.k3), by the logs steps that also run on a trim failure; the QA saves never run then" || no "OF-3 trim-failure logs:$bad"
+# ---- OF-2 round 9 (docs/reviews/OF2.md rulings 63-66) ----
+gdreset; bad=""; now=$(date -u +%s); touch "$GD/noguard-$NG"
+# 63. The log directories are named only as a write target, to mkdir or rm, in their assignment, or to the seal.
+f63() { mkfx "$T/fx63"; c="$T/fx63/research/historical/ci"; printf '%s\n' "$1" >> "$c/scan-day.sh"
+  ACFX=$c ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "scan-day.sh line [0-9]* prints scanner or QA output to the job log: log directory named other than as a write target" "$A/summary.md" || bad+=" [$1]"; }
+f63 'grep curve "$slog/run.log"'
+f63 'sed -n 1p "$slog/run.log"'
+f63 'cp "$slog/run.log" "$GITHUB_STEP_SUMMARY"'
+f63 'while read -r l; do echo "$l"; done < "$slog/run.log"'
+f63 'wc -l "$out/logs/run.log"'
+mkfx "$T/fx63"; c="$T/fx63/research/historical/ci"; printf '%s\n' 'echo done >> "$slog/note.log"' 'rm -rf "$slog/old"' >> "$c/scan-day.sh"
+ACFX=$c ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" write-target-ok:$(cat "$A/summary.md")"
+[[ -z "$bad" ]] && ok "OF-2 r9 ruling 63: arming refuses a log directory named by grep, sed, cp to the step summary, a while-read input redirect, or a full .../logs/ path; appending to it and rm on it are accepted" || no "OF-2 r9 log reads:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 64. The status queries run before the created slices.
+guard full 2026-07-22 || bad+=" guard"
+fs=$(grep -n "workflows/data-scan.yml/runs?status=" "$GD/gh.log" | head -1 | cut -d: -f1); fc=$(grep -n "workflows/data-scan.yml/runs?created=" "$GD/gh.log" | head -1 | cut -d: -f1)
+[[ -n "$fs" && -n "$fc" ]] && (( fs < fc )) || bad+=" order:$fs/$fc"
+[[ -z "$bad" ]] && ok "OF-2 r9 ruling 64: the run history asks for every non-completed status before the created slices" || no "OF-2 r9 query order:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 65. No job container, service containers or reusable workflow in an archive workflow.
+for v in container services uses; do
+  mkfx "$T/fx65"; python3 - "$T/fx65/.github/workflows/data-scan.yml" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read(); i = s.index("\n  assemble:"); j = s.index("\n    runs-on:", i)
+add = {"container": "\n    container: ubuntu:24.04", "services": "\n    services:\n      db:\n        image: postgres:16", "uses": "\n    uses: ./.github/workflows/other.yml"}[v]
+open(p, "w").write(s[:j] + add + s[j:])
+PY
+  ACFX=$T/fx65/research/historical/ci ac env AC_STATUS=206; [[ ! -e "$A/curl.calls" ]] && grep -q "data-scan.yml job assemble uses $v:" "$A/summary.md" || bad+=" [$v]"
+done
+[[ -z "$bad" ]] && ok "OF-2 r9 ruling 65: arming refuses an archive job with a container, service containers or a reusable workflow" || no "OF-2 r9 job kinds:$bad"
+bad=""; gdreset
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
