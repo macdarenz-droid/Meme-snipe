@@ -369,10 +369,12 @@ class Outcomes(unittest.TestCase):
             self.assertEqual(o.recv_15, min(xs))
             self.assertAlmostEqual(o.net_ret_15, (min(xs) - o.paid - o.fixed) / o.paid)
         self.assertGreater(o.rt_cost, o.fixed / o.paid)
-        # AMENDMENT_1/2: synthetic entries are on 2026-09-10 (after 09-03, before epoch 1033); no create row -> 170 bytes
-        self.assertEqual(o.fixed, expected_fixed(298 * 6_333))
+        # AMENDMENT_1/2 with RENT_BOUNDARY.md (R2-13): the rate is keyed by slot; the synthetic slots (S0 = 400,000,000)
+        # lie before epoch 1028, so 6,960 applies whatever the synthetic date; no create row -> 170 bytes
+        self.assertLess(int(p.entry_slot), C.EPOCH_1028_FIRST_SLOT)
+        self.assertEqual(o.fixed, expected_fixed(298 * 6_960))
         o2 = compute_outcomes(book, pts, {S.MINT: C.SPL_TOKEN_PROGRAM}).loc[el.index[0]]
-        self.assertEqual(o2.fixed, expected_fixed(293 * 6_333))
+        self.assertEqual(o2.fixed, expected_fixed(293 * 6_960))
 
     def test_fee_free_protocol_rows_do_not_price_our_fills_R2_2(self):
         """R2-2: BOOST slices and protocol swaps pay no venue fee (their fee fields are 0). A fill priced on the state
@@ -562,6 +564,14 @@ class Amendment1(unittest.TestCase):
         # RENT-1's refund model on the rent: (1 - 0.9 * 0.95) of it is lost
         self.assertAlmostEqual(f - FIXED_EDGE_COSTS, (1 - 0.855) * (2_074_080 - 1_513_840), places=6)
         self.assertAlmostEqual(fixed_for(C.TOKEN_2022_PROGRAM, *e1033), FIXED_EDGE_COSTS, places=6)
+
+    def test_rent_boundary_is_the_first_slot_of_epoch_1028_R2_13(self):
+        """R2-13 (RENT_BOUNDARY.md): 6,333 starts at slot 444,096,000 (2026-09-03 23:24:41 UTC), not at 00:00 UTC."""
+        t_noon = C.epoch("2026-09-03") + 12 * 3600                       # 09-03 12:00, still epoch 1027
+        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM, 443_990_000, t_noon), 298 * 6_960)
+        t_b = 1788477881                                                 # getBlockTime(444096000)
+        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM, 444_095_999, t_b - 1), 298 * 6_960)
+        self.assertEqual(rent_for(C.TOKEN_2022_PROGRAM, 444_096_000, t_b), 298 * 6_333)
 
     def test_binary_and_degenerate_item_23(self):
         x = np.array([1.0, 0.0, np.nan, 1.0])

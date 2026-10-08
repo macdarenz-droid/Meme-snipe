@@ -18,6 +18,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import h8 as H8  # noqa: E402
+import payer as PM  # noqa: E402
 import rebuy as RB  # noqa: E402
 import rows as R  # noqa: E402
 from tapeio import DEFAULT_PLAN, PlanError, Tape, check_plan, unit_info  # noqa: E402
@@ -111,22 +112,29 @@ def load_sol_usd_dir(days, folder=DEFAULT_SOL_USD_DIR, sums_sha256=SOL_USD_SUMS_
     return px, shas, minutes
 
 
-# PAYER_MASS.md (frozen): a necessary bar added to DEV-ZERO, REBUY-ANCHOR and SEAT-DRIFT. Its payer attribution,
-# Q and round-trip cost per row are not settled for the count rows, so it is not computed (CODE_REDTEAM.md R1-5).
-PAYER_MASS_BAR = {"passed": None, "status": "not computed: PAYER_MASS.md's payer-attributed net buy, Q and cost are "
-                                            "not defined for the count rows (open question, CODE_REDTEAM.md R1-5)"}
+# PAYER_MASS.md, defined per event by COUNT_ROWS_AMENDMENT_7 (payer.py). SEAT-DRIFT's bar is computed; DEV-ZERO's
+# and REBUY-ANCHOR's wait on the questions in CODE_REDTEAM.md (R1-17), and stay "not computed", which never earns.
+NOT_COMPUTED = {
+    "1_dev_zero": {"passed": None, "status": "not computed: which controls are 'matched' to a DEV-ZERO event is open "
+                                             "(CODE_REDTEAM.md R1-17)"},
+    "2_rebuy_anchor": {"passed": None, "status": "not computed: REBUY-ANCHOR's net rebuy flow is a share of Q "
+                                                 "(amendment 1), X* is in SOL; the unit is open (CODE_REDTEAM.md R1-17)"},
+    "3_seat_drift": {"passed": None, "status": "not computed"},
+}
 
 
-def decision(dz_s, sd_s, rb_s, payer=PAYER_MASS_BAR):
-    """A row earns a PREREG only when its own thresholds pass and the payer-mass bar passed (None = not computed,
-    which never earns)."""
+def decision(dz_s, sd_s, rb_s, payer=None):
+    """A row earns a PREREG only when its own thresholds pass and its payer-mass bar passed (None = not computed,
+    which never earns). `payer` maps "1_dev_zero", "2_rebuy_anchor", "3_seat_drift" to a bar result."""
+    payer = {**NOT_COMPUTED, **(payer or {})}
     own = {"1_dev_zero_by_arm": R.dev_zero_decide(dz_s), "2_rebuy_anchor": RB.rebuy_decide(rb_s),
            "3_seat_drift": R.seat_drift_decide(sd_s)}
-    bar = payer["passed"] is True
-    return {"own_thresholds": own, "payer_mass_bar": payer,
-            "1_dev_zero_prereg_by_arm": {k: bool(v and bar) for k, v in own["1_dev_zero_by_arm"].items()},
-            "2_rebuy_anchor_prereg": bool(own["2_rebuy_anchor"] and bar),
-            "3_seat_drift_prereg": bool(own["3_seat_drift"] and bar)}
+    ok = {k: payer[k].get("passed") is True for k in NOT_COMPUTED}
+    return {"own_thresholds": own,
+            "payer_mass_bar": {k: {kk: vv for kk, vv in v.items() if kk != "events"} for k, v in payer.items()},
+            "1_dev_zero_prereg_by_arm": {k: bool(v and ok["1_dev_zero"]) for k, v in own["1_dev_zero_by_arm"].items()},
+            "2_rebuy_anchor_prereg": bool(own["2_rebuy_anchor"] and ok["2_rebuy_anchor"]),
+            "3_seat_drift_prereg": bool(own["3_seat_drift"] and ok["3_seat_drift"])}
 
 
 REGISTERED_BOOT = 10_000   # COUNT_ROWS_AMENDMENT_1 Q1; run() overwrites R.BOOT_N, so this stays apart
@@ -142,6 +150,7 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
     dz, dz_s = R.dev_zero(tape, s, adj)
     rb, rb_pts, rb_pairs, rb_s = RB.rebuy_anchor(tape, s)
     sd, sd_s = R.seat_drift(tape, s, adj)
+    seat_bar = PM.seat_drift_bar(sd, sorted({d for d, _, _ in tape.ranges}))   # COUNT_ROWS_AMENDMENT_7
     ag, ag_s = R.age_gate(tape, s, fast)
     ru, ru_s = R.round_usd(tape, s, sol_usd, adj, n_boot=min(n_boot, 1000))
     # H8_AMENDMENT: rows 1-3 on the H8-eligible stratum at $5, $20, $50, and the H8 capacity count row
@@ -166,9 +175,10 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
         "5_two_sided_clusters": two, "6_round_usd": ru_s, "sol_usd_files": sol_usd_files or [],
         "h8_stratum_rows_1_3": h8_strata, "7_h8_capacity": h8_cap,
     }
+    summary["payer_mass_3_seat_drift"] = {k: v for k, v in seat_bar.items() if k != "events"}
     if decide:
         summary["plan"] = plan
-        summary["decision"] = decision(dz_s, sd_s, rb_s)
+        summary["decision"] = decision(dz_s, sd_s, rb_s, {"3_seat_drift": seat_bar})
     os.makedirs(out, exist_ok=True)
     for name, df in (("dev_zero", dz), ("rebuy_exits", rb), ("rebuy_points", rb_pts), ("rebuy_pairs", rb_pairs), ("seat_drift", sd), ("age_gate", ag),
                      ("two_sided_labels", labels), ("round_usd", ru), ("h8_pool_hours", h8_ph), ("h8_graduates", h8_gr)):

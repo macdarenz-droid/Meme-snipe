@@ -1009,7 +1009,7 @@ class RedTeamR1(unittest.TestCase):
         self.assertFalse(dec["2_rebuy_anchor_prereg"])
         self.assertFalse(dec["3_seat_drift_prereg"])
         self.assertTrue(all(dec["own_thresholds"]["1_dev_zero_by_arm"].values()))
-        self.assertIsNone(dec["payer_mass_bar"]["passed"])
+        self.assertTrue(all(v["passed"] is not True for v in dec["payer_mass_bar"].values()))   # R1-16: per row
 
 
     def test_round_usd_bound_counts_undefined_draws_against_it(self):
@@ -1028,6 +1028,93 @@ class RedTeamR1(unittest.TestCase):
         r = df.set_index("usd_level").loc[50_000.0]
         self.assertAlmostEqual(r["bunching_logratio_minus_placebo"], np.log(2))
         self.assertIsNone(r["lb95"])            # a quarter of the draws hold only P2: undefined
+
+
+class PayerMass(unittest.TestCase):
+    """COUNT_ROWS_AMENDMENT_7 Q-R1-a: the payer-mass bar (CODE_REDTEAM.md R1-16, R1-17)."""
+
+    def test_round_trip_cost_tier_and_x_star(self):
+        import payer as PM
+        x = 41_925_205                                  # $5 at $119.26: floor(5 / 119.26 * 1e9)
+        self.assertEqual(PM.SPEND_5USD, x)
+        Q = 85e9                                        # 85 SOL of effective quote; supply = base: cap = Q
+        c = PM.round_trip_cost(Q, Q, 1e15, 1e15)        # 85 SOL cap: the 125 bps tier
+        want = 2 * 0.0125 + (x * x / (Q + x) + x * x / Q) / x + 414_009 / x
+        self.assertAlmostEqual(c, want, places=12)
+        self.assertAlmostEqual(PM.x_star(Q, c), Q * (np.sqrt(1 + c) - 1))
+        # the tier the program applies: cap >= 420 SOL is the 120 bps tier, just under it the 125 bps one
+        at, under = PM.round_trip_cost(Q, 420e9, 1e15, 1e15), PM.round_trip_cost(Q, 419.999e9, 1e15, 1e15)
+        self.assertAlmostEqual(under - at, 2 * 0.0005, places=12)
+        self.assertTrue(np.isnan(PM.round_trip_cost(np.nan, Q, 1e15, 1e15)))
+
+    def test_bar_ties_pass_at_exactly_1_and_exactly_11_a_day(self):
+        import payer as PM
+        days = ["d1", "d2"]
+        ev_days = ["d1"] * 23 + ["d2"] * 22
+        xs = np.ones(45)
+        flows = np.r_[np.full(23, 1.0), np.full(22, 2.0)]   # median ratio exactly 1; 22 events at exactly 2 X*
+        r = PM.bar(flows, xs, ev_days, days)
+        self.assertEqual((r["median_ratio"], r["events_at_2x_per_day"]), (1.0, 11.0))
+        self.assertTrue(r["passed"])
+        r = PM.bar(np.r_[flows[:-1], 1.999], xs, ev_days, days)   # 21 at 2 X*: 10.5 a day
+        self.assertEqual(r["events_at_2x_per_day"], 10.5)
+        self.assertFalse(r["passed"])
+        low = np.r_[np.full(23, 0.999), np.full(22, 2.0)]          # median just under 1
+        self.assertFalse(PM.bar(low, xs, ev_days, days)["passed"])
+        # a day with no events counts in the average; an undefined flow or X* never helps
+        self.assertTrue(PM.bar(np.full(22, 3.0), np.ones(22), ["d1"] * 22, days)["passed"])
+        r = PM.bar(np.r_[np.full(21, 3.0), np.nan], np.ones(22), ["d1"] * 22, days)
+        self.assertFalse(r["passed"])
+        r = PM.bar(np.full(22, 3.0), np.r_[np.ones(21), np.nan], ["d1"] * 22, days)
+        self.assertFalse(r["passed"])
+        self.assertIsNone(PM.bar([], [], [], ["d1"])["passed"])
+
+    def _seat_unit(self, late_swap=False):
+        u = Unit()
+        # N_m: A 1, B 2, C 1 (A and C are 130 s apart), D, E, F 0 -> cuts 0 and 1: B busy, D, E, F lone
+        mints = [("A", "PA", 200, "CA"), ("B", "PB", 250, "CB"), ("C", "PC", 330, "CC"), ("D", "PD", 1000, "CD"),
+                 ("E", "PE", 2000, "CE"), ("F", "PF", 2500, "CF")]
+        for mint, pool, m, c in mints:
+            u.create(m - 100, mint, creator=c, name="n" + mint)
+            u.migrate(m, mint, pool, creator=c)
+            u.aswap(m + 1, "seed" + mint, mint, pool, creator=c)
+        # PB is busy: a 10 SOL first-time buy in its w1 window; the lone ones buy 1 SOL
+        u.aswap(250 + 3600 + 30, "N1", "B", "PB", sol=10e9, creator="CB")
+        for mint, pool, m, c in mints[3:]:
+            u.aswap(m + 3600 + 30, "L" + mint, mint, pool, sol=1e9, creator=c)
+        if late_swap:                                   # after m + 60 min: must not change Q or the tier
+            u.aswap(250 + 3600 + 5, "late", "B", "PB", sol=1, creator="CB", quote=400e9, virtual=0)
+        return u
+
+    def test_seat_drift_bar_uses_the_busy_excess_and_the_as_of_quote(self):
+        import payer as PM
+        tape, s, adj = load(self._seat_unit())
+        df, _ = R.seat_drift(tape, s, adj)
+        r = PM.seat_drift_bar(df, sorted({d for d, _, _ in tape.ranges}))
+        ev = r["events"]
+        self.assertEqual(list(ev["pool"]), ["PB"])
+        a = ev.set_index("pool").loc["PB"]
+        self.assertEqual(a["flow"], 10e9 - 1e9)        # busy minus the median lone graduate of the day
+        self.assertEqual(a["Q"], 100e9)                 # eff quote of the last swap at or before m + 60 min
+        tape2, s2, adj2 = load(self._seat_unit(late_swap=True))
+        df2, _ = R.seat_drift(tape2, s2, adj2)
+        a2 = PM.seat_drift_bar(df2, sorted({d for d, _, _ in tape2.ranges}))["events"].set_index("pool").loc["PB"]
+        self.assertEqual((a2["Q"], a2["x_star"]), (a["Q"], a["x_star"]))
+
+    def test_decision_earns_only_with_the_bar(self):
+        import run_step_a
+        from unittest import mock
+        own = {"le5": True, "zero": True, "le3": True}
+        with mock.patch.object(R, "dev_zero_decide", lambda s: own), \
+                mock.patch.object(R, "seat_drift_decide", lambda s: True), \
+                mock.patch.object(RB, "rebuy_decide", lambda s: True):
+            yes = run_step_a.decision({}, {}, {}, {"3_seat_drift": {"passed": True}})
+            no = run_step_a.decision({}, {}, {}, {"3_seat_drift": {"passed": False}})
+        self.assertTrue(yes["3_seat_drift_prereg"])
+        self.assertFalse(no["3_seat_drift_prereg"])
+        for d in (yes, no):                              # not computed for these rows: never earned
+            self.assertFalse(d["2_rebuy_anchor_prereg"])
+            self.assertFalse(any(d["1_dev_zero_prereg_by_arm"].values()))
 
 
 if __name__ == "__main__":

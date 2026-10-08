@@ -429,9 +429,14 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
             w = g[(g["block_time"] <= t1) & ((g["slot"] > s0 + LANDING) if plus23 else (g["block_time"] >= t0))]
             w = w[w["is_buy"] & w["ftb"] & ~w["fake"] & ~w["excluded"]]
             before = g[g["block_time"] <= t0]
-            eq = eff_quote(before.iloc[-1]) if len(before) else np.nan
+            last = before.iloc[-1] if len(before) else None
+            eq = eff_quote(last) if last is not None else np.nan
             res[f"{name}_ftb_sol"] = float(w["sol"].sum())
             res[f"{name}_eff_quote"] = eq
+            # the same as-of state's base reserve and supply, for the tier in the payer-mass bar (AMENDMENT_7)
+            res[f"{name}_base"] = (last["pool_base_post"] if pd.notna(last["pool_base_post"]) else last["pool_base_pre"]) \
+                if last is not None else np.nan
+            res[f"{name}_supply"] = last["supply"] if last is not None else np.nan
             res[f"{name}_share"] = res[f"{name}_ftb_sol"] / eq if eq and eq > 0 else np.nan
         out.update(res)
         rows.append(out)
@@ -584,6 +589,22 @@ def px_range(px):
     return float(px), float(px), float(px)
 
 
+def usd_level_flags(sol_usd, days):
+    """Count row 6's flag per day: 420 SOL within 5% of a round USD level ($50k or $100k) at any minute close of the
+    day (Q22). Returns (flags, not_separable): not_separable is True when every day is flagged, False when not, and
+    None when a day has no SOL/USD (Design A's verdict reads it, edge-a AMENDMENT_2 Q11)."""
+    flags = {}
+    for d in days:
+        px = sol_usd.get(d) if sol_usd else None
+        if px is None:
+            flags[d] = None
+            continue
+        _, lo, hi = px_range(px)
+        flags[d] = any(_overlap(A_LEVEL / 1.05, A_LEVEL / 0.95, u / hi, u / lo) for u in USD_LEVELS)
+    ns = None if (not flags or any(v is None for v in flags.values())) else all(flags.values())
+    return flags, ns
+
+
 def mcap_segments(tape: Tape, s: pd.DataFrame):
     """Per eligible pool: time segments [t, t_next) holding the market cap in SOL after each swap, for
     hours 0-72 after migration, outside the BOOST window (A amendment (b)). Market cap = effective quote
@@ -645,7 +666,7 @@ def round_usd(tape: Tape, s: pd.DataFrame, sol_usd: dict | None, adj, n_boot=BOO
         med, lo, hi = px_range(px)
         lv = [u / med for u in USD_LEVELS]                     # bunching at the median close's levels
         rng_l = [(u / hi, u / lo) for u in USD_LEVELS]          # every minute's level (Q22)
-        flags[d] = any(_overlap(A_LEVEL / 1.05, A_LEVEL / 0.95, a, b) for a, b in rng_l)
+        flags[d] = usd_level_flags({d: px}, [d])[0][d]
         grid = placebo_grid(day_ranges=rng_l)
         px = med
         sd = seg[seg["day"] == d]

@@ -229,6 +229,14 @@ class Replay(unittest.TestCase):
         self.assertEqual(costs.fixed_round_trip("2026-09-11", e1033), costs.expected_fixed(298 * 5_080))
         self.assertEqual(costs.expected_fixed(), costs.FIXED_ROUND_TRIP)   # the repo figure, kept for the parity check
 
+    def test_rent_boundary_is_the_first_slot_of_epoch_1028_R2_13(self):
+        """R2-13 (RENT_BOUNDARY.md): 6,333 starts at slot 444,096,000 (2026-09-03 23:24:41 UTC), not at 00:00 UTC."""
+        self.assertEqual(costs.lamports_per_byte("2026-09-03", 443_990_000), 6_960)   # 09-03 12:00, epoch 1027
+        self.assertEqual(costs.lamports_per_byte("2026-09-03", 444_095_999), 6_960)
+        self.assertEqual(costs.lamports_per_byte("2026-09-03", 444_096_000), 6_333)
+        self.assertEqual(costs.fixed_round_trip("2026-09-03", 443_990_000), costs.expected_fixed(298 * 6_960))
+        self.assertEqual(costs.rent_candidates("2026-09-03", 444_095_999), (293 * 6_960, 298 * 6_960))
+
     def test_no_fee_paying_row_yet_uses_the_dearest_rate_R2_11(self):
         """R2-11: before the venue's first fee-paying row, a later row's rate is never used (look-ahead, and cheaper);
         the quote pays the dearest rate (ledger.FALLBACK_BPS: PumpSwap's dearest tier; the curve's 95 + 30)."""
