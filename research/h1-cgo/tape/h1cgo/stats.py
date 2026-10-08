@@ -207,11 +207,12 @@ def h8_stratum(feats: pd.DataFrame, out: pd.DataFrame, frozen: dict, decision_da
     from . import h8 as H8
     bp, side = _frozen_rule(feats, frozen, decision_days)
     f = H8.flags(feats, sol)
-    e = entries(f, side, bp)
     ok = out[out.status.isin(["ok", "exit_refused"]) & (out.hold == HOLD_S)]
     res = {}
     for s in H8.SIZES_USD:
-        t = e[e[f"h8_{s}"]][["mint", "decision_slot"]].merge(ok[ok.usd == float(s)], on=["mint", "decision_slot"])
+        # AMENDMENT_6: H8 first (each decision point's own as-of flag), then the first eligible entry per coin per day
+        e = entries(f[f[f"h8_{s}"]], side, bp)
+        t = e[["mint", "decision_slot"]].merge(ok[ok.usd == float(s)], on=["mint", "decision_slot"])
         base = f[f.eligible & f[f"in_time_{HOLD_S}"] & f[f"h8_{s}"]][["mint", "decision_slot"]].merge(
             ok[ok.usd == float(s)], on=["mint", "decision_slot"])
         r = _judge(t, base)
