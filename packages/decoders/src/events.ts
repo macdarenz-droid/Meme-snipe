@@ -314,14 +314,16 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
     return [];
   }
   const out: LocatedEvent[] = [];
-  /** True when `ix` runs a multi-hop route: PumpSwap `multi_hop_swap` or pump `multi_hop_curve_swap` (rulings 38, 44). */
+  /**
+   * True when `ix` runs a multi-hop route: PumpSwap `multi_hop_swap` or pump `multi_hop_curve_swap` (rulings 38, 44).
+   * The 8-byte discriminator decides, whatever the data length: a route instruction with padded data is still a route
+   * (ruling 45). Only route-program instructions are decoded, at most once each per transaction walk.
+   */
   const isMultiHop = (ix: Ix | undefined): boolean => {
     const routes = ix === undefined ? undefined : byProgram.get(programOf(ix) ?? '')?.routeInstructions;
     if (ix === undefined || routes === undefined || routes.size === 0) return false;
-    const length58 = (ix as InnerIx).dataLength58;
-    if (length58 !== undefined && length58 > MAX_EVENT_DATA_B58) return false;
     const d = Buffer.from(ix.dataB64, 'base64');
-    return d.length >= 8 && d.length <= MAX_EVENT_DATA_BYTES && routes.has(d.subarray(0, 8).toString('hex'));
+    return d.length >= 8 && routes.has(d.subarray(0, 8).toString('hex'));
   };
   for (const group of tx.meta.innerInstructions) {
     const parent = tx.message.instructions[group.index];
@@ -409,11 +411,11 @@ const BUY_TOTAL_PARTS = new Set(['TradeEvent', 'PostCompleteBuyEvent']);
  * first seen. pump-public-docs 8cda1fa, docs/SYNTHETIC_MIGRATION.md: "the buyer's total is the `TradeEvent` amounts
  * plus the `PostCompleteBuyEvent` amounts". A coin bought twice in one instruction is summed; sells are not counted.
  * Events under a `multi_hop_swap` are left out (ruling 38): the middle coins of a route net to zero for the user, and
- * routes are not decoded until a real multi-hop fixture proves them. `gaps` mark totals `incomplete` (ruling 37); it is
- * required (ruling 43), so take both from one `decodeEventsWithGaps` call. Before any card reads these totals, a golden from a real mainnet completing v3 buy is required, because
+ * routes are not decoded until a real multi-hop fixture proves them. Its gaps mark totals `incomplete` (ruling 37); it
+ * takes the whole result of one `decodeEventsWithGaps` call, so the gaps cannot be left out (rulings 43, 46). Before any card reads these totals, a golden from a real mainnet completing v3 buy is required, because
  * the SOL rule for PostCompleteBuyEvent's quote mint (default key, not wSOL) is UNVERIFIED (ruling 37; Z08, PM01-KILL).
  */
-export function pumpBuyTotals(events: readonly LocatedEvent[], gaps: readonly LocatedGap[]): PumpBuyTotal[] {
+export function pumpBuyTotals({ events, gaps }: Readonly<DecodedTransactionEvents>): PumpBuyTotal[] {
   const totals = new Map<string, PumpBuyTotal>();
   const gapped = new Set(gaps.filter((g) => g.event === null || BUY_TOTAL_PARTS.has(g.event)).map((g) => `${g.signature} ${g.outerIx}`));
   for (const { event: e, outerIx, multiHop } of events) {

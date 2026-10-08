@@ -7,7 +7,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import type { RawTransaction } from '@bot/types';
 import {
-  base58, decodeEvents, decodeEventsWithGaps, type LocatedEvent, type LocatedGap, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction,
+  base58, decodeEvents, decodeEventsWithGaps, MAX_EVENT_DATA_BYTES, type LocatedEvent, type LocatedGap, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction,
   type GapReason, type InnerIx, type PinnedIdl,
 } from '../src/index.ts';
 import { accountsOf, bytes, decoders, fixture, idls, WSOL, type FixtureAccount } from './fixtures.ts';
@@ -177,7 +177,7 @@ describe('PostCompleteBuyEvent: the pool part of a completing buy, counted into 
     const r = run(t);
     const trade = r.located[0]?.event;
     assert.ok(trade?.kind === 'pump_trade');
-    assert.deepEqual(pumpBuyTotals(r.located, r.placed), [{
+    assert.deepEqual(pumpBuyTotals({ events: r.located, gaps: r.placed }), [{
       signature: t.signature, outerIx: r.located[0]?.outerIx, mint, solAmount: trade.solAmount + 250_000_000n,
       tokenAmount: trade.tokenAmount + 5_000_000n, fee: trade.fee + 2_375_000n, creatorFee: trade.creatorFee + 125_000n,
       incomplete: false,
@@ -201,11 +201,11 @@ describe('PostCompleteBuyEvent: the pool part of a completing buy, counted into 
 
   it('sells are not counted; a trade without a pool part is its own total', () => {
     const sell = TRADES.map(raw).find((t) => run(t).located.some((l) => l.event.kind === 'pump_trade' && !l.event.isBuy));
-    if (sell !== undefined) assert.deepEqual(pumpBuyTotals(run(sell).located, run(sell).placed), []);
+    if (sell !== undefined) assert.deepEqual(pumpBuyTotals({ events: run(sell).located, gaps: run(sell).placed }), []);
     const buy = TRADES.map(raw).find((t) => run(t).located.some((l) => l.event.kind === 'pump_trade' && l.event.isBuy)) as RawTransaction;
     const e = run(buy).located[0]?.event;
     assert.ok(e?.kind === 'pump_trade');
-    assert.deepEqual(pumpBuyTotals(run(buy).located, run(buy).placed).map((x) => [x.solAmount, x.tokenAmount]), [[e.solAmount, e.tokenAmount]]);
+    assert.deepEqual(pumpBuyTotals({ events: run(buy).located, gaps: run(buy).placed }).map((x) => [x.solAmount, x.tokenAmount]), [[e.solAmount, e.tokenAmount]]);
   });
 });
 
@@ -243,14 +243,14 @@ describe('round 2 (rulings 33-38)', () => {
   });
 
   it('ruling 33: two top-level instructions buying the same coin in one transaction give two totals', () => {
-    const totals = pumpBuyTotals([trade('s', 2, 'm', 100n), trade('s', 3, 'm', 50n), trade('s', 2, 'm', 7n)], []);
+    const totals = pumpBuyTotals({ events: [trade('s', 2, 'm', 100n), trade('s', 3, 'm', 50n), trade('s', 2, 'm', 7n)], gaps: [] });
     assert.deepEqual(totals.map((t) => [t.outerIx, t.solAmount]), [[2, 107n], [3, 50n]]);
   });
 
   it('ruling 37: a total is incomplete when a TradeEvent, a PostCompleteBuyEvent or an unnamed event gapped in its instruction', () => {
     const gap = (outerIx: number, event: string | null, signature = 's'): LocatedGap => ({ signature, outerIx, innerIx: 9, reason: 'truncated', event });
     const events = [trade('s', 2, 'm', 100n), trade('s', 3, 'm', 50n)];
-    const flags = (gaps: LocatedGap[]) => pumpBuyTotals(events, gaps).map((t) => t.incomplete);
+    const flags = (gaps: LocatedGap[]) => pumpBuyTotals({ events, gaps }).map((t) => t.incomplete);
     assert.deepEqual(flags([]), [false, false]);
     assert.deepEqual(flags([gap(2, 'PostCompleteBuyEvent')]), [true, false]);
     assert.deepEqual(flags([gap(3, 'TradeEvent')]), [false, true]);
@@ -269,11 +269,11 @@ describe('round 2 (rulings 33-38)', () => {
     const gaps: LocatedGap[] = [];
     const located = decodeEventsLocated(t, idls(), { onGapAt: (g) => gaps.push(g) }, { wsolMint: WSOL });
     assert.deepEqual(gaps, [{ signature: t.signature, outerIx: l.outerIx, innerIx: l.innerIx + 1, reason: 'truncated', event: 'PostCompleteBuyEvent' }]);
-    assert.deepEqual(pumpBuyTotals(located, gaps).map((x) => x.incomplete), [true]);
+    assert.deepEqual(pumpBuyTotals({ events: located, gaps }).map((x) => x.incomplete), [true]);
     // Ruling 43: the Decoders path gives the gaps with the events, so the gapped pool part marks the total incomplete.
     const both = decoders().decodeTransactionEventsWithGaps(t);
     assert.deepEqual(both.gaps, gaps);
-    assert.deepEqual(pumpBuyTotals(both.events, both.gaps).map((x) => x.incomplete), [true]);
+    assert.deepEqual(pumpBuyTotals(both).map((x) => x.incomplete), [true]);
   });
 
   it('ruling 38: a TradeEvent under a multi_hop_swap still decodes, is flagged multiHop and is left out of the buyer totals', () => {
@@ -281,7 +281,7 @@ describe('round 2 (rulings 33-38)', () => {
     const base = raw(rec);
     const plain = run(base).located.filter((l) => l.event.kind === 'pump_trade');
     assert.ok(plain.length > 0 && plain.every((l) => !l.multiHop));
-    assert.equal(pumpBuyTotals(plain, run(base).placed).length, plain.filter((l) => l.event.kind === 'pump_trade' && l.event.isBuy).length > 0 ? 1 : 0);
+    assert.equal(pumpBuyTotals({ events: plain, gaps: run(base).placed }).length, plain.filter((l) => l.event.kind === 'pump_trade' && l.event.isBuy).length > 0 ? 1 : 0);
     const t = raw(rec);
     const outer = t.message.instructions[plain[0]?.outerIx as number];
     assert.ok(outer !== undefined);
@@ -289,10 +289,10 @@ describe('round 2 (rulings 33-38)', () => {
     outer.dataB64 = withDisc(Buffer.alloc(24).toString('base64'), discOf(idl('pump_amm').instructions, 'multi_hop_swap'));
     const hop = run(t).located.filter((l) => l.event.kind === 'pump_trade');
     assert.deepEqual(hop.map((l) => [l.event, l.multiHop]), plain.map((l) => [l.event, true]));
-    assert.deepEqual(pumpBuyTotals(hop, run(t).placed), []);
+    assert.deepEqual(pumpBuyTotals({ events: hop, gaps: run(t).placed }), []);
     // A buy flagged multiHop stays out of the totals; the same buy without the flag is counted.
-    assert.deepEqual(pumpBuyTotals([trade('s', 2, 'm', 100n, { multiHop: true })], []), []);
-    assert.equal(pumpBuyTotals([trade('s', 2, 'm', 100n)], []).length, 1);
+    assert.deepEqual(pumpBuyTotals({ events: [trade('s', 2, 'm', 100n, { multiHop: true })], gaps: [] }), []);
+    assert.equal(pumpBuyTotals({ events: [trade('s', 2, 'm', 100n)], gaps: [] }).length, 1);
   });
 
   it('ruling 38: a multi_hop_swap invoked by an aggregator (an inner instruction) flags the pump events below it', () => {
@@ -365,7 +365,7 @@ describe('round 3 (ruling 44): unclear routes stay out of the buyer totals', () 
     ixs.splice(pumpAt, 0, { programIdIndex: t.message.instructions[l.outerIx]?.programIdIndex as number, accounts: [], dataB64: '', stackHeight: 2 });
     const after = run(t).located.filter((x) => x.event.kind === 'pump_trade');
     assert.deepEqual(after.map((x) => [x.event, x.multiHop]), [[l.event, true]]);
-    assert.deepEqual(pumpBuyTotals(after, run(t).placed), []);
+    assert.deepEqual(pumpBuyTotals({ events: after, gaps: run(t).placed }), []);
   });
 
   it('a TradeEvent whose invoker is pump multi_hop_curve_swap is a route hop', () => {
@@ -374,8 +374,54 @@ describe('round 3 (ruling 44): unclear routes stay out of the buyer totals', () 
     pumpIx.dataB64 = withDisc(Buffer.alloc(24).toString('base64'), discOf(idl('pump').instructions, 'multi_hop_curve_swap'));
     const after = run(t).located.filter((x) => x.event.kind === 'pump_trade');
     assert.deepEqual(after.map((x) => [x.event, x.multiHop]), [[l.event, true]]);
-    assert.deepEqual(pumpBuyTotals(after, run(t).placed), []);
+    assert.deepEqual(pumpBuyTotals({ events: after, gaps: run(t).placed }), []);
     assert.deepEqual([...idl('pump').routeInstructions].map((h) => idl('pump').instructions.get(h)?.name), ['multi_hop_curve_swap']);
     assert.deepEqual([...idl('pump_amm').routeInstructions].map((h) => idl('pump_amm').instructions.get(h)?.name), ['multi_hop_swap']);
+  });
+});
+
+describe('round 4 (rulings 45-47)', () => {
+  /** The v1 fixture's pump TradeEvent, its group, and the index of its pump invoker (height 2). */
+  function setup(): { t: RawTransaction; l: LocatedEvent; ixs: InnerIx[]; pumpAt: number } {
+    const t = raw(fixture<TxRecord>('decoders/tx/v1_transaction.json'));
+    const l = run(t).located.find((x) => x.event.kind === 'pump_trade') as LocatedEvent;
+    const ixs = (t.meta.innerInstructions.find((g) => g.index === l.outerIx) as RawTransaction['meta']['innerInstructions'][number]).instructions as InnerIx[];
+    const pumpAt = ixs.slice(0, l.innerIx).map((x, i) => [x, i] as const).filter(([x]) => x.stackHeight === 2).pop()?.[1] as number;
+    return { t, l, ixs, pumpAt };
+  }
+  const padded = (disc: string): string => Buffer.concat([Buffer.from(disc, 'hex'), Buffer.alloc(MAX_EVENT_DATA_BYTES + 100)]).toString('base64');
+
+  it('ruling 45: a multi_hop_swap or multi_hop_curve_swap with data past MAX_EVENT_DATA_BYTES is still a route', () => {
+    const top = setup();
+    const outer = top.t.message.instructions[top.l.outerIx];
+    assert.ok(outer !== undefined);
+    top.t.message.accountKeys[outer.programIdIndex] = idl('pump_amm').program;
+    outer.dataB64 = padded(discOf(idl('pump_amm').instructions, 'multi_hop_swap'));
+    const a = run(top.t).located.filter((x) => x.event.kind === 'pump_trade');
+    assert.deepEqual(a.map((x) => [x.event, x.multiHop]), [[top.l.event, true]]);
+    const inner = setup();
+    (inner.ixs[inner.pumpAt] as InnerIx).dataB64 = padded(discOf(idl('pump').instructions, 'multi_hop_curve_swap'));
+    const b = run(inner.t).located.filter((x) => x.event.kind === 'pump_trade');
+    assert.deepEqual(b.map((x) => [x.event, x.multiHop]), [[inner.l.event, true]]);
+  });
+
+  it('ruling 46: pumpBuyTotals takes one decode result, never a bare events array', () => {
+    const t = raw(TRADES[0] as TxRecord);
+    const decoded = decodeEventsWithGaps(t, idls(), {}, { wsolMint: WSOL });
+    // @ts-expect-error -- ruling 46: the events alone are not accepted; the gaps come with them.
+    assert.throws(() => pumpBuyTotals(decoded.events));
+    assert.ok(Array.isArray(pumpBuyTotals(decoded)));
+  });
+
+  it('ruling 47: a caller onGapAt passed to decodeEventsWithGaps receives the same gaps the result returns', () => {
+    const t = raw(SWAP());
+    const { ix } = swapBuy(t);
+    ix.dataB64 = withDisc(ix.dataB64, '0102030405060708');                   // an unpinned invoker: one gap
+    const seen: LocatedGap[] = [];
+    const reasons: GapReason[] = [];
+    const r = decodeEventsWithGaps(t, idls(), { onGapAt: (g) => seen.push(g), onGap: (g) => reasons.push(g) }, { wsolMint: WSOL });
+    assert.equal(r.gaps.length, 1);
+    assert.deepEqual(seen, r.gaps);
+    assert.deepEqual(reasons, r.gaps.map((g) => g.reason));
   });
 });
