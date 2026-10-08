@@ -176,12 +176,89 @@ EVENT_NAMES = {"CreateEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent"
                "PostCompleteBuyEvent"}
 
 
-class Tape:
-    """Everything loaded from a list of unit directories."""
+# ---------------------------------------------------------------------------- compact reader
+STR_COLS = {  # string columns kept as codes into one shared, sorted vocabulary (pandas categorical)
+    "swaps": ["signer", "owner", "mint", "pool", "creator", "top_program", "quote_mint", "day", "venue"],
+    "moves": ["mint", "kind", "from_owner", "to_owner"],
+    "links": ["from_owner", "to_owner"],
+    "w_links": ["from_owner", "to_owner"],
+    "fails": ["venue", "pool_or_curve", "err_class", "day"],
+}
+DROP_SWAP_COLS = ["protocol", "quote"]       # used only while a unit is read (excluded, sol)
+SMALL_INTS = {"tx_idx": np.int32, "ev_idx": np.int32, "outer_ix": np.int16, "inner_ix": np.int16}
 
-    def __init__(self, paths):
+
+def _trim():
+    """Hand freed heap back to the system between units (glibc), so the reading peaks do not pile up."""
+    import ctypes
+    import gc
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:
+        pass
+
+
+def sig_hash(values) -> np.ndarray:
+    """64-bit hash of transaction signatures (pandas' siphash), as int64. The compact reader keeps this instead of the
+    88-character signature; signatures are only ever compared for equality (Q32)."""
+    v = np.asarray(pd.Series(values, dtype=object).fillna(""), dtype=object)
+    return pd.util.hash_array(v).view(np.int64)
+
+
+class Interner:
+    """Shared vocabulary for string columns across units: codes while reading, one sorted categorical at the end."""
+
+    def __init__(self):
+        self.code, self.words = {}, []
+
+    def encode(self, series: pd.Series) -> np.ndarray:
+        local, uniq = pd.factorize(series, use_na_sentinel=True)
+        g = np.empty(len(uniq), dtype=np.int32)
+        for i, w in enumerate(uniq):
+            c = self.code.get(w)
+            if c is None:
+                c = self.code[w] = len(self.words)
+                self.words.append(w)
+            g[i] = c
+        return np.where(local < 0, -1, g[local] if len(g) else -1).astype(np.int32)
+
+    def finish(self):
+        """Categorical dtype with the words in sorted order (so sorting a column sorts as strings), and the map
+        from reading codes to final codes."""
+        words = np.array(self.words, dtype=object)
+        order = np.argsort(words, kind="stable") if len(words) else np.array([], dtype=np.int64)
+        rank = np.empty(len(words), dtype=np.int32)
+        rank[order] = np.arange(len(words), dtype=np.int32)
+        return pd.CategoricalDtype(categories=pd.Index(list(words[order]), dtype=object)), rank
+
+
+def compact_frame(df: pd.DataFrame, cols, it: Interner):
+    for c in cols:
+        if c in df.columns:
+            df[c] = it.encode(df[c])
+    return df
+
+
+def finish_frame(df: pd.DataFrame, cols, dtype, rank):
+    for c in cols:
+        if c in df.columns:
+            codes = df[c].to_numpy(np.int32)
+            df[c] = pd.Categorical.from_codes(np.where(codes < 0, -1, rank[np.maximum(codes, 0)]), dtype=dtype)
+    return df
+
+
+class Tape:
+    """Everything loaded from a list of unit directories. With compact=True (the default) string columns are held
+    as codes into one shared vocabulary, signatures as 64-bit hashes, small integers narrowed and unused columns
+    dropped, unit by unit, so a whole day fits in memory; results equal compact=False (tested)."""
+
+    def __init__(self, paths, compact=True):
         swaps, t, w, cf, blocks, ev, fails = [], [], [], [], [], [], []
         self.ranges = []
+        self.compact = compact
+        it = Interner()
+        unit_lo = []
         for path in paths:
             p, day, lo, hi = unit_info(path)
             e = read_events(p, EVENT_NAMES)
@@ -194,11 +271,36 @@ class Tape:
             swaps.append(swaps_from(read_csv(p, "S_curve", CURVE_COLS), read_csv(p, "S_amm", AMM_COLS), boost, day, v2))
             ff = read_csv(p, "F", ["slot", "block_time", "signature", "venue", "pool_or_curve", "err_class"])
             ff["day"] = day
+            if compact:
+                sw = swaps[-1].drop(columns=DROP_SWAP_COLS)
+                sw["signature"] = sig_hash(sw["signature"])
+                for c, d in SMALL_INTS.items():
+                    sw[c] = sw[c].astype(d)
+                # each unit sorted on its own: units hold disjoint slot ranges, so ordering the units by their first
+                # slot and concatenating gives the same rows in the same order as one stable sort of everything
+                sw = sw.sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort").reset_index(drop=True)
+                swaps[-1] = compact_frame(sw, STR_COLS["swaps"], it)
+                unit_lo.append(lo)
+                ff["signature"] = sig_hash(ff["signature"])
+                for c in ("slot", "block_time"):
+                    ff[c] = _num(ff[c]).astype("Int64")
+                ff = compact_frame(ff, STR_COLS["fails"], it)
             fails.append(ff)
+            if compact:
+                _trim()
             tt = read_csv(p, "T", ["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner",
                                    "amount"])
+            if compact:
+                for col in ("slot", "tx_idx", "outer_ix", "inner_ix", "amount"):
+                    tt[col] = _num(tt[col]).fillna(-1).astype(np.int64)
+                tt = compact_frame(tt, STR_COLS["moves"], it)
             t.append(tt)
             ww = read_csv(p, "W", ["slot", "from", "to"]).rename(columns={"from": "from_owner", "to": "to_owner"})
+            if compact:
+                ww = ww.dropna(subset=["from_owner", "to_owner"])
+                ww = ww[ww["from_owner"] != ww["to_owner"]]
+                ww["slot"] = _num(ww["slot"]).astype(np.int64)
+                ww = compact_frame(ww, STR_COLS["w_links"], it)
             w.append(ww)
             cff = read_csv(p, "CF", ["slot", "creator", "amount", "event"])
             cf.append(cff)
@@ -206,8 +308,27 @@ class Tape:
             b["day"] = day
             blocks.append(b)
             self.ranges.append((day, lo, hi))
-        self.swaps = pd.concat(swaps, ignore_index=True).sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort")
-        self.swaps = self.swaps.reset_index(drop=True)
+        if compact:
+            dtype, rank = it.finish()
+            self.vocab = dtype
+            del it
+            by_lo = [swaps[i] for i in np.argsort(np.array(unit_lo), kind="stable")]
+            swaps.clear()
+            one = pd.concat(by_lo, ignore_index=True)
+            del by_lo
+            finish_frame(one, STR_COLS["swaps"], dtype, rank)
+            swaps = [one]
+            del one
+            _trim()
+            t = [finish_frame(pd.concat(t, ignore_index=True), STR_COLS["moves"], dtype, rank)]
+            w = [finish_frame(pd.concat(w, ignore_index=True), STR_COLS["w_links"], dtype, rank)]
+            fails = [finish_frame(pd.concat(fails, ignore_index=True), STR_COLS["fails"], dtype, rank)]
+        if compact:
+            self.swaps = swaps[0]
+        else:
+            self.swaps = pd.concat(swaps, ignore_index=True).sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort")
+            self.swaps = self.swaps.reset_index(drop=True)
+        del swaps
         self.swaps["order"] = np.arange(len(self.swaps))
         tall = pd.concat(t, ignore_index=True)
         for col in ("slot", "tx_idx", "outer_ix", "inner_ix", "amount"):
@@ -234,6 +355,9 @@ class Tape:
         self.blocks = self.blocks.sort_values("slot").reset_index(drop=True)
         self.events = ev
         self._index_events()
+        if compact:   # event signatures hashed the same way as the swaps' and fails'
+            for df in (self.pool_creates, self.boosts, self.reprices):
+                df["signature"] = sig_hash(df["signature"]) if len(df) else df["signature"]
         self._intervals()
 
     # ------------------------------------------------------------------ events

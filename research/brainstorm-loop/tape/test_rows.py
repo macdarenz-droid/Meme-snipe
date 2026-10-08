@@ -887,6 +887,46 @@ class Speed(unittest.TestCase):
                 np.testing.assert_equal([mid[i], eq[i]], [m1, e1])
 
 
+class CompactReader(unittest.TestCase):
+    """The compact reader gives the same outputs as the plain one (every CSV and the summary), on synthetic units."""
+    def _same(self, units, minutes=None):
+        import filecmp
+        import json as js
+        import run_step_a as RS
+        d = tempfile.mkdtemp()
+        paths = [u.write(d) for u in units]
+        outs = []
+        for compact in (False, True):
+            o = os.path.join(d, f"out_{compact}")
+            summ = RS.run(paths, o, n_boot=200, minutes=minutes, compact=compact)
+            outs.append((o, js.loads(js.dumps(summ, default=str))))
+        self.assertEqual(outs[0][1], outs[1][1])
+        files = sorted(f for f in os.listdir(outs[0][0]) if f.endswith(".csv"))
+        self.assertGreater(len(files), 10)
+        for f in files:
+            self.assertTrue(filecmp.cmp(os.path.join(outs[0][0], f), os.path.join(outs[1][0], f), shallow=False), f)
+
+    def _minutes(self):
+        idx = np.arange((T0 - 7200) // 60 * 60, T0 + 40000, 60)
+        return pd.Series(200.0, index=idx)
+
+    def test_fixtures(self):
+        for u in (dev_unit(), rebuy_unit(), slicer_unit(), migseat_unit(), mayhem_unit(), SeatDrift()._unit()):
+            self._same([u], self._minutes())
+
+    def test_random_two_units(self):
+        a = Speed()._random_unit(7)
+        b = Unit(20001, 30000)
+        rng = np.random.default_rng(8)
+        for i in range(300):
+            b.aswap(int(20001 + i * 30), f"w{rng.integers(0, 60)}", "M1", "P1", sol=float(rng.uniform(0.1, 2)) * 1e9,
+                    buy=bool(rng.random() < 0.6))
+            b.f.append({"slot": 20001 + i, "block_time": T0 + 20001 + i, "signature": f"x{i}", "venue": "pumpswap",
+                        "pool_or_curve": "P1", "err_class": "slippage"})
+        b.w.append({"slot": 20005, "from": "w1", "to": "w2"})
+        self._same([a, b], self._minutes())
+
+
 class SolUsdDir(unittest.TestCase):
     def _folder(self):
         import hashlib

@@ -225,7 +225,7 @@ def reprice_steps(tape: Tape, s: pd.DataFrame):
     old = r["virtual_sol_reserves"].astype(float) / r["virtual_token_reserves"].astype(float)
     new = r["new_virtual_sol_reserves"].astype(float) / r["new_virtual_token_reserves"].astype(float)
     r["j"] = new / old - 1
-    tops = s.groupby("signature")["top_program"].agg(lambda x: set(x.dropna()))
+    tops = s["top_program"].astype(object).groupby(s["signature"]).agg(lambda x: set(x.dropna()))
     r["has_s_row"] = r["signature"].isin(tops.index)
     r["attributed"] = [MAYHEM_PROGRAM in tops.get(sig, set()) for sig in r["signature"]]
     return r.sort_values(["slot", "tx_idx"], kind="mergesort").reset_index(drop=True)

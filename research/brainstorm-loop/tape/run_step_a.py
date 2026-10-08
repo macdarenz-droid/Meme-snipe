@@ -155,9 +155,10 @@ def decision(dz_s, sd_s, rb_s, payer=None):
 REGISTERED_BOOT = 10_000   # COUNT_ROWS_AMENDMENT_1 Q1; run() overwrites R.BOOT_N, so this stays apart
 
 
-def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_usd_files=None, minutes=None):
+def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_usd_files=None, minutes=None,
+        compact=True):
     R.BOOT_N = n_boot
-    tape = Tape(units)
+    tape = Tape(units, compact=compact)
     adj = R.adjacency(tape.links)
     labels, two = R.two_sided_clusters(tape)
     s = R.prepare(tape, labels)
