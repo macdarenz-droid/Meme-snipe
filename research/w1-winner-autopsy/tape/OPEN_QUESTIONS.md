@@ -115,3 +115,6 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
 
 ## Red team R2-8 (2026-10-08)
 - **Fee-free rows.** BOOST slices and protocol swaps carry fee fields of 0. A venue state after one keeps its reserves but takes the fee rate of the venue's last fee-paying row (same mint and class), or, before the first such row, the dearest rate `ledger.FALLBACK_BPS` (125 bps; red team R2-11: no later row is read) (`ledger._paid_bps`, used by `States.asof` and `States.advance`). Replays, rule-test fills and marks therefore never trade fee-free.
+
+## Red team R2-12 (2026-10-08, parent's ruling on Q-R2-c)
+- **Replay rent by date.** The §7 replay and §8 rule test charge edge-costs' fixed costs with rent (128 + 170) × the lamports per byte at the entry slot (6,960 / 6,333 / 5,080), as D1, G1 and H1-CGO (`costs.fixed_round_trip`). The account is taken as 170 bytes (the larger) because the replay does not read the mint's token program. The 6,333 band starts on the date 2026-09-03, as D1 and AMENDMENT_5 Q35 read it; it follows any ruling on Q-R2-b (epoch 1028 began 23:24 UTC that day).

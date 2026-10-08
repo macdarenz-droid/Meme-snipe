@@ -71,7 +71,7 @@ python3 -m unittest discover -s tests
 | §7 statistic and bootstrap by trader within group (10,000, fixed seed) | `persist.groups`, `persist.lift`, `persist.bootstrap` |
 | §7 discovery futility stop | `persist.discovery_verdict` |
 | §7 validation (99.5% lower bound, top-decile mean > 0, replay > 0) | `persist.validation_verdict` |
-| §7 replay at 23 slots, $50 (0.4193 SOL), fees, impact, fixed costs of edge-costs.ts | `replay.replay_trades`, `replay.replay_mean`, `costs.FIXED_ROUND_TRIP` (checked against `research/edge/costs.json`) |
+| §7 replay at 23 slots, $50 (0.4193 SOL), fees, impact, fixed costs of edge-costs.ts | `replay.replay_trades`, `replay.replay_mean`, `costs.fixed_round_trip` (edge-costs fixed costs with rent by date, red team R2-12; `costs.FIXED_ROUND_TRIP` is checked against `research/edge/costs.json`) |
 | §8 winners, labelled entries, matched sample (5 per entry, same 10-minute window) | `run.cmd_extract`, `rules.matched_sample` |
 | §8 features as of the entry slot | `rules.MintTape.features`, `rules.MintTape.sweep_holders`, `rules.entry_features` |
 | §8 tree (depth ≤ 3, leaf ≥ 5%, deterministic), best leaf, median hold | `rules.fit_tree`, `rules.best_leaf`, `rules.extract` |

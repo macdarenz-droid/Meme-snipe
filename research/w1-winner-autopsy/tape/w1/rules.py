@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from . import load, venue
-from .costs import FIXED_ROUND_TRIP, REPLAY_DELAY_SLOTS, REPLAY_SPEND
+from .costs import REPLAY_DELAY_SLOTS, REPLAY_SPEND, fixed_round_trip
 from .ledger import States
 from .persist import SEED
 
@@ -255,7 +255,7 @@ def extract(win_X, win_hold, ctl_X):
 REFUSED = float("-inf")   # marker for a refused entry: not finite, so it is never in a mean
 
 
-def replay_entry(rows_states, mint, entry_slot, exit_slot, first_slot=None, last_slot=None):
+def replay_entry(rows_states, mint, entry_slot, exit_slot, first_slot=None, last_slot=None, day=None):
     """$50 in at the end of entry_slot, all out at the end of exit_slot; return net of fixed costs. AMENDMENT_3: no
     state on the tape (or a slot not read) -> nan (dropped, share reported); a refused entry -> REFUSED (no trade,
     AMENDMENT_5); an exit the vault cannot pay scores what it pays."""
@@ -271,7 +271,9 @@ def replay_entry(rows_states, mint, entry_slot, exit_slot, first_slot=None, last
     tok, _ = venue.buy_exact_in(a, REPLAY_SPEND)
     if tok <= 0:   # AMENDMENT_5 Q33: a refused entry is no trade
         return REFUSED
-    return (venue.sell(x, tok) - REPLAY_SPEND - FIXED_ROUND_TRIP) / REPLAY_SPEND
+    if day is None:
+        raise ValueError("replay_entry needs the trade's day for the rent by date (R2-12)")
+    return (venue.sell(x, tok) - REPLAY_SPEND - fixed_round_trip(day, entry_slot)) / REPLAY_SPEND
 
 
 def rule_test_trades(fires, controls, rows_states, hold_slots, first_slot=None, last_slot=None):
@@ -282,7 +284,7 @@ def rule_test_trades(fires, controls, rows_states, hold_slots, first_slot=None, 
             e = int(s) + REPLAY_DELAY_SLOTS
             out.append({"arm": name, "day": d, "mint": int(m), "entry_slot": e,
                         "ret": replay_entry(rows_states, int(m), e, e + int(round(hold_slots)), first_slot,
-                                            last_slot)})
+                                            last_slot, day=d)})
     return pd.DataFrame(out, columns=["arm", "day", "mint", "entry_slot", "ret"])
 
 

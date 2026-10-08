@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from . import load, venue
-from .costs import FIXED_ROUND_TRIP, REPLAY_DELAY_SLOTS, REPLAY_SPEND
+from .costs import REPLAY_DELAY_SLOTS, REPLAY_SPEND, fixed_round_trip
 from .ledger import States
 
 END_OF_SLOT = (1 << 16) - 1
@@ -38,7 +38,7 @@ def state_rows(units, vocab, mint_ids):
 
 
 def replay_trades(trades, units, vocab):
-    """trades: frame with mint, entry_slot, exit_slot, open_at_end, day_hi. Returns it with ret_replay and a reason
+    """trades: frame with mint, day, entry_slot, exit_slot, open_at_end, day_hi. Returns it with ret_replay and a reason
     for every trade that could not be replayed."""
     trades = trades.copy()
     ok = trades["entry_slot"].to_numpy() >= 0
@@ -71,7 +71,8 @@ def replay_trades(trades, units, vocab):
             continue
         proceeds, capped = venue.sell_detail(x, tok)
         # an exit the vault cannot (fully) pay scores what it pays: -100% for the unpaid part
-        rets.append((proceeds - REPLAY_SPEND - FIXED_ROUND_TRIP) / REPLAY_SPEND)
+        # R2-12: rent by date at the replay's entry slot (the position's day for the 09-03 band, Q-R2-b)
+        rets.append((proceeds - REPLAY_SPEND - fixed_round_trip(trades["day"].iat[i], int(es[i]))) / REPLAY_SPEND)
         reasons.append(UNPAID if capped else "")
     trades["ret_replay"] = rets
     trades["replay_reason"] = reasons

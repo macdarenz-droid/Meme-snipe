@@ -210,6 +210,25 @@ class Replay(unittest.TestCase):
         tok, _ = venue.buy_exact_in(("a", 10**14, 10**10, 0, int(st["bps"][0])), 4 * 10**8)
         self.assertLess(tok, tok_free)
 
+    def test_replay_rent_by_date_R2_12(self):
+        """R2-12 (parent's ruling on Q-R2-c): the §7 replay and §8 rule test charge rent by date, as D1, G1 and H1:
+        (128 + 170) x lamports per byte at the entry (6,960 / 6,333 / 5,080), with RENT-1's refund model."""
+        from w1 import replay
+        from w1.load import make_key
+        e1033 = 1033 * costs.EPOCH_SLOTS
+        rows = pd.DataFrame({"mint": [1, 1], "cls": [1, 1], "key": make_key([e1033 - 1000, e1033 - 900], [0, 0], [0, 0]),
+                             "kind": [1, 1], "s1": [10**14] * 2, "s2": [10**11] * 2, "s3": [0, 0], "s4": [0, 0],
+                             "bps": [125, 125]})
+        fires = pd.DataFrame({"mint": [1], "slot": [e1033 - 990], "day": ["2026-09-08"]})
+        t = rules.rule_test_trades(fires, fires.iloc[:0], rows, 50)
+        st = ("a", 10**14, 10**11, 0, 125)
+        tok, _ = venue.buy_exact_in(st, costs.REPLAY_SPEND)
+        fixed = costs.expected_fixed(298 * 6_333)
+        self.assertAlmostEqual(t["ret"].iloc[0], (venue.sell(st, tok) - costs.REPLAY_SPEND - fixed) / costs.REPLAY_SPEND)
+        self.assertEqual(costs.fixed_round_trip("2026-09-02", 0), costs.expected_fixed(298 * 6_960))
+        self.assertEqual(costs.fixed_round_trip("2026-09-11", e1033), costs.expected_fixed(298 * 5_080))
+        self.assertEqual(costs.expected_fixed(), costs.FIXED_ROUND_TRIP)   # the repo figure, kept for the parity check
+
     def test_no_fee_paying_row_yet_uses_the_dearest_rate_R2_11(self):
         """R2-11: before the venue's first fee-paying row, a later row's rate is never used (look-ahead, and cheaper);
         the quote pays the dearest rate (ledger.FALLBACK_BPS: PumpSwap's dearest tier; the curve's 95 + 30)."""
@@ -276,14 +295,16 @@ class ReplayAndFeaturesOnTape(unittest.TestCase):
             led = Ledger(v)
             led.process_unit(units[0])
             m = v.get(mint)
-            trades = pd.DataFrame({"mint": [m], "entry_slot": [446_004_510], "exit_slot": [446_004_580],
+            trades = pd.DataFrame({"mint": [m], "day": ["2026-09-08"], "entry_slot": [446_004_510], "exit_slot": [446_004_580],
                                    "open_at_end": [False], "day_hi": [446_008_999]})
             out = replay.replay_trades(trades, units, v)
             # entry at the end of slot 533 sees only the first trade; exit at the end of 603 sees all three
             st_in = ("a", base - 10**12, vault + 10**9, 0, 30)
             tok, _ = venue.buy_exact_in(st_in, costs.REPLAY_SPEND)
             st_out = ("a", base - 3 * 10**12, vault + 3 * 10**9, 0, 30)
-            want = (venue.sell(st_out, tok) - costs.REPLAY_SPEND - costs.FIXED_ROUND_TRIP) / costs.REPLAY_SPEND
+            fixed = costs.fixed_round_trip("2026-09-08", 446_004_533)          # R2-12: rent by date (6,333)
+            self.assertEqual(fixed, costs.expected_fixed(298 * 6_333))
+            want = (venue.sell(st_out, tok) - costs.REPLAY_SPEND - fixed) / costs.REPLAY_SPEND
             self.assertAlmostEqual(out["ret_replay"].iat[0], want)
             info = {"create": led.create, "migr": led.migr, "boost_done": led.boost_done}
             tapes = rules.tapes_for(units, v, {m}, info, lambda o: False)
