@@ -372,6 +372,29 @@ class Outcomes(unittest.TestCase):
         o2 = compute_outcomes(book, pts, {S.MINT: C.SPL_TOKEN_PROGRAM}).loc[el.index[0]]
         self.assertEqual(o2.fixed, expected_fixed(293 * 6_333))
 
+    def test_fee_free_protocol_rows_do_not_price_our_fills_R2_2(self):
+        """R2-2: BOOST slices and protocol swaps pay no venue fee (their fee fields are 0). A fill priced on the state
+        after such a row must still pay the fees a user trade pays (the last fee-paying row's rates), not 0."""
+        sim = S.AmmSim(S.POOL, S.MINT, base=206_900_000_000_000, vault=67_400_000_000, virt=17_600_000_000)
+        sim.trade(S.S0 + 10, "buy", 10**9, owner=101)
+        sim.fees = (0, 0, 0)
+        sim.trade(S.S0 + 20, "buy", 3 * 10**8, boost=1)                 # a BOOST slice: fee-free
+        sim.trade(S.S0 + 30, "buy", 2 * 10**8, protocol=1)              # a protocol swap: fee-free
+        sim.fees = (20, 5, 95)
+        book = PoolBook(sim.df())
+        for i in (1, 2):
+            st = book.state(S.POOL, i)
+            self.assertEqual((st.lp_bps, st.protocol_bps, st.creator_bps), (20, 5, 95))
+            f = buy_exact_quote_in(st, C.SPEND_LAMPORTS)
+            self.assertGreater(f.fees, 0)
+        # a pool whose only rows so far are fee-free borrows the rates of its first fee-paying row
+        sim2 = S.AmmSim(5, 6, base=206_900_000_000_000, vault=67_400_000_000, virt=17_600_000_000, fees=(0, 0, 0))
+        sim2.trade(S.S0 + 10, "buy", 3 * 10**8, boost=1)
+        sim2.fees = (20, 5, 95)
+        sim2.trade(S.S0 + 40, "buy", 10**9, owner=101)
+        st = PoolBook(sim2.df()).state(5, 0)
+        self.assertEqual((st.lp_bps, st.protocol_bps, st.creator_bps), (20, 5, 95))
+
 
 def synthetic_search_frame(seed=1, planted=True, n_pools=60):
     rng = np.random.default_rng(seed)

@@ -30,7 +30,9 @@ class PoolBook:
         starts = np.flatnonzero(np.r_[True, pools[1:] != pools[:-1]])
         ends = np.r_[starts[1:], len(pools)]
         for s, e in zip(starts, ends):
-            self.rows[int(pools[s])] = {c: arrs[c][s:e] for c in cols}
+            r = {c: arrs[c][s:e] for c in cols}
+            r["fee_lp"], r["fee_protocol"], r["fee_creator"] = _paid_fee_rates(r)
+            self.rows[int(pools[s])] = r
 
     def pools(self):
         return self.rows.keys()
@@ -53,7 +55,7 @@ class PoolBook:
             return None
         r = self.rows[pool]
         return Pool(int(r["base_after"][i]), int(r["vault_after"][i]), int(r["virt"][i]),
-                    int(r["lp_bps"][i]), int(r["protocol_bps"][i]), int(r["creator_bps"][i]))
+                    int(r["fee_lp"][i]), int(r["fee_protocol"][i]), int(r["fee_creator"][i]))
 
     def eff_after(self, pool: int) -> np.ndarray:
         r = self.rows[pool]
@@ -66,6 +68,21 @@ class PoolBook:
     def mid_before_first(self, pool: int) -> float:
         r = self.rows[pool]
         return float(r["vault_before"][0] + r["virt"][0]) / float(max(r["base_before"][0], 1))
+
+
+def _paid_fee_rates(r):
+    """Fee rates our fill pays on the state after row i (red team R2-2). BOOST slices and protocol swaps carry fee
+    fields of 0 (they pay no venue fee), so they never set the rate: row i uses the rates of the last fee-paying row at
+    or before it (a non-BOOST, non-protocol row with a non-zero total rate), or, before the pool's first such row, the
+    rates of its first one. A pool with no fee-paying row keeps its own fields."""
+    lp, pr, cr = r["lp_bps"], r["protocol_bps"], r["creator_bps"]
+    paid = ((lp + pr + cr) > 0) & (r["boost"] == 0) & (r["protocol"] == 0)
+    if not paid.any():
+        return lp, pr, cr
+    n = len(paid)
+    last = np.maximum.accumulate(np.where(paid, np.arange(n), -1))
+    src = np.where(last >= 0, last, int(np.flatnonzero(paid)[0]))
+    return lp[src], pr[src], cr[src]
 
 
 def flow_rows(r) -> np.ndarray:
