@@ -55,11 +55,12 @@ export interface Gap {
   fromMs: UnixMs;
   toMs: UnixMs;
   /**
-   * `backpressure`: records dropped (any stream). On `poll_counts` only, `clock_step`: one pool's minutes whose polls
-   * were moved more than one minute (a clock step, or a poll that late), and the minutes they were moved into (rulings
-   * 28 and 33). A-M07-03 excludes a gap's minutes from coverage, for `poolId` only when it is set.
+   * `backpressure`: records dropped (any stream). On `poll_counts` only, for one pool (`poolId`): `clock_step`, minutes
+   * whose polls a clock step moved more than one minute, and the minutes they were moved into (rulings 28 and 33);
+   * `moved`, the same for a poll that was simply that late, with no clock step (ruling 39). A-M07-03 excludes a gap's
+   * minutes from coverage: only that pool's when `poolId` is set, else the whole stream (ruling 40).
    */
-  reason: 'backpressure' | 'clock_step';
+  reason: 'backpressure' | 'clock_step' | 'moved';
   /** Set on poll_counts clock_step gaps: the one pool whose minutes the gap covers (ruling 33). */
   poolId?: string;
 }
@@ -310,8 +311,16 @@ export class RecorderQueue {
   private emitting = false;
   /** The minute of the latest tick's own time, uncapped: the writer's clock (ruling 27). Null before the first tick. */
   private lastTickRawMinute: number | null = null;
-  /** True while that tick moved at most CLOCK_STEP_MINUTES from the one before it (ruling 35). */
+  /**
+   * True while the tick clock can be trusted (rulings 35 and 37): the latest tick moved at most CLOCK_STEP_MINUTES from
+   * the one before, and the chain of such steady ticks either began within CLOCK_STEP_MINUTES of maxRecvMinute (a real
+   * outage: the clock moved on steadily from where the data stopped) or has itself lasted more than
+   * CLOCK_STEP_MINUTES (a lasting clock change). A jump followed by a tick or two right after it is neither.
+   */
   private tickSteady = false;
+  /** The minute the current chain of steady ticks began, and whether it began near maxRecvMinute. */
+  private tickChainStart: number | null = null;
+  private tickChainAnchored = false;
   /** Open episodes, so each is counted and logged once (ruling 29). */
   private readonly episode = { tickAhead: false, recvAhead: false, recvBehind: false, outage: false };
   /** maxRecvMinute when each episode last saw a skewed time: it closes CLOCK_STEP_MINUTES after that (ruling 34). */
@@ -513,7 +522,12 @@ export class RecorderQueue {
     const raw = Math.floor(nowMs / MINUTE_MS);
     const prevRaw = this.lastTickRawMinute;
     this.lastTickRawMinute = raw;
-    this.tickSteady = prevRaw !== null && Math.abs(raw - prevRaw) <= CLOCK_STEP_MINUTES;
+    const stepOk = prevRaw !== null && Math.abs(raw - prevRaw) <= CLOCK_STEP_MINUTES;
+    if (!stepOk || this.tickChainStart === null) {
+      this.tickChainStart = raw;
+      this.tickChainAnchored = this.maxRecvMinute === null || Math.abs(raw - this.maxRecvMinute) <= CLOCK_STEP_MINUTES;
+    }
+    this.tickSteady = stepOk && (this.tickChainAnchored || raw - this.tickChainStart > CLOCK_STEP_MINUTES);
     // A tick before any record has nothing to write and must not set the tick minute from an unchecked clock.
     if (this.maxRecvMinute === null) return;
     const ahead = raw - this.maxRecvMinute;
@@ -597,25 +611,25 @@ export class RecorderQueue {
   }
 
   /**
-   * Marks one pool's minute of poll_counts with a clock_step gap (ruling 33): a minute whose polls were moved more
-   * than one minute, or that received them. Merged with an overlapping or adjacent gap of the same pool; the list is
-   * capped like the backpressure gaps (the oldest two merge, which only widens a gap).
+   * Marks one pool's minute of poll_counts with a gap (rulings 33 and 39): a minute whose polls were moved more than
+   * one minute, or that received them. Merged with an overlapping or adjacent gap of the same pool and reason; the list
+   * is capped like the backpressure gaps (the oldest two merge, which only widens a gap).
    */
-  private addPollGap(poolId: string, minute: number): void {
+  private addPollGap(poolId: string, minute: number, reason: 'clock_step' | 'moved'): void {
     const fromMs = minute * MINUTE_MS;
     const toMs = fromMs + MINUTE_MS - 1;
     for (let i = this.pollGaps.length - 1; i >= Math.max(0, this.pollGaps.length - 8); i--) {
       const g = this.pollGaps[i] as Gap;
-      if (g.poolId === poolId && fromMs <= g.toMs + 1 && toMs >= g.fromMs - 1) {
-        this.pollGaps[i] = { fromMs: Math.min(g.fromMs, fromMs), toMs: Math.max(g.toMs, toMs), reason: 'clock_step', poolId };
+      if (g.poolId === poolId && g.reason === reason && fromMs <= g.toMs + 1 && toMs >= g.fromMs - 1) {
+        this.pollGaps[i] = { fromMs: Math.min(g.fromMs, fromMs), toMs: Math.max(g.toMs, toMs), reason, poolId };
         return;
       }
     }
-    this.pollGaps.push({ fromMs, toMs, reason: 'clock_step', poolId });
+    this.pollGaps.push({ fromMs, toMs, reason, poolId });
     if (this.pollGaps.length > GAPS_MAX_PER_STREAM) {
       const a = this.pollGaps.shift() as Gap;
       const b = this.pollGaps[0] as Gap;
-      const merged: Gap = { fromMs: Math.min(a.fromMs, b.fromMs), toMs: Math.max(a.toMs, b.toMs), reason: 'clock_step' };
+      const merged: Gap = { fromMs: Math.min(a.fromMs, b.fromMs), toMs: Math.max(a.toMs, b.toMs), reason: a.reason === 'moved' && b.reason === 'moved' ? 'moved' : 'clock_step' };
       // Two pools' gaps merged cover every pool, which only widens the exclusion.
       if (a.poolId !== undefined && a.poolId === b.poolId) merged.poolId = a.poolId;
       this.pollGaps[0] = merged;
@@ -907,9 +921,11 @@ export class RecorderQueue {
     // marks both of the pool's minutes with a clock_step gap (ruling 33).
     const oneMinute = minute !== own && Math.abs(minute - own) <= 1;
     if (minute !== own && !oneMinute) {
+      // A clock step either way, or a poll simply that late (ruling 39).
+      const reason = clock.status === 'ok' ? 'moved' : 'clock_step';
       this.s.movedPolls++;
-      this.addPollGap(poolId, own);
-      this.addPollGap(poolId, minute);
+      this.addPollGap(poolId, own, reason);
+      this.addPollGap(poolId, minute, reason);
     }
     let b = w.buckets.get(minute);
     if (b === undefined) {

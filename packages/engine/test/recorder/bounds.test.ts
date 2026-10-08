@@ -438,7 +438,7 @@ describe('round 7 (rulings 27-29): producer clock steps, forward and backward', 
     assert.ok(q.stats().clockSteps >= 2, 'the forward record and the forward tick each opened an episode');
   });
 
-  it("the red team's backward step: +1 h for 2 min, then corrected for 8 min: logged once, and a clock_step gap covers the late minutes (ruling 28)", () => {
+  it('a backward step: +1 h for 4 min (long enough to be adopted, ruling 37), then corrected for 8 min: a clock_step gap covers the late minutes (ruling 28)', () => {
     const logs: string[] = [];
     const q = new RecorderQueue({ log: (l, c) => logs.push(`${l}:${c}`) });
     const gaps: Array<{ fromMs: number; toMs: number; reason: string }> = [];
@@ -448,15 +448,15 @@ describe('round 7 (rulings 27-29): producer clock steps, forward and backward', 
       gaps.push(...(q.drainGaps().poll_counts ?? []));
     };
     for (let s = 0; s < 120; s++) step(T0 + s * 1_000, ['a']);
-    for (let s = 120; s < 240; s++) step(T0 + 3_600_000 + s * 1_000, ['a']);
-    for (let s = 240; s < 720; s++) step(T0 + s * 1_000, ['a', 'n']);
+    for (let s = 120; s < 360; s++) step(T0 + 3_600_000 + s * 1_000, ['a']);
+    for (let s = 360; s < 840; s++) step(T0 + s * 1_000, ['a', 'n']);
     q.take(Number.MAX_SAFE_INTEGER, SEG);
     assert.ok(q.stats().clockSteps >= 1);
     // Logged once per episode, not once per poll.
     assert.ok(logs.filter((l) => l === 'warning:M07.clock_step').length <= 3, `${logs.length} logs`);
     const stepGaps = gaps.filter((g) => g.reason === 'clock_step');
-    // Every corrected minute (4 to 11) is inside a clock_step gap.
-    for (let m = 4; m < 12; m++) {
+    // Every corrected minute (6 to 13) is inside a clock_step gap.
+    for (let m = 6; m < 14; m++) {
       const at = T0 + m * 60_000;
       assert.ok(stepGaps.some((g) => g.fromMs <= at && g.toMs >= at + 59_999), `minute ${m} not covered`);
     }
@@ -522,7 +522,7 @@ describe('round 8 (rulings 33-36)', () => {
     assert.ok(rows.filter((r) => r.poolId !== 'p0').every((r) => r.latePolls === undefined));
   });
 
-  it('a clock_step gap names its pool', () => {
+  it('a poll gap names its pool, and a poll simply 3 minutes late is `moved`, not a clock step (ruling 39)', () => {
     const q = new RecorderQueue();
     for (let sec = 0; sec < 300; sec++) {
       q.append(snap('a', 1, T0 + sec * 1_000));
@@ -532,7 +532,7 @@ describe('round 8 (rulings 33-36)', () => {
     // a's poll stamped 3 minutes back: moved more than one minute.
     q.append(snap('a', 1, T0 + 120_000));
     const gaps = q.drainGaps().poll_counts ?? [];
-    assert.ok(gaps.length > 0 && gaps.every((g) => g.reason === 'clock_step' && g.poolId === 'a'), JSON.stringify(gaps));
+    assert.ok(gaps.length > 0 && gaps.every((g) => g.reason === 'moved' && g.poolId === 'a'), JSON.stringify(gaps));
     assert.equal(q.stats().movedPolls, 1);
   });
 
@@ -571,5 +571,53 @@ describe('round 8 (rulings 33-36)', () => {
     assert.deepEqual(q.append(rec('decision', T0 + 120_000, { s: 'y'.repeat(70_000) })), { rejected: 'E_TOO_LARGE' });
     assert.deepEqual(q.append({ ...rec('decision', T0 + 120_000), source: 's'.repeat(300) }), { rejected: 'E_ENVELOPE' });
     assert.equal(q.stats().maxRecvMinute, T0 / 60_000);
+  });
+});
+
+describe('round 9 (ruling 37): the tick clock is trusted only when anchored or lasting', () => {
+  it("the red team's repro: tick +1 d, tick +1 d + 1 s, a record at +1 d + 2 s does not move maxRecvMinute", () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 1, T0 + 1_000));
+    q.tick(ms(T0 + 2_000));
+    q.tick(ms(T0 + 86_400_000));
+    q.tick(ms(T0 + 86_401_000));
+    q.append(rec('discovery', T0 + 86_402_000));
+    assert.equal(q.stats().maxRecvMinute, T0 / 60_000);
+  });
+
+  it('a short +1 h burst (2 minutes) is contained: the corrected minutes are recorded one by one with no gap', () => {
+    const q = new RecorderQueue();
+    const gaps: Array<{ fromMs: number; toMs: number; reason: string; poolId?: string }> = [];
+    const step = (t: number): void => {
+      q.append(snap('a', 1, t));
+      q.tick(ms(t));
+      gaps.push(...(q.drainGaps().poll_counts ?? []));
+    };
+    for (let s = 0; s < 120; s++) step(T0 + s * 1_000);
+    for (let s = 120; s < 240; s++) step(T0 + 3_600_000 + s * 1_000);
+    for (let s = 240; s < 720; s++) step(T0 + s * 1_000);
+    q.tick(ms(T0 + 720_000));
+    const rows = q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
+    // Minutes 4 to 11 are whole minutes of 60 polls each; only the burst's minutes carry a clock_step gap.
+    for (let m = 4; m < 12; m++) {
+      const r = rows.find((x) => x.minuteStartMs === T0 + m * 60_000);
+      assert.equal(r?.successfulPolls, 60, `minute ${m}`);
+      assert.ok(!gaps.some((g) => g.fromMs <= T0 + m * 60_000 && g.toMs >= T0 + m * 60_000), `minute ${m} has a gap`);
+    }
+    assert.ok(gaps.some((g) => g.reason === 'clock_step' && g.poolId === 'a'));
+    assert.ok(q.stats().clockSteps >= 1);
+  });
+
+  it('a lasting clock change (ticks and records +1 h for 4 minutes) is adopted', () => {
+    const q = new RecorderQueue();
+    for (let s = 0; s < 60; s++) {
+      q.append(snap('a', 1, T0 + s * 1_000));
+      q.tick(ms(T0 + s * 1_000));
+    }
+    for (let s = 60; s < 300; s++) {
+      q.append(snap('a', 1, T0 + 3_600_000 + s * 1_000));
+      q.tick(ms(T0 + 3_600_000 + s * 1_000));
+    }
+    assert.ok((q.stats().maxRecvMinute ?? 0) >= T0 / 60_000 + 60, `maxRecvMinute ${q.stats().maxRecvMinute}`);
   });
 });
