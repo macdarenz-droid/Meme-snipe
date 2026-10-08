@@ -14,3 +14,14 @@ R2 confirmed on the current unit: `zeroed-worker.service:32` StateDirectory=zero
 4. **MAJOR 4, R2.** List every Blueprint write path (`bot.db`, the m27 log dir, `/data/md`, `/data/backups`, `recovery-*.ndjson`, `/var/lib/bot-init`), all under the unit's writable state. Name one backup owner (M24's online backup or `zeroed-backup`) with the reason, and budget it once.
 5. **MINORs.** Apply all six as the red team wrote them: the 24.8 GB total; the 1.87 GB basis (or say "raw 1.56 basis"); align the fixed items; fill dates as days from start only; R3 "rollups can be rebuilt" UNVERIFIED or dropped; R7 warn sampling marked as a spec change needing a DECISIONS entry, and 56–58%.
 6. **Card PATHS-FIX (from R2), supervisor ruling.** A bug fix on merged Z02 work, not a new feature: move the Blueprint's default write paths under the worker's writable state, change SPEC-A's `/data/md` and SPEC-B's paths in the same PR with the reason, and add a test that every configured write path sits inside the unit's StateDirectory or ReadWritePaths (the test fails on today's defaults). It starts when a builder slot frees, after #307's round 2 settles the path list, and before any M1 recorder deploy.
+
+## Round 2 (head `ecb09dd0`): delta review + red team, same session
+
+Review PASS with notes; rulings 1–6 applied. Red team 0 BLOCKER, 1 MAJOR, 3 MINOR. Numbers reproduce. Nothing loosens a guard.
+
+### Supervisor rulings for round 3 (9 Oct 2026, about 12:12 AM)
+
+7. **MAJOR, last fail-closed step.** Name it: at the critical floor the M24 disk guard (SPEC-B:2027, 2035: 500 MB reserve, `disk_crit_pct`) blocks new entries and raises a critical alert; nothing protected is deleted. Moving the 7 daily copies off the host is the recommended default until R10 measures `bot.db`, but it waits on the owner's open "off-server backup" answer (HANDOVER owner waits); say so.
+8. **MINOR 1.** Add M24's pre-migration backup (`m24/migrate.ts:86,135-137`; SPEC-B:1992) as a row, kept out of the backup glob, budgeted at 1× ledger; the writer lock `<db>-writer.lock` (`m24/db.ts:225`) moves with the db.
+9. **MINOR 2.** The import spool (group `botops` write, SPEC-B:2539) and md-pull's read of `/md` get their own directories and modes (an extra StateDirectory or ReadWritePaths entry); PATHS-FIX builds them.
+10. **MINOR 3.** R3's split: add the cross-file atomicity point (SQLite WAL with ATTACH; cite the SQLite docs, or mark UNVERIFIED) to the R3 spec ruling, and label the market.db and metrics.db budget rows "if R3 is ruled".
