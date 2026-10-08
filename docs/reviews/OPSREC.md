@@ -99,3 +99,7 @@ REVIEW PASS, final. Red team 0 BLOCKER, 0 MAJOR, 2 MINOR. The send is refused un
 
 14. **MINOR 1, README step 3.** Write: "The first copy arrives at the next 17:20 UTC (04:20 Melbourne in daylight time, 03:20 otherwise), up to 5 minutes later."
 15. **MINOR 2, no alert when the owner step is never done.** No new alert now ("Bot first", and the owner's pause). Instead, the supervisor tracks the owner's `zeroed-backup-code` step in HANDOVER owner waits, and checks the `zeroed-status` backup line after the deploy.
+
+### #312 round 2 (head `deeb0e66`)
+
+The supervisor checked the delta itself: one README line, ruling 14 applied as worded. **#312 is approved.** It merges after #311, with #311's rebuild and re-pin carried forward.
