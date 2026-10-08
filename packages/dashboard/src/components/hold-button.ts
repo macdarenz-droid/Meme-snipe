@@ -43,8 +43,18 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
   /** The pointer press in progress or just released (its click follows); null when there is none. */
   const press = useRef<{ x: number; y: number; up: boolean } | null>(null);
   const upTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** The window-level listener that sees the press's pointer up wherever it lands (no pointer capture). */
+  /**
+   * The window-level listener that sees the press's pointer up or cancel wherever it lands (no pointer capture): an up
+   * starts the claim's expiry, a cancel ends the claim (Z05 rounds 5 and 6, rulings 22 and 27).
+   */
   const windowUp = useRef<((e: globalThis.PointerEvent) => void) | null>(null);
+  const stopWindowUp = (): void => {
+    const listener = windowUp.current;
+    if (listener === null) return;
+    window.removeEventListener('pointerup', listener, true);
+    window.removeEventListener('pointercancel', listener, true);
+    windowUp.current = null;
+  };
   const status = props.status ?? 'idle';
   const state: HoldState = status === 'idle' ? props.preview ?? phase : status;
   const label = props.label ?? 'Halt';
@@ -53,7 +63,7 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
     if (hold.current !== null) clearTimeout(hold.current);
     if (rewind.current !== null) clearTimeout(rewind.current);
     if (upTimer.current !== null) clearTimeout(upTimer.current);
-    if (windowUp.current !== null) window.removeEventListener('pointerup', windowUp.current, true);
+    stopWindowUp();
   }, []);
 
   const start = (e: PointerEvent<HTMLButtonElement>): void => {
@@ -63,11 +73,15 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
     press.current = { x: e.clientX, y: e.clientY, up: false };
     if (upTimer.current !== null) { clearTimeout(upTimer.current); upTimer.current = null; }
     // The press's pointer up starts the claim's expiry wherever it lands: on the button, or outside it when the
-    // browser gave no pointer capture (Z05 round 5, ruling 22).
+    // browser gave no pointer capture (Z05 round 5, ruling 22); a cancel anywhere ends the claim (round 6, ruling 27).
     const id = e.pointerId;
-    if (windowUp.current !== null) window.removeEventListener('pointerup', windowUp.current, true);
-    windowUp.current = (w) => { if (w.pointerId === id) up(); };
+    stopWindowUp();
+    windowUp.current = (w) => {
+      if (w.pointerId !== id) return;
+      if (w.type === 'pointercancel') abort(); else up();
+    };
     window.addEventListener('pointerup', windowUp.current, true);
+    window.addEventListener('pointercancel', windowUp.current, true);
     e.currentTarget.setPointerCapture?.(e.pointerId);
     if (rewind.current !== null) { clearTimeout(rewind.current); rewind.current = null; }
     setPhase('holding');
@@ -89,9 +103,6 @@ export function HoldButton(props: HoldButtonProps): ReactElement {
   const expireClaim = (): void => {
     if (upTimer.current !== null) clearTimeout(upTimer.current);
     upTimer.current = setTimeout(() => { upTimer.current = null; press.current = null; }, CLICK_AFTER_UP_MS);
-  };
-  const stopWindowUp = (): void => {
-    if (windowUp.current !== null) { window.removeEventListener('pointerup', windowUp.current, true); windowUp.current = null; }
   };
   /** The press's pointer went up: a click on the button may follow, which belongs to this press and opens nothing. */
   const up = (): void => {

@@ -10,6 +10,7 @@ import { Countdown } from '../../components/countdown.ts';
 import { Dialog, HaltDialog, StepUpAuth, TypedConfirmDialog, type ConnectionView, type StepUpStatus, type TypedConfirmStatus } from '../../components/dialog.ts';
 import { DiffView, type DiffLine } from '../../components/diff-view.ts';
 import { HoldButton, type HoldServerStatus } from '../../components/hold-button.ts';
+import { haltCommand } from '../../lib/halt-command.ts';
 import { MODE_NAME, type SystemStateView } from '../../lib/safety.ts';
 import type { Section } from '../catalogue.ts';
 
@@ -41,7 +42,7 @@ function HaltDemo(props: { open: boolean; system: SystemStateView | null; connec
     open: props.open, system: props.system, description: HALT_TEXT,
     connection: props.connection ?? 'connected', ...(props.inline === true ? { inline: true } : {}),
     secondary: { label: 'Halt and flatten all…', onClick: noop },
-    onHalt: props.onConfirm,
+    onHalt: haltCommand(() => props.onConfirm()),
     onClose: props.onClose,
   });
 }

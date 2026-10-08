@@ -131,13 +131,13 @@ describe('dashboard copy guard', () => {
     assert.deepEqual(findBanned('Daily loss · Pool momentum · Limit 1 · Fill'), []);
   });
 
-  it('Z05 round 5 (ruling 21): letter pairs, ASCII l/I/1/|, dashes, apostrophes, white space and marks are read as a reader sees them', () => {
+  it('Z05 round 5 (ruling 21): letter pairs, ASCII l/I/|, dashes, apostrophes, white space and marks are read as a reader sees them', () => {
     const seeded: ReadonlyArray<[string, string]> = [
       ['srnart', 'smart'], ['rnodels', 'models'], ['lnsights', 'insights'], ['unIock', 'unlock'], ['Al picks', 'AI'],
       ['cutting\u2011edge', 'cutting-edge'], ['game\u2010changer', 'game-changer'], ['Here\u02BCs', "Here's"], ['Let\u2032s', "Let's"],
       ['powered  by', 'powered by'], ['s\u20DDmart', 'smart'], ['sm\u0903art', 'smart'],
       // The other pairs and characters the ruling names.
-      ['vvizard journey', 'journey'], ['cleep dive', 'deep dive'], ['A1 picks', 'AI'], ['A| picks', 'AI'],
+      ['vvizard journey', 'journey'], ['cleep dive', 'deep dive'], ['A| picks', 'AI'],
       ['powered\u00A0\u2003by', 'powered by'],
     ];
     for (const [text, label] of seeded) {
@@ -149,6 +149,8 @@ describe('dashboard copy guard', () => {
     assert.ok(findBanned('Pick your jou\u0072\u006Eey').includes('journey'));
     // Ordinary trading copy with pairs, digits and dashes stays allowed.
     assert.deepEqual(findBanned('Modern turn · Close all · Slippage 1\u20132% · Tier 1 · Fill rate'), []);
+    // UI.md's action classes are copy: A1 reads as A1, not AI (round 6, ruling 26).
+    for (const honest of ['A1', '(A1)', 'Action class A1', 'tier A1', 'Cancel (A1)']) assert.deepEqual(findBanned(honest), [], honest);
   });
 
   it('Z05 round 5 (ruling 25): look-alikes that only appear after NFKC/NFD are mapped by the second pass', () => {

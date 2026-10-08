@@ -3687,3 +3687,9 @@ Rulings in `docs/reviews/Z05.md` on `claude/supervisor-docs-2` at `d95eb80f`. Th
 - **HOLD claim while the pointer is down** (ruling 22, replacing ruling 18's expiry from the move). The claim's 1 s expiry starts only from the pointer up, on the button or caught by a window listener. A drag held longer than 1 s and released on the button opens nothing.
 - **HaltDialog owns the exemption** (ruling 23). Only `HaltDialog` is exempt from the fail-closed gates, and it fixes its title and its confirm (`onHalt`). The generic `Dialog` overrides any `halt` key it is given.
 - **HALT closes on a mode change** (ruling 24). UI.md's UI-T07 edge case closes the open dialog on a mode change, and it names no exception, so HALT closes too. UI.md now says the operator reopens HALT from the header (hold, `Enter` or `⇧H`), which is never blocked.
+
+## Z05 UI system, round 6 (2026-10-08, supervisor rulings 26–28)
+
+- **`1` is not read as `I`** (ruling 26, narrowing ruling 21). The action classes A1, A2 and A3 (UI.md) are copy, so `A1` must stay honest. Only ASCII `l`, `I` and `|` are read both ways. The table demo keeps R1–R5.
+- **A pointer cancel anywhere ends the HOLD claim** (ruling 27). The window listener of ruling 22 also handles `pointercancel` for the same pointer, so a touch cancelled off the button never swallows a later click.
+- **No risk-reducing secondary** (ruling 28, replacing rulings 15's exemption and 19). Every secondary action is gated; "Halt and flatten all…" is A2. HaltDialog's `onHalt` is a branded `HaltCommand` that only `src/lib/halt-command.ts` makes.

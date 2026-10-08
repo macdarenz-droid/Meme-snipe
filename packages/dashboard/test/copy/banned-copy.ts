@@ -70,15 +70,18 @@ const LOOKALIKE: Readonly<Record<string, string>> = {
   'Υ': 'Y', 'Χ': 'X', 'ı': 'i', 'ɡ': 'g', 'ɑ': 'a', 'օ': 'o', 'ս': 'u', 'ց': 'g', 'ⅼ': 'l', 'ǀ': 'l',
 };
 
-/** ASCII characters a reader can take for `l` or `I` (Z05 round 5, ruling 21): read both ways, like the look-alikes. */
-const ASCII_L_OR_I: ReadonlySet<string> = new Set(['l', 'I', '1', '|']);
+/**
+ * ASCII characters a reader can take for `l` or `I` (Z05 round 5, ruling 21): read both ways, like the look-alikes. Not
+ * `1` (round 6, ruling 26): UI.md's action classes A1, A2 and A3 are copy, and "A1" must not read as AI.
+ */
+const ASCII_L_OR_I: ReadonlySet<string> = new Set(['l', 'I', '|']);
 
 /**
  * The text a reader sees, for matching (Z05 round 2, red team m1; round 3, ruling 14; round 5, ruling 21): NFKC
  * (fullwidth and compatibility letters become plain ones), format characters and other default-ignorable code points
  * removed, look-alike letters (the table above, then every single-letter skeleton of Unicode's confusables.txt,
  * lookalikes.ts) mapped to Latin, apostrophe look-alikes to `'`, dashes to `-`, runs of white space to one space, and
- * marks dropped after NFD. `lOrI` is how an `l` or `I` look-alike reads, ASCII `l`, `I`, `1` and `|` included.
+ * marks dropped after NFD. `lOrI` is how an `l` or `I` look-alike reads, ASCII `l`, `I` and `|` included.
  */
 export function normaliseCopy(text: string, lOrI: 'l' | 'I' = 'l'): string {
   // Format characters and every default-ignorable code point (combining grapheme joiner, Hangul fillers, variation

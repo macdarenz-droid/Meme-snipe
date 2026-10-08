@@ -20,6 +20,7 @@ import {
   checkPhrase, DIALOG_EXIT_MS, DIALOG_TITLE_PREFIX, MODE_CHANGED_CONFIRM_TEXT, modeChangedText, modeTone, unknownStateReason,
   type ConnectionView, type SystemStateView,
 } from '../lib/safety.ts';
+import type { HaltCommand } from '../lib/halt-command.ts';
 import { Button, type ButtonVariant } from './button.ts';
 import { Countdown, type CountdownProps } from './countdown.ts';
 import { cx } from './cx.ts';
@@ -33,25 +34,12 @@ export type DialogStatus = 'open' | 'submitting' | 'error';
 export type CloseReason = 'cancel' | 'escape' | 'mode-changed';
 export type { ConnectionView };
 
-interface DialogActionBase {
+/** An action of a dialog. A secondary action is always gated like a money-affecting confirm (Z05 round 6, ruling 28). */
+export interface DialogAction {
   label: ReactNode;
   onClick: () => void;
   variant?: ButtonVariant;
   disabledReason?: string;
-}
-
-/** An action of any dialog. Only the HALT dialog's secondary action may be marked risk-reducing. */
-export interface DialogAction extends DialogActionBase {
-  riskReducing?: never;
-}
-
-/** The HALT dialog's secondary action (Z05 round 4, ruling 19). */
-export interface HaltSecondaryAction extends DialogActionBase {
-  /**
-   * A secondary action that only reduces risk (like HALT itself) is not gated by an unknown mode or connection. Every
-   * other secondary action gets the same gate as a money-affecting confirm (Z05 round 3, ruling 15).
-   */
-  riskReducing?: boolean;
 }
 
 export interface DialogBaseProps {
@@ -97,16 +85,16 @@ export const HALT_CONFIRM_LABEL = 'Halt now';
  * the exemption from the fail-closed gates cannot be given to any other action (Z05 round 5, ruling 23).
  */
 export interface HaltDialogProps extends Omit<DialogBaseProps, 'title' | 'confirm' | 'kind' | 'moneyAffecting' | 'children'> {
-  /** Sends the halt command (UI-T14). */
-  onHalt(): void;
-  /** "Halt and flatten all…" (the A2 flatten flow): gated unless it is marked risk-reducing (ruling 19). */
-  secondary?: HaltSecondaryAction;
+  /** Sends the halt command: only `haltCommand` (lib/halt-command.ts) makes one (Z05 round 6, ruling 28). */
+  onHalt: HaltCommand;
+  /** "Halt and flatten all…" (the A2 flatten flow): always gated, like any money-affecting action. */
+  secondary?: DialogAction;
 }
 
 /** What the shared dialog body renders: `halt` is set only by HaltDialog. */
 interface DialogViewProps extends DialogBaseProps {
   halt: boolean;
-  secondary?: HaltSecondaryAction | DialogAction | undefined;
+  secondary?: DialogAction | undefined;
 }
 
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -229,13 +217,10 @@ function DialogView(props: DialogViewProps): ReactElement {
   // HALT's confirm alone stays enabled in that frame (Z05 round 4, ruling 19): halting is always allowed.
   const modeMoved = !inline && phase !== 'closed' && mode !== openedMode.current;
   const confirmReason = modeMoved && !props.halt ? MODE_CHANGED_CONFIRM_TEXT : unknownReason ?? confirm?.disabledReason;
-  // The secondary action is gated like a money-affecting confirm, HALT's exemption included only when it is marked
-  // risk-reducing itself (HALT's "Halt and flatten all…" sells, so it is gated). The mark counts only on the HALT
-  // dialog: a non-HALT secondary marked risk-reducing past the type (a cast) is refused the exemption (ruling 19).
+  // The secondary action is gated like a money-affecting confirm, in every dialog: HALT's "Halt and flatten all…" is the
+  // A2 flatten flow and sells (Z05 round 6, ruling 28: no action but HALT's confirm is ever exempt).
   const secondary = props.secondary;
-  const riskReducing = props.halt && (secondary as HaltSecondaryAction | undefined)?.riskReducing === true;
-  const secondaryGate = riskReducing ? undefined
-    : moneyAffecting ? unknownStateReason(props.connection, mode)
+  const secondaryGate = moneyAffecting ? unknownStateReason(props.connection, mode)
       : props.connection === 'disconnected' ? unknownStateReason('disconnected', mode) : undefined;
   const secondaryReason = modeMoved ? MODE_CHANGED_CONFIRM_TEXT : secondaryGate ?? secondary?.disabledReason;
   const rendered = props.open || phase !== 'closed';
