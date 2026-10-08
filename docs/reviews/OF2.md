@@ -122,3 +122,26 @@ Round 3 items A, B and C are closed. No archive request is possible from current
 
 - test-ci 218/219/233; 10 rows fail on the `dd08171c` files. Every zeroed-scan, finalize and qa call is redirected. data-scan.yml is refused until OF-4 (`contents: write`). No parser means fail closed. Merge-forwards are consistent.
 - m1 (the 500-run cap) is not changed: a `--created >= AG_SINCE` filter would hide re-runs of runs created before `AG_SINCE`, which is exactly what ruling 21 catches. The arm checklist records archive-check's run count and the date the cap is reached; a cap trip goes to the owner.
+
+### Round 5 red team (delta `dd08171c..89f99393`): 2 MAJOR, 4 MINOR
+
+Round 4 repros are closed. From current code, no archive request is possible while unarmed, held or backed off.
+
+### Supervisor rulings for round 6 (8 Oct 2026, 8:20 PM)
+
+43. **MAJOR 1, run-list cap.** The cap trips for good once a workflow has 500 runs, which for archive-check is about early December. This ruling replaces the round 5 reviewer note.
+    - List only runs created within the re-run window: `--created ">=<now − 35 days>"`. That still covers every possible re-run, because a run older than 30 days cannot be re-run (VERIFY the 30-day limit in GitHub's docs and record the source).
+    - Fail closed only if that windowed list reaches the cap.
+    - List every non-completed state (queued, in_progress, waiting, requested, pending).
+    - VERIFY that the runner's gh version supports `--created` and these `--status` values; print it, and fail closed if not.
+    - Test: a stub with 500 old runs outside the window passes; 500 inside the window fails closed.
+44. **MAJOR 2, cache readable by fork PRs.** In this public repo, a fork's pull_request workflow can restore the base branch's caches.
+    - Archive-derived bytes in the Actions cache (progress, units, k2 copies) are encrypted with an authenticated cipher available on the runner. The key comes from a secret (fork PRs get no secrets): derive it from `DATA_STORE_TOKEN` with HMAC and a fixed label, so the owner adds no new secret.
+    - A failed decrypt fails closed. A rotated token means the cache counts as missing, which ruling 7 / OF-4 already handles.
+    - The arm check asserts that the saved cache paths hold only encrypted files.
+    - The `data-rpc-*` Helius caches held today are not encrypted. They expire after 7 days unused, and are not deleted by hand (hard to undo).
+    - On the arm checklist, an owner step for defence in depth: set "Fork pull request workflows" to require approval for all outside collaborators.
+45. **m3, honest checker bypasses.** Match `zeroed-scan` after `/`, a quote or `-c `. Refuse `GITHUB_STEP_SUMMARY`, `GITHUB_OUTPUT` and `/dev/std*` as redirect targets. Also scan the `*.sh` files outside `ci/` that the workflows call. Tests: the red team's three lines.
+46. **m4, uploads.** Archive workflows refuse `uses: ./` composite actions unless their action.yml is checked the same way, and refuse the whole `actions/upload-*` family by prefix.
+47. **m5.** Compute `ag_sha_guarded` once per SHA in the parent shell, not in `$( )`. Test: one contents call per SHA.
+48. **m6.** Tags are checked as `refs/tags/NAME`, so a branch and a tag with the same name are both checked.
