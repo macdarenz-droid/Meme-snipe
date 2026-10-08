@@ -195,7 +195,8 @@ recommendation, before `ARCHIVE_ARM` is set:
    needs); otherwise one line for the owner: "Settings → Actions → General → Artifact and log retention: what number of
    days is set?". The value goes in DECISIONS.
 4. Which YAML parser the runner has for the permissions check (python3's `yaml`, else `yq`; **VERIFY** on the runner
-   image; with neither, arming fails closed).
+   image). The guard logs the parser and its version ("permissions: parsed with ..."); a parser that does not refuse a
+   repeated key, or no parser, fails arming closed (OF-2 round 4, ruling 33).
 
 **Reads, and the one allowed second read (DERIVED).**
 - Each day's unit plan carries two units of margin on each side (`scanner/main.go:310`, 3,600 s), about 1.9 units each
