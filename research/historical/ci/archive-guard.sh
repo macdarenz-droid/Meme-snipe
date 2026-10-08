@@ -180,6 +180,10 @@ CAP = re.compile(r"^[^)|]*2>(?:&1|>?\s*" + F + r")[^)|]*\)")
 ASSIGN = re.compile(r"(?:^|[\s;])(?:local\s+)?(qlog|slog|tlog)=(\S+)")
 UNDER = re.compile(r"^\x22(?:\$out|\$RUNNER_TEMP|\$\{RUNNER_TEMP:\?\})/")
 # a scanner binary held in a variable (or looked up) is refused
+# rulings 57 and OF-3 26: the log directories are written only by a plain assignment, and
+# never linked, read or copied to an output (ln, cat, tee, head, tail on their paths)
+NONPLAIN = re.compile(r"\bfor\s+(?:qlog|slog|tlog)\b|\bread\b[^#;|]*\b(?:qlog|slog|tlog)\b|\bprintf\s+-v\s*(?:qlog|slog|tlog)\b|\b(?:declare|typeset)\b[^#;|]*\b(?:qlog|slog|tlog)\b|\$\{(?:qlog|slog|tlog):?[=?+-]")
+TOUCH = re.compile(r"(?:^|[\s;&|(])(?:ln|cat|tee|head|tail)\b[^#;|]*\$\{?(?:qlog|slog|tlog)\b")
 VIA = re.compile(r"(?:^|[\s;])(?:local\s+|export\s+)?\w+=[\x22\x27]?[^\s$(#]*zeroed-(?:scan|rpcscan)|command\s+-v\s+zeroed-|which\s+zeroed-|type\s+-p\s+zeroed-")
 def bad_lines(text):
     for n, line in enumerate(text.split("\n"), 1):
@@ -187,6 +191,8 @@ def bad_lines(text):
         for m in ASSIGN.finditer(line):
             if not UNDER.match(m.group(2)): yield n, "log directory " + m.group(1) + " not under $out or $RUNNER_TEMP: " + line.strip()[:100]
         if VIA.search(line): yield n, "scanner binary through a variable: " + line.strip()[:100]
+        if NONPLAIN.search(line): yield n, "log directory written other than by a plain assignment: " + line.strip()[:100]
+        if TOUCH.search(line): yield n, "log directory linked or read out: " + line.strip()[:100]
         for m in CALL.finditer(line):
             rest = line[m.start(1):]
             if re.search(r"\$\(\s*(?:[\w./-]+\s+)*[\x22\x27]?[\w./$-]*$", line[:m.start(1)]):
@@ -261,7 +267,8 @@ def check_steps(steps, name, j, depth=0):
             w = st.get("with") or {}
             key = str(w.get("key", "")) + " " + str(w.get("restore-keys", ""))
             if re.search(r"data-(scan|rpc)", key) and not re.search(r"data-scan-backoff-", key):
-                want = "${{ runner.temp }}/work/sealed-assets" if "data-rpc-assets" in key else "${{ runner.temp }}/work/sealed"
+                want = ("${{ runner.temp }}/work/sealed-assets" if "data-rpc-assets" in key
+                        else "${{ runner.temp }}/work/sealed-logs" if re.search(r"-logs\s*$", str(w.get("key", ""))) else "${{ runner.temp }}/work/sealed")
                 if str(w.get("path", "")).strip() != want:
                     fail(where + " caches archive-derived progress unsealed (path " + str(w.get("path", "")).strip() + ")")
         run = join(str(st.get("run", "")))
@@ -285,10 +292,21 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
         fail(name + " has no explicit top-level permissions with contents: read")
     e = scopes(top, name, None)
     if e: fail(name + " " + e + " at the top level")
+    def envcheck(env, where):
+        for k, v in (env or {}).items():
+            if "zeroed-" in str(v): fail(where + " env " + str(k) + " names a scanner binary (ruling 57)")
+    envcheck(wf.get("env"), name)
     for j, job in (wf.get("jobs") or {}).items():
         if not isinstance(job, dict): continue
         e = scopes(job.get("permissions"), name, j)
         if e: fail(name + " job " + str(j) + " " + e)
+        envcheck(job.get("env"), name + " job " + str(j))
+        for st in job.get("steps") or []:
+            if isinstance(st, dict): envcheck(st.get("env"), name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))))
+        # ruling 59: a pinned runner image (ubuntu-latest moves to 26.04 in Nov 2026)
+        ro = job.get("runs-on")
+        if ro is not None and (not isinstance(ro, str) or "latest" in ro or not re.fullmatch(r"ubuntu-\d\d\.\d\d", ro)):
+            fail(name + " job " + str(j) + " runs on " + str(ro) + ", not a pinned ubuntu-NN.NN image")
         check_steps(job.get("steps") or [], name, j)
 
 '
@@ -391,13 +409,16 @@ ag_store_ok() {
     { ag_refuse "the storage-stop marker is present in $DATA_REPO (storage projection above 0.5 TB); the owner is asked"; return 2; }
   return 0
 }
-# ag_caches_sealed (round 7, ruling 51): no Actions cache entry of this repository, on any
-# ref, holds archive-derived or Helius progress or assets unsealed (a data-scan-* or
+# ag_caches_sealed (round 7, ruling 51; ruling 56: the default branch's ref only, the one
+# default-branch runs restore from; a fork or PR ref's entry is never restored by them and
+# cannot halt arming): no Actions cache entry holds archive-derived or Helius progress or
+# assets unsealed (a data-scan-* or
 # data-rpc-* key without the -k<key id>- of cache-crypt.sh; the back-off state aside).
 # Deleting any that remain is the owner's decision. Fails closed when the list cannot be read.
 ag_caches_sealed() {
   local keys bad
-  keys=$("$ag_gh" api --paginate "repos/$ag_repo/actions/caches?key=data-&per_page=100" --jq '.actions_caches[].key' 2>/dev/null) ||
+  local ref="refs/heads/$AG_BRANCH"
+  keys=$("$ag_gh" api --paginate "repos/$ag_repo/actions/caches?key=data-&ref=$ref&per_page=100" --jq ".actions_caches[] | select(.ref == \"$ref\") | .key" 2>/dev/null) ||
     { ag_refuse "the Actions cache list cannot be read (fail closed)"; return 2; }
   bad=$(grep -E '^data-(scan|rpc)-' <<< "$keys" | grep -vE '^data-scan-backoff-' | grep -vE '^data-(scan|rpc|rpc-assets)-[0-9]{4}-[0-9]{2}-[0-9]{2}-k[0-9a-f]{12}-' || true)
   [[ -z "$bad" ]] ||
@@ -418,27 +439,41 @@ ag_default_branch() {
   [[ "$b" =~ ^[A-Za-z0-9._/-]+$ && "$b" != null ]] || return 1
   echo "$b"
 }
-# ag_runs WORKFLOW (round 7, ruling 49): runs on every branch as TSV "id status
+# ag_runs WORKFLOW (rulings 49, 55, 61): runs on every branch as TSV "id status
 # conclusion createdAt updatedAt attempt headBranch headSha title" (a missing value is
 # "-": read splits on tabs and would merge empty fields): every run created since the
 # earlier of ARCHIVE_REARM_AT and 35 days ago (GitHub allows a re-run only within 30 days,
-# VERIFY, OLD-FAITHFUL.md §2), read page by page from the runs API with no cap, plus every
-# queued, in-progress, waiting, requested or pending run, each run once. Fails on an API
-# error, or above AG_RUNS_MAX (5,000) runs (fail closed).
+# VERIFY, OLD-FAITHFUL.md §2), read from the runs API in created slices of AG_SLICE_DAYS,
+# plus every queued, in-progress, waiting, requested or pending run, each run once. The
+# API returns at most 1,000 results for one filtered search and paging then just stops
+# (GitHub REST "List workflow runs for a workflow"), so each slice and each status query
+# fails closed when its total_count is AG_RUNS_MAX (1,000) or more, or when fewer rows are
+# read than it reports. Fails on an API error too.
 AG_STATUSES="queued in_progress waiting requested pending"
-AG_RUNS_MAX=5000
+AG_RUNS_MAX=1000
+AG_SLICE_DAYS=${AG_SLICE_DAYS:-7}
+ag_runs_query() { # ag_runs_query WORKFLOW QUERY: the rows; fails closed as above
+  local out total n
+  out=$("$ag_gh" api --paginate "repos/$ag_repo/actions/workflows/$1/runs?$2&per_page=100" \
+    --jq '"T\t\(.total_count)", (.workflow_runs[] | [.id, .status, (.conclusion // "-"), .created_at, .updated_at, .run_attempt, .head_branch, (.head_sha // "-"), .display_title] | @tsv)' 2>/dev/null) || return 1
+  total=$(sed -n $'s/^T\t\([0-9]*\)$/\\1/p' <<< "$out" | head -1)
+  [[ "$total" =~ ^[0-9]+$ ]] || return 1
+  out=$(grep -v $'^T\t' <<< "$out" || true)
+  n=$(grep -c . <<< "$out" || true)
+  (( total < AG_RUNS_MAX && n >= total )) || return 1
+  [[ -z "$out" ]] || printf '%s\n' "$out"
+}
 ag_runs() {
-  local wf=$1 out q n all="" from rearm
+  local wf=$1 q all="" from rearm now a b
   rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
-  from=$(( $(ag_now) - 35 * 86400 )); (( rearm < from )) && from=$rearm
-  for q in "created=>=$(date -u -d "@$from" +%FT%TZ)" $AG_STATUSES; do
-    [[ "$q" == created=* ]] || q="status=$q"
-    out=$("$ag_gh" api --paginate "repos/$ag_repo/actions/workflows/$wf/runs?$q&per_page=100" \
-      --jq '.workflow_runs[] | [.id, .status, (.conclusion // "-"), .created_at, .updated_at, .run_attempt, .head_branch, (.head_sha // "-"), .display_title] | @tsv' 2>/dev/null) || return 1
-    all+="$out"$'\n'
+  now=$(ag_now)
+  from=$(( now - 35 * 86400 )); (( rearm < from )) && from=$rearm
+  for (( a = from; a <= now; a += AG_SLICE_DAYS * 86400 )); do
+    b=$(( a + AG_SLICE_DAYS * 86400 - 1 ))
+    q="created=$(date -u -d "@$a" +%FT%TZ)..$(date -u -d "@$b" +%FT%TZ)"
+    all+="$(ag_runs_query "$wf" "$q")"$'\n' || return 1
   done
-  n=$(awk -F'\t' 'NF && !seen[$1]++' <<< "$all" | grep -c .)
-  (( n <= AG_RUNS_MAX )) || return 1
+  for q in $AG_STATUSES; do all+="$(ag_runs_query "$wf" "status=$q")"$'\n' || return 1; done
   awk -F'\t' 'NF && !seen[$1]++' <<< "$all"
 }
 # ag_sha_guarded SHA (round 4, ruling 21): sets AG_G to "yes" when the commit SHA carries
