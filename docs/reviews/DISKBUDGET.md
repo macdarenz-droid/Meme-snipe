@@ -56,3 +56,17 @@ Review PASS, final. Red team 0 BLOCKER, 0 MAJOR, 2 MINOR. The spool route gives 
 18. **Bind mount.** It persists through a systemd `.mount` unit (or fstab), ordered before `ssh.service`. `md` is mounted read-only, with a separate read-write bind for `md/receipts` only.
 
 #307 is ready to merge once it is out of draft and green on a head that contains the latest base.
+
+## PATHS-FIX #311 (head `c173f777`, base `d7c9c646`)
+
+### Red team `session_01HLmKT9VCuhF4Pzd2B7LXxW`: 1 BLOCKER, 1 MAJOR, 3 MINOR
+
+BLOCKER (`m07/receipts.ts:85`): `rmSync(path, { recursive: true })` on an entry the pull account made can delete the worker's own files. Swapping a directory for a symlink to `/var/lib/zeroed` during the recursive walk deletes through the link; the ledger stand-in was deleted in 10 of 10 local runs. MAJOR: receipts/ has no hard bound. The sweep runs after the fact and nothing calls it yet, so inode or byte exhaustion hits the disk the ledger shares, and duplicate valid receipts are kept. MINOR 1: SPEC-A:1307 and :2513 are stale (`/data/md`, `/data/rpc-usage.db` with group sentinel 0660), and the question of who writes rpc-usage.db is unanswered. MINOR 2: SPEC-B:2031 (M24 `/data/backups`) and :2584 (`/var/lib/bot`) are stale. MINOR 3: a failed pull mount fails closed, but nothing alerts. Clean: the Match block, the read-only md, the chroot, the groups (no path to ops.sock), every ENGINE_PATHS entry inside the writable paths, upgrade order, no guard loosened.
+
+### Supervisor rulings for round 2 (9 Oct 2026, about 1:35 AM; sent with the reviewer's findings)
+
+19. **BLOCKER.** Never recurse on anything the pull account can write. Unlink regular files and symlinks with `unlinkSync`, which never follows links. For a directory use `rmdirSync`, never recursive. If it is not empty, record it as `stuck` and alert. Anything else is `stuck`. Test: a race that swaps a directory for a symlink to the state folder deletes nothing outside receipts/.
+20. **MAJOR.** Hard bound: receipts/ lives on its own small fixed-size filesystem with a fixed inode count (a loop-mounted image the installer creates, mounted at `/var/lib/zeroed-md/receipts`, ordered with the other pull mounts). A full image fails closed. Bind each receipt's file name to its segment, and delete duplicate valid receipts. Record the image size and inode count with the reason.
+21. **MINOR 1.** Fix SPEC-A:1307 and :2513. For `rpc-usage.db`, find in the specs who writes it. If the sentinel must write it, give it its own shared state folder with the right group instead of the 0700 worker folder. Record the decision in DECISIONS.
+22. **MINOR 2.** SPEC-B:2031: "M24 backup step not built; zeroed-backup is the one backup owner (DISK-BUDGET §2.6)". SPEC-B:2584: replace `/var/lib/bot`.
+23. **MINOR 3.** `zeroed-check` alerts when a pull mount is inactive. This is monitoring of a component this PR adds, so it is in scope here. Test: inactive mount gives the alert; active gives none.
