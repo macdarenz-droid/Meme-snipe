@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Builds the multi-day dataset FROM..TO (TO exclusive) from the per-day releases
-# `data-day-YYYY-MM-DD` and publishes it as release `data-FROM-TO`
+# `data-day-YYYY-MM-DD` and stores it as release `data-FROM-TO` in the private store
 # (used by .github/workflows/data-scan.yml, mode=assemble).
 #   assemble.sh FROM TO OUT_DIR
 # Environment:
-#   GITHUB_REPOSITORY  owner/repo of the releases (required)
-#   GH_TOKEN           token for gh (the workflow's publish job)
+#   DATA_REPO          owner/repo of the private store the releases are read from and the
+#                      dataset is stored in (required; OF-4: never this repository)
+#   GH_TOKEN           the store token for gh (the workflow's assemble job)
 #   MAX_WINDOW_DAYS    largest window in days (default 3: units keep every curve and canonical-pool
 #                      trade, about 6.4-8.5 GB a day, so a runner holds about three days with the dataset)
 #   ALLOW_REVISIONS    optional comma list passed to finalize as -allow-revisions
@@ -59,7 +60,7 @@ day_list() {
 # (units-DAY.tar.part for window days, events-DAY.tar for lead-in days); fails when none.
 tar_bytes() {
   local day=$1 prefix=$2 n
-  n=$(gh release view "data-day-$day" --repo "$GITHUB_REPOSITORY" --json assets \
+  n=$(gh release view "data-day-$day" --repo "$DATA_REPO" --json assets \
     --jq "[.assets[] | select(.name | startswith(\"$prefix\")) | .size] | if length == 0 then -1 else add end") ||
     die "release data-day-$day is missing (every lead-in and window day is required)"
   [[ "$n" =~ ^[0-9]+$ ]] || die "release data-day-$day has no $prefix* asset"
@@ -148,7 +149,7 @@ fetch_day() {
   rm -rf "$dl"; mkdir -p "$x"
   if (( leadin )); then
     # Lead-in days need only events, stats and block rows: the day's small events asset.
-    gh release download "data-day-$day" --repo "$GITHUB_REPOSITORY" --dir "$dl" \
+    gh release download "data-day-$day" --repo "$DATA_REPO" --dir "$dl" \
       --pattern "events-$day.tar" --pattern "SHA256SUMS-$day"
     [[ -f "$dl/events-$day.tar" ]] || die "day $day: no events-$day.tar in its release"
     (cd "$dl" && grep -E "  events-$day\.tar$" "SHA256SUMS-$day" | sha256sum -c --quiet -) || die "day $day: events asset checksum mismatch"
@@ -168,7 +169,7 @@ fetch_day() {
 # fetch_parts DAY DL X: download, verify and extract the day's full units tar parts.
 fetch_parts() {
   local day=$1 dl=$2 x=$3 parts listed
-  gh release download "data-day-$day" --repo "$GITHUB_REPOSITORY" --dir "$dl" \
+  gh release download "data-day-$day" --repo "$DATA_REPO" --dir "$dl" \
     --pattern "units-$day.tar.part*" --pattern "SHA256SUMS-$day"
   parts=$(find "$dl" -maxdepth 1 -name "units-$day.tar.part*" | wc -l)
   listed=$(grep -cE "  units-$day\.tar\.part[0-9]+$" "$dl/SHA256SUMS-$day" || true)
@@ -200,14 +201,16 @@ build_release() {
 main() {
   (( $# == 3 )) || die "usage: assemble.sh FROM TO OUT_DIR"
   local from=$1 to=$2 work=$3 day leadin bytes tag
-  [[ -n "${GITHUB_REPOSITORY:-}" ]] || die "GITHUB_REPOSITORY is not set"
+  [[ "${DATA_REPO:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || die "DATA_REPO (the private store) is not set"
+  local this_repo=${GITHUB_REPOSITORY:-}
+  [[ "${DATA_REPO,,}" != "${this_repo,,}" ]] || die "DATA_REPO is this repository, not the private store"
   check_window "$from" "$to"
   local -a extra=()
   if [[ -n "${ALLOW_REVISIONS:-}" ]]; then
     [[ "$ALLOW_REVISIONS" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] || die "ALLOW_REVISIONS must be a comma list of revisions, got '$ALLOW_REVISIONS'"
     extra=(-allow-revisions "$ALLOW_REVISIONS")
   fi
-  ! gh release view "data-$from-$to" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+  ! gh release view "data-$from-$to" --repo "$DATA_REPO" >/dev/null 2>&1 ||
     die "release data-$from-$to already exists; a published dataset is never replaced"
   mkdir -p "$work/data/units"
   local -a days
@@ -235,9 +238,9 @@ main() {
   node --no-warnings "$repo_root/research/historical/qa/parity.ts" "$work/dataset" > "$qlog/parity.log" 2>&1 || die "decoder parity failed; its output is kept in the private log next to the data"
   build_release "$work/dataset" "$work/release"
   tag="data-$from-$to"
-  gh release create "$tag" --repo "$GITHUB_REPOSITORY" --prerelease --title "Historical dataset $from to $to" \
+  gh release create "$tag" --repo "$DATA_REPO" --prerelease --title "Historical dataset $from to $to" \
     --notes "Built by data-scan.yml at ${GITHUB_SHA:-unknown} from releases data-day-${days[0]} .. data-day-${days[-1]} (14 lead-in days). Strict QA and decoder parity passed (qa-report.md, parity.json). Format: docs/research/historical-data.md."
-  (cd "$work/release" && gh release upload "$tag" --repo "$GITHUB_REPOSITORY" -- *)
+  (cd "$work/release" && gh release upload "$tag" --repo "$DATA_REPO" -- *)
   echo "assemble: published $tag"
 }
 

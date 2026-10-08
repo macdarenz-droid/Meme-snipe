@@ -7,6 +7,8 @@ T=$(mktemp -d)
 export RUNNER_TEMP="$T/rt"; mkdir -p "$RUNNER_TEMP" # (assemble.sh and volume-day.sh keep their QA logs there, ruling 53)
 trap 'rm -rf "$T"' EXIT
 export T GITHUB_REPOSITORY=test/repo GITHUB_SHA=abc123 FAKE_AVAIL=999999999999999
+# OF-4: the private store the publish, volume and assemble scripts read and write
+export DATA_REPO=test/data
 mkdir -p "$T/bin" "$T/rel"
 pass=0 fail=0
 ok() { echo "ok   $1"; pass=$((pass + 1)); }
@@ -17,6 +19,9 @@ cat > "$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$1" == release ]] || exit 2
+# OF-4: every release call is logged with the repository it names and the token it holds
+repo=-; prev=""; for x in "$@"; do [[ "$prev" == --repo ]] && repo=$x; prev=$x; done
+echo "$2 $3 repo=$repo token=${GH_TOKEN:--}" >> "$T/ghrepo.log"
 cmd=$2 tag=$3; shift 3
 dir="$T/rel/$tag"
 case "$cmd" in
@@ -38,7 +43,10 @@ case "$cmd" in
     while (( $# )); do
       case "$1" in --dir) out=$2; shift ;; --pattern) pats+=("$2"); shift ;; esac; shift
     done
-    for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done ;;
+    for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done
+    # OF-4: FAKE_GH_CORRUPT=NAME hands back a changed copy of that asset (a read-back mismatch)
+    [[ -n "${FAKE_GH_CORRUPT:-}" && -e "$out/$FAKE_GH_CORRUPT" ]] && echo changed >> "$out/$FAKE_GH_CORRUPT"
+    true ;;
   create)
     mkdir "$dir"; echo "$tag" >> "$T/created.log"
     while (( $# )) && [[ "$1" != -- ]]; do shift; done
@@ -498,12 +506,12 @@ export GH_BIN="$T/bin/gh"
 pd="$T/pd"; mkdir -p "$pd"; rm -rf "$T/rel/data-day-2026-09-30"; : > "$T/created.log"
 mkpd() {
   rm -f "$pd"/*
-  for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 events-2026-09-30.tar qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json; do echo "$f" > "$pd/$f"; done
+  for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 events-2026-09-30.tar qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json units-2026-09-30.log; do echo "$f" > "$pd/$f"; done
   (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 }
 mkpd
-bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 8 ]] &&
-  ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity and sums" || no "publish-day create"
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 9 ]] &&
+  ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity, per-unit log and sums" || no "publish-day create"
 echo "rerun QA report with different live results" > "$pd/qa-2026-09-30.md"; echo '{"rerun":1}' > "$pd/qa-2026-09-30.json"
 (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
@@ -617,7 +625,7 @@ tree=$(cd "$here" && git rev-parse HEAD:research/historical/scanner)
   ok "scanner-rev: a toolchain other than go\$GO_VERSION fails the build"
 
 # ---- data-scan.yml: a published day is skipped before any archive read; the token only in two clean steps ----
-python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell; a resumable stop chains the next run, bounded, only after a saved progress; QA starts only with 45 min left" || no "workflow skip/token structure"
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, store) is skipped for a complete day; the store token only in the check, store and storage-check steps, all in a clean shell; a resumable stop chains the next run, bounded, only after a saved progress; QA starts only with 45 min left" || no "workflow skip/token structure"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
 i = next(k for k, s in enumerate(steps) if s.get("id") == "published")
@@ -627,8 +635,12 @@ for s in steps[i + 1:]:
     if "setup-node" in s.get("uses", ""):
         continue
     assert "steps.published.outputs.complete != 'true'" in s.get("if", ""), s
-tok = [s for s in steps if "github.token" in str(s)]
-assert [s.get("id") or s.get("name") for s in tok] == ["published", "pickprogress", "guardscan", "guardqa", "Publish this day", "Publish this day's volume hours"], tok
+gtok = [s.get("id") or s.get("name") for s in steps if "github.token" in str(s)]
+assert gtok == ["pickprogress", "guardscan", "guardqa"], gtok
+# OF-4: the store token as GH_TOKEN only in the skip, store, volume store and storage-check steps
+tok = [s for s in steps if (s.get("env") or {}).get("GH_TOKEN") == "${{ secrets.DATA_STORE_TOKEN }}"]
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "store", "Store this day's volume hours", "Storage check after the batch"], tok
+tok += [s for s in steps if (s.get("id") or s.get("name")) in ("guardscan", "guardqa")]
 pick = next(s for s in steps if s.get("id") == "pickprogress")
 assert pick["run"].endswith('research/historical/ci/progress-pick.sh" "$PREFIX"'), pick
 for s in tok:
@@ -663,10 +675,10 @@ vj = wf["jobs"]["volume"]
 assert vj["if"] == "inputs.mode == 'volume'" and vj["strategy"]["max-parallel"] == 1, vj
 vsteps = vj["steps"]
 assert not any("scan-day.sh" in str(st) or "zeroed-scan run" in str(st) or "zeroed-scan unit" in str(st) for st in vsteps), "the back-fill must not read the archive"
-vtok = [st["name"] for st in vsteps if "github.token" in str(st)]
-assert vtok == ["Download the day's units", "Publish the volume hours"], vtok
+vtok = [st["name"] for st in vsteps if "secrets.DATA_STORE_TOKEN" in str(st)]
+assert vtok == ["Download the day's units", "Store the volume hours"] and "github.token" not in str(vsteps), vtok
 dl = next(st for st in vsteps if st.get("name") == "Download the day's units")
-assert "volume-day.sh --download" in dl["run"] and "zeroed-scan" not in dl["run"] and "node" not in dl["run"], dl
+assert 'volume-day.sh" --download' in dl["run"] and "zeroed-scan" not in dl["run"] and "node" not in dl["run"], dl
 rb = next(st for st in vsteps if st.get("name") == "Rebuild the day's volume hours from its units")
 assert "GH_TOKEN" not in str(rb) and "--download" not in rb["run"], rb
 assert vsteps.index(dl) < vsteps.index(rb) < vsteps.index(vsteps[-1])
@@ -680,8 +692,8 @@ assert names[0] == "Record the job start (time budget of the QA phase)" and "JOB
 qt = next(s for s in steps if s.get("id") == "qatime")
 assert f'time-left.sh "$JOB_START" {wf["jobs"]["scan"]["timeout-minutes"]} ' in qt["run"] and '-eq 75 ]; then echo "resumable=true"' in qt["run"], qt
 order = lambda key: names.index(key)
-assert order("save") < order("qatime") < order("qa") < order("Package the day") < order("Publish this day")
-for k in ("qa", "Package the day", "Publish this day"):
+assert order("save") < order("qatime") < order("qa") < order("Package the day") < order("store")
+for k in ("qa", "Package the day", "store"):
     st = steps[order(k)]
     assert "always()" not in st.get("if", ""), st
 # chained only after a successful save, for either resumable stop
@@ -696,9 +708,9 @@ assert '-eq 75 ]; then echo "resumable=true"' in qa["run"] and 'exit "$rc"' in q
 for st in marks:
     assert "steps.qa.outputs.resumable == 'true'" in st["if"], st
     assert steps.index(st) > order("qa"), "resume markers must follow the QA step"
-# phase durations: artifact upload and publish timed around their steps
-day_up = next(i for i, st in enumerate(steps) if st.get("with", {}).get("name") == "day-${{ matrix.day }}")
-assert order("Note the upload start") < day_up < order("Note the publish start") < order("Publish this day") < order("Log the publish duration")
+# phase durations: the store (OF-4: no day artifact) timed around its step
+assert not any(st.get("with", {}).get("name") == "day-${{ matrix.day }}" for st in steps)
+assert order("Note the store start") < order("store") < order("Log the store duration")
 PY
 
 # ---- rpcscan: the scanner's own sources through symlinks; the IDLs byte-identical ----
@@ -1207,7 +1219,7 @@ chk, probe, ann, ra, save, disp = steps[1:]
 # OF-2 round 4, ruling 25: the annotation in its own step right after the probe, on any end but success or skip
 assert ann["name"] == "Record the back-off annotation" and ann["if"] == "always() && steps.probe.outcome != 'success' && steps.probe.outcome != 'skipped'", ann
 assert ann["env"] == {"END": "${{ steps.probe.outputs.backoff_annotation }}"} and ann["run"].strip() == 'if [[ "$END" =~ ^([0-9]{9,11}|hold)$ ]]; then echo "::warning title=archive-backoff::end=$END"; fi', ann
-assert chk["id"] == "check" and chk["run"] == "research/historical/ci/archive-check.sh" and "github.token" in chk["env"]["GH_TOKEN"], chk
+assert chk["id"] == "check" and chk["run"].endswith('/usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-check.sh"') and "github.token" in chk["env"]["GH_TOKEN"], chk
 assert chk["env"]["DATA_REPO"] == "${{ vars.DATA_REPO }}" and chk["env"]["DATA_STORE_TOKEN"] == "${{ secrets.DATA_STORE_TOKEN }}", chk["env"]
 assert probe["name"] == "Archive probe (a failure unless served)" and probe["id"] == "probe" and probe["if"] == "steps.check.outputs.ready == 'true'", probe
 assert probe["run"] == 'research/historical/ci/archive-check.sh --probe "$DAY"' and probe["env"]["DAY"] == "${{ steps.check.outputs.day }}", probe
@@ -1359,7 +1371,7 @@ python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "HISTORY
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 job = wf["jobs"]["scan"]
-assert job["permissions"] == {"contents": "write", "actions": "read"}, job["permissions"]
+assert job["permissions"] == {"contents": "read", "actions": "read"}, job["permissions"]
 steps = job["steps"]
 ids = [s.get("id") or s.get("name") for s in steps]
 assert ids.index("pickprogress") < ids.index("restore") < ids.index("record") < ids.index("scan")
@@ -2946,6 +2958,148 @@ bad=""
 bad=""
 bad=""
 bad=""; gdreset
+
+# ---- OF-4: nothing public; the private store; read-back; the storage stop after every batch ----
+bad=""; wf="$here/../../../.github/workflows"
+# Every release call any script made in this suite named the private store, never this repository.
+[[ -s "$T/ghrepo.log" ]] && ! grep -v ' repo=test/data ' "$T/ghrepo.log" >/dev/null || bad+=" [calls: $(grep -v ' repo=test/data ' "$T/ghrepo.log" | head -2 | tr '\n' ' ')]"
+# Each script refuses before any gh call without the private store, or when it is this repository.
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/ghcalls4.log"\nexit 1\n' "$T" > "$T/ghrec4"; chmod +x "$T/ghrec4"
+mkpd
+for dr in "" test/repo TEST/Repo; do
+  : > "$T/ghcalls4.log"
+  DATA_REPO="$dr" GH_BIN="$T/ghrec4" bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && bad+=" [publish-day '$dr']"
+  DATA_REPO="$dr" GH_BIN="$T/ghrec4" bash "$here/publish-day.sh" --check 2026-09-30 >/dev/null 2>&1 && bad+=" [check '$dr']"
+  DATA_REPO="$dr" GH_BIN="$T/ghrec4" bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" >/dev/null 2>&1 && bad+=" [publish-volume '$dr']"
+  DATA_REPO="$dr" GH_BIN="$T/ghrec4" bash "$here/storage-check.sh" >/dev/null 2>&1 && bad+=" [storage-check '$dr']"
+  [[ ! -s "$T/ghcalls4.log" ]] || bad+=" [gh called with '$dr']"
+done
+DATA_REPO="" PATH="$T/bin:$PATH" bash "$here/volume-day.sh" --download 2026-09-30 "$T/v4" >/dev/null 2>&1 && bad+=" [volume-day download]"
+out=$(DATA_REPO=test/repo bash -c '. "$1"; main 2026-09-20 2026-09-21 "$2"' _ "$here/assemble.sh" "$T/as4" 2>&1) && bad+=" [assemble]"
+[[ "$out" == *"not the private store"* ]] || bad+=" [assemble msg: ${out:0:80}]"
+[[ -z "$bad" ]] && ok "OF-4: every release call in this suite named the private store (DATA_REPO); publish-day (and --check), publish-volume, storage-check, volume-day --download and assemble refuse before any gh call without DATA_REPO or when it is this repository" || no "OF-4 private store only:$bad"
+bad=""
+# The day release carries the per-unit log, and the OF-3 files SHA256SUMS lists.
+rm -rf "$T/rel/data-day-2026-09-30"; mkpd; echo "k2 abc u" > "$pd/rescan-2026-09-30.sha256"; echo "pool 1 2" > "$pd/list-2026-09-30.txt"
+(cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* rescan-* list-* > SHA256SUMS-2026-09-30)
+: > "$T/ghout4"; GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 &&
+  for f in units-2026-09-30.log rescan-2026-09-30.sha256 list-2026-09-30.txt; do [[ -f "$T/rel/data-day-2026-09-30/$f" ]] || bad+=" [no $f]"; done || bad+=" [store]"
+grep -qx readback=true "$T/ghout4" || bad+=" [no readback=true]"
+GITHUB_OUTPUT=/dev/null bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 || bad+=" [complete rerun]"
+rm -rf "$T/rel/data-day-2026-09-30"; mkpd; rm "$pd/units-2026-09-30.log"; (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
+out=$(bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && bad+=" [stored without the per-unit log]"
+[[ "$out" == *"missing units-2026-09-30.log"* && ! -d "$T/rel/data-day-2026-09-30" ]] || bad+=" [log msg: ${out:0:80}]"
+[[ -z "$bad" ]] && ok "OF-4: the day release carries the per-unit log (and the rescan hashes and list when SHA256SUMS lists them), is read back (readback=true), and a day without its per-unit log is not stored" || no "OF-4 per-unit log:$bad"
+bad=""
+# A read-back mismatch fails the step (no readback=true), on a fresh store and on a complete rerun.
+for c in units-2026-09-30.tar.part01 units-2026-09-30.log SHA256SUMS-2026-09-30; do
+  rm -rf "$T/rel/data-day-2026-09-30"; mkpd; : > "$T/ghout4"
+  out=$(FAKE_GH_CORRUPT=$c GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && bad+=" [$c passed]"
+  [[ "$out" == *"read-back"* && ! -s "$T/ghout4" ]] || bad+=" [$c: ${out:0:80}]"
+done
+out=$(FAKE_GH_CORRUPT=units-2026-09-30.tar.part00 GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && bad+=" [rerun passed]"
+rm -rf "$T/rel/data-volume-2026-09-30"
+out=$(FAKE_GH_CORRUPT=volume-hours-2026-09-30.csv bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" 2>&1) && bad+=" [volume passed]"
+[[ "$out" == *"read-back"* ]] || bad+=" [volume: ${out:0:80}]"
+[[ -z "$bad" ]] && ok "OF-4: a read-back mismatch (a part, the per-unit log or SHA256SUMS; also on a rerun of a complete release; and the volume CSV) fails the store step without readback=true, so the progress cache is kept" || no "OF-4 read-back:$bad"
+bad=""
+# The workflows: nothing public, the store token only in clean steps, the storage check after each batch.
+python3 - "$wf/data-scan.yml" "$wf/archive-check.yml" <<'PY' || bad+=" [workflow]"
+import sys, yaml
+ds = yaml.safe_load(open(sys.argv[1])); jobs = ds["jobs"]
+for j, job in jobs.items():
+    perms = job.get("permissions") or {}
+    assert perms.get("contents") != "write" and perms != "write-all", j
+    for st in job.get("steps") or []:
+        u = str(st.get("uses", ""))
+        if u.startswith("actions/upload-artifact"):
+            assert j == "scan" and str(st["with"]["name"]).startswith("resume-"), (j, st)
+        assert st.get("name") != "Publish this day", st
+        run = str(st.get("run", "")); env = st.get("env") or {}
+        if any(k in run for k in ("publish-day.sh", "publish-volume.sh", "storage-check.sh", "volume-day.sh\" --download")):
+            assert env.get("GH_TOKEN") == "${{ secrets.DATA_STORE_TOKEN }}" and env.get("DATA_REPO") == "${{ vars.DATA_REPO }}", st
+            assert st["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and run.startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), st
+        if "DATA_STORE_TOKEN" in str(env) and "cache-crypt.sh" not in run and "archive-guard.sh" not in run:
+            assert run.startswith("/usr/bin/env -i ") or "assemble.sh" in run, st
+assert jobs["assemble"]["steps"][-1]["env"]["GH_TOKEN"] == "${{ secrets.DATA_STORE_TOKEN }}"
+steps = jobs["scan"]["steps"]; names = [s.get("id") or s.get("name") for s in steps]
+assert "Store this day's volume hours" in names and names.index("store") < names.index("Store this day's volume hours") < names.index("Storage check after the batch"), names
+sc = steps[names.index("Storage check after the batch")]
+assert sc["if"] == "steps.store.outcome == 'success' && inputs.source != 'helius'", sc
+head = open(sys.argv[1]).read().split("\nname:")[0]
+assert "contents: write for this" not in head and "private store" in head, "header"
+ac = yaml.safe_load(open(sys.argv[2]))
+hold = next(s for j in ac["jobs"].values() for s in j["steps"] if s.get("name") == "Holds")
+assert hold["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and hold["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), hold
+assert all(hold["env"].get(k) == "" for k in ("BASH_ENV", "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH")) and "archive-check.sh" in hold["run"], hold
+PY
+# The guard's own private-storage check passes on this tree (it refused while anything was public).
+(cd "$here" && . ./archive-limits.conf && . ./archive-guard.sh && ag_summary=/dev/null && ag_private_storage) >/dev/null 2>&1 || bad+=" [ag_private_storage refuses]"
+[[ -z "$bad" ]] && ok "OF-4: no data-scan job has contents: write, the only artifact is resume-, no 'Publish this day' step; every store, skip, volume and storage-check step holds the store token only under env -i; the storage check follows each stored day; archive-check's Holds step runs under env -i; the guard's ag_private_storage passes on this tree" || no "OF-4 workflows:$bad"
+bad=""
+# The storage stop after every batch, against a fake private store.
+cat > "$T/storegh" <<'EOF'
+#!/usr/bin/env bash
+# a fake private store: $T/store/<tag>/ files; .draft marks a draft; .bytes is the release's size
+set -euo pipefail
+S="$T/store"; mkdir -p "$S"
+case "$1" in
+  api)
+    shift; [[ "$1" == --paginate ]] && shift; path=$1; shift; q="."
+    while (( $# )); do [[ "$1" == --jq ]] && q=$2; shift; done
+    case "$path" in
+      repos/test/data) echo '{"private":true}' | jq -r "$q" ;;
+      repos/test/data/releases\?*)
+        for d in "$S"/*/; do [ -d "$d" ] || continue
+          t=$(basename "$d"); dr=false; [ -e "$d/.draft" ] && dr=true; b=$(cat "$d/.bytes" 2>/dev/null || echo 0)
+          (cd "$d" && ls) | jq -R . | jq -s --arg t "$t" --argjson dr "$dr" --argjson b "$b" \
+            '{tag_name: $t, draft: $dr, assets: ([.[] | {name: ., size: 0}] + [{name: ".bulk", size: $b}])}'
+        done | jq -s . | jq -r "$q" ;;
+      repos/test/data/git/matching-refs/tags/storage-stop)
+        if [ -d "$S/storage-stop" ] && [ ! -e "$S/storage-stop/.draft" ]; then echo '[{"ref":"refs/tags/storage-stop"}]'; else echo '[]'; fi | jq -r "$q" ;;
+      *) echo "HTTP 404" >&2; exit 1 ;;
+    esac ;;
+  release)
+    cmd=$2 tag=$3; shift 3; repo=""; out=""; pats=()
+    while (( $# )); do case "$1" in --repo) repo=$2; shift ;; --dir) out=$2; shift ;; --pattern) pats+=("$2"); shift ;; esac; shift; done
+    [[ "$repo" == test/data ]] || exit 9
+    case "$cmd" in
+      create) mkdir "$S/$tag"; echo "$tag" >> "$T/storecreated.log" ;;
+      download) for p in "${pats[@]}"; do cp "$S/$tag"/$p "$out/"; done ;;
+      *) exit 2 ;;
+    esac ;;
+esac
+EOF
+chmod +x "$T/storegh"
+mkday() { mkdir -p "$T/store/$1"; echo "$2" > "$T/store/$1/.bytes"; [[ -z "${3:-}" ]] || echo "$3" > "$T/store/$1/pm01-subset-${1#data-day-}.txt"; }
+sck() { : > "$T/sck.sum"; rc=0; GH_BIN="$T/storegh" GITHUB_STEP_SUMMARY="$T/sck.sum" bash "$here/storage-check.sh" > "$T/sck.out" 2>&1 || rc=$?; }
+# After batch 5: 31 days, 5 stored, 26 left. Stored 75 GB (two K2 days 40 + 35 with 5 GB subsets) + 3 x 15 GB
+# K3 days = 120 GB; + 26 x 15 GB = 510 GB (0.51 TB) -> the marker and exit 3.
+rm -rf "$T/store"; : > "$T/storecreated.log"
+mkday data-day-2026-07-22 40000000000 5000000000; mkday data-day-2026-07-23 35000000000 5000000000
+for d in 24 25 26; do mkday data-day-2026-07-$d 15000000000; done; mkday data-volume-2026-07-22 0
+sck; [[ $rc == 3 && -d "$T/store/storage-stop" && ! -e "$T/store/storage-stop/.draft" ]] && grep -q "= 510000000000 bytes" "$T/sck.sum" || bad+=" [0.51: $rc $(head -c 200 "$T/sck.out")]"
+# the stop from both sides: the marker it wrote is the one the guard refuses on
+(DATA_REPO=test/data DATA_STORE_TOKEN=x GH_REPO=test/repo GH_BIN="$T/storegh"; . "$here/archive-guard.sh"; ag_summary=/dev/null; ag_store_ok) >/dev/null 2>&1 && bad+=" [guard passed with the marker]"
+sck; [[ $rc == 3 && $(grep -c storage-stop "$T/storecreated.log") == 1 ]] || bad+=" [marker rewritten or not refused: $rc]"
+# Same day sizes with the K2 days at 30 + 25 GB: 100 GB + 390 GB = 490 GB (0.49 TB) -> no marker, exit 0.
+rm -rf "$T/store"; : > "$T/storecreated.log"
+mkday data-day-2026-07-22 30000000000 5000000000; mkday data-day-2026-07-23 25000000000 5000000000
+for d in 24 25 26; do mkday data-day-2026-07-$d 15000000000; done
+sck; [[ $rc == 0 && ! -e "$T/store/storage-stop" ]] && grep -q "= 490000000000 bytes" "$T/sck.sum" || bad+=" [0.49: $rc $(head -c 200 "$T/sck.out")]"
+(DATA_REPO=test/data DATA_STORE_TOKEN=x GH_REPO=test/repo GH_BIN="$T/storegh"; . "$here/archive-guard.sh"; ag_summary=/dev/null; ag_store_ok) >/dev/null 2>&1 || bad+=" [guard refused without the marker]"
+# A draft storage-stop does not count: the guard passes, and a stop still writes the published marker.
+mkdir -p "$T/store/storage-stop"; touch "$T/store/storage-stop/.draft"
+(DATA_REPO=test/data DATA_STORE_TOKEN=x GH_REPO=test/repo GH_BIN="$T/storegh"; . "$here/archive-guard.sh"; ag_summary=/dev/null; ag_store_ok) >/dev/null 2>&1 || bad+=" [a draft counted]"
+# After batch 1: the K2 day (45 GB) counts as its 5 GB PM-01 subset: 45 + 30 x 5 = 195 GB, not 45 + 30 x 45 = 1395 GB.
+rm -rf "$T/store"; mkday data-day-2026-07-22 45000000000 5000000000
+sck; [[ $rc == 0 && ! -e "$T/store/storage-stop" ]] && grep -q "= 195000000000 bytes" "$T/sck.sum" && grep -q "measured PM-01 subset" "$T/sck.sum" || bad+=" [batch 1: $rc $(head -c 200 "$T/sck.out")]"
+# Fail closed, no marker: an unreadable subset file, an empty store, an unreadable store.
+echo "n/a" > "$T/store/data-day-2026-07-22/pm01-subset-2026-07-22.txt"; sck; [[ $rc == 1 && ! -e "$T/store/storage-stop" ]] || bad+=" [bad subset: $rc]"
+rm -rf "$T/store"; mkdir -p "$T/store"; sck; [[ $rc == 1 ]] || bad+=" [empty: $rc]"
+rc=0; GH_BIN="$T/ghrec4" bash "$here/storage-check.sh" >/dev/null 2>&1 || rc=$?; [[ $rc == 1 ]] || bad+=" [unreadable: $rc]"
+[[ -z "$bad" ]] && ok "OF-4 storage stop: after batch 5, 120 GB stored + 26 x 15 GB = 0.51 TB writes the published storage-stop marker (once) and exits 3, and the guard then refuses; 0.49 TB passes; a draft marker does not count; after batch 1 the K2 day counts as its measured PM-01 subset (195 GB, not 1.395 TB); a bad subset, an empty or unreadable store fail closed without a marker" || no "OF-4 storage stop:$bad"
+bad=""
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

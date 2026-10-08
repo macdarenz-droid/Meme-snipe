@@ -15,18 +15,22 @@
 #   determinism rescan can also hit a 429) saves it again, so the next day and the next
 #   run sleep it out too.
 # - Each finished day passes the strict QA, the decoder parity check and a determinism
-#   rescan; its own scan job then publishes release `data-day-YYYY-MM-DD` at once
-#   (ci/publish-day.sh) with that day's units tar parts, QA report, manifest, parity
-#   report and SHA256SUMS. A published day release is never replaced. The scan job has
-#   contents: write for this, but the token reaches only the publish step (env on that
-#   step alone); checkouts keep persist-credentials: false and no other step uses it.
+#   rescan; its own scan job then stores release `data-day-YYYY-MM-DD` at once in the
+#   private store (OF-4: DATA_REPO, zeroed-data; ci/publish-day.sh) with that day's units
+#   tar parts, QA report, manifest, parity report, per-unit log and SHA256SUMS, and reads
+#   every file back. A stored day release is never replaced. Nothing goes to this public
+#   repository: no job has contents: write and no day artifact is uploaded; the store
+#   token (DATA_STORE_TOKEN) reaches only the clean store and storage-check steps (env on
+#   those steps alone); checkouts keep persist-credentials: false. After each stored day
+#   (a batch) ci/storage-check.sh projects the store's size and, above 0.5 TB, writes the
+#   storage-stop marker there, which stops the chain (OF-4).
 # - Limits: each scan job has a 300 min budget for scanning and back-off waits inside
 #   its 355 min timeout, and QA, packaging and publishing start only with 45 min left
 #   (ci/time-left.sh); a 429 in the determinism rescan also stops resumably. Each
 #   phase's duration is in the summary. A day that runs out of either saves its progress and stops
 #   resumably (exit 75), and it chains only when that save succeeded: fail-fast
 #   cancels the days queued behind it, and the `continue` job dispatches the same days again (inputs.chain counts the chained runs, at most
-#   12). Published days are skipped before any archive read, so the next run resumes
+#   12). Stored days are skipped before any archive read, so the next run resumes
 #   that day from its cache, with no manual step. Any other failure stops the chain.
 # - Cache: one progress entry per scan job (key data-scan-DAY-RUN-ATTEMPT, a day's units:
 #   about 3.7 GB at the 2026-10-01 unit's measured rate of 52 MB per 20 min, 6.4-8.5 GB on
@@ -35,15 +39,17 @@
 #   so one to two days' entries coexist and the entry evicted is always an older day's. A day is skipped once published, so its entry is never read
 #   again; the only entry that matters, the day in progress, is the most recently saved
 #   or restored and is never the one evicted. Days run one at a time, so no two days save
-#   at once.
-# - Each published day also gets release data-volume-DAY (DATA-1c): the regime volume
+#   at once. A K2 day's progress (about 45 GB) does not fit the cache and is never put in
+#   the private store either (OF-4): a K2 day that cannot finish in one job holds the
+#   chain for a decision (OF-3 ruling 7).
+# - Each stored day also gets release data-volume-DAY (DATA-1c), in the private store: the regime volume
 #   per hour (SOL-quoted curve and canonical PumpSwap volume, lamports, covered hours),
 #   cross-checked exactly against the units' kept rows. mode=volume back-fills it for
-#   days already published, from their own units (ci/volume-day.sh), on its own
+#   days already stored, from their own units (ci/volume-day.sh), on its own
 #   concurrency group, so it never replaces a pending chained scan run.
 # - mode=assemble runs research/historical/ci/assemble.sh: windows of up to 3 days,
-#   with the 14 lead-in days required, one day at a time, published as release
-#   `data-<from>-<to>`.
+#   with the 14 lead-in days required, one day at a time, stored as release
+#   `data-<from>-<to>` in the private store.
 # - Every checkout sets persist-credentials: false; inputs reach the shell only through
 #   env variables.
 name: data-scan
@@ -210,7 +216,7 @@ jobs:
       ARCHIVE_PRIOR_LIST: ""
       ARCHIVE_PRIOR_SUMS: ""
     permissions:
-      contents: write # used only by the "Publish this day" step
+      contents: read # OF-4: nothing is written to this repository; the day goes to the private store
       actions: read # "Pick the fullest progress cache" lists cache entries (read only)
     strategy:
       max-parallel: 1
@@ -223,20 +229,22 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      # A day already published and complete is skipped before any archive read. Same
-      # clean environment as the publish step (the token reaches only these two steps).
+      # A day already stored and complete in the private store is skipped before any
+      # archive read. Same clean environment as the store step (the store token reaches
+      # only the clean store steps).
       - name: Skip a day that is already published
         id: published
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
           DAY: ${{ matrix.day }}
           BASH_ENV: ""
           LD_PRELOAD: ""
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_OUTPUT="$GITHUB_OUTPUT"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" --check "$DAY"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -663,65 +671,72 @@ jobs:
         with:
           path: ${{ runner.temp }}/work/sealed-assets
           key: data-rpc-assets-${{ matrix.day }}-k${{ steps.cachekid.outputs.kid }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Note the upload start
+      # OF-4: no day artifact and nothing in this repository; the day goes to the private
+      # store only, then every file is read back (publish-day.sh).
+      - name: Note the store start
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
-        run: echo "T_UPLOAD=$(date +%s)" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
-        with:
-          name: day-${{ matrix.day }}
-          path: ${{ runner.temp }}/work/assets
-          compression-level: 0
-          retention-days: 14
-      - name: Note the publish start
-        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
-        env:
-          DAY: ${{ matrix.day }}
-        run: |
-          now=$(date +%s)
-          echo "phase artifact upload ($DAY): $(( now - T_UPLOAD )) s" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "T_PUBLISH=$now" >> "$GITHUB_ENV"
-      - name: Publish this day
+        run: echo "T_STORE=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Store this day
+        id: store
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
         # A clean environment: the shell starts without BASH_ENV/ENV and by absolute path,
         # the script runs under env -i with a fixed PATH, so nothing an earlier step put
         # in GITHUB_ENV, GITHUB_PATH or BASH_ENV reaches it, and no PATH lookup is used.
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
           DAY: ${{ matrix.day }}
           BASH_ENV: ""
           LD_PRELOAD: ""
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
-          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" GITHUB_OUTPUT="$GITHUB_OUTPUT"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/work/assets"
-      - name: Log the publish duration
+      - name: Log the store duration
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
         env:
           DAY: ${{ matrix.day }}
         run: |
-          echo "phase publish ($DAY): $(( $(date +%s) - T_PUBLISH )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "phase store ($DAY): $(( $(date +%s) - T_STORE )) s" | tee -a "$GITHUB_STEP_SUMMARY"
       # Regime volume per hour (DATA-1c): its own release data-volume-DAY, same clean shell.
-      - name: Publish this day's volume hours
+      - name: Store this day's volume hours
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
           DAY: ${{ matrix.day }}
           BASH_ENV: ""
           LD_PRELOAD: ""
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-volume.sh" "$DAY" "$RUNNER_TEMP/work/assets"
+      # OF-4: the storage stop after every batch (a stored archive day). Above 0.5 TB it
+      # writes the storage-stop marker in the private store and fails (exit 3), so nothing
+      # chains and the guard refuses every later dispatch.
+      - name: Storage check after the batch
+        if: steps.published.outputs.complete != 'true' && steps.store.outcome == 'success' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/storage-check.sh"
 
   # Unattended chaining: when a day stopped resumably (resume-* artifact: the time budget
-  # ran out, or a back-off did not fit it), dispatch the same days again. Published days
+  # ran out, or a back-off did not fit it), dispatch the same days again. Stored days
   # are skipped before any archive read, so the next run resumes that day from its cache.
   # It waits in the data-scan concurrency group until this run ends, so the lane stays
   # single. Any other failure (QA, parity, determinism, scanner error, publish) stops the
@@ -784,15 +799,16 @@ jobs:
           gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS" -f expect_units="$EXPECT_UNITS"
           echo "resumable stop ($resume): dispatched chained run $next of at most $MAX_CHAIN" | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # Back-fill of data-volume-DAY for days already published (DATA-1c): rebuilt from each
-  # day's own units in data-day-DAY (no archive access), cross-checked, then published.
+  # Back-fill of data-volume-DAY for days already stored (DATA-1c): rebuilt from each
+  # day's own units in data-day-DAY (no archive access), cross-checked, then stored, all in
+  # the private store.
   volume:
     needs: plan
     if: inputs.mode == 'volume'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
-      contents: write # read data-day-DAY and create data-volume-DAY, in the two token steps only
+      contents: read # OF-4: data-day-DAY is read from, and data-volume-DAY stored in, the private store
     strategy:
       max-parallel: 1
       fail-fast: false
@@ -817,30 +833,40 @@ jobs:
           rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
           go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Download the day's units
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DAY: ${{ matrix.day }}
+      - name: Prepare the work disk
         run: |
           sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
           research/historical/ci/disk-guard.sh /mnt/work 12000000000 "a day's units, extracted, and its one-day dataset"
-          research/historical/ci/volume-day.sh --download "$DAY" /mnt/work
-      # No token from here until publishing: extraction, finalize and node run without it.
-      - name: Rebuild the day's volume hours from its units
-        env:
-          DAY: ${{ matrix.day }}
-        run: research/historical/ci/volume-day.sh "$DAY" /mnt/work "$RUNNER_TEMP/assets"
-      - name: Publish the volume hours
+      - name: Download the day's units
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
           DAY: ${{ matrix.day }}
           BASH_ENV: ""
           LD_PRELOAD: ""
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/volume-day.sh" --download "$DAY" /mnt/work
+      # No token from here until publishing: extraction, finalize and node run without it.
+      - name: Rebuild the day's volume hours from its units
+        env:
+          DAY: ${{ matrix.day }}
+        run: research/historical/ci/volume-day.sh "$DAY" /mnt/work "$RUNNER_TEMP/assets"
+      - name: Store the volume hours
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-volume.sh" "$DAY" "$RUNNER_TEMP/assets"
 
@@ -850,7 +876,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     permissions:
-      contents: write
+      contents: read # OF-4: the days are read from, and the dataset stored in, the private store
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -876,7 +902,8 @@ jobs:
       - name: Assemble the dataset
         if: inputs.mode == 'assemble'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
           FROM: ${{ inputs.from }}
           TO: ${{ inputs.to }}
           ALLOW_REVISIONS: ${{ inputs.allow_revisions }}

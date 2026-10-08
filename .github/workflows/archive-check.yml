@@ -40,9 +40,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      # Every hold of research/historical/ci/archive-check.sh; no request.
+      # Every hold of research/historical/ci/archive-check.sh; no request. OF-4 (OF-2 ruling
+      # 73 note): the same clean shell as data-scan's guard steps, so nothing an earlier step
+      # planted (GITHUB_ENV, GITHUB_PATH, BASH_ENV) reaches the holds.
       - name: Holds
         id: check
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -50,7 +53,16 @@ jobs:
           HELIUS_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.helius_runs || '' }}
           DATA_REPO: ${{ vars.DATA_REPO }}
           DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
-        run: research/historical/ci/archive-check.sh
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GH_REPO="$GH_REPO" REF="$REF"
+          HELIUS_RUNS="$HELIUS_RUNS" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID"
+          GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-check.sh"
       # The one request. This step starting is the probe-sent mark: it succeeds only when
       # served, so any other end (not served, cancelled, timed out) is a counted failure
       # (archive-guard.sh reads this step by name, on every attempt of every run).

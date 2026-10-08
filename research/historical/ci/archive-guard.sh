@@ -36,8 +36,8 @@
 #     failed, was cancelled or timed out and whose `continue` job did not chain it (a
 #     block exits 4, any other failure, or a second resumable stop of the day), unless
 #     the only failed steps are its guard steps (no request was made; round 4, ruling 22).
-# A success is a batch's first attempt whose "Publish this day" step succeeded (it stored
-# a day; a day already published skips that step). Failures count from ARCHIVE_REARM_AT, and
+# A success is a batch's first attempt whose "Store this day" step succeeded (it stored a
+# day in the private store and read it back, OF-4; a day already stored skips that step). Failures count from ARCHIVE_REARM_AT, and
 # only after the last success; 3 stop the chain until a reviewed change moves it.
 #
 # Env: GH_REPO (or GITHUB_REPOSITORY), GH_TOKEN, DATA_REPO, DATA_STORE_TOKEN, GITHUB_REF,
@@ -707,7 +707,7 @@ ag_history() {
       # turns an earlier attempt's failure into a success.
       # Ruling 12 (a): only a default-branch run whose plan job's guard passed
       if (( k == 1 )) && [[ "$br" == "$AG_BRANCH" ]] && grep -qxF $'step\tArchive guard\tsuccess' <<< "$jobs" &&
-         grep -qxF $'step\tPublish this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
+         grep -qxF $'step\tStore this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
       if grep -qE $'^job\tscan[^\t]*\t(failure|cancelled|timed_out)(\t|$)' <<< "$jobs"; then
         if grep -qE $'^job\tcontinue\tsuccess(\t|$)' <<< "$jobs"; then
           d=$(sed -n $'s/^job\tscan (\\([0-9-]*\\))\t\\(failure\\|cancelled\\|timed_out\\)\\(\t.*\\)\\{0,1\\}$/\\1/p' <<< "$jobs" | head -1)
