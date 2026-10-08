@@ -129,3 +129,9 @@ On `f313ff1e` and `d9511e13`, e2e is red: after "install" passes, `FAIL PATHS-FI
 
 - Cause: step 8 deploys the base release, whose `install.sh --update` restores the base's host files, so step 9 ran the base's backup without usage-ledger support. Fix `77664719`: step 9 re-installs this branch's host files and `cmp`-checks them first. Red team `session_01HLmKT9VCuhF4Pzd2B7LXxW` delta check: PASS, 0/0/0; it tests what ships.
 - CI on `68c5764d`: the usage-ledger check passes, but the e2e job hit its 25-min timeout (run 37810707241; base runs take about 13 min). With the builder to root-cause (9 Oct 4:15 AM); raising the timeout is not a fix unless the extra time is shown to be real, necessary work.
+
+### #311 e2e fix 4 (head `fd8b87ad`)
+
+- Timeout cause: each `install.sh --update` ran `systemctl enable --now` on the running pull units; the start job pulled in the receipts loop mount (`Requires=dev-loopN.device`), which never appears without udev, so each update waited systemd's 90 s. Fix `fc02d613`: enable all three, start only inactive ones; a unit test fails on the old line; e2e step 9 fails if an update takes 60 s or more. No timeout raised.
+- Delta reviewer PASS and red team PASS (0 BLOCKER, 0 MAJOR). Notes for later hardening, not this PR (no new card while the owner's pause holds): restart a pull unit whose file changed on `--update` (reviewer); `zeroed-check` confirms the receipts loop filesystem is mounted (`findmnt` ext4) so a hand unmount raises the pull alert (red team). The red team showed no `loop0` is hard-coded; the device dependency is systemd's, per mount.
+- CI e2e on `fd8b87ad` is red at "the pull account's Match block reaches other users" (passed on `68c5764d`). With the builder to root-cause (9 Oct about 4:42 AM).
