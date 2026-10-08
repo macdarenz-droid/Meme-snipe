@@ -7,6 +7,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 ## Rules we work by
 - Each idea names who pays us, a gate that reads no returns, and a primary test frozen before any outcome.
 - Every confirmatory test from this loop is judged at a fixed 0.005 (99.5% intervals; agreed with the lead 2026-10-08). A pass counts only after it holds on data it never touched (forward tape, or the sealed window after 21 Oct).
+- Messages to the lead are at most 10 lines (owner rule "Lean manager context", 2026-10-08, CLAUDE.md on the lead's branch, verified): status, result in one line with key numbers, files and commit, what is needed next. Details go in repo files. Heavy reading runs in subagents with an explicit model (sonnet medium for mechanical work, opus for judgement).
 - Tests run in visible Auto worker sessions with a fresh reviewer before scoring. The lead holds the credit ledger and starts every worker ("AGREED <id>, cap <credits>").
 
 ## Timeline (Melbourne)
