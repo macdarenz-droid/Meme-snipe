@@ -219,7 +219,7 @@ if (( AG_LANE_END > 0 && now - AG_LANE_END < 3600 )); then
   hold 6 "the last data-scan run outside the Helius lane ended $(iso "$AG_LANE_END"), less than 60 min ago"
 fi
 # 7. the queue: the oldest allow-listed day not read done in the private store
-readdone=$(ag_read_done) || hold 7 "the private store's day releases cannot be read (fail closed)"
+readdone=$(ag_read_done) || hold 7 "the private store's day releases cannot be read, or one carries no readback-ok marker (fail closed)"
 days=$(ag_days 2>/dev/null) || hold 7 "ARCHIVE_DAYS in archive-limits.conf is malformed"
 next=""
 while read -r d; do

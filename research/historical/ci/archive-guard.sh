@@ -510,30 +510,65 @@ ag_caches_sealed() {
   [[ -z "$bad" ]] ||
     { ag_refuse "$(grep -c . <<< "$bad") Actions cache entries hold progress or assets unsealed ($(head -3 <<< "$bad" | tr '\n' ' ')); the owner decides whether to delete them or wait for them to expire"; return 2; }
 }
-# ag_read_done: the days with a data-day-D or data-day-D-k3 tag in the store ("read
-# done", OF-5), one a line. Fails when the store cannot be read.
+# ag_marked (OF-5 ruling 1): the store's day releases as "TAG MARKED" lines (MARKED 1 when
+# the release carries its uploaded readback-ok-DAY asset, which publish-day.sh writes, and
+# reads back, only after every other asset was read back; 0 when it does not). Read from
+# the releases list (drafts never count). Fails when the store cannot be read.
+ag_marked() {
+  local rows
+  rows=$(ag_store api --paginate "repos/$DATA_REPO/releases?per_page=100" \
+    --jq '.[] | select(.draft == false) | select(.tag_name | startswith("data-day-")) | .tag_name as $t | "\($t) \([.assets[] | select(.state == "uploaded") | .name] | join(","))"' 2>/dev/null) || return 1
+  awk '$1 ~ /^data-day-[0-9]{4}-[0-9]{2}-[0-9]{2}(-k3)?$/ {
+    d = substr($1, 10, 10); m = 0; n = split($2, a, ",")
+    for (i = 1; i <= n; i++) if (a[i] == "readback-ok-" d) m = 1
+    print $1, m }' <<< "$rows" | LC_ALL=C sort -u
+}
+# ag_read_done: the days with a data-day-D or data-day-D-k3 release in the store that
+# carries its readback-ok marker ("read done", OF-5 ruling 1), one a line. A day release
+# without the marker (its read-back never passed) stops the queue for review: it is never
+# counted and never read again automatically, so this refuses. Fails when the store cannot
+# be read.
 ag_read_done() {
-  local refs
-  refs=$(ag_store api --paginate "repos/$DATA_REPO/git/matching-refs/tags/data-day-" --jq '.[].ref' 2>/dev/null) || return 1
-  sed -n 's#^refs/tags/data-day-\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)\(-k3\)\{0,1\}$#\1#p' <<< "$refs" | LC_ALL=C sort -u
+  local rows bad
+  rows=$(ag_marked) || return 1
+  bad=$(awk '$2 == 0 {print $1}' <<< "$rows")
+  [[ -z "$bad" ]] ||
+    { ag_refuse "day release(s) $(tr '\n' ' ' <<< "$bad")in the private store carry no readback-ok marker (the read-back never passed); stopped for review, never read again automatically"; return 1; }
+  awk '$2 == 1 {print substr($1, 10, 10)}' <<< "$rows" | LC_ALL=C sort -u
 }
 
-# ag_b10_done (OF-5): the days that are B-10 done, one a line, oldest first. For the two
-# measurement days (the first two allow-listed days, read at K2) only a data-day-D-k3 tag
-# counts; for every other allow-listed day the plain data-day-D tag. A K2 release is read
-# done but never B-10 done. It drives only the B10-PULL row and the evaluator, never the
-# queue (that is ag_read_done). Fails when the store cannot be read.
+# ag_b10_ok TAG DAY (OF-5 ruling 2): the marked release TAG holds DAY at the B-10
+# retention: every unit line of its units-DAY.log is K3 with the sha256 of list-DAY.txt
+# that its SHA256SUMS-DAY records. Judged from the recorded retention, never the tag name.
+ag_b10_ok() {
+  local tag=$1 d=$2 tmp sha rc=1
+  tmp=$(mktemp -d)
+  if ag_store release download "$tag" --repo "$DATA_REPO" --pattern "units-$d.log" --pattern "SHA256SUMS-$d" --dir "$tmp" >/dev/null 2>&1 &&
+    [[ -f "$tmp/units-$d.log" && -f "$tmp/SHA256SUMS-$d" ]]; then
+    sha=$(awk -v f="list-$d.txt" '$2 == f {print $1}' "$tmp/SHA256SUMS-$d")
+    if [[ "$sha" =~ ^[0-9a-f]{64}$ ]] && awk -v s="$sha" '
+        $1 ~ /^[0-9]+\/[0-9]+-[0-9]+$/ { n++; if (NF != 4 || $3 != "K3" || $4 != s) bad = 1 }
+        END { exit !(n > 0 && !bad) }' "$tmp/units-$d.log"; then rc=0; fi
+  fi
+  rm -rf "$tmp"
+  return $rc
+}
+# ag_b10_done (OF-5): the days that are B-10 done, one a line, oldest first: an
+# allow-listed day with a marked release (data-day-D-k3 or data-day-D) whose recorded
+# retention is K3 with its list (ag_b10_ok; ruling 2: a measurement day stored at K3 under
+# the plain tag counts, a K2 release never does). It drives only the B10-PULL row and the
+# evaluator, never the queue (that is ag_read_done). Fails when the store cannot be read.
 ag_b10_done() {
-  local refs days m2 d
+  local rows days d t
   [[ "${DATA_REPO:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || return 1
-  refs=$(ag_store api --paginate "repos/$DATA_REPO/git/matching-refs/tags/data-day-" --jq '.[].ref' 2>/dev/null) || return 1
+  rows=$(ag_marked) || return 1
   days=$(ag_days) || return 1
-  m2=$(head -2 <<< "$days")
   while IFS= read -r d; do
     [[ -n "$d" ]] || continue
-    if grep -qx "$d" <<< "$m2"; then
-      if grep -qx "refs/tags/data-day-$d-k3" <<< "$refs"; then echo "$d"; fi
-    elif grep -qx "refs/tags/data-day-$d" <<< "$refs"; then echo "$d"; fi
+    for t in "data-day-$d-k3" "data-day-$d"; do
+      grep -qx "$t 1" <<< "$rows" || continue
+      if ag_b10_ok "$t" "$d"; then echo "$d"; break; fi
+    done
   done <<< "$days"
   return 0
 }
@@ -858,7 +893,7 @@ ag_full() {
   if [[ "$qa" != qa ]] && (( AG_LANE_END > 0 && now - AG_LANE_END < 3600 )) && [[ "$AG_LANE_RESUME" != "$1" ]]; then
     ag_refuse "the last archive-lane run ended $(date -u -d "@$AG_LANE_END" +%FT%TZ), less than 60 min ago"; return 2
   fi
-  next=$(ag_next_day) || { ag_refuse "the private store's day releases cannot be read (fail closed)"; return 2; }
+  next=$(ag_next_day) || { ag_refuse "the private store's day releases cannot be read, or one carries no readback-ok marker (fail closed)"; return 2; }
   [[ "$next" == "$1" ]] ||
     { ag_refuse "$1 is not the oldest allow-listed day not read done (${next:-none left}); days are read in order, once"; return 2; }
   echo "$ret"
