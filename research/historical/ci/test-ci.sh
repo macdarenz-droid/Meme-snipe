@@ -1919,10 +1919,19 @@ assert t["if"] == "steps.published.outputs.complete != 'true' && inputs.source !
 assert 'archive-guard.sh local "$DAY"' in t["run"], t
 # OF-3 ruling 18: both trim calls take the prior list scan-day checks (ARCHIVE_PRIOR_LIST, "-" until OF-5)
 assert t["run"].count('trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" "${ARCHIVE_PRIOR_LIST:--}" "$RUNNER_TEMP/work/assets"') == 2 and " - " not in t["run"], t
+# ruling 23: declared once at job level (empty until OF-5); no step or other job sets either
+job = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]
+assert job.get("env", {}).get("ARCHIVE_PRIOR_LIST") == "" and job.get("env", {}).get("ARCHIVE_PRIOR_SUMS") == "", job.get("env")
+for st in steps:
+    assert not set(st.get("env") or {}) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}, st
+wf = yaml.safe_load(open(sys.argv[1]))
+for jn, j in wf["jobs"].items():
+    if jn != "scan": assert not set(j.get("env") or {}) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}, jn
+assert not set(wf.get("env") or {}) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}
 # ruling 20: a trim out of budget is not resumable
 assert "resumable" not in t["run"] and all("steps.trim.outputs.resumable" not in str(st.get("if", "")) for st in steps), t
 PY
-[[ -z "$bad" ]] && ok "OF-3 data-scan: the trim step runs after the scan and right before the QA guard, with no token, behind the local guard; both trim calls take \${ARCHIVE_PRIOR_LIST:--} (rulings 18; until OF-5 a K3 day other than the first fails closed); a trim out of budget is never chained (ruling 20)" || no "OF-3 workflow trim:$bad"
+[[ -z "$bad" ]] && ok "OF-3 data-scan: the trim step runs after the scan and right before the QA guard, with no token, behind the local guard; both trim calls take \${ARCHIVE_PRIOR_LIST:--} (rulings 18; until OF-5 a K3 day other than the first fails closed); a trim out of budget is never chained (ruling 20); ARCHIVE_PRIOR_LIST and ARCHIVE_PRIOR_SUMS are declared once for the scan job and set by no step (ruling 23)" || no "OF-3 workflow trim:$bad"
 bad=""
 
 # ---- OF-2 round 2 (docs/reviews/OF2.md rulings 1-10) ----

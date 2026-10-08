@@ -203,6 +203,12 @@ jobs:
     if: inputs.mode == 'scan'
     runs-on: ubuntu-latest
     timeout-minutes: 355
+    # OF-3 round 3, ruling 23: the day before's pinned list and its SHA256SUMS, declared once
+    # for the whole job so the scan (scan-day.sh) and the trim see the same value. Empty
+    # until OF-5 wires them from the private store: only the first allow-listed day reads.
+    env:
+      ARCHIVE_PRIOR_LIST: ""
+      ARCHIVE_PRIOR_SUMS: ""
     permissions:
       contents: write # used only by the "Publish this day" step
       actions: read # "Pick the fullest progress cache" lists cache entries (read only)
