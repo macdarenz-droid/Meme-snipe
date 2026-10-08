@@ -21,7 +21,7 @@ import { pubkey } from './samples.ts';
 const dir = tempDir('schema');
 let n = 0;
 /** The SHA-256 of migration 0001's text. Pinned: the text is frozen once applied anywhere; a change needs a new migration. */
-const M0001_SHA256 = 'ddd172de8932df20c4518d5c98688ca295dfa321b460fa3f7b3ce1ba99d2c1e1';
+const M0001_SHA256 = 'ae1db15d0e075ad3ed3f4019ac192f069f8e8ec021147a93860a51f6fe798336';
 
 function fresh(): { db: Db; path: string; lines: string[]; log: ReturnType<typeof createLogger> } {
   const path = join(dir, `m${n++}.db`);
@@ -74,10 +74,10 @@ describe('schema comparison', () => {
     };
     const reference = build((sql) => sql);
     const check = schemaStatements().find((sql) => sql.includes('CHECK (')) as string;
-    const horizon = schemaStatements().find((sql) => sql.includes('unixepoch')) as string;
+    const horizon = schemaStatements().find((sql) => sql.includes('retention_clock') && sql.includes('_no_delete')) as string;
     const drifts = [
       build((sql) => (sql === check ? sql.replace(/CHECK \(/, 'CHECK (1 = 1 OR ') : sql)),
-      build((sql) => (sql === horizon ? sql.replace(/unixepoch\('now'\) - (\d+)/, (_m, d: string) => `unixepoch('now') - ${Number(d) + 1}`) : sql)),
+      build((sql) => (sql === horizon ? sql.replace(/ - (\d+) \* 1000/, (_m, d: string) => ` - ${Number(d) + 1} * 1000`) : sql)),
     ];
     for (const drifted of drifts) {
       assert.deepEqual(shapeOf(drifted), shapeOf(reference));
@@ -195,7 +195,7 @@ describe('metric_rollup_1m disk use (review R2)', () => {
   it('stores a rollup row in at most 100 bytes (measured 87; 259 with a hex hash in a rowid table)', () => {
     const raw = new DatabaseSync(':memory:');
     for (const statement of tableStatements('metric_rollup_1m', TABLES.metric_rollup_1m)) raw.exec(statement);
-    const insert = raw.prepare('INSERT INTO metric_rollup_1m (metric, labels_hash, minute, count, sum, p50, p95, p99, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const insert = raw.prepare("INSERT INTO metric_rollup_1m (metric, labels_hash, minute, scope, count, sum, p50, p95, p99, created_at) VALUES (?, ?, ?, 'pool', ?, ?, ?, ?, ?, ?)");
     // 200 watched pools with their three per-pool series, 120 minutes, written in the registry's order (one
     // transaction a minute): 72,000 rows.
     const series = Array.from({ length: 200 }, (_, p) => pubkey(p + 1)).flatMap((pool) => [

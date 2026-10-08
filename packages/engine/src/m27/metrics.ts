@@ -29,8 +29,13 @@ export interface GaugeHandle { set(value: number): void }
 export interface HistogramHandle { observe(value: number): void }
 
 /** One row of `metric_rollup_1m` (ARCH 15): the minute that ended, keyed by metric, labels hash and minute start. */
+const scopeOf = (labels: Readonly<Record<string, string>>): 'aggregate' | 'pool' => (POOL_LABELS.some((k) => k in labels) ? 'pool' : 'aggregate');
+
+/** Labels that make a series per pool or per token; their rollups keep 7 days, the others 1 year (ruling 7). */
+export const POOL_LABELS: readonly string[] = ['pool', 'mint'];
+
 export interface RollupRow {
-  metric: string; labelsHash: bigint; minute: UnixMs; count: number; sum: number;
+  metric: string; labelsHash: bigint; minute: UnixMs; scope: 'aggregate' | 'pool'; count: number; sum: number;
   p50: number | null; p95: number | null; p99: number | null;
 }
 export interface RollupSink { append(rows: readonly RollupRow[]): void }
@@ -425,13 +430,13 @@ export class MetricsRegistry {
         if (samples.length === 0 || samples.every((v) => v === s.lastEmitted)) continue;
         gauges.push([s, samples[samples.length - 1] as number]);
         const sorted = [...samples].sort((a, b) => a - b);
-        rows.push({ metric: s.name, labelsHash: s.labelsHash, minute, count: samples.length, sum: samples.reduce((a, b) => a + b, 0),
+        rows.push({ metric: s.name, labelsHash: s.labelsHash, minute, scope: scopeOf(s.labels), count: samples.length, sum: samples.reduce((a, b) => a + b, 0),
           p50: quantile(sorted, 0.5), p95: quantile(sorted, 0.95), p99: quantile(sorted, 0.99) });
         continue;
       }
       if (s.mCount === 0) continue;
       const q = (p: number): number | null => (s.kind === 'histogram' ? bucketQuantile(s.mBuckets, s.bounds, s.mCount, p, s.mMax) : null);
-      rows.push({ metric: s.name, labelsHash: s.labelsHash, minute, count: s.mCount, sum: s.mSum, p50: q(0.5), p95: q(0.95), p99: q(0.99) });
+      rows.push({ metric: s.name, labelsHash: s.labelsHash, minute, scope: scopeOf(s.labels), count: s.mCount, sum: s.mSum, p50: q(0.5), p95: q(0.95), p99: q(0.99) });
       s.mCount = 0;
       s.mSum = 0;
       s.mMax = Number.NEGATIVE_INFINITY;

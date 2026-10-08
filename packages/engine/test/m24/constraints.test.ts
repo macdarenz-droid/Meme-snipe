@@ -7,6 +7,7 @@ import { openDb, type Db, type TxHandle } from '../../src/m24/db.ts';
 import { MS_MAX, MS_MIN, tableStatements } from '../../src/m24/ddl.ts';
 import { prepareDatabase } from '../../src/m24/migrate.ts';
 import { createRepos, type RowOf } from '../../src/m24/repos.ts';
+import { deleteExpired } from '../../src/m24/retention.ts';
 import { snake, TABLES, type TableName } from '../../src/m24/schema.ts';
 import { fakeClock, tempDir } from '../helpers.ts';
 import { pubkey, sampleRow, sha256, signature, ulid } from './samples.ts';
@@ -24,10 +25,9 @@ async function migrated(): Promise<Db> {
   return db;
 }
 
-/** SQLite's own clock, which the retention triggers read. */
-function sqliteNowMs(db: Db): number {
-  return Number(db.withTx((tx) => tx.get("SELECT unixepoch('now') * 1000 AS now"))?.now);
-}
+/** The engine clock's now in these tests; the retention triggers read only the time the retention job sets (ruling 10). */
+const NOW = Date.UTC(2026, 9, 7, 12, 0, 0);
+const sqliteNowMs = (_db: Db): number => NOW;
 
 const insert = <N extends TableName>(db: Db, table: N, row: RowOf<N>): void => db.withTx((tx) => repos[table].insert(tx, row));
 const fails = (db: Db, fn: (tx: TxHandle) => unknown, re: RegExp): void => assert.throws(() => db.withTx(fn), re);
@@ -57,19 +57,22 @@ describe('append-only tables (B-M24-02 logic 3; CL-51)', () => {
     db.close();
   });
 
-  it('a DELETE past the horizon succeeds (7 years for fill, 30 days for 30 s wallet snapshots); forever never', async () => {
+  it('the retention job deletes past the horizon (7 years for fill, 30 days for 30 s wallet snapshots); forever never; a plain DELETE never', async () => {
     const db = await migrated();
-    const now = sqliteNowMs(db);
-    insert(db, 'fill', { ...sampleRow('fill', 1), createdAt: now - 2_558 * DAY });
-    insert(db, 'fill', { ...sampleRow('fill', 2), createdAt: now - 2_550 * DAY });
-    assert.equal(db.withTx((tx) => tx.run(`DELETE FROM fill WHERE fill_id = ?`, ulid(1)).changes), 1);
-    fails(db, (tx) => tx.run('DELETE FROM fill WHERE fill_id = ?', ulid(2)), /append_only/);
-    insert(db, 'wallet_snapshot', { ...sampleRow('wallet_snapshot', 1), granularity: '30s', createdAt: now - 31 * DAY });
-    insert(db, 'wallet_snapshot', { ...sampleRow('wallet_snapshot', 2), granularity: 'daily', createdAt: now - 31 * DAY });
-    assert.equal(db.withTx((tx) => tx.run("DELETE FROM wallet_snapshot WHERE granularity = '30s'").changes), 1);
-    fails(db, (tx) => tx.run("DELETE FROM wallet_snapshot WHERE granularity = 'daily'"), /append_only/);
+    const clock = fakeClock(NOW);
+    insert(db, 'fill', { ...sampleRow('fill', 1), createdAt: NOW - 2_558 * DAY });
+    insert(db, 'fill', { ...sampleRow('fill', 2), createdAt: NOW - 2_550 * DAY });
+    fails(db, (tx) => tx.run('DELETE FROM fill WHERE fill_id = ?', ulid(1)), /append_only/);   // outside the job: refused
+    assert.equal(deleteExpired(db, 'fill', clock), 1);
+    assert.deepEqual(repos.fill.find(db.reader()).map((f) => f.fillId), [ulid(2)]);
+    insert(db, 'wallet_snapshot', { ...sampleRow('wallet_snapshot', 1), granularity: '30s', createdAt: NOW - 31 * DAY });
+    insert(db, 'wallet_snapshot', { ...sampleRow('wallet_snapshot', 2), granularity: 'daily', createdAt: NOW - 31 * DAY });
+    assert.equal(deleteExpired(db, 'wallet_snapshot', clock), 1);
+    assert.deepEqual(repos.wallet_snapshot.find(db.reader()).map((w) => w.granularity), ['daily']);
     insert(db, 'config_version', { ...sampleRow('config_version', 1), createdAt: MS_MIN });
     fails(db, (tx) => tx.run('DELETE FROM config_version'), /append_only/);
+    assert.throws(() => deleteExpired(db, 'config_version', clock), /no expiring/);
+    assert.equal(db.reader().get('SELECT now_ms FROM retention_clock')?.now_ms, 0n);          // reset before commit
     db.close();
   });
 

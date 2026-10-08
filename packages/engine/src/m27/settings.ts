@@ -3,7 +3,7 @@ import type { Config } from '@bot/types';
 import { configValue } from '../m25/registry.ts';
 
 export interface M27Settings {
-  seriesCap: number; logRetentionDays: number; ringBudgetBytes: number; logMaxBytesPerDay: number; logQueueBytes: number; logDir: string; metricsPort: number;
+  seriesCap: number; logRetentionDays: number; ringBudgetBytes: number; logMaxBytesPerDay: number; logQueueBytes: number; logDir: string; metricsPort: number; rollupMaxBytes: number;
 }
 
 export function m27Settings(config: Config): M27Settings {
@@ -15,5 +15,6 @@ export function m27Settings(config: Config): M27Settings {
     logQueueBytes: configValue(config, 'm27.log_queue_bytes'),
     logDir: configValue(config, 'm27.log_dir'),
     metricsPort: configValue(config, 'm27.metrics_port'),
+    rollupMaxBytes: configValue(config, 'm27.rollup_max_bytes'),
   };
 }

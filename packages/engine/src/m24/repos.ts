@@ -7,6 +7,7 @@
 // convention 5): they have no plain update or upsert, so no write can leave `version` unchanged or set it.
 import type { Clock, Result } from '@bot/types';
 import type { RollupRow, RollupSink } from '../m27/metrics.ts';
+import type { Logger } from '../m27/log.ts';
 import type { Db, ReaderHandle, Row, SqlValue, TxHandle } from './db.ts';
 import { snake, TABLES, type ColumnDef, type TableName } from './schema.ts';
 
@@ -188,8 +189,7 @@ export type BreakerEventsRepo = RepoFor<'breaker_event'>;
 export type CommandsRepo = RepoFor<'command'>;
 export type AuditRepo = RepoFor<'audit_event'>;
 export type AlertsRepo = RepoFor<'alert'>;
-export type SessionsRepo = RepoFor<'session'>;
-export type PreferencesRepo = RepoFor<'operator_preferences'>;
+// SessionsRepo and PreferencesRepo come with B-M28-02's login migration (Z02 round 2 ruling 1).
 export type ConfigVersionsRepo = RepoFor<'config_version'>;
 export type PriceRefRepo = RepoFor<'price_reference'>;
 export type FixedCostRepo = RepoFor<'fixed_cost_item'>;
@@ -211,17 +211,47 @@ export type QuarantineRepo = RepoFor<'quarantine'>;
 export type MetricRollupRepo = RepoFor<'metric_rollup_1m'>;
 export type SignalRepo = RepoFor<'signal'>;
 
-/** B-M27-01 rollup sink: writes each minute's rollups to `metric_rollup_1m` in one transaction. */
-export function metricRollupSink(db: Db, repo: MetricRollupRepo, clock: Clock): RollupSink {
+/** Bytes a stored `metric_rollup_1m` row takes at most (measured 87; schema.test.ts asserts at most 100). */
+export const ROLLUP_ROW_BYTES = 100;
+
+export const M24_ROLLUP_LOG_CODES = {
+  'm24.rollup_cap_reached': { fields: { dropped_rows: 'integer', stored_rows: 'integer', max_bytes: 'integer' } },
+} as const;
+
+export interface RollupSinkOptions {
+  /** `m27.rollup_max_bytes`: above it, pool rows are dropped (aggregate rows are still written) and an error is logged. */
+  maxBytes: number;
+  log?: Logger;
+}
+
+/**
+ * B-M27-01 rollup sink: writes each minute's rollups to `metric_rollup_1m` in one transaction. The table's size is
+ * tracked as rows x ROLLUP_ROW_BYTES (counted once at start, then per write and per retention delete); at the cap, pool
+ * rows are dropped and each dropping minute logs `m24.rollup_cap_reached` at error, which the alert hook copies to the
+ * alert store (Z02 round 2 ruling 7).
+ */
+export function metricRollupSink(db: Db, repo: MetricRollupRepo, clock: Clock, opts: RollupSinkOptions): RollupSink & { expired(n: number): void; storedRows(): number } {
+  if (!Number.isSafeInteger(opts.maxBytes) || opts.maxBytes < ROLLUP_ROW_BYTES) throw new RangeError('m24: rollup maxBytes too small');
+  let stored = Number(db.reader().get('SELECT count(*) AS n FROM metric_rollup_1m')?.n ?? 0n);
   return {
     append(rows: readonly RollupRow[]): void {
+      const room = Math.floor(opts.maxBytes / ROLLUP_ROW_BYTES) - stored;
+      const aggregate = rows.filter((r) => r.scope === 'aggregate');
+      const pool = rows.filter((r) => r.scope === 'pool');
+      const keepPool = Math.max(0, Math.min(pool.length, room - aggregate.length));
+      const kept = [...aggregate, ...pool.slice(0, keepPool)];
       const createdAt = clock.nowMs();
       db.withTx((tx) => {
-        for (const r of rows) {
-          repo.insert(tx, { metric: r.metric, labelsHash: r.labelsHash, minute: r.minute as number, count: r.count, sum: r.sum,
+        for (const r of kept) {
+          repo.insert(tx, { metric: r.metric, labelsHash: r.labelsHash, minute: r.minute as number, scope: r.scope, count: r.count, sum: r.sum,
             p50: r.p50, p95: r.p95, p99: r.p99, createdAt });
         }
       });
+      stored += kept.length;
+      const dropped = pool.length - keepPool;
+      if (dropped > 0) opts.log?.event('error', 'm24.rollup_cap_reached', { dropped_rows: dropped, stored_rows: stored, max_bytes: opts.maxBytes });
     },
+    expired(n: number): void { stored = Math.max(0, stored - n); },
+    storedRows: () => stored,
   };
 }

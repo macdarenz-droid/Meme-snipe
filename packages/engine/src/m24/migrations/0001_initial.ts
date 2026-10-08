@@ -1,8 +1,10 @@
 // Migration 0001 (B-M24-02): the initial schema. FROZEN: this text is recorded with its SHA-256 in schema_migrations
 // when applied, and a changed text refuses entries at start (E_MIGRATION_CHECKSUM). Generated once from the table
 // descriptors (schema.ts, ddl.ts); later schema changes are new numbered migrations, never edits here.
-// 121 statements: 55 tables (every table of schema.ts except schema_migrations, which the
+// 118 statements: 52 tables (every table of schema.ts except schema_migrations, which the
 // migration runner creates), their indexes, the append-only triggers and the signal update-once trigger.
+// Regenerated once in Z02 round 2, before it was applied anywhere: login tables moved out (ruling 1), metric_rollup_1m
+// scope (ruling 7), retention_clock instead of SQLite's wall clock in the delete triggers (ruling 10).
 import type { Migration } from '../migrate.ts';
 
 export const M0001_INITIAL: Migration = {
@@ -110,7 +112,7 @@ export const M0001_INITIAL: Migration = {
 ) STRICT`,
   `CREATE INDEX "screen_result_mint_pool_slot" ON "screen_result" ("mint", "pool_id", "as_of_slot")`,
   `CREATE TRIGGER "screen_result_no_update" BEFORE UPDATE ON "screen_result" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "screen_result_no_delete" BEFORE DELETE ON "screen_result" WHEN OLD."created_at" > (unixepoch('now') - 31622400) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "screen_result_no_delete" BEFORE DELETE ON "screen_result" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 31622400 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "candidate" (
   "candidate_id" TEXT NOT NULL CHECK (length("candidate_id") = 26 AND "candidate_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "mint" TEXT NOT NULL CHECK (length("mint") BETWEEN 32 AND 44 AND "mint" NOT GLOB '*[^1-9A-HJ-NP-Za-km-z]*'),
@@ -222,7 +224,7 @@ export const M0001_INITIAL: Migration = {
 ) STRICT`,
   `CREATE INDEX "fill_position" ON "fill" ("position_id")`,
   `CREATE TRIGGER "fill_no_update" BEFORE UPDATE ON "fill" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "fill_no_delete" BEFORE DELETE ON "fill" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "fill_no_delete" BEFORE DELETE ON "fill" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "position" (
   "position_id" TEXT NOT NULL CHECK (length("position_id") = 26 AND "position_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "mode" TEXT NOT NULL CHECK ("mode" IN ('backtest', 'replay', 'paper', 'live_small', 'live')),
@@ -258,7 +260,7 @@ export const M0001_INITIAL: Migration = {
 ) STRICT`,
   `CREATE INDEX "position_event_position" ON "position_event" ("position_id")`,
   `CREATE TRIGGER "position_event_no_update" BEFORE UPDATE ON "position_event" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "position_event_no_delete" BEFORE DELETE ON "position_event" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "position_event_no_delete" BEFORE DELETE ON "position_event" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "trade" (
   "trade_id" TEXT NOT NULL CHECK (length("trade_id") = 26 AND "trade_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "position_id" TEXT NOT NULL CHECK (length("position_id") = 26 AND "position_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
@@ -303,7 +305,7 @@ export const M0001_INITIAL: Migration = {
   `CREATE INDEX "trade_closed_at" ON "trade" ("closed_at")`,
   `CREATE INDEX "trade_position" ON "trade" ("position_id")`,
   `CREATE TRIGGER "trade_no_update" BEFORE UPDATE ON "trade" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "trade_no_delete" BEFORE DELETE ON "trade" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "trade_no_delete" BEFORE DELETE ON "trade" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "cash_flow" (
   "flow_id" TEXT NOT NULL CHECK (length("flow_id") = 26 AND "flow_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "kind" TEXT NOT NULL CHECK ("kind" IN ('sweep', 'refill', 'sim_funding', 'external_in', 'external_out')),
@@ -318,7 +320,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("flow_id")
 ) STRICT`,
   `CREATE TRIGGER "cash_flow_no_update" BEFORE UPDATE ON "cash_flow" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "cash_flow_no_delete" BEFORE DELETE ON "cash_flow" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "cash_flow_no_delete" BEFORE DELETE ON "cash_flow" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "sandwich_check" (
   "fill_id" TEXT NOT NULL CHECK (length("fill_id") = 26 AND "fill_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "slot" INTEGER NOT NULL,
@@ -330,7 +332,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("fill_id")
 ) STRICT`,
   `CREATE TRIGGER "sandwich_check_no_update" BEFORE UPDATE ON "sandwich_check" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "sandwich_check_no_delete" BEFORE DELETE ON "sandwich_check" WHEN OLD."created_at" > (unixepoch('now') - 31622400) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "sandwich_check_no_delete" BEFORE DELETE ON "sandwich_check" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 31622400 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "cost_item" (
   "cost_id" TEXT NOT NULL CHECK (length("cost_id") = 26 AND "cost_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "attempt_id" TEXT NOT NULL CHECK (length("attempt_id") = 26 AND "attempt_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
@@ -342,7 +344,7 @@ export const M0001_INITIAL: Migration = {
   UNIQUE ("attempt_id", "kind")
 ) STRICT`,
   `CREATE TRIGGER "cost_item_no_update" BEFORE UPDATE ON "cost_item" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "cost_item_no_delete" BEFORE DELETE ON "cost_item" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "cost_item_no_delete" BEFORE DELETE ON "cost_item" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "fixed_cost_item" (
   "item_id" TEXT NOT NULL CHECK (length("item_id") = 26 AND "item_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "label" TEXT NOT NULL,
@@ -363,7 +365,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("asset", "at")
 ) STRICT`,
   `CREATE TRIGGER "price_reference_no_update" BEFORE UPDATE ON "price_reference" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "price_reference_no_delete" BEFORE DELETE ON "price_reference" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "price_reference_no_delete" BEFORE DELETE ON "price_reference" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "reservation" (
   "reservation_id" TEXT NOT NULL CHECK (length("reservation_id") = 26 AND "reservation_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "intent_id" TEXT NOT NULL CHECK (length("intent_id") = 26 AND "intent_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
@@ -398,7 +400,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("wallet", "at")
 ) STRICT`,
   `CREATE TRIGGER "wallet_snapshot_no_update" BEFORE UPDATE ON "wallet_snapshot" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "wallet_snapshot_no_delete" BEFORE DELETE ON "wallet_snapshot" WHEN OLD."created_at" > (unixepoch('now') - (CASE OLD."granularity" WHEN 'daily' THEN 220924800 WHEN '30s' THEN 2592000 END)) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "wallet_snapshot_no_delete" BEFORE DELETE ON "wallet_snapshot" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - (CASE OLD."granularity" WHEN 'daily' THEN 220924800 WHEN '30s' THEN 2592000 END) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "reconcile_run" (
   "run_at" INTEGER NOT NULL CHECK ("run_at" >= 1000000000000 AND "run_at" < 100000000000000),
   "sol_diff_lamports" INTEGER NOT NULL,
@@ -408,7 +410,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("run_at")
 ) STRICT`,
   `CREATE TRIGGER "reconcile_run_no_update" BEFORE UPDATE ON "reconcile_run" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "reconcile_run_no_delete" BEFORE DELETE ON "reconcile_run" WHEN OLD."created_at" > (unixepoch('now') - 31622400) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "reconcile_run_no_delete" BEFORE DELETE ON "reconcile_run" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 31622400 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "limit_def" (
   "limit_id" TEXT NOT NULL,
   "short_code" TEXT NOT NULL,
@@ -446,7 +448,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("event_id")
 ) STRICT`,
   `CREATE TRIGGER "breaker_event_no_update" BEFORE UPDATE ON "breaker_event" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "breaker_event_no_delete" BEFORE DELETE ON "breaker_event" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "breaker_event_no_delete" BEFORE DELETE ON "breaker_event" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "command" (
   "command_id" TEXT NOT NULL CHECK (length("command_id") = 26 AND "command_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "type" TEXT NOT NULL CHECK ("type" IN ('halt', 'resume', 'flatten_all', 'close_position', 'set_mode', 'update_limit', 'reset_breaker', 'apply_config', 'ack_alert', 'snooze_alert', 'cancel_scheduled', 'write_off_position', 'close_unsolicited')),
@@ -488,7 +490,7 @@ export const M0001_INITIAL: Migration = {
   UNIQUE ("seq")
 ) STRICT`,
   `CREATE TRIGGER "audit_event_no_update" BEFORE UPDATE ON "audit_event" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "audit_event_no_delete" BEFORE DELETE ON "audit_event" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "audit_event_no_delete" BEFORE DELETE ON "audit_event" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "alert" (
   "alert_id" TEXT NOT NULL CHECK (length("alert_id") = 26 AND "alert_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "dedupe_key" TEXT NOT NULL,
@@ -508,48 +510,6 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("alert_id")
 ) STRICT`,
   `CREATE UNIQUE INDEX "alert_open_dedupe" ON "alert" ("dedupe_key") WHERE state != 'resolved'`,
-  `CREATE TABLE "operator" (
-  "operator_id" TEXT NOT NULL CHECK (length("operator_id") = 26 AND "operator_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-  "handle" TEXT NOT NULL,
-  "role" TEXT NOT NULL CHECK ("role" IN ('viewer', 'operator')),
-  "created_at" INTEGER NOT NULL CHECK ("created_at" >= 1000000000000 AND "created_at" < 100000000000000),
-  PRIMARY KEY ("operator_id"),
-  UNIQUE ("handle")
-) STRICT`,
-  `CREATE TABLE "webauthn_credential" (
-  "credential_id" TEXT NOT NULL,
-  "operator_id" TEXT NOT NULL CHECK (length("operator_id") = 26 AND "operator_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-  "public_key" BLOB NOT NULL,
-  "sign_count" INTEGER NOT NULL,
-  "created_at" INTEGER NOT NULL CHECK ("created_at" >= 1000000000000 AND "created_at" < 100000000000000),
-  "last_used_at" INTEGER CHECK ("last_used_at" IS NULL OR ("last_used_at" >= 1000000000000 AND "last_used_at" < 100000000000000)),
-  PRIMARY KEY ("credential_id")
-) STRICT`,
-  `CREATE TABLE "session" (
-  "session_hash" TEXT NOT NULL CHECK (length("session_hash") = 64 AND "session_hash" NOT GLOB '*[^0-9a-f]*'),
-  "operator_id" TEXT NOT NULL CHECK (length("operator_id") = 26 AND "operator_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-  "client_kind" TEXT NOT NULL CHECK ("client_kind" IN ('desktop', 'mobile')),
-  "expires_at" INTEGER NOT NULL CHECK ("expires_at" >= 1000000000000 AND "expires_at" < 100000000000000),
-  "idle_expires_at" INTEGER NOT NULL CHECK ("idle_expires_at" >= 1000000000000 AND "idle_expires_at" < 100000000000000),
-  "elevated_until" INTEGER CHECK ("elevated_until" IS NULL OR ("elevated_until" >= 1000000000000 AND "elevated_until" < 100000000000000)),
-  "revoked_at" INTEGER CHECK ("revoked_at" IS NULL OR ("revoked_at" >= 1000000000000 AND "revoked_at" < 100000000000000)),
-  "created_at" INTEGER NOT NULL CHECK ("created_at" >= 1000000000000 AND "created_at" < 100000000000000),
-  PRIMARY KEY ("session_hash")
-) STRICT`,
-  `CREATE TABLE "operator_preferences" (
-  "operator_id" TEXT NOT NULL CHECK (length("operator_id") = 26 AND "operator_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-  "theme" TEXT NOT NULL CHECK ("theme" IN ('system', 'dark', 'light')),
-  "density" TEXT NOT NULL CHECK ("density" IN ('compact', 'standard', 'comfortable')),
-  "polarity" TEXT NOT NULL CHECK ("polarity" IN ('green-red', 'blue-orange')),
-  "tz" TEXT NOT NULL CHECK ("tz" IN ('utc', 'local')),
-  "shortcuts_json" TEXT NOT NULL CHECK (json_valid("shortcuts_json")),
-  "sound" INTEGER NOT NULL CHECK ("sound" IN (0, 1)),
-  "reduced_motion" TEXT NOT NULL CHECK ("reduced_motion" IN ('system', 'on')),
-  "default_route" TEXT NOT NULL,
-  "created_at" INTEGER NOT NULL CHECK ("created_at" >= 1000000000000 AND "created_at" < 100000000000000),
-  "updated_at" INTEGER NOT NULL CHECK ("updated_at" >= 1000000000000 AND "updated_at" < 100000000000000),
-  PRIMARY KEY ("operator_id")
-) STRICT`,
   `CREATE TABLE "trial_registry" (
   "trial_id" TEXT NOT NULL CHECK (length("trial_id") = 26 AND "trial_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "trial_key" TEXT NOT NULL,
@@ -595,7 +555,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("eval_id")
 ) STRICT`,
   `CREATE TRIGGER "gate_evaluation_no_update" BEFORE UPDATE ON "gate_evaluation" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "gate_evaluation_no_delete" BEFORE DELETE ON "gate_evaluation" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "gate_evaluation_no_delete" BEFORE DELETE ON "gate_evaluation" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "bar_1m" (
   "pool_id" TEXT NOT NULL CHECK (length("pool_id") BETWEEN 32 AND 44 AND "pool_id" NOT GLOB '*[^1-9A-HJ-NP-Za-km-z]*'),
   "minute" INTEGER NOT NULL CHECK ("minute" >= 1000000000000 AND "minute" < 100000000000000),
@@ -618,7 +578,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("minute", "mode")
 ) STRICT`,
   `CREATE TRIGGER "equity_point_no_update" BEFORE UPDATE ON "equity_point" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "equity_point_no_delete" BEFORE DELETE ON "equity_point" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "equity_point_no_delete" BEFORE DELETE ON "equity_point" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "quarantine" (
   "id" TEXT NOT NULL CHECK (length("id") = 26 AND "id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "program_id" TEXT NOT NULL CHECK (length("program_id") BETWEEN 32 AND 44 AND "program_id" NOT GLOB '*[^1-9A-HJ-NP-Za-km-z]*'),
@@ -631,11 +591,12 @@ export const M0001_INITIAL: Migration = {
   UNIQUE ("program_id", "discriminator")
 ) STRICT`,
   `CREATE TRIGGER "quarantine_no_update" BEFORE UPDATE ON "quarantine" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "quarantine_no_delete" BEFORE DELETE ON "quarantine" WHEN OLD."created_at" > (unixepoch('now') - 31622400) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "quarantine_no_delete" BEFORE DELETE ON "quarantine" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 31622400 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "metric_rollup_1m" (
   "metric" TEXT NOT NULL,
   "labels_hash" INTEGER NOT NULL,
   "minute" INTEGER NOT NULL CHECK ("minute" >= 1000000000000 AND "minute" < 100000000000000),
+  "scope" TEXT NOT NULL CHECK ("scope" IN ('aggregate', 'pool')),
   "count" INTEGER NOT NULL,
   "sum" REAL NOT NULL,
   "p50" REAL,
@@ -645,7 +606,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("metric", "labels_hash", "minute")
 ) STRICT, WITHOUT ROWID`,
   `CREATE TRIGGER "metric_rollup_1m_no_update" BEFORE UPDATE ON "metric_rollup_1m" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "metric_rollup_1m_no_delete" BEFORE DELETE ON "metric_rollup_1m" WHEN OLD."created_at" > (unixepoch('now') - 31622400) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "metric_rollup_1m_no_delete" BEFORE DELETE ON "metric_rollup_1m" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - (CASE OLD."scope" WHEN 'aggregate' THEN 31622400 WHEN 'pool' THEN 604800 END) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "outbox" (
   "seq" INTEGER PRIMARY KEY AUTOINCREMENT,
   "topic" TEXT NOT NULL CHECK (length(CAST("topic" AS BLOB)) <= 128),
@@ -666,13 +627,20 @@ export const M0001_INITIAL: Migration = {
 ) STRICT`,
   `CREATE INDEX "cost_item_correction_cost" ON "cost_item_correction" ("cost_id")`,
   `CREATE TRIGGER "cost_item_correction_no_update" BEFORE UPDATE ON "cost_item_correction" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "cost_item_correction_no_delete" BEFORE DELETE ON "cost_item_correction" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "cost_item_correction_no_delete" BEFORE DELETE ON "cost_item_correction" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "kv_state" (
   "key" TEXT NOT NULL,
   "value_json" TEXT NOT NULL CHECK (json_valid("value_json")),
   "created_at" INTEGER NOT NULL CHECK ("created_at" >= 1000000000000 AND "created_at" < 100000000000000),
   "updated_at" INTEGER NOT NULL CHECK ("updated_at" >= 1000000000000 AND "updated_at" < 100000000000000),
   PRIMARY KEY ("key")
+) STRICT`,
+  `CREATE TABLE "retention_clock" (
+  "id" INTEGER NOT NULL,
+  "now_ms" INTEGER NOT NULL,
+  PRIMARY KEY ("id"),
+  CHECK ("id" = 1),
+  CHECK ("now_ms" >= 0)
 ) STRICT`,
   `CREATE TABLE "audit_import_cursor" (
   "source" TEXT NOT NULL CHECK ("source" IN ('signer', 'sentinel')),
@@ -747,7 +715,7 @@ export const M0001_INITIAL: Migration = {
   PRIMARY KEY ("shadow_id")
 ) STRICT`,
   `CREATE TRIGGER "shadow_result_no_update" BEFORE UPDATE ON "shadow_result" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "shadow_result_no_delete" BEFORE DELETE ON "shadow_result" WHEN OLD."created_at" > (unixepoch('now') - 220924800) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "shadow_result_no_delete" BEFORE DELETE ON "shadow_result" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 220924800 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "candidate_event" (
   "event_id" TEXT NOT NULL CHECK (length("event_id") = 26 AND "event_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
   "candidate_id" TEXT NOT NULL CHECK (length("candidate_id") = 26 AND "candidate_id" NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
@@ -763,7 +731,7 @@ export const M0001_INITIAL: Migration = {
   `CREATE INDEX "candidate_event_candidate" ON "candidate_event" ("candidate_id")`,
   `CREATE INDEX "candidate_event_at" ON "candidate_event" ("at")`,
   `CREATE TRIGGER "candidate_event_no_update" BEFORE UPDATE ON "candidate_event" BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
-  `CREATE TRIGGER "candidate_event_no_delete" BEFORE DELETE ON "candidate_event" WHEN OLD."created_at" > (unixepoch('now') - 31622400) * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
+  `CREATE TRIGGER "candidate_event_no_delete" BEFORE DELETE ON "candidate_event" WHEN OLD."created_at" > coalesce((SELECT "now_ms" FROM "retention_clock" WHERE "id" = 1), 0) - 31622400 * 1000 BEGIN SELECT RAISE(ABORT, 'append_only'); END`,
   `CREATE TABLE "blacklist" (
   "mint" TEXT NOT NULL CHECK (length("mint") BETWEEN 32 AND 44 AND "mint" NOT GLOB '*[^1-9A-HJ-NP-Za-km-z]*'),
   "reason" TEXT NOT NULL,

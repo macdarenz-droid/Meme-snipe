@@ -40,7 +40,7 @@ describe('typed repositories (B-M24-02 interfaces)', () => {
   it('every table round-trips a full row and a row with every nullable column null', async () => {
     const db = await migrated();
     for (const name of Object.keys(TABLES) as TableName[]) {
-      if (name === 'schema_migrations' || name === 'system_state' || name === 'outbox') continue;
+      if (name === 'schema_migrations' || name === 'system_state' || name === 'outbox' || name === 'retention_clock') continue;
       const repo = repos[name] as Repo<TableName>;
       for (const [i, nulls] of [[1, false], [2, true]] as const) {
         const row: RowOf<TableName> = sampleRow(name, i, nulls);
@@ -129,13 +129,13 @@ describe('metric_rollup_1m sink (B-M27-01 logic 2 meets B-M24-02)', () => {
   it('writes the registry rollups of a finished minute into the append-only table', async () => {
     const db = await migrated();
     const clock = fakeClock(Date.UTC(2026, 9, 7, 12, 0, 0));
-    const reg = new MetricsRegistry({ clock, seriesCap: 50, ringBudgetBytes: 0, sink: metricRollupSink(db, repos.metric_rollup_1m, clock) });
+    const reg = new MetricsRegistry({ clock, seriesCap: 50, ringBudgetBytes: 0, sink: metricRollupSink(db, repos.metric_rollup_1m, clock, { maxBytes: 1_000_000 }) });
     reg.counter('send_429_total', { path: 'rpc' }).inc(3);
     reg.tick();
     clock.advance(60_000);
     reg.tick();
     const rows = repos.metric_rollup_1m.find(db.reader(), { metric: 'send_429_total' });
-    assert.deepEqual(rows, [{ metric: 'send_429_total', labelsHash: labelsHash({ path: 'rpc' }), minute: Date.UTC(2026, 9, 7, 12, 0, 0), count: 1, sum: 3,
+    assert.deepEqual(rows, [{ metric: 'send_429_total', labelsHash: labelsHash({ path: 'rpc' }), minute: Date.UTC(2026, 9, 7, 12, 0, 0), scope: 'aggregate', count: 1, sum: 3,
       p50: null, p95: null, p99: null, createdAt: Date.UTC(2026, 9, 7, 12, 1, 0) }]);
     db.close();
   });

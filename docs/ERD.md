@@ -425,43 +425,6 @@ erDiagram
     INTEGER created_at
     INTEGER updated_at
   }
-  operator {
-    TEXT operator_id PK
-    TEXT handle UK
-    TEXT role
-    INTEGER created_at
-  }
-  webauthn_credential {
-    TEXT credential_id PK
-    TEXT operator_id
-    BLOB public_key
-    INTEGER sign_count
-    INTEGER created_at
-    INTEGER last_used_at
-  }
-  session {
-    TEXT session_hash PK
-    TEXT operator_id
-    TEXT client_kind
-    INTEGER expires_at
-    INTEGER idle_expires_at
-    INTEGER elevated_until
-    INTEGER revoked_at
-    INTEGER created_at
-  }
-  operator_preferences {
-    TEXT operator_id PK
-    TEXT theme
-    TEXT density
-    TEXT polarity
-    TEXT tz
-    TEXT shortcuts_json
-    INTEGER sound
-    TEXT reduced_motion
-    TEXT default_route
-    INTEGER created_at
-    INTEGER updated_at
-  }
   trial_registry {
     TEXT trial_id PK
     TEXT trial_key UK
@@ -530,6 +493,7 @@ erDiagram
     TEXT metric PK
     INTEGER labels_hash PK
     INTEGER minute PK
+    TEXT scope
     INTEGER count
     REAL sum
     REAL p50
@@ -557,6 +521,10 @@ erDiagram
     TEXT value_json
     INTEGER created_at
     INTEGER updated_at
+  }
+  retention_clock {
+    INTEGER id PK
+    INTEGER now_ms
   }
   schema_migrations {
     INTEGER version PK
@@ -676,9 +644,6 @@ erDiagram
   token ||--o{ token_account : mint
   limit_def ||--o{ limit_state : limit_id
   command ||--o{ audit_event : command_id
-  operator ||--o{ webauthn_credential : operator_id
-  operator ||--o{ session : operator_id
-  operator ||--o{ operator_preferences : operator_id
   run ||--o{ trial_registry : run_id
   pool ||--o{ bar_1m : pool_id
   cost_item ||--o{ cost_item_correction : cost_id

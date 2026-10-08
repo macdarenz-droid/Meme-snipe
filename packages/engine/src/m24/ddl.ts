@@ -69,10 +69,13 @@ function columnSql(name: string, def: ColumnDef, table: TableDef): string {
 function horizonSql(def: TableDef): string | null {
   const r = def.retention;
   if (r === 'forever') return null;
-  if ('days' in r) return `${r.days * DAY_S}`;
-  const cases = Object.entries(r.byGranularity).map(([g, days]) => `WHEN '${g}' THEN ${days * DAY_S}`).join(' ');
-  return `(CASE OLD.${q('granularity')} ${cases} END)`;
+  if (!('byColumn' in r)) return `${r.days * DAY_S}`;
+  const cases = Object.entries(r.days).map(([g, days]) => `WHEN '${g}' THEN ${days * DAY_S}`).join(' ');
+  return `(CASE OLD.${q(snake(r.byColumn))} ${cases} END)`;
 }
+
+/** The retention job's time for its own transaction; 0 (every DELETE refused) when unset (ruling 10). */
+export const RETENTION_NOW_SQL = `coalesce((SELECT ${q('now_ms')} FROM ${q('retention_clock')} WHERE ${q('id')} = 1), 0)`;
 
 /** The statements that create one table with its indexes and triggers. */
 export function tableStatements(name: string, def: TableDef): string[] {
@@ -87,7 +90,7 @@ export function tableStatements(name: string, def: TableDef): string[] {
   if (def.appendOnly) {
     out.push(`CREATE TRIGGER ${q(`${name}_no_update`)} BEFORE UPDATE ON ${q(name)} BEGIN SELECT RAISE(ABORT, 'append_only'); END`);
     const horizon = horizonSql(def);
-    const when = horizon === null ? '' : ` WHEN OLD.${q('created_at')} > (unixepoch('now') - ${horizon}) * 1000`;
+    const when = horizon === null ? '' : ` WHEN OLD.${q('created_at')} > ${RETENTION_NOW_SQL} - ${horizon} * 1000`;
     out.push(`CREATE TRIGGER ${q(`${name}_no_delete`)} BEFORE DELETE ON ${q(name)}${when} BEGIN SELECT RAISE(ABORT, 'append_only'); END`);
   }
   if (def.updateOnce !== undefined) {

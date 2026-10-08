@@ -6,7 +6,7 @@ import { storageOf } from './ddl.ts';
 
 /** The table that owns a key name shared by several tables. */
 const OWNERS: Readonly<Record<string, string>> = {
-  mint: 'token', pool_id: 'pool', limit_id: 'limit_def', operator_id: 'operator', fill_id: 'fill', candidate_id: 'candidate',
+  mint: 'token', pool_id: 'pool', limit_id: 'limit_def', fill_id: 'fill', candidate_id: 'candidate',
 };
 
 function referenceTargets(tables: Readonly<Record<string, TableDef>>): Map<string, string> {

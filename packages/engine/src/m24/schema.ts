@@ -11,7 +11,9 @@
 // given in seconds is refused instead of reading as 1970 and expiring at once; below 10^14, year 5138, so a time given
 // in microseconds is refused instead of never expiring); every table has `created_at`.
 // Retention (ARCH 15): an append-only table rejects every UPDATE and any DELETE of a row younger than its horizon,
-// measured on `created_at` against SQLite's clock (CL-51); `forever` rejects every DELETE.
+// measured on `created_at` against the time the retention job writes into `retention_clock` for its own transaction
+// (retention.ts), never SQLite's wall clock (CL-51; Z02 round 2 ruling 10). Outside that transaction the time reads 0,
+// so every DELETE is refused; `forever` rejects every DELETE.
 
 export type Kind =
   | 'ulid' | 'text' | 'pubkey' | 'signature' | 'sha256' | 'json' | 'bool' | 'int' | 'ms' | 'real'
@@ -27,8 +29,9 @@ export interface ColumnDef {
   readonly default?: string;
 }
 
-/** Days a row is kept; `forever` rows are never deleted. `granularity` selects per-row horizons (wallet_snapshot). */
-export type Retention = { readonly days: number } | 'forever' | { readonly byGranularity: Readonly<Record<string, number>> };
+/** Days a row is kept; `forever` rows are never deleted. `byColumn` selects per-row horizons by an enum column's value. */
+export type Retention = { readonly days: number } | 'forever'
+  | { readonly byColumn: string; readonly days: Readonly<Record<string, number>> };
 
 export interface TableDef {
   readonly columns: Readonly<Record<string, ColumnDef>>;
@@ -259,7 +262,7 @@ export const TABLES = {
     columns: {
       wallet: c.pubkey, at: c.ms, granularity: oneOf('daily', '30s'), solLamports: c.lamports, tokensJson: c.json, slot: c.i64, createdAt: c.ms,
     },
-    key: ['wallet', 'at'], appendOnly: true, retention: { byGranularity: { daily: 2_557, '30s': 30 } },
+    key: ['wallet', 'at'], appendOnly: true, retention: { byColumn: 'granularity', days: { daily: 2_557, '30s': 30 } },
   },
   reconcile_run: {
     columns: { runAt: c.ms, solDiffLamports: c.slamports, tokenDiffsJson: c.json, orphansJson: c.json, createdAt: c.ms },
@@ -312,29 +315,9 @@ export const TABLES = {
     key: ['alertId'], appendOnly: false, retention: Y1,
     indexes: [{ name: 'alert_open_dedupe', columns: ['dedupeKey'], unique: true, where: "state != 'resolved'" }],
   },
-  operator: {
-    columns: { operatorId: c.ulid, handle: c.text, role: oneOf('viewer', 'operator'), createdAt: c.ms },
-    key: ['operatorId'], appendOnly: false, retention: 'forever', unique: [['handle']],
-  },
-  webauthn_credential: {
-    columns: { credentialId: c.text, operatorId: c.ulid, publicKey: c.blob, signCount: c.i64, createdAt: c.ms, lastUsedAt: opt(c.ms) },
-    key: ['credentialId'], appendOnly: false, retention: 'forever',
-  },
-  session: {
-    columns: {
-      sessionHash: c.sha256, operatorId: c.ulid, clientKind: oneOf('desktop', 'mobile'), expiresAt: c.ms, idleExpiresAt: c.ms, elevatedUntil: opt(c.ms),
-      revokedAt: opt(c.ms), createdAt: c.ms,
-    },
-    key: ['sessionHash'], appendOnly: false, retention: { days: 30 },
-  },
-  operator_preferences: {
-    columns: {
-      operatorId: c.ulid, theme: oneOf('system', 'dark', 'light'), density: oneOf('compact', 'standard', 'comfortable'),
-      polarity: oneOf('green-red', 'blue-orange'), tz: oneOf('utc', 'local'), shortcutsJson: c.json, sound: c.bool, reducedMotion: oneOf('system', 'on'),
-      defaultRoute: c.text, createdAt: c.ms, updatedAt: c.ms,
-    },
-    key: ['operatorId'], appendOnly: false, retention: 'forever',
-  },
+  // operator, webauthn_credential, session and operator_preferences (ARCH 15, M28 login) are not here: they hold login
+  // credentials, which need the owner's approval (CLAUDE.md "Stored data"). B-M28-02 adds them in its own migration
+  // once the owner approves (Z02 round 2 ruling 1).
   trial_registry: {
     columns: {
       trialId: c.ulid, trialKey: c.text, kind: oneOf('gate', 'coarse_screen'), strategyId: c.text, affectsReturnsJson: c.json, datasetHashes: c.json,
@@ -372,13 +355,16 @@ export const TABLES = {
     key: ['id'], appendOnly: true, retention: Y1, unique: [['programId', 'discriminator']],
   },
   // Disk (review R2, measured by the `metric_rollup_1m` disk test in schema.test.ts: 200 pools x 3 series x 120 minutes,
-  // 72,000 rows): 259 bytes a row with a 64-character hex hash in a rowid table plus its key index; 87 bytes a row with
-  // the 8-byte integer hash WITHOUT ROWID. One series written every minute for a year (525,600 rows) is then about
-  // 46 MB, so 200 such series are about 9.1 GB a year (27 GB before), and every backup copies it. The 1-year retention
-  // of per-pool series is a spec question for the supervisor (Z02 pull request).
+  // 72,000 rows): 87 bytes a row with the 8-byte integer hash WITHOUT ROWID (259 with a hex hash in a rowid table). A
+  // series written every minute is about 125 kB a day. Series labelled by pool or mint keep 7 days, aggregate series
+  // 1 year (Z02 round 2 ruling 7; deviation from ARCH 15's 1 year for all, docs/DECISIONS.md), and the sink stops
+  // writing pool rows at its byte cap (m27.rollup_max_bytes) with an error log.
   metric_rollup_1m: {
-    columns: { metric: c.text, labelsHash: c.i64, minute: c.ms, count: c.int, sum: c.real, p50: opt(c.real), p95: opt(c.real), p99: opt(c.real), createdAt: c.ms },
-    key: ['metric', 'labelsHash', 'minute'], appendOnly: true, retention: Y1, withoutRowid: true,
+    columns: {
+      metric: c.text, labelsHash: c.i64, minute: c.ms, scope: oneOf('aggregate', 'pool'), count: c.int, sum: c.real,
+      p50: opt(c.real), p95: opt(c.real), p99: opt(c.real), createdAt: c.ms,
+    },
+    key: ['metric', 'labelsHash', 'minute'], appendOnly: true, retention: { byColumn: 'scope', days: { aggregate: 366, pool: 7 } }, withoutRowid: true,
   },
   outbox: {
     columns: { seq: c.i64, topic: bytes(128), payloadJson: c.json, createdAt: c.ms, publishedAt: opt(c.ms) },
@@ -396,6 +382,11 @@ export const TABLES = {
   kv_state: {
     columns: { key: c.text, valueJson: c.json, createdAt: c.ms, updatedAt: c.ms },
     key: ['key'], appendOnly: false, retention: 'forever',
+  },
+  // The time the retention job deletes against, set and reset inside its own transaction (retention.ts; ruling 10).
+  retention_clock: {
+    columns: { id: c.int, nowMs: c.i64 },
+    key: ['id'], appendOnly: false, retention: 'forever', checks: ['"id" = 1', '"now_ms" >= 0'],
   },
   schema_migrations: {
     columns: { version: c.int, sha256: c.sha256, appliedAt: c.ms },

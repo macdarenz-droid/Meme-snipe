@@ -45,7 +45,7 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
   it('CA-24: the keys that do not affect returns are listed here for review', () => {
     assert.deepEqual(CONFIG_FIELDS.filter((f) => !f.affectsReturns).map((f) => f.key), [
       'm24.db_path', 'm24.synchronous', 'm27.log_dir', 'm27.log_max_bytes_per_day', 'm27.log_queue_bytes', 'm27.log_retention_days', 'm27.metrics_port',
-      'm27.ring_budget_bytes', 'm27.series_cap',
+      'm27.ring_budget_bytes', 'm27.rollup_max_bytes', 'm27.series_cap',
     ]);
   });
 
@@ -73,7 +73,7 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
     const config = { ...(resolved.ok ? resolved.value : {}), version: 'v' } as Config;
     assert.deepEqual(m24Settings(config), { dbPath: '/x/bot.db', synchronous: 'FULL' });
     assert.deepEqual(m27Settings(config), { seriesCap: 5_000, logRetentionDays: 14, ringBudgetBytes: 67_108_864, logMaxBytesPerDay: 268_435_456,
-      logQueueBytes: 8_388_608, logDir: '/var/lib/bot/log', metricsPort: 9_464 });
+      logQueueBytes: 8_388_608, logDir: '/var/lib/bot/log', metricsPort: 9_464, rollupMaxBytes: 4_294_967_296 });
     assert.throws(() => configValue({ version: 'v' } as Config, 'm24.db_path'), /no value/);
   });
 });

@@ -18,6 +18,8 @@ export const M27_CONFIG = [
     label: 'Log write queue', description: 'Bytes waiting for the disk before info lines are dropped (debug from half of it); warn and above only at twice it.' },
   { ...base, key: 'm27.log_dir', type: 'string', unit: null, displayUnit: null, min: null, max: null, step: null, default: '/var/lib/bot/log',
     label: 'Log directory', description: 'JSON-lines log files, one per UTC day.' },
+  { ...base, key: 'm27.rollup_max_bytes', unit: 'bytes', displayUnit: 'bytes', min: String(64 * MIB), max: String(16_384 * MIB), default: 4_096 * MIB,
+    label: 'Metric history on disk', description: 'Above it per-pool minute rollups are no longer stored and an error is logged; aggregate rollups are kept.' },
   { ...base, key: 'm27.metrics_port', unit: null, displayUnit: null, min: '1024', max: '65535', default: 9_464, label: '/metrics port',
     description: 'Port of the loopback-only /metrics endpoint.' },
 ] as const satisfies readonly ConfigFieldDef[];

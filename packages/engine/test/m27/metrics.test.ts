@@ -212,9 +212,9 @@ describe('1 s history and 1-minute rollups (B-M27-01 logic 2)', () => {
     reg.tick();
     const minute = Date.UTC(2026, 9, 7, 12, 0, 0);
     const by = (m: string) => rows.filter((r) => r.metric === m);
-    assert.deepEqual(by('send_429_total'), [{ metric: 'send_429_total', labelsHash: labelsHash({ path: 'rpc' }), minute, count: 2, sum: 5, p50: null, p95: null, p99: null }]);
+    assert.deepEqual(by('send_429_total'), [{ metric: 'send_429_total', labelsHash: labelsHash({ path: 'rpc' }), minute, scope: 'aggregate', count: 2, sum: 5, p50: null, p95: null, p99: null }]);
     assert.equal(by('sweeps_total').length, 0);
-    assert.deepEqual(by('confirm_latency_ms'), [{ metric: 'confirm_latency_ms', labelsHash: labelsHash({}), minute, count: 5, sum: 400_065, p50: 20, p95: 400_000, p99: 400_000 }]);
+    assert.deepEqual(by('confirm_latency_ms'), [{ metric: 'confirm_latency_ms', labelsHash: labelsHash({}), minute, scope: 'aggregate', count: 5, sum: 400_065, p50: 20, p95: 400_000, p99: 400_000 }]);
     const rss = by('rss_bytes');
     assert.equal(rss.length, 1);
     assert.deepEqual({ count: rss[0]?.count, sum: rss[0]?.sum, p50: rss[0]?.p50, p99: rss[0]?.p99 }, { count: 2, sum: 400, p50: 100, p99: 300 });
