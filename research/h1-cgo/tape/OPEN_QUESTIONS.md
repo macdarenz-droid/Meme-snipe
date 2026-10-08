@@ -12,6 +12,8 @@
 - **Other protocol addresses (item 10).** None is added, because none held tokens. One is to be added if an address appears whose tokens come only from protocol instructions.
 - **BOOST swaps.** Decoder v3 sets `protocol=1` on BOOST swaps. Older units leave it 0, so an S_amm row also counts as protocol flow when its (signature, outer_ix, pool) matches a `BoostBuyAndBurnEvent` in E (`features.boost_keys`). On 09-11 unit 446265000-446269499, 651 of 651 events matched exactly one row each. Protocol rows never enter the holder ledger, and their owner is excluded as `protocol`.
 
+- **Whole discovery (red team R2-4).** `gate0` passes only on both Step A days (`whole_discovery`); `freeze` and `score` refuse breakpoints, sign and futility made from a subset of the discovery days or of their creation days.
+
 ## Timing
 1. **Decision slot.** §3 says "each whole UTC hour" without naming the slot. **Used:** the last slot whose block time is before the hour, and only when a later block in the same contiguous tape stretch shows the hour has closed. No row from the hour itself enters the features.
 2. **Exit timing.** §6 says "60 minutes after entry (+ D slots)". **Used:** the last slot before (entry slot's block time + 60 min), plus 23 slots. The same rule applies to the 15-minute and 4-hour holds.

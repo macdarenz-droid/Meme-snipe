@@ -167,6 +167,19 @@ class CLI(unittest.TestCase):
         pathlib.Path(fz).write_text(json.dumps(base))  # no hash recorded
         self.refused(lambda: R.main(["score", "--out", self.out, "--frozen", fz]), "SHA256SUMS hash differs")
 
+    def test_freeze_and_score_need_both_discovery_days_R2_4(self):
+        """R2-4: sign and breakpoints frozen from one discovery day (or from coins created on a subset of the days)
+        are refused, by freeze and again by score."""
+        self.features(self.units)
+        pathlib.Path(os.path.join(self.out, "gate0.json")).write_text(json.dumps({"passed": True}))
+        self.refused(lambda: R.main(["freeze", "--out", self.out]), "both discovery days")
+        fz = os.path.join(self.tmp.name, "frozen.json")
+        base = dict(verdict="continue", sign="high", code=R.tapeio.code_hash(), breakpoints=dict(p20=0, p80=1),
+                    sol_usd_sums_sha256=R.H8.SOL_USD_SUMS_SHA256)
+        for days in ([DAY], None):
+            pathlib.Path(fz).write_text(json.dumps(dict(base, discovery_days=days)))
+            self.refused(lambda: R.main(["score", "--out", self.out, "--frozen", fz]), "both discovery days")
+
     # 4. score refuses code that differs from the frozen code
     def test_score_refuses_other_code(self):
         self.features(self.units)

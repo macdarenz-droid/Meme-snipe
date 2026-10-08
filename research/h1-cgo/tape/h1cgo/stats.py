@@ -62,11 +62,13 @@ def gate0(feats: pd.DataFrame, days) -> dict:
     b_ok = bool(np.isfinite(r2_simple) and r2_simple < GATE_B_MAX_R2 and (not np.isfinite(r2_log) or r2_log < GATE_B_MAX_R2))
     p20, p80 = (np.percentile(e.cgo, [BP_LOW_PCT, BP_HIGH_PCT]) if len(e) else (float("nan"),) * 2)
     c_ok = bool(len(e) and (p80 - p20) >= GATE_C_MIN_SPREAD)
+    # R2-4: the gate is judged on both Step A days only; a run on part of them reports its rows but never passes
+    whole = sorted(days) == sorted(DISCOVERY_DAYS)
     return dict(days=list(days), eligible_points=n_all, eligible_first_per_mint_day=n_dedup,
                 per_day_first=n_dedup / n_days if n_days else 0.0, per_day_all=n_all / n_days if n_days else 0.0,
                 a_pass=bool(a_ok), r2_simple=r2_simple, r2_log=r2_log, n_regression=int(len(z)), b_pass=b_ok,
-                p20=float(p20), p80=float(p80), spread=float(p80 - p20), c_pass=c_ok,
-                passed=bool(a_ok and b_ok and c_ok))
+                p20=float(p20), p80=float(p80), spread=float(p80 - p20), c_pass=c_ok, whole_discovery=whole,
+                passed=bool(a_ok and b_ok and c_ok and whole))
 
 
 def breakpoints(feats: pd.DataFrame) -> dict:

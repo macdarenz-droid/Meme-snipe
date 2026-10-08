@@ -131,6 +131,15 @@ class Gate0(unittest.TestCase):
         f3 = f.assign(cgo=f.cgo * 0.01)
         self.assertFalse(S.gate0(f3, ["2026-09-11"])["c_pass"])
 
+    def test_one_discovery_day_gives_no_pass_R2_4(self):
+        """R2-4: gate (a) is an average over both Step A days. A run on one day (chosen after a look) can never pass."""
+        f = feats_table(n_mints=200, hours=3)
+        one = S.gate0(f, ["2026-09-11"])
+        self.assertTrue(one["a_pass"] and one["b_pass"] and one["c_pass"])
+        self.assertFalse(one["passed"])
+        both = pd.concat([f, feats_table(n_mints=200, hours=3, day="2026-09-10", seed=2)], ignore_index=True)
+        self.assertTrue(S.gate0(both, ["2026-09-10", "2026-09-11"])["passed"])
+
     def test_not_eligible_or_out_of_time_do_not_count(self):
         f = feats_table(n_mints=4, hours=3)
         f.loc[0, "eligible"] = False

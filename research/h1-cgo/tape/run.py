@@ -66,6 +66,15 @@ def _verify_meta(out):
     return meta
 
 
+def _whole_discovery(decision_days, creation_days, what):
+    """R2-4: breakpoints, sign and futility come from both Step A days, with coins created on both (never from a day
+    or a creation-day subset chosen after a look)."""
+    want = sorted(DISCOVERY_DAYS)
+    if sorted(decision_days or []) != want or sorted(creation_days or []) != want:
+        sys.exit(f"{what} needs both discovery days {DISCOVERY_DAYS} as decision and creation days; "
+                 f"got {decision_days} / {creation_days}")
+
+
 def main(argv=None):
     a = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     a.add_argument("stage", choices=["features", "gate0", "outcomes", "freeze", "score"])
@@ -144,6 +153,7 @@ def main(argv=None):
         if not os.path.exists(gp) or not _load_json(gp)["passed"]:
             sys.exit("freeze runs only after gate H1-CGO-0 passed (run gate0 first)")
         meta = _verify_meta(o.out)
+        _whole_discovery(meta["decision_days"], meta.get("creation_days"), "freeze")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
         res = stats.sign_and_futility(f, out)
@@ -153,7 +163,8 @@ def main(argv=None):
             res["sol_usd_sums_sha256"] = H8.check_pin(o.sol_usd)
         except (ValueError, OSError) as e:
             sys.exit(f"freeze: SOL/USD input refused: {e}")
-        res.update(code=tapeio.code_hash(), feature_inputs=meta.get("inputs"), discovery_days=meta["decision_days"])
+        res.update(code=tapeio.code_hash(), feature_inputs=meta.get("inputs"), discovery_days=meta["decision_days"],
+                   creation_days=meta.get("creation_days"))
         _dump(os.path.join(o.out, "frozen.json"), res)
         print("frozen:", res["verdict"], "sign", res["sign"])
 
@@ -167,9 +178,13 @@ def main(argv=None):
             sys.exit("score: the code differs from the code that froze the discovery result")
         if frozen.get("sol_usd_sums_sha256") != H8.SOL_USD_SUMS_SHA256:
             sys.exit("score: frozen.json's SOL/USD SHA256SUMS hash differs from the pinned one")
+        _whole_discovery(frozen.get("discovery_days"), frozen.get("creation_days", frozen.get("discovery_days")),
+                         "score: the freeze")
         meta = _verify_meta(o.out)
         if list(meta["decision_days"]) != list(VALIDATION_DAYS):
             sys.exit(f"score needs decision days exactly {VALIDATION_DAYS}; got {meta['decision_days']}")
+        if sorted(meta.get("creation_days") or []) != sorted(VALIDATION_DAYS):
+            sys.exit(f"score needs creation days exactly {VALIDATION_DAYS}; got {meta.get('creation_days')}")
         f = _read_feats(o.out)
         out = pd.read_csv(os.path.join(o.out, "outcomes.csv"), dtype={"decision_day": str})
         try:
