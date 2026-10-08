@@ -14,24 +14,32 @@
 #       (ag_attested); what scan-day.sh and check-day.sh run. Prints the retention.
 #   archive-guard.sh recorded OUT     the retention the units in OUT record (ag_recorded).
 #   archive-guard.sh k3list OUT       a K3 read's pinned migration list (ag_k3list).
-#   archive-guard.sh full DAY         local, plus the private store (DATA_REPO, read with
-#       DATA_STORE_TOKEN) is readable, private and holds no storage-stop tag, plus the
-#       3-failure stop is not active (run history of this repository, GH_TOKEN). Prints
-#       the retention.
+#   archive-guard.sh full DAY         local, plus: run attempt 1 on the default branch;
+#       the private store (DATA_REPO, read with DATA_STORE_TOKEN) readable, private and
+#       without the storage-stop tag; the 3-failure stop not active; no back-off running
+#       (max(3 h after the last failure, the recorded Retry-After end)); 60 min since the
+#       last archive-lane run ended (unless it was this day's resumable stop); and DAY is
+#       the oldest allow-listed day not read done. Prints the retention.
 #   archive-guard.sh attest DAY DIR   full, then writes DIR/DAY ("DAY RETENTION UNIX
-#       TIME"): the scan job's clean guard steps hand it to scan-day.sh and check-day.sh,
-#       which never hold a token.
+#       RUN_ID ATTEMPT"): the scan job's clean guard steps hand it to scan-day.sh and
+#       check-day.sh, which never hold a token.
+#   archive-guard.sh restarts DAY     the resumable stops (exit 75, chained) DAY already
+#       had since ARCHIVE_REARM_AT, from run history (the continue job allows one).
 # Any refusal exits 2 with the reason on stderr (and the step summary). When sourced, it
 # defines the ag_* functions archive-check.sh uses.
 #
-# Failures (OF-2): a non-served archive check (its step "Not served (counted failure)"
-# failed), and a data-scan archive batch (title "data-scan scan source=archive") whose
-# scan job failed, was cancelled or timed out and whose `continue` job did not chain it
-# (a block exits 4, any other failure, or a second resumable stop: data-scan allows one
-# resumable restart a day). They count from ARCHIVE_REARM_AT, and only after the last
-# successful batch; 3 stop the chain until a reviewed change moves ARCHIVE_REARM_AT.
+# Failures (OF-2), read from every attempt of every run (a re-run never hides one):
+#   - an archive check, on any branch, whose step "Archive probe (a failure unless
+#     served)" ran and did not succeed (not served, cancelled, timed out);
+#   - a data-scan archive batch (title "data-scan scan source=archive") whose scan job
+#     failed, was cancelled or timed out and whose `continue` job did not chain it (a
+#     block exits 4, any other failure, or a second resumable stop of the day).
+# A success is a batch's first attempt whose "Publish this day" step succeeded (it stored
+# a day; a day already published skips that step). Failures count from ARCHIVE_REARM_AT, and
+# only after the last success; 3 stop the chain until a reviewed change moves it.
 #
-# Env: GH_REPO (or GITHUB_REPOSITORY), GH_TOKEN, DATA_REPO, DATA_STORE_TOKEN. GH_BIN and
+# Env: GH_REPO (or GITHUB_REPOSITORY), GH_TOKEN, DATA_REPO, DATA_STORE_TOKEN, GITHUB_REF,
+# GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT. GH_BIN and
 # AG_NOW (a fixed clock) are for tests only; no workflow sets them (test-ci.sh checks).
 set -uo pipefail
 ag_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -89,6 +97,20 @@ ag_armed() {
     { ag_refuse "the archive chain is not armed (ARCHIVE_ARM '$ARCHIVE_ARM' is not the one pinned B10-PULL id '${pin:-none}' in docs/DECISIONS.md)"; return 2; }
   t=$(ag_ts "${ARCHIVE_REARM_AT:-}") && (( t <= $(ag_now) )) ||
     { ag_refuse "ARCHIVE_REARM_AT '${ARCHIVE_REARM_AT:-}' is not a past UTC time (YYYY-MM-DDTHH:MM:SSZ)"; return 2; }
+  ag_private_storage || return 2
+}
+# ag_private_storage (OF-2 round 2, ruling 9): the chain cannot be armed while a day
+# would still be stored in this public repository: publish-day.sh (also the skip step,
+# publish-day.sh --check) or publish-volume.sh releasing to $GITHUB_REPOSITORY, or
+# data-scan.yml uploading the day-DAY artifact. OF-4 and OF-5 must land first.
+ag_private_storage() {
+  local f wf="$ag_here/../../../.github/workflows/data-scan.yml"
+  for f in "$ag_here/publish-day.sh" "$ag_here/publish-volume.sh"; do
+    [[ -f "$f" ]] && ! grep -qF -- '--repo "$GITHUB_REPOSITORY"' "$f" ||
+      { ag_refuse "the archive chain is not armed: $(basename "$f") still stores days in this public repository (OF-4/OF-5 first)"; return 2; }
+  done
+  [[ -f "$wf" ]] && ! grep -qF 'name: day-${{ matrix.day }}' "$wf" ||
+    { ag_refuse "the archive chain is not armed: data-scan.yml still uploads the public day-DAY artifact (OF-4 first)"; return 2; }
 }
 # ag_retention DAY: the retention a fresh read of DAY uses, or nothing. Unset: only the
 # first allow-listed day (2026-07-22, K2, measurement day 1); K2: the first two days (the
@@ -119,22 +141,25 @@ ag_local() {
   echo "$ret"
 }
 
-# ag_attested DAY: the scan job's clean guard step (attest) passed DAY within the last
-# 30 min: ARCHIVE_GUARD_DIR/DAY reads "DAY RETENTION TIME". scan-day.sh and check-day.sh
-# hold no token, so this is how the store and 3-failure checks reach them.
+# ag_attested DAY RET: the scan job's clean guard step (attest) passed DAY within the
+# last 30 min, for this run and attempt: ARCHIVE_GUARD_DIR/DAY reads "DAY RETENTION TIME
+# RUN_ID ATTEMPT", and DAY, RET, GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT all match.
+# scan-day.sh and check-day.sh hold no token, so this is how the store, history and
+# order checks reach them.
 ag_attested() {
-  local f="${ARCHIVE_GUARD_DIR:-}/$1" d r t
+  local f="${ARCHIVE_GUARD_DIR:-}/$1" d r t id at
   [[ -n "${ARCHIVE_GUARD_DIR:-}" && -f "$f" ]] ||
-    { ag_refuse "no archive guard pass for $1 (the guard step checks the store, the storage-stop marker and the 3-failure stop)"; return 2; }
-  read -r d r t < "$f"
-  [[ "$d" == "$1" && "$r" =~ ^K[23]$ && "$t" =~ ^[0-9]+$ ]] && (( t <= $(ag_now) && $(ag_now) - t <= 1800 )) ||
-    { ag_refuse "the archive guard pass for $1 is malformed or older than 30 min"; return 2; }
+    { ag_refuse "no archive guard pass for $1 (the guard step checks the store, the storage-stop marker, the history and the order)"; return 2; }
+  read -r d r t id at < "$f"
+  [[ "$d" == "$1" && "$r" == "$2" && "$t" =~ ^[0-9]+$ && -n "${GITHUB_RUN_ID:-}" && "$id" == "${GITHUB_RUN_ID:-}" && "$at" == "${GITHUB_RUN_ATTEMPT:-}" ]] &&
+    (( t <= $(ag_now) && $(ag_now) - t <= 1800 )) ||
+    { ag_refuse "the archive guard pass for $1 is malformed, older than 30 min, or for another retention, run or attempt"; return 2; }
 }
 # ag_entry DAY: what scan-day.sh and check-day.sh check: ag_local plus ag_attested.
 ag_entry() {
   local ret
   ret=$(ag_local "$1") || return 2
-  ag_attested "$1" || return 2
+  ag_attested "$1" "$ret" || return 2
   echo "$ret"
 }
 # ag_recorded OUT: the one retention the finished units in OUT record (stats.json
@@ -202,15 +227,15 @@ ag_default_branch() {
   [[ "$b" =~ ^[A-Za-z0-9._/-]+$ && "$b" != null ]] || return 1
   echo "$b"
 }
-# ag_runs WORKFLOW [BRANCH]: runs as TSV "id status conclusion createdAt updatedAt title"
-# (a missing conclusion is "-": read splits on tabs and would merge empty fields),
-# newest first. Fails on an API error, or when 500 runs do not reach back to the window
-# start (AG_SINCE), so no failure can hide past the list's end.
+# ag_runs WORKFLOW: runs on every branch as TSV "id status conclusion createdAt
+# updatedAt attempt headBranch title" (a missing conclusion is "-": read splits on tabs
+# and would merge empty fields), newest first. Fails on an API error, or when 500 runs do
+# not reach back to the window start (AG_SINCE), so no failure can hide past the list's end.
 ag_runs() {
-  local wf=$1 br=${2:-} out n oldest
-  out=$("$ag_gh" run list --repo "$ag_repo" --workflow "$wf" ${br:+--branch "$br"} --limit 500 \
-    --json databaseId,status,conclusion,createdAt,updatedAt,displayTitle \
-    --jq '.[] | [.databaseId, .status, (.conclusion // "-"), .createdAt, .updatedAt, .displayTitle] | @tsv' 2>/dev/null) || return 1
+  local wf=$1 out n oldest
+  out=$("$ag_gh" run list --repo "$ag_repo" --workflow "$wf" --limit 500 \
+    --json databaseId,status,conclusion,createdAt,updatedAt,attempt,headBranch,displayTitle \
+    --jq '.[] | [.databaseId, .status, (.conclusion // "-"), .createdAt, .updatedAt, .attempt, .headBranch, .displayTitle] | @tsv' 2>/dev/null) || return 1
   n=$(grep -c . <<< "$out")
   if (( n >= 500 )); then
     oldest=$(ag_ts "$(tail -1 <<< "$out" | cut -f4)") || return 1
@@ -218,47 +243,88 @@ ag_runs() {
   fi
   printf '%s\n' "$out"
 }
-# ag_jobs ID: "job<TAB>conclusion" and "step<TAB>name<TAB>conclusion" lines of a run.
+# ag_attempt ID K: "status<TAB>conclusion<TAB>updated_at" of attempt K of run ID.
+ag_attempt() {
+  "$ag_gh" api "repos/$ag_repo/actions/runs/$1/attempts/$2" --jq '"\(.status)\t\(.conclusion // "-")\t\(.updated_at)"' 2>/dev/null
+}
+# ag_jobs ID K: "job<TAB>name<TAB>conclusion" and "step<TAB>name<TAB>conclusion" lines of
+# attempt K of run ID.
 ag_jobs() {
-  "$ag_gh" run view "$1" --repo "$ag_repo" --json jobs \
+  "$ag_gh" api --paginate "repos/$ag_repo/actions/runs/$1/attempts/$2/jobs?per_page=100" \
     --jq '.jobs[] | ("job\t\(.name)\t\(.conclusion // "-")"), (.steps[]? | "step\t\(.name)\t\(.conclusion // "-")")' 2>/dev/null
 }
+# ag_backoff_end: the latest back-off end recorded as an Actions cache key
+# archive-backoff-<unix end>-... on the default branch (a probe's Retry-After, a scan's
+# persisted back-off); 0 when none. Fails when the list cannot be read.
+ag_backoff_end() {
+  local ref="refs/heads/$AG_BRANCH" keys k e max=0
+  keys=$("$ag_gh" api --paginate "repos/$ag_repo/actions/caches?key=archive-backoff-&ref=$ref&per_page=100" \
+    --jq ".actions_caches[] | select(.ref == \"$ref\") | .key" 2>/dev/null) || return 1
+  while read -r k; do
+    [[ "$k" =~ ^archive-backoff-([0-9]{9,11})(-|$) ]] || continue
+    e=${BASH_REMATCH[1]}; (( e > max )) && max=$e
+  done <<< "$keys"
+  echo "$max"
+}
 # ag_history: reads both workflows' runs since AG_SINCE (the earlier of ARCHIVE_REARM_AT
-# and one day ago) and sets
-#   AG_FAILS      failures at or after ARCHIVE_REARM_AT with no successful batch after them
-#   AG_LAST_FAIL  unix end of the last failure of any age in the window (0: none)
-#   AG_LANE_END   unix end of the last completed data-scan run outside the Helius lane (0: none)
-#   AG_DS_RUNS / AG_AC_RUNS / AG_BRANCH  the run lists and the default branch (for archive-check)
+# and one day ago), every attempt of each, and sets
+#   AG_FAILS       failures at or after ARCHIVE_REARM_AT with no success after them
+#   AG_LAST_FAIL   unix end of the last failure of any age in the window (0: none)
+#   AG_LANE_END    unix end of the last completed data-scan run outside the Helius lane (0: none)
+#   AG_LANE_RESUME the day that run stopped resumably and chained ("" otherwise)
+#   AG_RESTARTS    "unix day" lines: resumable stops that were chained
+#   AG_DS_RUNS / AG_AC_RUNS / AG_BRANCH  the run lists and the default branch
 # Fails when anything cannot be read (fail closed).
 ag_history() {
-  local now rearm id st co cr up ti t ev jobs events="" lastok=0
+  local now rearm id st co cr up at br ti k meta kst kco kup jobs t ev d events="" lastok=0 lane_id=""
   now=$(ag_now)
   rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
   AG_SINCE=$(( rearm < now - 86400 ? rearm : now - 86400 ))
   AG_BRANCH=$(ag_default_branch) || return 1
-  AG_AC_RUNS=$(ag_runs archive-check.yml "$AG_BRANCH") || return 1
+  AG_AC_RUNS=$(ag_runs archive-check.yml) || return 1
   AG_DS_RUNS=$(ag_runs data-scan.yml) || return 1
-  AG_FAILS=0 AG_LAST_FAIL=0 AG_LANE_END=0
-  while IFS=$'\t' read -r id st co cr up ti; do
+  AG_FAILS=0 AG_LAST_FAIL=0 AG_LANE_END=0 AG_LANE_RESUME="" AG_RESTARTS=""
+  while IFS=$'\t' read -r id st co cr up at br ti; do
     [[ -n "$id" && "$st" == completed ]] || continue
-    cr=$(ag_ts "$cr") && up=$(ag_ts "$up") || return 1
+    cr=$(ag_ts "$cr") || return 1
     (( cr >= AG_SINCE )) || continue
-    if [[ "$co" == failure ]]; then
-      jobs=$(ag_jobs "$id") || return 1
-      grep -qxF $'step\tNot served (counted failure)\tfailure' <<< "$jobs" && events+="$up F"$'\n'
-    fi
+    [[ "$at" =~ ^[1-9][0-9]*$ ]] || return 1
+    (( at == 1 )) && [[ "$co" == success ]] && continue # a single attempt that succeeded probed nothing or was served
+    for (( k = 1; k <= at; k++ )); do
+      meta=$(ag_attempt "$id" "$k") || return 1
+      IFS=$'\t' read -r kst kco kup <<< "$meta"
+      [[ "$kst" == completed ]] || continue
+      kup=$(ag_ts "$kup") || return 1
+      jobs=$(ag_jobs "$id" "$k") || return 1
+      grep -qE $'^step\tArchive probe \\(a failure unless served\\)\t(failure|cancelled|timed_out)$' <<< "$jobs" && events+="$kup F"$'\n'
+    done
   done <<< "$AG_AC_RUNS"
-  while IFS=$'\t' read -r id st co cr up ti; do
+  while IFS=$'\t' read -r id st co cr up at br ti; do
     [[ -n "$id" && "$st" == completed ]] || continue
     cr=$(ag_ts "$cr") && up=$(ag_ts "$up") || return 1
     (( cr >= AG_SINCE )) || continue
-    if [[ "$ti" != "data-scan scan source=helius" ]] && (( up > AG_LANE_END )); then AG_LANE_END=$up; fi
+    [[ "$at" =~ ^[1-9][0-9]*$ ]] || return 1
+    if [[ "$ti" != "data-scan scan source=helius" ]] && (( up > AG_LANE_END )); then AG_LANE_END=$up lane_id=$id; fi
     [[ "$ti" == "data-scan scan source=archive" ]] || continue
-    if [[ "$co" == success ]]; then events+="$up S"$'\n'; continue; fi
-    jobs=$(ag_jobs "$id") || return 1
-    if grep -qE $'^job\tscan[^\t]*\t(failure|cancelled|timed_out)$' <<< "$jobs" && ! grep -qxF $'job\tcontinue\tsuccess' <<< "$jobs"; then
-      events+="$up F"$'\n'
-    fi
+    for (( k = 1; k <= at; k++ )); do
+      meta=$(ag_attempt "$id" "$k") || return 1
+      IFS=$'\t' read -r kst kco kup <<< "$meta"
+      [[ "$kst" == completed ]] || continue
+      kup=$(ag_ts "$kup") || return 1
+      jobs=$(ag_jobs "$id" "$k") || return 1
+      # A success counts from attempt 1 only: a re-run (refused by the guard anyway) never
+      # turns an earlier attempt's failure into a success.
+      if (( k == 1 )) && grep -qxF $'step\tPublish this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
+      if grep -qE $'^job\tscan[^\t]*\t(failure|cancelled|timed_out)$' <<< "$jobs"; then
+        if grep -qxF $'job\tcontinue\tsuccess' <<< "$jobs"; then
+          d=$(sed -n $'s/^job\tscan (\\([0-9-]*\\))\t\\(failure\\|cancelled\\|timed_out\\)$/\\1/p' <<< "$jobs" | head -1)
+          AG_RESTARTS+="$kup $d"$'\n'
+          [[ "$id" == "$lane_id" && $k == "$at" ]] && AG_LANE_RESUME=$d
+        else
+          events+="$kup F"$'\n'
+        fi
+      fi
+    done
   done <<< "$AG_DS_RUNS"
   while read -r t ev; do
     [[ -n "$t" ]] || continue
@@ -269,17 +335,61 @@ ag_history() {
   done <<< "$events"
   return 0
 }
+# ag_restarts DAY: how many chained resumable stops DAY had since ARCHIVE_REARM_AT.
+ag_restarts() {
+  local rearm t d n=0
+  rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
+  while read -r t d; do [[ "$d" == "$1" ]] && (( t >= rearm )) && n=$(( n + 1 )); done <<< "$AG_RESTARTS"
+  echo "$n"
+}
 # ag_stop_ok: the 3-failure stop is not active (history readable, fewer than 3 failures).
 ag_stop_ok() {
   ag_history || { ag_refuse "the run history cannot be read, so the 3-failure stop cannot be ruled out"; return 2; }
   (( AG_FAILS < 3 )) ||
     { ag_refuse "the archive chain is stopped: $AG_FAILS failures since ARCHIVE_REARM_AT ${ARCHIVE_REARM_AT} with no successful batch between them; only a reviewed change re-arms it"; return 2; }
 }
+# ag_run_ok: attempt 1 of a run on the default branch (a re-run never reads; a probe or a
+# scan from another branch never runs). Needs AG_BRANCH (ag_history).
+ag_run_ok() {
+  [[ "${GITHUB_RUN_ATTEMPT:-}" == 1 ]] ||
+    { ag_refuse "run attempt '${GITHUB_RUN_ATTEMPT:-}' is not 1: a re-run never reads the archive"; return 2; }
+  [[ "${GITHUB_REF:-}" == "refs/heads/$AG_BRANCH" ]] ||
+    { ag_refuse "ref '${GITHUB_REF:-}' is not the default branch refs/heads/$AG_BRANCH"; return 2; }
+}
+# ag_backoff_ok: no back-off running: 3 h after the last failure, and the latest recorded
+# Retry-After or scan back-off end.
+ag_backoff_ok() {
+  local now end rec
+  now=$(ag_now)
+  rec=$(ag_backoff_end) || { ag_refuse "the recorded back-off ends cannot be read (fail closed)"; return 2; }
+  end=$(( AG_LAST_FAIL > 0 ? AG_LAST_FAIL + ARCHIVE_BACKOFF_S : 0 ))
+  (( rec > end )) && end=$rec
+  (( now >= end )) ||
+    { ag_refuse "back-off: nothing goes out before $(date -u -d "@$end" +%FT%TZ) (3 h after the last failure, or a recorded Retry-After)"; return 2; }
+}
+# ag_next_day: the oldest allow-listed day not read done in the store.
+ag_next_day() {
+  local done days d
+  done=$(ag_read_done) || return 1
+  days=$(ag_days 2>/dev/null) || return 1
+  while read -r d; do grep -qx "$d" <<< "$done" || { echo "$d"; return 0; }; done <<< "$days"
+  return 0
+}
+# ag_full DAY: every check before an archive scan of DAY (plan job, scan job's guard steps).
 ag_full() {
-  local ret
+  local ret next now
   ret=$(ag_local "$1") || return 2
-  ag_store_ok || return 2
   ag_stop_ok || return 2
+  ag_run_ok || return 2
+  ag_store_ok || return 2
+  ag_backoff_ok || return 2
+  now=$(ag_now)
+  if (( AG_LANE_END > 0 && now - AG_LANE_END < 3600 )) && [[ "$AG_LANE_RESUME" != "$1" ]]; then
+    ag_refuse "the last archive-lane run ended $(date -u -d "@$AG_LANE_END" +%FT%TZ), less than 60 min ago"; return 2
+  fi
+  next=$(ag_next_day) || { ag_refuse "the private store's day releases cannot be read (fail closed)"; return 2; }
+  [[ "$next" == "$1" ]] ||
+    { ag_refuse "$1 is not the oldest allow-listed day not read done (${next:-none left}); days are read in order, once"; return 2; }
   echo "$ret"
 }
 
@@ -294,7 +404,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       [[ $# -eq 3 ]] || { echo "usage: archive-guard.sh attest DAY DIR" >&2; exit 2; }
       rm -f "$3/$2"
       ret=$(ag_full "$2") || exit 2
-      mkdir -p "$3" && echo "$2 $ret $(ag_now)" > "$3/$2" && echo "archive guard: $2 may be read ($ret)" | tee -a "$ag_summary" ;;
-    *) echo "usage: archive-guard.sh local|entry|full DAY | attest DAY DIR | recorded OUT" >&2; exit 2 ;;
+      mkdir -p "$3" && echo "$2 $ret $(ag_now) ${GITHUB_RUN_ID:-none} ${GITHUB_RUN_ATTEMPT:-none}" > "$3/$2" && echo "archive guard: $2 may be read ($ret)" | tee -a "$ag_summary" ;;
+    restarts)
+      [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh restarts DAY" >&2; exit 2; }
+      ag_history || { ag_refuse "the run history cannot be read"; exit 2; }
+      ag_restarts "$2"; exit $? ;;
+    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR | recorded OUT" >&2; exit 2 ;;
   esac
 fi

@@ -181,6 +181,14 @@ mkfx() {
   local dir=$1 kv k; shift
   rm -rf "$dir"; mkdir -p "$dir/research/historical/ci" "$dir/research/historical/scanner" "$dir/docs"
   cp "$here"/*.sh "$here/archive-limits.conf" "$dir/research/historical/ci/"
+  # OF-4/OF-5 stand-in: days stored in the private store, no day-DAY artifact (ruling 9
+  # refuses to arm otherwise); PUBLICSTORE keeps today's public storage.
+  mkdir -p "$dir/.github/workflows"
+  cp "$here/../../../.github/workflows/data-scan.yml" "$dir/.github/workflows/data-scan.yml"
+  if [[ -z "${PUBLICSTORE:-}" ]]; then
+    sed -i 's/--repo "\$GITHUB_REPOSITORY"/--repo "$DATA_REPO"/g' "$dir/research/historical/ci/publish-day.sh" "$dir/research/historical/ci/publish-volume.sh"
+    sed -i 's/name: day-\${{ matrix.day }}/name: private-day-${{ matrix.day }}/' "$dir/.github/workflows/data-scan.yml"
+  fi
   sed 's/^var reqLimiter = newLimiter([0-9.]*)$/var reqLimiter = newLimiter(10)/' "$here/../scanner/archive.go" > "$dir/research/historical/scanner/archive.go"
   printf '| 2026-10-08 | B10-PULL id=b10pull-test-1 source=old-faithful scannerRev=r1 days=2026-07-22..2026-08-21 pinnedAt=2026-10-08T00:00:00Z | t | t |\n' > "$dir/docs/DECISIONS.md"
   for kv in ARCHIVE_ARM=b10pull-test-1 ARCHIVE_REARM_AT=2026-10-01T00:00:00Z ARCHIVE_RETENTION=K2 "$@"; do
@@ -215,14 +223,27 @@ case "$1 $2" in
     [[ -n "${GD_RUNS_FAIL:-}" ]] && exit 1
     if [[ "$wf" == archive-check.yml ]]; then f="$GD/ac.json"; else f="$GD/ds.json"; fi
     if [[ -f "$f" ]]; then out "$(cat "$f")"; elif [[ "$wf" == archive-check.yml ]]; then
-      out "[{\"databaseId\": 900, \"status\": \"in_progress\", \"conclusion\": null, \"createdAt\": \"$(date -u +%FT%TZ)\", \"updatedAt\": \"$(date -u +%FT%TZ)\", \"displayTitle\": \"archive-check\"}]"
+      out "[{\"databaseId\": 900, \"status\": \"in_progress\", \"conclusion\": null, \"createdAt\": \"$(date -u +%FT%TZ)\", \"updatedAt\": \"$(date -u +%FT%TZ)\", \"attempt\": 1, \"headBranch\": \"main\", \"displayTitle\": \"archive-check\"}]"
     else out '[]'; fi ;;
-  "run view") f="$GD/jobs-$3.json"; [[ -f "$f" ]] && out "$(cat "$f")" || out '{"jobs": []}' ;;
   "workflow run") echo "$*" >> "$GD/dispatch.log" ;;
   api*)
     case "$path" in
       repos/o/r) out '{"default_branch": "main", "private": false}' ;;
-      repos/o/r/actions/caches*) [[ -n "${GD_CACHE_FAIL:-}" ]] && exit 1; [[ -f "$GD/caches.json" ]] && out "$(cat "$GD/caches.json")" || out '{"actions_caches": []}' ;;
+      repos/o/r/actions/caches*)
+        [[ -n "${GD_CACHE_FAIL:-}" ]] && exit 1
+        pre=${path#*key=}; pre=${pre%%&*}
+        c='{"actions_caches": []}'; [[ -f "$GD/caches.json" ]] && c=$(cat "$GD/caches.json")
+        out "$(printf '%s' "$c" | jq --arg p "$pre" '{actions_caches: [.actions_caches[] | select(.key | startswith($p))]}')" ;;
+      repos/o/r/actions/runs/*/artifacts) out '{"artifacts": [{"name": "resume-2026-07-22"}]}' ;;
+      repos/o/r/actions/runs/*/attempts/*/jobs*)
+        x=${path#repos/o/r/actions/runs/}; id=${x%%/*}; k=${x#*/attempts/}; k=${k%%/*}
+        if [[ -f "$GD/jobs-$id-$k.json" ]]; then out "$(cat "$GD/jobs-$id-$k.json")"
+        elif [[ $k == 1 && -f "$GD/jobs-$id.json" ]]; then out "$(cat "$GD/jobs-$id.json")"
+        else out '{"jobs": []}'; fi ;;
+      repos/o/r/actions/runs/*/attempts/*)
+        x=${path#repos/o/r/actions/runs/}; id=${x%%/*}; k=${x##*/}
+        if [[ -f "$GD/attempt-$id-$k.json" ]]; then out "$(cat "$GD/attempt-$id-$k.json")"
+        else out "$(cat "$GD/ds.json" "$GD/ac.json" 2>/dev/null | jq -s --argjson id "$id" '[.[][] | select(.databaseId == $id)][0] | {status, conclusion, updated_at: .updatedAt}')"; fi ;;
       repos/o/data*)
         [[ -n "${GD_STORE_FAIL:-}" || -z "$GH_TOKEN" ]] && { echo "HTTP 401" >&2; exit 1; }
         case "$path" in
@@ -241,14 +262,14 @@ chmod +x "$GD/bin/gh"
 # guard ARGS...: archive-guard.sh of the fixture (FXG overrides the copy) with the stub.
 guard() { rm -f "$GD/gh.log"; : > "$T/summary.md"
   GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok GH_TOKEN=ghtok GITHUB_STEP_SUMMARY="$T/summary.md" \
-    bash "${FXG:-$FX}/archive-guard.sh" "$@" > "$T/gout.txt" 2>&1; }
+    GITHUB_REF=refs/heads/main GITHUB_RUN_ID=700 GITHUB_RUN_ATTEMPT=1 bash "${FXG:-$FX}/archive-guard.sh" "$@" > "$T/gout.txt" 2>&1; }
 # dsrun ID TITLE CONCLUSION CREATED_AGO_MIN UPDATED_AGO_MIN [JOBS]: a completed data-scan
 # run for $GD/ds.json (one JSON object a line; dsjson joins them); JOBS "name=conclusion,..."
 # goes to $GD/jobs-ID.json.
 dsrun() {
   local now; now=$(date -u +%s)
-  printf '{"databaseId": %s, "status": "completed", "conclusion": "%s", "createdAt": "%s", "updatedAt": "%s", "displayTitle": "%s"}\n' \
-    "$1" "$3" "$(iso $(( now - $4 * 60 )))" "$(iso $(( now - $5 * 60 )))" "$2"
+  printf '{"databaseId": %s, "status": "completed", "conclusion": "%s", "createdAt": "%s", "updatedAt": "%s", "attempt": %s, "headBranch": "main", "displayTitle": "%s"}\n' \
+    "$1" "$3" "$(iso $(( now - $4 * 60 )))" "$(iso $(( now - $5 * 60 )))" "${ATTEMPT:-1}" "$2"
   [[ -n "${6:-}" ]] && jobsfile "$1" "$6"
   return 0
 }
@@ -258,16 +279,17 @@ dsjson() { jq -s . > "$GD/ds.json"; }
 # a failed "Not served (counted failure)" step.
 acrun() {
   local now; now=$(date -u +%s)
-  printf '{"databaseId": %s, "status": "completed", "conclusion": "%s", "createdAt": "%s", "updatedAt": "%s", "displayTitle": "archive-check"}\n' \
-    "$1" "$2" "$(iso $(( now - $3 * 60 - 1 )))" "$(iso $(( now - $3 * 60 )))"
-  [[ "${4:-}" == notserved ]] && jobsfile "$1" "Not served (counted failure)=failure"
+  printf '{"databaseId": %s, "status": "completed", "conclusion": "%s", "createdAt": "%s", "updatedAt": "%s", "attempt": %s, "headBranch": "%s", "displayTitle": "archive-check"}\n' \
+    "$1" "$2" "$(iso $(( now - $3 * 60 - 1 )))" "$(iso $(( now - $3 * 60 )))" "${ATTEMPT:-1}" "${BRANCH:-main}"
+  [[ "${4:-}" == notserved ]] && jobsfile "$1" "Archive probe (a failure unless served)=${PROBE:-failure}"
   return 0
 }
-acjson() { { cat; printf '{"databaseId": 900, "status": "in_progress", "conclusion": null, "createdAt": "%s", "updatedAt": "%s", "displayTitle": "archive-check"}\n' "$(iso "$(date -u +%s)")" "$(iso "$(date -u +%s)")"; } | jq -s . > "$GD/ac.json"; }
+acjson() { { cat; printf '{"databaseId": 900, "status": "in_progress", "conclusion": null, "createdAt": "%s", "updatedAt": "%s", "attempt": 1, "headBranch": "main", "displayTitle": "archive-check"}\n' "$(iso "$(date -u +%s)")" "$(iso "$(date -u +%s)")"; } | jq -s . > "$GD/ac.json"; }
 gdreset() { rm -f "$GD"/*.json "$GD"/*.log "$GD/published"; }
 # pass DAY RET: a fresh pass of the scan job's guard step for scan-day.sh / check-day.sh.
 GP="$T/guardpass"
-gpass() { rm -rf "$GP"; mkdir -p "$GP"; echo "$1 $2 $(date -u +%s)" > "$GP/$1"; }
+gpass() { rm -rf "$GP"; mkdir -p "$GP"; echo "$1 $2 $(date -u +%s) 700 1" > "$GP/$1"; }
+export GITHUB_RUN_ID=700 GITHUB_RUN_ATTEMPT=1
 
 # ---- 3. scan-day.sh: shared back-off (zeroed-scan and sleep stubs record each call) ----
 S="$T/sbin"; mkdir -p "$S"
@@ -554,9 +576,11 @@ assert '-eq 75 ]; then echo "resumable=true"' in scan["run"] and 'exit "$rc"' in
 assert any(s.get("with", {}).get("name") == "resume-${{ matrix.day }}" for s in steps)
 c = wf["jobs"]["continue"]
 assert c["needs"] == ["plan", "scan"] and "needs.scan.result == 'failure'" in c["if"], c
-assert c["permissions"] == {"actions": "write"} and int(c["env"]["MAX_CHAIN"]) <= 12, c
-assert len(c["steps"]) == 1 and "uses" not in c["steps"][0], c
-r = c["steps"][0]["run"]
+# OF-2 round 2 (ruling 5): a read-only checkout so the step can run archive-guard.sh restarts
+assert c["permissions"] == {"contents": "read", "actions": "write"} and int(c["env"]["MAX_CHAIN"]) <= 12, c
+assert len(c["steps"]) == 2 and c["steps"][0]["uses"].startswith("actions/checkout@") and c["steps"][0]["with"]["persist-credentials"] is False, c
+assert "uses" not in c["steps"][1], c
+r = c["steps"][1]["run"]
 assert r.index('select(startswith("resume-"))') < r.index('-ge "$MAX_CHAIN"') < r.index("gh workflow run"), r
 assert '-f chain="$next"' in r and "-f days=\"$DAYS\"" in r, r
 assert wf[True]["workflow_dispatch"]["inputs"]["chain"]["default"] == "0"
@@ -665,7 +689,7 @@ cdrun() {
   if [[ "$r" == none ]]; then echo '{"blocks": 3}' > "$o/units/1046/1-2/stats.json"; else printf '{"blocks": 3, "retention": "%s"}\n' "$r" > "$o/units/1046/1-2/stats.json"; fi
   : > "$T/summary.md"
   : > "$T/zs.args"
-  [[ -n "${NOPASS:-}" ]] || gpass "$d" "$r"
+  [[ -n "${NOPASS:-}" ]] || gpass "$d" "${CDPASS:-$r}"
   ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} ARCHIVE_GUARD_DIR="$GP" RESCAN_RC=$2 FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
     bash "${CFX:-$FX}/check-day.sh" "$d" "$o" "$T/cd-assets-$1" > "$T/out.txt" 2>&1
 }
@@ -773,33 +797,39 @@ cat > "$A/bin/curl" <<'SH'
 printf '%s\n' "$@" > "$AC/curl.args"; echo x >> "$AC/curl.calls"
 hdr=; while (( $# )); do [[ $1 == -D ]] && hdr=$2; shift; done
 [[ "$AC_STATUS" == 000 ]] && exit 7
-printf 'HTTP/2 %s\r\ncf-ray: 8abc123-SYD\r\n\r\n' "$AC_STATUS" > "$hdr"
+{ printf 'HTTP/2 %s\r\ncf-ray: 8abc123-SYD\r\n' "$AC_STATUS"; [[ -n "${AC_RA:-}" ]] && printf 'retry-after: %s\r\n' "$AC_RA"; printf '\r\n'; } > "$hdr"
 head -c "${AC_BYTES:-64}" /dev/zero
 exit "${AC_EXIT:-0}"
 SH
 chmod +x "$A/bin/"*
-# ac [env VAR=...]: one scheduled check of the fixture (ACFX overrides), then what the
-# workflow does next: on served=true the marker is saved to the cache stub (ref of the
-# default branch, run 900) and `--dispatch DAY` runs. The cache stub is emptied first
-# unless KEEPCACHE is set. Data-scan runs come from AC_RUNS (written to $GD/ds.json).
-ac() { rm -f "$A/curl.calls" "$A/curl.args" "$GD/dispatch.log" "$GD/gh.log" "$A/output"; : > "$A/summary.md"
+# ac [env VAR=...]: one scheduled check of the fixture (ACFX overrides), as the workflow
+# runs it: the holds; when ready, the probe step (exit 1 unless served); a Retry-After
+# recorded as cache key archive-backoff-<end>; on served the marker saved to the cache
+# stub (default branch, run 900) and `--dispatch DAY`. The cache stub is emptied first
+# unless KEEPCACHE is set. ACRC holds the probe step's exit code ("" when it did not run).
+ac() { rm -f "$A/curl.calls" "$A/curl.args" "$GD/dispatch.log" "$GD/gh.log" "$A/output"; : > "$A/summary.md"; ACRC=""
   [[ -n "${KEEPCACHE:-}" ]] || rm -f "$GD/caches.json"
-  local rc=0
-  GD="$GD" AC="$A" GH_BIN="$GD/bin/gh" CURL_BIN="$A/bin/curl" GH_REPO=o/r REF=main DATA_REPO=o/data DATA_STORE_TOKEN=tok GH_TOKEN=ghtok \
-    GITHUB_RUN_ID=900 GITHUB_OUTPUT="$A/output" RUNNER_TEMP="$A/rt" GITHUB_STEP_SUMMARY="$A/summary.md" "$@" bash "${ACFX:-$FX}/archive-check.sh" > "$A/out.txt" 2>&1 || rc=$?
-  if grep -qx served=true "$A/output" 2>/dev/null; then
-    local key day
-    key=$(sed -n 's/^marker=//p' "$A/output"); day=$(sed -n 's/^day=//p' "$A/output")
-    python3 - "$GD/caches.json" "$key" <<'PY'
+  local rc=0 day
+  local base=(GD="$GD" AC="$A" GH_BIN="$GD/bin/gh" CURL_BIN="$A/bin/curl" GH_REPO=o/r REF=main DATA_REPO=o/data DATA_STORE_TOKEN=tok GH_TOKEN=ghtok
+    GITHUB_REF=refs/heads/main GITHUB_RUN_ID=900 GITHUB_RUN_ATTEMPT=1 GITHUB_OUTPUT="$A/output" RUNNER_TEMP="$A/rt" GITHUB_STEP_SUMMARY="$A/summary.md")
+  env "${base[@]}" "$@" bash "${ACFX:-$FX}/archive-check.sh" > "$A/out.txt" 2>&1 || rc=$?
+  grep -qx ready=true "$A/output" 2>/dev/null || return $rc
+  day=$(sed -n 's/^day=//p' "$A/output")
+  ACRC=0; env "${base[@]}" "$@" bash "${ACFX:-$FX}/archive-check.sh" --probe "$day" >> "$A/out.txt" 2>&1 || ACRC=$?
+  if grep -q '^backoff_end=' "$A/output"; then addcache "archive-backoff-$(sed -n 's/^backoff_end=//p' "$A/output")-900" refs/heads/main; fi
+  if grep -qx served=true "$A/output"; then
+    addcache "$(sed -n 's/^marker=//p' "$A/output")" refs/heads/main
+    env "${base[@]}" "$@" bash "${ACFX:-$FX}/archive-check.sh" --dispatch "$day" >> "$A/out.txt" 2>&1 || rc=$?
+  fi
+  return $rc
+}
+addcache() { python3 - "$GD/caches.json" "$1" "$2" <<'PY'
 import json, os, sys
 p = sys.argv[1]
 c = json.load(open(p)) if os.path.exists(p) else {"actions_caches": []}
-c["actions_caches"].append({"key": sys.argv[2], "ref": "refs/heads/main"})
+c["actions_caches"].append({"key": sys.argv[2], "ref": sys.argv[3]})
 json.dump(c, open(p, "w"))
 PY
-    GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r REF=main GITHUB_STEP_SUMMARY="$A/summary.md" bash "${ACFX:-$FX}/archive-check.sh" --dispatch "$day" >> "$A/out.txt" 2>&1 || rc=$?
-  fi
-  return $rc
 }
 acruns() { if [[ $# -gt 0 ]]; then runs "$@" > "$GD/ds.json"; else rm -f "$GD/ds.json"; fi; }
 ua=$(sed -n 's/^const userAgent = "\(.*\)"$/\1/p' "$here/../scanner/archive.go")
@@ -808,7 +838,7 @@ ua=$(sed -n 's/^const userAgent = "\(.*\)"$/\1/p' "$here/../scanner/archive.go")
 runs() { python3 -c '
 import json, sys, datetime
 old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-print(json.dumps([{"databaseId": 100 + i, "status": a.split("|")[0], "conclusion": "success" if a.split("|")[0] == "completed" else None, "createdAt": old, "updatedAt": old, "displayTitle": a.split("|")[1]} for i, a in enumerate(sys.argv[1:])]))' "$@"; }
+print(json.dumps([{"databaseId": 100 + i, "status": a.split("|")[0], "conclusion": "success" if a.split("|")[0] == "completed" else None, "createdAt": old, "updatedAt": old, "attempt": 1, "headBranch": "main", "displayTitle": a.split("|")[1]} for i, a in enumerate(sys.argv[1:])]))' "$@"; }
 gdreset
 H="in_progress|data-scan scan source=helius"
 bad=""
@@ -824,7 +854,7 @@ for set in "$H" "queued|data-scan scan source=helius" "$H;queued|data-scan scan 
   IFS=';' read -ra a <<< "$set"
   acruns "${a[@]}" "completed|data-scan scan source=archive"; ac env AC_STATUS=206
   [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$GD/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "served; dispatched data-scan for" "$A/summary.md" || bad+=" [$set]"
-  grep -q 'gh run list --repo o/r --workflow data-scan.yml --limit 500 --json databaseId,status,conclusion,createdAt,updatedAt,displayTitle' "$GD/gh.log" || bad+=" [list-call]"
+  grep -q 'gh run list --repo o/r --workflow data-scan.yml --limit 500 --json databaseId,status,conclusion,createdAt,updatedAt,attempt,headBranch,displayTitle' "$GD/gh.log" || bad+=" [list-call]"
 done
 acruns "$H"; ac env AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$GD/dispatch.log" ]] && grep -q "not served" "$A/summary.md" || bad+=" [429]"
@@ -933,7 +963,7 @@ cp "$A/summary.md" "$A/summary-two.md"; ACFX=$T/fxnopin/research/historical/ci a
 now=$(date -u +%s)
 dsrun 301 "data-scan scan source=archive" failure 300 61 "scan (2026-07-22)=failure,continue=failure" | dsjson
 ac env AC_STATUS=206
-[[ ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" ]] && grep -q "held (2): back-off: the last failure ended" "$A/summary.md" &&
+[[ ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" ]] && grep -q "held (2): back-off: nothing goes out before" "$A/summary.md" &&
   ok "OF-2 hold 2: a block 61 min ago (batch exit 4, not chained) → no request" || no "OF-2 block 61 min: $(cat "$A/summary.md")"
 rm -f "$GD/ds.json"; acrun 501 failure 120 notserved | acjson
 ac env AC_STATUS=206
@@ -970,7 +1000,7 @@ ACFX=$T/fxr4/research/historical/ci ac env AC_STATUS=206
 [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$GD/dispatch.log" 2>/dev/null) == 1 ]] &&
   ok "OF-2 hold 3: the same 3 failures before a later ARCHIVE_REARM_AT → a request (and a dispatch)" || no "OF-2 re-armed: $(cat "$A/summary.md")"
 { dsrun 311 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
-  dsrun 314 "data-scan scan source=archive" success 410 390
+  dsrun 314 "data-scan scan source=archive" success 410 390 "scan (2026-07-22)=success,Publish this day=success"
   dsrun 312 "data-scan scan source=archive" failure 380 360 "scan (2026-07-23)=failure,continue=failure"
   dsrun 313 "data-scan scan source=archive" failure 320 300 "scan (2026-07-23)=failure,continue=failure"; } | dsjson
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
@@ -1026,7 +1056,7 @@ grep -q 'actions/caches?key=archive-dispatch-&ref=refs/heads/main&per_page=100' 
 [[ -z "$bad" ]] && ok "OF-2 hold 5: a marker on another ref, or whose run id is not an archive-check run on the default branch, or malformed → ignored" || no "OF-2 marker validity:$bad"
 rm -f "$GD/caches.json"
 ac env AC_STATUS=206 GD_CACHE_FAIL=1
-[[ ! -e "$A/curl.calls" ]] && grep -q "held (5): the dispatch markers cannot be listed" "$A/summary.md" &&
+[[ ! -e "$A/curl.calls" ]] && grep -qE "held \((2|5)\): .* cannot be (listed|read)" "$A/summary.md" &&
   ok "OF-2 hold 5: an unreadable cache list → no request" || no "OF-2 cache unreadable"
 # 6: 60 min since the last archive-lane run ended.
 dsrun 331 "data-scan scan source=archive" success 200 59 | dsjson
@@ -1094,23 +1124,27 @@ ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_C
   ok "archive-check: a real 206 of 64 bytes dispatches once" || no "archive-check real 206: $(cat "$A/summary.md")"
 kill $srv 2>/dev/null; wait $srv 2>/dev/null
 
-python3 - "$here/../../../.github/workflows/archive-check.yml" <<'PY' && ok "archive-check workflow: every 3 hours plus dispatch; the check step (holds, one request), then on served the marker save before the dispatch step, on not served a failing 'Not served (counted failure)' step; tokens only in the check and dispatch steps, no inputs in the shell, credentials not persisted" || no "archive-check workflow structure"
+python3 - "$here/../../../.github/workflows/archive-check.yml" <<'PY' && ok "archive-check workflow: every 3 hours plus dispatch; the holds step, then 'Archive probe (a failure unless served)' only when ready, a Retry-After saved as archive-backoff-<end> on its failure, and on served the marker save before the dispatch step; tokens only in the holds and dispatch steps, the probe step without any; no inputs in the shell, credentials not persisted" || no "archive-check workflow structure"
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 on = wf[True]
 assert set(on) == {"schedule", "workflow_dispatch"} and on["schedule"] == [{"cron": "41 */3 * * *"}], on
 assert wf["permissions"] == {"contents": "read", "actions": "write"}, wf["permissions"]
 steps = wf["jobs"]["check"]["steps"]
-assert len(steps) == 5 and steps[0]["with"]["persist-credentials"] is False, steps
-chk, save, disp, ns = steps[1:]
+assert len(steps) == 6 and steps[0]["with"]["persist-credentials"] is False, steps
+chk, probe, ra, save, disp = steps[1:]
 assert chk["id"] == "check" and chk["run"] == "research/historical/ci/archive-check.sh" and "github.token" in chk["env"]["GH_TOKEN"], chk
 assert chk["env"]["DATA_REPO"] == "${{ vars.DATA_REPO }}" and chk["env"]["DATA_STORE_TOKEN"] == "${{ secrets.DATA_STORE_TOKEN }}", chk["env"]
-assert save["uses"].startswith("actions/cache/save@") and save["if"] == "steps.check.outputs.served == 'true'", save
-assert save["with"] == {"path": "${{ runner.temp }}/archive-dispatch", "key": "${{ steps.check.outputs.marker }}"}, save
-assert disp["if"] == "steps.check.outputs.served == 'true'" and disp["run"] == 'research/historical/ci/archive-check.sh --dispatch "$DAY"', disp
+assert probe["name"] == "Archive probe (a failure unless served)" and probe["id"] == "probe" and probe["if"] == "steps.check.outputs.ready == 'true'", probe
+assert probe["run"] == 'research/historical/ci/archive-check.sh --probe "$DAY"' and probe["env"]["DAY"] == "${{ steps.check.outputs.day }}", probe
+assert "GH_TOKEN" not in probe["env"] and "DATA_STORE_TOKEN" not in probe["env"], probe
+assert ra["uses"].startswith("actions/cache/save@") and ra["if"] == "failure() && steps.probe.outputs.backoff_end != ''", ra
+assert ra["with"] == {"path": "${{ runner.temp }}/archive-backoff", "key": "archive-backoff-${{ steps.probe.outputs.backoff_end }}-${{ github.run_id }}"}, ra
+assert save["uses"].startswith("actions/cache/save@") and save["if"] == "steps.probe.outputs.served == 'true'", save
+assert save["with"] == {"path": "${{ runner.temp }}/archive-dispatch", "key": "${{ steps.probe.outputs.marker }}"}, save
+assert disp["if"] == "steps.probe.outputs.served == 'true'" and disp["run"] == 'research/historical/ci/archive-check.sh --dispatch "$DAY"', disp
 assert disp["env"]["DAY"] == "${{ steps.check.outputs.day }}" and "DATA_STORE_TOKEN" not in disp["env"], disp
-assert ns["name"] == "Not served (counted failure)" and ns["if"] == "steps.check.outputs.served == 'false'" and ns["run"].rstrip().endswith("exit 1"), ns
-assert [s.get("name") for s in steps if "secrets." in str(s) or "github.token" in str(s)] == ["Holds, then one archive request", "Dispatch the day"]
+assert [s.get("name") for s in steps if "secrets." in str(s) or "github.token" in str(s)] == ["Holds", "Dispatch the day"]
 assert all("${{" not in st.get("run", "") for st in steps)
 assert not any(k in str(steps) for k in ("ARCHIVE_CHECK_URL", "CURL_BIN", "GH_BIN", "ARCHIVE_GO", "AG_NOW", "ARCHIVE_GUARD_DIR")), "test-only overrides in the workflow"
 assert set(on["workflow_dispatch"]["inputs"]) == {"helius_runs"} and on["workflow_dispatch"]["inputs"]["helius_runs"]["default"] == "", on
@@ -1137,7 +1171,7 @@ res = next(s for s in caches if "cache/restore" in s["uses"])
 assert res["with"]["key"] == "${{ steps.pickprogress.outputs.key || format('{0}-{1}-{2}', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, github.run_id) }}" and "restore-keys" not in res["with"], res
 pick = next(s for s in steps if s.get("id") == "pickprogress")
 assert pick["env"]["PREFIX"] == "${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-", pick
-r = wf["jobs"]["continue"]["steps"][0]["run"]
+r = wf["jobs"]["continue"]["steps"][-1]["run"]
 assert '-f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS"' in r, r
 assert 'rpc_rps must be from 1 to 50' in plan and ins["rpc_rps"]["default"] == "5"
 for s in key:
@@ -1250,7 +1284,7 @@ assert rec["run"] == 'research/historical/ci/progress-guard.sh record "$RUNNER_T
 assert rec["env"] == {"EXPECT_UNITS": "${{ inputs.expect_units }}", "PICKED": "${{ steps.pickprogress.outputs.key }}"} and rec["id"] == "record", rec
 assert wf[True]["workflow_dispatch"]["inputs"]["expect_units"]["default"] == "", "expect_units defaults to no check"
 cont = wf["jobs"]["continue"]
-assert '-f expect_units="$EXPECT_UNITS"' in cont["steps"][0]["run"] and cont["steps"][0]["env"]["EXPECT_UNITS"] == "${{ inputs.expect_units }}", "the chain carries expect_units"
+assert '-f expect_units="$EXPECT_UNITS"' in cont["steps"][-1]["run"] and cont["steps"][-1]["env"]["EXPECT_UNITS"] == "${{ inputs.expect_units }}", "the chain carries expect_units"
 for guard, save in (("shrink", "save"), ("shrinkqa", "Save progress after QA")):
     g, s = steps[ids.index(guard)], steps[ids.index(save)]
     assert "steps.restore.outcome == 'success'" in g["if"] and "steps.record.outcome == 'success'" in g["if"] and "always()" in g["if"] and 'progress-guard.sh check "$RUNNER_TEMP/work/data"' in g["run"], g
@@ -1490,14 +1524,15 @@ mkfx "$T/fxret0" ARCHIVE_RETENTION=
 FXG=$T/fxret0/research/historical/ci guard full 2026-07-22 && [[ $(cat "$T/gout.txt") == K2 ]] || bad+=" unset-07-22"
 rc=0; FXG=$T/fxret0/research/historical/ci guard full 2026-07-23 || rc=$?
 [[ $rc == 2 ]] && grep -q "2026-07-23 has no retention value" "$T/gout.txt" || bad+=" unset-07-23:$rc"
-guard full 2026-07-23 && [[ $(cat "$T/gout.txt") == K2 ]] || bad+=" K2-07-23"
+echo 2026-07-22 > "$GD/published"; guard full 2026-07-23 && [[ $(cat "$T/gout.txt") == K2 ]] || bad+=" K2-07-23"; rm -f "$GD/published"
 rc=0; guard full 2026-07-24 || rc=$?
 [[ $rc == 2 ]] && grep -q "2026-07-24 has no retention value" "$T/gout.txt" || bad+=" K2-07-24:$rc"
 rc=0; sd 2026-07-24 || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] || bad+=" scan-day-K2-07-24:$rc"
 rc=0; CDAY=2026-07-24 cdrun of2 0 || rc=$?
 [[ $rc == 2 && ! -s "$T/zs.args" ]] || bad+=" check-day-K2-07-24:$rc"
-FXG=$T/fxk3/research/historical/ci guard full 2026-08-21 && [[ $(cat "$T/gout.txt") == K3 ]] || bad+=" K3-08-21"
+d=2026-07-22; while [[ "$d" < 2026-08-21 ]]; do echo "$d"; d=$(date -u -d "$d + 1 day" +%F); done > "$GD/published"
+FXG=$T/fxk3/research/historical/ci guard full 2026-08-21 && [[ $(cat "$T/gout.txt") == K3 ]] || bad+=" K3-08-21"; rm -f "$GD/published"
 mkfx "$T/fxretx" ARCHIVE_RETENTION=K1
 rc=0; FXG=$T/fxretx/research/historical/ci guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] || bad+=" K1:$rc"
 [[ -z "$bad" ]] && ok "OF-2 retention: 07-23 with no retention value refused (unset allows only 07-22, K2); 07-24 with K2 refused at the plan job, scan-day.sh and check-day.sh; K3 allows 08-21; an unknown value allows no day" || no "OF-2 retention:$bad"
@@ -1516,7 +1551,7 @@ rc=0; NOPASS=1 cdrun of2 0 || rc=$?
 [[ -z "$bad" ]] && ok "OF-2: the storage-stop marker present → a manual dispatch refused at the plan job, the scan job's guard step writes no pass, and scan-day.sh and check-day.sh refuse without one" || no "OF-2 storage-stop:$bad"
 bad=""
 for v in GD_STORE_FAIL GD_PUBLIC; do rc=0; eval "$v=1 guard full 2026-07-22" || rc=$?; [[ $rc == 2 ]] && grep -q "store" "$T/gout.txt" || bad+=" $v:$rc"; done
-rc=0; DATA_STORE_TOKEN= GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data GH_TOKEN=x bash "$FX/archive-guard.sh" full 2026-07-22 > "$T/gout.txt" 2>&1 || rc=$?
+rc=0; DATA_STORE_TOKEN= GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data GH_TOKEN=x GITHUB_REF=refs/heads/main GITHUB_RUN_ATTEMPT=1 bash "$FX/archive-guard.sh" full 2026-07-22 > "$T/gout.txt" 2>&1 || rc=$?
 [[ $rc == 2 ]] && grep -q "the private store cannot be read" "$T/gout.txt" || bad+=" no-token:$rc"
 [[ -z "$bad" ]] && ok "OF-2: zeroed-data unreadable, public, or without a token → refused at the plan job" || no "OF-2 store unreadable:$bad"
 bad=""
@@ -1557,14 +1592,14 @@ o="$T/of2f"; rm -rf "$o"; mkdir -p "$o"
 echo "$attr_list_line" > "$T/k3list.txt"
 SLIST=$T/k3list.txt SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" && [[ " $(cat "$T/scan.args") " == *" -retention K3 -migration-list $T/k3list.txt "* ]] || bad+=" fresh-K3"
 o="$T/of2m"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$o/units/1046/3-4"; echo '{"scanner_revision": "r1", "retention": "K2"}' > "$o/units/1046/1-2/stats.json"; echo '{"scanner_revision": "r1", "retention": "K3"}' > "$o/units/1046/3-4/stats.json"
-rc=0; SDAY=2026-07-22 SFX=$T/fxk3/research/historical/ci scan "$o" || rc=$?
+rc=0; PASSRET=K3 SDAY=2026-07-22 SFX=$T/fxk3/research/historical/ci scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "record retention 'K2 K3 '" "$T/out.txt" || bad+=" mixed:$rc"
 [[ -z "$bad" ]] && ok "OF-2: scan-day passes ARCHIVE_RETENTION's day value to the scanner (-retention K2 for 07-22, K3 for 07-24 under K3); a unit re-read on a K2 day uses K2 after ARCHIVE_RETENTION became K3; units mixing K2 and K3 are refused" || no "OF-2 scan retention:$bad"
 bad=""
 # (the stub's rescan writes no files, so the byte comparison after it fails: only the call is checked)
 cdrun of2 0 || true
 grep -q '^unit .* -retention K2 ' "$T/zs.args" || bad+=" K2:$(grep '^unit' "$T/zs.args")"
-CFX=$T/fxk3/research/historical/ci cdrun of2 0 || true
+CDPASS=K3 CFX=$T/fxk3/research/historical/ci cdrun of2 0 || true
 grep -q '^unit .* -retention K2 ' "$T/zs.args" || bad+=" K2-under-K3"
 rc=0; CDRET=none cdrun of2 0 || rc=$?
 [[ $rc == 2 && ! -s "$T/zs.args" ]] || bad+=" none:$rc"
@@ -1606,16 +1641,23 @@ bad=""
 # The continue job: one resumable restart a day for the archive.
 python3 - "$here/../../../.github/workflows/data-scan.yml" > "$T/cont.sh" <<'PY'
 import sys, yaml
-print(yaml.safe_load(open(sys.argv[1]))["jobs"]["continue"]["steps"][0]["run"])
+print(next(st for st in yaml.safe_load(open(sys.argv[1]))["jobs"]["continue"]["steps"] if st.get("name") == "Dispatch the next run if a day stopped resumably")["run"])
 PY
-cb="$T/contbin"; mkdir -p "$cb"
-printf '#!/usr/bin/env bash\ncase "$1 $2" in "api repos/"*) echo resume-2026-07-22 ;; "workflow run") echo "$*" >> "$T/cont.dispatch" ;; esac\n' > "$cb/gh"; chmod +x "$cb/gh"
-cont() { rm -f "$T/cont.dispatch"; env PATH="$cb:$PATH" GH_REPO=o/r RUN_ID=1 REF=main DAYS=2026-07-22 MAX_MBPS=40 MAX_CREDITS=0 RPC_RPS=5 EXPECT_UNITS= MAX_CHAIN=12 GITHUB_STEP_SUMMARY="$T/cont.sum" "$@" bash "$T/cont.sh" > "$T/cont.out" 2>&1; }
-rc=0; cont CHAIN=1 SOURCE=archive || rc=$?
-[[ $rc == 1 && ! -e "$T/cont.dispatch" ]] && grep -q "second resumable stop on 2026-07-22: counted as a failure" "$T/cont.out" || bad+=" archive-second:$rc"
-cont CHAIN=0 SOURCE=archive && grep -q -- '-f chain=1 -f source=archive' "$T/cont.dispatch" || bad+=" archive-first"
-cont CHAIN=1 SOURCE=helius && grep -q -- '-f chain=2 -f source=helius' "$T/cont.dispatch" || bad+=" helius-second"
-[[ -z "$bad" ]] && ok "OF-2: the continue job allows one resumable restart a day for the archive (a second exit 75 fails it, so the run counts as a failure); Helius chains are unchanged" || no "OF-2 continue:$bad"
+# It runs from the checkout (the fixture) with the guard's gh stub: the artifacts list
+# names resume-2026-07-22; restarts come from run history, per day (ruling 5).
+cont() { rm -f "$GD/dispatch.log"; (cd "$T/fx" && env PATH="$GD/bin:$PATH" GD="$GD" GH_REPO=o/r RUN_ID=1 REF=main DAYS=2026-07-22 MAX_MBPS=40 MAX_CREDITS=0 RPC_RPS=5 EXPECT_UNITS= MAX_CHAIN=12 GITHUB_STEP_SUMMARY="$T/cont.sum" "$@" bash "$T/cont.sh") > "$T/cont.out" 2>&1; }
+gdreset
+dsrun 341 "data-scan scan source=archive" failure 300 290 "scan (2026-07-22)=failure,continue=success" | dsjson
+rc=0; cont CHAIN=0 SOURCE=archive || rc=$?
+[[ $rc == 1 && ! -e "$GD/dispatch.log" ]] && grep -q "second resumable stop on 2026-07-22: counted as a failure" "$T/cont.out" || bad+=" archive-second-by-day:$rc"
+dsrun 342 "data-scan scan source=archive" failure 300 290 "scan (2026-07-21)=failure,continue=success" | dsjson
+cont CHAIN=5 SOURCE=archive && grep -q -- '-f chain=6 -f source=archive' "$GD/dispatch.log" || bad+=" archive-other-day"
+rm -f "$GD/ds.json"; cont CHAIN=0 SOURCE=archive && grep -q -- '-f chain=1 -f source=archive' "$GD/dispatch.log" || bad+=" archive-first"
+dsrun 341 "data-scan scan source=archive" failure 300 290 "scan (2026-07-22)=failure,continue=success" | dsjson
+cont CHAIN=1 SOURCE=helius && grep -q -- '-f chain=2 -f source=helius' "$GD/dispatch.log" || bad+=" helius-second"
+rc=0; cont CHAIN=0 SOURCE=archive GD_RUNS_FAIL=1 || rc=$?; [[ $rc == 1 && ! -e "$GD/dispatch.log" ]] || bad+=" history-unreadable:$rc"
+gdreset
+[[ -z "$bad" ]] && ok "OF-2: the continue job allows one resumable restart a day for the archive, counted per day from run history (a second exit 75 of 07-22 fails it whatever inputs.chain says; another day's restart does not count; an unreadable history stops); Helius chains are unchanged" || no "OF-2 continue:$bad"
 bad=""
 # The repository's values: 31 days, unarmed, retention unset, re-arm time valid.
 ( . "$here/archive-limits.conf"; . "$here/archive-guard.sh"
@@ -1704,6 +1746,147 @@ mkk2; rm -rf "$T/tk2/units"; rc=0; td || rc=$?; [[ $rc == 2 ]] || bad+=" no-unit
 mkk2; rc=0; FAKE_AVAIL=1 DATASET_PARENT="$T/cd-ds" PATH="$TB:$PATH" bash "$here/trim-day.sh" 2026-07-22 "$T/tk2" "$T/nolist" "$T/tk3" "$T/tassets" > "$T/out.txt" 2>&1 || rc=$?
 [[ $rc == 2 && ! -e "$T/trim.args" ]] || bad+=" no-list:$rc"
 [[ -z "$bad" ]] && ok "OF-3 trim-day: every K2 unit trimmed with the pinned list, the trimmed units checked against the expected per-unit log (revision, K3, list sha256) before finalize, strict QA, parity and volume rerun; the log goes into the assets; no gh, curl or wget call; refused with no list, no K2 units or K3 units already there; a log mismatch stops it" || no "OF-3 trim-day:$bad"
+bad=""
+
+# ---- OF-2 round 2 (docs/reviews/OF2.md rulings 1-10) ----
+gdreset; bad=""; now=$(date -u +%s)
+attemptfile() { printf '{"status": "completed", "conclusion": "%s", "updated_at": "%s"}\n' "$3" "$(iso $(( $(date -u +%s) - $4 * 60 )))" > "$GD/attempt-$1-$2.json"; }
+# 1. Re-runs. A re-run of archive-check (attempt 2) never probes; the guard's full and
+# attest refuse attempt 2; a re-run's earlier failed attempt still counts.
+rc=0; ac env AC_STATUS=206 GITHUB_RUN_ATTEMPT=2 || rc=$?
+[[ $rc == 1 && ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" && ! -e "$GD/gh.log" ]] && grep -q "run attempt '2' is not 1" "$A/summary.md" || bad+=" check-attempt2:$rc"
+for m in full attest; do
+  rc=0; GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok GH_TOKEN=x GITHUB_REF=refs/heads/main GITHUB_RUN_ID=700 GITHUB_RUN_ATTEMPT=2 \
+    bash "$FX/archive-guard.sh" $m 2026-07-22 $([[ $m == attest ]] && echo "$T/attest2") > "$T/gout.txt" 2>&1 || rc=$?
+  [[ $rc == 2 && ! -e "$T/attest2/2026-07-22" ]] && grep -q "run attempt '2' is not 1" "$T/gout.txt" || bad+=" guard-$m-attempt2:$rc"
+done
+# A failed check re-run green: attempt 1's probe failure (250 min ago) counts with two more.
+{ ATTEMPT=2 acrun 531 success 240; acrun 532 failure 420 notserved; acrun 533 failure 360 notserved; } | acjson
+attemptfile 531 1 failure 250; jobsfile 531 "Archive probe (a failure unless served)=failure"; mv "$GD/jobs-531.json" "$GD/jobs-531-1.json"
+attemptfile 531 2 success 240; echo '{"jobs": [{"name": "check", "conclusion": "success", "steps": [{"name": "Holds", "conclusion": "success"}]}]}' > "$GD/jobs-531-2.json"
+ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
+[[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" || bad+=" rerun-check:$(cat "$A/summary.md")"
+# Failed batch #3 re-run green (a Publish success in attempt 2): still 3 failures.
+rm -f "$GD"/jobs-* "$GD"/attempt-* "$GD/ac.json"
+{ dsrun 351 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
+  dsrun 352 "data-scan scan source=archive" failure 400 360 "scan (2026-07-22)=failure,continue=failure"
+  ATTEMPT=2 dsrun 353 "data-scan scan source=archive" success 320 240; } | dsjson
+attemptfile 353 1 failure 300; jobsfile 353 "scan (2026-07-22)=failure,continue=failure"; mv "$GD/jobs-353.json" "$GD/jobs-353-1.json"
+attemptfile 353 2 success 240; jobsfile 353 "scan (2026-07-22)=success,Publish this day=success"; mv "$GD/jobs-353.json" "$GD/jobs-353-2.json"
+ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
+[[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" || bad+=" rerun-batch:$(cat "$A/summary.md")"
+FXG=$T/fxr8/research/historical/ci guard full 2026-07-22; rc=$?
+[[ $rc == 2 ]] && grep -q "chain is stopped" "$T/gout.txt" || bad+=" rerun-batch-plan:$rc"
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 1: a re-run (attempt 2) of archive-check, or of the guard's full or attest, refuses with no request; a failed check re-run green and failed batch #3 re-run green still count their first attempt's failure (3 failures: no request, and a manual dispatch refused)" || no "OF-2 r2 re-runs:$bad"
+bad=""; gdreset
+# 2. A manual dispatch gets every hold of a check: (a) out of order, (b) done, (c) within
+# 3 h of a 403/503 (a blocked batch), (d) within 60 min of the last lane run.
+rc=0; guard full 2026-07-23 || rc=$?
+[[ $rc == 2 ]] && grep -q "2026-07-23 is not the oldest allow-listed day not read done (2026-07-22)" "$T/gout.txt" || bad+=" a:$rc"
+echo 2026-07-22 > "$GD/published"; rc=0; guard full 2026-07-22 || rc=$?
+[[ $rc == 2 ]] && grep -q "2026-07-22 is not the oldest allow-listed day not read done (2026-07-23)" "$T/gout.txt" || bad+=" b:$rc"
+rm -f "$GD/published"
+dsrun 361 "data-scan scan source=archive" failure 200 120 "scan (2026-07-22)=failure,continue=failure" | dsjson
+rc=0; guard full 2026-07-22 || rc=$?
+[[ $rc == 2 ]] && grep -q "back-off: nothing goes out before" "$T/gout.txt" || bad+=" c:$rc"
+dsrun 362 "data-scan scan source=archive" success 200 30 "scan (2026-07-21)=success" | dsjson
+rc=0; guard full 2026-07-22 || rc=$?
+[[ $rc == 2 ]] && grep -q "less than 60 min ago" "$T/gout.txt" || bad+=" d:$rc"
+dsrun 363 "data-scan scan source=archive" failure 200 5 "scan (2026-07-22)=failure,continue=success" | dsjson
+guard full 2026-07-22 || bad+=" chained-restart"
+dsrun 364 "data-scan scan source=archive" failure 200 5 "scan (2026-07-21)=failure,continue=success" | dsjson
+rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] || bad+=" other-day-restart:$rc"
+rm -f "$GD/ds.json" "$GD"/jobs-*
+guard full 2026-07-22 || bad+=" control"
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 2: a manual dispatch is refused at the plan job (a) out of order, (b) for a day read done, (c) within 3 h of a blocked batch, (d) within 60 min of the last lane run; only this day's own chained restart passes the 60-min gap" || no "OF-2 r2 manual dispatch:$bad"
+bad=""
+# 3. A no-op success (the day was already published: no Publish step) does not reset.
+{ dsrun 371 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
+  dsrun 372 "data-scan scan source=archive" failure 400 360 "scan (2026-07-22)=failure,continue=failure"
+  dsrun 373 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Publish this day=skipped"
+  dsrun 374 "data-scan scan source=archive" failure 320 300 "scan (2026-07-22)=failure,continue=failure"; } | dsjson
+ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
+[[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" &&
+  ok "OF-2 r2 ruling 3: a no-op success after 2 failures (no day stored) does not reset the count: a third failure stops the chain" || no "OF-2 r2 no-op success: $(cat "$A/summary.md")"
+gdreset
+# 4. Default branch only; failures from every branch count; markers only from default-branch runs.
+rc=0; ac env AC_STATUS=206 GITHUB_REF=refs/heads/feature || rc=$?
+[[ ! -e "$A/curl.calls" ]] && grep -q "held (1): ref 'refs/heads/feature' is not the default branch" "$A/summary.md" || bad+=" check-branch"
+rc=0; GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok GH_TOKEN=x GITHUB_REF=refs/heads/feature GITHUB_RUN_ID=700 GITHUB_RUN_ATTEMPT=1 \
+  bash "$FX/archive-guard.sh" full 2026-07-22 > "$T/gout.txt" 2>&1 || rc=$?
+[[ $rc == 2 ]] && grep -q "is not the default branch" "$T/gout.txt" || bad+=" guard-branch:$rc"
+BRANCH=feature acrun 541 failure 120 notserved | acjson
+ac env AC_STATUS=206
+[[ ! -e "$A/curl.calls" ]] && grep -q "held (2): back-off" "$A/summary.md" || bad+=" other-branch-failure"
+{ BRANCH=feature acrun 542 success 2; } | acjson
+mk "$(mkey 2 542)@refs/heads/main"; KEEPCACHE=1 ac env AC_STATUS=206
+[[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" other-branch-marker"
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 4: archive-check and the guard refuse off the default branch; a non-served check on another branch still counts (back-off); a marker from another branch's run is ignored" || no "OF-2 r2 branches:$bad"
+bad=""; gdreset
+# 6. A probe cancelled or timed out counts; a holds-only failure does not.
+for c in cancelled timed_out; do
+  PROBE=$c acrun 551 "$c" 120 notserved | acjson
+  ac env AC_STATUS=206
+  [[ ! -e "$A/curl.calls" ]] && grep -q "held (2): back-off" "$A/summary.md" || bad+=" $c"
+done
+acrun 552 failure 120 | acjson; echo '{"jobs": [{"name": "check", "conclusion": "failure", "steps": [{"name": "Holds", "conclusion": "failure"}, {"name": "Archive probe (a failure unless served)", "conclusion": "skipped"}]}]}' > "$GD/jobs-552.json"
+ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" holds-only"
+rm -f "$GD/ac.json" "$GD"/jobs-*
+ac env AC_STATUS=429
+[[ $ACRC == 1 ]] && grep -q "probe sent for 2026-07-22" "$A/out.txt" || bad+=" probe-exit:$ACRC"
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 6: the probe step logs the probe-sent mark before the request and fails unless served; a probe cancelled or timed out counts as a failure; a failed holds step with the probe skipped does not" || no "OF-2 r2 probe mark:$bad"
+bad=""; gdreset
+# 8. The pass binds retention, run id and attempt.
+o="$T/r2p"; for v in "2026-07-22 K3" "2026-07-22 K2 x 701 1" "2026-07-22 K2 x 700 2"; do
+  rm -rf "$o" "$GP"; mkdir -p "$o" "$GP"; set -- $v; echo "$1 $2 $(date -u +%s) ${4:-700} ${5:-1}" > "$GP/2026-07-22"
+  rc=0; ARCHIVE_GO="$T/archive10.go" ARCHIVE_GUARD_DIR="$GP" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$FX/scan-day.sh" 2026-07-22 "$o" 40 300 > "$T/out.txt" 2>&1 || rc=$?
+  [[ $rc == 2 ]] && grep -q "for another retention, run or attempt" "$T/out.txt" || bad+=" [$v]:$rc"
+done
+rm -rf "$GP"; guard attest 2026-07-22 "$GP"; read -r d r t id at < "$GP/2026-07-22"; [[ "$d $r $id $at" == "2026-07-22 K2 700 1" ]] || bad+=" attest-format"
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 8: the guard pass carries retention, run id and attempt; scan-day refuses a pass for another retention, run or attempt" || no "OF-2 r2 pass binding:$bad"
+bad=""; gdreset
+# 9. Not armed while days would still be stored in this public repository.
+for v in day vol art; do
+  mkfx "$T/fxpub$v"; c="$T/fxpub$v/research/historical/ci"
+  case $v in day) cp "$here/publish-day.sh" "$c/" ;; vol) cp "$here/publish-volume.sh" "$c/" ;; art) cp "$here/../../../.github/workflows/data-scan.yml" "$T/fxpub$v/.github/workflows/" ;; esac
+  ACFX=$c ac env AC_STATUS=206
+  [[ ! -e "$A/curl.calls" ]] && grep -qE "held \(1\): the archive chain is not armed: .*(publish-day.sh|publish-volume.sh|day-DAY artifact)" "$A/summary.md" || bad+=" check-$v"
+  rc=0; FXG=$c guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] || bad+=" plan-$v:$rc"
+done
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 9: armed, the chain still refuses (archive-check and a manual dispatch) while publish-day.sh (and its skip check) or publish-volume.sh release to this repository, or data-scan.yml uploads the day-DAY artifact: OF-4/OF-5 land first" || no "OF-2 r2 public storage:$bad"
+bad=""; gdreset
+# 10. Retry-After: the probe records it; hold 2 and the guard wait for max(3 h, the end).
+rc=0; ac env AC_STATUS=429 AC_RA=30000 || rc=$?
+end=$(sed -n 's/^backoff_end=//p' "$A/output"); n=$(date -u +%s)
+(( ${end:-0} >= n + 29990 && ${end:-0} <= n + 30000 )) && grep -q "^archive-backoff-$end-900" <(jq -r '.actions_caches[].key' "$GD/caches.json") || bad+=" record:$end"
+ac env AC_STATUS=429 AC_RA="$(date -u -d "@$(( n + 7200 ))" '+%a, %d %b %Y %H:%M:%S GMT')"
+end2=$(sed -n 's/^backoff_end=//p' "$A/output"); (( ${end2:-0} >= n + 7190 && ${end2:-0} <= n + 7210 )) || bad+=" http-date:$end2"
+addcache "archive-backoff-$(( n + 20000 ))-9" refs/heads/main
+acrun 561 failure 200 notserved | acjson
+KEEPCACHE=1 ac env AC_STATUS=206
+[[ ! -e "$A/curl.calls" ]] && grep -q "held (2): back-off: nothing goes out before $(iso $(( n + 20000 )))" "$A/summary.md" || bad+=" hold-ra:$(cat "$A/summary.md")"
+rc=0; guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] && grep -q "back-off" "$T/gout.txt" || bad+=" plan-ra:$rc"
+addcache "archive-backoff-$(( n - 60 ))-9" refs/heads/other
+python3 - "$GD/caches.json" <<'PY'
+import json, sys
+p = sys.argv[1]; c = json.load(open(p)); c["actions_caches"] = [x for x in c["actions_caches"] if x["ref"] != "refs/heads/main"]; json.dump(c, open(p, "w"))
+PY
+KEEPCACHE=1 ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" ra-over"
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 10: a probe's Retry-After (seconds or an HTTP date) is recorded as cache key archive-backoff-<end>; with a recorded end 5.5 h out, a non-served check 3 h 20 min ago still holds archive-check and a manual dispatch; once only other branches' ends remain, the check proceeds" || no "OF-2 r2 Retry-After:$bad"
+bad=""; gdreset
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' || bad+=" scan-records-end"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+s = next(st for st in steps if st.get("name") == "Record the back-off end for archive-check")
+assert s["uses"].startswith("actions/cache/save@") and s["with"]["key"].startswith("archive-backoff-${{ steps.backoff.outputs.end }}-"), s
+assert "steps.backoff.outputs.end != ''" in s["if"] and "inputs.source != 'helius'" in s["if"], s
+b = next(st for st in steps if st.get("id") == "backoff")
+assert 'echo "end=$end" >> "$GITHUB_OUTPUT"' in b["run"], b
+for st in steps:
+    if "archive-guard.sh" in str(st):
+        assert 'GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"' in st["run"], st
+PY
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 10: the scan saves its back-off end as archive-backoff-<end>; the guard steps get the ref, run id and attempt in their clean shell" || no "OF-2 r2 scan back-off:$bad"
 bad=""
 
 echo "$pass passed, $fail failed"
