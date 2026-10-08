@@ -99,6 +99,10 @@ class Rent(unittest.TestCase):
 
     def test_from_epoch_1028(self):
         self.assertEqual(ps.token_account_rent(ps.TOKEN_2022, self.E1028), 1_887_234)
+        # R2-13 (RENT_BOUNDARY.md): the boundary is slot 444,096,000 (2026-09-03 23:24:41 UTC)
+        self.assertEqual(ps.lamports_per_byte(443_990_000), 6_960)         # 09-03 12:00
+        self.assertEqual(ps.lamports_per_byte(444_095_999), 6_960)
+        self.assertEqual(ps.lamports_per_byte(444_096_000), 6_333)
         self.assertEqual(ps.token_account_rent(ps.TOKEN_2022, self.E1033 - 1), 1_887_234)
 
     def test_from_epoch_1033(self):

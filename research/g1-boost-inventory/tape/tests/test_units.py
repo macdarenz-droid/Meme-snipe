@@ -29,6 +29,10 @@ class Costs(unittest.TestCase):
         # amendment 3: 6,960 before 2026-09-03 (epoch 1028), 6,333 from it, 5,080 from epoch 1033
         self.assertEqual(token_account_rent(P.TOKEN_2022_PROGRAM, 1028 * 432_000 - 1), 2_074_080)
         self.assertEqual(token_account_rent(P.TOKEN_2022_PROGRAM, 1028 * 432_000), 1_887_234)
+        # R2-13 (RENT_BOUNDARY.md): the boundary is slot 444,096,000 (2026-09-03 23:24:41 UTC)
+        self.assertEqual(lamports_per_byte(443_990_000), 6_960)          # 09-03 12:00
+        self.assertEqual(lamports_per_byte(444_095_999), 6_960)
+        self.assertEqual(lamports_per_byte(444_096_000), 6_333)
 
     def test_fallback_tier_uses_base_supply(self):
         from g1lib.market import fallback_tier

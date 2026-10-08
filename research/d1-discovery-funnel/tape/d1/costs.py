@@ -88,10 +88,11 @@ def expected_failed_exits() -> float:
 
 
 def rent_rate(entry_slot: int, entry_time: int) -> int:
-    """AMENDMENT_2: lamports per byte in force at the entry slot."""
+    """AMENDMENT_2: lamports per byte in force at the entry slot. Keyed by slot only (RENT_BOUNDARY.md: 6,333 from slot
+    444,096,000, the first of epoch 1028); entry_time is not used."""
     if entry_slot >= C.EPOCH_1033_FIRST_SLOT:
         return C.RENT_RATE_FROM_EPOCH_1033
-    if entry_time >= C.RENT_DATE_0903:
+    if entry_slot >= C.EPOCH_1028_FIRST_SLOT:   # RENT_BOUNDARY.md (red team R2-13): by slot, not by date
         return C.RENT_RATE_FROM_0903
     return C.RENT_RATE_BEFORE_0903
 

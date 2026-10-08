@@ -56,10 +56,16 @@ EPOCH_SLOTS = 432_000
 RENT_EPOCH_1033 = 1033
 
 
+RENT_EPOCH_1028 = 1028
+
+
 def lamports_per_byte(day, slot):
-    if slot // EPOCH_SLOTS >= RENT_EPOCH_1033:
+    """Rent rate at a slot, keyed by slot only (research/brainstorm-loop/RENT_BOUNDARY.md, red team R2-13): 6,333 from
+    slot 444,096,000 (epoch 1028, 2026-09-03 23:24:41 UTC), 5,080 from epoch 1033. `day` is not used (kept for callers)."""
+    epoch = int(slot) // EPOCH_SLOTS
+    if epoch >= RENT_EPOCH_1033:
         return 5_080
-    return 6_333 if day >= "2026-09-03" else 6_960
+    return 6_333 if epoch >= RENT_EPOCH_1028 else 6_960
 
 
 def rent_candidates(day, slot):
@@ -75,7 +81,7 @@ REPLAY_ACCOUNT_BYTES = 170   # the larger (Token-2022) account; the replay does 
 def fixed_round_trip(day, slot) -> float:
     """Red team R2-12 (ruling on Q-R2-c): the replay's and rule test's fixed cost with rent by date, as D1, G1 and
     H1-CGO: (128 + 170) x lamports_per_byte(day, slot) at the entry, RENT-1's refund model. The start of the 6,333
-    rate follows lamports_per_byte, which switches on the date 2026-09-03 as D1 does (open question Q-R2-b)."""
+    rate starts at slot 444,096,000 (RENT_BOUNDARY.md, R2-13)."""
     return expected_fixed((128 + REPLAY_ACCOUNT_BYTES) * lamports_per_byte(day, slot))
 
 

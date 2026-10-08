@@ -389,7 +389,7 @@ class Guards(unittest.TestCase):
 
 class Amendment5(unittest.TestCase):
     def test_rents_follow_the_date(self):
-        self.assertEqual(costs.rent_candidates("2026-09-02", 445_000_000), (2_039_280, 2_074_080))
+        self.assertEqual(costs.rent_candidates("2026-09-02", 443_000_000), (2_039_280, 2_074_080))   # epoch 1025 (R2-13)
         self.assertEqual(costs.rent_candidates("2026-09-03", 445_000_000), (1_855_569, 1_887_234))
         self.assertEqual(costs.rent_candidates("2026-09-11", 1033 * 432_000), (1_488_440, 1_513_840))
 
