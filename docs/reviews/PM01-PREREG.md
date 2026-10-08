@@ -255,3 +255,16 @@ No MAJOR is open, so these are the last text changes before merge (merge still w
 65. **r3.** Part 5 runs the pre-upgrade program bytes (its program-data at the slot before the upgrade) on the post-upgrade pre-state in a local simulator. Pin that binary's sha256 in the boundary record. Name the simulator only after checking it exists and runs those bytes (**VERIFY**). If it cannot be run, part 5 fails and the upgrade is economic (fail closed).
 66. **r4.** The refreshed IDL comes from, in order: (1) the program's on-chain IDL account read at a slot after the upgrade, if the program has one (**VERIFY**); (2) the IDL file the program's owner publishes, at a commit dated after the upgrade. Pin its sha256. A hand-edited IDL never counts. If neither exists by the end of the pending day, the upgrade is economic.
 67. **r5.** Add acceptance cases: one synthetic fixture per kill rule 1–7 and one per pending_data path (side floor, n_b, the 100-trade floors), each asserting kill, pass or pending from the block's values.
+
+## Round 9 (head `3134fd62`): reviewer PASS (0 findings); red team 0 BLOCKER, 1 MAJOR, 4 MINOR
+
+- R7-M1: ruling 65's part 5 cannot be run: it needs every touched account's state just before each trade, and neither Old Faithful (transactions), M07 (pool state) nor standard RPC (current state only) holds it. So every upgrade would be economic, and PM-01 might never finish W_B (paralysis). The simulator and on-chain IDL VERIFYs are also missing from start-condition item 5.
+- r1: "dated" entries can use free git dates. r2: trade counts read during W_B could be an unlogged first run. r3: "commit dated after the upgrade" is not proof of publication time. r4: a fixture where pending_data and a failing gate meet.
+
+### Supervisor rulings for round 10 (8 Oct 2026, 3:28 PM)
+
+68. **R7-M1.** Ruling 65 is replaced. Part 5 uses transaction data only. For each buy and sell on the pending day: (a) the swap instruction's account list matches the pinned pre-upgrade IDL's list for that instruction (new instructions go by part 6); (b) every account created inside the transaction (its inner create-account or ATA instructions), with size and rent lamports, is one that a rule table pinned now from the pinned IDLs allows for that instruction. Whether an account existed before is read from the transaction's own metadata (**VERIFY** which fields the archive's transaction metadata carries). The simulator stays an optional stronger check; its absence does not fail part 5. Start-condition item 5 becomes "every VERIFY in §6.2", with the full list written out.
+69. **r1.** preRegister entries are ordered by their append sequence in the M13 registry, against the first-run record in the same registry; no date field is ever used.
+70. **r2.** If the screen has not run, the first trade count computed during W_B is logged as the first run, which freezes the file and closes the preRegister record.
+71. **r3.** "After the upgrade" for a published IDL means the first time this repo fetched that commit, recorded in the boundary record with the fetched sha; a commit first fetched after the upgrade slot counts. Commit dates are never used.
+72. **r4.** Add combination fixtures: the excess test is pending_data (side floor not met) and B-2 fails with sufficient data → kill (kill rule 1); the same for W_R with R-2.
