@@ -335,3 +335,15 @@ No MAJOR is open, so these are the last text changes before merge (merge still w
 99. **r3.** Numerator and denominator cover the same span: fees and volume over the same UTC hour as the event, or over the covered span of a capped sample.
 
 After this push, one closure check by the reviewer and the red team; then #294 is ready, and its merge waits only on the owner's keep-or-undo answer (3:10 PM).
+
+## Round 14 (head `fee8cf16`): reviewer PASS (no findings); red team 0 BLOCKER, 0 MAJOR, 2 MINOR
+
+- Block sha256 `e4146b30…6d68`, recomputed by both.
+- r1: hourly ratios can have a zero denominator. r2: unlisted types use raw sizes, which follow trading activity.
+
+### Supervisor rulings for round 15 (8 Oct 2026, 3:48 PM)
+
+100. **r1.** Events with a zero denominator go into a separate count, compared before and after by the Poisson path; they are left out of the KS sample, and their share is reported.
+101. **r2.** Unlisted types' reserve deltas are normalised by the pool's swap volume or fees collected over the same span (as `ratioSpan`) before the KS test and the size rule; raw sizes only where no activity measure applies, stated per type in item 5.9.
+
+The red team's own fixes, taken as written. After this push the reviewer checks closure, and #294 is ready; its merge waits only on the owner's keep-or-undo answer (3:10 PM).
