@@ -45,3 +45,14 @@ Rulings 11, 12, 14 applied correctly; 13 applied but its route breaks the proces
 
 15. **MAJOR, botops.** The worker never joins botops (it owns `/run/signer/ops.sock`; under SPEC-B:668 fallback (b) membership would carry sentinel or operator identity). Use the dedicated group `zeroed-spool` = {operator, zeroed-worker}: folder 2730, owner zeroed-worker, group zeroed-spool, made by the installer; botctl writes 0640. PATHS-FIX changes SPEC-B:2539's "group botops" to this, with the reason.
 16. **MINOR, pull account.** Sftp-only Match block with no shell and a ChrootDirectory (ForceCommand internal-sftp already named), and the pull account is added to B-M30-02's host user list (SPEC-B:2584) by PATHS-FIX.
+
+## Round 5 (head `bead6dca`): delta review + red team, same session
+
+Review PASS, final. Red team 0 BLOCKER, 0 MAJOR, 2 MINOR. The spool route gives no access to `ops.sock`; the chroot and bind mount keep the pull account inside the md subtree.
+
+### Supervisor rulings (9 Oct 2026, about 12:25 AM): both MINORs go to PATHS-FIX, not this doc
+
+17. **Receipts cap.** The pull account can write without limit into `receipts/`. PATHS-FIX caps their size and count: the worker deletes files that are not valid receipts and alerts. Alternatively, receipts get a small filesystem or a quota.
+18. **Bind mount.** It persists through a systemd `.mount` unit (or fstab), ordered before `ssh.service`. `md` is mounted read-only, with a separate read-write bind for `md/receipts` only.
+
+#307 is ready to merge once it is out of draft and green on a head that contains the latest base.
