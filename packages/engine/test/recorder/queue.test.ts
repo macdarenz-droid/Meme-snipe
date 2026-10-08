@@ -247,6 +247,7 @@ describe('poll counts (logic 3)', () => {
     q.tick(ms(T0 + 60_000));
     // A poll stamped in the minute already written is counted in the next one.
     q.append(snap('busy', 2, T0 + 59_000));
+    q.append(rec('decision', T0 + 180_400));
     q.tick(ms(T0 + 180_500));
     const counts = q.take(100, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
     const by = (pool: string): unknown[] => counts.filter((p) => p.poolId === pool).map((p) => [p.minuteStartMs, p.successfulPolls, p.changedPolls, p.failedPolls]);
@@ -271,12 +272,14 @@ describe('poll counts (logic 3)', () => {
     const q = new RecorderQueue();
     q.append(snap('a', 1, T0 + 5_000));
     q.append(snap('a', 2, T0 + 125_000));
+    q.append(rec('decision', T0 + 30 * 60_000));
     q.tick(ms(T0 + 30 * 60_000));
     const counts = q.take(10_000, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
     assert.deepEqual(counts, [{ poolId: 'a', minuteStartMs: T0, successfulPolls: 2, changedPolls: 1, failedPolls: 0, priorityClass: 'normal', skippedMinutes: 30 }]);
     assert.equal(q.stats().skippedPollMinutes, 30);
     // Within pollCatchUpMaxMinutes, minute by minute as before.
     q.append(snap('a', 3, T0 + 30 * 60_000 + 1));
+    q.append(rec('decision', T0 + 33 * 60_000));
     q.tick(ms(T0 + 33 * 60_000));
     assert.equal(q.take(100, SEG).filter((r) => r.stream === 'poll_counts').length, 3);
   });

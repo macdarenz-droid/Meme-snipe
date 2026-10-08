@@ -85,9 +85,11 @@ describe('tick work (ruling 2)', () => {
   it('a +3 day pause over 1,000 pools writes one record per pool within a time budget', { timeout: 2_000 }, async () => {
     const q = new RecorderQueue({ config: { maxWatchedPools: 1_000, idleUnwatchMinutes: 1_440 } });
     for (let i = 0; i < 1_000; i++) q.watch(`p${i}`, 'normal', ms(T0));
+    // The feed comes back 3 days later (ruling 25: a tick never writes past the newest received minute + 1).
+    q.append(rec('decision', T0 + 3 * 86_400_000));
     q.tick(ms(T0 + 3 * 86_400_000));
     await yieldToTimers();
-    const out = q.take(Number.MAX_SAFE_INTEGER, SEG);
+    const out = q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts');
     assert.equal(out.length, 1_000);
     assert.ok(out.every((r) => payloadOf(r).skippedMinutes === 3 * 1_440));
   });
@@ -232,6 +234,8 @@ describe('idle by elapsed time (round 4, rulings 17-20)', () => {
     q.append(snap('a', 1, T0 + 1_000));
     q.unwatch('a', ms(T0 + 2_000));
     q.append(snap('a', 1, T0 + 3_000));
+    // Data reaches minute 3, so the tick may write minutes 0-2 (ruling 25).
+    q.append(rec('decision', T0 + 180_000));
     q.tick(ms(T0 + 180_000));
     const keys = pollCounts(q).filter((p) => p.poolId === 'a').map((p) => p.minuteStartMs);
     assert.deepEqual(keys, [T0, T0 + 60_000, T0 + 120_000]);
@@ -281,8 +285,15 @@ describe('round 5 (rulings 22 and 23)', () => {
     q.tick(ms(T0 + 60_100));
     q.append(snap('p', 1, T0 + 59_990));
     q.tick(ms(T0 + 120_100));
-    const keys = q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf)
+    const counts = (): string[] => q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf)
       .map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+    const keys = counts();
+    // No record arrived in minute 2, so the second tick may not write minute 1 yet (ruling 25)...
+    assert.deepEqual(keys, [`p@${T0}`]);
+    // ...and once data reaches minute 2 it does, still once.
+    q.append(rec('decision', T0 + 120_200));
+    q.tick(ms(T0 + 120_300));
+    keys.push(...counts());
     assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
     assert.deepEqual(keys, [`p@${T0}`, `p@${T0 + 60_000}`]);
     assert.equal(q.stats().latePolls, 1);
@@ -331,5 +342,48 @@ describe('round 5 (ruling 24): the forgotten pools map stays bounded without a t
     collected.push(...q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf));
     const p = collected.filter((c) => c.poolId === 'p').map((c) => c.minuteStartMs);
     assert.equal(new Set(p).size, p.length, `p minutes ${p.join(', ')}`);
+  });
+});
+
+describe('round 6 (ruling 25): one wrong forward time cannot stop new pools\' per-minute counts', () => {
+  const perMinute = (q: RecorderQueue, pool: string): Array<Record<string, unknown>> =>
+    q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf).filter((p) => p.poolId === pool);
+
+  /** A fresh pool polled once a second from minute 1 to the end of minute 5, the writer ticking each second. */
+  const fiveMinutes = (q: RecorderQueue): void => {
+    for (let sec = 60; sec < 360; sec++) {
+      q.append(snap('fresh', 1, T0 + sec * 1_000));
+      q.tick(ms(T0 + sec * 1_000));
+    }
+    q.tick(ms(T0 + 360_000));
+  };
+  const expectMinutes = (rows: Array<Record<string, unknown>>): void => {
+    assert.deepEqual(rows.map((p) => [p.minuteStartMs, p.successfulPolls, p.skippedMinutes]),
+      [1, 2, 3, 4, 5].map((m) => [T0 + m * 60_000, 60, undefined]));
+  };
+
+  it('repro A: tick(T0 + 1 h), then 5 minutes of normal polls and ticks: the fresh pool gets per-minute records', () => {
+    const logs: string[] = [];
+    const q = new RecorderQueue({ log: (l, c) => logs.push(`${l}:${c}`) });
+    q.append(snap('p', 1, T0));
+    q.tick(ms(T0 + 3_600_000));
+    fiveMinutes(q);
+    expectMinutes(perMinute(q, 'fresh'));
+    assert.equal(q.stats().clockSteps, 1);
+    assert.ok(logs.includes('warning:M07.clock_step'));
+  });
+
+  it('repro B: unwatch(bad, T0 + 1 day), then 4,096 unwatches, then a fresh pool: per-minute records', () => {
+    const q = new RecorderQueue();
+    q.append(snap('bad', 1, T0));
+    q.unwatch('bad', ms(T0 + 86_400_000));
+    for (let i = 0; i < FLUSHED_UNTIL_MAX; i++) {
+      q.append(snap(`u${i}`, 1, T0 + 1_000));
+      q.unwatch(`u${i}`, ms(T0 + 1_000));
+    }
+    q.take(Number.MAX_SAFE_INTEGER, SEG);
+    fiveMinutes(q);
+    expectMinutes(perMinute(q, 'fresh'));
+    assert.equal(q.stats().clockSteps, 1);
   });
 });
