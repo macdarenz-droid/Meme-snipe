@@ -2,6 +2,7 @@
 // DS formatting table with its display text, exact tooltip text and accessible label.
 import { createElement as h, type ReactElement } from 'react';
 import { Num } from '../../components/num.ts';
+import { SAMPLE_ADDRESS, SAMPLE_MINT } from '../../fixtures.ts';
 import {
   formatAge, formatBps, formatDuration, formatFeeLamports, formatLamports, formatMicroLamportsPerCu, formatPrice, formatSlot, formatSol,
   formatTime, formatTokenAmount, formatUsdE6, sanitizeUntrusted, truncateMiddle, type Formatted,
@@ -49,7 +50,7 @@ export const GALLERY: ReadonlyArray<readonly [string, string, Formatted]> = [
 
 function Gallery(): ReactElement {
   const symbols = ['BONK', 'US\u202EDC Тест very long symbol'].map((s) => sanitizeUntrusted(s, 12));
-  const mint = 'So11111111111111111111111111111111111111112';
+  const mint = SAMPLE_MINT;
   return h('div', { className: 'gallery' },
     h('table', { className: 'gallery__table' },
       h('thead', null, h('tr', null, ['Quantity', 'Wire value', 'Shown', 'Exact (tooltip)'].map((c) => h('th', { key: c, scope: 'col' }, c)))),
@@ -66,7 +67,7 @@ function Typography(): ReactElement {
       h('code', { className: 'typography__token' }, `--t-${t}`), ' Realised PnL after costs')),
     h('p', { className: 'typography__figures num' }, '0123456789 1,111.1111 SOL'),
     h('p', { className: 'typography__figures typography__fallback' }, 'Inter Fallback: Realised PnL after costs 0123456789'),
-    h('p', { className: 'typography__figures' }, h('code', null, '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin')));
+    h('p', { className: 'typography__figures' }, h('code', null, SAMPLE_ADDRESS)));
 }
 
 export const typographySection: Section = { id: 'typography', title: 'Typography', render: () => h(Typography) };
