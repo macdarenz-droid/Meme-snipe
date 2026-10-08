@@ -54,6 +54,42 @@ def read_events(p, names):
     return out
 
 
+# ---------------------------------------------------------------- Step A plan check (for --decide)
+DEFAULT_PLAN = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                                             "shared-tape", "stepa-plan.txt"))
+PLAN_DAYS = ("2026-09-11", "2026-09-10")
+
+
+class PlanError(Exception):
+    pass
+
+
+def check_plan(ranges, plan_path=DEFAULT_PLAN, days=PLAN_DAYS):
+    """Refuse unless the loaded (day, from, to) units equal the committed plan rows for `days` exactly and
+    each day's slot ranges are contiguous. Returns the plan's sha256."""
+    import hashlib
+
+    with open(plan_path, "rb") as fh:
+        raw = fh.read()
+    sha = hashlib.sha256(raw).hexdigest()
+    plan = set()
+    for line in raw.decode().splitlines():
+        f = line.split()
+        if len(f) >= 4 and f[0] in days:
+            plan.add((f[0], int(f[-2]), int(f[-1])))
+    loaded = {(d, int(a), int(b)) for d, a, b in ranges}
+    if not plan:
+        raise PlanError(f"plan {plan_path} has no rows for {days}")
+    if loaded != plan:
+        raise PlanError(f"loaded units differ from the plan: missing {len(plan - loaded)}, extra {len(loaded - plan)}")
+    for d in days:
+        iv = sorted((a, b) for dd, a, b in loaded if dd == d)
+        for (a0, b0), (a1, b1) in zip(iv, iv[1:]):
+            if a1 != b0 + 1:
+                raise PlanError(f"{d}: slots not contiguous between {b0} and {a1}")
+    return sha
+
+
 def _num(s):
     return pd.to_numeric(s, errors="coerce")
 

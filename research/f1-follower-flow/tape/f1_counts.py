@@ -41,6 +41,42 @@ BOOT_SEED = 20261009
 BOOT_N = 10_000
 
 
+# ---------------------------------------------------------------- Step A plan check (for --decide)
+DEFAULT_PLAN = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                                             "shared-tape", "stepa-plan.txt"))
+PLAN_DAYS = ("2026-09-11", "2026-09-10")
+
+
+class PlanError(Exception):
+    pass
+
+
+def check_plan(ranges, plan_path=DEFAULT_PLAN, days=PLAN_DAYS):
+    """Refuse unless the loaded (day, from, to) units equal the committed plan rows for `days` exactly and
+    each day's slot ranges are contiguous. Returns the plan's sha256."""
+    import hashlib
+
+    with open(plan_path, "rb") as fh:
+        raw = fh.read()
+    sha = hashlib.sha256(raw).hexdigest()
+    plan = set()
+    for line in raw.decode().splitlines():
+        f = line.split()
+        if len(f) >= 4 and f[0] in days:
+            plan.add((f[0], int(f[-2]), int(f[-1])))
+    loaded = {(d, int(a), int(b)) for d, a, b in ranges}
+    if not plan:
+        raise PlanError(f"plan {plan_path} has no rows for {days}")
+    if loaded != plan:
+        raise PlanError(f"loaded units differ from the plan: missing {len(plan - loaded)}, extra {len(loaded - plan)}")
+    for d in days:
+        iv = sorted((a, b) for dd, a, b in loaded if dd == d)
+        for (a0, b0), (a1, b1) in zip(iv, iv[1:]):
+            if a1 != b0 + 1:
+                raise PlanError(f"{d}: slots not contiguous between {b0} and {a1}")
+    return sha
+
+
 # ---------------------------------------------------------------- loading
 def unit_info(path: str):
     p = os.path.abspath(path)
@@ -236,9 +272,10 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
     return pd.DataFrame(rows, columns=cols)
 
 
-def leader_test(ev: pd.DataFrame, n_boot=BOOT_N, seed=BOOT_SEED) -> pd.DataFrame:
+def leader_test(ev: pd.DataFrame, n_boot=BOOT_N, seed=BOOT_SEED, min_buys=None) -> pd.DataFrame:
     """Per leader: mean follow - mean placebo follow, and the one-sided 99.5% lower bound from a
-    bootstrap over that leader's (buy, placebo) pairs. Followed = mean diff > 0 and lower bound > 0."""
+    bootstrap over that leader's (buy, placebo) pairs. Followed = mean diff > 0 and lower bound > 0, and
+    the differences are not all equal (zero variance), and n >= min_buys when min_buys is given."""
     ok = ev[ev["dropped"] == ""]
     rng = np.random.default_rng(seed)
     out = []
@@ -248,21 +285,25 @@ def leader_test(ev: pd.DataFrame, n_boot=BOOT_N, seed=BOOT_SEED) -> pd.DataFrame
         idx = rng.integers(0, n, size=(n_boot, n))
         means = d[idx].mean(axis=1)
         lb = float(np.quantile(means, LOWER_Q))
+        zero_var = bool(np.all(d == d[0]))
+        enough = min_buys is None or n >= min_buys
         out.append({"leader": leader, "n_buys": n, "mean_follow": float(g["follow"].mean()),
                     "mean_placebo": float(g["placebo_follow"].mean()), "diff": float(d.mean()),
-                    "lb995": lb, "followed": bool(d.mean() > 0 and lb > 0)})
-    return pd.DataFrame(out, columns=["leader", "n_buys", "mean_follow", "mean_placebo", "diff", "lb995", "followed"])
+                    "lb995": lb, "zero_variance": zero_var,
+                    "followed": bool(d.mean() > 0 and lb > 0 and not zero_var and enough)})
+    return pd.DataFrame(out, columns=["leader", "n_buys", "mean_follow", "mean_placebo", "diff", "lb995",
+                                      "zero_variance", "followed"])
 
 
-def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2):
+def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2, min_buys=None):
     swaps, t, w, ranges = load_units(paths)
     sol_pairs, mint_pairs = build_links(t, w)
     cands = leader_candidates(swaps, day1)
     ev1 = event_table(swaps, cands, day1, ranges, sol_pairs, mint_pairs)
-    lt1 = leader_test(ev1, n_boot)
+    lt1 = leader_test(ev1, n_boot, min_buys=min_buys)
     followed = set(lt1.loc[lt1["followed"], "leader"])
     ev2 = event_table(swaps, followed, day2, ranges, sol_pairs, mint_pairs, candidates=cands)
-    lt2 = leader_test(ev2, n_boot)
+    lt2 = leader_test(ev2, n_boot, min_buys=min_buys)
     persistent = set(lt2.loc[lt2["followed"], "leader"])
     e2p = ev2[(ev2["dropped"] == "") & ev2["leader"].isin(persistent)]
     vol = int(e2p["follower_sol"].sum()) if len(e2p) else 0
@@ -270,6 +311,7 @@ def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2):
     slots = {d: sum(b - a + 1 for dd, a, b in ranges if dd == d) for d in (day1, day2)}
     summary = {
         "units": [f"{d} {a}-{b}" for d, a, b in ranges],
+        "min_buys": min_buys,
         "slots_loaded": slots,
         "swaps_kept": int(len(swaps)),
         "leader_candidates_day1": len(cands),
@@ -303,9 +345,21 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--boot", type=int, default=BOOT_N)
     ap.add_argument("--decide", action="store_true", help="also apply the kill rules (only on complete Step A days)")
+    ap.add_argument("--min-buys", type=int, default=None,
+                    help="minimum used buys per leader; required with --decide (set by the lead, no default)")
+    ap.add_argument("--plan", default=DEFAULT_PLAN, help="committed Step A plan (checked with --decide)")
     a = ap.parse_args(argv)
-    summary, tables = run(a.unit, a.boot)
+    plan_sha = None
     if a.decide:
+        if a.min_buys is None:
+            ap.error("--decide needs --min-buys (the lead sets it)")
+        try:
+            plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
+        except PlanError as e:
+            ap.error(f"--decide refused: {e}")
+    summary, tables = run(a.unit, a.boot, min_buys=a.min_buys)
+    if a.decide:
+        summary["plan"] = {"path": a.plan, "sha256": plan_sha}
         summary["decision"] = decide(summary)
     os.makedirs(a.out, exist_ok=True)
     for k, df in tables.items():

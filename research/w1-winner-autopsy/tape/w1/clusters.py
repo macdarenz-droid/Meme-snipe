@@ -1,6 +1,8 @@
-"""PREREG §3: funding clusters. Owners are joined (union-find, as connected components) through W SOL transfers
-and T transfers of pump mints made on or before the cluster day. An address linked to more than 50 owners (a hub)
-is never used for joining, nor is an excluded address (pool, curve, program-derived, protocol; OPEN_QUESTIONS Q5)."""
+"""PREREG §3: funding clusters. Owners are joined (union-find, as connected components) when a W SOL transfer or a
+T transfer of a pump mint made on or before the cluster day ran directly between them. An address linked to more
+than 50 owners (a hub) is never used for joining, nor is an excluded address (pool, curve, program-derived,
+protocol). OPEN_QUESTIONS Q5: joining only through direct owner-to-owner links is the literal reading; the variant
+that also joins through non-owner intermediaries is reported by `hub_effect` for the reviewer, never used."""
 import numpy as np
 import pandas as pd
 from scipy.sparse import coo_matrix
@@ -9,7 +11,7 @@ from scipy.sparse.csgraph import connected_components
 HUB_OWNERS = 50
 
 
-def build(days, asof_day, hub=HUB_OWNERS):
+def build(days, asof_day, hub=HUB_OWNERS, via_non_owners=False):
     """Clusters as of `asof_day` from the ledger day dicts with day <= asof_day.
 
     Returns (trader: pd.Series owner id -> trader id, info dict). Owners are every tracked swap owner seen on
@@ -37,6 +39,8 @@ def build(days, asof_day, hub=HUB_OWNERS):
     blocked = np.union1d(hubs, excluded)
     if len(e):
         keep = ~np.isin(e[:, 0], blocked) & ~np.isin(e[:, 1], blocked)
+        if not via_non_owners:
+            keep &= is_owner(e[:, 0]) & is_owner(e[:, 1])
         ej = e[keep]
     else:
         ej = e
@@ -71,6 +75,9 @@ def hub_effect(days, asof_day, thresholds=(20, 50, 100, 10**9)):
     for h in thresholds:
         t, i = build(days, asof_day, hub=h)
         out[str(h)] = {"traders": i["traders"], "largest": i["largest"], "hubs": i["hubs"]}
+    t, i = build(days, asof_day, via_non_owners=True)
+    out["50, joining through non-owners (not used)"] = {"traders": i["traders"], "largest": i["largest"],
+                                                         "hubs": i["hubs"]}
     return out
 
 

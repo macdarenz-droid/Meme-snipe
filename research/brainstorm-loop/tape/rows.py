@@ -298,7 +298,7 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
         med = float(np.median(en) - np.median(cn)) if len(en) and len(cn) else None
         lb = boot_lb(lambda x, y: np.median(x) - np.median(y), [en, cn]) if med is not None else None
         fa = float(e["ftb_sol_all"].sum()) if len(e) else 0.0
-        days = sorted(set(e["day"])) if len(e) else []
+        days = sorted({d for d, _, _ in tape.ranges})   # every loaded day, 0 where no event
         summ[arm] = {
             "events_found": int((a["kind"] == "event").sum()) if len(a) else 0,
             "controls_found": int((a["kind"] == "control").sum()) if len(a) else 0,
@@ -306,7 +306,7 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
             "dropped": a["dropped"].value_counts().to_dict() if len(a) else {},
             "median_net_excess": med, "lb95": lb,
             "late_share_of_ftb": (float(e["ftb_sol_late"].sum()) / fa) if fa else None,
-            "events_per_day": {d: int((e["day"] == d).sum()) for d in days},
+            "events_per_day": {d: int((e["day"] == d).sum()) if len(e) else 0 for d in days},
         }
     return df, summ
 
@@ -563,8 +563,9 @@ def mcap_segments(tape: Tape, s: pd.DataFrame):
         for ti, tj, mci, sig, own, buy, sol in zip(t, tn, mc.values, g["signer"].values, g["owner"].values,
                                                     g["is_buy"].values, g["sol"].values):
             a_, b_ = max(ti, start), min(tj, end)
-            segs.append({"pool": r.pool, "mint": r.mint, "day": r.day, "t0": a_, "t1": max(a_, b_), "mcap": mci})
-    return pd.DataFrame(segs, columns=["pool", "mint", "day", "t0", "t1", "mcap"])
+            segs.append({"pool": r.pool, "mint": r.mint, "day": r.day, "t0": a_, "t1": max(a_, b_), "mcap": mci,
+                         "w_start": start, "w_end": end})
+    return pd.DataFrame(segs, columns=["pool", "mint", "day", "t0", "t1", "mcap", "w_start", "w_end"])
 
 
 def band_time(seg, lo, hi):
@@ -613,12 +614,13 @@ def round_usd(tape: Tape, s: pd.DataFrame, sol_usd: dict | None, adj, n_boot=BOO
                         "placebos": len(grid), "bunching_logratio_minus_placebo": point, "lb95": lb})
     gate3 = gate3_split(tape, s, seg, adj)
     summ = {"days": days, "a_within_5pct_of_round_usd": flags,
-            "a_not_separable_from_usd_level": bool(flags and all(v is True for v in flags.values())),
+            "a_not_separable_from_usd_level": (None if (not flags or any(v is None for v in flags.values()))
+                                               else all(flags.values())),
             "gate3_focused_vs_spread": gate3}
     return pd.DataFrame(out), summ
 
 
-def gate3_split(tape: Tape, s: pd.DataFrame, seg: pd.DataFrame, adj):
+def gate3_split(tape: Tape, s: pd.DataFrame, seg: pd.DataFrame, adj, return_rows=False):
     """Design A gate 3 measure (coin_creator's net SOL buying per hour while the pool sits in [399, 441),
     minus the median of the same in +/-5% bands around the placebo cutoffs), split by creators focused on
     one coin vs spread over several (same creator-group definition; Q20). CF collections are reported."""
@@ -644,7 +646,9 @@ def gate3_split(tape: Tape, s: pd.DataFrame, seg: pd.DataFrame, adj):
             secs, _ = band_time(sg, lo, hi)
             if secs <= 0:
                 return np.nan
-            mine = ((g["signer"] == cc) | (g["owner"] == cc)).values & ~g["excluded"].values
+            bt = g["block_time"].values
+            in_win = (bt >= sg["w_start"].iloc[0]) & (bt <= sg["w_end"].iloc[0])
+            mine = ((g["signer"] == cc) | (g["owner"] == cc)).values & ~g["excluded"].values & in_win
             inb = (prev_mc >= lo) & (prev_mc < hi)
             n = len(prev_mc)
             m_, b_, sol = mine[:n], inb, np.nan_to_num(g["sol"].values[:n])
@@ -658,9 +662,11 @@ def gate3_split(tape: Tape, s: pd.DataFrame, seg: pd.DataFrame, adj):
         coins = set().union(*(roles.get(x, set()) for x in grp))
         rows.append({"pool": pool, "coin_creator": cc, "group_size": len(grp), "group_coins": len(coins),
                      "class": "spread" if len(coins) >= 2 else "focused",
-                     "group_cf_collections": int(sum(cf_by.get(x, 0) for x in grp)),
+                     "group_cf_collections": int(sum(cf_by.get(x, 0) for x in grp)), "measure_main": main,
                      "measure_minus_placebo": main - plc if np.isfinite(main) and np.isfinite(plc) else np.nan})
     df = pd.DataFrame(rows)
+    if return_rows:
+        return df
     if not len(df):
         return {}
     return {c: {"pools": int(len(g)), "pools_with_measure": int(g["measure_minus_placebo"].notna().sum()),

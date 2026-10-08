@@ -17,7 +17,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rows as R  # noqa: E402
-from tapeio import Tape  # noqa: E402
+from tapeio import DEFAULT_PLAN, PlanError, Tape, check_plan, unit_info  # noqa: E402
 
 
 def read_sol_usd(path):
@@ -28,7 +28,7 @@ def read_sol_usd(path):
     return dict(zip(df["day"], df["sol_usd"].astype(float)))
 
 
-def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False):
+def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None):
     R.BOOT_N = n_boot
     tape = Tape(units)
     adj = R.adjacency(tape.links)
@@ -49,6 +49,7 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False):
         "5_two_sided_clusters": two, "6_round_usd": ru_s,
     }
     if decide:
+        summary["plan"] = plan
         summary["decision"] = {"1_dev_zero_prereg_by_arm": R.dev_zero_decide(dz_s),
                                "3_seat_drift_prereg": R.seat_drift_decide(sd_s),
                                "2_rebuy_anchor": "not decidable: see not_computed_pending_ruling"}
@@ -68,8 +69,16 @@ def main(argv=None):
     ap.add_argument("--sol-usd")
     ap.add_argument("--boot", type=int, default=R.BOOT_N)
     ap.add_argument("--decide", action="store_true")
+    ap.add_argument("--plan", default=DEFAULT_PLAN, help="committed Step A plan (checked with --decide)")
     a = ap.parse_args(argv)
-    s = run(a.unit, a.out, read_sol_usd(a.sol_usd), a.boot, a.decide)
+    plan_sha = None
+    if a.decide:
+        try:
+            plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
+        except PlanError as e:
+            ap.error(f"--decide refused: {e}")
+    s = run(a.unit, a.out, read_sol_usd(a.sol_usd), a.boot, a.decide,
+            plan={"path": a.plan, "sha256": plan_sha} if a.decide else None)
     json.dump(s, sys.stdout, indent=1, default=str)
     print()
 

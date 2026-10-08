@@ -64,8 +64,8 @@ class Unit:
         self.event("CreatePoolEvent", slot, {"pool": pool, "base_mint": mint, "quote_mint": WSOL,
                                              "is_mayhem_mode": "0", "coin_creator": creator, "creator": "x"})
 
-    def write(self, root):
-        p = os.path.join(root, DAY, f"{self.lo}-{self.hi}", "research")
+    def write(self, root, day=DAY):
+        p = os.path.join(root, day, f"{self.lo}-{self.hi}", "research")
         os.makedirs(p, exist_ok=True)
         z = dict(index=False, compression="zstd")
         pd.DataFrame(self.curve, columns=CURVE_COLS).to_csv(os.path.join(p, "S_curve.csv.zst"), **z)
@@ -118,7 +118,7 @@ class Helpers(unittest.TestCase):
 class Loader(unittest.TestCase):
     def test_boost_rows_excluded_by_signature(self):
         u = Unit()
-        u.aswap(10, None, "M", "P", sig="boostsig")
+        u.aswap(10, "A0", "M", "P", sig="boostsig")          # has an owner and protocol=0
         u.event("BoostBuyAndBurnEvent", 10, {"mint": "M", "pool": "P"}, sig="boostsig")
         u.aswap(11, "A", "M", "P")
         tape, s, _ = load(u)
@@ -273,6 +273,74 @@ class Rebuy(unittest.TestCase):
         self.assertEqual(df.set_index("owner").at["B", "rebuy_2h"], False)
         self.assertAlmostEqual(summ["proceeds_readable_share"], 0.75)
         self.assertTrue(summ["not_computed_pending_ruling"])
+
+
+class ReviewFixes(unittest.TestCase):
+    def test_dev_zero_counts_zero_for_loaded_day_without_events(self):
+        d = tempfile.mkdtemp()
+        tape = Tape([dev_unit().write(d), Unit(20000, 20999).write(d, "2026-09-10")])
+        adj = R.adjacency(tape.links)
+        labels, _ = R.two_sided_clusters(tape)
+        s = R.prepare(tape, labels)
+        _, summ = R.dev_zero(tape, s, adj)
+        self.assertEqual(summ["le5"]["events_per_day"], {DAY: 1, "2026-09-10": 0})
+        self.assertEqual(summ["zero"]["events_per_day"], {DAY: 0, "2026-09-10": 0})
+
+    def test_missing_price_gives_none(self):
+        d = tempfile.mkdtemp()
+        tape = Tape([Unit().write(d), Unit(20000, 20999).write(d, "2026-09-10")])
+        _, summ = R.round_usd(tape, tape.swaps, {DAY: 119.26}, {}, n_boot=0)
+        self.assertIsNone(summ["a_not_separable_from_usd_level"])
+
+    def test_gate3_ignores_creator_swaps_before_window(self):
+        u = Unit()
+        u.create(10, "M"); u.migrate(100, "M", "P")
+        u.aswap(150, "o0", "M", "P", quote=22e9)                        # market cap 420 SOL
+        u.aswap(200, "DEV", "M", "P", sol=5e9, quote=22e9)               # creator buy before m + 5 min
+        u.aswap(1000, "o1", "M", "P", quote=22e9)
+        tape, s, adj = load(u)
+        seg = R.mcap_segments(tape, s)
+        df = R.gate3_split(tape, s, seg, adj, return_rows=True)
+        self.assertEqual(df.iloc[0]["measure_main"], 0.0)
+
+
+class Plan(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.plan = os.path.join(self.d, "plan.txt")
+        with open(self.plan, "w") as fh:
+            fh.write("2026-09-11 1 0 99\n2026-09-11 1 100 199\n2026-09-11 1 200 299\n"
+                     "2026-09-10 1 1000 1099\n2026-09-08 1 5 6\n")
+        self.full = [("2026-09-11", 0, 99), ("2026-09-11", 100, 199), ("2026-09-11", 200, 299),
+                     ("2026-09-10", 1000, 1099)]
+
+    def test_exact_plan_passes_and_returns_sha(self):
+        import hashlib
+        from tapeio import check_plan
+        self.assertEqual(check_plan(self.full, self.plan), hashlib.sha256(open(self.plan, "rb").read()).hexdigest())
+
+    def test_missing_middle_and_subset_refused(self):
+        from tapeio import PlanError, check_plan
+        with self.assertRaises(PlanError):
+            check_plan([r for r in self.full if r[1] != 100], self.plan)
+        with self.assertRaises(PlanError):
+            check_plan(self.full[:3], self.plan)                         # a correct subset is not enough
+        with self.assertRaises(PlanError):
+            check_plan(self.full + [("2026-09-12", 1, 2)], self.plan)
+
+    def test_noncontiguous_plan_refused(self):
+        from tapeio import PlanError, check_plan
+        with open(self.plan, "w") as fh:
+            fh.write("2026-09-11 1 0 99\n2026-09-11 1 150 199\n2026-09-10 1 1000 1099\n")
+        with self.assertRaises(PlanError):
+            check_plan([("2026-09-11", 0, 99), ("2026-09-11", 150, 199), ("2026-09-10", 1000, 1099)], self.plan)
+
+    def test_cli_decide_refused_on_incomplete_units(self):
+        import run_step_a
+        u = Unit().write(self.d)
+        with self.assertRaises(SystemExit):
+            run_step_a.main(["--unit", u, "--out", os.path.join(self.d, "o"), "--decide", "--plan", self.plan])
+        self.assertFalse(os.path.exists(os.path.join(self.d, "o")))
 
 
 class RoundUsd(unittest.TestCase):
