@@ -120,3 +120,6 @@ These are the places where PREREG.md and AMENDMENT_1.md are silent or ambiguous.
   - The median within-slot rank of its buys: the dense rank of the buy's transaction among the slot's SOL-quoted swaps of the same mint, 1 = first.
   - The tag is reported per class (quartiles) in `gate`, and for the winners beside any extracted rule. It never enters the class or the ranking.
   - W1 ranks slow traders only, so a rule never comes from fast winners. `rule.json` still names MIG-SEAT's seat estimate as the reference.
+
+## Red team R2-12 (2026-10-08, parent's ruling on Q-R2-c)
+- **Replay rent by date.** The §7 replay and §8 rule test charge edge-costs' fixed costs with rent (128 + 170) × the lamports per byte at the entry slot (6,960 / 6,333 / 5,080), as D1, G1 and H1-CGO (`costs.fixed_round_trip`). The account is taken as 170 bytes (the larger) because the replay does not read the mint's token program. The 6,333 band starts on the date 2026-09-03, as D1 and AMENDMENT_5 Q35 read it; it follows any ruling on Q-R2-b (epoch 1028 began 23:24 UTC that day).

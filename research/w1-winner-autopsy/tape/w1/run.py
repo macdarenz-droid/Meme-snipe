@@ -219,7 +219,7 @@ def _persistence(a, role, with_replay):
         return out, tp, ranked, m
     top = tp[tp["decile"] == 10]
     units = guard.ledger_units(m, test_days)               # the ledger's own units, never the cache
-    rp = replay.replay_trades(top[["mint", "entry_slot", "exit_slot", "open_at_end", "day_hi"]], units, _vocab(a.work))
+    rp = replay.replay_trades(top[["mint", "day", "entry_slot", "exit_slot", "open_at_end", "day_hi"]], units, _vocab(a.work))
     rm = replay.replay_mean(rp)
     out["replay"] = {"trades": int(len(rp)), "replayed": int(np.isfinite(rp["ret_replay"]).sum()),
                      **replay.shares(rp),

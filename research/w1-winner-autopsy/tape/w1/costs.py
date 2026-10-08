@@ -26,13 +26,14 @@ EXIT_FIXED = _BASE + _LADDER_PRIORITY[0] + _TIP
 FAILED_EXIT = _BASE + _LADDER_PRIORITY[min(2, len(_LADDER_PRIORITY) - 1)]
 
 
-def expected_fixed() -> float:
-    """Expected fixed lamports per filled round trip, exactly as edge-costs.ts `expectedFixed`."""
+def expected_fixed(rent: int = _RENT) -> float:
+    """Expected fixed lamports per filled round trip, exactly as edge-costs.ts `expectedFixed`, with `rent` in place of
+    its token-account rent (the repo's 1,513,840 by default, kept for the parity check)."""
     f = 1 - _LAND_PUMPSWAP_CONSERVATIVE
     failed = sum(f ** k for k in range(1, _MAX_ATTEMPTS + 1))
     rent_back = _CLOSE_SUCCESS * (1 - _DUST)
     failed_close = (1 - _CLOSE_SUCCESS) * (1 - _DUST)
-    return ENTRY_LANDED + EXIT_FIXED + failed * FAILED_EXIT + (1 - rent_back) * _RENT + failed_close * FAILED_EXIT
+    return ENTRY_LANDED + EXIT_FIXED + failed * FAILED_EXIT + (1 - rent_back) * rent + failed_close * FAILED_EXIT
 
 
 FIXED_ROUND_TRIP = expected_fixed()
@@ -66,6 +67,16 @@ def rent_candidates(day, slot):
     lpb = lamports_per_byte(day, slot)
     r = sorted((128 + s) * lpb for s in ACCOUNT_SIZES)
     return r[0], r[1]
+
+
+REPLAY_ACCOUNT_BYTES = 170   # the larger (Token-2022) account; the replay does not read the mint's token program
+
+
+def fixed_round_trip(day, slot) -> float:
+    """Red team R2-12 (ruling on Q-R2-c): the replay's and rule test's fixed cost with rent by date, as D1, G1 and
+    H1-CGO: (128 + 170) x lamports_per_byte(day, slot) at the entry, RENT-1's refund model. The start of the 6,333
+    rate follows lamports_per_byte, which switches on the date 2026-09-03 as D1 does (open question Q-R2-b)."""
+    return expected_fixed((128 + REPLAY_ACCOUNT_BYTES) * lamports_per_byte(day, slot))
 
 
 RENT_CANDIDATES = rent_candidates("2026-09-11", RENT_EPOCH_1033 * EPOCH_SLOTS)   # the latest (1,488,440, 1,513,840)

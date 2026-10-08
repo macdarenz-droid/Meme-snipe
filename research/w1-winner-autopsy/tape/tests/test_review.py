@@ -179,7 +179,7 @@ class ReplayAmendment3(unittest.TestCase):
             units = load.parse_units([u.dir])
             v = load.Vocab()
             Ledger(v).process_unit(units[0])
-            t = pd.DataFrame({"mint": [v.get(M)], "entry_slot": [entry], "exit_slot": [exit_],
+            t = pd.DataFrame({"mint": [v.get(M)], "day": [A10], "entry_slot": [entry], "exit_slot": [exit_],
                               "open_at_end": [False], "day_hi": [H1]})
             return replay.replay_trades(t, units, v)
 
