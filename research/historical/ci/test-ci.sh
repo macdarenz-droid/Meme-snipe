@@ -2981,6 +2981,7 @@ out=$(DATA_REPO=test/repo bash -c '. "$1"; main 2026-09-20 2026-09-21 "$2"' _ "$
 [[ -z "$bad" ]] && ok "OF-4: every release call in this suite named the private store (DATA_REPO); publish-day (and --check), publish-volume, storage-check, volume-day --download and assemble refuse before any gh call without DATA_REPO or when it is this repository" || no "OF-4 private store only:$bad"
 bad=""
 # The day release carries the per-unit log, and the OF-3 files SHA256SUMS lists.
+export GH_BIN="$T/bin/gh"
 rm -rf "$T/rel/data-day-2026-09-30"; mkpd; echo "k2 abc u" > "$pd/rescan-2026-09-30.sha256"; echo "pool 1 2" > "$pd/list-2026-09-30.txt"
 (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* rescan-* list-* > SHA256SUMS-2026-09-30)
 : > "$T/ghout4"; GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 &&
@@ -3002,6 +3003,7 @@ out=$(FAKE_GH_CORRUPT=units-2026-09-30.tar.part00 GITHUB_OUTPUT="$T/ghout4" bash
 rm -rf "$T/rel/data-volume-2026-09-30"
 out=$(FAKE_GH_CORRUPT=volume-hours-2026-09-30.csv bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" 2>&1) && bad+=" [volume passed]"
 [[ "$out" == *"read-back"* ]] || bad+=" [volume: ${out:0:80}]"
+unset GH_BIN
 [[ -z "$bad" ]] && ok "OF-4: a read-back mismatch (a part, the per-unit log or SHA256SUMS; also on a rerun of a complete release; and the volume CSV) fails the store step without readback=true, so the progress cache is kept" || no "OF-4 read-back:$bad"
 bad=""
 # The workflows: nothing public, the store token only in clean steps, the storage check after each batch.
