@@ -292,5 +292,56 @@ class RedTeamR1(unittest.TestCase):
         self.assertTrue(F.decide(base, payer={"passed": True})["gate_passes"])
 
 
+class PayerMassF1(unittest.TestCase):
+    """COUNT_ROWS_AMENDMENT_8 Q-R1-g: F1's payer-mass bar (CODE_REDTEAM.md R1-23)."""
+
+    def test_q_and_fee_from_the_trade_row(self):
+        curve = pd.DataFrame([dict(curve_row(10, "L", "m"), virtual_sol_reserves="30000000000",
+                                   fee_basis_points="95", creator_fee_basis_points="30")])
+        amm = pd.DataFrame([{"slot": 11, "tx_idx": 0, "ev_idx": 0, "signature": "a1", "user_token_owner": "L",
+                             "base_mint": "m2", "side": "buy", "quote_amount": "5", "quote_mint": F.WSOL,
+                             "protocol": "0", "chain_pool_quote": "80000000000", "virtual_quote_reserves": "20000000000",
+                             "lp_fee_basis_points": "20", "protocol_fee_basis_points": "5",
+                             "coin_creator_fee_basis_points": "95"}])
+        s = F.normalise_swaps(curve, amm, set(), F.DAY2).set_index("mint")
+        self.assertEqual((s.at["m", "q"], s.at["m", "fee_bps"]), (30e9, 125))        # curve: virtual SOL, own fields
+        self.assertEqual((s.at["m2", "q"], s.at["m2", "fee_bps"]), (100e9, 120))     # pool: effective quote after
+
+    def test_bar_excess_in_shares_and_ties(self):
+        x = F.SPEND_5USD
+        Q = 2.0 ** 35                                   # a power of 2: shares round-trip exactly
+        c = 2 * 0.0125 + (x * x / (Q + x) + x * x / Q) / x + 414_009 / x
+        ss = np.sqrt(1 + c) - 1
+        self.assertAlmostEqual(F.round_trip_share(Q, 125), ss)
+        n = 21                                          # 11 at exactly 2 s*, 10 at exactly s*: median ratio 2, 11 a day
+        ev = pd.DataFrame({"day": F.DAY2, "follower_sol_late": [2 * ss * Q] * 11 + [ss * Q] * 10,
+                           "q": Q, "fee_bps": 125, "placebo_late": 0, "placebo_q": 50e9})
+        r = F.f1_payer_bar(ev)
+        self.assertEqual(r["events"], n)
+        self.assertAlmostEqual(r["events_at_2x_per_day"], 11.0)
+        self.assertTrue(r["passed"])
+        ev2 = ev.assign(placebo_late=[1e-3 * 50e9] + [0] * (n - 1))   # placebo excess in its own Q's share
+        self.assertFalse(F.f1_payer_bar(ev2)["passed"])                # one 2 s* event drops below: 10 a day
+        self.assertIsNone(F.f1_payer_bar(ev.iloc[:0])["passed"])
+
+    def test_run_and_decide_carry_the_bar(self):
+        with tempfile.TemporaryDirectory() as root:
+            rows1, rows2 = [], []
+            for rows, base in ((rows1, 1000), (rows2, 20000)):
+                for i in range(10):
+                    s0 = base + 3000 + i * 100
+                    rows.append(curve_row(s0, "L", f"m{i}"))
+                    rows.append(curve_row(s0 + 700, f"pl{i}", f"m{i}"))
+                    for k in range(3 + i % 2):
+                        rows.append(curve_row(s0 + 30 + k, f"f{i}_{k}", f"m{i}", sol=1000))
+            u1 = write_unit(root, F.DAY1, 1000, 9999, rows1)
+            u2 = write_unit(root, F.DAY2, 20000, 29999, rows2)
+            summ, tabs = F.run([u1, u2], n_boot=500)
+            self.assertIn("placebo_late", tabs["events_day2"].columns)
+            self.assertIn("passed", summ["payer_mass_bar"])
+            d = F.decide(summ, payer=summ["payer_mass_bar"])
+            self.assertEqual(d["gate_passes"], bool(not d["f1_closes"] and summ["payer_mass_bar"]["passed"] is True))
+
+
 if __name__ == "__main__":
     unittest.main()
