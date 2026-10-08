@@ -41,6 +41,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 20:20 | Sweep 3 finished (8 ideas, 7 agents, 52 min): no edge; LAUNCHER-ID is a filter fix; key fact checked in code: H8 needs effective quote ≥ max($15k, 1,000 × size) (about 126/168/419 SOL at $5/$20/$50), so fresh graduates (about 85 SOL) fail at every size |
 | 2026-10-08 20:20 | H8 amendment, H1-CGO amendment 3 (D60), W1 amendment 4 (flipper rows) committed (8cf92af) and sent to the lead |
 | 2026-10-08 20:33 | H1-CGO amendment 4 (D60 and H8 readings confirmed, dust-at-migration added) and SOL/USD klines for the 10 tape days (Binance archive, 20 of 20 checksums matched, no holdout days) committed (efce06e) |
+| 2026-10-08 20:36 | W1 amendment 5 (1e2d3be): a refused replay entry is no trade; rent candidates by date; Steps B and C plans are the lead's to register |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
