@@ -186,6 +186,7 @@ STR_COLS = {  # string columns kept as codes into one shared, sorted vocabulary 
 }
 DROP_SWAP_COLS = ["protocol", "quote"]       # used only while a unit is read (excluded, sol)
 SMALL_INTS = {"tx_idx": np.int32, "ev_idx": np.int32, "outer_ix": np.int16, "inner_ix": np.int16}
+EXACT_F32 = ["cu", "creator_fee_bps", "mayhem"]   # compute units (<= 1.4M), fee bps, the 0/1 mayhem flag
 
 
 def _trim():
@@ -276,6 +277,8 @@ class Tape:
                 sw["signature"] = sig_hash(sw["signature"])
                 for c, d in SMALL_INTS.items():
                     sw[c] = sw[c].astype(d)
+                for c in EXACT_F32:            # values below 2^24, so float32 holds them exactly
+                    sw[c] = sw[c].astype(np.float32)
                 # each unit sorted on its own: units hold disjoint slot ranges, so ordering the units by their first
                 # slot and concatenating gives the same rows in the same order as one stable sort of everything
                 sw = sw.sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort").reset_index(drop=True)
@@ -329,7 +332,7 @@ class Tape:
             self.swaps = pd.concat(swaps, ignore_index=True).sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort")
             self.swaps = self.swaps.reset_index(drop=True)
         del swaps
-        self.swaps["order"] = np.arange(len(self.swaps))
+        self.swaps["order"] = np.arange(len(self.swaps), dtype=np.int32 if compact else np.int64)
         tall = pd.concat(t, ignore_index=True)
         for col in ("slot", "tx_idx", "outer_ix", "inner_ix", "amount"):
             tall[col] = _num(tall[col]).fillna(-1).astype(np.int64)

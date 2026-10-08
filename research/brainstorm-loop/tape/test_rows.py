@@ -910,6 +910,15 @@ class CompactReader(unittest.TestCase):
         idx = np.arange((T0 - 7200) // 60 * 60, T0 + 40000, 60)
         return pd.Series(200.0, index=idx)
 
+    def test_compact_tape_is_compact(self):
+        d = tempfile.mkdtemp()
+        p = dev_unit().write(d)
+        a, b = Tape([p], compact=False), Tape([p], compact=True)
+        self.assertEqual(str(b.swaps["owner"].dtype), "category")
+        self.assertEqual(b.swaps["signature"].dtype, np.int64)
+        self.assertNotIn("protocol", b.swaps.columns)
+        self.assertEqual(list(a.swaps["owner"].astype(object)), list(b.swaps["owner"].astype(object)))
+
     def test_fixtures(self):
         for u in (dev_unit(), rebuy_unit(), slicer_unit(), migseat_unit(), mayhem_unit(), SeatDrift()._unit()):
             self._same([u], self._minutes())
