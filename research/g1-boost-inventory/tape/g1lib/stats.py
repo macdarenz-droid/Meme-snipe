@@ -34,7 +34,8 @@ def interval(boot: np.ndarray, alpha: float):
     return float(np.quantile(boot, alpha / 2)), float(np.quantile(boot, 1 - alpha / 2))
 
 
-def primary(trades: pd.DataFrame, control: Optional[pd.DataFrame] = None, lift_over: Optional[Dict[str, pd.DataFrame]] = None) -> dict:
+def primary(trades: pd.DataFrame, control: Optional[pd.DataFrame] = None, lift_over: Optional[Dict[str, pd.DataFrame]] = None,
+            required_days=None) -> dict:
     """PREREG §9 on filled trades (columns ret, day, mint). Returns the statistic, both intervals and the verdict.
     `control` is S0 (point lift above 0 required); `lift_over` adds further required point lifts (amendments)."""
     t = trades[trades["filled"]].copy()
@@ -56,7 +57,12 @@ def primary(trades: pd.DataFrame, control: Optional[pd.DataFrame] = None, lift_o
         v = v[v["filled"]]
         lifts[k] = out["mean"] - float(v["ret"].mean()) if len(v) else math.nan
     out["lifts"] = lifts
-    passed = (out["ci_99_5"][0] > 0 and n >= P.MIN_FILLED_TRADES and all(x > 0 for x in out["per_day_mean"].values())
+    # every required (validation) day must be present with a mean above 0 (review finding 3)
+    days = list(required_days) if required_days is not None else list(out["per_day_mean"])
+    out["missing_days"] = [x for x in days if x not in out["per_day_mean"]]
+    per_day_ok = not out["missing_days"] and all(out["per_day_mean"][x] > 0 for x in days) \
+        and all(x > 0 for x in out["per_day_mean"].values())
+    passed = (out["ci_99_5"][0] > 0 and n >= P.MIN_FILLED_TRADES and per_day_ok
               and all((x > 0) for x in lifts.values()) and len(lifts) > 0)
     out["verdict"] = "pass" if passed else ("unresolved" if n < P.MIN_FILLED_TRADES else "not supported")
     return out

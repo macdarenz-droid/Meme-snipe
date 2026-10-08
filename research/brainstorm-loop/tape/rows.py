@@ -533,13 +533,26 @@ A_LADDER = 1470.0
 USD_LEVELS = (50_000.0, 100_000.0)
 
 
-def placebo_grid(day_levels=()):
+def _overlap(a0, a1, b0, b1):
+    return max(a0, b0) <= min(a1, b1)
+
+
+def placebo_grid(day_levels=(), day_ranges=()):
     """Design A gate 2: 20 cutoffs on a log grid 340-1,300 SOL, each > 10% from 420 and 1,470 (Q18: the
     grid is 20 points and the exclusions then thin it). Amendment: drop cutoffs within 10% of the day's
-    USD levels."""
+    USD levels; with a range of levels (minute closes, Q22) a cutoff is dropped if it is within 10% of any
+    level in the range."""
     g = np.geomspace(340.0, 1300.0, 20)
     keep = [c for c in g if all(abs(c / x - 1) > 0.10 for x in (A_LEVEL, A_LADDER))]
-    return [float(c) for c in keep if all(abs(c / x - 1) > 0.10 for x in day_levels)]
+    ranges = [(x, x) for x in day_levels] + list(day_ranges)
+    return [float(c) for c in keep if not any(_overlap(c / 1.10, c / 0.90, lo, hi) for lo, hi in ranges)]
+
+
+def px_range(px):
+    """A day's SOL/USD: a float, or (median, min, max) of the day's minute closes."""
+    if isinstance(px, (tuple, list)):
+        return float(px[0]), float(px[1]), float(px[2])
+    return float(px), float(px), float(px)
 
 
 def mcap_segments(tape: Tape, s: pd.DataFrame):
@@ -598,9 +611,12 @@ def round_usd(tape: Tape, s: pd.DataFrame, sol_usd: dict | None, adj, n_boot=BOO
         if px is None:
             flags[d] = None
             continue
-        lv = [u / px for u in USD_LEVELS]
-        flags[d] = any(abs(A_LEVEL / L - 1) <= 0.05 for L in lv)
-        grid = placebo_grid(lv)
+        med, lo, hi = px_range(px)
+        lv = [u / med for u in USD_LEVELS]                     # bunching at the median close's levels
+        rng_l = [(u / hi, u / lo) for u in USD_LEVELS]          # every minute's level (Q22)
+        flags[d] = any(_overlap(A_LEVEL / 1.05, A_LEVEL / 0.95, a, b) for a, b in rng_l)
+        grid = placebo_grid(day_ranges=rng_l)
+        px = med
         sd = seg[seg["day"] == d]
         plist = list(sd["pool"].unique())
         for usd, L in zip(USD_LEVELS, lv):

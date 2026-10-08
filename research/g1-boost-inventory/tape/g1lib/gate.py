@@ -127,7 +127,9 @@ def g1_0(d: pd.DataFrame, grads: pd.DataFrame, mkt: Market, days) -> dict:
     comp = [mkt.completion_slot(int(m)) for m in trig["mint_c"]]
     trig["completion"] = [c if c is not None else -1 for c in comp]
     trig["m"] = [int(mkt.mig[m]["slot"]) if m in mkt.mig else -1 for m in trig["mint_c"]]
-    trig["catchable"] = [(c < 0) or (c > t + P.D) for c, t in zip(trig["completion"], trig["t0"])]
+    # catchable: the curve is still open after the entry slot, and the decision is not dropped by time (finding 5)
+    trig["catchable"] = [((c < 0) or (c > t + P.D)) and not bool(dr)
+                         for c, t, dr in zip(trig["completion"], trig["t0"], trig["dropped_by_time"])]
     mig = trig[trig["m"] >= 0]
     slots_to_m = (mig["m"] - mig["t0"]).to_numpy()
     out = {"days": list(days)}
@@ -218,7 +220,8 @@ def hc_gate(trig: pd.DataFrame, flows: Dict[int, dict], days) -> dict:
     med_r = float(has_r["R"].median()) if len(has_r) else math.nan
     filt = has_r[(has_r["R"] < med_r) & has_r["catchable"]]
     per_day = {str(k): int(v) for k, v in filt.groupby("day").size().items()}
-    avg = sum(per_day.get(str(x), 0) for x in days) / max(len(days), 1)
+    # "at least 100 ... a day": every day must reach it (per-day minimum, review finding 4; OQ-27)
+    day_min = min(per_day.get(str(x), 0) for x in days) if len(days) else 0
     terc = None
     if len(has_r):
         q1, q2 = has_r["R"].quantile(1 / 3), has_r["R"].quantile(2 / 3)
@@ -231,7 +234,7 @@ def hc_gate(trig: pd.DataFrame, flows: Dict[int, dict], days) -> dict:
         "b_min_coverage": float(cov.min()) if len(cov) else math.nan,
         "b_pass": bool(pooled >= P.HC_GATE_COVERAGE and float(cov.median()) >= P.HC_GATE_COVERAGE) if len(cov) else False,
         "b_dropped_created_before_tape": int((t["hc_reason"] == "created-before-tape").sum()),
-        "c_filtered_catchable_per_day": per_day, "c_avg": avg, "c_pass": avg >= P.HC_GATE_MIN_PER_DAY,
+        "c_filtered_catchable_per_day": per_day, "c_min_day": day_min, "c_pass": day_min >= P.HC_GATE_MIN_PER_DAY,
         "d_spearman_R_vs_create_to_trigger_slots": _rho(has_r["R"].to_numpy(), age),
         "d_counts_by_R_tercile": {str(k): int(v) for k, v in terc.value_counts().items()} if terc is not None else {},
         "median_R": med_r,
@@ -252,7 +255,7 @@ def cap_gate(trig: pd.DataFrame, flows: Dict[int, dict], g10_pass: bool, days) -
     med_z = float(t["Z"].median()) if len(t) else math.nan
     low = t[(t["Z"] <= med_z) & t["catchable"]]
     per_day = {str(k): int(v) for k, v in low.groupby("day").size().items()}
-    avg = sum(per_day.get(str(x), 0) for x in days) / max(len(days), 1)
+    day_min = min(per_day.get(str(x), 0) for x in days) if len(days) else 0   # per-day minimum (OQ-27)
     out = {
         "a_g1_0_passes": g10_pass,
         "b_rho_Z_lambda": zl["rho"], "b_iqr_Z": iqr,
@@ -261,7 +264,7 @@ def cap_gate(trig: pd.DataFrame, flows: Dict[int, dict], g10_pass: bool, days) -
         "c_pass": bool(c["rho"] <= P.CAP_GATE_RHO_FLOW and c["upper_95"] < 0) if not math.isnan(c["rho"]) else False,
         "c2_spearman_Z_vs_fast_buys": c2,
         "c2_pass": bool(c2["rho"] <= P.CAP_GATE_RHO_FLOW and c2["upper_95"] < 0) if not math.isnan(c2["rho"]) else False,
-        "d_low_Z_catchable_per_day": per_day, "d_avg": avg, "d_pass": avg >= P.CAP_GATE_MIN_PER_DAY,
+        "d_low_Z_catchable_per_day": per_day, "d_min_day": day_min, "d_pass": day_min >= P.CAP_GATE_MIN_PER_DAY,
         "excluded_by_reason": {str(k): int(v) for k, v in trig[trig["cap_reason"] != ""].groupby("cap_reason").size().items()} if "cap_reason" in trig else {},
         "median_Z": med_z,
     }

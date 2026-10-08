@@ -5,6 +5,7 @@ import math
 
 import pandas as pd
 
+from . import guard
 from . import params as P
 from .stats import futility, primary
 
@@ -52,9 +53,10 @@ def judge(trades: pd.DataFrame, decisions: pd.DataFrame, frozen: dict, role: str
             # amendments: closes with G1 unless its own one-sided 95% upper bound on discovery is above 0
             out[k]["closes"] = out[k]["closes"] or (g1_closes and not (out[k]["upper_95_one_sided"] > 0))
         return out
-    return {"G1": primary(g1, control=s0),
-            "G1_HC": primary(hc, control=s0, lift_over={"G1": g1}),
-            "G1_CAP": primary(cap, control=s0, lift_over={"G1": g1}),
+    vd = guard.VALIDATION_DAYS
+    return {"G1": primary(g1, control=s0, required_days=vd),
+            "G1_HC": primary(hc, control=s0, lift_over={"G1": g1}, required_days=vd),
+            "G1_CAP": primary(cap, control=s0, lift_over={"G1": g1}, required_days=vd),
             "secondary": secondary(trades)}
 
 

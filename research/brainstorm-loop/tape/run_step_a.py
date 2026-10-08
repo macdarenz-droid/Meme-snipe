@@ -12,6 +12,7 @@ import json
 import os
 import sys
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -21,15 +22,36 @@ import rows as R  # noqa: E402
 from tapeio import DEFAULT_PLAN, PlanError, Tape, check_plan, unit_info  # noqa: E402
 
 
-def read_sol_usd(path):
-    """CSV with columns day,sol_usd (one SOL/USD reading per tape day, from the Binance public archive)."""
-    if not path:
-        return None
-    df = pd.read_csv(path, dtype={"day": str})
-    return dict(zip(df["day"], df["sol_usd"].astype(float)))
+def read_sol_usd(paths):
+    """SOL/USD per tape day, with each file's sha256 (COUNT_ROWS_AMENDMENT_1: the Binance public archive's
+    SOLUSDT 1-minute closes, committed with their sha256).
+    Accepts Binance kline CSVs (no header: open_time, open, high, low, close, ...; open_time in ms or us,
+    UTC day from open_time) -> {day: (median, min, max) of the closes}; or a CSV with header day,sol_usd."""
+    import hashlib
+
+    if not paths:
+        return None, []
+    out, shas = {}, []
+    for p in paths:
+        with open(p, "rb") as fh:
+            shas.append({"path": p, "sha256": hashlib.sha256(fh.read()).hexdigest()})
+        head = pd.read_csv(p, nrows=0).columns
+        if "day" in head and "sol_usd" in head:
+            df = pd.read_csv(p, dtype={"day": str})
+            out.update(dict(zip(df["day"], df["sol_usd"].astype(float))))
+            continue
+        k = pd.read_csv(p, header=None)
+        k = k[pd.to_numeric(k[0], errors="coerce").notna()]
+        t = pd.to_numeric(k[0]).astype("int64")
+        unit = np.where(t > 10**14, "us", "ms")
+        ts = pd.to_datetime(np.where(unit == "us", t // 1000, t), unit="ms", utc=True)
+        close = pd.to_numeric(k[4]).astype(float)
+        for d, c in close.groupby(ts.strftime("%Y-%m-%d").values):
+            out[d] = (float(c.median()), float(c.min()), float(c.max()))
+    return out, shas
 
 
-def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None):
+def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_usd_files=None):
     R.BOOT_N = n_boot
     tape = Tape(units)
     adj = R.adjacency(tape.links)
@@ -47,7 +69,7 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None):
         "first_time_buys": int(s["ftb"].sum()), "fake_demand_rows": int(s["fake"].sum()),
         "w1_fast_owner_days": int(fast.sum()), "w1_owner_days": int(len(fast)),
         "1_dev_zero": dz_s, "2_rebuy_anchor": rb_s, "3_seat_drift": sd_s, "4_age_gate": ag_s,
-        "5_two_sided_clusters": two, "6_round_usd": ru_s,
+        "5_two_sided_clusters": two, "6_round_usd": ru_s, "sol_usd_files": sol_usd_files or [],
     }
     if decide:
         summary["plan"] = plan
@@ -67,7 +89,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--unit", action="append", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--sol-usd")
+    ap.add_argument("--sol-usd", action="append", help="SOLUSDT 1-minute kline CSV per day (repeat), or day,sol_usd")
     ap.add_argument("--boot", type=int, default=R.BOOT_N)
     ap.add_argument("--decide", action="store_true")
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="committed Step A plan (checked with --decide)")
@@ -78,7 +100,8 @@ def main(argv=None):
             plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
         except PlanError as e:
             ap.error(f"--decide refused: {e}")
-    s = run(a.unit, a.out, read_sol_usd(a.sol_usd), a.boot, a.decide,
+    px, px_sha = read_sol_usd(a.sol_usd)
+    s = run(a.unit, a.out, px, a.boot, a.decide, sol_usd_files=px_sha,
             plan={"path": a.plan, "sha256": plan_sha} if a.decide else None)
     json.dump(s, sys.stdout, indent=1, default=str)
     print()
