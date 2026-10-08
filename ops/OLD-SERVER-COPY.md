@@ -32,7 +32,7 @@ Route: supervisor rulings of 9 Oct (`docs/reviews/OPSREC.md` on `claude/supervis
 Log in to the new host's console (Vultr **View Console**, `linuxuser`, then `sudo -i`). Run:
 
 ```sh
-tailscale status | head -5; zeroed-status | grep Telegram
+tailscale status | head -5; zeroed-status | grep '^Telegram:'
 ```
 
 Check: your devices are listed, and the last line says `Telegram:  paired`.
@@ -43,12 +43,13 @@ In Vultr, open the old server `zeroed` → **Settings** → **Custom ISO**. In *
 
 ```sh
 P=/dev/vda1; mount "$P" /mnt && rel="$(readlink /mnt/opt/zeroed/current)" && echo "release: $rel" && grep '"worker"' "/mnt$rel/ops/host-config.json"
-find /mnt/etc/systemd/system -path '*.wants/zeroed-*' -print -delete; touch /mnt/root/OLD-SERVER-ONLY; sync; umount /mnt; echo DONE
+mountpoint -q /mnt && [ -d /mnt/etc/systemd/system ] && find /mnt/etc/systemd/system -path '*.wants/zeroed-*' -print -delete && touch /mnt/root/OLD-SERVER-ONLY && sync && umount /mnt && echo DONE || echo "NOT mounted: nothing done"
 ```
 
 Check:
 - the first lines show the release and `"worker": "stub"`;
-- a list of removed `zeroed-…` links follows, and the last line is `DONE`.
+- a list of removed `zeroed-…` links follows. It includes at least `multi-user.target.wants/zeroed-worker.service` and `timers.target.wants/zeroed-check.timer`;
+- the last line is `DONE`. If it says `NOT mounted`, the mount failed: check the partition name from `lsblk -f` and paste both lines again.
 
 If it says `"release"`, write down the line and carry on: no bot unit starts now either way.
 
@@ -56,7 +57,7 @@ Then in Vultr: **Custom ISO** → **Remove ISO**. The server reboots into its ow
 
 - VERIFY: the exact SystemRescue name in the ISO library, that it costs nothing, and the **Remove ISO** wording. Vultr's pages show the attach button but not the remove step or any price.
 - VERIFY: that `linuxuser` still logs in afterwards. Vultr warns that installing a custom ISO "disables the default user credentials" ([Vultr: attach a custom ISO](https://docs.vultr.com/products/compute/instances/cloud-compute/management/custom-iso)). Here the ISO is only booted, not installed, and the old system's own password is unchanged.
-- Fallback, only if the ISO library has no SystemRescue: at the boot menu, edit the kernel line and add `systemd.mask=zeroed-worker.service systemd.mask=zeroed-signer.service systemd.mask=zeroed-check.timer systemd.mask=zeroed-update.timer systemd.mask=zeroed-record-upload.timer systemd.mask=zeroed-pair.timer`. VERIFY: that the menu can be reached on the Vultr console (Ubuntu hides it by default; hold Shift or press Esc while it starts).
+- Fallback, only if the ISO library has no SystemRescue: at the boot menu, edit the kernel line and add `systemd.mask=zeroed-worker.service systemd.mask=zeroed-signer.service systemd.mask=zeroed-check.timer systemd.mask=zeroed-update.timer systemd.mask=zeroed-record-upload.timer systemd.mask=zeroed-pair.timer systemd.mask=zeroed-dryrun-tick.timer`. After logging in, run `touch /root/OLD-SERVER-ONLY` once (step 3 needs it); step 3 then checks that no zeroed unit is active. VERIFY: that the menu can be reached on the Vultr console (Ubuntu hides it by default; hold Shift or press Esc while it starts).
 
 **3. Old server: log in, check that the bot is off, make the copy.**
 Log in on **View Console** (`linuxuser`, then `sudo -i`). Paste:
@@ -120,7 +121,7 @@ Check: Vultr shows the old server **Stopped**.
 
 **7. New host and Telegram: check that nothing moved.**
 - In Telegram, send `/status` to your bot. Check: it answers.
-- On the new host, run `zeroed-status | grep Telegram`. Check: `Telegram:  paired`.
+- On the new host, run `zeroed-status | grep '^Telegram:'`. Check: `Telegram:  paired`.
 - If the bot does not answer: on the new host run `zeroed-new-deploy-code`, put the code in the `DEPLOY_CODE` secret, and run Deploy. The new host then sets the webhook again ("Live view" in `ops/README.md`).
 
 **8. Delete the old server (your step, only after steps 5 and 7 passed).**
