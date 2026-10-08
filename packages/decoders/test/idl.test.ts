@@ -33,7 +33,7 @@ describe('A-M02-01 pinned IDLs', () => {
     assert.ok(r.ok);
     assert.deepEqual(r.value.map((i) => [i.name, i.file, i.commit]), [
       ['pump', 'pump.json', IDL_COMMIT], ['pump_amm', 'pump_amm.json', IDL_COMMIT], ['pump_fees', 'pump_fees.json', IDL_COMMIT]]);
-    assert.equal(IDL_COMMIT, 'cb188ce08b5069196eef1f3e4a0c43b70099793b');
+    assert.equal(IDL_COMMIT, '8cda1fa30ea658b20909d8aedf002047119388d2');
     const pump = r.value[0] as PinnedIdl;
     assert.equal(pump.events.get(hex([189, 219, 127, 211, 78, 230, 97, 238]))?.name, 'TradeEvent');
     assert.deepEqual(events.map((e) => e[0]), ['m02.idl_verified', 'm02.idl_verified', 'm02.idl_verified']);
@@ -55,7 +55,7 @@ describe('A-M02-01 pinned IDLs', () => {
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'E_IDL_HASH');
     assert.equal(r.error.file, 'pump_amm.json');
-    assert.equal(r.error.expected, '2091433899b07d003d98118ae6cd3c628960fd393b40710b6e15bce6d0e7f2d1');
+    assert.equal(r.error.expected, 'b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b');
     assert.equal(r.error.actual, createHash('sha256').update(bytes).digest('hex'));
     assert.deepEqual(logged, ['critical m02.idl_hash_mismatch']);
   });

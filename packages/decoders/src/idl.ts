@@ -57,8 +57,8 @@ export interface PinnedIdl {
   poolQuoteMint: Map<string, number>;
   /**
    * PumpSwap `multi_hop_swap` (card IDL-REPIN): its discriminator hex and the number of fixed accounts the IDL lists
-   * (16 at 8cda1fa); the hops follow as remaining accounts, which no IDL describes. Null when the IDL has no such
-   * instruction (pump, pump_fees).
+   * (16 at 8cda1fa); the hops follow as remaining accounts, which no IDL describes, so its trades are `unpinned_invoker`
+   * (see `invokerQuoteMint` in events.ts). Null when the IDL has no such instruction (pump, pump_fees).
    */
   multiHopSwap: { disc: string; fixedAccounts: number } | null;
 }

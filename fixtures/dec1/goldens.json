@@ -6,7 +6,7 @@
    "kind": "pump_global",
    "flags": {
     "layoutExtended": false,
-    "shortLegacy": false
+    "shortLegacy": true
    },
    "expected": {
     "raw": {
@@ -65,7 +65,8 @@
      "creator_fee_configurable": true,
      "max_configurable_creator_fee_bps": "300",
      "holder_reward_claim_authority": "HckQ93Xqjjo8mwt5pNPWvyCTZXQZ858rvzmm7ZRrZg9t",
-     "is_holder_reward_enabled": true
+     "is_holder_reward_enabled": true,
+     "max_curve_depth": 0
     }
    }
   },
@@ -444,7 +445,7 @@
    "kind": "pump_bonding_curve",
    "flags": {
     "layoutExtended": false,
-    "shortLegacy": false
+    "shortLegacy": true
    },
    "expected": {
     "virtualQuote": "0",
@@ -471,7 +472,7 @@
    "label": "PumpSwap pool with negative virtual_quote_reserves at trade",
    "kind": "pumpswap_pool",
    "flags": {
-    "layoutExtended": true,
+    "layoutExtended": false,
     "shortLegacy": false
    },
    "expected": {
@@ -508,7 +509,7 @@
    "kind": "pump_bonding_curve",
    "flags": {
     "layoutExtended": false,
-    "shortLegacy": false
+    "shortLegacy": true
    },
    "expected": {
     "virtualQuote": "30000000001",
@@ -543,7 +544,7 @@
    "kind": "pump_bonding_curve",
    "flags": {
     "layoutExtended": false,
-    "shortLegacy": false
+    "shortLegacy": true
    },
    "expected": {
     "virtualQuote": "36680491157",
@@ -578,7 +579,7 @@
    "kind": "pump_bonding_curve",
    "flags": {
     "layoutExtended": false,
-    "shortLegacy": false
+    "shortLegacy": true
    },
    "expected": {
     "virtualQuote": "30000000002",
@@ -736,7 +737,7 @@
    "kind": "pump_bonding_curve",
    "flags": {
     "layoutExtended": false,
-    "shortLegacy": false
+    "shortLegacy": true
    },
    "expected": {
     "virtualQuote": "10846559798",
@@ -784,7 +785,7 @@
      "protocolFeeBps": 5,
      "coinCreatorFeeBps": 85,
      "virtualQuoteReserves": "17584506065",
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -803,7 +804,7 @@
      "protocolFeeBps": 93,
      "coinCreatorFeeBps": 30,
      "virtualQuoteReserves": "17584505288",
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -822,7 +823,7 @@
      "protocolFeeBps": 93,
      "coinCreatorFeeBps": 30,
      "virtualQuoteReserves": "17584505288",
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -841,7 +842,7 @@
      "protocolFeeBps": 93,
      "coinCreatorFeeBps": 30,
      "virtualQuoteReserves": "17584505288",
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -860,7 +861,7 @@
      "protocolFeeBps": 5,
      "coinCreatorFeeBps": 15,
      "virtualQuoteReserves": "17584505288",
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -881,7 +882,7 @@
      "creatorFeeBps": 30,
      "creatorFee": "1237608",
      "quoteMint": null,
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -902,7 +903,7 @@
      "creatorFeeBps": 30,
      "creatorFee": "592593",
      "quoteMint": null,
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -970,7 +971,7 @@
      "creatorFeeBps": 30,
      "creatorFee": "1481482",
      "quoteMint": null,
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -993,7 +994,7 @@
      "creatorFeeBps": 30,
      "creatorFee": "4444445",
      "quoteMint": null,
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -1016,7 +1017,7 @@
      "creatorFeeBps": 30,
      "creatorFee": "891051",
      "quoteMint": null,
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -1039,7 +1040,7 @@
      "creatorFeeBps": 30,
      "creatorFee": "1253339",
      "quoteMint": null,
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -1087,7 +1088,7 @@
      "protocolFeeBps": 93,
      "coinCreatorFeeBps": 30,
      "virtualQuoteReserves": "17584505289",
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -1108,7 +1109,7 @@
      "protocolFeeBps": 0,
      "coinCreatorFeeBps": 0,
      "virtualQuoteReserves": "17584505934",
-     "layoutExtended": true
+     "layoutExtended": false
     }
    ],
    "refused": [],
@@ -1131,7 +1132,7 @@
      "creatorFeeBps": 30,
      "creatorFee": "4447449",
      "quoteMint": null,
-     "layoutExtended": true
+     "layoutExtended": false
     },
     {
      "kind": "pump_complete",

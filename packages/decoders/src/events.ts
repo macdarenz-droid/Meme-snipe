@@ -5,7 +5,7 @@
 // review fixes C03-R1-1, R2 (lazy base58, `oversized`) and R9 (`bad_trace`) included.
 import type { BaseUnits, Bps, DecodedEvent, Lamports, Pubkey, RawTransaction, Result, Signature, Slot } from '@bot/types';
 import { base58, DecodeError, Reader, toHex } from './codec.ts';
-import type { PinnedIdl } from './idl.ts';
+import type { IdlTypeDef, PinnedIdl } from './idl.ts';
 
 /** Anchor event-CPI prefix (the `emit_cpi!` instruction tag) [DA-16]. */
 export const EVENT_CPI_PREFIX = 'e445a52e51cb9a1d';
@@ -14,12 +14,11 @@ export const EVENT_CPI_PREFIX = 'e445a52e51cb9a1d';
  * `decode_gap_total` reasons: `bad_trace` (an event-CPI instruction of a pump program whose invoker cannot be told: an
  * inconsistent stackHeight trace, or a group whose top-level instruction or program is missing; review C03 R9) and
  * `oversized` (pump or PumpSwap instruction data longer than any event, never decoded; review C03 R2) join the three
- * reasons of A-M02-03. Card IDL-REPIN adds `unpinned_invoker` (a PumpSwap trade invoked by an instruction the pinned IDL
- * does not list, so its quote mint cannot be read) and `unresolved_quote` (a `multi_hop_swap` hop whose quote mint
- * cannot be established); neither is ever labelled `non_sol_quote`, which means a quote mint read and found not SOL.
+ * reasons of A-M02-03. Card IDL-REPIN adds `unpinned_invoker`: a PumpSwap trade invoked by an instruction whose quote
+ * mint the pin does not let the decoder read (one the pinned IDL does not list, or `multi_hop_swap`, see
+ * `invokerQuoteMint`); it is never labelled `non_sol_quote`, which means a quote mint read and found not SOL.
  */
-export type GapReason = 'no_inner' | 'truncated' | 'unknown_disc' | 'bad_trace' | 'oversized' | 'non_sol_quote'
-  | 'unpinned_invoker' | 'unresolved_quote';
+export type GapReason = 'no_inner' | 'truncated' | 'unknown_disc' | 'bad_trace' | 'oversized' | 'non_sol_quote' | 'unpinned_invoker';
 /**
  * The pool part of a pump curve buy that completes the curve (card IDL-REPIN): `base_out` tokens for `quote_in` SOL,
  * with the fees on that part (pump-public-docs 8cda1fa, docs/SYNTHETIC_MIGRATION.md "Events and state"). Only from a
@@ -85,8 +84,42 @@ export interface QuoteMints { wsolMint?: Pubkey }
  * An event with where it sat in its transaction (Z03 ruling m11): `outerIx` is the top-level instruction, `innerIx`
  * its position in that instruction's inner list, so with the signature a second delivery of the same event is told
  * from a second fill. `layoutExtended`: the event's data held bytes the pinned layout does not describe (ruling 2).
+ * `shortLegacy`: the event was emitted before fields the pin appends existed, and reads them as 0 (card IDL-REPIN).
  */
-export interface LocatedEvent { event: M02Event; outerIx: number; innerIx: number; layoutExtended: boolean }
+export interface LocatedEvent { event: M02Event; outerIx: number; innerIx: number; layoutExtended: boolean; shortLegacy: boolean }
+
+/**
+ * POLICY (card IDL-REPIN): the last field each event had at the previous pin cb188ce, for the events pump-public-docs
+ * 8cda1fa lengthens by appending (`creator_fee_unclaimed` on TradeEvent, BuyEvent and SellEvent; `depth` on CreateEvent;
+ * every other field unchanged, checked against both IDLs). Events emitted before those fields existed are shorter;
+ * "Logs emitted before the new fields existed are shorter; read the missing fields as `0` / `false`"
+ * (docs/HOLDER_REWARDS_README.md, 8cda1fa). An event whose data ends on a field boundary at or after that field reads
+ * the rest as zero, so every event the previous pin decoded still decodes; data ending inside a field is `truncated`.
+ */
+const EVENT_PADDED_FROM: Readonly<Record<string, string>> = {
+  'pump.TradeEvent': 'holder_rewards', 'pump.CreateEvent': 'is_holder_reward',
+  'pump_amm.BuyEvent': 'holder_rewards', 'pump_amm.SellEvent': 'holder_rewards',
+};
+/** Zero bytes the missing trailing fields of a short legacy event are read from (the appended fields are a few bytes). */
+const ZERO_TAIL = new Uint8Array(64);
+
+/** Reads an event's fields; a short legacy event (see EVENT_PADDED_FROM) reads its missing trailing fields from zeros. */
+function readEvent(idl: PinnedIdl['name'], def: IdlTypeDef, body: Uint8Array): { value: Record<string, unknown>; extra: number; shortLegacy: boolean } {
+  const r = new Reader(body);
+  const from = EVENT_PADDED_FROM[`${idl}.${def.name}`];
+  const at = from === undefined ? -1 : def.fields.findIndex((f) => f.name === from);
+  if (at < 0) {
+    const value = def.read(r) as Record<string, unknown>;
+    return { value, extra: r.remaining(), shortLegacy: false };
+  }
+  const value: Record<string, unknown> = {};
+  let zeros: Reader | null = null;
+  for (const [i, f] of def.fields.entries()) {
+    if (zeros === null && i > at && r.remaining() === 0) zeros = new Reader(ZERO_TAIL);
+    value[f.name] = f.read(zeros ?? r);
+  }
+  return { value, extra: r.remaining(), shortLegacy: zeros !== null };
+}
 
 function bps(v: unknown): Bps {
   if (typeof v !== 'bigint' || v > MAX_BPS) throw new DecodeError('E_BAD_VALUE', 'a fee is at most 10,000 bps');
@@ -103,21 +136,18 @@ const quoteMintOf = (v: unknown): Pubkey | null => (v === DEFAULT_PUBKEY ? null 
 
 /** Thrown for a trade whose quote is not SOL, so it never yields Lamports (Z03 ruling 3); counted as `non_sol_quote`. */
 class NonSolQuote extends Error {}
-/** Thrown for a PumpSwap trade whose invoking instruction the pin does not list (card IDL-REPIN); `unpinned_invoker`. */
+/** Thrown for a PumpSwap trade whose invoker's quote mint the pin does not let the decoder read (card IDL-REPIN). */
 class UnpinnedInvoker extends Error {}
-/** Thrown for a `multi_hop_swap` trade whose hop quote mint cannot be established (card IDL-REPIN); `unresolved_quote`. */
-class UnresolvedQuote extends Error {}
 
-const gapOf = (e: unknown): GapReason => (e instanceof NonSolQuote ? 'non_sol_quote' : e instanceof UnpinnedInvoker
-  ? 'unpinned_invoker' : e instanceof UnresolvedQuote ? 'unresolved_quote' : 'truncated');
+const gapOf = (e: unknown): GapReason => (e instanceof NonSolQuote ? 'non_sol_quote' : e instanceof UnpinnedInvoker ? 'unpinned_invoker' : 'truncated');
 
 /**
  * Maps a decoded IDL event to its `DecodedEvent` variant; null for an event the system does not use. `poolQuoteMint`
- * gives the PumpSwap pool's quote mint, or null when its invoker binds none (ruling 3); it throws `UnpinnedInvoker` or
- * `UnresolvedQuote` when the quote mint cannot be read (card IDL-REPIN).
+ * gives the PumpSwap pool's quote mint, or null when its invoker binds none (ruling 3); it throws `UnpinnedInvoker` when
+ * the quote mint cannot be read (card IDL-REPIN).
  */
 function mapEvent(idl: PinnedIdl['name'], name: string, v: Record<string, unknown>, slot: Slot, signature: Signature,
-  poolQuoteMint: (pool: Pubkey) => Pubkey | null, wsolMint: Pubkey | undefined): M02Event | null {
+  poolQuoteMint: () => Pubkey | null, wsolMint: Pubkey | undefined): M02Event | null {
   const key = `${idl}.${name}`;
   if (key === 'pump.TradeEvent') {
     // Ruling 3: `sol_amount` is Lamports only on a SOL curve; pump coins may also trade against other mints (pump-public-
@@ -158,7 +188,7 @@ function mapEvent(idl: PinnedIdl['name'], name: string, v: Record<string, unknow
   // mirror of it (U-A05, U-A10: field names from the pinned pump_amm.json).
   if (key === 'pump_amm.BuyEvent' || key === 'pump_amm.SellEvent') {
     // Ruling 3: `quoteAmount` is Lamports only when the pool's quote mint is wSOL.
-    if (wsolMint === undefined || poolQuoteMint(v.pool as Pubkey) !== wsolMint) throw new NonSolQuote();
+    if (wsolMint === undefined || poolQuoteMint() !== wsolMint) throw new NonSolQuote();
     const buy = name === 'BuyEvent';
     const lpFeeBps = bps(v.lp_fee_basis_points);
     const protocolFeeBps = bps(v.protocol_fee_basis_points);
@@ -218,65 +248,19 @@ export function decodedOnly(events: readonly LocatedEvent[]): DecodedEvent[] {
 }
 
 /**
- * POLICY (card IDL-REPIN): a `multi_hop_swap` hop is 5 remaining accounts after the IDL's fixed ones, in route order;
- * slot 2 is the hop's quote mint, slot 3 its pool (or bonding curve), slot 5 its quote vault. Source: pump-public-docs
- * 8cda1fa, docs/instructions/MULTI_HOP_SWAP.md "Remaining accounts (5 per hop)" (the IDL does not describe them).
- */
-const HOP_ACCOUNTS = 5;
-const HOP_QUOTE_MINT = 1;
-const HOP_POOL = 2;
-const HOP_QUOTE_VAULT = 4;
-
-/**
- * The mints the runtime recorded for token accounts in `preTokenBalances` and `postTokenBalances`, by account key index
- * (the index runs over the account keys, then the loaded writable and readonly addresses); null where entries disagree.
- */
-export type TokenAccountMints = ReadonlyMap<number, Pubkey | null>;
-
-/** Reads the `accountIndex` and `mint` of each token balance entry; entries that disagree on one account give null. */
-export function tokenAccountMints(tx: RawTransaction): TokenAccountMints {
-  const out = new Map<number, Pubkey | null>();
-  for (const e of [...tx.meta.preTokenBalances, ...tx.meta.postTokenBalances]) {
-    if (typeof e !== 'object' || e === null) continue;
-    const { accountIndex, mint } = e as { accountIndex?: unknown; mint?: unknown };
-    if (!Number.isSafeInteger(accountIndex) || typeof mint !== 'string') continue;
-    const seen = out.get(accountIndex as number);
-    out.set(accountIndex as number, seen === undefined || seen === mint ? mint : null);
-  }
-  return out;
-}
-
-/**
- * The quote mint of the `multi_hop_swap` hop that traded `pool` (card IDL-REPIN): the hop's slot-2 mint, and only when
- * the runtime's token balances record the hop's quote vault (slot 5) as an account of that same mint, so the quote
- * rests on what the vault holds and not on the caller's account list alone. Throws `UnresolvedQuote` when the hop list
- * is malformed, no hop or more than one hop names the pool, or the vault's mint is missing, conflicting or different.
- */
-function multiHopQuoteMint(accounts: readonly number[], fixed: number, keys: readonly Pubkey[], pool: Pubkey, mints: () => TokenAccountMints): Pubkey {
-  const rest = accounts.length - fixed;
-  if (rest < HOP_ACCOUNTS || rest % HOP_ACCOUNTS !== 0) throw new UnresolvedQuote();
-  const hops: Array<readonly number[]> = [];
-  for (let i = fixed; i < accounts.length; i += HOP_ACCOUNTS) hops.push(accounts.slice(i, i + HOP_ACCOUNTS));
-  const named = hops.filter((h) => keys[h[HOP_POOL] as number] === pool);
-  if (named.length !== 1) throw new UnresolvedQuote();
-  const hop = named[0] as readonly number[];
-  const quoteMint = keys[hop[HOP_QUOTE_MINT] as number];
-  const vault = mints().get(hop[HOP_QUOTE_VAULT] as number);
-  if (quoteMint === undefined || vault === undefined || vault === null || vault !== quoteMint) throw new UnresolvedQuote();
-  return quoteMint;
-}
-
-/**
  * The PumpSwap pool's quote mint for an event its program emitted (ruling 3): the `quote_mint` account of the PumpSwap
  * instruction that invoked the event-CPI, only when the pinned IDL marks that account `relations: ["pool"]` (Anchor
  * `has_one`: the program refuses an instruction whose `quote_mint` is not the pool's; ruling 14, the set built at IDL
  * load: at 8cda1fa `buy`, `buy_v2`, `buy_exact_quote_in`, `buy_exact_quote_in_v2`, `sell`, `sell_v2`, `deposit`,
- * `withdraw`, `init_boost`, `boost_buy_and_burn`, `sweep_creator_fee`, `sweep_protocol_fee`), or the hop of a
- * `multi_hop_swap` that traded `pool` (`multiHopQuoteMint`). Null for any other pinned invoker (`create_pool` among
- * them), so its event gets no quote and is refused (`non_sol_quote`); an invoker the pin does not list throws
- * `UnpinnedInvoker` (card IDL-REPIN).
+ * `withdraw`, `init_boost`, `boost_buy_and_burn`, `sweep_creator_fee`, `sweep_protocol_fee`). Null for any other
+ * pinned invoker (`create_pool` among them), so its event gets no quote and is refused (`non_sol_quote`). Card
+ * IDL-REPIN: an invoker the pin does not list throws `UnpinnedInvoker`, and so does `multi_hop_swap`. Its hops are
+ * remaining accounts the IDL does not describe; pump-public-docs 8cda1fa (docs/instructions/MULTI_HOP_SWAP.md,
+ * "Remaining accounts (5 per hop)") names slot 2 of each hop as its quote mint, but that the program checks the slot
+ * against the pool is UNVERIFIED, so its trades stay dropped until a golden fixture from a real multi-hop transaction
+ * proves it (supervisor ruling, docs/reviews/Z03.md "IDL-REPIN").
  */
-function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonly Pubkey[], pool: Pubkey, mints: () => TokenAccountMints): Pubkey | null {
+function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonly Pubkey[]): Pubkey | null {
   if (invoker === undefined) return null;
   const length58 = (invoker as InnerIx).dataLength58;
   if (length58 !== undefined && length58 > MAX_EVENT_DATA_B58) throw new UnpinnedInvoker();
@@ -289,8 +273,7 @@ function invokerQuoteMint(invoker: Ix | undefined, idl: PinnedIdl, keys: readonl
     const index = invoker.accounts[at];
     return index === undefined ? null : keys[index] ?? null;
   }
-  if (idl.multiHopSwap !== null && disc === idl.multiHopSwap.disc) return multiHopQuoteMint(invoker.accounts, idl.multiHopSwap.fixedAccounts, keys, pool, mints);
-  if (!idl.instructions.has(disc)) throw new UnpinnedInvoker();
+  if (!idl.instructions.has(disc) || disc === idl.multiHopSwap?.disc) throw new UnpinnedInvoker();
   return null;
 }
 
@@ -306,8 +289,6 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
     return [];
   }
   const out: LocatedEvent[] = [];
-  let mints: TokenAccountMints | undefined;
-  const tokenMints = (): TokenAccountMints => (mints ??= tokenAccountMints(tx));
   for (const group of tx.meta.innerInstructions) {
     const parent = tx.message.instructions[group.index];
     const top = parent === undefined ? undefined : programOf(parent);   // undefined: a bad trace for any event below
@@ -332,16 +313,18 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
       if (def === undefined) {
         hooks.onGap?.('unknown_disc');
         hooks.onUnknown?.(program, disc, tx.signature);
-        out.push({ event: { kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature }, outerIx: group.index, innerIx: k, layoutExtended: false });
+        out.push({ event: { kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature }, outerIx: group.index, innerIx: k, layoutExtended: false, shortLegacy: false });
         continue;
       }
       let ev: M02Event | null;
       let extra = 0;
+      let shortLegacy = false;
       try {
-        const r = new Reader(data.subarray(16));
-        const value = def.read(r) as Record<string, unknown>;
-        extra = r.remaining();
-        ev = mapEvent(idl.name, def.name, value, tx.slot, tx.signature, (pool) => invokerQuoteMint(invokerIx, idl, keys, pool, tokenMints), quote.wsolMint);
+        const read = readEvent(idl.name, def, data.subarray(16));
+        const value = read.value;
+        extra = read.extra;
+        shortLegacy = read.shortLegacy;
+        ev = mapEvent(idl.name, def.name, value, tx.slot, tx.signature, () => invokerQuoteMint(invokerIx, idl, keys), quote.wsolMint);
       } catch (e) {
         hooks.onGap?.(gapOf(e));                              // never a guessed event
         continue;
@@ -349,7 +332,7 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
       if (ev === null) continue;
       hooks.onEvent?.(ev.kind);
       if (extra > 0) hooks.onLayoutExtended?.(ev.kind, extra);
-      out.push({ event: ev, outerIx: group.index, innerIx: k, layoutExtended: extra > 0 });
+      out.push({ event: ev, outerIx: group.index, innerIx: k, layoutExtended: extra > 0, shortLegacy });
     }
   }
   return out;

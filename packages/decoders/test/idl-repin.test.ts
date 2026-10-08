@@ -1,13 +1,13 @@
 // Card IDL-REPIN (docs/reviews/Z03.md "IDL-REPIN"; findings in docs/reviews/VERIFYNEXT.md, V22): the IDLs re-pinned to
-// pump-public-docs 8cda1fa; PumpSwap v2 trades and `multi_hop_swap` hops get their quote mint; `PostCompleteBuyEvent`
-// is counted into the buyer's total; a trade invoked by an instruction the pin does not list is `unpinned_invoker`.
+// pump-public-docs 8cda1fa; PumpSwap v2 trades get their quote mint; `PostCompleteBuyEvent` is counted into the buyer's
+// total; a trade invoked by an instruction the pin does not list, or by `multi_hop_swap`, is `unpinned_invoker`.
 // Each case fails on 6fab4c99 (the Z03 head). Recorded mainnet data (C03 and C11 fixtures), changed where a case
 // needs an instruction the sample lacks.
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import type { RawTransaction } from '@bot/types';
 import {
-  base58, decodeEvents, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction, tokenAccountMints,
+  base58, decodeEvents, decodeEventsLocated, IDL_COMMIT, PINNED_IDLS, pumpBuyTotals, readRpcTransaction,
   type GapReason, type InnerIx, type PinnedIdl,
 } from '../src/index.ts';
 import { accountsOf, bytes, decoders, fixture, idls, WSOL, type FixtureAccount } from './fixtures.ts';
@@ -68,9 +68,29 @@ describe('re-pin to pump-public-docs 8cda1fa', () => {
 
   it('a recorded trade event is described in full: creator_fee_unclaimed is no longer extra bytes', () => {
     const r = run(raw(TRADES[0] as TxRecord));
-    assert.deepEqual([r.kinds, r.located[0]?.layoutExtended], [['pump_trade'], false]);
+    assert.deepEqual([r.kinds, r.located[0]?.layoutExtended, r.located[0]?.shortLegacy], [['pump_trade'], false, false]);
     const s = run(raw(SWAP()));
-    assert.deepEqual([s.kinds, s.located[0]?.layoutExtended], [['pumpswap_buy'], false]);
+    assert.deepEqual([s.kinds, s.located[0]?.layoutExtended, s.located[0]?.shortLegacy], [['pumpswap_buy'], false, false]);
+  });
+
+  it('an event emitted before creator_fee_unclaimed existed reads it as 0 (shortLegacy); data ending inside a field is truncated', () => {
+    for (const [rec, kind] of [[TRADES[0] as TxRecord, 'pump_trade'], [SWAP(), 'pumpswap_buy']] as const) {
+      const full = run(raw(rec));
+      const cut = (n: number): ReturnType<typeof run> => {
+        const t = raw(rec);
+        const l = full.located[0];
+        assert.ok(l !== undefined);
+        const ix = (t.meta.innerInstructions.find((g) => g.index === l.outerIx)?.instructions[l.innerIx]) as InnerIx;
+        const data = Buffer.from(ix.dataB64, 'base64');
+        ix.dataB64 = data.subarray(0, data.length - n).toString('base64');
+        return run(t);
+      };
+      const old = cut(8);                                        // the layout of the previous pin cb188ce
+      assert.deepEqual([old.kinds, old.gaps, old.located[0]?.shortLegacy, old.located[0]?.layoutExtended], [[kind], [], true, false]);
+      assert.deepEqual(old.located[0]?.event, full.located[0]?.event);   // creator_fee_unclaimed is not mapped; every mapped field equal
+      assert.deepEqual([cut(4).kinds, cut(4).gaps], [[], ['truncated']]);
+      assert.deepEqual([cut(9).kinds, cut(9).gaps], [[], ['truncated']]);   // shorter than the previous pin: never padded
+    }
   });
 });
 
@@ -99,66 +119,19 @@ describe('PumpSwap v2 trades and unpinned invokers', () => {
   });
 });
 
-describe('multi_hop_swap: each pool hop gets the quote mint of its own hop', () => {
-  /** The recorded buy rewritten as a `multi_hop_swap` with the given hops (5 account indexes each) after 16 fixed accounts. */
-  function multiHop(hops: (at: (name: string) => number) => number[][]): RawTransaction {
+describe('multi_hop_swap: dropped as unpinned_invoker until a real multi-hop fixture proves the hop check', () => {
+  /** The recorded buy rewritten as a `multi_hop_swap` with one SOL-pool hop (5 accounts) after 16 fixed accounts. */
+  function multiHop(): RawTransaction {
     const t = raw(SWAP());
     const { ix, at } = swapBuy(t);
     ix.dataB64 = withDisc(ix.dataB64, discOf(idl('pump_amm').instructions, 'multi_hop_swap'));
-    ix.accounts = [...ix.accounts.slice(0, 16), ...hops(at).flat()];
+    ix.accounts = [...ix.accounts.slice(0, 16), at('base_mint'), at('quote_mint'), at('pool'), at('pool_base_token_account'), at('pool_quote_token_account')];
     return t;
   }
-  const solHop = (at: (name: string) => number): number[] =>
-    [at('base_mint'), at('quote_mint'), at('pool'), at('pool_base_token_account'), at('pool_quote_token_account')];
 
-  it('the recorded vault holds wSOL, as the runtime\'s token balances say', () => {
-    const t = raw(SWAP());
-    const { at } = swapBuy(t);
-    assert.equal(tokenAccountMints(t).get(at('pool_quote_token_account')), WSOL);
-    assert.equal(t.message.accountKeys[at('quote_mint')], WSOL);
-  });
-
-  it('a one-hop route on a SOL pool decodes as pumpswap_buy (dropped as non_sol_quote under cb188ce)', () => {
-    const r = run(multiHop((at) => [solHop(at)]));
-    assert.deepEqual([r.kinds, r.gaps], [['pumpswap_buy'], []]);
-  });
-
-  it('the hop is found by pool among several hops', () => {
-    // A first hop on another pool (its slot 3 is the user, any key but the event's pool).
-    const r = run(multiHop((at) => [[at('base_mint'), at('base_mint'), at('user'), at('user_base_token_account'), at('user_quote_token_account')], solHop(at)]));
-    assert.deepEqual([r.kinds, r.gaps], [['pumpswap_buy'], []]);
-  });
-
-  it('a hop whose quote mint and vault are the base side is non_sol_quote', () => {
-    const r = run(multiHop((at) => [[at('base_mint'), at('base_mint'), at('pool'), at('pool_quote_token_account'), at('pool_base_token_account')]]));
-    assert.deepEqual([r.kinds, r.gaps], [[], ['non_sol_quote']]);
-  });
-
-  it('a slot-2 mint the vault does not hold is unresolved_quote: the account list alone never makes a trade SOL', () => {
-    const r = run(multiHop((at) => [[at('base_mint'), at('quote_mint'), at('pool'), at('pool_base_token_account'), at('pool_base_token_account')]]));
-    assert.deepEqual([r.kinds, r.gaps], [[], ['unresolved_quote']]);
-  });
-
-  it('a vault without a token balance, a pool no hop names, a pool two hops name and a broken hop list are unresolved_quote', () => {
-    const noBalance = multiHop((at) => [solHop(at)]);
-    noBalance.meta.preTokenBalances = [];
-    noBalance.meta.postTokenBalances = [];
-    const cases = [
-      noBalance,
-      multiHop((at) => [[at('base_mint'), at('quote_mint'), at('user'), at('pool_base_token_account'), at('pool_quote_token_account')]]),
-      multiHop((at) => [solHop(at), solHop(at)]),
-      multiHop((at) => [solHop(at).slice(0, 4)]),
-      multiHop(() => []),
-    ];
-    for (const [i, t] of cases.entries()) assert.deepEqual(run(t).gaps, ['unresolved_quote'], `case ${i}`);
-  });
-
-  it('token balance entries that disagree on a vault\'s mint give no mint', () => {
-    const t = raw(SWAP());
-    const { at } = swapBuy(t);
-    const vault = at('pool_quote_token_account');
-    t.meta.preTokenBalances = [...t.meta.preTokenBalances, { accountIndex: vault, mint: t.message.accountKeys[at('base_mint')] }];
-    assert.equal(tokenAccountMints(t).get(vault), null);
+  it('a pool hop on a SOL pool is refused as unpinned_invoker, never non_sol_quote and never a guessed quote', () => {
+    const r = run(multiHop());
+    assert.deepEqual([r.kinds, r.gaps], [[], ['unpinned_invoker']]);
   });
 });
 
@@ -254,7 +227,7 @@ describe('accounts the new pin lengthens', () => {
     const inside = Uint8Array.from(full.slice(0, 8 + 267));                              // 4 bytes into protocol_fees
     inside[8 + 266] = 1;
     assert.equal(d.decodeAccount(pool.owner, inside).kind, 'unknown');
-    inside[8 + 266] = 0;                                                                 // zero bytes: capacity, read as 0
+    inside.fill(0, 8 + 263, 8 + 267);                                                    // zero bytes: capacity, read as 0
     assert.equal(d.decodeAccountWithFlags(pool.owner, inside).flags.shortLegacy, true);
   });
 });
