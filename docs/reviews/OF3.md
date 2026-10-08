@@ -89,3 +89,12 @@ test-ci 245/0. `$out/logs` reaches no clear-text path. m1 (`data-scan.yml:533-53
 
 25. **m1.** When the trim step fails, seal only `$out/logs` under its own key (`data-scan-DAY-k<kid>-RUN-ATTEMPT-logs`). Never seal half-trimmed units. Test: a forced trim failure leaves a sealed logs entry and no units entry.
 26. **m2.** Merged into OF-2 ruling 57, which now also covers: any write to qlog, slog or tlog other than a plain assignment (`for`, `read`, `printf -v`, `declare`, `:=`), and `ln`, `cat`, `tee`, `head` or `tail` on `"$qlog|$slog|$tlog/..."` in the CI scripts. One test per form.
+
+### Round 5 reviewer `session_01DK9TU4gHh9V1Accrv4yuPY`: FAIL at `8db8b0bf` (1 MAJOR, 1 MINOR)
+
+MAJOR: the same gap as the red team's m1. "Save progress" (`data-scan.yml:444`) runs before the trim (`:472`). On a trim failure, the QA steps are skipped, and sealqa and the save after QA (`:535`, `:548`) look only at `qa.outcome`, so the trim, migration and unitlog logs are lost. MINOR: a K2 day's progress over the 10 GB cache cannot be saved, so its logs are lost too.
+
+### Ruling 25 refined and ruling 27 (9 Oct 2026, about 12:42 AM)
+
+- **25 (refined).** shrinkqa, sealqa and the save after QA also run when `steps.trim.outcome == 'failure'`. Only `$out/logs` is sealed in that case; half-trimmed units never are. Add a workflow-structure assertion for it, alongside the forced-failure test.
+- **27. MINOR.** Whenever the full progress save is skipped or fails, seal and save `$out/logs` alone as a small separate entry (`if: always()`).

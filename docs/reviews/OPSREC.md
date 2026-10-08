@@ -65,3 +65,12 @@ The MAJOR: the folder's mtime moves with every worker start (a new boot folder) 
 ### WEBHOOK-FP closed (9 Oct 2026, about 12:40 AM)
 
 The builder found the premise wrong. Telegram's `getWebhookInfo` reply (WebhookInfo) has no `secret_token` field; it exists only as a `setWebhook` parameter (core.telegram.org/bots/api#webhookinfo). So the fingerprint cannot see a re-set with another secret. Ruling: option C, close the card with no code. #310's rescue-disk method already stops the old server from re-setting the webhook. A new alert (option A) or a watchdog counter (option B) would be new Telegram and alert work, which waits under the owner's "Bot first" rule. The unpushed branch `claude/ops-webhook-fp` is dropped.
+
+### #310 round 2 (head `fc106e20`): REVIEW PASS, final; red team 0 BLOCKER, 0 MAJOR, 4 MINOR
+
+### Supervisor rulings for round 3 (9 Oct 2026, about 12:42 AM): apply all four, because the owner runs this text by hand
+
+9. Use `grep '^Telegram:'` (L35, L123).
+10. Line 46 starts with `mountpoint -q /mnt && [ -d /mnt/etc/systemd/system ] &&`. The check lists at least `zeroed-worker.service` and `zeroed-check.timer` as removed.
+11. The GRUB fallback also masks `zeroed-dryrun-tick.timer`.
+12. On the fallback path, after login: `touch /root/OLD-SERVER-ONLY`, then check that no zeroed unit is active.
