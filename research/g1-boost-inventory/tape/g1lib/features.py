@@ -163,7 +163,7 @@ class FeatureContext:
     # ---- amendment 2: N, lambda, Z --------------------------------------------------------------------
     def _rivals(self):
         tape = self.tape
-        st, en, mm, cr = [], [], [], []
+        st, en, mm, cr, ss, es = [], [], [], [], [], []
         for mint, (a, b) in tape._curve_off.items():
             rows = tape.curve.iloc[a:b]
             q = rows["quote_mint"].to_numpy()
@@ -177,19 +177,24 @@ class FeatureContext:
                 may = may | (rows["slot"].to_numpy() >= self.create_slot[mint])
             on = (real >= P.CAP_RIVAL_REAL_SOL) & ~done & (q == P.SOL_QUOTE_CURVE) & ~may
             t = rows["block_time"].to_numpy()
+            sl = rows["slot"].to_numpy()
             creator = self.creator_of.get(mint, int(rows["creator"].iloc[0]))
             edges = np.diff(np.concatenate([[0], on.astype(np.int8)]))
             for i in np.flatnonzero(edges != 0):
                 if edges[i] > 0:
                     st.append(t[i]); en.append(np.inf); mm.append(mint); cr.append(creator)
+                    ss.append(sl[i]); es.append(np.iinfo(np.int64).max)
                 else:
                     en[-1] = t[i]
+                    es[-1] = sl[i]
         self.iv_start = np.array(st, dtype=float)
         self.iv_end = np.array(en, dtype=float)
         self.iv_mint = np.array(mm, dtype=np.int64)
         self.iv_creator = np.array(cr, dtype=np.int64)
+        self.iv_start_slot = np.array(ss, dtype=np.int64)
+        self.iv_end_slot = np.array(es, dtype=np.int64)
         mig = tape.events["CompletePumpAmmMigrationEvent"]
-        ms, mt, mc = [], [], []
+        ms, mt, mc, msl = [], [], [], []
         for r in mig.itertuples(index=False):
             q = getattr(r, "quote_mint", None)
             if q != P.SOL_QUOTE_CURVE:
@@ -199,10 +204,11 @@ class FeatureContext:
             rows = rows[rows["slot"] <= int(r.slot)]
             if (rows["mayhem_mode"] == 1).any():
                 continue
-            ms.append(m); mt.append(int(r.block_time)); mc.append(self.creator_of.get(m, int(rows["creator"].iloc[0]) if len(rows) else -1))
+            ms.append(m); mt.append(int(r.block_time)); msl.append(int(r.slot)); mc.append(self.creator_of.get(m, int(rows["creator"].iloc[0]) if len(rows) else -1))
         self.mg_mint = np.array(ms, dtype=np.int64)
         self.mg_time = np.array(mt, dtype=float)
         self.mg_creator = np.array(mc, dtype=np.int64)
+        self.mg_slot = np.array(msl, dtype=np.int64)
 
     def feature_z(self, d: dict, cluster=None) -> dict:
         tape = self.tape
@@ -226,10 +232,14 @@ class FeatureContext:
         cl = np.array(sorted(cluster), dtype=np.int64)
         grid = t - P.CAP_GRID_S * np.arange(P.CAP_LAMBDA_WINDOW_S // P.CAP_GRID_S)
         lo = grid[-1]
-        iv = (self.iv_start <= t) & (self.iv_end > lo) & (self.iv_mint != mint) & ~np.isin(self.iv_creator, cl)
-        # an interval may only use rows at or before each grid time: start <= g and end > g
-        n_iv = ((self.iv_start[iv][None, :] <= grid[:, None]) & (self.iv_end[iv][None, :] > grid[:, None])).sum(axis=1)
-        mg = (self.mg_time <= t) & (self.mg_time >= lo - P.CAP_RECENT_MIGRATION_S) & (self.mg_mint != mint) & ~np.isin(self.mg_creator, cl)
+        # Rows count by slot (at or before the cutoff) as well as by block time: a later slot can share the cutoff's
+        # block time (review finding 2). An interval is on at grid time g if its opening row is at or before the
+        # cutoff and at or before g, and its closing row is not.
+        iv = (self.iv_start_slot <= cutoff) & (self.iv_start <= t) & (self.iv_end > lo) & (self.iv_mint != mint) & ~np.isin(self.iv_creator, cl)
+        started = self.iv_start[iv][None, :] <= grid[:, None]
+        ended = (self.iv_end[iv][None, :] <= grid[:, None]) & (self.iv_end_slot[iv][None, :] <= cutoff)
+        n_iv = (started & ~ended).sum(axis=1)
+        mg = (self.mg_slot <= cutoff) & (self.mg_time <= t) & (self.mg_time >= lo - P.CAP_RECENT_MIGRATION_S) & (self.mg_mint != mint) & ~np.isin(self.mg_creator, cl)
         mt = self.mg_time[mg]
         n_mg = ((mt[None, :] <= grid[:, None]) & (mt[None, :] >= grid[:, None] - P.CAP_RECENT_MIGRATION_S)).sum(axis=1)
         N = (n_iv + n_mg).astype(float)
@@ -241,7 +251,7 @@ class FeatureContext:
             out["cap_reason"] = "name-unknown"
             return out
         others = set(self.iv_mint[iv].tolist()) | set(self.mg_mint[mg].tolist())
-        others |= {m for m, ct in self.create_time.items() if lo <= ct <= t}
+        others |= {m for m, ct in self.create_time.items() if lo <= ct <= t and self.create_slot[m] <= cutoff}
         others.discard(mint)
         for m in others:
             nm = self.name_of.get(m)

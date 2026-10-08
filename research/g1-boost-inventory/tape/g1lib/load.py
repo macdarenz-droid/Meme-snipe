@@ -25,15 +25,15 @@ CURVE_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", 
               "token_amount", "virtual_sol_reserves", "virtual_token_reserves", "real_sol_reserves",
               "real_token_reserves", "fee_basis_points", "fee", "creator_fee_basis_points", "creator_fee",
               "mayhem_mode", "cashback_fee_basis_points", "quote_mint", "quote_amount", "virtual_quote_reserves",
-              "real_quote_reserves", "user", "user_token_owner", "owner_token_post", "creator"]
-CURVE_STR = {"mint", "user", "user_token_owner", "creator"}
+              "real_quote_reserves", "user", "user_token_owner", "owner_token_post", "creator", "signer"]
+CURVE_STR = {"mint", "user", "user_token_owner", "creator", "signer"}
 
 AMM_COLS = ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "pool", "base_mint", "quote_mint",
             "side", "base_amount", "quote_amount", "quote_amount_lp_adjusted", "pool_base_token_reserves",
             "pool_quote_token_reserves", "virtual_quote_reserves", "lp_fee_basis_points",
             "protocol_fee_basis_points", "coin_creator_fee_basis_points", "lp_fee", "protocol_fee",
             "coin_creator_fee", "min_base_amount_out", "ix_name", "base_supply", "chain_pool_base",
-            "chain_pool_quote", "user", "user_token_owner", "canonical", "protocol", "signer"]
+            "chain_pool_quote", "user", "user_token_owner", "canonical", "signer"]
 AMM_STR = {"pool", "base_mint", "user", "user_token_owner", "signer"}
 
 T_COLS = ["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner", "amount"]
@@ -279,7 +279,9 @@ def load(units: List[Unit], links: bool = True, log=print) -> Tape:
         c["owner"] = names.codes(owner.to_numpy())
         c["mint"] = names.codes(c["mint"].to_numpy())
         c["creator"] = names.codes(c["creator"].to_numpy())
-        c = c.drop(columns=["user", "user_token_owner"])
+        auth = names.code(P.BUYBACK_AUTHORITY)
+        c["is_buyback"] = (names.codes(c["signer"].to_numpy()) == auth) | (names.codes(c["user"].to_numpy()) == auth)
+        c = c.drop(columns=["user", "user_token_owner", "signer"])
         C.append(c)
         cb = c[c["is_buy"] == 1]
         Buys.append(pd.DataFrame({"slot": cb["slot"].to_numpy(), "tx_idx": cb["tx_idx"].to_numpy(),
@@ -291,7 +293,7 @@ def load(units: List[Unit], links: bool = True, log=print) -> Tape:
                  "quote_amount_lp_adjusted", "pool_base_token_reserves", "pool_quote_token_reserves",
                  "virtual_quote_reserves", "lp_fee_basis_points", "protocol_fee_basis_points",
                  "coin_creator_fee_basis_points", "lp_fee", "protocol_fee", "coin_creator_fee", "min_base_amount_out",
-                 "base_supply", "chain_pool_base", "chain_pool_quote", "canonical", "protocol"])
+                 "base_supply", "chain_pool_base", "chain_pool_quote", "canonical"])
         owner = a["user_token_owner"].where(a["user_token_owner"].notna() & (a["user_token_owner"] != ""), a["user"])
         a["owner"] = names.codes(owner.to_numpy())
         a["pool"] = names.codes(a["pool"].to_numpy())

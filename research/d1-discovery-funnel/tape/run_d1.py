@@ -197,7 +197,7 @@ def search(args):
     res = run_search(joined(args.run))
     res["table"].to_csv(os.path.join(args.run, "search_table.csv"), index=False)
     m1 = json.load(open(os.path.join(args.run, "manifest_stage1.json")))
-    frozen = {"design": "D1", "amendments": ["AMENDMENT_1"], "median_rt_cost": res["median_rt_cost"],
+    frozen = {"design": "D1", "amendments": ["AMENDMENT_1", "AMENDMENT_2"], "median_rt_cost": res["median_rt_cost"],
               "outcome": res["outcome"], "advanced": res["advanced"], "discovery_days": list(C.DISCOVERY_DAYS),
               "code_sha256": code_hash(), "input_sha256": m1["input_sha256"], "bootstrap_seed": C.BOOT_SEED}
     with open(args.out, "w") as fh:

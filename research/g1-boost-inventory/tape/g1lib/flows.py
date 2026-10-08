@@ -78,7 +78,7 @@ def migration_flows(ctx: FeatureContext, mkt: Market, mint: int, fast: Optional[
     boost = w[w["is_boost"]] if len(w) else w
     w = w[~w["is_protocol"]] if len(w) else w
     cr = ctx.tape.curve_of(mint)
-    cw = cr[cr["slot"] == m]
+    cw = cr[(cr["slot"] == m) & ~cr["is_buyback"]]
     sells = pd.concat([
         pd.DataFrame({"owner": w.loc[w["side"] == "sell", "owner"], "tokens": w.loc[w["side"] == "sell", "base_amount"],
                       "sol": w.loc[w["side"] == "sell", "quote_amount_lp_adjusted"]}),
