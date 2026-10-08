@@ -216,11 +216,11 @@ Plain reading: at $5, PM-01 needs an average gross gain of roughly 5% a trade pl
   6. no buy or sell on that day uses an instruction the pinned pre-upgrade IDL does not have. A new swap instruction makes the upgrade economic; part 6 is not limited to any instruction family (R11-73).
   7. program-side reserve changes (R11-75): every non-user instruction on the watched programs that changes pool or curve reserves on that day (`boost_buy_and_burn`, buybacks, fee withdrawals or sweeps that move reserves) has its amounts recomputed from a pinned pre-upgrade rule where one exists. Where none exists, its daily count and its median size on universe pools must each lie within a factor of `gates.boundary.part7Factor` (2) of the 7 days before the boundary (daily mean count, median size; `gates.boundary.part7LookbackDays`). Any difference makes the upgrade economic.
 
-  **Which IDL is "pre-upgrade"** (R11-73). Before the first run, post-UPG-1 IDLs for pump, PumpSwap and pump_fees are pinned through the source order below (R9-66, R10-71), and the rule table gets their v3 rows; this is start-condition item 6 (§6.4). For each boundary, the pre-upgrade IDL is the latest IDL pinned before that boundary's slot. Once a boundary is cleared or ruled economic, its refreshed IDL becomes the baseline for the next boundary, recorded in the boundary record.
+  **Which IDL is "pre-upgrade"** (R11-73). Before the first run, post-UPG-1 IDLs for pump, PumpSwap and pump_fees are pinned through the source order below (R9-66, R10-71), and the rule table gets their v3 rows; this is start-condition item 5.6 (§6.4). For each boundary, the pre-upgrade IDL is the latest IDL pinned before that boundary's slot. Once a boundary is cleared or ruled economic, its refreshed IDL becomes the baseline for the next boundary, recorded in the boundary record.
 
   **Transaction source for the pending day** (R11-74). For the B-10 days, Old Faithful. For the forward windows (`W_B`, `W_R`, `W_P`), first choice: for the pending UTC day after any L-4 flag, the capture path writes the raw transactions it already reads for the watched programs, with inner instructions and metadata, to the recorder, with no extra provider reads (**VERIFY** that the capture path carries them; proposed for card Z08's acceptance). Fallback: a capped sample of every swap in the universe pools that day, fetched through the rate limiter at no more than 50% of the provider's documented limit; if the cap is hit, the first N swaps by slot are used and the shortfall is reported. If neither source is in place by the first run, every forward upgrade is economic. Expected restart rate in that case (DERIVED, approximate): the watched programs had program upgrades on 6 dates from 2026-07-01 to 10-02 (B1, B3, B4, 09-15, 09-23, B5; `docs/research/venues.md` §2.7), about one every 15 days, so a 30-day `W_B` would usually be cut short, and R4-3's one-restart limit would send PM-01 to the owner.
 
-  **Rule table for part 5(b)** (pinned now from the pinned IDLs, `pump_amm.json` sha256 `20914338…` and `pump.json` sha256 `ffe966c4…`; R10-68). For each created account (R11-76): its size equals the table size; its lamports after creation are at least the rent-exempt minimum for that size under the Rent sysvar in effect; and the rent the user paid equals max(0, minimum − the account's balance before the trade), so a pre-funded address passes. v3 rows are added when the post-UPG-1 IDLs are pinned (start-condition item 6).
+  **Rule table for part 5(b)** (pinned now from the pinned IDLs, `pump_amm.json` sha256 `20914338…` and `pump.json` sha256 `ffe966c4…`; R10-68). For each created account (R11-76): its size equals the table size; its lamports after creation are at least the rent-exempt minimum for that size under the Rent sysvar in effect; and the rent the user paid equals max(0, minimum − the account's balance before the trade), so a pre-funded address passes. v3 rows are added when the post-UPG-1 IDLs are pinned (start-condition item 5.6).
 
   | Instruction | Accounts it may create | Size (bytes) |
   |---|---|---|
@@ -229,7 +229,7 @@ Plain reading: at $5, PM-01 needs an average gross gain of roughly 5% a trade pl
   | pump `buy`, `buy_exact_sol_in` | `associated_user` (associated token account); `user_volume_accumulator` | as above |
   | pump `buy_v2`, `buy_exact_quote_in_v2` | `associated_base_user`, `associated_quote_user` (associated token accounts); `user_volume_accumulator`, `associated_user_volume_accumulator` | as above |
   | pump `sell`, `sell_v2` | `associated_quote_user` (v2 only) | 165 |
-  | pump `sell_v3`, `buy_exact_quote_in_v3` | added from the pinned post-UPG-1 IDL (start-condition item 6) | — |
+  | pump `sell_v3`, `buy_exact_quote_in_v3` | added from the pinned post-UPG-1 IDL (start-condition item 5.6) | — |
 
   **VERIFY** (R11-78): whether a swap itself can create any of these: `protocol_fee_recipient_token_account` and `coin_creator_vault_ata` (AMM); `associated_quote_fee_recipient`, `associated_quote_buyback_fee_recipient` and `associated_creator_vault` (curve v2); and, for `sell_v2`, `user_volume_accumulator` and `associated_user_volume_accumulator`. Each is resolved from golden fixtures of real transactions, including first trades in new pools, not from the IDL alone. Until then they are not in the table, so a swap that creates one fails part 5 (fail closed).
 
@@ -262,8 +262,7 @@ The owner approved a one-time screen of PM-01's rules on the B-10 days that can 
      4. which fields the Old Faithful transaction metadata, and the forward-window source (capture path or capped sample, R11-74), carry for "existed before" (part 5);
      5. Token-2022 token-account sizes per mint (part 5 rule table);
      6. whether the fee-recipient, buyback, creator-vault and `sell_v2` accumulator accounts can be created by a swap, from golden fixtures (part 5 rule table, R11-78); the post-UPG-1 IDLs for pump, PumpSwap and pump_fees pinned, with the v3 rows in the rule table (R11-73);
-     7. whether these programs keep an on-chain IDL account (refreshed IDL source 1).
-
+     7. whether these programs keep an on-chain IDL account (refreshed IDL source 1);
      8. the capture path carries raw transactions with inner instructions and metadata for the pending day (R11-74); if not, the §6.2 statement that every forward upgrade is economic applies.
 
      The optional simulator of part 5 is not a start condition.
