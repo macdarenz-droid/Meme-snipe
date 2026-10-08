@@ -30,7 +30,7 @@ What the owner gives the supervisor when a piece of research looks usable. Plain
 - a private repository, either the existing private `zeroed-data` or a new private strategies repository, with a fetch path for the server; or
 - this whole repository becoming private.
 
-Owner-strategy work (building, review and red team) happens only in the private location, and nothing about it is pushed to any branch of this repository (round 6 ruling 61). The public repo, PR text, review logs and DECISIONS refer to an owner strategy only by an opaque id (`o-<n>`) and hashes; the DECISIONS citation points to where the owner's message is and does not quote it. The private location runs the same pin CI; public CI compares only the commitment hash with the pin entry (round 6 ruling 66). Until the owner chooses the location, no owner-strategy work starts at all. Agent-origin strategies may stay public.
+Owner-strategy work (building, review and red team) happens only in the private location, and nothing about it is pushed to any branch of this repository (round 6 ruling 61). The public repo, PR text, review logs and DECISIONS hold nothing about an owner strategy except the opaque id (`o-<n>`), the hashes and the export row (round 7 ruling 72). Its results stay in the private location too; public text names only the opaque id and stage names (round 7 ruling 75). The DECISIONS citation points to where the owner's message is and does not quote it. The private location runs the same pin CI; public CI compares only the commitment hash with the pin entry (round 6 ruling 66). Until the owner chooses the location, no owner-strategy work starts at all. Agent-origin strategies may stay public.
 
 **The data the idea came from cannot prove it.** A strategy is tested on data it was not tuned on (`CLAUDE.md` "MR-01 parked"; ARCH D08: no further search on the same data). The owner's own data shapes the rules; the gates run on days recorded after the rules are fixed (section 5).
 
@@ -49,7 +49,7 @@ Turning the handover into a pre-registration (PREREG): the rules written down an
 | Entry rule | The exact signal on complete 15 s bars and A-M08-02 features | A-M09-01 step 3; A-M08-02 |
 | Exit plan | `stopBps` (negative), `targetBps`, `trailingBps`, `targetPriceSolPerToken`, `timeStopMs` (> 0), `maxExitSlippageBps`; the universal exits of ARCH 8.6 apply on top | A-M09-01 `ExitPlan`, step 4 |
 | Size | The `sizing` rule; the risk engine (M21) caps it. Live sizing uses `kellyFractionLowerBound`, which is 0 without an edge estimate | A-M09-01 step 6; ARCH 3.5, D21 |
-| Configurations | The full set to test. The budget is set by MinBTL: 2 configurations on a 30-day `W_B` at an assumed best annualised Sharpe of 2; a third is refused (`E_BUDGET`) | A-M13-02 step 4; ARCH 3.4 table |
+| Configurations | The full set to test, plus k = 2 reserved re-run trials (round 7 ruling 69). The budget is set by MinBTL, computed on configurations + k: the ARCH 3.4 table allows N = 2 on a 30-day `W_B` at an assumed best annualised Sharpe of 2, N = 3 on 91 days; `preRegister` refuses a `W_B` too short for configurations + k (`E_BUDGET`) | A-M13-02 step 4; ARCH 3.4 table; round 7 ruling 69 |
 | Settings that change results | Every config key with `affectsReturns = true` is part of `configKey`; a later change is a new trial. `configKey` also holds `runtimeDepsHash()`, the hash of every runtime dependency outside the plugin's own package directory (the features package and the `@bot/types` runtime modules the plugin imports), kept apart from the plugin's pin hash (section 3): a change in the middle of a window resets that window through `E_TRIAL_MISMATCH`, and the reset is recorded, unless section 3's "Changes after freezing" re-freezes it | A-M13-02 steps 1–3, 6; B-M25-01 step 2; round 2 ruling 5; round 4 rulings 41, 42; round 5 ruling 51 (amendments to A-M13-02 step 2) |
 | Costs | In SOL (lamports). Pass decisions use the conservative cost row with the stricter fixed cost ($59 a month while D04 is open) | ARCH 3.4 "Cost row" (C-77); `CLAUDE.md` "Profit is counted in SOL" |
 | Sizes | Results shown at $5, $20, $100, $1,000 and $10,000, with gross return, fixed costs, percentage fees and price impact apart | `CLAUDE.md` "Size is not the trial"; MIGRATION Z09 |
@@ -112,17 +112,22 @@ The runner, on the research host too, refuses to register an `id@version` whose 
 **Changes after freezing** (round 3 ruling 26; round 4 rulings 43 and 49; round 5 rulings 52, 53, 56 and 59). Every `affectsReturns` key in the B-M25-01 schema carries a group tag; a CI test fails any key without one, and until it is tagged the key counts as group P. `configKey` has two groups:
 - **Group P, which changes which trades happen.** Two kinds:
   - *Proposal keys:* `runtimeDepsHash()`, the plugin, the universe and the registered configuration. When a config change of this kind alters the `configKey` of a strategy in paper or live, a B-9 replay on its `W_B` data decides: the proposals are byte-identical and the change is A1 → re-freeze by an audited A1 action, and the stage stands; the proposals differ and the change is A1 → drop one stage and restart that window; the change is A2 or A3 → back to `research`. Only these keys can send a strategy back to `research` (round 6 ruling 64). A code deploy of `runtimeDepsHash()` follows "Code deploys" below.
-  - *Admission keys:* exit ladder, cooldown, entry rate, regime, dump window, maximum open positions and the per-token rule. They are compared on trades, not proposals: the recorded proposals are replayed through M21 with the old and the new setting (round 6 ruling 64). An A1 change with identical trades is re-frozen; with different trades, the passed gates' statistics are re-run on the new trade set, registered as trials (as for code deploys), and the strategy keeps its stage or is demoted one. An A3 raise follows the group S raise rule below, and the stage stands.
+  - *Admission keys:* exit ladder, cooldown, entry rate, regime, dump window, maximum open positions and the per-token rule. They are compared on trades, not proposals: the recorded proposals are replayed through M21 with the old and the new setting (round 6 ruling 64). An A1 change with identical trades is re-frozen; with different trades, the "Re-run rule" below applies. An A3 raise follows the group S raise rule below.
 - **Group S, which changes only a trade's size or cost, never which trades happen:** sizing, caps, and the cost and fill model.
   - An A1 change always applies, with its own re-freeze in the same `apply_config` at the same class, so a live strategy never goes dark waiting for a second action. The same apply checks the size table at the new size; if the CI lower bound there is ≤ 0, the strategy stays enabled but entries are blocked with reason `size_not_profitable` (PROPOSED code, named by the ruling) until the size is raised back or the gate passes; exits are kept and a critical alert goes out (round 6 ruling 62).
-  - A raise (A3) is applied only if the re-run gate statistics, and the size table at the new size ($5 to $10,000, with price impact; "Capital and trade size scale"), still pass with the CI lower bound above 0. Otherwise the server refuses the A3, at preview or at `effective_at`, with the blocking reason, and the stage and limit stay as they were. When it passes, it is re-frozen by the same audited action, and the stage stands.
+  - A raise (A3) is applied only if the gates re-run under the "Re-run rule" below, and the size table at the new size ($5 to $10,000, with price impact; "Capital and trade size scale"), still pass with the CI lower bound above 0. Otherwise the server refuses the A3, at preview or at `effective_at`, with the blocking reason, and the stage and limit stay as they were. When it passes, it is re-frozen by the same audited action, and the stage stands.
 
-**Code deploys** (round 5 ruling 53; round 6 rulings 63, 65 and 67). A deploy that changes `configKey` (new runtime dependencies, or new cost- or fill-model code) has its own rule:
-- B-9 is byte-identical and the model outputs are not more favourable: re-frozen by an audited A2 with actor `system`. "Not more favourable" means that on the window's trades, every modelled cost is ≥ and every modelled fill is ≤ the old model's, per trade.
-- Otherwise every gate already passed is re-run on its own recorded window with the new code. If all still pass, it is re-frozen by an audited A2; if not, the strategy is demoted through B-M26-04 to the last stage whose gate still passes. If gate B fails on a re-run with sufficient data, the stage is `failed` (A-M13-05 step 3); with insufficient data, the strategy goes to `research`.
-- Every re-run is a registered trial (A-M13-02 `registerTrial`, kind `gate`), counted in the DSR (B-3) and in B-5. Re-runs on `W_B` and `W_R` are allowed only within the trial budget; when it is used up, the strategy needs a fresh forward window.
-- P and LS are not re-run on recorded data: if the differing proposals change any trade in `W_P`, the strategy drops to `replay_passed` through B-M26-04 and starts a fresh `W_P`, with no cooldown, since this is not a demotion for cause.
-- An open window continues under the new key from the deploy time, and the reset is recorded.
+**Code deploys** (round 5 ruling 53; round 6 rulings 63, 65 and 67; round 7 ruling 71). A deploy that changes `configKey` (new runtime dependencies, or new cost- or fill-model code):
+- B-9 is byte-identical and the model outputs are not more favourable: re-frozen by an audited A2 with actor `system`. "Not more favourable" is measured in SOL outcome, per trade and side, on the window's trades: for a buy, tokens received ≤ the old model's; for a sell, SOL received ≤ the old model's; modelled costs in lamports ≥ the old model's; and net SOL P&L per trade ≤ the old model's.
+- Otherwise the "Re-run rule" applies.
+
+**Re-run rule** (round 6 rulings 63 and 67; round 7 rulings 69, 70, 73 and 74). One rule for code deploys, admission-key changes and group S raises:
+- Every re-run is a registered trial (A-M13-02 `registerTrial`, kind `gate`), counted in the DSR (B-3) and in B-5, and runs only inside the budget: the PREREG reserves k = 2 re-run trials (section 2).
+- B and R are re-run on their own recorded windows. If all still pass, the change is re-frozen by an audited action (A2 for a deploy; the change's own class otherwise); if not, the strategy is demoted through B-M26-04 to the last stage whose gate still passes. If gate B fails on a re-run with sufficient data, the stage is `failed` (A-M13-05 step 3); with insufficient data, the strategy goes to `research`.
+- P and LS are never re-run on simulated trades. If a change adds or removes any `W_P` trade, it applies only as "`W_P` restarts under the new setting from `replay_passed`" (a stage drop through B-M26-04), or, for a raise, it is refused until the owner accepts that restart in the A3 preview. If it changes `W_LS` trades but no `W_P` trade, `W_LS` restarts at `live_small`.
+- A restart drop is not a demotion for cause, so it adds no cooldown, and it never shortens an existing one: `cooldown_until` stays the later of the existing value and none.
+- When the k re-run trials are used up, the strategy goes to the fresh-window state: it drops to `backtest_passed` (through B-M26-04 when live), is disabled in paper and live with exits kept, then records a new `W_R` and, after it, a new `W_P`. `W_B` is re-run only inside the budget.
+- An open window continues under the new key from the change, and the reset is recorded.
 
 Rules for every change:
 - The class of changes that piled up is the server-derived maximum over every change since the frozen `configKey`, recorded in the re-freeze audit.
@@ -244,6 +249,8 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | `preRegister` copying the DECISIONS reference into the registry row; refusing new `agent` registrations after the stop | A-M13-02 | A fake registry behind the same type |
 | Group tag on every `affectsReturns` key; the group S raise check at preview and `effective_at`; the same-apply re-freeze of a group S lowering | B-M25-01, B-M25-02, B-M26-02, B-M26-03 | Z-STRAT ships the CI tag check and tests its validator's side against fakes |
 | The code-deploy re-run of every passed gate on its own window | A-M13-06, A-M11-01 | The host's side only, against fake decision events |
+| The `size_not_profitable` entry block; the M21 replay comparing admission keys on trades | B-M21-02, B-M25-02 | A fake M21 (round 7 ruling 76) |
+| `registerTrial` and the re-run trial budget (k = 2) | A-M13-02 | A fake registry (round 7 ruling 76) |
 | The private location of owner strategies and the server's fetch path | The owner (pending, round 5 ruling 54) | No owner strategy is merged anywhere public; tests use an agent-origin fixture and a fake commitment |
 | `canonicalJson()` | Z01, B-M19-01 (`@bot/types` `canon.ts`, merged #287) | Available |
 | Lint and dependency policy | Z01, B-M30-01 | Available; add the allow-list lint and the pin checks |
@@ -301,12 +308,15 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | AC-47 | A scheduled A3 enable named for X@1 is cancelled at `effective_at` when X@2 is running (fake B-M26-03 re-validation) | Round 5 ruling 55 |
 | AC-48 | The runner refuses a second `preRegister`, or a registration, of an `id@version` whose export entry is not on main | Round 5 ruling 58 |
 | AC-49 | Group S A1 lowering with a fixed-cost fixture that makes the size table's CI lower bound ≤ 0 at the new size: the change applies and re-freezes in the same apply; the strategy stays enabled with entries blocked (`size_not_profitable`), exits kept and a critical alert; raising the size back clears the block | Round 6 ruling 62 |
-| AC-50 | A code-deploy re-run is registered as a trial (fake registry, kind `gate`); with the trial budget used up, no `W_B` or `W_R` re-run starts and the strategy is marked as needing a fresh forward window | Round 6 ruling 63 |
+| AC-50 | Re-run budget (fake registry): each re-run is registered as a trial of kind `gate`. `preRegister` with 1 configuration + k = 2 on a 91-day `W_B` is accepted; with 2 configurations + k = 2 on a 30-day `W_B` it is refused `E_BUDGET` (ARCH 3.4 table at Sharpe 2; see open point 8). A re-run inside k proceeds; the (k+1)-th puts the strategy in the fresh-window state: `backtest_passed`, disabled in paper and live, exits kept, a new `W_R` then a new `W_P` | Round 6 ruling 63; round 7 ruling 69 |
 | AC-51 | A differing deploy that changes a trade in `W_P`: no P re-run; a fake B-M26-04 demotion to `replay_passed`, a fresh `W_P`, and no cooldown | Round 6 ruling 63 |
 | AC-52 | An A3 `MAXOPEN` raise whose fake gate re-run and size table pass keeps the stage; one that fails is refused, with the stage and the limit unchanged | Round 6 ruling 64 |
 | AC-53 | An A1 admission-key change: identical trades in the fake M21 replay → re-freeze; different trades → the passed gates' re-runs are requested as trials, and the stage stays or drops one on the fake result; it never goes to `research` | Round 6 ruling 64 |
-| AC-54 | "Not more favourable": a new model with one trade's modelled cost lower, or one fill higher, than the old model's is not re-frozen by the byte-identical rule | Round 6 ruling 65 |
+| AC-54 | "Not more favourable", per trade and side: a buy whose new model gives more tokens than the old is not re-frozen by the byte-identical rule; separately, a sell whose new model gives more SOL than the old is not either; a model with lower lamport costs, or a higher net SOL P&L on one trade, is not either | Round 6 ruling 65; round 7 ruling 71 |
 | AC-55 | Gate B fails on a code-deploy re-run: with sufficient data the fake stage store shows `failed`; with insufficient data, `research` | Round 6 ruling 67 |
+| AC-56 | An A3 `MAXOPEN` raise that admits a new `W_P` trade (fake M21 replay) is never judged by P on simulated trades: the preview shows the `W_P` restart from `replay_passed`, and without the owner's acceptance the raise is refused | Round 7 ruling 70 |
+| AC-57 | A deploy that changes `W_LS` trades but no `W_P` trade restarts `W_LS` at `live_small` | Round 7 ruling 74 |
+| AC-58 | A restart drop with an existing `cooldown_until` in the future leaves it unchanged; with none, it sets none | Round 7 ruling 73 |
 
 ### Tests
 
@@ -353,11 +363,13 @@ Not in scope: A-M13-02, A-M13-05, A-M13-06, A-M11-01, B-M25-03 and B-M26-04 (the
 | Unit with a fake B-M26-03: version-bound A3 cancelled | AC-47 |
 | Runner unit: export entry missing from main | AC-48 |
 | Validator and host unit with a fixed-cost fixture: A1 lowering below profitability | AC-49 |
-| Host unit with a fake registry and fake B-M26-04: trial registration, budget used up, `W_P` restart | AC-50, AC-51 |
+| Host and `preRegister` unit with a fake registry and fake B-M26-04: trial registration, budget accept and refuse, (k+1)-th re-run, `W_P` restart | AC-50, AC-51 |
 | Validator unit with fake gate and size-table results: `MAXOPEN` raise | AC-52 |
 | Host unit with a fake M21 replay: admission A1 change | AC-53 |
-| Unit: per-trade "not more favourable" check | AC-54 |
+| Unit: "not more favourable" per trade, one buy case and one sell case | AC-54 |
 | Host unit with a fake stage store: B failing on a re-run, sufficient and insufficient data | AC-55 |
+| Validator unit with a fake M21 replay: `MAXOPEN` raise admitting a `W_P` trade | AC-56 |
+| Host unit with fake B-M26-04: `W_LS` restart; cooldown kept | AC-57, AC-58 |
 | Metrics: `signals_total{strategy}`, `proposal_dropped_total{reason}`, `strategy_onbar_ms{strategy}`; log `M09.strategy_disabled` | A-M09-01 observability |
 
 Every bug-fix test must fail before and pass after (AGENTS.md "Builders"). MIGRATION row A-M09-01 marks `core/src/engine/engine.ts:17-40` and `core/test/purity.test.ts` as adapt; under "No bugs migrate" its B1 and B5 probes are AC-27 and AC-28.
@@ -524,6 +536,19 @@ Reviewer at `79aba2c1` (PASS, 2 optional MINOR) and red team round 5 at `79aba2c
 67. m3: gate B failing on a re-run: `failed` with sufficient data, `research` without (section 3; AC-55).
 68. Reviewer n1: section 2's "Document" and "Order" say the in-repo path is for agent-origin strategies only.
 
+### Round 7
+
+Reviewer at `fdbaf99c` (PASS, 1 optional MINOR) and red team round 6 at `fdbaf99c` (0 BLOCKER, 3 MAJOR, 4 MINOR), rulings about 3:06 PM:
+
+69. S1: k = 2 reserved re-run trials; MinBTL on configurations + k; `preRegister` refuses a `W_B` too short; the fresh-window state (sections 2 and 3; AC-50; open point 8).
+70. S2: one "Re-run rule" for code deploys, admission changes and group S raises; P and LS never on simulated trades (section 3; AC-56).
+71. S3: "not more favourable" in SOL per trade and side (section 3; AC-54).
+72. s1: nothing public except the opaque id, the hashes and the export row (section 1).
+73. s2: the no-cooldown drop never shortens an existing cooldown; added to the amendments (section 3; AC-58; open point 6).
+74. s3: `W_LS` restarts at `live_small` (section 3; AC-57).
+75. s4: owner results stay private; public text uses the opaque id and stage names (section 1).
+76. Reviewer n1: the two Dependencies rows.
+
 ## Open points
 
 1. **Owner's evidence and the windows.** Gate B uses only days recorded after the PREREG (C-26). The owner's research data may serve a CS-1 kill-only screen, never a pass. This is a confirmed reading; no change is proposed.
@@ -548,4 +573,7 @@ Reviewer at `79aba2c1` (PASS, 2 optional MINOR) and red team round 5 at `79aba2c
    - B-M26-03: the A3 enable bound to `id@version` and re-validated at `effective_at`.
    - VM-03 (UI.md): `version` in `strategies[]`.
    - B-M21-02 and B-M25-02: the `size_not_profitable` entry block after a group S A1 lowering; the M21 replay that compares admission keys on trades.
+   - B-M26-04 and A-M13-05: the restart drop with no cooldown for cause, which keeps any existing `cooldown_until`; the `W_LS` restart at `live_small`; the fresh-window state.
+   - A-M13-02 step 4: MinBTL on configurations + k.
 7. **Where owner strategies live (owner, pending; round 5 ruling 54).** A private repository (the existing private `zeroed-data` or a new private strategies repository) with a server fetch path, or this whole repository becoming private. Until the owner answers, no owner-strategy work starts at all and nothing about one is pushed here (round 6 ruling 61).
+8. **k = 2 against the MinBTL table (round 7 ruling 69).** The ruling's example accepts a 30-day `W_B` with 2 configurations and k = 2. With MinBTL on configurations + k, that is N = 4, and the ARCH 3.4 table allows N = 2 at 30 days and N = 3 at 91 days at the assumed best annualised Sharpe of 2 (N = 4 only at Sharpe 3, from 60 days). AC-50 follows the ARCH table. If the ruling's example stands, either the assumed Sharpe in A-M13-02 step 4 or k must change; that is the supervisor's call.
