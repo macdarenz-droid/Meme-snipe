@@ -414,10 +414,10 @@ class Ledger:
         agg["start"] = start.reindex(agg.index).to_numpy()
         clean = agg["ok0"] & ~agg["mism"] & ~agg["bad"]
         agg["dirty"] = ~clean
-        self.stats.setdefault("dirty_reasons", {"start_unknown": 0, "balance_mismatch": 0, "unvalued_or_mint": 0})
+        self.stats.setdefault("dirty_reasons", {"carried_unknown": 0, "balance_mismatch_or_unseen_start": 0, "unvalued_or_mint": 0})
         dr = self.stats["dirty_reasons"]
-        dr["start_unknown"] += int((~agg["ok0"]).sum())
-        dr["balance_mismatch"] += int((agg["ok0"] & agg["mism"]).sum())
+        dr["carried_unknown"] += int((~agg["ok0"]).sum())
+        dr["balance_mismatch_or_unseen_start"] += int((agg["ok0"] & agg["mism"]).sum())
         dr["unvalued_or_mint"] += int((agg["ok0"] & ~agg["mism"] & agg["bad"]).sum())
         closed = (agg["end"] == 0)
         agg["end_ok"] = clean | (closed & agg["lastzsw"])
