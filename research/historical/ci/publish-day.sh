@@ -58,17 +58,24 @@ release_state() {
 }
 
 if [ "${1:-}" = --check ]; then
-  # --check DAY: is data-day-DAY published and complete? Writes complete=true|false to
-  # $GITHUB_OUTPUT (when set) so the scan job can skip a published day before any read.
+  # --check DAY: is DAY read done in the private store (OF-5: a complete data-day-DAY or
+  # data-day-DAY-k3 release; a release in this repository never counts)? Writes
+  # complete=true|false to $GITHUB_OUTPUT (when set) so the scan job skips a stored day
+  # before any read. Any store error, or an incomplete release, fails the step.
   d=$2
   [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day $d"; exit 1; }
-  st=$(release_state "data-day-$d" "$d")
-  echo "data-day-$d: $st"
-  case "$st" in
-    complete) echo "complete=true" >> "${GITHUB_OUTPUT:-/dev/null}"; exit 0 ;;
-    absent) echo "complete=false" >> "${GITHUB_OUTPUT:-/dev/null}"; exit 0 ;;
-    *) echo "data-day-$d is incomplete; delete it to republish"; exit 1 ;;
-  esac
+  done=false
+  for tag in "data-day-$d" "data-day-$d-k3"; do
+    st=$(release_state "$tag" "$d")
+    echo "$tag: $st"
+    case "$st" in
+      complete) done=true ;;
+      absent) ;;
+      *) echo "$tag is not complete or cannot be read; delete it to republish (fail closed)"; exit 1 ;;
+    esac
+  done
+  echo "complete=$done" >> "${GITHUB_OUTPUT:-/dev/null}"
+  exit 0
 fi
 
 d=$1 assets=$2

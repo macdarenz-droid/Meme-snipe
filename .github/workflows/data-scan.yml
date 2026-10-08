@@ -212,12 +212,6 @@ jobs:
     outputs:
       forget: ${{ steps.forgetmark.outputs.prefix }}
     timeout-minutes: 355
-    # OF-3 round 3, ruling 23: the day before's pinned list and its SHA256SUMS, declared once
-    # for the whole job so the scan (scan-day.sh) and the trim see the same value. Empty
-    # until OF-5 wires them from the private store: only the first allow-listed day reads.
-    env:
-      ARCHIVE_PRIOR_LIST: ""
-      ARCHIVE_PRIOR_SUMS: ""
     permissions:
       contents: read # OF-4: nothing is written to this repository; the day goes to the private store
       actions: read # "Pick the fullest progress cache" lists cache entries (read only)
@@ -402,12 +396,34 @@ jobs:
           GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" DATA_REPO="$DATA_REPO" DATA_STORE_TOKEN="$DATA_STORE_TOKEN"
           GITHUB_REF="$GITHUB_REF" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" attest "$DAY" "$RUNNER_TEMP/archive-guard"
+      # OF-5: the day before's pinned list and its SHA256SUMS, from the read-done release of
+      # D-1 in the private store (none for the first allow-listed day); a store that cannot
+      # be read, or a release without them, fails the day before any archive read.
+      - name: Fetch the day before's pinned list
+        id: prior
+        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/prior-fetch.sh" "$DAY" "$RUNNER_TEMP/prior"
       # Exit 75 (the 300 min budget ran out, or a back-off did not fit it) is resumable:
       # progress is saved below and the `continue` job dispatches the next chained run.
       - name: Scan (one lane, stops on 429)
         id: scan
         if: steps.published.outputs.complete != 'true'
         env:
+          # OF-3 ruling 23, OF-5: one source for the scan and the trim, the prior step's outputs
+          ARCHIVE_PRIOR_LIST: ${{ steps.prior.outputs.list }}
+          ARCHIVE_PRIOR_SUMS: ${{ steps.prior.outputs.sums }}
           DAY: ${{ matrix.day }}
           MAX_MBPS: ${{ inputs.max_mbps }}
           SOURCE: ${{ inputs.source }}
@@ -478,14 +494,15 @@ jobs:
           exit "$rc"
       # OF-3 (docs/reviews/OF3.md ruling 2): a day stored at K3 is read at K2 and trimmed
       # here, before QA and storing; the per-unit log keeps each unit's K2 hashes. The day
-      # before's pinned list comes from the store (OF-5) as ARCHIVE_PRIOR_LIST and
-      # ARCHIVE_PRIOR_SUMS, the same inputs scan-day.sh checks (OF-3 ruling 18); until it is
-      # wired, only the first allow-listed day can be read or trimmed. A trim out of budget
-      # fails the day (ruling 20).
+      # before's pinned list comes from the store (OF-5, the prior step) as ARCHIVE_PRIOR_LIST
+      # and ARCHIVE_PRIOR_SUMS, the same inputs scan-day.sh checks (OF-3 ruling 18). A trim
+      # out of budget fails the day (ruling 20).
       - name: Trim the day to K3
         id: trim
         if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
         env:
+          ARCHIVE_PRIOR_LIST: ${{ steps.prior.outputs.list }}
+          ARCHIVE_PRIOR_SUMS: ${{ steps.prior.outputs.sums }}
           DAY: ${{ matrix.day }}
         run: |
           ret=$(research/historical/ci/archive-guard.sh local "$DAY")

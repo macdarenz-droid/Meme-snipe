@@ -26,6 +26,8 @@
 #       other-run and 60-min checks.
 #   archive-guard.sh restarts DAY     the resumable stops (exit 75, chained) DAY already
 #       had since ARCHIVE_REARM_AT, from run history (the continue job allows one).
+#   archive-guard.sh b10-done         the B-10 done days, from the private store (OF-5: the
+#       -k3 release for the two measurement days, the plain release for the others).
 # Any refusal exits 2 with the reason on stderr (and the step summary). When sourced, it
 # defines the ag_* functions archive-check.sh uses.
 #
@@ -511,6 +513,26 @@ ag_read_done() {
   sed -n 's#^refs/tags/data-day-\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)\(-k3\)\{0,1\}$#\1#p' <<< "$refs" | LC_ALL=C sort -u
 }
 
+# ag_b10_done (OF-5): the days that are B-10 done, one a line, oldest first. For the two
+# measurement days (the first two allow-listed days, read at K2) only a data-day-D-k3 tag
+# counts; for every other allow-listed day the plain data-day-D tag. A K2 release is read
+# done but never B-10 done. It drives only the B10-PULL row and the evaluator, never the
+# queue (that is ag_read_done). Fails when the store cannot be read.
+ag_b10_done() {
+  local refs days m2 d
+  [[ "${DATA_REPO:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || return 1
+  refs=$(ag_store api --paginate "repos/$DATA_REPO/git/matching-refs/tags/data-day-" --jq '.[].ref' 2>/dev/null) || return 1
+  days=$(ag_days) || return 1
+  m2=$(head -2 <<< "$days")
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    if grep -qx "$d" <<< "$m2"; then
+      if grep -qx "refs/tags/data-day-$d-k3" <<< "$refs"; then echo "$d"; fi
+    elif grep -qx "refs/tags/data-day-$d" <<< "$refs"; then echo "$d"; fi
+  done <<< "$days"
+  return 0
+}
+
 # ---- run history of this repository ----
 ag_default_branch() {
   local b
@@ -849,10 +871,14 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       rm -f "$3/$2"
       ret=$(ag_full "$2" "${4:-}") || exit 2
       mkdir -p "$3" && echo "$2 $ret $(ag_now) ${GITHUB_RUN_ID:-none} ${GITHUB_RUN_ATTEMPT:-none}" > "$3/$2" && echo "archive guard: $2 may be read ($ret)" | tee -a "$ag_summary" ;;
+    b10-done)
+      [[ $# -eq 1 ]] || { echo "usage: archive-guard.sh b10-done" >&2; exit 2; }
+      ag_b10_done || { ag_refuse "the private store's day releases cannot be read (fail closed)"; exit 2; }
+      exit 0 ;;
     restarts)
       [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh restarts DAY" >&2; exit 2; }
       ag_history || { ag_refuse "the run history cannot be read"; exit 2; }
       ag_restarts "$2"; exit $? ;;
-    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR [qa] | recorded OUT" >&2; exit 2 ;;
+    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR [qa] | recorded OUT | b10-done" >&2; exit 2 ;;
   esac
 fi
