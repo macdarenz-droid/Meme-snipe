@@ -1,0 +1,15 @@
+[Unit]
+Description=Zeroed: the pull receipts' own fixed-size filesystem (PATHS-FIX ruling 20)
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+After=local-fs.target
+# Mounted before the chroot's binds and SSH, so the pull account only ever writes into the small filesystem.
+Before=srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount ssh.service ssh.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/zeroed/receipts-fs start
+ExecStop=/usr/local/lib/zeroed/receipts-fs stop
+
+[Install]
+WantedBy=multi-user.target

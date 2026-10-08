@@ -31,7 +31,8 @@ function unitNameOf(n: AstNode): string | null {
   return name !== null && isUnitName(name) ? name : null;
 }
 
-function converterName(callee: AstNode): string | null {
+/** The number conversion `callee` names (`Number`, `parseFloat`, `parseInt`, `Number.parseFloat`, `Number.parseInt`), or null. */
+export function converterName(callee: AstNode): string | null {
   const g = globalName(callee);
   if (g !== null) return NUMBER_FUNCTIONS.has(g) ? g : null;
   if (callee.type !== 'MemberExpression' || globalName(callee.object as AstNode) !== 'Number') return null;

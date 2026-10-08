@@ -1,2 +1,2 @@
-// Skeleton (card C01, B-M30-01). Later cards fill this package.
-export {};
+// @bot/venue (M01 venue registry; group A). The constants registry is also exported as @bot/venue/constants.
+export * from './constants.ts';

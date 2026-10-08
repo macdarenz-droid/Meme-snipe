@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "mode": "paper",
+  "simulated": true,
+  "limits": [
+    {
+      "limit_id": "lim_max_position",
+      "label": "Max position size",
+      "short_code": "MAXPOS",
+      "scope": "global",
+      "scope_id": null,
+      "kind": "max_position_size",
+      "unit": "lamports",
+      "display_unit": "sol",
+      "limit_value_display": "0.6",
+      "limit_value": "18446744073709551615",
+      "usage_value": "420000000",
+      "usage_bps": 7000,
+      "state": "elevated",
+      "action_on_breach": "block_entries",
+      "last_breach_at": null,
+      "editable": true,
+      "hard_ceiling": "18446744073709551615",
+      "pending_change": null
+    },
+    {
+      "limit_id": "lim_daily_loss",
+      "label": "Max daily loss",
+      "short_code": "DAYLOSS",
+      "scope": "global",
+      "scope_id": null,
+      "kind": "max_daily_loss",
+      "unit": "lamports",
+      "display_unit": "sol",
+      "limit_value_display": "0.25",
+      "limit_value": "250000000",
+      "usage_value": "50000000",
+      "usage_bps": 2000,
+      "state": "normal",
+      "action_on_breach": "halt",
+      "last_breach_at": "2026-10-04T09:12:44.512Z",
+      "editable": true,
+      "hard_ceiling": "500000000",
+      "pending_change": null
+    }
+  ],
+  "breakers": [
+    {
+      "breaker_id": "brk_landing",
+      "label": "Landing rate",
+      "tripped": false,
+      "tripped_at": null,
+      "reason": null,
+      "auto_reset_at": null,
+      "requires_manual_reset": false
+    }
+  ],
+  "daily_loss": {
+    "used_lamports": "50000000",
+    "limit_lamports": "18446744073709551615",
+    "resets_at": "2026-10-07T00:00:00.000Z"
+  },
+  "as_of": "2026-10-06T14:02:11.123Z"
+}

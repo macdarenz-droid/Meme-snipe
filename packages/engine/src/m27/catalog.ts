@@ -183,6 +183,17 @@ export const METRICS = {
   sse_emit_lag_ms: histogram(BUCKETS.latencyMs),
   sse_replays_total: counter(),
   sse_resets_total: counter(),
+  // ---- SPEC-A observability sections (group A tickets, added in review) ----
+  rpc_latency_ms: histogram(BUCKETS.latencyMs, 'provider', 'method'), // A-M14-01
+  rpc_queue_depth: gauge('provider', 'priority'),               // A-M14-02
+  rpc_wait_ms: histogram(BUCKETS.latencyMs, 'priority'),
+  rpc_failover_total: counter('from', 'to'),
+  rpc_429_total: counter('provider'),
+  rpc_byte_budget_refused_total: counter('provider', 'method'), // A-M14-02 owner byte rule (C03 red team R6-1)
+  decode_accounts_total: counter('kind', 'result'),             // A-M02-02
+  decode_events_total: counter('kind'),                         // A-M02-03
+  decode_gap_total: counter('reason'),
+  decode_layout_extended_total: counter('kind'),                // A-M02-03, Z03 ruling 2
 } as const;
 
 export type MetricName = keyof typeof METRICS;

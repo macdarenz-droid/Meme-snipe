@@ -76,6 +76,47 @@ jobs:
         run: node tools/policy/bin/age.ts
       - run: pnpm -r --if-present build
 
+  dashboard:
+    # Dashboard browser tests (UI-T01 acceptance 4; card Z05): end-to-end with axe accessibility checks, then screenshot
+    # comparisons, against a production build served on 127.0.0.1 with the production CSP. The runner image's
+    # preinstalled Chrome is used (channel chrome), so no browser is downloaded and no install script runs. Lint, type
+    # check and unit tests run in the check job. No secrets: read-only token, credentials not persisted.
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DASHBOARD_BROWSER_CHANNEL: chrome
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Install (frozen lockfile; .npmrc ignore-scripts)
+        run: pnpm install --frozen-lockfile
+      - name: Dashboard end-to-end and accessibility tests
+        run: pnpm -r --filter @bot/dashboard run test:e2e
+      # UI-T06: the DataTable scroll benchmark is a non-gating trend.
+      - name: Keep the DataTable frame-rate record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dashboard-table-perf
+          path: packages/dashboard/test-results/table-perf.json
+          if-no-files-found: ignore
+          retention-days: 90
+      - name: Dashboard visual tests
+        run: pnpm -r --filter @bot/dashboard run test:visual
+      - name: Keep the screenshot diffs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dashboard-test-results
+          path: packages/dashboard/test-results
+          retention-days: 7
+
   historical-data:
     # DATA-1 scanner, QA verdict and CI script tests (offline; no archive access).
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}

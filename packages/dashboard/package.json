@@ -7,5 +7,41 @@
   "license": "UNLICENSED",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "node test/tooling/serve.ts --dev",
+    "build": "node test/tooling/build.ts",
+    "preview": "node test/tooling/serve.ts --preview",
+    "tokens": "node test/tooling/tokens.ts",
+    "test": "cd ../.. && vitest run --project blueprint packages/dashboard",
+    "test:e2e": "node test/tooling/build.ts --e2e && playwright test -c test/e2e/playwright.config.ts --project=e2e",
+    "test:visual": "node test/tooling/build.ts --e2e && playwright test -c test/e2e/playwright.config.ts --project=visual",
+    "test:visual:update": "node test/tooling/build.ts --e2e && playwright test -c test/e2e/playwright.config.ts --project=visual --update-snapshots=all",
+    "storybook": "node test/tooling/serve.ts --dev --catalogue",
+    "lint": "cd ../.. && eslint --config eslint.config.mjs --max-warnings=0 packages/dashboard",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@bot/types": "workspace:*",
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@radix-ui/react-context-menu": "2.3.7",
+    "@radix-ui/react-dropdown-menu": "2.1.24",
+    "@radix-ui/react-popover": "1.1.23",
+    "@radix-ui/react-tabs": "1.1.21",
+    "@radix-ui/react-tooltip": "1.2.16",
+    "@tanstack/react-table": "9.2.4",
+    "@tanstack/react-virtual": "3.14.13",
+    "lucide-react": "1.47.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "happy-dom": "20.14.5",
+    "vite": "8.3.2"
   }
 }

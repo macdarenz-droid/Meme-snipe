@@ -19,7 +19,23 @@ const WEB3_V1 = 'Banned in the engine and signer: use @solana/kit (B-M30-01; LD-
  * paths, never a file-name pattern, so a new clock.ts or rng.ts elsewhere is linted like any other file. The card that
  * builds a clock or RNG module adds its path here, in review.
  */
-const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts'];
+const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts', 'packages/dashboard/src/lib/clock.ts'];
+
+/** The dashboard's formatting library (UI-T03): the one dashboard source allowed to call toFixed and friends. */
+const DASHBOARD_MONEY_MODULE = 'packages/dashboard/src/lib/money.ts';
+
+/** The constants registry (A-M01-01 logic 1): the only file that may hold a program ID literal. */
+const CONSTANTS_REGISTRY = 'packages/venue/src/constants.ts';
+
+/**
+ * The fixture files that may hold address literals, but never a program ID (Z03 ruling m7, narrowed by ruling 32):
+ * anything under fixtures/, test fixtures, and two named src files, the dashboard's display samples and the frozen
+ * `@bot/contract/fixtures` (random test keys, B-M28-01).
+ */
+const FIXTURE_FILES = ['fixtures/**', 'packages/*/test/fixtures.ts', 'packages/dashboard/src/fixtures.ts', 'packages/contract/src/fixtures.ts'];
+
+/** The code that may import a fixtures module (Z03 ruling 32): the dashboard catalogue and test code. */
+const FIXTURE_IMPORTERS = ['packages/dashboard/src/catalogue/**', '**/test/**'];
 
 /**
  * Every JavaScript and TypeScript source extension, so no module escapes the rules by its extension. The policy check
@@ -29,7 +45,12 @@ const SOURCES = ['ts', 'mts', 'cts', 'tsx', 'js', 'mjs', 'cjs', 'jsx'];
 const sources = (dir) => SOURCES.map((ext) => `${dir}**/*.${ext}`);
 
 export default [
-  { ignores: ['**/node_modules/**', 'coverage/**', 'tools/policy/test/fixtures/**', ...ZEROED_PACKAGE_PREFIXES.map((p) => `${p}**`), ...zeroedSourceFiles()] },
+  // The dashboard's build and test output (packages/dashboard/.gitignore) is generated, never committed: the policy
+  // check refuses any committed module under packages/ that is not .ts (E_SOURCE_TYPE).
+  {
+    ignores: ['**/node_modules/**', 'coverage/**', 'tools/policy/test/fixtures/**', ...ZEROED_PACKAGE_PREFIXES.map((p) => `${p}**`), ...zeroedSourceFiles(),
+      'packages/dashboard/{dist,.dev-build,.e2e-build,test-results,playwright-report}/**'],
+  },
   {
     files: sources(''),
     // The Node timers no-implied-eval checks are declared, so the rule sees them as the globals they are.
@@ -42,6 +63,8 @@ export default [
       'bot/no-shared-type-redefinition': 'error',
       // B-M24-01 logic 3: no await inside a withTx callback (ARCH 7.1).
       'bot/no-await-in-withtx': 'error',
+      'bot/no-program-id-literal': 'error',
+      'bot/no-fixtures-import': 'error',
       // Code built from strings loads modules the import check cannot see (C01 review finding R2).
       'no-eval': 'error',
       'no-new-func': 'error',
@@ -49,8 +72,31 @@ export default [
     },
   },
   {
+    // The dashboard's money rule (UI-T01): view-model money and slot fields are never converted to JS numbers.
+    files: sources('packages/dashboard/'),
+    rules: { 'bot/no-number-on-money': 'error' },
+  },
+  {
+    // UI-T03: the money module is the only dashboard source that formats numbers (exact path, never a name pattern).
+    files: sources('packages/dashboard/src/'),
+    ignores: [DASHBOARD_MONEY_MODULE],
+    rules: { 'bot/no-number-formatting': 'error' },
+  },
+  {
     files: CLOCK_AND_RNG_MODULES,
     rules: { 'bot/no-ambient-clock-or-random': 'off' },
+  },
+  {
+    files: [CONSTANTS_REGISTRY],
+    rules: { 'bot/no-program-id-literal': 'off' },
+  },
+  {
+    files: FIXTURE_FILES,
+    rules: { 'bot/no-program-id-literal': ['error', { allowAddresses: true }] },
+  },
+  {
+    files: FIXTURE_IMPORTERS,
+    rules: { 'bot/no-fixtures-import': 'off' },
   },
   {
     files: [...sources('packages/engine/'), ...sources('packages/signer/')],

@@ -1,0 +1,14 @@
+{
+  "name": "@bot/decoders",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "M02 IDL decoders: pinned IDLs, base58, readers, account and event decoders (A-M02-01..03). Node built-ins only; shared with the signer (C-02).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@bot/types": "workspace:*"
+  }
+}

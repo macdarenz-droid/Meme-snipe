@@ -1,0 +1,35 @@
+/* Application shell (UI-T01). */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-shell__header {
+  display: flex;
+  align-items: center;
+  height: 48px;
+  padding: 0 var(--s-6);
+  background: var(--c-bg-surface-1);
+  border-bottom: var(--b-hair) solid var(--c-border-subtle);
+}
+
+.app-shell__name {
+  font: var(--t-title-sm);
+  letter-spacing: var(--t-title-sm-ls);
+}
+
+.app-shell__main {
+  flex: 1;
+  padding: var(--s-6);
+}
+
+.app-shell__main:focus {
+  outline: none;
+}
+
+.app-shell__title {
+  margin: 0;
+  font: var(--t-title);
+  letter-spacing: var(--t-title-ls);
+}

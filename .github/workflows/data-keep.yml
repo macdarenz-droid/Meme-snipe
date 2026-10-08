@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   list:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       entries: ${{ steps.list.outputs.entries }}
@@ -47,7 +47,7 @@ jobs:
   keep:
     needs: list
     if: needs.list.outputs.count != '0'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       max-parallel: 1

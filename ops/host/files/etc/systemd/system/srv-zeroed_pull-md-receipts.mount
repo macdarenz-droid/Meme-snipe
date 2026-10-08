@@ -1,0 +1,15 @@
+[Unit]
+Description=Zeroed: pull receipts, the one folder the pull account may write (PATHS-FIX)
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+Requires=srv-zeroed_pull-md.mount zeroed-receipts-fs.service
+After=srv-zeroed_pull-md.mount zeroed-receipts-fs.service
+Before=ssh.service ssh.socket
+
+[Mount]
+What=/var/lib/zeroed-md/receipts
+Where=/srv/zeroed_pull/md/receipts
+Type=none
+Options=bind,rw,nodev,nosuid,noexec,private
+
+[Install]
+WantedBy=multi-user.target

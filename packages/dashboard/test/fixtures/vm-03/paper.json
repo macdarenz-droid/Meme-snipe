@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "state_version": "101",
+  "mode": "paper",
+  "simulated": true,
+  "mode_since": "2026-10-06T08:00:00.000Z",
+  "run_id": "01K6Y3V2Q8ZQ4D5M7N9P1R3T5Y",
+  "trading_state": "running",
+  "trading_state_changed_at": "2026-10-06T08:00:05.000Z",
+  "kill": {
+    "halted_by": null,
+    "latch_set_by": null,
+    "latch_clear_requires": null,
+    "reason_code": null,
+    "reason_text": null,
+    "components": [
+      {
+        "name": "executor",
+        "acked": true,
+        "acked_at": "2026-10-06T08:00:05.000Z"
+      },
+      {
+        "name": "risk",
+        "acked": true,
+        "acked_at": "2026-10-06T08:00:05.000Z"
+      }
+    ]
+  },
+  "signer": {
+    "lock": "locked",
+    "exit_lease_holder": null
+  },
+  "live_caps": {
+    "max_trade_lamports": null,
+    "max_open_positions": null,
+    "max_daily_loss_lamports": null
+  },
+  "scheduled_change": null,
+  "strategies": [
+    {
+      "strategy_id": "mr-01",
+      "name": "Mean reversion",
+      "enabled": true,
+      "modes": [
+        "paper"
+      ]
+    }
+  ],
+  "sim_clock": null,
+  "versions": {
+    "bot": "0.1.0+2026-10-06",
+    "config": "cfg-17"
+  },
+  "trading_wallet_pubkey": null
+}

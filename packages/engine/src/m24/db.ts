@@ -26,6 +26,7 @@ import { canonicalJson, type Clock, type UnixMs } from '@bot/types';
 import type { Logger } from '../m27/log.ts';
 import type { GaugeHandle, HistogramHandle } from '../m27/metrics.ts';
 import { registerSchemaRunner } from './schema-tx.ts';
+import { writerLockPath } from '../paths.ts';
 
 export type SqlValue = null | number | bigint | string | Uint8Array;
 export type Row = Record<string, SqlValue>;
@@ -76,8 +77,8 @@ export interface DbOptions {
    * A missing database file is created only by an explicit init (Z02 round 2 ruling 2): `create: true` is `botctl init`;
    * `initMarker` is a first-start marker file kept outside the database directory, removed once the database exists.
    * Without either, a missing file refuses the start (E_DATABASE_MISSING, critical log). The marker's directory must be
-   * writable by the engine's user, so the marker can be removed (ruling 15): on the host, `/var/lib/bot-init/first-start`
-   * in a `bot`-owned 0700 directory beside (not inside) `/var/lib/bot`. A marker that cannot be removed refuses the start
+   * writable by the engine's user, so the marker can be removed (ruling 15): on the host, `ENGINE_PATHS.initMarker`
+   * (`/var/lib/zeroed/init/first-start`, PATHS-FIX), in the unit's 0700 state folder. A marker that cannot be removed refuses the start
    * (E_INIT_MARKER_STUCK) with the writer closed and the lock released, so it can never later recreate an empty
    * database; a marker found beside an existing database is removed first, or the start is refused the same way.
    */
@@ -222,7 +223,7 @@ function restrictFiles(path: string): void {
  * two openers racing for a new lock file may both be refused, and neither runs (a start retries).
  */
 function takeWriterLock(path: string): () => void {
-  const lockPath = `${path}-writer.lock`;
+  const lockPath = writerLockPath(path);
   const lock = new DatabaseSync(lockPath, { timeout: 0 });
   try {
     lock.exec('PRAGMA locking_mode = EXCLUSIVE');

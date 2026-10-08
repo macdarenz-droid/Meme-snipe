@@ -1,0 +1,56 @@
+/* Fonts (UI-T03, D-UI-01): Inter and JetBrains Mono, self-hosted from @fontsource-variable/inter and
+   @fontsource-variable/jetbrains-mono 5.3.0 (OFL-1.1; texts in /licenses). No CDN at runtime. Latin and Latin
+   Extended subsets with the packages' unicode ranges; the build preloads the Inter Latin file. Inter's files carry the
+   wght and opsz axes, so titles get optical sizing automatically. "Inter Fallback" is Arial (or its metric clone
+   Liberation Sans on Linux) scaled to Inter's measured width and vertical metrics, so body and table text (11-15px)
+   moves less than 1% when Inter arrives (test/e2e/fonts.e2e.ts). */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("~@fontsource-variable/inter/files/inter-latin-opsz-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("~@fontsource-variable/inter/files/inter-latin-ext-opsz-normal.woff2") format("woff2-variations");
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("~@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("~@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Inter Fallback";
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("LiberationSans");
+  /* Measured in Chromium 141 (2026-10-07, test/e2e/fonts.e2e.ts): over a sample of UI text, Inter is 1.0608-1.0610
+     times as wide as Arial's metric clone Liberation Sans at 11-14px (Inter's optical size stays at 14 there), 1.056 at
+     15px. Vertical metrics (hhea, unitsPerEm 2048): Inter ascent 1984, descent 494. The overrides are Inter's ascent and
+     descent divided by the size adjustment. A paragraph shifts by less than 1%; a short label can differ by up to about
+     2.5% (letter proportions differ), and titles of 18px and more by up to about 5% (Inter's narrower optical size), only
+     while Inter loads (it is preloaded). */
+  size-adjust: 106.09%;
+  ascent-override: 91.31%;
+  descent-override: 22.74%;
+  line-gap-override: 0%;
+}

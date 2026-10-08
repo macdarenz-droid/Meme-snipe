@@ -1,0 +1,5 @@
+dist/
+.dev-build/
+.e2e-build/
+test-results/
+playwright-report/

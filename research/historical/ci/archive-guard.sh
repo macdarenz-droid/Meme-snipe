@@ -177,13 +177,80 @@ CAP = re.compile(r"^[^)|]*2>(?:&1|>?\s*" + F + r")[^)|]*\)")
 ASSIGN = re.compile(r"(?:^|[\s;])(?:local\s+)?(qlog|slog|tlog)=(\S+)")
 UNDER = re.compile(r"^\x22(?:\$out|\$RUNNER_TEMP|\$\{RUNNER_TEMP:\?\})/")
 # a scanner binary held in a variable (or looked up) is refused
+# rulings 57 and OF-3 26: the log directories are written only by a plain assignment, and
+# never linked, read or copied to an output (ln, cat, tee, head, tail on their paths)
+NONPLAIN = re.compile(r"\bfor\s+(?:qlog|slog|tlog)\b|\bread\b[^#;|]*\b(?:qlog|slog|tlog)\b|\bprintf\s+-v\s*(?:qlog|slog|tlog)\b|\b(?:declare|typeset)\b[^#;|]*\b(?:qlog|slog|tlog)\b|\$\{(?:qlog|slog|tlog):?[=?+-]")
+TOUCH = re.compile(r"(?:^|[\s;&|(])(?:ln|cat|tee|head|tail)\b[^#;|]*\$\{?(?:qlog|slog|tlog)\b")
+# OF-3 ruling 30 (replaces the deny-list of OF-2 ruling 63): an allow-list. A line that
+# names qlog, slog or tlog (or a .../logs path under $out or $RUNNER_TEMP) may only assign
+# it a path under $out or $RUNNER_TEMP, mkdir or rm it, redirect the output of a command into
+# it, mv migrations.list out of it, or name it in an echo to the step summary (and the
+# sealing call, cache-crypt.sh seal, takes the logs path). Anything else is refused, and
+# eval is refused in the CI scripts.
+# OF-2 ruling 67: any spelling of $out or $RUNNER_TEMP (plain, braced, quoted) then a logs part
+OUTV = r"\$(?:\{(?:out|RUNNER_TEMP)(?:[:?][^}]*)?\}|(?:out|RUNNER_TEMP)\b)"
+LOGREF = re.compile(r"\$\{?(?:qlog|slog|tlog)\b|(?<![\w$])(?:qlog|slog|tlog)\b|" + OUTV + r"[\w./${}\x22\x27*?-]*/logs\b")
+# ... and no read command on $out itself (or a glob of its top level), with find -exec or
+# into xargs, or after a cd into it (on the same line, or anywhere after a top-level cd)
+READ = r"(?:cat|tac|nl|grep|egrep|fgrep|rg|sed|awk|head|tail|cp|rsync|od|xxd|strings|base64|zcat|zstdcat|diff|find)"
+# OF-2 ruling 70: whatever variable comes first, an argument with a logs path part
+# (/logs/, /logs at its end, or a leading logs/) makes a read command a log read
+LOGPART = re.compile(r"/logs(?:/|[\x22\x27]|\s|$)|(?:^|\s)[\x22\x27]?logs/")
+OUTARG = re.compile(r"(?:^|\s)\x22?" + OUTV + r"\x22?(?:/\.?|/[^\s/]*[*?[][^\s]*)?\x22?(?=\s|$)")
+CDOUT = re.compile(r"^(?:cd|pushd)\s+\x22?" + OUTV + r"\x22?/?\.?\x22?\s*$")
+def out_reads(line, state):
+    segs, last, cdl = [], 0, False
+    for m in SEP.finditer(line + ";"):
+        segs.append((line[last:m.start()], m.group(0))); last = m.end()
+    prev = ";"
+    for seg, sep in segs:
+        head = KW.sub("", seg, count=1); cmd = re.match(r"^(?:\S+/)?(\w+)", head); cmd = cmd.group(1) if cmd else ""
+        if CDOUT.match(head):
+            cdl = True
+            if prev not in ("(", "$(", "`"): state["cd"] = True
+        elif re.fullmatch(READ + "|tar|xargs", cmd):
+            # find only lists names, unless it runs a command on them (-exec, xargs)
+            if cmd == "find" and not (re.search(r"\s-(?:exec|execdir|ok|okdir|delete|fprint\w*)\b", head) or "xargs" in line): pass
+            elif LOGPART.search(head): return "a read command on a logs path"
+            elif cmd in ("tar", "xargs"): pass
+            elif state.get("cd") or cdl: return "a read command after a cd into $out or $RUNNER_TEMP"
+            elif OUTARG.search(head): return "a read command on $out or $RUNNER_TEMP itself"
+        prev = sep
+    return None
+
+SEP = re.compile(r";|&&|\|\||\||\$\(|[<>]\(|`|\(|\)")
+KW = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{|time)\s+)*")
+EVAL = re.compile(r"(?:^|[\s;&|(`!{])eval\b")
+def logref_ok(line, m):
+    before = line[:m.start()]
+    seps = list(SEP.finditer(before)); start = seps[-1].end() if seps else 0
+    nxt = SEP.search(line, m.end()); seg = line[start:nxt.start() if nxt else len(line)]
+    head = KW.sub("", seg, count=1); at = m.start() - start - (len(seg) - len(head)); name = not m.group(0).endswith("/logs")
+    if re.search(r"(?<![<>&\d])(?:[12]?>>?|&>>?)\s*\x22?$", before): return True
+    if re.match(r"^(?:local\s+)?(?:qlog|slog|tlog)=\S+\s*$", head): return True
+    if re.match(r"^(?:mkdir|rm)\s[^<]*$", head): return True
+    mv = re.match(r"^(mv\s+(?:-\w+\s+)*\x22)\$\{?(?:qlog|slog|tlog)\}?/migrations\.list\x22\s+(\S+)\s*$", head)
+    if mv and at == len(mv.group(1)) and not re.search(r"GITHUB_|/dev/|/proc/|qlog|slog|tlog|/logs\b", mv.group(2)): return True
+    if re.match(r"^echo\s[^<]*>>\s*\x22?\$\{?GITHUB_STEP_SUMMARY\b[^<]*$", head): return True
+    if not name and re.search(r"cache-crypt\.sh\x22?\s+seal\s", head): return True
+    return False
 VIA = re.compile(r"(?:^|[\s;])(?:local\s+|export\s+)?\w+=[\x22\x27]?[^\s$(#]*zeroed-(?:scan|rpcscan)|command\s+-v\s+zeroed-|which\s+zeroed-|type\s+-p\s+zeroed-")
 def bad_lines(text):
+    state = {}
     for n, line in enumerate(text.split("\n"), 1):
         if line.lstrip().startswith("#"): continue
+        r = out_reads(line, state)
+        if r: yield n, r + ": " + line.strip()[:100]
         for m in ASSIGN.finditer(line):
             if not UNDER.match(m.group(2)): yield n, "log directory " + m.group(1) + " not under $out or $RUNNER_TEMP: " + line.strip()[:100]
         if VIA.search(line): yield n, "scanner binary through a variable: " + line.strip()[:100]
+        if NONPLAIN.search(line): yield n, "log directory written other than by a plain assignment: " + line.strip()[:100]
+        if TOUCH.search(line): yield n, "log directory linked or read out: " + line.strip()[:100]
+        if EVAL.search(line): yield n, "eval in a CI script: " + line.strip()[:100]
+        for m in LOGREF.finditer(line):
+            if not logref_ok(line, m):
+                yield n, "log directory named other than as a write target: " + line.strip()[:100]
+                break
         for m in CALL.finditer(line):
             rest = line[m.start(1):]
             if re.search(r"\$\(\s*(?:[\w./-]+\s+)*[\x22\x27]?[\w./$-]*$", line[:m.start(1)]):
@@ -258,7 +325,8 @@ def check_steps(steps, name, j, depth=0):
             w = st.get("with") or {}
             key = str(w.get("key", "")) + " " + str(w.get("restore-keys", ""))
             if re.search(r"data-(scan|rpc)", key) and not re.search(r"data-scan-backoff-", key):
-                want = "${{ runner.temp }}/work/sealed-assets" if "data-rpc-assets" in key else "${{ runner.temp }}/work/sealed"
+                want = ("${{ runner.temp }}/work/sealed-assets" if "data-rpc-assets" in key
+                        else "${{ runner.temp }}/work/sealed-logs" if re.search(r"-logs\s*$", str(w.get("key", ""))) else "${{ runner.temp }}/work/sealed")
                 if str(w.get("path", "")).strip() != want:
                     fail(where + " caches archive-derived progress unsealed (path " + str(w.get("path", "")).strip() + ")")
         run = join(str(st.get("run", "")))
@@ -282,10 +350,24 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
         fail(name + " has no explicit top-level permissions with contents: read")
     e = scopes(top, name, None)
     if e: fail(name + " " + e + " at the top level")
+    def envcheck(env, where):
+        for k, v in (env or {}).items():
+            if "zeroed-" in str(v): fail(where + " env " + str(k) + " names a scanner binary (ruling 57)")
+    envcheck(wf.get("env"), name)
     for j, job in (wf.get("jobs") or {}).items():
         if not isinstance(job, dict): continue
         e = scopes(job.get("permissions"), name, j)
         if e: fail(name + " job " + str(j) + " " + e)
+        envcheck(job.get("env"), name + " job " + str(j))
+        for st in job.get("steps") or []:
+            if isinstance(st, dict): envcheck(st.get("env"), name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))))
+        # ruling 65: no job container, service containers or reusable workflow (none is checked)
+        for k in ("container", "services", "uses"):
+            if k in job: fail(name + " job " + str(j) + " uses " + k + ": (a container, a service or a reusable workflow is not checked)")
+        # ruling 59: a pinned runner image (ubuntu-latest moves to 26.04 in Nov 2026)
+        ro = job.get("runs-on")
+        if ro is not None and (not isinstance(ro, str) or "latest" in ro or not re.fullmatch(r"ubuntu-\d\d\.\d\d", ro)):
+            fail(name + " job " + str(j) + " runs on " + str(ro) + ", not a pinned ubuntu-NN.NN image")
         check_steps(job.get("steps") or [], name, j)
 
 '
@@ -373,13 +455,16 @@ ag_store_ok() {
     { ag_refuse "the storage-stop marker is present in $DATA_REPO (storage projection above 0.5 TB); the owner is asked"; return 2; }
   return 0
 }
-# ag_caches_sealed (round 7, ruling 51): no Actions cache entry of this repository, on any
-# ref, holds archive-derived or Helius progress or assets unsealed (a data-scan-* or
+# ag_caches_sealed (round 7, ruling 51; ruling 56: the default branch's ref only, the one
+# default-branch runs restore from; a fork or PR ref's entry is never restored by them and
+# cannot halt arming): no Actions cache entry holds archive-derived or Helius progress or
+# assets unsealed (a data-scan-* or
 # data-rpc-* key without the -k<key id>- of cache-crypt.sh; the back-off state aside).
 # Deleting any that remain is the owner's decision. Fails closed when the list cannot be read.
 ag_caches_sealed() {
   local keys bad
-  keys=$("$ag_gh" api --paginate "repos/$ag_repo/actions/caches?key=data-&per_page=100" --jq '.actions_caches[].key' 2>/dev/null) ||
+  local ref="refs/heads/$AG_BRANCH"
+  keys=$("$ag_gh" api --paginate "repos/$ag_repo/actions/caches?key=data-&ref=$ref&per_page=100" --jq ".actions_caches[] | select(.ref == \"$ref\") | .key" 2>/dev/null) ||
     { ag_refuse "the Actions cache list cannot be read (fail closed)"; return 2; }
   bad=$(grep -E '^data-(scan|rpc)-' <<< "$keys" | grep -vE '^data-scan-backoff-' | grep -vE '^data-(scan|rpc|rpc-assets)-[0-9]{4}-[0-9]{2}-[0-9]{2}-k[0-9a-f]{12}-' || true)
   [[ -z "$bad" ]] ||
@@ -400,27 +485,43 @@ ag_default_branch() {
   [[ "$b" =~ ^[A-Za-z0-9._/-]+$ && "$b" != null ]] || return 1
   echo "$b"
 }
-# ag_runs WORKFLOW (round 7, ruling 49): runs on every branch as TSV "id status
+# ag_runs WORKFLOW (rulings 49, 55, 61): runs on every branch as TSV "id status
 # conclusion createdAt updatedAt attempt headBranch headSha title" (a missing value is
 # "-": read splits on tabs and would merge empty fields): every run created since the
 # earlier of ARCHIVE_REARM_AT and 35 days ago (GitHub allows a re-run only within 30 days,
-# VERIFY, OLD-FAITHFUL.md §2), read page by page from the runs API with no cap, plus every
-# queued, in-progress, waiting, requested or pending run, each run once. Fails on an API
-# error, or above AG_RUNS_MAX (5,000) runs (fail closed).
+# VERIFY, OLD-FAITHFUL.md §2), read from the runs API in created slices of AG_SLICE_DAYS,
+# plus every queued, in-progress, waiting, requested or pending run, each run once. The
+# API returns at most 1,000 results for one filtered search and paging then just stops
+# (GitHub REST "List workflow runs for a workflow"), so each slice and each status query
+# fails closed when its total_count is AG_RUNS_MAX (1,000) or more, or when fewer rows are
+# read than it reports. Fails on an API error too.
 AG_STATUSES="queued in_progress waiting requested pending"
-AG_RUNS_MAX=5000
+AG_RUNS_MAX=1000
+AG_SLICE_DAYS=${AG_SLICE_DAYS:-7}
+ag_runs_query() { # ag_runs_query WORKFLOW QUERY: the rows; fails closed as above
+  local out total n
+  out=$("$ag_gh" api --paginate "repos/$ag_repo/actions/workflows/$1/runs?$2&per_page=100" \
+    --jq '"T\t\(.total_count)", (.workflow_runs[] | [.id, .status, (.conclusion // "-"), .created_at, .updated_at, .run_attempt, .head_branch, (.head_sha // "-"), .display_title] | @tsv)' 2>/dev/null) || return 1
+  total=$(sed -n $'s/^T\t\([0-9]*\)$/\\1/p' <<< "$out" | head -1)
+  [[ "$total" =~ ^[0-9]+$ ]] || return 1
+  out=$(grep -v $'^T\t' <<< "$out" || true)
+  n=$(grep -c . <<< "$out" || true)
+  (( total < AG_RUNS_MAX && n >= total )) || return 1
+  [[ -z "$out" ]] || printf '%s\n' "$out"
+}
 ag_runs() {
-  local wf=$1 out q n all="" from rearm
+  local wf=$1 q all="" from rearm now a b
   rearm=$(ag_ts "${ARCHIVE_REARM_AT:-}") || return 1
-  from=$(( $(ag_now) - 35 * 86400 )); (( rearm < from )) && from=$rearm
-  for q in "created=>=$(date -u -d "@$from" +%FT%TZ)" $AG_STATUSES; do
-    [[ "$q" == created=* ]] || q="status=$q"
-    out=$("$ag_gh" api --paginate "repos/$ag_repo/actions/workflows/$wf/runs?$q&per_page=100" \
-      --jq '.workflow_runs[] | [.id, .status, (.conclusion // "-"), .created_at, .updated_at, .run_attempt, .head_branch, (.head_sha // "-"), .display_title] | @tsv' 2>/dev/null) || return 1
-    all+="$out"$'\n'
+  now=$(ag_now)
+  from=$(( now - 35 * 86400 )); (( rearm < from )) && from=$rearm
+  # Ruling 64: the non-completed runs first, so a run that completes between the two reads
+  # is still caught by its created slice.
+  for q in $AG_STATUSES; do all+="$(ag_runs_query "$wf" "status=$q")"$'\n' || return 1; done
+  for (( a = from; a <= now; a += AG_SLICE_DAYS * 86400 )); do
+    b=$(( a + AG_SLICE_DAYS * 86400 - 1 ))
+    q="created=$(date -u -d "@$a" +%FT%TZ)..$(date -u -d "@$b" +%FT%TZ)"
+    all+="$(ag_runs_query "$wf" "$q")"$'\n' || return 1
   done
-  n=$(awk -F'\t' 'NF && !seen[$1]++' <<< "$all" | grep -c .)
-  (( n <= AG_RUNS_MAX )) || return 1
   awk -F'\t' 'NF && !seen[$1]++' <<< "$all"
 }
 # ag_sha_guarded SHA (round 4, ruling 21): sets AG_G to "yes" when the commit SHA carries

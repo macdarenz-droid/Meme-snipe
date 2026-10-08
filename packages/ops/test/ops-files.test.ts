@@ -203,9 +203,9 @@ describe('deploy code', () => {
 });
 
 describe('off-server backup gate', () => {
-  it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
+  it('on by the owner\'s decision (9 Oct about 12:54 AM: "Yes"); the deploy, not the installer, turns the timer on, and the sender checks the flag and the owner\'s code first', () => {
     expect(JSON.parse(read('ops/host-config.json'))).toEqual({
-      offsite_backup: false, worker: 'stub', // PAUSE (owner, 2026-10-07): back to 'release' when every blocker is fixed
+      offsite_backup: true, worker: 'stub', // PAUSE (owner, 2026-10-07): back to 'release' when every blocker is fixed
       // RECORD-UPLOAD: on by the owner's decision (6 Oct about 12:30 AM: "Approve upload", "Okay yes delete after upload").
       record_upload: true, record_upload_delete_local: true,
       // PRACTICE-ON: the S0 shakedown (packages/worker/test/practice-on.test.ts checks each value).
@@ -215,7 +215,12 @@ describe('off-server backup gate', () => {
       },
     });
     expect(read('ops/host/install-main.sh')).not.toMatch(/enable[^\n]*zeroed-backup-offsite/);
+    const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
+    expect(upd).toContain(`if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then\n  systemctl enable --now zeroed-backup-offsite.timer`);
     const send = read('ops/host/files/usr/local/sbin/zeroed-backup-offsite');
+    // Nothing is sent until the owner ran zeroed-backup-code (its recipient) and Telegram is paired.
+    expect(send.indexOf('owner_backup_recipient')).toBeLessThan(send.indexOf('sendDocument'));
+    expect(send.indexOf('paired ||')).toBeLessThan(send.indexOf('sendDocument'));
     expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeGreaterThan(0);
     expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeLessThan(send.indexOf('sendDocument'));
     expect(send).toContain('age -d -i /etc/zeroed/age/host.key "$newest" | age -r "$owner" -o "$copy"');
@@ -628,5 +633,143 @@ describe('daily summary deploy step (OPS-SUMMARY, ops/deploy/reports.sh)', () =>
       expect(r.calls, repo).toEqual([]);
       expect(r.out).not.toContain(TOKEN);
     }
+  });
+});
+
+describe('PATHS-FIX: the engine folders, the pull account and its chroot', () => {
+  const main = read('ops/host/install-main.sh');
+  const worker = read('ops/host/files/etc/systemd/system/zeroed-worker.service');
+
+  it('the installer makes each folder with its owner, group and mode, and the worker unit may write exactly those', () => {
+    for (const line of [
+      'install -d -m 2750 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md',
+      'install -d -m 2770 -o zeroed-worker -g zeroed-pull /var/lib/zeroed-md/receipts',
+      'install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool',
+      'install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage',
+      'install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys',
+      // Never chmod the read-only bind while it is mounted (an update would stop on EROFS).
+      'mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md',
+    ]) expect(main.split('\n'), line).toContain(line);
+    expect(worker).toMatch(/^ReadWritePaths=\/var\/lib\/zeroed-md \/var\/lib\/zeroed-spool \/var\/lib\/zeroed-usage$/m);
+    expect(worker).toMatch(/^SupplementaryGroups=zeroed-pull zeroed-spool$/m);
+    expect(worker.split('\n').filter((l) => !l.startsWith('#')).join('\n')).not.toContain('botops');
+    expect(worker).toMatch(/^StateDirectoryMode=0700$/m);
+    // Ruling 32: the worker never sees receipts/ before its own filesystem is mounted, and is never held down by it.
+    expect(worker).toMatch(/^After=network-online\.target zeroed-signer\.service zeroed-receipts-fs\.service$/m);
+    expect(worker).toMatch(/^Wants=network-online\.target zeroed-receipts-fs\.service$/m);
+    expect(worker).not.toMatch(/^Requires=.*zeroed-receipts-fs/m);
+    // The groups exist before any unit names them.
+    expect(main.indexOf('groupadd --system zeroed-pull')).toBeLessThan(main.indexOf('# @@FILES@@'));
+    expect(main.indexOf('groupadd --system zeroed-spool')).toBeLessThan(main.indexOf('# @@FILES@@'));
+    expect(main.indexOf('groupadd --system zeroed-sentinel')).toBeLessThan(main.indexOf('# @@FILES@@'));
+    expect(main).toContain('useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull');
+  });
+
+  it('md is bound read-only and receipts read-write into the chroot, both before SSH', () => {
+    const md = read('ops/host/files/etc/systemd/system/srv-zeroed_pull-md.mount');
+    const rc = read('ops/host/files/etc/systemd/system/srv-zeroed_pull-md-receipts.mount');
+    expect(md).toMatch(/^What=\/var\/lib\/zeroed-md$/m);
+    expect(md).toMatch(/^Where=\/srv\/zeroed_pull\/md$/m);
+    // private: under systemd / is a shared mount, and without it the receipts bind inside the chroot propagates back
+    // and stacks a second mount on /var/lib/zeroed-md/receipts (reproduced in the e2e host image with / shared).
+    expect(md).toMatch(/^Options=bind,ro,nodev,nosuid,noexec,private$/m);
+    expect(rc).toMatch(/^What=\/var\/lib\/zeroed-md\/receipts$/m);
+    expect(rc).toMatch(/^Where=\/srv\/zeroed_pull\/md\/receipts$/m);
+    expect(rc).toMatch(/^Options=bind,rw,nodev,nosuid,noexec,private$/m);
+    for (const u of [md, rc]) expect(u).toMatch(/^Before=ssh\.service ssh\.socket$/m);
+    // The installer's own lines, run against a stand-in systemctl: everything is enabled; only what is not running is
+    // started, in one call; nothing is started when all three run (a start job on the running receipts bind queues
+    // receipts/'s loop device, and every --update in the e2e host waited out systemd's 90 s job timeout for it).
+    const block = /^systemctl enable zeroed-receipts-fs\.service [^\n]*\n[\s\S]*?\n\[ "\$\{#PULL_DOWN\[@\]\}" = 0 \] \|\| systemctl start "\$\{PULL_DOWN\[@\]\}"$/m.exec(main)?.[0];
+    expect(block).toBeDefined();
+    const calls = (active: string) => {
+      const log = join(mkdtempSync(join(tmpdir(), 'pull-units-')), 'calls');
+      writeFileSync(log, '');
+      const r = spawnSync('bash', ['-c', `set -euo pipefail
+systemctl() { echo "$*" >> "$LOG"; if [ "$1" = is-active ]; then [[ " $ACTIVE " == *" $3 "* ]]; fi; }
+${block}`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', LOG: log, ACTIVE: active } });
+      expect(r.status, r.stderr).toBe(0);
+      return readFileSync(log, 'utf8').split('\n').filter((l) => l && !l.startsWith('is-active'));
+    };
+    const units = 'zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount';
+    expect(calls(units)).toEqual([`enable ${units}`]);
+    expect(calls('')).toEqual([`enable ${units}`, `start ${units}`]);
+    expect(calls('zeroed-receipts-fs.service srv-zeroed_pull-md.mount')).toEqual([`enable ${units}`, 'start srv-zeroed_pull-md-receipts.mount']);
+    // Ruling 20: receipts/ is its own small filesystem, mounted before both binds and SSH.
+    const fsu = read('ops/host/files/etc/systemd/system/zeroed-receipts-fs.service');
+    expect(fsu).toMatch(/^Before=srv-zeroed_pull-md\.mount srv-zeroed_pull-md-receipts\.mount ssh\.service ssh\.socket$/m);
+    expect(fsu).toMatch(/^ExecStart=\/usr\/local\/lib\/zeroed\/receipts-fs start$/m);
+    expect(rc).toMatch(/^Requires=srv-zeroed_pull-md\.mount zeroed-receipts-fs\.service$/m);
+    expect(md).toMatch(/^After=zeroed-receipts-fs\.service$/m);
+    const script = read('ops/host/files/usr/local/lib/zeroed/receipts-fs');
+    expect(script).toContain('fallocate -l "$SIZE" "$IMG.new"');
+    expect(script).not.toContain('truncate');
+    // nodiscard: mkfs would otherwise free the preallocated blocks again (measured: 131,072 -> 8,960 512-byte blocks).
+    // lazy_*_init=0: the kernel's background init after mounting would punch holes through the loop device (measured:
+    // 131,080 -> 114,768 within 20 s; the ops e2e caught it).
+    expect(script).toContain('mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"');
+    expect(script).toContain('mount -o loop,nodev,nosuid,noexec "$IMG" "$MNT"');
+    expect(script).toMatch(/^IMG_DIR=\/var\/lib\/zeroed-receipts$/m);
+    // mkfs.ext4 and e2fsck come from e2fsprogs, installed like every other tool the host scripts use.
+    expect(main).toMatch(/^PACKAGES=\(.*\be2fsprogs\b.*\)$/m);
+  });
+
+  it('the pull account is sftp only, chrooted, with no key until the operator adds one, and its Match block ends', () => {
+    const conf = read('ops/host/files/etc/ssh/sshd_config.d/20-zeroed-pull.conf');
+    const lines = conf.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+    expect(lines).toEqual(['Match User zeroed-pull', 'ChrootDirectory /srv/zeroed_pull', 'ForceCommand internal-sftp -u 0027',
+      'AuthorizedKeysFile /etc/zeroed/pull-keys/%u', 'AllowTcpForwarding no', 'AllowAgentForwarding no', 'AllowStreamLocalForwarding no',
+      'PermitTunnel no', 'X11Forwarding no', 'PermitTTY no', 'Match all']);
+    expect(walk('ops/host/files/etc/zeroed').filter((p) => p.includes('pull-keys'))).toEqual([]);
+    expect(main).toContain('/usr/sbin/sshd -t || die "sshd refuses the SSH settings"');
+  });
+});
+
+describe('PATHS-FIX ruling 24: the provider usage ledger is in every backup', () => {
+  // The real zeroed-backup and zeroed-restore-drill, with a stand-in `age` that copies (encryption is tested by the ops
+  // end-to-end with the real tool); sqlite3 and tar are the real ones.
+  const bin = mkdtempSync(join(tmpdir(), 'zeroed-bk-bin-'));
+  writeFileSync(join(bin, 'age'), '#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -R|-r|-i) shift 2 ;; -d) shift ;; *) in="$1"; shift ;; esac; done\nif [ -n "$out" ]; then cat "${in:-/dev/stdin}" > "$out"; else cat "${in:-/dev/stdin}"; fi\n');
+  chmodSync(join(bin, 'age'), 0o755);
+  const run = (script: string, args: string[], env: Record<string, string>) =>
+    spawnSync('bash', [join(root, script), ...args], { encoding: 'utf8', env: { PATH: `${bin}:${process.env['PATH'] ?? ''}`, ...env } });
+
+  it('a bundle holds zeroed-usage/rpc-usage.db and the restore drill restores and checks it', () => {
+    // Ruling 28: the scripts need the sqlite3 CLI, so this test needs it too and never skips without it. CI's check job
+    // runs on ubuntu-latest (Ubuntu 24.04 until Nov 2026), whose image lists "sqlite3 3.45.1" under Databases
+    // (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md); the host installs it (install-main.sh PACKAGES).
+    const cli = spawnSync('sqlite3', ['-version'], { encoding: 'utf8' });
+    if (cli.status !== 0) throw new Error('sqlite3 missing: install the sqlite3 command-line tool (apt-get install sqlite3); zeroed-backup and zeroed-restore-drill need it');
+    const t = mkdtempSync(join(tmpdir(), 'zeroed-bk-'));
+    const src = join(t, 'zeroed');
+    const usage = join(t, 'zeroed-usage');
+    const out = join(t, 'backups');
+    mkdirSync(src);
+    mkdirSync(usage);
+    const db = (p: string, table: string) => spawnSync('sqlite3', [p, `PRAGMA journal_mode=WAL; CREATE TABLE ${table}(x); INSERT INTO ${table} VALUES (1);`], { encoding: 'utf8' });
+    expect(db(join(src, 'bot.db'), 'ledger').status).toBe(0);
+    expect(db(join(usage, 'rpc-usage.db'), 'reservations').status).toBe(0);
+    writeFileSync(join(t, 'recipients'), 'age1test\n');
+    const env = { ZEROED_BACKUP_SRC: src, ZEROED_BACKUP_USAGE_SRC: usage, ZEROED_BACKUP_OUT: out, ZEROED_BACKUP_RECIPIENTS: join(t, 'recipients') };
+    const bk = run('ops/host/files/usr/local/sbin/zeroed-backup', [], env);
+    expect(bk.status, bk.stderr + bk.stdout).toBe(0);
+    expect(bk.stdout).toMatch(/: 2 file\(s\), 1 recipient\(s\)\.$/m);
+    const file = join(out, readdirSync(out)[0]!);
+    const listing = spawnSync('tar', ['-tf', file], { encoding: 'utf8' }).stdout.split('\n');
+    expect(listing).toContain('./zeroed-usage/rpc-usage.db');
+    expect(listing).toContain('./bot.db');
+    const drill = run('ops/host/files/usr/local/sbin/zeroed-restore-drill', [join(t, 'identity')], env);
+    expect(drill.status, drill.stdout).toBe(0);
+    expect(drill.stdout).toContain('zeroed-usage/rpc-usage.db reservations: 1 rows');
+    expect(drill.stdout).toMatch(/^PASS: .*, 2 file\(s\) restored/m);
+    // The drill compares against the live usage ledger: a different live schema fails it.
+    expect(spawnSync('sqlite3', [join(usage, 'rpc-usage.db'), 'CREATE TABLE extra(y);']).status).toBe(0);
+    const bad = run('ops/host/files/usr/local/sbin/zeroed-restore-drill', [join(t, 'identity')], env);
+    expect(bad.stdout).toContain('FAIL: zeroed-usage/rpc-usage.db tables differ from the live database');
+    rmSync(t, { recursive: true, force: true });
+  });
+
+  it('the backup unit may read the usage folder', () => {
+    expect(read('ops/host/files/etc/systemd/system/zeroed-backup.service')).toMatch(/^ReadWritePaths=\/var\/backups\/zeroed \/var\/lib\/zeroed \/var\/lib\/zeroed-usage$/m);
   });
 });

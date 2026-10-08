@@ -46,6 +46,10 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
     assert.deepEqual(CONFIG_FIELDS.filter((f) => !f.affectsReturns).map((f) => f.key), [
       'm24.db_path', 'm24.synchronous', 'm27.log_dir', 'm27.log_max_bytes_per_day', 'm27.log_queue_bytes', 'm27.log_retention_days', 'm27.metrics_port',
       'm27.ring_budget_bytes', 'm27.rollup_max_bytes', 'm27.series_cap',
+      // Z03 (A-M14-01/02): read-path plumbing; backtest and replay make no RPC call, and the live read path's limits are
+      // the owner's data-source rule, not a strategy parameter.
+      'rpc.default_timeout_ms.p0', 'rpc.default_timeout_ms.p1', 'rpc.default_timeout_ms.p2', 'rpc.default_timeout_ms.p3', 'rpc.default_timeout_ms.p4',
+      'rpc.max_response_bytes', 'rpc.p0_reserve_bps', 'rpc.providers_file', 'rpc.send_enabled',
     ]);
   });
 
@@ -73,7 +77,7 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
     const config = { ...(resolved.ok ? resolved.value : {}), version: 'v' } as Config;
     assert.deepEqual(m24Settings(config), { dbPath: '/x/bot.db', synchronous: 'FULL' });
     assert.deepEqual(m27Settings(config), { seriesCap: 5_000, logRetentionDays: 14, ringBudgetBytes: 67_108_864, logMaxBytesPerDay: 268_435_456,
-      logQueueBytes: 8_388_608, logDir: '/var/lib/bot/log', metricsPort: 9_464, rollupMaxBytes: 4_294_967_296 });
+      logQueueBytes: 8_388_608, logDir: '/var/lib/zeroed/log', metricsPort: 9_464, rollupMaxBytes: 4_294_967_296 });
     assert.throws(() => configValue({ version: 'v' } as Config, 'm24.db_path'), /no value/);
   });
 });

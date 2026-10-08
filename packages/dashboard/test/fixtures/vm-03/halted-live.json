@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "state_version": "103",
+  "mode": "live",
+  "simulated": false,
+  "mode_since": "2026-10-06T08:00:00.000Z",
+  "run_id": "01K6Y3V2Q8ZQ4D5M7N9P1R3T5Y",
+  "trading_state": "halt_partial",
+  "trading_state_changed_at": "2026-10-06T14:02:11.123Z",
+  "kill": {
+    "halted_by": {
+      "type": "operator",
+      "id": "op-1",
+      "display": "you"
+    },
+    "latch_set_by": "engine",
+    "latch_clear_requires": "dashboard",
+    "reason_code": "OPERATOR_HALT",
+    "reason_text": "Halted from the dashboard",
+    "components": [
+      {
+        "name": "executor",
+        "acked": false,
+        "acked_at": null
+      },
+      {
+        "name": "risk",
+        "acked": true,
+        "acked_at": "2026-10-06T14:02:11.400Z"
+      }
+    ]
+  },
+  "signer": {
+    "lock": "exits_only",
+    "exit_lease_holder": "engine"
+  },
+  "live_caps": {
+    "max_trade_lamports": "250000000",
+    "max_open_positions": 2,
+    "max_daily_loss_lamports": "600000000"
+  },
+  "scheduled_change": null,
+  "strategies": [
+    {
+      "strategy_id": "mr-01",
+      "name": "Mean reversion",
+      "enabled": true,
+      "modes": [
+        "paper"
+      ]
+    }
+  ],
+  "sim_clock": null,
+  "versions": {
+    "bot": "0.1.0+2026-10-06",
+    "config": "cfg-17"
+  },
+  "trading_wallet_pubkey": "FuuP5Kfgnudp7Jxu9Zcuq7u7Xy1hDo8bBC8MmDQfXzG1"
+}
