@@ -110,7 +110,8 @@ def build(units: list[L.Unit], fee_config: str = FEE_CONFIG) -> dict:
     pools["count_rule"] = counted & pools.eligible.to_numpy()
     entries = F.cross_events(sw, pools, cuts)
     el = pools.eligible.to_numpy()
-    return {"units": units, "segs": segs, "pools": pools, "cuts": cuts, "up": up[el], "dn": dn[el],
+    return {"units": units, "segs": segs, "pools": pools, "cuts": cuts, "up": up[el], "dn": dn[el], "sw": sw,
+            "blocks": pd.concat(blocks, ignore_index=True),
             "net": net[el], "entries": entries, "supply_tally": tally, "n_swaps": len(sw),
             "n_creator_swaps_in_window": int((win & sw.is_creator.to_numpy()).sum())}
 
@@ -202,6 +203,12 @@ def main(argv=None) -> int:
         res = G.score_gates(b["up"], b["dn"], b["net"], s["count_rule"]["n"], steps, a.n_boot,
                             usd_not_separable=usd["not_separable"])
         res["count_row_6"] = usd
+        if res.get("return_test_may_run"):   # AMENDMENT_2 Q9, on the same scored days and units
+            import outcomes as O
+            el = b["pools"].eligible.to_numpy()
+            ent = b["entries"][el[b["entries"].pool.to_numpy()]] if len(b["entries"]) else b["entries"]
+            res["return_test"] = O.score_return_test(b["sw"], ent, b["blocks"], b["segs"], O.load_tiers(a.fee_config),
+                                                     sorted({u.day for u in units}))
         np.savez(os.path.join(a.out, "features.npz"), up=b["up"], dn=b["dn"], net=b["net"], cuts=b["cuts"],
                  pools=b["pools"].pool[b["pools"].eligible].to_numpy())
         with open(os.path.join(a.out, "gates.json"), "w") as f:

@@ -279,8 +279,8 @@ class TestLookAhead(unittest.TestCase):
                 src += f.read()
         self.assertNotIn("import outcomes", src)
         self.assertNotIn("from outcomes", src)
-        import outcomes
-        with self.assertRaises(NotImplementedError):
+        import outcomes  # AMENDMENT_2 Q9 froze the return test: it now needs its inputs (R1-18)
+        with self.assertRaises(TypeError):
             outcomes.score_return_test()
 
 
@@ -497,6 +497,120 @@ class TestAmendment2(unittest.TestCase):
         for missing in ({}, {"usd_not_separable": None}):   # row 6 not read: the verdict is never given
             with self.assertRaises((TypeError, ValueError)):
                 G.score_gates(up, dn, net, 250, ("A",), n_boot=200, **missing)
+
+
+class TestReturnTestQ9(unittest.TestCase):
+    """AMENDMENT_2 Q9: the frozen return test (CODE_REDTEAM.md R1-18)."""
+    TB = 1_789_000_000
+
+    def setUp(self):
+        import outcomes as O
+        self.O = O
+        self.tiers = O.load_tiers(os.path.join(run_a.REPO, "research", "edge", "snapshot", "fee-configs.json"))
+        n = 20_000
+        self.blocks = pd.DataFrame({"slot": np.arange(n), "block_time": self.TB + np.arange(n) // 2})  # 2 slots a second
+        self.segs = pd.DataFrame({"from_slot": [0], "to_slot": [n - 1], "t_start": [self.TB], "t_end": [self.TB + n // 2]})
+
+    def sw(self, rows):
+        # rows: (pool, slot, pre_mc, vault_post); base 1e15, virt 0, supply 1e15: post cap = vault_post / 1e9 SOL
+        return pd.DataFrame([{"pool": p, "slot": s, "tx_idx": 0, "ev_idx": 0, "t": self.TB + s // 2, "pre_mc": m,
+                              "base_post": 1e15, "vault_post": v, "virt": 0.0, "supply": 1e15} for p, s, m, v in rows])
+
+    def ent(self, rows):
+        return pd.DataFrame([{"pool": p, "cutoff_idx": k, "cutoff": c, "slot": s} for p, k, c, s in rows])
+
+    def expect(self, state_in, state_out, spend, entry_slot):
+        O = self.O
+        tok = O.buy(state_in, spend, self.tiers)
+        got = O.sell(state_out, tok, self.tiers)
+        return ((got if got is not None else 0) - spend - O.fixed_for(entry_slot)) / spend
+
+    def test_time_exit_worse_of_and_costs(self):
+        O = self.O
+        st = lambda v: (10**15, int(v), 0, 10**15)  # noqa: E731
+        sw = self.sw([(0, 100, 410.0, 421e9), (0, 110, 421.0, 425e9), (0, 123, 425.0, 430e9),   # entry slot 123
+                      (0, 8000, 430.0, 440e9)])
+        tr = O.trades(sw, self.ent([(0, 0, 420.0, 100)]), self.blocks, self.segs, self.tiers, O.SPEND_50USD)
+        r = tr.iloc[0]
+        self.assertEqual((r.dropped, r.exit_kind, r.entry_slot), ("", "time", 123))
+        # entry: worse of the slot's start (425 SOL state) and end (430 SOL state): the dearer one gives fewer tokens
+        self.assertEqual(r.tokens, O.buy(st(430e9), O.SPEND_50USD, self.tiers))
+        self.assertEqual(r.exit_slot, 7322 + 23)             # first block at entry time + 60 min (slot 7322), + 23
+        self.assertAlmostEqual(r.ret, self.expect(st(430e9), st(430e9), O.SPEND_50USD, 123))   # the 8000 swap is later
+        # fixed cost with rent by date: 298 bytes x 6,960 before epoch 1028, 5,080 from epoch 1033
+        self.assertAlmostEqual(O.fixed_for(0), O.expected_fixed(298 * 6_960))
+        self.assertAlmostEqual(O.fixed_for(444_096_000), O.expected_fixed(298 * 6_333))
+        self.assertAlmostEqual(O.fixed_for(446_256_000), 414_009.07027200004)
+
+    def test_stop_exit_and_total_loss(self):
+        O = self.O
+        sw = self.sw([(0, 100, 410.0, 421e9), (0, 500, 398.0, 380e9), (0, 9000, 450.0, 450e9)])
+        r = O.trades(sw, self.ent([(0, 0, 420.0, 100)]), self.blocks, self.segs, self.tiers).iloc[0]
+        self.assertEqual((r.exit_kind, r.exit_slot), ("stop", 523))      # pre-trade cap 398 < 399
+        sw2 = self.sw([(0, 100, 410.0, 421e9), (0, 500, 398.0, 1.0)])     # the real vault cannot pay the sell
+        r2 = O.trades(sw2, self.ent([(0, 0, 420.0, 100)]), self.blocks, self.segs, self.tiers).iloc[0]
+        self.assertEqual(r2.proceeds, 0)
+        self.assertAlmostEqual(r2.ret, (0 - O.SPEND_50USD - O.fixed_for(123)) / O.SPEND_50USD)
+        # placebo level L: stop at 0.95 L
+        r3 = O.trades(sw, self.ent([(0, 5, 410.0, 100)]), self.blocks, self.segs, self.tiers).iloc[0]
+        self.assertEqual(r3.exit_kind, "time")                             # 398 >= 0.95 x 410 = 389.5
+
+    def test_no_look_ahead_after_the_exit(self):
+        O = self.O
+        base = [(0, 100, 410.0, 421e9), (0, 500, 430.0, 430e9)]
+        a = O.trades(self.sw(base), self.ent([(0, 0, 420.0, 100)]), self.blocks, self.segs, self.tiers)
+        later = base + [(0, 7400, 1.0, 1.0), (0, 9000, 1.0, 1.0)]          # planted after the exit slot (7345)
+        b = O.trades(self.sw(later), self.ent([(0, 0, 420.0, 100)]), self.blocks, self.segs, self.tiers)
+        pd.testing.assert_frame_equal(a, b)
+
+    def test_judge_pass_rules(self):
+        O = self.O
+        rng = np.random.default_rng(5)
+
+        def tr(n, mean, days=("2026-09-10", "2026-09-11"), ctrl=-0.01):
+            rows = []
+            for i in range(n):
+                rows.append({"pool": i, "cutoff_idx": 0, "dropped": "", "day": days[i % len(days)],
+                             "ret": mean + rng.normal(0, 0.01)})
+                rows.append({"pool": i, "cutoff_idx": 3, "dropped": "", "day": days[i % len(days)],
+                             "ret": ctrl + rng.normal(0, 0.01)})
+            return pd.DataFrame(rows)
+        days = ["2026-09-10", "2026-09-11"]
+        ok = O.judge(tr(300, 0.02), days, n_boot=500)
+        self.assertTrue(ok["passed"])
+        self.assertEqual((ok["seed"], O.B_RESAMPLES, round(ok["level"], 6)), (20261009, 10_000, round(1 - 0.05 / 12, 6)))
+        self.assertEqual(O.judge(tr(299, 0.02), days, n_boot=500)["verdict"], "unresolved: fewer than 300 trades")
+        self.assertEqual(O.judge(tr(400, 0.0, ctrl=-0.05), days, n_boot=500)["verdict"], "not supported")
+        one_day = tr(300, 0.02, days=("2026-09-10",))                       # a day read with no positive mean
+        self.assertFalse(O.judge(one_day, days, n_boot=500)["passed"])
+        self.assertFalse(O.judge(tr(300, 0.02, ctrl=0.03), days, n_boot=500)["passed"])   # lift below 0
+
+
+class TestReturnTestWiring(unittest.TestCase):
+    """R1-18: run_a runs the frozen return test only when the gates pass and row 6 says separable."""
+
+    def _score(self, may_run):
+        from unittest import mock
+        t = TestRedTeamR1()
+        with tempfile.TemporaryDirectory() as r, mock.patch.object(G, "COUNT_BAR", 1):
+            plan = t._tape(r)
+            real = G.score_gates
+
+            def fake(*a, **k):
+                out = real(*a, **k)
+                out["return_test_may_run"] = may_run
+                return out
+            with mock.patch.object(G, "score_gates", fake):
+                self.assertEqual(run_a.main(t._args(r, plan, t.A)), 0)
+            with open(os.path.join(r, "o", "gates.json")) as f:
+                return json.load(f)
+
+    def test_return_test_runs_only_when_allowed(self):
+        g = self._score(True)
+        self.assertIn("$50", g["return_test"])
+        self.assertEqual(g["return_test"]["primary"], "$50")
+        self.assertIn("$5", g["return_test"])
+        self.assertNotIn("return_test", self._score(False))
 
 
 if __name__ == "__main__":

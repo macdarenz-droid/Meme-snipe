@@ -41,7 +41,8 @@ nice -n 19 python3 run_a.py ... --score-primary --confirm REVIEW-PASSED-AND-STEP
 | Gate 2: log(time in [c, 1.05c) ÷ time in [0.95c, c)) at 420 minus the placebo median | `features.band_seconds`, `gates.gate2_stat` |
 | Gate 3: coin_creator (signer or token owner) net SOL bought per hour in [399, 441) minus the placebo median | `features.creator_net`, `features.band_seconds`, `gates.gate3_stat` |
 | Pool-clustered bootstrap; both gates need a 95% lower bound > 0, else A closes and no return is read | `gates.pool_bootstrap`, `gates.score_gates` |
-| Return test entry: first cross of 420 from below, stop under 399, placebo crosses as control | `features.cross_events` (causal); outcome stage `outcomes.score_return_test` is not implemented (not frozen) |
+| Return test (`../AMENDMENT_2.md` Q9): entry at the cross + 23 slots, stop under 0.95 L or 60 min, $50 primary and $5, costs in SOL, 99.58% pool-clustered bootstrap by day | `features.cross_events` (causal entries); `outcomes.score_return_test`, run by `run_a` only when both gates pass and count row 6 (Q11, `gates.score_gates`) does not mark the result not separable |
+| Q5 registered: 10,000 resamples, seed 20261009 for both gates | `gates.DEFAULT_B`, `gates.DEFAULT_SEED` |
 | No row from 2026-09-12 | `load.check_day`, `load._guard_times`, `load.select_units` |
 
 ## Look-ahead
