@@ -61,7 +61,7 @@ export interface Gap {
    * minutes from coverage: only that pool's when `poolId` is set, else the whole stream (ruling 40).
    */
   reason: 'backpressure' | 'clock_step' | 'moved';
-  /** Set on poll_counts clock_step gaps: the one pool whose minutes the gap covers (ruling 33). */
+  /** Set on poll_counts clock_step and moved gaps: the one pool whose minutes the gap covers (rulings 33 and 39). */
   poolId?: string;
 }
 
@@ -323,8 +323,11 @@ export class RecorderQueue {
   private tickChainAnchored = false;
   /** Open episodes, so each is counted and logged once (ruling 29). */
   private readonly episode = { tickAhead: false, recvAhead: false, recvBehind: false, outage: false };
-  /** maxRecvMinute when each episode last saw a skewed time: it closes CLOCK_STEP_MINUTES after that (ruling 34). */
-  private readonly episodeLast = { tickAhead: 0, recvAhead: 0, recvBehind: 0 };
+  /**
+   * maxRecvMinute when each episode last saw a skewed time, or for an outage the last tick more than outageMinutes
+   * ahead: it closes CLOCK_STEP_MINUTES after that (rulings 34 and 41).
+   */
+  private readonly episodeLast = { tickAhead: 0, recvAhead: 0, recvBehind: 0, outage: 0 };
   /** clock_step and late gaps on poll_counts, by minute (rulings 28 and 30). */
   private pollGaps: Gap[] = [];
 
@@ -531,16 +534,22 @@ export class RecorderQueue {
     // A tick before any record has nothing to write and must not set the tick minute from an unchecked clock.
     if (this.maxRecvMinute === null) return;
     const ahead = raw - this.maxRecvMinute;
+    // An outage closes once the tick clock is back within outageMinutes of the data (ruling 41).
+    if (ahead <= this.cfg.outageMinutes) this.episode.outage = false;
     if (ahead <= CLOCK_STEP_MINUTES) {
       this.closeIfQuiet('tickAhead');
     } else if (prevRaw === null || raw - prevRaw > CLOCK_STEP_MINUTES) {
       // The tick clock itself jumped: a clock step.
       this.openEpisode('tickAhead', { direction: 'forward', from: 'tick', minutes: ahead });
-    } else if (ahead > this.cfg.outageMinutes && !this.episode.outage) {
-      // A steady tick clock and no producer record: an outage, not a clock step (ruling 29).
-      this.episode.outage = true;
-      this.s.outages++;
-      this.log('warning', 'M07.outage', { silentMinutes: ahead });
+    } else if (ahead > this.cfg.outageMinutes) {
+      // A steady tick clock and no producer record: an outage, not a clock step (ruling 29). Each such tick keeps the
+      // episode open, so a tick clock running ahead of a live feed is one episode, not one per record (ruling 41).
+      this.episodeLast.outage = this.maxRecvMinute;
+      if (!this.episode.outage) {
+        this.episode.outage = true;
+        this.s.outages++;
+        this.log('warning', 'M07.outage', { silentMinutes: ahead });
+      }
     }
     const nowMinute = this.capMinute(raw);
     this.lastTickMinute = this.lastTickMinute === null ? nowMinute : Math.max(this.lastTickMinute, nowMinute);
@@ -581,9 +590,9 @@ export class RecorderQueue {
       this.openEpisode('recvBehind', { direction: 'backward', from: 'recv', minutes: (this.lastTickMinute ?? 0) - Math.floor(recvMs / MINUTE_MS) });
       return;
     }
-    this.episode.outage = false;
     const m = Math.floor(recvMs / MINUTE_MS);
     if (this.maxRecvMinute === null || m > this.maxRecvMinute) this.maxRecvMinute = m;
+    this.closeIfQuiet('outage');
     this.closeIfQuiet('recvAhead');
     this.closeIfQuiet('recvBehind');
   }
@@ -600,8 +609,11 @@ export class RecorderQueue {
     this.log('warning', 'M07.clock_step', fields);
   }
 
-  /** Closes an episode once CLOCK_STEP_MINUTES of received data have passed with no skewed time from its source. */
-  private closeIfQuiet(kind: 'tickAhead' | 'recvAhead' | 'recvBehind'): void {
+  /**
+   * Closes an episode once CLOCK_STEP_MINUTES of received data have passed with no skewed time from its source (for an
+   * outage: no tick more than outageMinutes ahead). A single accepted record does not close it (ruling 41).
+   */
+  private closeIfQuiet(kind: 'tickAhead' | 'recvAhead' | 'recvBehind' | 'outage'): void {
     if (this.episode[kind] && (this.maxRecvMinute ?? 0) - this.episodeLast[kind] > CLOCK_STEP_MINUTES) this.episode[kind] = false;
   }
 

@@ -621,3 +621,45 @@ describe('round 9 (ruling 37): the tick clock is trusted only when anchored or l
     assert.ok((q.stats().maxRecvMinute ?? 0) >= T0 / 60_000 + 60, `maxRecvMinute ${q.stats().maxRecvMinute}`);
   });
 });
+
+describe('outage episodes close on the outage window or quiet (round 10, ruling 41)', () => {
+  it('a tick clock running 7 min ahead of a live feed for 720 min is one outage episode, not one per record', () => {
+    const logs: string[] = [];
+    const q = new RecorderQueue({ log: (l, c) => logs.push(`${l}:${c}`) });
+    for (let m = 0; m < 720; m++) {
+      q.append(snap('a', m, T0 + m * 60_000 + 1_000));
+      q.tick(ms(T0 + (m + 7) * 60_000 + 30_000));
+      q.take(10_000, SEG);
+    }
+    assert.equal(q.stats().outages, 1);
+    assert.equal(logs.filter((x) => x === 'warning:M07.outage').length, 1);
+  });
+
+  it('a feed that resumes closes the episode, so a later silence is a second outage', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 0, T0 + 1_000));
+    for (let m = 0; m <= 10; m++) q.tick(ms(T0 + m * 60_000 + 500));
+    assert.equal(q.stats().outages, 1);
+    // The feed resumes at minute 10; the next tick is back within outageMinutes.
+    for (let m = 10; m <= 20; m++) {
+      q.append(snap('a', m, T0 + m * 60_000 + 1_000));
+      q.tick(ms(T0 + m * 60_000 + 30_000));
+    }
+    assert.equal(q.stats().outages, 1);
+    // Silent again from minute 21.
+    for (let m = 21; m <= 30; m++) q.tick(ms(T0 + m * 60_000 + 500));
+    assert.equal(q.stats().outages, 2);
+    assert.equal(q.stats().clockSteps, 0);
+  });
+
+  it('a tick back within outageMinutes of the data closes the episode with no new record', () => {
+    const q = new RecorderQueue();
+    q.append(snap('a', 0, T0 + 1_000));
+    for (let m = 0; m <= 6; m++) q.tick(ms(T0 + m * 60_000 + 500));
+    assert.equal(q.stats().outages, 1);
+    // The tick clock steps back to 4 min past the data: inside the window, so the episode closes.
+    q.tick(ms(T0 + 4 * 60_000 + 500));
+    q.tick(ms(T0 + 6 * 60_000 + 500));
+    assert.equal(q.stats().outages, 2);
+  });
+});
