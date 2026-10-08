@@ -27,6 +27,7 @@ log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$work/stepa.log" >&2; }
 . "$root/research/historical/ci/archive-limits.conf"
 for d in "${days[@]}"; do [[ " $HELIUS_DAYS " == *" $d "* ]] || { log "refused: $d is not in HELIUS_DAYS"; exit 2; }; done
 [ -n "${HELIUS_API_KEY:-}" ] || { log "refused: HELIUS_API_KEY is not set"; exit 2; }
+[ "${TAPE_TEST:-}" == 1 ] || command -v gh >/dev/null || { log "refused: gh is not installed"; exit 2; }
 [ -z "$(git -C "$root" status --porcelain -- research/shared-tape research/historical)" ] || { log "refused: uncommitted changes under research/shared-tape or research/historical"; exit 2; }
 
 export GO_VERSION=${GO_VERSION:-$(sed -n 's/^ *GO_VERSION: *"\([0-9.]*\)".*/\1/p' "$root/.github/workflows/data-scan.yml" | head -1)}
@@ -125,6 +126,15 @@ decode_unit() { # DAY EP FROM TO UDIR: research tables, completeness, then delet
   cp "$ud/spool/MANIFEST.tsv" "$ud/getblock-manifest.tsv"
   rm -rf "$ud/spool"
   log "unit $from: decoded ($(jq -c '.rows' "$ud/decode-stats.json"))"
+  release_unit "$day" "$ep" "$from" "$to"
+}
+released() { [ "$(awk -v u="$2-$3" '$2 == u' "$work/released.tsv" 2>/dev/null | wc -l)" -ge 3 ]; }
+release_unit() { # DAY EP FROM TO: release assets, read back, then free the local copy
+  local day=$1 ep=$2 from=$3 to=$4
+  bash "$here/release.sh" "$work" "$day" "$ep" "$from" "$to" >> "$work/release.log" 2>&1 || { log "unit $from: release failed (kept locally)"; return 1; }
+  released "$day" "$from" "$to" || { log "unit $from: release not recorded"; return 1; }
+  rm -rf "$out/units/$ep/$from-$to" "$res/units/$ep/$from-$to"
+  log "unit $from: released to tape-$day and read back; local copy removed"
 }
 
 n=0 decpid= nread=0
@@ -132,7 +142,11 @@ while read -r day ep from to; do
   (( max > 0 && nread >= max )) && { log "MAX_UNITS $max reached: stopping (resumable)"; break; }
   n=$((n+1))
   unit="$out/units/$ep/$from-$to" rdir="$res/units/$ep/$from-$to" ud="$work/units/$from"
-  if [ -f "$unit/stats.json" ] && [ -f "$rdir/stats.json" ]; then continue; fi
+  released "$day" "$from" "$to" && continue
+  if [ -f "$unit/stats.json" ] && [ -f "$rdir/stats.json" ]; then
+    [ -z "$decpid" ] || { wait "$decpid" || exit 1; decpid=; }
+    release_unit "$day" "$ep" "$from" "$to" || exit 1; continue
+  fi
   if [ -f "$unit/stats.json" ] && [ -d "$ud/spool" ]; then
     [ -z "$decpid" ] || wait "$decpid"; decpid=; decode_unit "$day" "$ep" "$from" "$to" "$ud" || exit 1; continue
   fi

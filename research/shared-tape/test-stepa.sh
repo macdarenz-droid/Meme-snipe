@@ -29,11 +29,30 @@ class H(BaseHTTPRequestHandler):
 srv = HTTPServer(('127.0.0.1', 0), H)
 open(sys.argv[1], 'w').write(str(srv.server_address[1])); srv.serve_forever()
 PY
+cat > "$T/gh" <<'SH'
+#!/usr/bin/env bash
+# Fake gh: releases are directories under $FAKE_GH.
+set -e
+cmd="$1 $2"; shift 2
+tag=$1; shift
+repo=; files=(); pat=; dir=
+while [ $# -gt 0 ]; do case $1 in -R) repo=$2; shift 2;; --json|--jq|--title|--notes) shift 2;; -p) pat=$2; shift 2;; -D) dir=$2; shift 2;; *) files+=("$1"); shift;; esac; done
+[ "$repo" = macdarenz-droid/zeroed-data ] || { echo "wrong repo $repo" >&2; exit 9; }
+[[ "$tag" == tape-* ]] || { echo "wrong tag $tag" >&2; exit 9; }
+r="$FAKE_GH/$tag"
+case $cmd in
+  "release view") [ -d "$r" ] || exit 1; ls "$r" ;;
+  "release create") mkdir -p "$r" ;;
+  "release upload") for f in "${files[@]}"; do [ ! -e "$r/$(basename "$f")" ] || exit 8; cp "$f" "$r/"; done ;;
+  "release download") cp "$r/$pat" "$dir/" ;;
+esac
+SH
+chmod +x "$T/gh"; mkdir -p "$T/rel"
 (cd "$here/tapedec" && go build -o "$T/tapedec" .) || exit 1
 "$T/tapedec" zcat "$root/research/historical/rpcscan/testdata/rpc/452277009.json.zst" > "$T/block.json" || exit 1
 python3 "$T/fake.py" "$T/port" "$T/block.json" "$T/getblock.log" & fpid=$!
 for _ in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
-run() { env TAPE_TEST=1 HELIUS_API_KEY=CANARY-stepa TAPE_UPSTREAM="http://127.0.0.1:$(cat "$T/port")/" RPC_CONC=4 REPLAY_EVERY=2 "$@" bash "$here/stepa.sh" "$T/work" >> "$T/out.txt" 2>&1; }
+run() { env GH="$T/gh" FAKE_GH="$T/rel" TAPE_TEST=1 HELIUS_API_KEY=CANARY-stepa TAPE_UPSTREAM="http://127.0.0.1:$(cat "$T/port")/" RPC_CONC=4 REPLAY_EVERY=2 "$@" bash "$here/stepa.sh" "$T/work" >> "$T/out.txt" 2>&1; }
 pass=0 fail=0
 ok() { echo "ok   $1"; pass=$((pass+1)); }
 no() { echo "FAIL $1"; fail=$((fail+1)); }
@@ -46,13 +65,14 @@ head -1 "$T/work/plan.txt" | grep -q " $(( s12 - 1 ))$" && ok "the newest unit i
 tail -1 "$T/work/plan.txt" | grep -q "2026-09-10 [0-9]* $(( s10 / 4500 * 4500 )) " && ok "09-10 starts at the unit holding 00:00Z" || no "09-10 start: $(tail -1 "$T/work/plan.txt")"
 dup=$(awk '{print $3}' "$T/work/plan.txt" | sort | uniq -d | wc -l)
 [[ $dup == 0 ]] && ok "every unit planned once" || no "duplicate units"
-n=$(find "$T/work/research/units" -name stats.json | wc -l); [[ $n == 3 ]] && ok "3 units decoded" || no "decoded $n"
+n=$(awk '{print $2}' "$T/work/released.tsv" | sort -u | wc -l); [[ $n == 3 && $(ls "$T/rel/tape-2026-09-11" | wc -l) == 9 ]] && ok "3 units decoded, released (3 assets each) and read back" || no "released $n"
+[[ $(find "$T/work/research/units" "$T/work/day/units" -name stats.json 2>/dev/null | wc -l) == 0 ]] && ok "local copies removed after read-back" || no "local copies left"
 [[ $(find "$T/work/units" -name spool -type d | wc -l) == 0 ]] && ok "spools deleted after decode" || no "spool left"
 grep -q "replay digest equal" "$T/work/stepa.log" && ok "replay digest on a sampled unit" || no "replay"
 grep -rq CANARY-stepa "$T/work" --include='*.log' --include='*.json' --include='*.txt' && no "canary in a log" || ok "canary in no log"
 before=$(wc -l < "$T/getblock.log"); rc=0; run MAX_UNITS=2 || rc=$?
 after=$(wc -l < "$T/getblock.log")
-[[ $rc == 0 && $(( after - before )) == 2 && $(find "$T/work/research/units" -name stats.json | wc -l) == 5 ]] && ok "resume skips done units and reads the next two" || no "resume rc=$rc reads $((after-before))"
+[[ $rc == 0 && $(( after - before )) == 2 && $(awk '{print $2}' "$T/work/released.tsv" | sort -u | wc -l) == 5 ]] && ok "resume skips done units and reads the next two" || no "resume rc=$rc reads $((after-before))"
 echo 999999 > "$T/work/stepa-credits-used"; rc=0; run || rc=$?
 [[ $rc == 3 ]] && ok "the Step A cap stops the run" || no "cap rc=$rc"
 echo "$pass passed, $fail failed"; [[ $fail == 0 ]]
