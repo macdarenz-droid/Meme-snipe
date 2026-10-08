@@ -11,7 +11,7 @@ import { M14_CONFIG } from '../../src/m14/config.ts';
 import { DEFAULT_PROVIDERS } from '../../src/m14/defaults.ts';
 import { createRpcGateway, JSON_RPC_NODE_UNHEALTHY, STOP_AFTER_LIMITED } from '../../src/m14/gateway.ts';
 import { M14_LOG_CODES } from '../../src/m14/log.ts';
-import { envSecrets, loadProviders, maxRpsUnder, validateProviderConfigs, withOwnerCap } from '../../src/m14/providers.ts';
+import { envSecrets, loadProviders, maxRpsUnder, P0_READ_METHODS, validateProviderConfigs, withOwnerCap } from '../../src/m14/providers.ts';
 import { m14Settings } from '../../src/m14/settings.ts';
 import type { CallValue, ProviderConfig, ResolvedProvider, RpcError } from '../../src/m14/types.ts';
 import { M24_LOG_CODES } from '../../src/m24/db.ts';
@@ -373,10 +373,46 @@ describe('Z03 round 4: allocation checks (rulings 22, 23, 24)', () => {
   it('ruling 24: a nonzero share below one request a minute is refused; 0 turns the provider off', () => {
     // Chainstack runs at 0.5 req/s: 3 bps of it is 0.00015 req/s, about one request every 111 minutes.
     const tiny = { consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 3, sentinel: 9_997 } } };
-    assert.deepEqual(keys(load(tiny)), ['rpc.allocation[chainstack]']);
-    // 334 bps of 0.5 req/s is 0.0167 req/s, just above one a minute.
-    assert.ok(load({ consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 334 } } }).ok);
+    assert.deepEqual([...new Set(keys(load(tiny)))], ['rpc.allocation[chainstack]']);     // its rate and the part below P0
+    // 417 bps of 0.5 req/s is 0.0209 req/s, and its part below P0 (80%) 0.0167 req/s, just above one a minute (ruling
+    // 25 counts the part below P0 too: 334 bps, enough before round 5, now leaves it at 0.0134).
+    assert.ok(load({ consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 417 } } }).ok);
+    assert.deepEqual(keys(load({ consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 334 } } })), ['rpc.allocation[chainstack]']);
     const off = load({ consumer: 'research', shares: { shyft: { research: 10_000 }, chainstack: { research: 0 } } }, 'research');
     assert.ok(off.ok && off.value.disabled.some((x) => x.label === 'chainstack' && x.reason === 'no_allocation'));
+  });
+});
+
+describe('Z03 round 5: every scaled rate keeps one request a minute (ruling 25); backups serve every P0 read (ruling 26)', () => {
+  const secrets = envSecrets({ RPC_SHYFT_URL: 'https://shyft.example/k', RPC_CHAINSTACK_URL: 'https://chainstack.example/k' });
+  const shyft = DEFAULT_PROVIDERS[0] as ProviderConfig;
+  const chainstack = DEFAULT_PROVIDERS[1] as ProviderConfig;
+  const both = { consumer: 'engine', shares: { shyft: { engine: 5_000 }, chainstack: { engine: 10_000 } } };
+  const problems = (configs: ProviderConfig[], allocation = both) => {
+    const r = loadProviders(configs, secrets, { context: 'engine', allocation }, new RecordingLogPort());
+    return r.ok ? [] : r.error.problems.map((p) => `${p.key} ${p.message}`);
+  };
+
+  it('ruling 25: Shyft heavyRps 0.01 with a 5,000 bps share is refused', () => {
+    const p = problems([{ ...shyft, limits: { rps: 5, heavyRps: 0.01 } }, chainstack]);
+    assert.equal(p.length, 1);
+    assert.match(p[0] as string, /^rpc\.allocation\[shyft\] .*heavyRps at 0\.005 req\/s/);
+  });
+
+  it('ruling 25: perMethodRps, sendRps and the part of rps below P0 are held to the floor too', () => {
+    assert.match(problems([{ ...shyft, limits: { rps: 5, perMethodRps: 0.02 } }, chainstack]).join(), /perMethodRps/);
+    assert.match(problems([{ ...shyft, roles: ['read', 'send'], limits: { rps: 5, sendRps: 0.02 }, documentedLimits: [...shyft.documentedLimits, { scope: 'send', count: 1, windowMs: 1_000, fact: 'VF-09' }] }, chainstack]).join(), /sendRps/);
+    const r = loadProviders([shyft, { ...chainstack, limits: { rps: 2.5, ownerMaxRps: 0.04 } }], secrets,
+      { context: 'engine', allocation: { consumer: 'engine', shares: { shyft: { engine: 10_000 }, chainstack: { engine: 5_000 } } }, p0ReserveBps: 5_000 }, new RecordingLogPort());
+    // 0.04 req/s × 50% share = 0.02 (above the floor), but its half below P0 is 0.01: refused.
+    assert.ok(!r.ok && r.error.problems.some((x) => /rps below P0/.test(x.message)));
+  });
+
+  it('ruling 26: a provider serving only getHealth does not count as the engine\'s backup', () => {
+    const p = problems([shyft, { ...chainstack, methods: ['getHealth'] }]);
+    assert.deepEqual(p.map((x) => x.split(' ')[0]), ['rpc.allocation']);
+    assert.match(p[0] as string, /serving every P0 read method; it has 1/);
+    assert.deepEqual(P0_READ_METHODS, ['getAccountInfo', 'getMultipleAccounts', 'getTransaction', 'getSlot', 'getSignatureStatuses', 'getLatestBlockhash']);
+    assert.ok(DEFAULT_PROVIDERS.every((c) => P0_READ_METHODS.every((m) => c.methods.includes(m))));
   });
 });

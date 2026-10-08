@@ -4,6 +4,7 @@
 // Ported from Snipe-solana card C03 (#6 @ 6ae4d62), review fixes C03 R4 and N2 included. Z03 adds `limits.ownerMaxRps`
 // (SPEC-A A-M14-02: the bucket runs at the lower of the configured rate and the owner's cap).
 import type { Result } from '@bot/types';
+import { DEFAULT_P0_RESERVE_BPS } from './gateway.ts';
 import { methodSpec } from './methods.ts';
 import type { DocumentedLimit, GatewayContext, LogPort, ProviderConfig, ResolvedProvider, SecretSource } from './types.ts';
 
@@ -22,6 +23,8 @@ export interface RegistryOptions {
    * `Allocation`.
    */
   allocation?: Allocation;
+  /** `rpc.p0_reserve_bps` (default DEFAULT_P0_RESERVE_BPS): the part of each rate only P0 may use (ruling 25). */
+  p0ReserveBps?: number;
 }
 
 /**
@@ -57,6 +60,13 @@ export const PUBLIC_MAINNET_LIMITS: readonly DocumentedLimit[] = Object.freeze([
   { scope: 'per_method', count: 40, windowMs: 10_000, fact: 'LD-26' },
   { scope: 'bytes', count: 100_000_000, windowMs: 30_000, fact: 'LD-26' },
 ] as const);
+
+/**
+ * The read methods the engine's P0 calls use (ARCH M14 priorities: send, confirm and exit reads; Z03 ruling 26): pool,
+ * vault and wallet reads, fill and expiry proofs, blockhash and slot. A provider counts toward the engine's two live
+ * readers only when it serves all of them.
+ */
+export const P0_READ_METHODS: readonly string[] = Object.freeze(['getAccountInfo', 'getMultipleAccounts', 'getTransaction', 'getSlot', 'getSignatureStatuses', 'getLatestBlockhash']);
 
 /** The least rate a nonzero allocation share may leave a process: one request a minute (Z03 ruling 24). */
 export const MIN_SHARED_RPS = 1 / 60;
@@ -260,17 +270,28 @@ export function loadProviders(raw: unknown, secrets: SecretSource, opts: Registr
     return { ok: false, error: { code: 'E_CONFIG', problems: [{ key: 'rpc.allocation', message: 'the provider allocation is required (each process reads under its share of every budget; ARCH D04)' }] } };
   }
   const shares = sharesOf(opts.allocation, valid.value.map((c) => c.label), problems);
+  const reserveBps = opts.p0ReserveBps ?? DEFAULT_P0_RESERVE_BPS;
   for (const c of valid.value) {
     const share = shares.get(c.label) ?? 0;
-    // Z03 ruling 24: a share that is on gives at least one request a minute; 0 is the only way to turn a provider off.
-    if (share > 0 && (c.limits.rps * share) / 10_000 < MIN_SHARED_RPS) {
-      problems.push({ key: `rpc.allocation[${c.label}]`, message: `a share of ${share} bps gives ${(c.limits.rps * share) / 10_000} req/s, below one request a minute; use 0 to turn it off` });
+    if (share === 0) continue;
+    // Z03 rulings 24 and 25: a share that is on leaves every rate of the provider at least one request a minute (its
+    // total, heavy, per-method and send rates, and the part of the total below P0); 0 is the only way to turn it off.
+    const { rps, heavyRps, perMethodRps, sendRps } = c.limits;
+    const rates: Array<[string, number | undefined]> = [
+      ['rps', rps], ['heavyRps', heavyRps], ['perMethodRps', perMethodRps], ['sendRps', sendRps],
+      ['rps below P0', (rps * (10_000 - reserveBps)) / 10_000],
+    ];
+    for (const [name, rate] of rates) {
+      if (rate !== undefined && (rate * share) / 10_000 < MIN_SHARED_RPS) {
+        problems.push({ key: `rpc.allocation[${c.label}]`, message: `a share of ${share} bps leaves ${name} at ${(rate * share) / 10_000} req/s, below one request a minute; use 0 to turn it off` });
+      }
     }
   }
   // Z03 ruling 23 (ARCH D04: a primary and a backup): the engine starts only with two live read providers it has a share of.
   if (opts.context === 'engine' && problems.length === 0) {
-    const live = valid.value.filter((c) => c.roles.includes('read') && c.allowInLivePaths && (shares.get(c.label) ?? 0) > 0);
-    if (live.length < 2) problems.push({ key: 'rpc.allocation', message: `the engine needs a share of at least two live read providers; it has ${live.length}` });
+    const live = valid.value.filter((c) => c.roles.includes('read') && c.allowInLivePaths && (shares.get(c.label) ?? 0) > 0
+      && P0_READ_METHODS.every((m) => c.methods.includes(m)));             // ruling 26: a backup serves every P0 read
+    if (live.length < 2) problems.push({ key: 'rpc.allocation', message: `the engine needs a share of at least two live read providers serving every P0 read method; it has ${live.length}` });
   }
   if (problems.length > 0) return { ok: false, error: { code: 'E_CONFIG', problems } };
   const providers: ResolvedProvider[] = [];
