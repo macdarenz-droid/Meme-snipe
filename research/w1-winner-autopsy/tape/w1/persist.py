@@ -176,7 +176,7 @@ def validation_verdict(gr, boot, replay_mean, top_mean_uncapped=None):
     passed = bool(lb_ok and top_ok and rp_ok)
     if passed:
         verdict = "pass"
-    elif cap_ok != nc_ok:
+    elif lb_ok and cap_ok != nc_ok:
         verdict = "persistence depends on cost attribution"
     elif lb_ok and top_ok and not rp_ok:
         verdict = "persistent, but not at our speed or cost"

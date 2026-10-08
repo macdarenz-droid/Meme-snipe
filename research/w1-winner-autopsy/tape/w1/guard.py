@@ -21,11 +21,14 @@ STEP_C = ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06"]
 # AMENDMENT_5 Q36: Steps B and C run only from registered plans; the expected sha256 is the first word of the
 # committed <plan>.sha256 file beside each plan (Step A's is registered here).
 SHARED = os.path.join(REPO, "research", "shared-tape")
+# Registered 2026-10-08 (research/shared-tape/plan-steps.sh); fixed here, as Step A's is.
+STEP_B_SHA = "44f133a5b825876b8ca29bb9b807e3d75e2d2fb375780e26f3570fdab03058d5"
+STEP_C_SHA = "79b1d6b1f5f67f2be68cbfe125efe802fe95b7685eb47789104d9b35a8a6049f"
 STEP_B_PLAN, STEP_C_PLAN = os.path.join(SHARED, "stepb-plan.txt"), os.path.join(SHARED, "stepc-plan.txt")
 # day -> (plan file, sha256 or a ".sha256" file holding it)
 PLANS = {**{d: (STEP_A_PLAN, STEP_A_SHA) for d in STEP_A},
-         **{d: (STEP_B_PLAN, STEP_B_PLAN[:-4] + ".sha256") for d in STEP_B},
-         **{d: (STEP_C_PLAN, STEP_C_PLAN[:-4] + ".sha256") for d in STEP_C}}
+         **{d: (STEP_B_PLAN, STEP_B_SHA) for d in STEP_B},
+         **{d: (STEP_C_PLAN, STEP_C_SHA) for d in STEP_C}}
 # AMENDMENT_5 Q36: W1 runs discovery only until a registered gate releases Step B. Flipping this is a reviewed code
 # change (the manifest's code hashes then differ from any earlier ledger, so stages re-verify).
 STEP_B_RELEASED = False
