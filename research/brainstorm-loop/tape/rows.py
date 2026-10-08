@@ -25,17 +25,31 @@ warnings.filterwarnings("ignore", message="All-NaN slice", category=RuntimeWarni
 
 
 # ===================================================================== helpers
-def boot_lb(stat, groups, n=None, q=0.025, seed=SEED):
-    """Percentile bootstrap lower bound of stat(*resampled groups); each group resampled on its own (Q1)."""
+def boot_lb_clustered(stat, groups, cols, n=None, q=0.025, seed=SEED):
+    """COUNT_ROWS_AMENDMENT_1 Q1: pool-clustered bootstrap stratified by day. Each group (a DataFrame with
+    `day` and `pool`) is resampled on its own: within each day, its pools are drawn with replacement and all
+    rows of a drawn pool come along. stat(*[dict of column arrays]) -> float. Percentile bound, 10,000 draws."""
     n = BOOT_N if n is None else n
-    groups = [np.asarray(g, dtype=float) for g in groups]
     if any(len(g) == 0 for g in groups):
         return None
+    prep = []
+    for g in groups:
+        g = g.reset_index(drop=True)
+        arrs = {c: g[c].to_numpy() for c in cols}
+        strata = [list(dd.groupby("pool", sort=True).indices.values()) for _, dd in g.groupby("day", sort=True)]
+        prep.append((arrs, strata))
     rng = np.random.default_rng(seed)
     vals = np.empty(n)
     for i in range(n):
-        vals[i] = stat(*[g[rng.integers(0, len(g), len(g))] for g in groups])
-    return float(np.nanquantile(vals, q))
+        res = []
+        for arrs, strata in prep:
+            idx = np.concatenate([np.concatenate([pools[j] for j in rng.integers(0, len(pools), len(pools))])
+                                  for pools in strata])
+            res.append({c: a[idx] for c, a in arrs.items()})
+        vals[i] = stat(*res)
+    vals[np.isnan(vals)] = -np.inf          # an undefined draw counts against the bound (conservative)
+    lb = float(np.quantile(vals, q))
+    return None if lb == -np.inf else lb
 
 
 def adjacency(links: pd.DataFrame):
@@ -162,9 +176,13 @@ def cluster_maps(tape: Tape, hub_cap=HUB_CAP):
     return {"hub_cap_50": capped, "hub_keyed": keyed}, hubs
 
 
+LABEL_MIN, LABEL_MAX = 2, 50   # COUNT_ROWS_AMENDMENT_1 Q13: only clusters of 2-50 owners are labelled
+
+
 def two_sided_clusters(tape: Tape, window=TWO_SIDED_SLOTS):
     """Clusters (>= 2 owners) whose members both buy and sell the same mint within `window` slots.
-    Returns (labels, summary). labels: DataFrame (rule, mint, owner) of owners in such clusters."""
+    Returns (labels, summary). labels: DataFrame (rule, mint, owner, cluster_size) of owners in such clusters
+    of 2-50 owners (Q13). The summary reports the share of swap rows labelled before and after the cap."""
     maps, hubs = cluster_maps(tape)
     s = tape.swaps[~tape.swaps["excluded"] & tape.swaps["owner"].notna() & tape.swaps["sol_quoted"]]
     total_vol = float(s["sol"].sum())
@@ -185,7 +203,7 @@ def two_sided_clusters(tape: Tape, window=TWO_SIDED_SLOTS):
             if hit.any():
                 flagged.append((cl, mint, float(g["sol"].sum()), g["owner"].nunique()))
                 for o in g["owner"].unique():
-                    labels.append((rule, mint, o))
+                    labels.append((rule, mint, o, int(sizes[cl])))
         f = pd.DataFrame(flagged, columns=["cluster", "mint", "sol", "n_owners"])
         csize = sizes.reindex(f["cluster"].unique()) if len(f) else pd.Series(dtype=float)
         summary[rule] = {
@@ -195,12 +213,29 @@ def two_sided_clusters(tape: Tape, window=TWO_SIDED_SLOTS):
             "cluster_size_quantiles": {str(q): float(csize.quantile(q)) for q in (0.5, 0.9, 0.99, 1.0)} if len(csize) else {},
             "cluster_size_counts": {str(k): int(v) for k, v in csize.value_counts().sort_index().items()} if len(csize) else {},
         }
-    return pd.DataFrame(labels, columns=["rule", "mint", "owner"]), summary
+    all_labels = pd.DataFrame(labels, columns=["rule", "mint", "owner", "cluster_size"])
+    capped = all_labels[all_labels["cluster_size"].between(LABEL_MIN, LABEL_MAX)].reset_index(drop=True)
+    key = pd.MultiIndex.from_arrays([s["mint"], s["owner"]])
+
+    def share(lab):
+        if not len(s):
+            return None
+        return float(key.isin(pd.MultiIndex.from_arrays([lab["mint"], lab["owner"]])).mean()) if len(lab) else 0.0
+
+    for rule in maps:
+        summary[rule]["rows_labelled_share_uncapped"] = share(all_labels[all_labels["rule"] == rule])
+        summary[rule]["rows_labelled_share_capped"] = share(capped[capped["rule"] == rule])
+    summary["either_rule"] = {"rows_labelled_share_uncapped": share(all_labels),
+                              "rows_labelled_share_capped": share(capped),
+                              "label_cluster_size": [LABEL_MIN, LABEL_MAX]}
+    return capped, summary
 
 
 def fake_demand_set(labels: pd.DataFrame):
-    """Q13: an owner is excluded from first-time-buyer counts on a mint if either rule labels it."""
-    return set(zip(labels["mint"], labels["owner"]))
+    """Q13: an owner is excluded from first-time-buyer counts on a mint if either rule labels it, in a
+    cluster of 2-50 owners."""
+    lab = labels[labels["cluster_size"].between(LABEL_MIN, LABEL_MAX)] if "cluster_size" in labels else labels
+    return set(zip(lab["mint"], lab["owner"]))
 
 
 # ============================================================ prepared swaps
@@ -296,7 +331,9 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
         en = e["net"].dropna().values if len(e) else np.array([])
         cn = c["net"].dropna().values if len(c) else np.array([])
         med = float(np.median(en) - np.median(cn)) if len(en) and len(cn) else None
-        lb = boot_lb(lambda x, y: np.median(x) - np.median(y), [en, cn]) if med is not None else None
+        lb = (boot_lb_clustered(lambda x, y: np.median(x["net"]) - np.median(y["net"]),
+                                [e.dropna(subset=["net"]), c.dropna(subset=["net"])], ["net"])
+              if med is not None else None)
         fa = float(e["ftb_sol_all"].sum()) if len(e) else 0.0
         days = sorted({d for d, _, _ in tape.ranges})   # every loaded day, 0 where no event
         summ[arm] = {
@@ -432,14 +469,25 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
         rows.append(out)
     df = pd.DataFrame(rows)
     ok = df[df["dropped"] == ""] if len(df) else df
-    busy = ok[ok["N_m"] >= 1] if len(ok) else ok      # Q9: busy = N_m >= 1, lone = N_m == 0
-    lone = ok[ok["N_m"] == 0] if len(ok) else ok
+    # COUNT_ROWS_AMENDMENT_1 Q9: lone = bottom tercile of N_m, busy = top tercile, per discovery day over the
+    # day's eligible graduates (ties broken by migration order).
+    if len(ok):
+        ok = ok.sort_values(["day", "m_slot"]).copy()
+        ok["tercile"] = -1
+        for d, g in ok.groupby("day"):
+            if len(g) >= 3:
+                ok.loc[g.index, "tercile"] = pd.qcut(g["N_m"].rank(method="first"), 3, labels=False).astype(int)
+        df.loc[ok.index, "tercile"] = ok["tercile"]
+    busy = ok[ok["tercile"] == 2] if len(ok) else ok
+    lone = ok[ok["tercile"] == 0] if len(ok) else ok
 
     def diff(col):
-        b, l_ = busy[col].dropna().values if len(busy) else [], lone[col].dropna().values if len(lone) else []
+        b = busy.dropna(subset=[col]) if len(busy) else busy
+        l_ = lone.dropna(subset=[col]) if len(lone) else lone
         if not len(b) or not len(l_):
             return None, None
-        return float(np.median(b) - np.median(l_)), boot_lb(lambda x, y: np.median(x) - np.median(y), [b, l_])
+        return (float(b[col].median() - l_[col].median()),
+                boot_lb_clustered(lambda x, y: np.median(x[col]) - np.median(y[col]), [b, l_], [col]))
 
     d1, lb1 = diff("w1_share")
     d2, _ = diff("w2_share")

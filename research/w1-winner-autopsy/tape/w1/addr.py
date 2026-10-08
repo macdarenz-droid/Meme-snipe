@@ -40,7 +40,9 @@ def on_curve(addr: str) -> bool:
     y = (y & ((1 << 255) - 1)) % _P  # dalek's FieldElement::from_bytes: top bit ignored, value reduced
     u = (y * y - 1) % _P
     v = (_D * y * y + 1) % _P
-    x = (u * pow(v, 3, _P) * pow(u * pow(v, 7, _P), (_P - 5) // 8, _P)) % _P
+    v3 = v * v % _P * v % _P
+    v7 = v3 * v3 % _P * v % _P
+    x = u * v3 % _P * pow(u * v7 % _P, (_P - 5) // 8, _P) % _P
     vx2 = (v * x * x) % _P
     # sqrt_ratio_i succeeds when v*x^2 is u or -u (the latter fixed by sqrt(-1)); dalek accepts x = 0 with
     # either sign bit, so the sign bit never decides the answer.

@@ -424,6 +424,8 @@ class Ledger:
         agg["end_ver"] = (agg["ver0"] | (agg["anyswap"] & clean)) | closed
         self.acc.append(agg[["cash", "paid", "xin", "nbuy", "nsell", "dirty", "buykey", "closekey", "lastkey",
                              "lastslot", "n", "end_ver"]])
+        if len(self.acc) >= 8:
+            self._collapse_acc()
         # carry update
         keep = self.carry[~self.carry.index.isin(agg.index)]
         new = pd.DataFrame({"bal": agg["end"].astype(np.int64), "ok": agg["end_ok"].astype(bool),
@@ -432,17 +434,22 @@ class Ledger:
         new = new[new["bal"] > 0]
         self.carry = pd.concat([keep, new])
 
+    def _collapse_acc(self):
+        """Merges the per-unit aggregates of the day into one frame (keeps memory flat over a day)."""
+        a = pd.concat(self.acc)
+        g = a.groupby(level=0, sort=False)
+        self.acc = [g.agg(cash=("cash", "sum"), paid=("paid", "sum"), xin=("xin", "sum"), nbuy=("nbuy", "sum"),
+                          nsell=("nsell", "sum"), dirty=("dirty", "any"), buykey=("buykey", "min"),
+                          closekey=("closekey", "max"), lastkey=("lastkey", "max"), lastslot=("lastslot", "max"),
+                          n=("n", "sum"), end_ver=("end_ver", "last"))]
+
     # ---------------------------------------------------------------- day end
     def finish_day(self):
         """Closes the day: end marks, the owner-mint-day rows and the §3/§5 raw tables. Returns a dict."""
         day = self.prev_day
         if self.acc:
-            a = pd.concat(self.acc)
-            g = a.groupby(level=0, sort=False)
-            acc = g.agg(cash=("cash", "sum"), paid=("paid", "sum"), xin=("xin", "sum"), nbuy=("nbuy", "sum"),
-                        nsell=("nsell", "sum"), dirty=("dirty", "any"), buykey=("buykey", "min"),
-                        closekey=("closekey", "max"), lastkey=("lastkey", "max"), lastslot=("lastslot", "max"),
-                        n=("n", "sum"), end_ver=("end_ver", "last"))
+            self._collapse_acc()
+            acc = self.acc[0]
         else:
             acc = pd.DataFrame(columns=["cash", "paid", "xin", "nbuy", "nsell", "dirty", "buykey", "closekey",
                                         "lastkey", "lastslot", "n", "end_ver"])

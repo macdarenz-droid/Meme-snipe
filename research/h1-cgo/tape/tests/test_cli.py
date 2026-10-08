@@ -87,6 +87,16 @@ class CLI(unittest.TestCase):
         self.refused(lambda: R.main(["freeze", "--out", self.out]), "gate H1-CGO-0 passed")
         self.refused(lambda: R.main(["score", "--out", self.out]), "--frozen")
 
+    def test_features_read_boost_events(self):
+        e = os.path.join(self.units[0], "research", "E.jsonl.zst")
+        ev = _events() + [dict(event="BoostBuyAndBurnEvent", signature="", outer_ix=0, slot=1100, fields=dict(pool="P"))]
+        with open(e, "wb") as f:
+            f.write(zstandard.ZstdCompressor().compress("".join(json.dumps(x) + "\n" for x in ev).encode()))
+        self.features(self.units)
+        meta = read_json(os.path.join(self.out, "features_meta.json"))
+        self.assertEqual(meta["boost_events"], 1)
+        self.assertGreater(meta["protocol_rows"], 0)  # the synthetic rows share the event's (signature, outer_ix, pool)
+
     # 1. Step A completeness
     def test_missing_middle_unit(self):
         self.refused(lambda: self.features([self.units[0], self.units[2]]), "missing units [(40000, 79999)]")

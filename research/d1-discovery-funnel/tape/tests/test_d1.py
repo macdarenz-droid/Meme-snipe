@@ -10,7 +10,7 @@ import pandas as pd
 from tests import synth as S
 from d1 import config as C
 from d1.clusters import ClusterState, follow_pairs, near_event_flags
-from d1.costs import FIXED, Pool, buy_exact_quote_in, expected_fixed, fee_of, sell
+from d1.costs import FIXED_EDGE_COSTS, Pool, buy_exact_quote_in, expected_fixed, fee_of, fixed_for, rent_for, sell
 from d1.features import compute_features
 from d1.holders import holder_features
 from d1.outcomes import compute_outcomes
@@ -38,7 +38,7 @@ class Costs(unittest.TestCase):
         p = os.path.join(REPO, "research", "edge", "costs.json")
         if os.path.exists(p):
             with open(p) as fh:
-                self.assertEqual(round(FIXED), json.load(fh)["rows"][0]["fixedLamports"])
+                self.assertEqual(round(FIXED_EDGE_COSTS), json.load(fh)["rows"][0]["fixedLamports"])
 
     def test_spend(self):
         self.assertEqual(C.SPEND_LAMPORTS, 419_252_054)
@@ -365,8 +365,12 @@ class Outcomes(unittest.TestCase):
             xs = [sell(book.state(S.POOL, int(i)), int(o.tokens)).user
                   for i in {int(book.idx_lt(S.POOL, p.exit_slot_15)), int(book.idx_le(S.POOL, p.exit_slot_15))}]
             self.assertEqual(o.recv_15, min(xs))
-            self.assertAlmostEqual(o.net_ret_15, (min(xs) - o.paid - FIXED) / o.paid)
-        self.assertGreater(o.rt_cost, FIXED / o.paid)
+            self.assertAlmostEqual(o.net_ret_15, (min(xs) - o.paid - o.fixed) / o.paid)
+        self.assertGreater(o.rt_cost, o.fixed / o.paid)
+        # AMENDMENT_1 item 11: no create row on the tape -> the larger (Token-2022) rent
+        self.assertEqual(o.fixed, expected_fixed(2_074_080))
+        o2 = compute_outcomes(book, pts, {S.MINT: C.SPL_TOKEN_PROGRAM}).loc[el.index[0]]
+        self.assertEqual(o2.fixed, expected_fixed(2_039_280))
 
 
 def synthetic_search_frame(seed=1, planted=True, n_pools=60):

@@ -1,6 +1,16 @@
 # H1-CGO scoring: open questions
 
-Each item is a point where `../PREREG.md` is silent or ambiguous. The code uses the reading marked **Used**, which is the more conservative one (harder to pass, or no trade). A reviewer or an amendment can overturn any of them before the primary is scored.
+**Resolved by `../AMENDMENT_1.md` (2026-10-08): all 25 readings below are confirmed as written.** The amendment also changes the rent and BOOST handling (below). Each item was a point where `../PREREG.md` is silent or ambiguous; the code uses the reading marked **Used**, the more conservative one.
+
+## Changes from AMENDMENT_1 and decoder v3
+- **Rent.** The fixed costs charge the rent of the token account the mint actually needs, with RENT-1's refund model (`pumpswap.token_account_rent`, `expected_fixed(rent)`, applied per trade in `outcomes.run`):
+  - Token-2022: 2,074,080 lamports, as ruled, so the fixed cost is about 495,244 lamports;
+  - legacy SPL Token: 2,039,280, from the same 6,960 lamports a byte × (165 + 128);
+  - an unknown program pays the Token-2022 amount.
+
+  The repo's 1,513,840 is used only for the parity check with `research/edge/costs.json`. Item 15's fixed cost changes accordingly.
+- **Other protocol addresses (item 10).** None is added, because none held tokens. One is to be added if an address appears whose tokens come only from protocol instructions.
+- **BOOST swaps.** Decoder v3 sets `protocol=1` on BOOST swaps. Older units leave it 0, so an S_amm row also counts as protocol flow when its (signature, outer_ix, pool) matches a `BoostBuyAndBurnEvent` in E (`features.boost_keys`). On 09-11 unit 446265000-446269499, 651 of 651 events matched exactly one row each. Protocol rows never enter the holder ledger, and their owner is excluded as `protocol`.
 
 ## Timing
 1. **Decision slot.** §3 says "each whole UTC hour" without naming the slot. **Used:** the last slot whose block time is before the hour, and only when a later block in the same contiguous tape stretch shows the hour has closed. No row from the hour itself enters the features.
@@ -34,7 +44,7 @@ Each item is a point where `../PREREG.md` is silent or ambiguous. The code uses 
     - round-trip cost = (fees + impact on both legs + fixed) ÷ SOL paid;
     - net = (SOL received − SOL paid − fixed) ÷ SOL paid.
 
-    Fixed = edge-costs `expectedFixed()` = 414,009 lamports. A test checks it against `research/edge/costs.json`.
+    Fixed = edge-costs `expectedFixed()` (414,009 lamports with the repo's rent, checked against `research/edge/costs.json`), with the rent as set by AMENDMENT_1 (see above).
 
 ## Statistics
 16. **Gate (a) count.** "Eligible decision points" could mean every point or one per coin per day. **Used:** the first eligible point per coin per UTC day, which is stricter. Both counts are reported.
