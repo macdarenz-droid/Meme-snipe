@@ -415,3 +415,8 @@ Please adopt `research/BLUEPRINT_ADDENDUM.md` item by item.
 - Results from unfinished runs enter only after their RESULTS.md and a fresh review.
 - Never loosen a gate. Keep lamport units.
 - Record any item you reject in HANDOVER, with the reason.
+## Bot hazards found by the brainstorm loop (2026-10-08; for the supervisor, not edges)
+- **Fake volume above 420 SOL.** Above the 420 SOL creator step, a creator trading with themselves pays 1.20% and gets back 0.95% as creator fee: a net cost of about 0.25% per SOL of volume, against 0.95% below the step (`research/edge/snapshot/fee-configs.json`). Volume-based filters should distrust volume that jumps just after a coin crosses 420 SOL.
+- **LAUNCHER-ID.** Hard gates H12–H14 key on `CreateEvent.creator`, not on the wallet that actually launched the coin, so a launcher can rotate creator keys (`research/brainstorm-loop/SWEEP_3.md`).
+- **H8 blocks young pools.** H8 needs an effective quote of at least max($15k, 1,000 × size): about 126, 168 and 419 SOL at $5, $20 and $50 (hard.ts:286-315, policy.ts:205, per the partner). A fresh graduate (about 85 SOL) fails at every size, so any young-pool rule is untradable unless the owner lowers H8.
+- **New pump IDL instructions.** `buy_v3` and `PostCompleteBuyEvent` are missing from the tape decoder. A live version of G1 must decode them.
