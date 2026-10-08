@@ -113,7 +113,12 @@ type UnitStats struct {
 	// Retention: which rows the unit keeps (retentionPolicy); empty for older units,
 	// which kept trades of sampled mints only.
 	Retention string `json:"retention"`
-	mu        sync.Mutex
+	// OF-3 (canonical.go): the pinned PM-01 migration list's sha256 (K3 units), and the
+	// records of the files K2 and K3 units add.
+	MigrationListSha256 string `json:"migration_list_sha256,omitempty"`
+	RawCanonicalRecords int64  `json:"raw_canonical_records,omitempty"`
+	ConfigRecords       int64  `json:"config_records,omitempty"`
+	mu                  sync.Mutex
 }
 
 func (s *UnitStats) decodeErr(msg string) {
@@ -217,6 +222,8 @@ type blockResult struct {
 	pumpFail  int64
 	agg       map[aggKey]*aggVal
 	raw       []string
+	rawCanon  []string // K2/K3: canonical-pool transactions not in raw (canonical.go, OF-3)
+	config    []string // K2/K3: transactions that write a fee or venue config account (P12)
 	mintOnly  int64
 	moves     [][]string
 	delegs    [][]string
@@ -224,11 +231,31 @@ type blockResult struct {
 	marks     []coverageMark
 }
 
+// openUnitFiles opens a unit's data files in dir (K2 and K3 add raw_canonical and
+// config; canonical.go, OF-3).
+func openUnitFiles(dir string) (map[string]*csvOut, error) {
+	outs := map[string]*csvOut{}
+	files := map[string][]string{"curve_trades.csv.zst": curveCols, "amm_trades.csv.zst": ammCols,
+		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil,
+		"movements.csv.zst": movementCols, "movement_coverage.csv.zst": movementCoverageCols, "delegations.csv.zst": delegationCols}
+	if retentionMode != "" {
+		files["raw_canonical.jsonl.zst"], files["config.jsonl.zst"] = nil, nil
+	}
+	for name, cols := range files {
+		o, err := newCSV(filepath.Join(dir, name), cols)
+		if err != nil {
+			return nil, err
+		}
+		outs[name] = o
+	}
+	return outs, nil
+}
+
 // ScanUnit scans blocks in [from, to] of epoch e into dir/<from>-<to>/.
 func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlConc int, workers int) (*UnitStats, error) {
 	t0 := time.Now()
 	st := &UnitStats{Schema: schemaVersion, Epoch: e.N, RootCid: e.RootCid, FromSlot: from, ToSlot: to,
-		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, FirstSeen: map[string]uint64{}, ScannerRevision: scannerRevision, SampleRate: sampleRate, Retention: retentionPolicy}
+		EventCounts: map[string]int{}, UnknownEvents: map[string]int{}, NewerLayouts: map[string]int{}, OlderLayouts: map[string]int{}, ExtraBytes: map[string]int{}, FirstSeen: map[string]uint64{}, ScannerRevision: scannerRevision, SampleRate: sampleRate, Retention: unitRetention(), MigrationListSha256: k3ListSha}
 	req0, ret0, r4290 := statHTTPRequests.Load(), statHTTPRetries.Load(), statHTTP429.Load()
 
 	start, end, firstBlock, err := e.ByteRange(ctx, from, to)
@@ -242,15 +269,9 @@ func ScanUnit(ctx context.Context, e *Epoch, from, to uint64, outDir string, dlC
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
 		return nil, err
 	}
-	outs := map[string]*csvOut{}
-	for name, cols := range map[string][]string{"curve_trades.csv.zst": curveCols, "amm_trades.csv.zst": ammCols,
-		"blocks.csv.zst": blockCols, "failed.csv.zst": failedCols, "events.jsonl.zst": nil, "agg_hourly.csv.zst": aggCols, "raw.jsonl.zst": nil,
-		"movements.csv.zst": movementCols, "movement_coverage.csv.zst": movementCoverageCols, "delegations.csv.zst": delegationCols} {
-		o, err := newCSV(filepath.Join(tmp, name), cols)
-		if err != nil {
-			return nil, err
-		}
-		outs[name] = o
+	outs, err := openUnitFiles(tmp)
+	if err != nil {
+		return nil, err
 	}
 
 	// Stream and split into blocks.
@@ -431,6 +452,8 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	st.AmmTrades += int64(len(r.amm))
 	st.OtherEvents += int64(len(r.other))
 	st.RawRecords += int64(len(r.raw))
+	st.RawCanonicalRecords += int64(len(r.rawCanon))
+	st.ConfigRecords += int64(len(r.config))
 	st.MintOnlyRecords += r.mintOnly
 	st.Movements += int64(len(r.moves))
 	st.Delegations += int64(len(r.delegs))
@@ -450,6 +473,12 @@ func writeResult(outs map[string]*csvOut, r *blockResult, st *UnitStats, agg map
 	}
 	for _, l := range r.raw {
 		outs["raw.jsonl.zst"].line(l)
+	}
+	for _, l := range r.rawCanon {
+		outs["raw_canonical.jsonl.zst"].line(l)
+	}
+	for _, l := range r.config {
+		outs["config.jsonl.zst"].line(l)
 	}
 	for _, row := range r.moves {
 		outs["movements.csv.zst"].row(row)
@@ -550,6 +579,11 @@ func processBlock(b *blockData, st *UnitStats) *blockResult {
 			continue
 		}
 		staticHit := bytes.Contains(txBytes, pumpProgram[:]) || bytes.Contains(txBytes, ammProgram[:])
+		// P12 (K2/K3): a pump_fees admin transaction runs no pump or PumpSwap
+		// instruction; its config write is recorded here, and only here.
+		if !staticHit && mayWriteConfig(txBytes) {
+			configOnlyTx(r, st, b, txIdx, txBytes, metaBuf)
+		}
 		// Programs reached through an address lookup table are only visible in the meta.
 		if !staticHit && !mayLoadAccounts(txBytes) {
 			if mintScan {
@@ -723,6 +757,10 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		}
 		return [32]byte{}
 	}
+	// P12 (K2/K3): a config write, unless processBlock already recorded it.
+	if bytes.Contains(txBytes, pumpProgram[:]) || bytes.Contains(txBytes, ammProgram[:]) || !mayWriteConfig(txBytes) {
+		r.addConfig(st, b, txIdx, &tx, txBytes, metaRaw, meta.LoadedWritableAddresses)
+	}
 	sig := tx.Signatures[0].String()
 	signer := solana.PublicKey(key(0)).String()
 	fee := strconv.FormatUint(meta.Fee, 10)
@@ -804,7 +842,9 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 		if mintHint != "" && inSample(mintHint) {
 			r.failed = append(r.failed, []string{slot, bt, tidx, sig, signer, fee, cu, strings.Join(progs, "|"), mintHint, hexs(meta.Err.Err)})
 		}
+		nRaw := len(r.raw)
 		r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, nil, mintHint)
+		r.addCanonical(st, b, txIdx, sig, txBytes, metaRaw, groups, key, len(r.raw) > nRaw)
 		return
 	}
 
@@ -1110,7 +1150,9 @@ func processTx(r *blockResult, st *UnitStats, b *blockData, slot, bt string, txI
 			r.delegs = append(r.delegs, delegationRows(slot, bt, txIdx, keys, groups, full, want)...)
 		}
 	}
+	nRaw := len(r.raw)
 	r.addRaw(st, b, txIdx, sig, txBytes, metaRaw, meta, createdMints, eventMints...)
+	r.addCanonical(st, b, txIdx, sig, txBytes, metaRaw, groups, key, len(r.raw) > nRaw)
 }
 
 // addRaw writes the raw record of a transaction that touches a sampled mint, or that

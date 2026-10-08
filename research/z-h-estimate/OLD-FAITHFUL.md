@@ -65,9 +65,10 @@ a second time for the exact quote.
   10/s cap. If Triton's RPC figure (120 req/s) did apply, 10/s would be 8% of it.
 - A rate or bucket that Triton publishes or sends replaces these numbers in `archive-limits.conf` (`:2`).
 
-**Today's code is above the request cap.** `scanner/archive.go:73` is `newLimiter(40)` and `polite.go:25` allows
-80 MB/s; `archive-check` therefore dispatches nothing (fail closed, `ci/archive-check.sh:110-114`). PR #214 sets 10/s and
-40 MB/s and makes any 429, 403 or 503 stop the run (§4).
+**Before #214 (history).** The scanner was above the request cap: `scanner/archive.go:73` was `newLimiter(40)` and
+`polite.go:25` allowed 80 MB/s, so `archive-check` dispatched nothing (fail closed, then `ci/archive-check.sh:110-114`).
+PR #214 sets `reqLimiter` to 10/s and the byte cap to 40 MB/s, and makes any 429, 403 or 503 stop the run (§4); OF-2
+moved the request-cap hold before the probe (hold 4, §2).
 
 **Terms and the owner's answers (8 Oct about 7:42 AM).**
 - No Triton clause on storing, redistributing or deriving works from archive data was found (table above).

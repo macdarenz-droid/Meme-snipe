@@ -13,6 +13,7 @@
 #   archive-guard.sh entry DAY        local, plus a fresh pass of the guard step
 #       (ag_attested); what scan-day.sh and check-day.sh run. Prints the retention.
 #   archive-guard.sh recorded OUT     the retention the units in OUT record (ag_recorded).
+#   archive-guard.sh k3list OUT       a K3 read's pinned migration list (ag_k3list).
 #   archive-guard.sh full DAY         local, plus the private store (DATA_REPO, read with
 #       DATA_STORE_TOKEN) is readable, private and holds no storage-stop tag, plus the
 #       3-failure stop is not active (run history of this repository, GH_TOKEN). Prints
@@ -152,6 +153,22 @@ ag_recorded() {
   echo "$vals"
 }
 
+# ag_k3list OUT (OF-3): a K3 read needs the pinned PM-01 migration list
+# (ARCHIVE_MIGRATION_LIST), and every unit already in OUT must record that list's sha256.
+ag_k3list() {
+  local want st got
+  [[ -n "${ARCHIVE_MIGRATION_LIST:-}" && -f "${ARCHIVE_MIGRATION_LIST:-}" ]] ||
+    { ag_refuse "a K3 read needs the pinned migration list (ARCHIVE_MIGRATION_LIST)"; return 2; }
+  want=$(sha256sum "$ARCHIVE_MIGRATION_LIST" | cut -d' ' -f1)
+  for st in "$1"/units/*/*/stats.json; do
+    [[ -f "$st" ]] || continue
+    got=$(sed -n 's/.*"migration_list_sha256": *"\([^"]*\)".*/\1/p' "$st" | head -1)
+    [[ "$got" == "$want" ]] ||
+      { ag_refuse "unit $(dirname "$st") records migration list sha256 '${got:-none}', not the pinned list's $want"; return 2; }
+  done
+  return 0
+}
+
 # ---- the private store (DATA_REPO, zeroed-data) ----
 ag_store() { GH_TOKEN="${DATA_STORE_TOKEN:-}" "$ag_gh" "$@"; }
 # ag_store_ok: the store is named, is not this repository, answers, is private, and
@@ -270,6 +287,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
     local) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh local DAY" >&2; exit 2; }; ag_local "$2"; exit $? ;;
     entry) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh entry DAY" >&2; exit 2; }; ag_entry "$2"; exit $? ;;
+    k3list) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh k3list OUT" >&2; exit 2; }; ag_k3list "$2"; exit $? ;;
     recorded) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh recorded OUT" >&2; exit 2; }; ag_recorded "$2"; exit $? ;;
     full) [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh full DAY" >&2; exit 2; }; ag_full "$2"; exit $? ;;
     attest)

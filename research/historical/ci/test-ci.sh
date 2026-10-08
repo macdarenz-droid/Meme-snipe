@@ -299,7 +299,7 @@ scan() {
   : > "$T/calls.log"
   local d=${SDAY:-2026-07-22}
   [[ -n "${NOPASS:-}" ]] || gpass "$d" "${PASSRET:-K2}"
-  ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} ARCHIVE_GUARD_DIR="$GP" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "${SFX:-$FX}/scan-day.sh" "$d" "$1" "${MBPS:-40}" "${2:-300}" > "$T/out.txt" 2>&1
+  ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} ARCHIVE_GUARD_DIR="$GP" SCANNER_REVISION=${SREV-r1} ARCHIVE_MIGRATION_LIST="${SLIST:-}" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "${SFX:-$FX}/scan-day.sh" "$d" "$1" "${MBPS:-40}" "${2:-300}" > "$T/out.txt" 2>&1
 }
 calls() { tr '\n' ' ' < "$T/calls.log"; }
 o="$T/scan1"; mkdir -p "$o"; now=$(date +%s); echo "$((now - 5)) 600 $((now + 120))" > "$o/archive-429.state"
@@ -386,15 +386,19 @@ for i in $(seq 1 995); do : > "$ds/days/2026-09-20/f$i"; done
 echo '{}' > "$ds/manifest.json"; : > "$ds/qa/report.md"; : > "$ds/qa/report.json"; : > "$ds/qa/parity.json"
 out=$( ( build_release "$ds" "$T/bigrel" ) 2>&1 ) && no "990-asset guard passed" || { [[ "$out" == *"990"* ]] && ok "more than 990 assets refused" || no "asset guard: $out"; }
 
-# ---- scan-day.sh: cached units of another scanner revision are rescanned ----
-o="$T/scanrev"; mkdir -p "$o/units/1047/1-2" "$o/units/1047/3-4" "$o/units/1047/5-6"
-printf '{\n  "scanner_revision": "rOld"\n}\n' > "$o/units/1047/1-2/stats.json"
-printf '{\n  "scanner_revision": "rNew"\n}\n' > "$o/units/1047/3-4/stats.json"
-mkdir -p "$o/units/1047/7-8"; printf '{\n  "blocks": 3\n}\n' > "$o/units/1047/7-8/stats.json"
-: > "$T/calls.log"; gpass 2026-07-22 K2
-ARCHIVE_GO="$T/archive10.go" ARCHIVE_GUARD_DIR="$GP" SCANNER_REVISION=rNew PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$FX/scan-day.sh" 2026-07-22 "$o" 40 300 > "$T/out.txt" 2>&1
-[[ ! -d "$o/units/1047/1-2" && ! -d "$o/units/1047/7-8" && -d "$o/units/1047/3-4" && -d "$o/units/1047/5-6" ]] && grep -q "rescanning it" "$T/summary.md" &&
-  ok "scan-day: cached units of another revision or with no scanner_revision are dropped and rescanned, the rest kept" || no "scan-day revision drop"
+# ---- scan-day.sh: OF-3 (P2) a cached unit of another scanner revision is refused, never read again ----
+bad=""
+for st in '{"scanner_revision": "rOld"}' '{"blocks": 3}'; do
+  o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o/units/1047/1-2" "$o/units/1047/3-4"
+  printf '{\n  "scanner_revision": "rNew"\n}\n' > "$o/units/1047/3-4/stats.json"; echo "$st" > "$o/units/1047/1-2/stats.json"
+  rc=0; SREV=rNew scan "$o" || rc=$?
+  [[ $rc == 2 && ! -s "$T/calls.log" && -d "$o/units/1047/1-2" && -d "$o/units/1047/3-4" ]] && grep -q "a unit of another revision is never read again" "$T/out.txt" || bad+=" [$st]:$rc"
+done
+o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o"; rc=0; SREV= scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "SCANNER_REVISION is not set" "$T/out.txt" || bad+=" [no-rev]:$rc"
+o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o/units/1047/3-4"; printf '{\n  "scanner_revision": "rNew",\n  "retention": "K2"\n}\n' > "$o/units/1047/3-4/stats.json"
+SREV=rNew scan "$o" && [[ $(calls) == "scan " ]] || bad+=" [same-rev]"
+[[ -z "$bad" ]] && ok "OF-3: scan-day refuses (exit 2, no scanner call, nothing deleted) a cached unit of another revision or with none, and a run without SCANNER_REVISION; units of the frozen revision resume" || no "OF-3 revision refusal:$bad"
 
 # ---- publish-day.sh: one day, one create call, existing releases checked, never edited ----
 export GH_BIN="$T/bin/gh"
@@ -1531,6 +1535,8 @@ FXG=$T/fxr5/research/historical/ci guard full 2026-07-22 || bad+=" rearmed"
 [[ -z "$bad" ]] && ok "OF-2: a manual dispatch after 3 failures (2 blocked batches and a non-served check) is refused at the plan job and gets no guard pass; an unreadable history refuses; a later ARCHIVE_REARM_AT lets it through" || no "OF-2 3-failure stop at entry points:$bad"
 bad=""
 gdreset
+# A pinned PM-01 migration list line (OF-3), for K3 reads.
+attr_list_line="8rjKP44zZewzNGx6DyF3Ck1Ub6y45pXbures2Dx3pump 100 200"
 # The guard pass: fresh, for this day.
 o="$T/of2p"; rm -rf "$o"; mkdir -p "$o" "$GP"
 echo "2026-07-22 K2 $(( $(date -u +%s) - 1801 ))" > "$GP/2026-07-22"
@@ -1544,12 +1550,13 @@ rm -rf "$GP"; guard attest 2026-07-22 "$GP" && read -r d r t < "$GP/2026-07-22" 
 bad=""
 # Retention passed to the scanner and the rescan: the day's recorded one wins.
 sd 2026-07-22 >/dev/null; [[ " $(cat "$T/scan.args") " == *" -retention K2 "* ]] || bad+=" fresh-K2:$(cat "$T/scan.args")"
-o="$T/of2k"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; echo '{"retention": "K2"}' > "$o/units/1046/1-2/stats.json"
+o="$T/of2k"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; echo '{"scanner_revision": "r1", "retention": "K2"}' > "$o/units/1046/1-2/stats.json"
 SDAY=2026-07-22 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || bad+=" reread-rc"
 [[ " $(cat "$T/scan.args") " == *" -retention K2 "* ]] || bad+=" reread:$(cat "$T/scan.args")"
 o="$T/of2f"; rm -rf "$o"; mkdir -p "$o"
-SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" && [[ " $(cat "$T/scan.args") " == *" -retention K3 "* ]] || bad+=" fresh-K3"
-o="$T/of2m"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$o/units/1046/3-4"; echo '{"retention": "K2"}' > "$o/units/1046/1-2/stats.json"; echo '{"retention": "K3"}' > "$o/units/1046/3-4/stats.json"
+echo "$attr_list_line" > "$T/k3list.txt"
+SLIST=$T/k3list.txt SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" && [[ " $(cat "$T/scan.args") " == *" -retention K3 -migration-list $T/k3list.txt "* ]] || bad+=" fresh-K3"
+o="$T/of2m"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$o/units/1046/3-4"; echo '{"scanner_revision": "r1", "retention": "K2"}' > "$o/units/1046/1-2/stats.json"; echo '{"scanner_revision": "r1", "retention": "K3"}' > "$o/units/1046/3-4/stats.json"
 rc=0; SDAY=2026-07-22 SFX=$T/fxk3/research/historical/ci scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "record retention 'K2 K3 '" "$T/out.txt" || bad+=" mixed:$rc"
 [[ -z "$bad" ]] && ok "OF-2: scan-day passes ARCHIVE_RETENTION's day value to the scanner (-retention K2 for 07-22, K3 for 07-24 under K3); a unit re-read on a K2 day uses K2 after ARCHIVE_RETENTION became K3; units mixing K2 and K3 are refused" || no "OF-2 scan retention:$bad"
@@ -1616,6 +1623,88 @@ bad=""
   ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && -z "$ARCHIVE_ARM" && -z "$ARCHIVE_RETENTION" ]] &&
   ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ -z "$(ag_pinned_id)" ]] ) &&
   ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (31 days, 09-21 stays in HELIUS_DAYS only), ARCHIVE_ARM and ARCHIVE_RETENTION empty, ARCHIVE_REARM_AT a valid UTC time, no B10-PULL row pinned yet" || no "OF-2 repository values"
+
+# ---- OF-3: K3 reads take the pinned migration list; the K2 release keeps the rescan hashes and the per-unit log; the trim ----
+gdreset; bad=""
+echo "$attr_list_line" > "$T/k3list.txt"; k3sha=$(sha256sum "$T/k3list.txt" | cut -d' ' -f1)
+o="$T/of3s"; rm -rf "$o"; mkdir -p "$o"; rc=0
+SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "a K3 read needs the pinned migration list" "$T/out.txt" || bad+=" no-list:$rc"
+rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; printf '{"scanner_revision": "r1", "retention": "K3", "migration_list_sha256": "%s"}\n' "$(printf 'x' | sha256sum | cut -d' ' -f1)" > "$o/units/1046/1-2/stats.json"
+rc=0; SLIST=$T/k3list.txt SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "records migration list sha256" "$T/out.txt" || bad+=" other-sha:$rc"
+printf '{"scanner_revision": "r1", "retention": "K3", "migration_list_sha256": "%s"}\n' "$k3sha" > "$o/units/1046/1-2/stats.json"
+SLIST=$T/k3list.txt SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" && [[ " $(cat "$T/scan.args") " == *" -retention K3 -migration-list $T/k3list.txt "* ]] || bad+=" same-sha"
+[[ -z "$bad" ]] && ok "OF-3: a K3 scan without the pinned migration list, or over units recording another list sha256, is refused before any scanner call; with the same list it passes -migration-list" || no "OF-3 K3 scan list:$bad"
+bad=""
+# check-day: a K3 day's rescan takes the units' list; another list is refused.
+cdk3() { rm -rf "$T/cd-k3"; mkdir -p "$T/cd-k3/units/1046/1-2" "$T/cd-ds"; echo x > "$T/cd-k3/units/1046/1-2/blocks.csv.zst"
+  printf '{"scanner_revision": "r1", "retention": "K3", "migration_list_sha256": "%s"}\n' "$1" > "$T/cd-k3/units/1046/1-2/stats.json"
+  : > "$T/zs.args"; : > "$T/summary.md"; gpass 2026-07-24 K3
+  ARCHIVE_GO="$T/archive10.go" ARCHIVE_GUARD_DIR="$GP" ARCHIVE_MIGRATION_LIST="${2:-}" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
+    bash "$T/fxk3/research/historical/ci/check-day.sh" 2026-07-24 "$T/cd-k3" "$T/cd-assets-k3" > "$T/out.txt" 2>&1; }
+cdk3 "$k3sha" "$T/k3list.txt" || true
+grep -q "^unit .* -retention K3 -migration-list $T/k3list.txt " "$T/zs.args" || bad+=" K3-rescan:$(grep '^unit' "$T/zs.args")"
+rc=0; cdk3 "$k3sha" || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] || bad+=" no-list:$rc"
+rc=0; cdk3 "$(printf 'x' | sha256sum | cut -d' ' -f1)" "$T/k3list.txt" || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] || bad+=" other-sha:$rc"
+[[ -z "$bad" ]] && ok "OF-3: check-day's rescan of a K3 day runs with -retention K3 and the pinned list; without it, or with units recording another list sha256, it is refused before any call" || no "OF-3 check-day K3:$bad"
+bad=""
+# A passing determinism rescan: the assets keep the rescan unit's hashes (equal to the
+# day's unit) and the per-unit log; package-day puts both in SHA256SUMS-DAY.
+C3="$T/cd3bin"; mkdir -p "$C3"; cp "$C/node" "$C3/node"
+cat > "$C3/zeroed-scan" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$T/zs.args"
+case $1 in
+  finalize) while (( $# )); do [[ "$1" == -dataset ]] && ds=$2; shift; done; mkdir -p "$ds/qa"; echo '{}' > "$ds/manifest.json" ;;
+  unit) while (( $# )); do case $1 in -out) o=$2 ;; -epoch) e=$2 ;; -from-slot) f=$2 ;; -to-slot) t=$2 ;; -state) s=$2 ;; esac; shift; done
+        mkdir -p "$o/units/$e/$f-$t"; cp "$s/units/$e/$f-$t/"*.zst "$o/units/$e/$f-$t/" ;;
+  unitlog) echo "1046/1-2 r1 K2 -" ;;
+esac
+STUB
+chmod +x "$C3/zeroed-scan"
+rm -rf "$T/cd-ok" "$T/cd-assets-ok"; mkdir -p "$T/cd-ok/units/1046/1-2" "$T/cd-ds"; echo x > "$T/cd-ok/units/1046/1-2/blocks.csv.zst"; echo y > "$T/cd-ok/units/1046/1-2/raw_canonical.jsonl.zst"
+echo '{"scanner_revision": "r1", "retention": "K2"}' > "$T/cd-ok/units/1046/1-2/stats.json"; : > "$T/zs.args"; gpass 2026-07-22 K2
+rc=0; ARCHIVE_GO="$T/archive10.go" ARCHIVE_GUARD_DIR="$GP" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C3:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
+  bash "$FX/check-day.sh" 2026-07-22 "$T/cd-ok" "$T/cd-assets-ok" > "$T/out.txt" 2>&1 || rc=$?
+want=$(cd "$T/cd-ok/units" && sha256sum -- 1046/1-2/*.zst)
+[[ $rc == 0 && "$(cat "$T/cd-assets-ok/rescan-2026-07-22.sha256" 2>/dev/null)" == "$want" && "$(cat "$T/cd-assets-ok/units-2026-07-22.log" 2>/dev/null)" == "1046/1-2 r1 K2 -" ]] ||
+  bad+=" check-day:$rc:$(tail -3 "$T/out.txt")"
+for f in qa-2026-07-22.md qa-2026-07-22.json parity-2026-07-22.json manifest-2026-07-22.json; do [[ -f "$T/cd-assets-ok/$f" ]] || echo x > "$T/cd-assets-ok/$f"; done
+FAKE_AVAIL=999000000000 GITHUB_STEP_SUMMARY="$T/summary.md" bash "$FX/package-day.sh" 2026-07-22 "$T/cd-ok" "$T/cd-assets-ok" > "$T/out.txt" 2>&1 || bad+=" package"
+grep -q "  units-2026-07-22.log$" "$T/cd-assets-ok/SHA256SUMS-2026-07-22" && grep -q "  rescan-2026-07-22.sha256$" "$T/cd-assets-ok/SHA256SUMS-2026-07-22" || bad+=" sums"
+[[ -z "$bad" ]] && ok "OF-3: after a passing determinism rescan the K2 release's assets list the rescan unit's file hashes (equal to the day's unit) and the per-unit log, and SHA256SUMS-DAY covers both" || no "OF-3 rescan hashes:$bad"
+bad=""
+# trim-day.sh: no network tool is ever called; every unit trimmed with the list; the
+# trimmed units checked against the expected per-unit log; finalize, QA and parity rerun.
+TB="$T/trimbin"; mkdir -p "$TB"; cp "$C/node" "$TB/node"
+for x in gh curl wget; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$T/net.log"; exit 1\n' "$x" > "$TB/$x"; done
+cat > "$TB/zeroed-scan" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$T/trim.args"
+case $1 in
+  trim) while (( $# )); do case $1 in -out) o=$2 ;; esac; shift; done; mkdir -p "$o"; echo z > "$o/blocks.csv.zst" ;;
+  unitlog) [[ -n "${TRIM_LOG_FAIL:-}" ]] && exit 2; exit 0 ;;
+  finalize) while (( $# )); do [[ "$1" == -dataset ]] && ds=$2; shift; done; mkdir -p "$ds/qa"; echo '{}' > "$ds/manifest.json" ;;
+esac
+STUB
+chmod +x "$TB"/*
+mkk2() { rm -rf "$T/tk2" "$T/tk3" "$T/tassets" "$T/trim.args" "$T/net.log"; mkdir -p "$T/tk2/units/1046/1-2" "$T/tk2/units/1046/3-4" "$T/cd-ds"
+  for u in 1-2 3-4; do echo '{"scanner_revision": "rF", "retention": "K2"}' > "$T/tk2/units/1046/$u/stats.json"; done; }
+td() { FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$TB:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" "$@" bash "$here/trim-day.sh" 2026-07-22 "$T/tk2" "$T/k3list.txt" "$T/tk3" "$T/tassets" > "$T/out.txt" 2>&1; }
+mkk2; rc=0; td || rc=$?
+[[ $rc == 0 && $(grep -c "^trim -in $T/tk2/units/1046/[13]-[24] -out $T/tk3/units/1046/[13]-[24] -migration-list $T/k3list.txt$" "$T/trim.args") == 2 ]] || bad+=" trims:$rc:$(tail -2 "$T/out.txt")"
+grep -q "^unitlog -out $T/tk3 -check " "$T/trim.args" && grep -q "^finalize -out $T/tk3 " "$T/trim.args" || bad+=" check-finalize"
+[[ "$(cat "$T/tassets/units-2026-07-22.log" 2>/dev/null)" == "$(printf '1046/1-2 rF K3 %s\n1046/3-4 rF K3 %s' "$k3sha" "$k3sha")" ]] || bad+=" log"
+for f in qa-2026-07-22.md parity-2026-07-22.json manifest-2026-07-22.json; do [[ -f "$T/tassets/$f" ]] || bad+=" no-$f"; done
+[[ ! -e "$T/net.log" ]] || bad+=" network:$(cat "$T/net.log")"
+mkk2; rc=0; td TRIM_LOG_FAIL=1 || rc=$?; [[ $rc != 0 ]] && ! grep -q "^finalize" "$T/trim.args" || bad+=" log-mismatch:$rc"
+mkk2; mkdir -p "$T/tk3/units/1046/1-2"; rc=0; td || rc=$?; [[ $rc == 2 && ! -e "$T/trim.args" ]] || bad+=" existing:$rc"
+mkk2; rm -rf "$T/tk2/units"; rc=0; td || rc=$?; [[ $rc == 2 ]] || bad+=" no-units:$rc"
+mkk2; rc=0; FAKE_AVAIL=1 DATASET_PARENT="$T/cd-ds" PATH="$TB:$PATH" bash "$here/trim-day.sh" 2026-07-22 "$T/tk2" "$T/nolist" "$T/tk3" "$T/tassets" > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 2 && ! -e "$T/trim.args" ]] || bad+=" no-list:$rc"
+[[ -z "$bad" ]] && ok "OF-3 trim-day: every K2 unit trimmed with the pinned list, the trimmed units checked against the expected per-unit log (revision, K3, list sha256) before finalize, strict QA, parity and volume rerun; the log goes into the assets; no gh, curl or wget call; refused with no list, no K2 units or K3 units already there; a log mismatch stops it" || no "OF-3 trim-day:$bad"
+bad=""
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

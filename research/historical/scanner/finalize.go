@@ -363,7 +363,7 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 		}
 	}
 	rateCap := minRate
-	if retention == retentionPolicy {
+	if retention == retentionPolicy || retention == "K2" || retention == "K3" { // K2 and K3 keep the same rows (OF-3)
 		rateCap = 1
 	}
 	if launchRate > rateCap || gradRate > rateCap || poolRate > minRate {
@@ -1123,3 +1123,230 @@ func fileSum(p string) (sumInfo, error) {
 }
 
 var _ = bytes.Equal
+
+// ---- OF-3 ----
+
+// OF-3 trim (research/z-h-estimate/OLD-FAITHFUL.md §3): a K2 unit trimmed to K3 with the
+// pinned PM-01 migration list, with no network access. Every data file is copied byte
+// for byte except raw_canonical.jsonl.zst, whose records are kept by k3Keep, the same
+// test a K3 scan applies, and written through the scanner's own writer (newCSV), so a
+// trimmed unit's data files equal a K3 scan of the same unit byte for byte. stats.json
+// records retention K3, the list's sha256 and the kept count.
+//
+// The per-unit log (unitlog) is one line a unit, "EPOCH/FROM-TO REVISION RETENTION
+// LIST_SHA256" ("-" for no list), sorted; -check refuses a directory whose units do not
+// match a given log line for line.
+
+// TrimUnit writes the K3 trim of the K2 unit in to out (which must not exist).
+func TrimUnit(in, out, listPath string) error {
+	if in == "" || out == "" || listPath == "" {
+		return fmt.Errorf("trim needs -in, -out and -migration-list")
+	}
+	list, sum, err := loadMigrationList(listPath)
+	if err != nil {
+		return err
+	}
+	st, err := readStats(in)
+	if err != nil {
+		return err
+	}
+	if st.Retention != "K2" {
+		return fmt.Errorf("%s has retention %q; only a K2 unit is trimmed", in, st.Retention)
+	}
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("%s exists; a trimmed unit is written once", out)
+	}
+	tmp := out + ".tmp"
+	os.RemoveAll(tmp)
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return err
+	}
+	ents, err := os.ReadDir(in)
+	if err != nil {
+		return err
+	}
+	kept := int64(0)
+	for _, e := range ents {
+		name := e.Name()
+		if !e.Type().IsRegular() {
+			return fmt.Errorf("%s/%s is not a regular file", in, name)
+		}
+		switch name {
+		case "stats.json":
+			continue
+		case "raw_canonical.jsonl.zst":
+			o, err := newCSV(filepath.Join(tmp, name), nil)
+			if err != nil {
+				return err
+			}
+			err = readZstLines(filepath.Join(in, name), func(l []byte) error {
+				var r struct {
+					BlockTime int64    `json:"blockTime"`
+					Mints     []string `json:"mints"`
+				}
+				if err := json.Unmarshal(l, &r); err != nil {
+					return err
+				}
+				if k3Keep(list, r.Mints, r.BlockTime) {
+					o.line(string(l))
+					kept++
+				}
+				return nil
+			})
+			if cerr := o.close(); err == nil {
+				err = cerr
+			}
+			if err != nil {
+				return fmt.Errorf("%s/%s: %w", in, name, err)
+			}
+		default:
+			if err := copyFile(filepath.Join(in, name), filepath.Join(tmp, name)); err != nil {
+				return err
+			}
+		}
+	}
+	st.Retention, st.MigrationListSha256, st.RawCanonicalRecords = "K3", sum, kept
+	sb, _ := json.MarshalIndent(st, "", "  ")
+	if err := os.WriteFile(filepath.Join(tmp, "stats.json"), sb, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, out)
+}
+
+func readStats(dir string) (*UnitStats, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "stats.json"))
+	if err != nil {
+		return nil, err
+	}
+	st := &UnitStats{}
+	if err := json.Unmarshal(b, st); err != nil {
+		return nil, fmt.Errorf("%s/stats.json: %w", dir, err)
+	}
+	return st, nil
+}
+
+func copyFile(src, dst string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	g, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(g, f); err != nil {
+		g.Close()
+		return err
+	}
+	return g.Close()
+}
+
+// unitLog returns the per-unit log of the finished units under out/units.
+func unitLog(out string) ([]string, error) {
+	dirs, err := filepath.Glob(filepath.Join(out, "units", "*", "*", "stats.json"))
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, p := range dirs {
+		d := filepath.Dir(p)
+		if strings.HasSuffix(d, ".tmp") {
+			continue
+		}
+		st, err := readStats(d)
+		if err != nil {
+			return nil, err
+		}
+		sha := st.MigrationListSha256
+		if sha == "" {
+			sha = "-"
+		}
+		lines = append(lines, fmt.Sprintf("%s/%s %s %s %s", filepath.Base(filepath.Dir(d)), filepath.Base(d), st.ScannerRevision, st.Retention, sha))
+	}
+	sort.Strings(lines)
+	return lines, nil
+}
+
+// checkUnitLog refuses when the units under out differ from the log in any line: a
+// unit missing or extra, or another revision, retention or migration list sha256.
+func checkUnitLog(out, logPath string) error {
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	want := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	have, err := unitLog(out)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < len(want) || i < len(have); i++ {
+		w, h := "", ""
+		if i < len(want) {
+			w = want[i]
+		}
+		if i < len(have) {
+			h = have[i]
+		}
+		if w != h {
+			return fmt.Errorf("unit log mismatch: the log says %q, the units say %q", w, h)
+		}
+	}
+	return nil
+}
+
+// pmHorizonS is PM-01's holding horizon after a migration: entries up to 120 min after
+// the verified CompletePumpAmmMigrationEvent (docs/blueprint/SPEC-A.md PM-01 logic) plus
+// the 120 min time stop (docs/blueprint/ARCH.md, exits table), so 240 min.
+const pmHorizonS = 240 * 60
+
+// migrationList builds the pinned PM-01 migration list from the finished units under
+// each dir: every CompletePumpAmmMigrationEvent's mint, from its block time to block time
+// + horizonS, one line a mint (its first migration), sorted by mint.
+func migrationList(dirs []string, horizonS int64) ([]string, error) {
+	first := map[string]int64{}
+	for _, dir := range dirs {
+		paths, err := filepath.Glob(filepath.Join(dir, "units", "*", "*", "events.jsonl.zst"))
+		if err != nil {
+			return nil, err
+		}
+		if len(paths) == 0 {
+			return nil, fmt.Errorf("%s holds no units", dir)
+		}
+		for _, p := range paths {
+			if strings.HasSuffix(filepath.Dir(p), ".tmp") {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(p), "stats.json")); err != nil {
+				return nil, fmt.Errorf("%s is not a finished unit", filepath.Dir(p))
+			}
+			err := readZstLines(p, func(l []byte) error {
+				var e struct {
+					BlockTime int64             `json:"block_time"`
+					Program   string            `json:"program"`
+					Event     string            `json:"event"`
+					Fields    map[string]string `json:"fields"`
+				}
+				if err := json.Unmarshal(l, &e); err != nil {
+					return err
+				}
+				if e.Program != "pump" || e.Event != "CompletePumpAmmMigrationEvent" || e.Fields["mint"] == "" || e.BlockTime <= 0 {
+					return nil
+				}
+				if t, ok := first[e.Fields["mint"]]; !ok || e.BlockTime < t {
+					first[e.Fields["mint"]] = e.BlockTime
+				}
+				return nil
+			})
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", p, err)
+			}
+		}
+	}
+	lines := make([]string, 0, len(first))
+	for m, t := range first {
+		lines = append(lines, fmt.Sprintf("%s %d %d", m, t, t+horizonS))
+	}
+	sort.Strings(lines)
+	return lines, nil
+}

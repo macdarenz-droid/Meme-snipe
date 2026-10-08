@@ -30,6 +30,11 @@ if [ "${SOURCE:-archive}" != helius ]; then
   # ARCHIVE_RETENTION.
   rec=$("$here/archive-guard.sh" recorded "$out") || exit 2
   [ -n "$rec" ] || { echo "refused: the units of $day record no retention" | tee -a "$summary"; exit 2; }
+  list_args=()
+  if [ "$rec" = K3 ]; then
+    "$here/archive-guard.sh" k3list "$out" || exit 2
+    list_args=(-migration-list "$ARCHIVE_MIGRATION_LIST")
+  fi
 fi
 # phase NAME CMD...: runs CMD and logs its duration to the summary (sizes the 45 min
 # QA-phase budget in data-scan.yml from real days).
@@ -83,7 +88,7 @@ if [ "${SOURCE:-archive}" = helius ]; then
     -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" || rc=$?
   "$here/rpc-credits.sh" add "$out" "$again/rpc-usage.json"
 else
-  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -retention "$rec" -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" || rc=$?
+  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -retention "$rec" "${list_args[@]}" -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" || rc=$?
 fi
 if [ "$rc" -eq 75 ] && [ "${SOURCE:-archive}" = helius ]; then
   echo "RPC rate-limit back-off ran out during the determinism rescan: stopping resumably; the next run redoes QA" | tee -a "$summary"
@@ -105,4 +110,10 @@ for f in "$first"/*.zst; do
   if [ "$a" != "$b" ]; then echo "determinism check failed for $range/$(basename "$f")"; exit 1; fi
 done
 echo "determinism: unit $epoch/$range rescanned, every file identical" | tee -a "$summary"
+if [ "${SOURCE:-archive}" != helius ]; then
+  # OF-3: the release keeps the rescan unit's file hashes (equal to the day's unit, just
+  # checked) and the per-unit log (revision, retention, migration list sha256 a unit).
+  (cd "$again/units/$epoch/$range" && sha256sum -- *.zst | sed "s#  #  $epoch/$range/#") > "$assets/rescan-$day.sha256"
+  zeroed-scan unitlog -out "$out" > "$assets/units-$day.log"
+fi
 rm -rf "$ds" "$again"

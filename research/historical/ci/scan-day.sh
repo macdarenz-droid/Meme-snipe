@@ -107,25 +107,32 @@ backoff() {
   echo "$(date -u +%FT%TZ) archive back-off: waiting $(( (wait_s + 59) / 60 )) min, then resuming the same lane" | tee -a "$summary"
   sleep "$wait_s"
 }
-# Units restored from the cache that another scanner revision wrote are rescanned, so a
-# day never mixes revisions (finalize refuses that). SCANNER_REVISION is the revision
-# the workflow built into zeroed-scan; unset (local tests), nothing is dropped.
-if [ -n "${SCANNER_REVISION:-}" ]; then
-  for st in "$out"/units/*/*/stats.json; do
-    [ -f "$st" ] || continue
-    rev=$(sed -n 's/.*"scanner_revision": *"\([^"]*\)".*/\1/p' "$st" | head -1)
-    if [ "$rev" != "$SCANNER_REVISION" ]; then
-      echo "unit $(dirname "$st") was scanned by revision '$rev', not '$SCANNER_REVISION': rescanning it" | tee -a "$summary"
-      rm -rf "$(dirname "$st")"
-    fi
-  done
-fi
+# OF-3 (P2): the scanner revision is frozen for the batches. A unit restored from the
+# cache that another revision wrote is refused, never read again: exit 2 before any
+# request (a day never mixes revisions, and finalize refuses that too). The workflow
+# always sets SCANNER_REVISION (the revision built into zeroed-scan); it is required.
+[ -n "${SCANNER_REVISION:-}" ] || { echo "refused: SCANNER_REVISION is not set" | tee -a "$summary" >&2; exit 2; }
+for st in "$out"/units/*/*/stats.json; do
+  [ -f "$st" ] || continue
+  rev=$(sed -n 's/.*"scanner_revision": *"\([^"]*\)".*/\1/p' "$st" | head -1)
+  if [ "$rev" != "$SCANNER_REVISION" ]; then
+    echo "refused: unit $(dirname "$st") was scanned by revision '$rev', not '$SCANNER_REVISION'; a unit of another revision is never read again" | tee -a "$summary" >&2
+    exit 2
+  fi
+done
 # The retention passed to the scanner: the day's recorded one when units of it are
 # already kept (a unit read again never changes its day's retention), else the one
 # archive-limits.conf gives the day.
 ret=$("$(dirname "$0")/archive-guard.sh" recorded "$out") || exit 2
 ret=${ret:-$cfg_ret}
 echo "retention for $day: $ret" | tee -a "$summary"
+# K3 reads with the pinned PM-01 migration list (ARCHIVE_MIGRATION_LIST); units already
+# kept must record the same list's sha256.
+list_args=()
+if [ "$ret" = K3 ]; then
+  "$(dirname "$0")/archive-guard.sh" k3list "$out" || exit 2
+  list_args=(-migration-list "$ARCHIVE_MIGRATION_LIST")
+fi
 # A back-off persisted by an earlier run (restored from the cache) is slept out first.
 backoff 0
 while true; do
@@ -137,7 +144,7 @@ while true; do
   # Interrupted (SIGINT) at the budget's end; it finishes nothing new after that and
   # exits within 2 min, else it is killed (an unfinished unit is never renamed into place).
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
-    -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop
+    -sample 0.05 -retention "$ret" "${list_args[@]}" -max-mbps "$mbps" -on-429 stop
   rc=$?
   if [ $(( deadline - $(date +%s) )) -le 0 ] && [ $rc -ne 0 ] && [ $rc -ne 75 ]; then
     echo "time budget reached while scanning (scanner exit $rc); progress kept for the next run" | tee -a "$summary"
