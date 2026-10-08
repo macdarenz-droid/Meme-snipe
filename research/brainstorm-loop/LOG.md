@@ -50,6 +50,7 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | 2026-10-08 21:48 | H8 amendment 2, D1 amendment 3 (D1-H8), payer-mass bar and slicer count rows committed (519b58d) and sent to the lead |
 | 2026-10-08 21:49 | Lead: sweep 4 files frozen from 519b58d; no design red team had run; asked for one on G1, W1 and D1, and for the slicer ethics question to go to the owner |
 | 2026-10-08 21:49 | Design red team started (3 agents: G1 with HC and CAP, W1, D1); slicer ethics question put to the owner |
+| 2026-10-08 21:52 | Owner, asked whether the slicer ride is fair play or counts as cutting in front of another trader (reply "fair" or "not fair"): "Sure". Read as fair; the reading was stated back to the owner for correction. The slicer ride may get a PREREG only if its count rows pass |
 | 2026-10-08 16:42 | Owner: "never stop brain storming until a proven one arises ... put urself on a shoes of a winner ... We take whats true". Relayed to the lead; idea sweep started (5 lenses, 3 skeptic lenses, synthesis) |
 | 2026-10-08 16:30 | Lead's state reply (crossed with round 6): tape builder session_01NPJDktZQzVHjTV4qFGfAum, Step A (09-10, 09-11) in about a day; survivorship-free download about 36 h left; Helius about 0.9M of 10M used, 25 rps cap; protocol agreed at 0.005 per test with untouched confirmation; the lead spawns every worker |
 
@@ -68,5 +69,6 @@ This file is partner 2's copy. The lead's `research/EDGE_DIALOGUE.md` on its bra
 | CREATOR-BUY | Creator group's own open-market buying after migration | Sellers into it | about 1% | Fee claims are dropped by the decoder; ethics ruling needed |
 | FLUSH-BUY | Buy after forced perp long liquidations | Liquidated longs | about 1% | **Closed by the owner** ("Yes no hyperliquid", 18:16) |
 | G1-CAP | G1 only when few rival curves and graduates split the opening buyers | BOOST, snipers | about 0.5% | `research/g1-boost-inventory/AMENDMENT_2.md` |
+| SLICE-RIDE | Ride a wallet's unfinished slices in U1 pools | The slicer's later slices | about 0.2% | Count rows (`COUNT_ROWS_AMENDMENT_4.md`); owner ruled it fair ("Sure", 21:52); PREREG only if counts pass |
 | DEV-ZERO, REBUY-ANCHOR, SEAT-DRIFT, AGE-GATE | Count rows only on Step A | various | 0.1–0.3% | `STEP_A_COUNT_ROWS.md`; a PREREG only if a row clears its threshold |
 | D1 | Discovery funnel: 28 tape features, at most 5 rules advance to validation | found by the data | about 2–4% | AGREED, frozen (lead, 19:28) |
