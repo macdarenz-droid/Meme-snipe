@@ -674,7 +674,10 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     expect(rc).toMatch(/^Requires=srv-zeroed_pull-md\.mount zeroed-receipts-fs\.service$/m);
     expect(md).toMatch(/^After=zeroed-receipts-fs\.service$/m);
     const script = read('ops/host/files/usr/local/lib/zeroed/receipts-fs');
-    expect(script).toContain('mkfs.ext4 -q -F -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"');
+    expect(script).toContain('fallocate -l "$SIZE" "$IMG.new"');
+    expect(script).not.toContain('truncate');
+    // nodiscard: mkfs would otherwise free the preallocated blocks again (measured: 131,072 -> 8,960 512-byte blocks).
+    expect(script).toContain('mkfs.ext4 -q -F -E nodiscard -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"');
     expect(script).toContain('mount -o loop,nodev,nosuid,noexec "$IMG" "$MNT"');
     expect(script).toMatch(/^IMG_DIR=\/var\/lib\/zeroed-receipts$/m);
     // mkfs.ext4 and e2fsck come from e2fsprogs, installed like every other tool the host scripts use.

@@ -3702,6 +3702,7 @@ Rulings in `docs/reviews/Z05.md` on `claude/supervisor-docs-2` at `d95eb80f`. Th
 
 - **The receipts sweep never recurses** (ruling 19). Files and links go with `unlink`, folders only with `rmdir`, anything else is reported as stuck. A swap between the check and the delete can only fail; it never reaches outside `receipts/`.
 - **`receipts/` is its own filesystem** (ruling 20). It is a root-only 64 MiB ext4 image with 1 KiB blocks and 32,768 inodes, loop-mounted at `/var/lib/zeroed-md/receipts` by `zeroed-receipts-fs.service`.
+  - The image is preallocated (ruling 26): `fallocate`, and `mkfs.ext4 -E nodiscard`, because a default mkfs discards and frees the blocks again (measured: 131,072 to 8,960 512-byte blocks). So it takes exactly 64 MiB of the server's disk, counted in the disk budget, and can never fail later for lack of space.
   - Measured: 32,757 receipts fit, then every write fails with ENOSPC. That fails closed: a segment with no receipt is only kept longer.
   - At the recorder's 30-day retention this is room for about 45 streams an hour. The stream count is UNVERIFIED.
   - A receipt's file name is bound to its segment (sha256 of the segment path), so there is one receipt per segment. A copy under any other name is deleted.
@@ -3712,5 +3713,6 @@ Rulings in `docs/reviews/Z05.md` on `claude/supervisor-docs-2` at `d95eb80f`. Th
   - Card notes (ruling 25, no code now):
     - The sentinel's user and unit (B-M30-02) do not exist on the host yet. Its unit must run with group `zeroed-sentinel`.
     - M14 must create the database and its `-wal` and `-shm` files as 0660, because the engine unit's `UMask=0077` would otherwise make them 0600.
+    - The sentinel opens `rpc-usage.db` and its `-wal` and `-shm` files only after an `lstat` check that each is a regular file, or with `O_NOFOLLOW` (ruling 27). The folder is group-writable, so a link planted there must never lead it to another file.
 - **SPEC fixes** (rulings 21–22). SPEC-A:1307 (day index path), SPEC-A:2513 (usage ledger), SPEC-B:2031 (no M24 backup step; `zeroed-backup` is the one owner) and SPEC-B:2584 (`/var/lib/zeroed` replaces `/var/lib/bot`; the usage folder added).
 - **Pull mounts are watched** (ruling 23). `zeroed-check` raises one alert while the receipts filesystem or either chroot bind is not active, and a CLEARED line after.

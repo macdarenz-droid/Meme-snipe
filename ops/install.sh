@@ -1743,7 +1743,8 @@ install_file /usr/local/lib/zeroed/receipts-fs 0755 <<'__ZEROED_FILE__'
 # PATHS-FIX ruling 20: the pull receipts live on their own small filesystem, so the pull account can never fill the
 # host's disk or run it out of inodes: a 64 MiB ext4 image with 1 KiB blocks and 32,768 inodes, loop-mounted at
 # /var/lib/zeroed-md/receipts. Measured: 32,757 receipt files fit, then every write fails with "No space left on
-# device" (fails closed: a segment without a receipt is only kept longer). At the recorder's 30-day retention that is
+# device" (fails closed: a segment without a receipt is only kept longer). The image is preallocated: it always
+# takes 64 MiB of the server's disk, counted in the disk budget. At the recorder's 30-day retention that is
 # room for about 45 streams an hour (the stream count is UNVERIFIED). The image is root-only and outside every bot path.
 # Run by zeroed-receipts-fs.service: "start" checks, makes (once) and mounts it; "stop" unmounts it.
 set -euo pipefail
@@ -1758,8 +1759,10 @@ case "${1:-}" in
     mountpoint -q "$MNT" && exit 0
     install -d -m 0700 -o root -g root "$IMG_DIR"
     if [ ! -s "$IMG" ]; then
-      truncate -s "$SIZE" "$IMG.new"
-      mkfs.ext4 -q -F -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"
+      # Ruling 26: the whole 64 MiB is allocated now (fallocate, and mkfs without discard, which would free it again),
+      # so the image always takes exactly its budgeted space and can never fail later for lack of disk.
+      fallocate -l "$SIZE" "$IMG.new"
+      mkfs.ext4 -q -F -E nodiscard -b 1024 -I 256 -N "$INODES" -m 0 -L zreceipts "$IMG.new"
       chmod 0600 "$IMG.new"
       mv -f "$IMG.new" "$IMG"
     fi
