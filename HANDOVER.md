@@ -135,6 +135,9 @@
 - **8 Oct 3:12 PM: docs branches.** Every push to `claude/supervisor-docs` restarts #298's CI (one concurrency group). The log now goes to `claude/supervisor-docs-2` until #298 merges at `d2ba7204` (reviewer PASS at `f0220a00`; the delta to `d2ba7204` is one review-log commit, records only). After the merge, `claude/supervisor-docs-2` merges the base and becomes the next docs PR.
   - #293: round 7 reviewer PASS at `5be4b143`; red team 2 MAJOR (T1 what-if vs re-validation; T2 fill sets); round 8 rulings 77–81 sent.
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
+- **8 Oct 4:45 PM:** **#302 Z0D-3 merged at `13cdf32a`** (4 doc lines; reviewed by the supervisor against each source; check and historical-data green). Builder archived. Docs only, so `e2e_commit` stays `106d14ec`. Open PRs need the new base in their next push.
+  - #296 OF-2 round 3 at `3b67e97d` (test-ci 205/0; 12 fail with the old guard files; label `deps-reviewed:319aef8ef8e73a15a7fa8d3ecb2e853f`); #214 `32fbf8d9`; #299 `835bd3e4` (label `deps-reviewed:8d2823050933d748305567e2fc390fd6`). OF-2 delta review and red team round 3 sent.
+  - #295 OPS-CLEAN round 5 rulings 18–21 sent (resumable rollback; switch waits on a due rollback; realign under the hold; NRestarts check).
 - **8 Oct 4:12 PM:**
   - **#293 STRATEGY-INTAKE merged at `6ad9a1e7`** (4:10 PM; 17 rounds; reviewer PASS and red team 0 MAJOR at `a6b33d16`; delta to `07d1825e` the base merge only; check and historical-data green). Researcher, reviewer and red team archived. Docs only, so `e2e_commit` stays `106d14ec`. Z02 and Z04 told to merge the latest base.
   - **Z0D-3 spec notes** (follow-up item 1 plus VF-08's Node note): docs builder `session_015s7mtjrmYzyv71RNoWsaGn` on Sonnet 5.5 (mechanical, sourced edits), branch `claude/z0d3-docs`.
