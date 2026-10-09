@@ -29,7 +29,7 @@ import shutil
 import tempfile
 import time
 import zlib
-from collections import Counter
+from collections import Counter, deque
 
 import numpy as np
 import pandas as pd
@@ -209,6 +209,32 @@ class LinkGraph:
         lo, hi = self.indptr[r], self.indptr[r + 1]
         return int(np.searchsorted(self.slot[lo:hi], slot, side="right"))
 
+    def _deg(self, r, slot) -> int:
+        lo, hi = self.indptr[r], self.indptr[r + 1]
+        return int(np.searchsorted(self.slot[lo:hi], slot, side="right"))
+
+    def creator_group(self, seeds, as_of_slot, hub_cap=R.HUB_CAP):
+        """rows.creator_group on node ranks: the same group (a breadth-first walk through non-hub nodes as of the
+        slot, seeds always in), without listing a hub's neighbours as text."""
+        seeds = {s for s in seeds if isinstance(s, str) and s}
+        group, seen, q = set(seeds), set(), deque()
+        for sd in seeds:
+            r = self._rank(sd)
+            if r >= 0:
+                seen.add(r)
+                q.append(r)
+        while q:
+            r = q.popleft()
+            lo, hi = self.indptr[r], self.indptr[r + 1]
+            k = int(np.searchsorted(self.slot[lo:hi], as_of_slot, side="right"))
+            for y in self.nbr[lo:lo + k].tolist():
+                if y in seen or self._deg(y, as_of_slot) > hub_cap:
+                    continue
+                seen.add(y)
+                group.add(self.vocab.word(y))
+                q.append(y)
+        return group
+
     def before(self, x, st):
         """TwoSidedAsOf._links: [(slot, neighbour)] with slot < st, in order."""
         r = self._rank(x)
@@ -284,6 +310,27 @@ class StreamTwoSided(R.TwoSidedAsOf):
         x = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
         self.tr = {m: g for m, g in x.groupby("mint", sort=False)}
         self._deg = {}
+
+    def labelled(self, mint, x, st) -> bool:
+        """TwoSidedAsOf.labelled, with the mint's trades filtered only when a cluster of 2-50 owners exists."""
+        g = self.tr.get(mint)
+        if g is None:
+            return False
+        sub = None
+        for cl in (self._capped(x, st), self._keyed(x, st)):
+            if cl is None or not (R.LABEL_MIN <= len(cl) <= R.LABEL_MAX):
+                continue
+            if sub is None:
+                sub = g[g["slot"].to_numpy() < st]
+            c = sub[sub["owner"].isin(cl)]
+            bs = np.sort(c.loc[c["is_buy"], "slot"].to_numpy())
+            ss = c.loc[~c["is_buy"], "slot"].to_numpy()
+            if not len(bs) or not len(ss):
+                continue
+            i = np.searchsorted(bs, ss - self.window, side="left")
+            if ((i < len(bs)) & (bs[np.minimum(i, len(bs) - 1)] <= ss + self.window)).any():
+                return True
+        return False
 
     def _links(self, n, st):
         return self.g.before(n, st)

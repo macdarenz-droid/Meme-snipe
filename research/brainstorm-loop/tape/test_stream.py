@@ -274,6 +274,11 @@ class StreamEquality(unittest.TestCase):
                 self.assertEqual(MS.w_group(tape, {o}, sl), st.w_graph.within({o}, sl))
         labels, _ = R.two_sided_clusters(tape)
         s = R.prepare(tape, labels)
+        sts = stream.StreamTwoSided(st.graph, tape.swaps)
+        x = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
+        for mint, owner in sorted(set(zip(x["mint"].astype(object), x["owner"].astype(object))))[:400]:
+            for sl in (20000, 45000, 90000):
+                self.assertEqual(ts.labelled(mint, owner, sl), sts.labelled(mint, owner, sl), (mint, owner, sl))
         fb = R.w1_fast_buys(tape, s)
         ref = SL.FastAsOf(fb)
         idx = stream._pass_a(st, lambda *a: None)

@@ -71,6 +71,8 @@ def creator_group(adj, seeds, as_of_slot, hub_cap=HUB_CAP):
     """SWEEP_1 §4 / G1 AMENDMENT_1 Feature R(1): union-find on T and W links on or before the slot,
     seeded with the creator (and create `user`), never joining through an address linked to more than
     `hub_cap` owners. A hub is neither added nor crossed (Q7); a seed is always in its group."""
+    if hasattr(adj, "creator_group"):    # the streaming reader's indexed link graph: the same group (test_stream)
+        return adj.creator_group(seeds, as_of_slot, hub_cap)
     seeds = {s for s in seeds if isinstance(s, str) and s}
     group, q = set(seeds), deque(seeds)
     while q:
