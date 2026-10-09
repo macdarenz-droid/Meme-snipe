@@ -122,13 +122,26 @@ def cmd_ledger(a):
             close_day()
         cur = u.day
         led.process_unit(u)
-        print(f"unit {u.day} {u.lo}-{u.hi} done", file=sys.stderr)
+        print(f"unit {u.day} {u.lo}-{u.hi} done; rss {_rss_mb()} MB, peak {_peak_mb()} MB", file=sys.stderr)
     close_day()
     manifest["stats"] = {k: (v if k != "gaps" else [list(g) for g in v]) for k, v in led.stats.items()}
     manifest["excluded_by_type"] = {k: len(v) for k, v in excluded.items()}   # over all days
     _save(os.path.join(a.work, "vocab.pkl"), vocab)
     _write_manifest(a.work, manifest)
     print(json.dumps(manifest["days"], indent=1, default=str))
+
+
+def _rss_mb():
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // 2**20
+    except OSError:
+        return -1
+
+
+def _peak_mb():
+    import resource
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
 
 
 def _day_counts(d):
