@@ -17,6 +17,11 @@ Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md`, `../AMENDMENT
 
 `U` is a unit directory (`/home/user/tape-cache/<day>/<from>-<to>` or its `research/` folder) or a cache root (`/home/user/tape-cache`, `/home/user/tape-cache/<day>`); `--days` keeps only those days. Units of v1 and v2 schema both load (G1 reads no v2-only column). Overlapping units are refused. Contiguous units form one covered run of slots; a decision needs its trigger and its whole window inside one run.
 
+### Memory (2026-10-09)
+- Every command reads the tape with the compact reader (`load.load`, `reader="compact"`): address columns are read as categoricals and interned per distinct value (`Interner.codes_cat`), names are held in byte arrays behind a hash table (`load.CompactInterner`), each unit's frames are freed as soon as they are cut down (with `malloc_trim` and a fixed glibc mmap threshold), and the final tables are assembled one column at a time. The Tape it returns equals the original reader's in every table, column, dtype, value, row order and address code, and every output file is byte-identical (`tests/test_reader.py`). `--reference-reader` (any command that reads the tape) runs the original reader.
+- `decide` does not load the PumpSwap pool rows (it never reads one; every other table and code is unchanged). `LinkGraph` and the serial-buyer index hold their arrays as int32 when the values fit (same values).
+- Peaks: see `OPEN_QUESTIONS.md`, "Scale (2026-10-09)". Real-tape memory runs go through `flock /home/user/tape-work/mem.lock`.
+
 Example (discovery, Step A):
 ```
 cd research/g1-boost-inventory/tape
@@ -47,12 +52,12 @@ The gate's per-day counts assume whole days: run it once every unit of a day is 
 - `tests/test_pipeline.py::test_planted_future_marker` plants a SOL link, a mayhem-flagged trade by a new holder and a token transfer one slot after the decision and requires every decision and feature to be unchanged, and the same rows at the decision slot to change them. Two deliberate leaks (holdings replayed one slot late; links read without their slot) both fail it.
 
 ## Tests
-`cd research/g1-boost-inventory/tape && python3 -m unittest discover -s tests` (synthetic tables only; about 3 s). Each review fix was checked by reverting it: the matching test fails.
+`cd research/g1-boost-inventory/tape && python3 -m unittest discover -s tests` (synthetic tables only; about 45 s, most of it `tests/test_reader.py`, which runs every command with both readers on the fixture and on two random multi-unit, two-day tapes from `tests/synth_random.py`). Each review fix was checked by reverting it: the matching test fails.
 
 ## Files
 - `g1.py`: command line.
 - `g1lib/params.py`: every registered constant and seed.
-- `g1lib/load.py`: units, covered runs, tables, address interning; PumpSwap after-states.
+- `g1lib/load.py`: units, covered runs, tables, address interning (compact and reference readers); PumpSwap after-states.
 - `g1lib/decide.py`: universe, triggers, S0, strata, timing.
 - `g1lib/features.py`, `holdings.py`, `graph.py`: R and its four groups, N, λ, Z, theme waves, clusters.
 - `g1lib/market.py`, `quotes.py`, `costs.py`, `outcome.py`: slot-boundary states, exact quotes (ported from `packages/core/src/amm`), fixed costs and rent, fills and returns.
