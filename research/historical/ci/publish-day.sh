@@ -9,7 +9,7 @@
 #   publish-day.sh DAY ASSET_DIR
 # The release is created with all its files in one call: the parts, events, QA, manifest,
 # parity, the per-unit log units-DAY.log (OF-4) and whatever else SHA256SUMS-DAY lists
-# (rescan-DAY.sha256, list-DAY.txt, pm01-subset-DAY.txt). An existing release is never
+# (rescan-DAY.sha256, list-DAY.txt, pm01-subset-DAY.txt, and OF-6's margin-DAY.tar). An existing release is never
 # edited: if its asset names equal this day's files it is accepted, otherwise the step
 # fails ("incomplete release, delete it to republish"). Then every asset is read back
 # (downloaded one at a time and checked against the release's own SHA256SUMS-DAY, which
@@ -69,7 +69,7 @@ cd "$assets"
 sums="SHA256SUMS-$d"
 files=(units-"$d".tar.part* events-"$d".tar qa-"$d".md qa-"$d".json manifest-"$d".json parity-"$d".json units-"$d".log)
 # the optional OF-3 files ride along when SHA256SUMS lists them
-for f in rescan-"$d".sha256 list-"$d".txt pm01-subset-"$d".txt; do grep -q "  $f\$" "$sums" && files+=("$f"); done
+for f in rescan-"$d".sha256 list-"$d".txt pm01-subset-"$d".txt margin-"$d".tar; do grep -q "  $f\$" "$sums" && files+=("$f"); done
 for f in "${files[@]}"; do
   [ -f "$f" ] || { echo "missing $f"; exit 1; }
   grep -q "  $f\$" "$sums" || { echo "$f is not listed in $sums"; exit 1; }

@@ -46,6 +46,54 @@ func (u unitSpec) dir(out string) string {
 	return filepath.Join(out, "units", fmt.Sprintf("%d", u.epoch), fmt.Sprintf("%d-%d", u.from, u.to))
 }
 
+func (u unitSpec) name() string { return fmt.Sprintf("%d/%d-%d", u.epoch, u.from, u.to) }
+
+// readUnitsFile (OF-6 ruling 3): the units a -units file lists, one "EPOCH/FROM-TO" a line
+// (a QA failure's named units, after the owner was told); at least one, each well formed.
+// Read before planning, so a bad file refuses the run before any request.
+func readUnitsFile(path string) (map[string]bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	want := map[string]bool{}
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		var e, f, t uint64
+		if n, err := fmt.Sscanf(l, "%d/%d-%d", &e, &f, &t); err != nil || n != 3 || (unitSpec{e, f, t}).name() != l {
+			return nil, fmt.Errorf("-units: bad line %q (EPOCH/FROM-TO)", l)
+		}
+		want[l] = true
+	}
+	if len(want) == 0 {
+		return nil, fmt.Errorf("-units: %s lists no unit", path)
+	}
+	return want, nil
+}
+
+// onlyUnits keeps the planned units listed in want; a listed unit that is not in the
+// plan refuses the run.
+func onlyUnits(units []unitSpec, want map[string]bool) ([]unitSpec, error) {
+	left := map[string]bool{}
+	for k := range want {
+		left[k] = true
+	}
+	var kept []unitSpec
+	for _, u := range units {
+		if left[u.name()] {
+			kept = append(kept, u)
+			delete(left, u.name())
+		}
+	}
+	for l := range left {
+		return nil, fmt.Errorf("-units: %s is not a unit of this day's plan", l)
+	}
+	return kept, nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: zeroed-scan run|unit|finalize|trim|unitlog|migrations ...")
@@ -168,6 +216,7 @@ func main() {
 		newestFirst := fs.Bool("newest-first", true, "scan the most recent units first")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		slots := fs.String("slots", "", "only units inside this slot range, FROM-TO (for tests)")
+		onlyFile := fs.String("units", "", "OF-6: only these units (a file of EPOCH/FROM-TO lines; a QA failure's named units)")
 		maxMBps := fs.Float64("max-mbps", 40, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 40")
 		on429 := fs.String("on-429", "stop", "stop: end the run (exit code 75) so a scheduler can back off; pause: wait max(1 h, Retry-After) and retry")
 		retention := fs.String("retention", "", "K2 or K3 (OF-3; empty: today's units)")
@@ -176,6 +225,14 @@ func main() {
 		if err := setRetention(*retention, *mlist); err != nil {
 			log.Printf("refused: %v", err)
 			os.Exit(2)
+		}
+		var onlyWant map[string]bool
+		if *onlyFile != "" {
+			var err error
+			if onlyWant, err = readUnitsFile(*onlyFile); err != nil {
+				log.Printf("refused: %v", err)
+				os.Exit(2)
+			}
 		}
 		if !validMBps(*maxMBps) || (*on429 != "stop" && *on429 != "pause") {
 			log.Printf("refused: -max-mbps must be in (0, %d] and -on-429 stop or pause", maxAllowedMBps)
@@ -227,6 +284,12 @@ func main() {
 				}
 			}
 			units = kept
+		}
+		if onlyWant != nil {
+			if units, err = onlyUnits(units, onlyWant); err != nil {
+				log.Printf("refused: %v", err)
+				os.Exit(2)
+			}
 		}
 		if *newestFirst {
 			sort.Slice(units, func(i, j int) bool { return units[i].from > units[j].from })

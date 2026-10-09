@@ -41,9 +41,14 @@ list="$out/list-$day.txt" log="$out/units.log" partial="$out/units.log.partial"
 # saved with it, sealed (OF-3 ruling 24).
 tlog="$out/logs"
 mkdir -p "$assets" "$tlog"
-k2=() k3=()
+k2=() k3=() fs=()
+# OF-6 (rulings 1, 2): units taken whole from the day before's stored release
+# (margin-fetch.sh, OUT/from-store.txt) are passed through untouched: never trimmed again,
+# kept across the trim, and logged as "from EPOCH/RANGE TAG" instead of k2 lines.
+taken=""; [ -f "$out/from-store.txt" ] && taken=$(awk '{print $1}' "$out/from-store.txt")
 for u in "$out"/units/*/*; do
   [[ -d "$u" && "$u" != *.tmp && "$u" != *.del ]] || continue
+  if grep -qxF "$(basename "$(dirname "$u")")/$(basename "$u")" <<< "$taken"; then fs+=("$u"); continue; fi
   [ -f "$u/stats.json" ] || refuse "$u is not a finished unit"
   if grep -q '"retention": *"K2"' "$u/stats.json"; then k2+=("$u")
   elif grep -q '"retention": *"K3"' "$u/stats.json"; then k3+=("$u")
@@ -142,14 +147,19 @@ for u in "${k2[@]}"; do
   mv "$u" "$u.del" && rm -rf "$u.del"
   n=$((n + 1))
 done
-# 3. The trimmed units replace the K2 ones; the per-unit log is checked.
+# 3. The trimmed units replace the K2 ones (the taken units move across untouched); the
+# per-unit log is checked.
+for u in "${fs[@]}"; do mkdir -p "$out/units.k3/$(basename "$(dirname "$u")")"; mv "$u" "$out/units.k3/$(basename "$(dirname "$u")")/$(basename "$u")"; done
 rm -rf "$out"/units/*/*.del
 find "$out/units" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 if compgen -G "$out/units/*/*" > /dev/null; then refuse "$out/units still holds units after the trim"; fi
 rm -rf "$out/units" && mv "$out/units.k3" "$out/units"
 ulines=$(zeroed-scan unitlog -out "$out" 2>> "$tlog/unitlog.log")
-while read -r l; do [[ "$l" == *" K3 $sha" ]] || refuse "unit line '$l' is not K3 with the pinned list $sha"; done <<< "$ulines"
-{ printf '%s\n' "$ulines"; LC_ALL=C sort -k3,3 "$partial"; } > "$log.tmp"
+while read -r l; do
+  grep -qxF "${l%% *}" <<< "$taken" && continue
+  [[ "$l" == *" K3 $sha" ]] || refuse "unit line '$l' is not K3 with the pinned list $sha"
+done <<< "$ulines"
+{ printf '%s\n' "$ulines"; LC_ALL=C sort -k3,3 "$partial"; [ -z "$taken" ] || sed 's/^/from /' "$out/from-store.txt" | LC_ALL=C sort; } > "$log.tmp"
 mv "$log.tmp" "$log"
 zeroed-scan unitlog -out "$out" -check "$log" >> "$tlog/unitlog.log" 2>&1
 rm -f "$partial"

@@ -198,6 +198,7 @@ mkfx() {
   mkdir -p "$dir/.github/workflows"
   cp "$here/../../../.github/workflows/data-scan.yml" "$dir/.github/workflows/data-scan.yml"
   sed 's/^var reqLimiter = newLimiter([0-9.]*)$/var reqLimiter = newLimiter(10)/' "$here/../scanner/archive.go" > "$dir/research/historical/scanner/archive.go"
+  cp "$here/../scanner/main.go" "$dir/research/historical/scanner/main.go" # OF-6: the unit size (unitSlots)
   printf '| 2026-10-08 | B10-PULL id=b10pull-test-1 source=old-faithful scannerRev=r1 days=2026-07-22..2026-08-21 pinnedAt=2026-10-08T00:00:00Z | t | t |\n' > "$dir/docs/DECISIONS.md"
   for kv in ARCHIVE_ARM=b10pull-test-1 ARCHIVE_REARM_AT=2026-10-01T00:00:00Z ARCHIVE_RETENTION=K2 "$@"; do
     k=${kv%%=*}
@@ -374,7 +375,7 @@ acjson() { { cat; printf '{"databaseId": 900, "status": "in_progress", "conclusi
 gdreset() { rm -f "$GD"/*.json "$GD"/*.log "$GD/published" "$GD/unmarked"; rm -rf "$GD/rel"; }
 # pass DAY RET: a fresh pass of the scan job's guard step for scan-day.sh / check-day.sh.
 GP="$T/guardpass"
-gpass() { rm -rf "$GP"; mkdir -p "$GP"; echo "$1 $2 $(date -u +%s) 700 1" > "$GP/$1"; }
+gpass() { rm -rf "$GP"; mkdir -p "$GP"; echo "$1 $2 $(date -u +%s) 700 1 ${GFAILED:-0}" > "$GP/$1"; }
 export GITHUB_RUN_ID=700 GITHUB_RUN_ATTEMPT=1
 
 # ---- 3. scan-day.sh: shared back-off (zeroed-scan and sleep stubs record each call) ----
@@ -657,7 +658,7 @@ gtok = [s.get("id") or s.get("name") for s in steps if "github.token" in str(s)]
 assert gtok == ["pickprogress", "guardscan", "guardqa"], gtok
 # OF-4: the store token as GH_TOKEN only in the skip, store, volume store and storage-check steps
 tok = [s for s in steps if (s.get("env") or {}).get("GH_TOKEN") == "${{ secrets.DATA_STORE_TOKEN }}"]
-assert [s.get("id") or s.get("name") for s in tok] == ["published", "prior", "store", "Store this day's volume hours", "Storage check after the batch"], tok
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "prior", "margin", "store", "Store this day's volume hours", "Storage check after the batch"], tok
 tok += [s for s in steps if (s.get("id") or s.get("name")) in ("guardscan", "guardqa")]
 pick = next(s for s in steps if s.get("id") == "pickprogress")
 assert pick["run"].endswith('research/historical/ci/progress-pick.sh" "$PREFIX"'), pick
@@ -773,6 +774,11 @@ if [[ $1 == finalize ]]; then
   while (( $# )); do [[ "$1" == -dataset ]] && ds=$2; shift; done
   mkdir -p "$ds/qa"; echo '{}' > "$ds/manifest.json"; exit 0
 fi
+# RESCAN_COPY (OF-6 tests): the rescan writes the unit's own files, so the comparison passes
+if [[ $1 == unit && -n "${RESCAN_COPY:-}" && "${RESCAN_RC:-0}" == 0 ]]; then
+  while (( $# )); do case "$1" in -out) o=$2 ;; -state) st=$2 ;; -epoch) e=$2 ;; -from-slot) f=$2 ;; -to-slot) t=$2 ;; esac; shift; done
+  mkdir -p "$o/units/$e/$f-$t"; cp "$st/units/$e/$f-$t"/*.zst "$o/units/$e/$f-$t/"
+fi
 exit "${RESCAN_RC:-0}"
 STUB
 cat > "$C/node" <<'STUB'
@@ -810,6 +816,15 @@ ARCHIVE_GO="$T/archive10.go" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" P
 [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "2026-09-21 is a Helius day" "$T/summary.md" || bad+=" helius-day:$rc"
 [[ -z "$bad" ]] && ok "ARCHIVE-SAFE: check-day (archive) exits 2 before any zeroed-scan call for max_mbps 41 or 0, a request cap of 40, 10.5 or none, and a Helius day (ARCHIVE-NODUP); 40 MB/s at 10/s runs" || no "check-day limits:$bad"
 [[ $p == determinism ]] && grep -q "^phase determinism" "$T/summary.md" && ok "check-day: finalize, QA, parity, volume and determinism durations are logged"
+# OF-6: the rescan reads exactly one unit; a unit range longer than unitSlots is refused before any read.
+bad=""
+rc=0; RESCAN_COPY=1 cdrun o1 0 || rc=$?; [[ $rc == 0 && $(grep -c '^unit ' "$T/zs.args") == 1 ]] && grep -q -- "-from-slot 1 -to-slot 2 " "$T/zs.args" || bad+=" [one: $rc]"
+mkdir -p "$T/cd-long/units/1046/1-9001" "$T/cd-long/cache"; echo x > "$T/cd-long/units/1046/1-9001/blocks.csv.zst"; printf '{"blocks": 3, "retention": "K2"}\n' > "$T/cd-long/units/1046/1-9001/stats.json"
+: > "$T/zs.args"; : > "$T/summary.md"; gpass 2026-07-22 K2; rc=0
+ARCHIVE_GO=$T/archive10.go ARCHIVE_GUARD_DIR="$GP" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
+  bash "$FX/check-day.sh" 2026-07-22 "$T/cd-long" "$T/cd-assets-long" > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 2 ]] && ! grep -q '^unit ' "$T/zs.args" && grep -q "is not one unit" "$T/summary.md" || bad+=" [long: $rc $(tail -1 "$T/summary.md")]"
+[[ -z "$bad" ]] && ok "OF-6: the determinism rescan reads exactly one unit; a unit range longer than unitSlots is refused before any read" || no "OF-6 rescan one unit:$bad"
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
 
@@ -1761,7 +1776,7 @@ print(next(st for st in yaml.safe_load(open(sys.argv[1]))["jobs"]["continue"]["s
 PY
 # It runs from the checkout (the fixture) with the guard's gh stub: the artifacts list
 # names resume-2026-07-22; restarts come from run history, per day (ruling 5).
-cont() { rm -f "$GD/dispatch.log"; (cd "$T/fx" && env PATH="$GD/bin:$PATH" GD="$GD" GH_REPO=o/r GITHUB_RUN_ATTEMPT=1 RUN_ID=1 REF=main DAYS=2026-07-22 MAX_MBPS=40 MAX_CREDITS=0 RPC_RPS=5 EXPECT_UNITS= MAX_CHAIN=12 GITHUB_STEP_SUMMARY="$T/cont.sum" "$@" bash "$T/cont.sh") > "$T/cont.out" 2>&1; }
+cont() { rm -f "$GD/dispatch.log"; (cd "$T/fx" && env PATH="$GD/bin:$PATH" GD="$GD" GH_REPO=o/r GITHUB_RUN_ATTEMPT=1 RUN_ID=1 REF=main DAYS=2026-07-22 MAX_MBPS=40 MAX_CREDITS=0 RPC_RPS=5 EXPECT_UNITS= REREAD_ID= MAX_CHAIN=12 GITHUB_STEP_SUMMARY="$T/cont.sum" "$@" bash "$T/cont.sh") > "$T/cont.out" 2>&1; }
 gdreset
 dsrun 341 "data-scan scan source=archive" failure 300 290 "scan (2026-07-22)=failure,continue=success" | dsjson
 rc=0; cont CHAIN=0 SOURCE=archive || rc=$?
@@ -2108,7 +2123,7 @@ o="$T/r2p"; for v in "2026-07-22 K3" "2026-07-22 K2 x 701 1" "2026-07-22 K2 x 70
   rc=0; ARCHIVE_GO="$T/archive10.go" ARCHIVE_GUARD_DIR="$GP" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$FX/scan-day.sh" 2026-07-22 "$o" 40 300 > "$T/out.txt" 2>&1 || rc=$?
   [[ $rc == 2 ]] && grep -q "for another retention, run or attempt" "$T/out.txt" || bad+=" [$v]:$rc"
 done
-rm -rf "$GP"; guard attest 2026-07-22 "$GP"; read -r d r t id at < "$GP/2026-07-22"; [[ "$d $r $id $at" == "2026-07-22 K2 700 1" ]] || bad+=" attest-format"
+rm -rf "$GP"; guard attest 2026-07-22 "$GP"; read -r d r t id at fl < "$GP/2026-07-22"; [[ "$d $r $id $at $fl" == "2026-07-22 K2 700 1 0" ]] || bad+=" attest-format"
 [[ -z "$bad" ]] && ok "OF-2 r2 ruling 8: the guard pass carries retention, run id and attempt; scan-day refuses a pass for another retention, run or attempt" || no "OF-2 r2 pass binding:$bad"
 bad=""; gdreset
 # 9. Not armed while days would still be stored in this public repository.
@@ -2593,7 +2608,7 @@ for s in steps:
 # the token reaches only clean guard, crypt and store steps, never scan, trim or QA
 for s in steps:
     if "DATA_STORE_TOKEN" in str(s.get("env", "")):
-        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh", "storage-check.sh", "prior-fetch.sh")), s
+        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh", "storage-check.sh", "prior-fetch.sh", "margin-fetch.sh")), s
 for k in ("scan", "qa"):
     assert "DATA_STORE_TOKEN" not in str(by[k]), k
 PY
@@ -3458,6 +3473,85 @@ out=$(FAKE_GH_DROP=manifest.json bash "$here/assemble.sh" --store 2026-09-20 202
 [[ "$out" == *"differ from its SHA256SUMS set"* ]] || bad+=" [dropped msg: ${out:0:100}]"
 [[ -z "$bad" ]] && ok "OF-4 ruling 10: assemble --store creates the dataset release in one call with exactly the files SHA256SUMS lists (a stray file stays behind), and fails when a stored file differs or one is missing" || no "OF-4 assemble store:$bad"
 bad=""
+
+# ---- OF-6: no second read of a margin unit, no whole-day re-read (docs/reviews/OF6.md) ----
+bad=""
+# 1. package-day: margin-DAY.tar holds the units reaching the next day (last block time at or
+# after the next midnight minus 2 h), and SHA256SUMS lists it.
+pm="$T/pm6"; rm -rf "$pm"; mkdir -p "$pm/out" "$pm/assets"; nm=$(date -u -d 2026-09-30 +%s)
+for v in "1-2 $(( nm - 10000 ))" "3-4 $(( nm - 3000 ))" "5-6 $(( nm + 500 ))"; do set -- $v
+  mkdir -p "$pm/out/units/1046/$1"; printf '{\n  "last_block_time": %s,\n  "retention": "K3"\n}\n' "$2" > "$pm/out/units/1046/$1/stats.json"; echo "e$1" > "$pm/out/units/1046/$1/events.jsonl.zst"; done
+for f in qa-2026-09-29.md qa-2026-09-29.json parity-2026-09-29.json manifest-2026-09-29.json; do echo x > "$pm/assets/$f"; done
+FAKE_AVAIL=999000000000 GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/package-day.sh" 2026-09-29 "$pm/out" "$pm/assets" > "$T/out.txt" 2>&1 || bad+=" [package: $(tail -2 "$T/out.txt")]"
+[[ "$(tar -tf "$pm/assets/margin-2026-09-29.tar" 2>/dev/null | grep -E '^units/[0-9]+/[0-9-]+/?$' | sed 's#/$##' | LC_ALL=C sort | tr '\n' ' ')" == "units/1046/3-4 units/1046/5-6 " ]] || bad+=" [margin set: $(tar -tf "$pm/assets/margin-2026-09-29.tar" 2>&1 | tr '\n' ' ')]"
+grep -q "  margin-2026-09-29.tar$" "$pm/assets/SHA256SUMS-2026-09-29" 2>/dev/null || bad+=" [not in sums]"
+# 2. margin-fetch: day D takes D-1's margin units from the store, never from the archive.
+export GH_BIN="$T/bin/gh"
+mf() { rc=0; GITHUB_STEP_SUMMARY="$T/mf.sum" bash "$here/margin-fetch.sh" "$1" "$T/mfout" > "$T/mf.txt" 2>&1 || rc=$?; }
+mkmargin() { rm -rf "$T/rel/data-day-2026-07-22" "$T/rel/data-day-2026-07-22-k3" "$T/mfsrc"; mkdir -p "$T/rel/data-day-2026-07-22" "$T/mfsrc/units/1046/3-4" "$T/mfsrc/units/1046/5-6"
+  for u in 3-4 5-6; do echo '{"retention": "K3"}' > "$T/mfsrc/units/1046/$u/stats.json"; echo "d$u" > "$T/mfsrc/units/1046/$u/events.jsonl.zst"; done
+  tar -C "$T/mfsrc" -cf "$T/rel/data-day-2026-07-22/margin-2026-07-22.tar" units/1046/3-4 units/1046/5-6
+  (cd "$T/rel/data-day-2026-07-22" && sha256sum margin-2026-07-22.tar > SHA256SUMS-2026-07-22); }
+rm -rf "$T/mfout"; mf 2026-07-22; [[ $rc == 0 && ! -e "$T/mfout/from-store.txt" ]] || bad+=" [first day: $rc]"
+mkmargin; rm -rf "$T/mfout"; mf 2026-07-23
+[[ $rc == 0 && -f "$T/mfout/units/1046/3-4/stats.json" && -f "$T/mfout/units/1046/5-6/events.jsonl.zst" ]] && [[ "$(cat "$T/mfout/from-store.txt")" == $'1046/3-4 data-day-2026-07-22\n1046/5-6 data-day-2026-07-22' ]] || bad+=" [take: $rc $(cat "$T/mf.txt")]"
+echo own > "$T/mfout/units/1046/5-6/events.jsonl.zst"; mf 2026-07-23; [[ $rc == 0 && "$(cat "$T/mfout/units/1046/5-6/events.jsonl.zst")" == own && $(wc -l < "$T/mfout/from-store.txt") == 2 ]] || bad+=" [resume: $rc]"
+mkmargin; echo changed >> "$T/rel/data-day-2026-07-22/margin-2026-07-22.tar"; rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] || bad+=" [sha: $rc]"
+mkmargin; mkdir -p "$T/mfsrc/evil"; echo x > "$T/mfsrc/evil/x"; tar -C "$T/mfsrc" -cf "$T/rel/data-day-2026-07-22/margin-2026-07-22.tar" units evil
+(cd "$T/rel/data-day-2026-07-22" && sha256sum margin-2026-07-22.tar > SHA256SUMS-2026-07-22); rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] || bad+=" [path: $rc]"
+rm -rf "$T/rel/data-day-2026-07-22"; rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] || bad+=" [missing: $rc]"
+mkmargin; mv "$T/rel/data-day-2026-07-22" "$T/rel/data-day-2026-07-22-k3"; rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 0 ]] && grep -q "data-day-2026-07-22-k3" "$T/mfout/from-store.txt" || bad+=" [k3: $rc]"
+rm -rf "$T/rel/data-day-2026-07-22-k3"; unset GH_BIN
+# 3. scan-day: a day holding only D-1's taken (K3) units reads its own at K2, without refusing;
+# check-day rescans its first own unit, never a taken one; the trim passes taken units through.
+mkfx "$T/fx6"; o="$T/sc6"; rm -rf "$o"; mkdir -p "$o/units/1046/3-4"; printf '{\n  "scanner_revision": "r1",\n  "retention": "K3"\n}\n' > "$o/units/1046/3-4/stats.json"; echo "1046/3-4 data-day-2026-07-22" > "$o/from-store.txt"
+rc=0; SFX=$T/fx6/research/historical/ci SDAY=2026-07-23 scan "$o" || rc=$?
+[[ $rc == 0 && $(calls) == "scan " ]] && grep -q -- "-retention K2 " "$T/scan.args" || bad+=" [scan with taken units: $rc $(tail -2 "$T/out.txt")]"
+o="$T/cd6"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$o/units/1046/3-4" "$o/cache"
+for u in 1-2 3-4; do echo x > "$o/units/1046/$u/blocks.csv.zst"; printf '{"blocks": 3, "retention": "K2"}\n' > "$o/units/1046/$u/stats.json"; done
+echo "1046/1-2 data-day-2026-07-21" > "$o/from-store.txt"; : > "$T/zs.args"; : > "$T/summary.md"; gpass 2026-07-22 K2; rc=0
+ARCHIVE_GO=$T/archive10.go ARCHIVE_GUARD_DIR="$GP" RESCAN_RC=0 RESCAN_COPY=1 FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
+  bash "$FX/check-day.sh" 2026-07-22 "$o" "$T/cd6-assets" > "$T/out.txt" 2>&1 || rc=$?
+grep -q -- "-from-slot 3 -to-slot 4 " "$T/zs.args" && ! grep -q -- "-from-slot 1 " "$T/zs.args" || bad+=" [rescan picked: $rc $(grep '^unit' "$T/zs.args")]"
+grep -qx "from 1046/1-2 data-day-2026-07-21" "$T/cd6-assets/units-2026-07-22.log" 2>/dev/null || bad+=" [check-day log from line]"
+mkk2; mkdir -p "$T/tk2/units/1046/7-8"; echo '{"scanner_revision": "rF", "retention": "K3", "migration_list_sha256": "other"}' > "$T/tk2/units/1046/7-8/stats.json"; echo taken > "$T/tk2/units/1046/7-8/a.zst"
+echo "1046/7-8 data-day-2026-07-21" > "$T/tk2/from-store.txt"; rc=0; td 2026-07-22 - || rc=$?
+[[ $rc == 0 && "$(cat "$T/tk2/units/1046/7-8/a.zst" 2>/dev/null)" == taken ]] && ! grep -q -- "-in $T/tk2/units/1046/7-8" "$T/trim.args" && grep -qx "from 1046/7-8 data-day-2026-07-21" "$T/tk2/units.log" || bad+=" [trim pass-through: $rc $(tail -2 "$T/out.txt")]"
+[[ -z "$bad" ]] && ok "OF-6 margin: package-day stores margin-DAY.tar (the units reaching the next day) in SHA256SUMS; margin-fetch moves D-1's margin units into D's progress from data-day-<D-1> (else -k3) and lists them in from-store.txt, takes nothing for the first day, keeps a unit already there, and fails closed on a changed tar, a path outside units/ or no release; scan-day reads the rest at K2 with taken K3 units present; check-day rescans an own unit and logs from lines; the trim passes taken units through untouched with from lines" || no "OF-6 margin:$bad"
+bad=""; gdreset
+# 4. The guard pass records whether the day had a counted scan failure since ARCHIVE_REARM_AT.
+dsrun 391 "data-scan scan source=archive" failure 300 200 "Archive guard=success,scan (2026-07-22)=failure,continue=failure" | dsjson
+rm -rf "$GP"; guard attest 2026-07-22 "$GP"; read -r _ _ _ _ _ fl < "$GP/2026-07-22" 2>/dev/null; [[ "${fl:-}" == 1 ]] || bad+=" [flag after a failure: ${fl:-none} $(tail -2 "$T/gout.txt")]"
+gdreset; rm -rf "$GP"; guard attest 2026-07-22 "$GP"; read -r _ _ _ _ _ fl < "$GP/2026-07-22" 2>/dev/null; [[ "${fl:-}" == 0 ]] || bad+=" [flag without: ${fl:-none}]"
+# 5. QA-REREAD rows and scan-day: only the named units are read again, at the recorded retention.
+dec="$T/fx6/docs/DECISIONS.md"
+printf '| 2026-10-08 | QA-REREAD id=rr-1 day=2026-07-22 units=1046/1-2,1046/3-4 toldAt=2026-10-08T00:00:00Z | t | t |\n| 2026-10-08 | QA-REREAD id=rr-t day=2026-07-23 units=1046/3-4 toldAt=2026-10-08T00:00:00Z | t | t |\n| 2026-10-08 | QA-REREAD id=rr-f day=2026-07-22 units=1046/1-2 toldAt=2099-01-01T00:00:00Z | t | t |\n| 2026-10-08 | QA-REREAD id=rr-b day=2026-07-22 units=1046/1-2;rm toldAt=2026-10-08T00:00:00Z | t | t |\n' >> "$dec"
+rr() { rc=0; (. "$T/fx6/research/historical/ci/archive-guard.sh"; ag_summary=/dev/null; ag_reread "$1" "$2") > "$T/rr.out" 2>&1 || rc=$?; }
+rr rr-1 2026-07-22; [[ $rc == 0 && "$(cat "$T/rr.out")" == $'1046/1-2\n1046/3-4' ]] || bad+=" [row: $rc $(cat "$T/rr.out")]"
+rr rr-1 2026-07-23; [[ $rc == 2 ]] || bad+=" [other day: $rc]"
+rr rr-9 2026-07-22; [[ $rc == 2 ]] || bad+=" [no row: $rc]"
+rr rr-f 2026-07-22; [[ $rc == 2 ]] || bad+=" [future told: $rc]"
+rr rr-b 2026-07-22; [[ $rc == 2 ]] || bad+=" [bad units: $rc]"
+mk6() { rm -rf "$1"; for u in 1-2 3-4 5-6; do mkdir -p "$1/units/1046/$u"; printf '{\n  "scanner_revision": "r1",\n  "retention": "%s"\n}\n' "$2" > "$1/units/1046/$u/stats.json"; echo "$u" > "$1/units/1046/$u/a.zst"; done; }
+o="$T/rr6"; mk6 "$o" K2
+rc=0; ARCHIVE_REREAD_ID=rr-1 SFX=$T/fx6/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 0 && $(calls) == "scan " ]] && grep -q -- "-retention K2 -units $o/reread.units " "$T/scan.args" && [[ "$(cat "$o/reread.units")" == $'1046/1-2\n1046/3-4' && ! -e "$o/units/1046/1-2" && ! -e "$o/units/1046/3-4" && -f "$o/units/1046/5-6/a.zst" ]] || bad+=" [K2 reread: $rc $(tail -2 "$T/out.txt")]"
+o="$T/rr6k3"; mk6 "$o" K3; echo "pool 1 2" > "$o/list-2026-07-22.txt"
+{ for u in 1-2 3-4 5-6; do echo "1046/$u r1 K3 x"; done; for u in 1-2 3-4 5-6; do echo "k2 $(h $u) 1046/$u/a.zst"; done; } > "$o/units.log"
+rc=0; ARCHIVE_REREAD_ID=rr-1 SFX=$T/fx6/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 0 ]] && grep -q -- "-retention K3 -migration-list $o/list-2026-07-22.txt -units $o/reread.units " "$T/scan.args" || bad+=" [K3 reread: $rc $(tail -2 "$T/out.txt")]"
+[[ "$(grep -c '^k2 ' "$o/units.log")" == 1 ]] && grep -q "^k2 .* 1046/5-6/a.zst$" "$o/units.log" && grep -qx "reread 1046/1-2 rr-1" "$o/units.log" && grep -qx "reread 1046/3-4 rr-1" "$o/units.log" || bad+=" [K3 log: $(tr '\n' '|' < "$o/units.log")]"
+o="$T/rr6n"; mk6 "$o" K2; rc=0; ARCHIVE_REREAD_ID=rr-9 SFX=$T/fx6/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" && -d "$o/units/1046/1-2" ]] || bad+=" [no row: $rc]"
+o="$T/rr6t"; mk6 "$o" K2; echo "1046/3-4 data-day-2026-07-22" > "$o/from-store.txt"; rc=0; ARCHIVE_REREAD_ID=rr-t SFX=$T/fx6/research/historical/ci SDAY=2026-07-23 scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "taken from the day before's store; it is never read again" "$T/out.txt" || bad+=" [taken reread: $rc]"
+# 6. A whole-day re-read of a failed day is refused; a resume of its saved progress is not.
+o="$T/rr6w"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=1 SFX=$T/fx6/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "a whole-day re-read is refused" "$T/out.txt" || bad+=" [whole day: $rc]"
+o="$T/rr6r"; mk6 "$o" K2; rc=0; GFAILED=1 SFX=$T/fx6/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 0 && $(calls) == "scan " ]] || bad+=" [resume: $rc]"
+[[ -z "$bad" ]] && ok "OF-6 re-read: the guard pass flags a day with a counted scan failure; a QA-REREAD row is used only for its day, with a past toldAt and well-formed units; scan-day then reads exactly the named units (deleted first, the rest kept) at the recorded retention (K3 with the day's list, the per-unit log marking them reread instead of k2 lines); no row, or a unit taken from the store, reads nothing; a fresh whole-day read of a failed day is refused while a resume of its progress runs" || no "OF-6 re-read:$bad"
+bad=""; gdreset
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

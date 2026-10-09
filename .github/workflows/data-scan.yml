@@ -108,6 +108,10 @@ on:
         description: "scan: stop before any read unless the restored progress holds at least this many finished units (empty: no check)"
         required: false
         default: ""
+      reread_id:
+        description: "scan (archive): the id of the pinned QA-REREAD row in docs/DECISIONS.md; only the units it names are read again (OF-6; empty: none)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -394,6 +398,26 @@ jobs:
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/prior-fetch.sh" "$DAY" "$RUNNER_TEMP/prior"
+      # OF-6 (docs/reviews/OF6.md rulings 1, 2): the units this day shares with the day
+      # before are taken from that day's stored margin-<D-1>.tar, never read from the
+      # archive again; a store that cannot be read, or a missing or changed tar, fails the
+      # day before any archive read.
+      - name: Take the day before's margin units from the store
+        id: margin
+        if: steps.published.outputs.complete != 'true' && inputs.source != 'helius'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/margin-fetch.sh" "$DAY" "$RUNNER_TEMP/work/data"
       # OF-2: the same guard as the plan job, just before the scan, in a clean shell; its
       # pass (a file in $RUNNER_TEMP/archive-guard) is what scan-day.sh requires, so the
       # scan step itself never holds a token.
@@ -433,6 +457,7 @@ jobs:
           HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
           ARCHIVE_GUARD_DIR: ${{ runner.temp }}/archive-guard
           EXPECT_UNITS: ${{ inputs.expect_units }}
+          ARCHIVE_REREAD_ID: ${{ inputs.reread_id }}
         # source helius: rpc-day.sh exits 75 like a back-off (resumable) and 3 when the
         # day's credit cap is spent (not resumable: the chain stops).
         run: |
@@ -801,6 +826,7 @@ jobs:
           MAX_CREDITS: ${{ inputs.max_credits }}
           RPC_RPS: ${{ inputs.rpc_rps }}
           EXPECT_UNITS: ${{ inputs.expect_units }}
+          REREAD_ID: ${{ inputs.reread_id }}
         run: |
           set -euo pipefail
           [[ "$CHAIN" =~ ^[0-9]+$ ]] || { echo "bad chain '$CHAIN'"; exit 1; }
@@ -829,7 +855,7 @@ jobs:
             exit 1
           fi
           next=$((CHAIN + 1))
-          gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS" -f expect_units="$EXPECT_UNITS"
+          gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS" -f expect_units="$EXPECT_UNITS" -f reread_id="$REREAD_ID"
           echo "resumable stop ($resume): dispatched chained run $next of at most $MAX_CHAIN" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # OF-4 ruling 1: once a day is stored and every file read back, its sealed progress cache

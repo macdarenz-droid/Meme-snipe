@@ -28,7 +28,7 @@ release_state() {
   tmp=$(mktemp -d)
   "$GH" release download "$tag" --repo "$DATA_REPO" --pattern "SHA256SUMS-$day" --dir "$tmp" >/dev/null 2>&1 ||
     { rm -rf "$tmp"; echo "incomplete: no SHA256SUMS-$day"; return; }
-  want=$( { awk '{print $2}' "$tmp/SHA256SUMS-$day" | grep -E "^(units-$day\.tar\.part[0-9]+|rescan-$day\.sha256|list-$day\.txt|pm01-subset-$day\.txt)\$" || true
+  want=$( { awk '{print $2}' "$tmp/SHA256SUMS-$day" | grep -E "^(units-$day\.tar\.part[0-9]+|rescan-$day\.sha256|list-$day\.txt|pm01-subset-$day\.txt|margin-$day\.tar)\$" || true
             printf '%s\n' "events-$day.tar" "qa-$day.md" "qa-$day.json" "manifest-$day.json" "parity-$day.json" "units-$day.log" "SHA256SUMS-$day"; } | sort)
   have=$(grep '^asset ' <<<"$info" | awk '{print $2}' | sort)
   if grep -qx "readback-ok-$day" <<<"$have"; then
