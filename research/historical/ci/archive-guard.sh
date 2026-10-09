@@ -26,6 +26,8 @@
 #       other-run and 60-min checks.
 #   archive-guard.sh restarts DAY     the resumable stops (exit 75, chained) DAY already
 #       had since ARCHIVE_REARM_AT, from run history (the continue job allows one).
+#   archive-guard.sh b10-done         the B-10 done days, from the private store (OF-5: the
+#       -k3 release for the two measurement days, the plain release for the others).
 # Any refusal exits 2 with the reason on stderr (and the step summary). When sourced, it
 # defines the ag_* functions archive-check.sh uses.
 #
@@ -47,6 +49,8 @@ set -uo pipefail
 ag_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=archive-limits.conf
 . "$ag_here/archive-limits.conf"
+# shellcheck source=release-state.sh
+. "$ag_here/release-state.sh"
 ag_gh=${GH_BIN:-gh}
 ag_repo=${GH_REPO:-${GITHUB_REPOSITORY:-}}
 ag_summary=${GITHUB_STEP_SUMMARY:-/dev/null}
@@ -510,12 +514,75 @@ ag_caches_sealed() {
   [[ -z "$bad" ]] ||
     { ag_refuse "$(grep -c . <<< "$bad") Actions cache entries hold progress or assets unsealed ($(head -3 <<< "$bad" | tr '\n' ' ')); the owner decides whether to delete them or wait for them to expire"; return 2; }
 }
-# ag_read_done: the days with a data-day-D or data-day-D-k3 tag in the store ("read
-# done", OF-5), one a line. Fails when the store cannot be read.
-ag_read_done() {
+# ag_day_tags: the store's data-day-D and data-day-D-k3 tags as "TAG DAY" lines. Fails
+# when the store cannot be read.
+ag_day_tags() {
   local refs
   refs=$(ag_store api --paginate "repos/$DATA_REPO/git/matching-refs/tags/data-day-" --jq '.[].ref' 2>/dev/null) || return 1
-  sed -n 's#^refs/tags/data-day-\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)\(-k3\)\{0,1\}$#\1#p' <<< "$refs" | LC_ALL=C sort -u
+  sed -n 's#^refs/tags/\(data-day-\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)\(-k3\)\{0,1\}\)$#\1 \2#p' <<< "$refs" | LC_ALL=C sort -u
+}
+# ag_marked (OF-5 rulings 1 and 3): each day tag as "TAG STATE", STATE from release_state
+# (release-state.sh, the judgement publish-day.sh --check uses): done (complete, every
+# asset uploaded and named as its SHA256SUMS-D lists, and carrying its read-back
+# readback-ok-D marker), or anything else. Fails when the store cannot be read.
+ag_marked() {
+  local tags tag d st
+  tags=$(ag_day_tags) || return 1
+  while read -r tag d; do
+    [[ -n "$tag" ]] || continue
+    st=$(GH=ag_store release_state "$tag" "$d")
+    [[ "$st" != error* ]] || return 1
+    echo "$tag ${st%%:*}"
+  done <<< "$tags"
+}
+# ag_read_done: the days with a data-day-D or data-day-D-k3 release in the store that is
+# done ("read done", OF-5 rulings 1 and 3), one a line. Any other day release (not
+# complete, or without its readback-ok marker: its read-back never passed) stops the
+# queue for review: it is never counted and never read again automatically, so this
+# refuses. Fails when the store cannot be read.
+ag_read_done() {
+  local rows bad
+  rows=$(ag_marked) || return 1
+  bad=$(awk '$2 != "done" {print $1}' <<< "$rows")
+  [[ -z "$bad" ]] ||
+    { ag_refuse "day release(s) $(tr '\n' ' ' <<< "$bad")in the private store are not complete or carry no readback-ok marker (the read-back never passed); stopped for review, never read again automatically"; return 1; }
+  awk '$2 == "done" {print substr($1, 10, 10)}' <<< "$rows" | LC_ALL=C sort -u
+}
+
+# ag_b10_ok TAG DAY (OF-5 ruling 2): the marked release TAG holds DAY at the B-10
+# retention: every unit line of its units-DAY.log is K3 with the sha256 of list-DAY.txt
+# that its SHA256SUMS-DAY records. Judged from the recorded retention, never the tag name.
+ag_b10_ok() {
+  local tag=$1 d=$2 tmp sha rc=1
+  tmp=$(mktemp -d)
+  if ag_store release download "$tag" --repo "$DATA_REPO" --pattern "units-$d.log" --pattern "SHA256SUMS-$d" --dir "$tmp" >/dev/null 2>&1 &&
+    [[ -f "$tmp/units-$d.log" && -f "$tmp/SHA256SUMS-$d" ]]; then
+    sha=$(awk -v f="list-$d.txt" '$2 == f {print $1}' "$tmp/SHA256SUMS-$d")
+    if [[ "$sha" =~ ^[0-9a-f]{64}$ ]] && awk -v s="$sha" '
+        $1 ~ /^[0-9]+\/[0-9]+-[0-9]+$/ { n++; if (NF != 4 || $3 != "K3" || $4 != s) bad = 1 }
+        END { exit !(n > 0 && !bad) }' "$tmp/units-$d.log"; then rc=0; fi
+  fi
+  rm -rf "$tmp"
+  return $rc
+}
+# ag_b10_done (OF-5): the days that are B-10 done, one a line, oldest first: an
+# allow-listed day with a marked release (data-day-D-k3 or data-day-D) whose recorded
+# retention is K3 with its list (ag_b10_ok; ruling 2: a measurement day stored at K3 under
+# the plain tag counts, a K2 release never does). It drives only the B10-PULL row and the
+# evaluator, never the queue (that is ag_read_done). Fails when the store cannot be read.
+ag_b10_done() {
+  local rows days d t
+  [[ "${DATA_REPO:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || return 1
+  rows=$(ag_marked) || return 1
+  days=$(ag_days) || return 1
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    for t in "data-day-$d-k3" "data-day-$d"; do
+      grep -qx "$t done" <<< "$rows" || continue
+      if ag_b10_ok "$t" "$d"; then echo "$d"; break; fi
+    done
+  done <<< "$days"
+  return 0
 }
 
 # ---- run history of this repository ----
@@ -838,7 +905,7 @@ ag_full() {
   if [[ "$qa" != qa ]] && (( AG_LANE_END > 0 && now - AG_LANE_END < 3600 )) && [[ "$AG_LANE_RESUME" != "$1" ]]; then
     ag_refuse "the last archive-lane run ended $(date -u -d "@$AG_LANE_END" +%FT%TZ), less than 60 min ago"; return 2
   fi
-  next=$(ag_next_day) || { ag_refuse "the private store's day releases cannot be read (fail closed)"; return 2; }
+  next=$(ag_next_day) || { ag_refuse "the private store's day releases cannot be read, or one carries no readback-ok marker (fail closed)"; return 2; }
   [[ "$next" == "$1" ]] ||
     { ag_refuse "$1 is not the oldest allow-listed day not read done (${next:-none left}); days are read in order, once"; return 2; }
   echo "$ret"
@@ -856,10 +923,14 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       rm -f "$3/$2"
       ret=$(ag_full "$2" "${4:-}") || exit 2
       mkdir -p "$3" && echo "$2 $ret $(ag_now) ${GITHUB_RUN_ID:-none} ${GITHUB_RUN_ATTEMPT:-none}" > "$3/$2" && echo "archive guard: $2 may be read ($ret)" | tee -a "$ag_summary" ;;
+    b10-done)
+      [[ $# -eq 1 ]] || { echo "usage: archive-guard.sh b10-done" >&2; exit 2; }
+      ag_b10_done || { ag_refuse "the private store's day releases cannot be read (fail closed)"; exit 2; }
+      exit 0 ;;
     restarts)
       [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh restarts DAY" >&2; exit 2; }
       ag_history || { ag_refuse "the run history cannot be read"; exit 2; }
       ag_restarts "$2"; exit $? ;;
-    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR [qa] | recorded OUT" >&2; exit 2 ;;
+    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR [qa] | recorded OUT | b10-done" >&2; exit 2 ;;
   esac
 fi

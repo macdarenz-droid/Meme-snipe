@@ -17,7 +17,8 @@
 #   GITHUB_SHA         recorded in the release notes
 # Steps:
 #   1. (--download) every lead-in day (FROM-14 .. FROM-1) and every window day must have a
-#      day release, or the script stops before downloading anything; no earlier day is
+#      day release that is done (complete, with its readback-ok marker; OF-5 ruling 4), or
+#      the script stops before downloading anything; no earlier day is
 #      read; free-space guard (all the days' assets + 10 GB); then each day's parts (lead-in
 #      days: only the small events-DAY.tar asset, which holds each unit's events, stats and
 #      block rows) and SHA256SUMS go to OUT_DIR/dl-DAY;
@@ -41,6 +42,9 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$here/../../.." && pwd)
 
 die() { echo "assemble: $*" >&2; exit 1; }
+# release_state (OF-5 ruling 4): a day is taken only when its release is done
+# shellcheck source=release-state.sh
+. "$here/release-state.sh"
 
 # check_window FROM TO: valid UTC days, FROM < TO, TO-FROM <= MAX_WINDOW_DAYS.
 check_window() {
@@ -234,9 +238,15 @@ download_main() {
     die "release data-$from-$to already exists; a published dataset is never replaced"
   local -a days
   mapfile -t days < <(day_list "$from" "$to")
-  # Every required day must exist before any download.
+  # Every required day must exist before any download, and (OF-5 ruling 4) be done:
+  # complete, with its read-back readback-ok marker (release-state.sh); anything else
+  # stops for review.
   local -A size
+  local st
   for day in "${days[@]}"; do
+    st=$(GH=gh release_state "data-day-$day" "$day")
+    [[ "$st" != absent ]] || die "release data-day-$day is missing (every lead-in and window day is required)"
+    [[ "$st" == done ]] || die "release data-day-$day is not done ($st); stopped for review before any download"
     if [[ "$day" < "$from" ]]; then size[$day]=$(tar_bytes "$day" "events-$day.tar"); else size[$day]=$(tar_bytes "$day" "units-$day.tar.part"); fi
     total=$(( total + size[$day] ))
   done

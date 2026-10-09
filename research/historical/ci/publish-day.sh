@@ -26,49 +26,33 @@ this_repo=${GITHUB_REPOSITORY:-}
 # The 2026-10-02 program upgrade is a regime boundary (supervisor ruling): that day and
 # later are never published. Same constant as qa/verdict.mjs and the plan job.
 REGIME_BOUNDARY_DAY=2026-10-02
-# release_state TAG DAY: "complete", "absent", or "incomplete: <why>", judged only from
-# the release itself (never from local files, whose QA reports change on every rerun):
-# not a draft, every asset uploaded, and the asset names equal the expected set, with
-# the part count taken from the release's own SHA256SUMS-DAY.
-release_state() {
-  local tag=$1 day=$2 info tmp want have
-  local err
-  err=$(mktemp)
-  if ! info=$("$GH" release view "$tag" --repo "$DATA_REPO" --json isDraft,assets \
-    --jq '"draft \(.isDraft)", (.assets[] | "asset \(.name) \(.state)")' 2>"$err"); then
-    # Only a missing release is "absent"; any other gh error (auth, network, rate
-    # limit) is an error, never a reason to publish.
-    if grep -qi "release not found" "$err"; then echo absent; else echo "error: $(tr '\n' ' ' < "$err")"; fi
-    rm -f "$err"
-    return
-  fi
-  rm -f "$err"
-  grep -qx "draft false" <<<"$info" || { echo "incomplete: draft release"; return; }
-  if grep '^asset ' <<<"$info" | grep -vq ' uploaded$'; then echo "incomplete: an asset is not fully uploaded"; return; fi
-  tmp=$(mktemp -d)
-  "$GH" release download "$tag" --repo "$DATA_REPO" --pattern "SHA256SUMS-$day" --dir "$tmp" >/dev/null 2>&1 ||
-    { rm -rf "$tmp"; echo "incomplete: no SHA256SUMS-$day"; return; }
-  want=$( { awk '{print $2}' "$tmp/SHA256SUMS-$day" | grep -E "^(units-$day\.tar\.part[0-9]+|rescan-$day\.sha256|list-$day\.txt|pm01-subset-$day\.txt)\$" || true
-            printf '%s\n' "events-$day.tar" "qa-$day.md" "qa-$day.json" "manifest-$day.json" "parity-$day.json" "units-$day.log" "SHA256SUMS-$day"; } | sort)
-  rm -rf "$tmp"
-  have=$(grep '^asset ' <<<"$info" | awk '{print $2}' | sort)
-  grep -q "^units-$day\.tar\.part" <<<"$want" || { echo "incomplete: SHA256SUMS-$day lists no tar part"; return; }
-  [ "$have" = "$want" ] || { echo "incomplete: assets differ from the expected set"; return; }
-  echo complete
-}
+# release_state TAG DAY and marker_text: release-state.sh (shared with archive-guard.sh).
+# shellcheck source=release-state.sh
+. "$(cd "$(dirname "$0")" && pwd)/release-state.sh"
 
 if [ "${1:-}" = --check ]; then
-  # --check DAY: is data-day-DAY published and complete? Writes complete=true|false to
-  # $GITHUB_OUTPUT (when set) so the scan job can skip a published day before any read.
+  # --check DAY: is DAY read done in the private store (OF-5: a data-day-DAY or
+  # data-day-DAY-k3 release that is done, its readback-ok marker included (ruling 1); a
+  # release in this repository never counts)? Writes complete=true|false to
+  # $GITHUB_OUTPUT (when set) so the scan job skips a stored day before any read. Any
+  # store error, an incomplete release, or a complete one without the marker (its
+  # read-back never passed: stopped for review, never read again automatically) fails
+  # the step.
   d=$2
   [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day $d"; exit 1; }
-  st=$(release_state "data-day-$d" "$d")
-  echo "data-day-$d: $st"
-  case "$st" in
-    complete) echo "complete=true" >> "${GITHUB_OUTPUT:-/dev/null}"; exit 0 ;;
-    absent) echo "complete=false" >> "${GITHUB_OUTPUT:-/dev/null}"; exit 0 ;;
-    *) echo "data-day-$d is incomplete; delete it to republish"; exit 1 ;;
-  esac
+  done=false
+  for tag in "data-day-$d" "data-day-$d-k3"; do
+    st=$(release_state "$tag" "$d")
+    echo "$tag: $st"
+    case "$st" in
+      done) done=true ;;
+      absent) ;;
+      complete) echo "$tag carries no readback-ok-$d marker (its read-back never passed); stopped for review, never read again automatically"; exit 1 ;;
+      *) echo "$tag is not complete or cannot be read; delete it to republish (fail closed)"; exit 1 ;;
+    esac
+  done
+  echo "complete=$done" >> "${GITHUB_OUTPUT:-/dev/null}"
+  exit 0
 fi
 
 d=$1 assets=$2
@@ -95,7 +79,8 @@ files+=("$sums")
 tag="data-day-$d"
 st=$(release_state "$tag" "$d")
 case "$st" in
-  complete) echo "release $tag is already stored and complete; left unchanged" | tee -a "$summary" ;;
+  done) echo "release $tag is already stored and read back; left unchanged" | tee -a "$summary" ;;
+  complete) echo "release $tag carries no readback-ok-$d marker (its read-back never passed); stopped for review, never edited or read again here" | tee -a "$summary"; exit 1 ;;
   absent)
     "$GH" release create "$tag" --repo "$DATA_REPO" --prerelease --title "Historical data: $d" \
       --notes "Scanner units, strict QA report, decoder parity report, per-unit log and SHA256SUMS for UTC day $d, from .github/workflows/data-scan.yml at ${GITHUB_SHA:-unknown}. Format: docs/research/historical-data.md." \
@@ -117,18 +102,31 @@ rb=$(mktemp -d)
 fail_rb() { rm -rf "$rb"; echo "read-back: $*; the progress cache is kept" | tee -a "$summary"; exit 1; }
 "$GH" release download "$tag" --repo "$DATA_REPO" --pattern "$sums" --dir "$rb" >/dev/null 2>&1 && [ -f "$rb/$sums" ] ||
   fail_rb "$sums could not be downloaded from $tag"
-[ "$st" = complete ] || cmp -s "$rb/$sums" "$sums" || fail_rb "the stored $sums differs from this run's"
+[ "$st" = done ] || cmp -s "$rb/$sums" "$sums" || fail_rb "the stored $sums differs from this run's"
 mv "$rb/$sums" "$rb/.sums"
 names=$("$GH" release view "$tag" --repo "$DATA_REPO" --json assets --jq '.assets[].name' 2>/dev/null) || fail_rb "the assets of $tag cannot be listed"
 n=0
 while IFS= read -r f; do
-  [ -n "$f" ] && [ "$f" != "$sums" ] || continue
+  [ -n "$f" ] && [ "$f" != "$sums" ] && [ "$f" != "readback-ok-$d" ] || continue
   "$GH" release download "$tag" --repo "$DATA_REPO" --pattern "$f" --dir "$rb" >/dev/null 2>&1 && [ -f "$rb/$f" ] ||
     fail_rb "$f could not be downloaded from $tag"
   want=$(awk -v f="$f" '$2 == f {print $1}' "$rb/.sums"); got=$(sha256sum "$rb/$f" | cut -d' ' -f1)
   [ -n "$want" ] && [ "$want" = "$got" ] || fail_rb "$f does not match $sums"
   rm -f "$rb/$f"; n=$((n + 1))
 done <<< "$names"
+# OF-5 ruling 1: only now, every asset read back, the release gets its readback-ok-DAY
+# marker (listed after SHA256SUMS), which is itself read back; a release stored earlier
+# already carries it (release_state checked its content).
+mk=$(marker_text "$tag" "$rb/.sums")
+if [ "$st" = created ]; then
+  printf '%s' "$mk" > "$rb/readback-ok-$d"
+  "$GH" release upload "$tag" --repo "$DATA_REPO" -- "$rb/readback-ok-$d" >/dev/null 2>&1 || fail_rb "the readback-ok-$d marker could not be stored in $tag"
+  rm -f "$rb/readback-ok-$d"
+fi
+"$GH" release download "$tag" --repo "$DATA_REPO" --pattern "readback-ok-$d" --dir "$rb" >/dev/null 2>&1 && [ -f "$rb/readback-ok-$d" ] ||
+  fail_rb "the readback-ok-$d marker could not be read back from $tag"
+[ "$(cat "$rb/readback-ok-$d")" = "${mk%$'\n'}" ] || fail_rb "the readback-ok-$d marker in $tag does not match"
+[ "$(release_state "$tag" "$d")" = done ] || fail_rb "$tag is not done after its marker was stored"
 rm -rf "$rb"
-echo "read back $tag: $n files match its $sums" | tee -a "$summary"
+echo "read back $tag: $n files match its $sums; readback-ok-$d stored and read back" | tee -a "$summary"
 echo "readback=true" >> "${GITHUB_OUTPUT:-/dev/null}"

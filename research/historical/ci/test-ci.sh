@@ -38,11 +38,14 @@ case "$cmd" in
       jq -s --argjson d "$draft" '{isDraft: $d, assets: .}' | jq -r "$jqx" ;;
   download)
     [[ -d "$dir" ]] || exit 1
-    echo "$tag" >> "$T/downloads.log"
     out="" pats=()
     while (( $# )); do
       case "$1" in --dir) out=$2; shift ;; --pattern) pats+=("$2"); shift ;; esac; shift
     done
+    # downloads.log lists data downloads; reading only SHA256SUMS or the readback-ok marker
+    # (release-state.sh judging a release) is not one
+    for p in "${pats[@]}"; do [[ "$p" == SHA256SUMS-* || "$p" == readback-ok-* ]] || { echo "$tag" >> "$T/downloads.log"; break; }; done
+    for p in "${pats[@]}"; do echo "$tag $p" >> "$T/dlpat.log"; done
     for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done
     # OF-4: FAKE_GH_CORRUPT=NAME hands back a changed copy of that asset (a read-back mismatch)
     [[ -n "${FAKE_GH_CORRUPT:-}" && -e "$out/$FAKE_GH_CORRUPT" ]] && echo changed >> "$out/$FAKE_GH_CORRUPT"
@@ -107,7 +110,10 @@ make_day() {
   (cd "$src" && tar -cf - units) | split -b 4000 -d -a 2 - "$dir/units-$day.tar.part"
   (cd "$src" && find units -mindepth 3 -maxdepth 3 \( -name events.jsonl.zst -o -name stats.json -o -name blocks.csv.zst \) | LC_ALL=C sort |
     tar --no-recursion -cf "$dir/events-$day.tar" -T -)
-  (cd "$dir" && sha256sum units-"$day".tar.part* events-"$day".tar > "SHA256SUMS-$day")
+  # the rest of a done release (OF-5 rulings 1 and 4): QA, manifest, parity, per-unit log and the readback-ok marker
+  for f in qa-$day.md qa-$day.json manifest-$day.json parity-$day.json units-$day.log; do echo "$f" > "$dir/$f"; done
+  (cd "$dir" && sha256sum units-"$day".tar.part* events-"$day".tar qa-* manifest-* parity-* units-"$day".log > "SHA256SUMS-$day")
+  printf 'readback-ok data-day-%s %s' "$day" "$(sha256sum "$dir/SHA256SUMS-$day" | cut -d' ' -f1)" > "$dir/readback-ok-$day"
   rm -rf "$src"
 }
 reset_store() {
@@ -156,6 +162,14 @@ run 2026-09-20 2026-09-22 "$T/w3" && no "existing dataset release replaced" || {
 reset_store; rm -rf "$T/rel/data-day-2026-09-10"
 run 2026-09-20 2026-09-22 "$T/work" && no "missing lead-in day skipped silently" ||
   { grep -q "data-day-2026-09-10 is missing" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "missing lead-in day fails before any download" || no "missing day: $(cat "$T/out.txt")"; }
+# OF-5 ruling 4: a complete day release without its readback-ok marker is refused before any download
+reset_store; rm "$T/rel/data-day-2026-09-21/readback-ok-2026-09-21"
+bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" > "$T/out.txt" 2>&1 && no "assemble took an unmarked day" ||
+  { grep -q "data-day-2026-09-21 is not done (complete); stopped for review" "$T/out.txt" && [[ ! -s "$T/downloads.log" && ! -d "$T/work" ]] &&
+    ok "OF-5 ruling 4: assemble --download refuses a complete day release without its readback-ok marker before any download" || no "OF-5 ruling 4: $(cat "$T/out.txt")"; }
+reset_store; echo units-2026-09-12.tar.part00 > "$T/rel/data-day-2026-09-12/.partial"
+bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" > "$T/out.txt" 2>&1 && no "assemble took a partial day" ||
+  { grep -q "data-day-2026-09-12 is not done (incomplete" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "OF-5 ruling 4: assemble --download refuses a day release with an asset not uploaded before any download" || no "OF-5 ruling 4 partial: $(cat "$T/out.txt")"; }
 
 reset_store
 FAKE_AVAIL=1000 run 2026-09-20 2026-09-22 "$T/work" && no "disk guard passed" || { grep -q "not enough disk" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "free-space guard (all the days' assets + 10 GB before the download; 2x a day's assets + 10 GB before its extraction)" || no "disk guard message"; }
@@ -164,9 +178,12 @@ reset_store; echo junk >> "$T/rel/data-day-2026-09-21/units-2026-09-21.tar.part0
 run 2026-09-20 2026-09-22 "$T/work" && no "corrupt part accepted" || { grep -q "checksum mismatch" "$T/out.txt" && ok "corrupt window part fails the checksum" || no "checksum message: $(cat "$T/out.txt")"; }
 reset_store; echo junk >> "$T/rel/data-day-2026-09-08/events-2026-09-08.tar"
 run 2026-09-20 2026-09-22 "$T/work" && no "corrupt events asset accepted" || { grep -q "events asset checksum mismatch" "$T/out.txt" && ok "corrupt lead-in events asset fails the checksum" || no "events checksum message: $(cat "$T/out.txt")"; }
-reset_store; rm "$T/rel/data-day-2026-09-10/units-2026-09-10.tar.part"*
-run 2026-09-20 2026-09-22 "$T/work"; grep -q "^data-day-2026-09-10$" "$T/downloads.log" && ! ls "$T/work"/dl-* >/dev/null 2>&1 && [[ -f "$T/rel/data-2026-09-20-2026-09-22/manifest.json" || -f "$T/finalize.args" ]] &&
-  ok "lead-in days download only the events asset (a lead-in day with no tar parts still assembles)" || no "lead-in events-only: $(tail -3 "$T/out.txt")"
+# (OF-5 ruling 4: a release without its tar parts is not done, so this reads the download patterns)
+reset_store; rm -f "$T/dlpat.log"
+run 2026-09-20 2026-09-22 "$T/work" || true
+grep -qx "data-day-2026-09-10 events-2026-09-10.tar" "$T/dlpat.log" && ! grep -q "^data-day-2026-09-10 units-" "$T/dlpat.log" && grep -q "^data-day-2026-09-21 units-2026-09-21.tar.part" "$T/dlpat.log" &&
+  ! ls "$T/work"/dl-* >/dev/null 2>&1 && [[ -f "$T/rel/data-2026-09-20-2026-09-22/manifest.json" ]] &&
+  ok "lead-in days download only the events asset (never their tar parts); window days their parts" || no "lead-in events-only: $(tail -3 "$T/out.txt")"
 
 STATS_REV_2026_09_20=r2 reset_store
 run 2026-09-20 2026-09-22 "$T/work" && no "midnight unit with another scanner_revision accepted" ||
@@ -210,7 +227,9 @@ mkfx "$T/fx" || no "OF-2 fixture"
 iso() { date -u -d "@$1" +%FT%TZ; }
 # The guard's gh stub (GH_BIN), state in $GD: the store (o/data) private unless
 # GD_PUBLIC, unreadable with GD_STORE_FAIL, storage-stop with GD_STOP, day tags from
-# $GD/published; runs of data-scan.yml ($GD/ds.json) and archive-check.yml ($GD/ac.json,
+# $GD/published (each carries its readback-ok marker unless $GD/unmarked lists it; OF-5
+# ruling 1); a day release's units-D.log and SHA256SUMS-D from $GD/rel/data-day-TAG when
+# present, else made up (K3 with its list, but K2 for the plain 07-22 and 07-23); runs of data-scan.yml ($GD/ds.json) and archive-check.yml ($GD/ac.json,
 # default: this run, 900, in progress), jobs from $GD/jobs-ID.json, caches from
 # $GD/caches.json (GD_CACHE_FAIL: unreadable); dispatches to $GD/dispatch.log; every call
 # to $GD/gh.log.
@@ -242,6 +261,19 @@ case "$1 $2" in
     # the filters gh applies: created on or after a time, one status
     out "$(jq --arg cr "$cr" --arg st "$st" '[.[] | select(($cr == "" or .createdAt >= $cr) and ($st == "" or .status == $st))]' <<< "$all")" ;;
   "workflow run") echo "$*" >> "$GD/dispatch.log" ;;
+  "release view"|"release download")
+    [[ -n "${GD_STORE_FAIL:-}" || -z "$GH_TOKEN" ]] && { echo "HTTP 401" >&2; exit 1; }
+    t=${3#data-day-}; dir=; pats=()
+    for ((i = 4; i <= $#; i++)); do j=$((i + 1)); case "${!i}" in --dir) dir=${!j} ;; --pattern) pats+=("${!j}") ;; esac; done
+    grep -qx "$t" "$GD/published" 2>/dev/null || { echo "release not found" >&2; exit 1; }
+    src="$GD/rel/data-day-$t"; [[ -d "$src" ]] || "$GD/bin/mkrel" "$t"
+    if [[ $2 == view ]]; then
+      (cd "$src" && for f in *; do st=uploaded; grep -qx "$f" .partial 2>/dev/null && st=starter; printf '{"name":"%s","state":"%s"}\n' "$f" "$st"; done) |
+        jq -s '{isDraft: false, assets: .}' | jq -r "$jqx"
+    else
+      for p in "${pats[@]}"; do for f in "$src"/$p; do [[ -e "$f" ]] && cp "$f" "$dir/"; done; done
+    fi
+    true ;;
   api*)
     case "$path" in
       repos/o/r) out '{"default_branch": "main", "private": false}' ;;
@@ -313,6 +345,21 @@ case "$1 $2" in
 esac
 SH
 chmod +x "$GD/bin/gh"
+# mkrel TAG [R1 R2 SHA]: a complete day release data-day-TAG in $GD/rel (two units at
+# retention R1 and R2 with the list's sha256, or SHA; default K3, but K2 for the plain
+# 07-22 and 07-23), with its readback-ok marker unless $GD/unmarked lists TAG.
+cat > "$GD/bin/mkrel" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+t=$1 d=${1:0:10} dir="$GD/rel/data-day-$1"; r=K3; [[ "$t" == 2026-07-2[23] ]] && r=K2
+rm -rf "$dir"; mkdir -p "$dir"; cd "$dir"
+echo "list $t" > "list-$d.txt"; s=$(sha256sum "list-$d.txt" | cut -d' ' -f1)
+printf '1046/1-4500 r1 %s %s\n1046/4501-9000 r1 %s %s\nk2 %s 1046/1-4500/events.jsonl.zst\n' "${2:-$r}" "${4:-$s}" "${3:-$r}" "${4:-$s}" "$s" > "units-$d.log"
+for f in "units-$d.tar.part00" "events-$d.tar" "qa-$d.md" "qa-$d.json" "manifest-$d.json" "parity-$d.json"; do echo "$f" > "$f"; done
+sha256sum -- * > "SHA256SUMS-$d"
+grep -qx "$t" "$GD/unmarked" 2>/dev/null || printf 'readback-ok data-day-%s %s' "$t" "$(sha256sum "SHA256SUMS-$d" | cut -d' ' -f1)" > "readback-ok-$d"
+SH
+chmod +x "$GD/bin/mkrel"
 # guard ARGS...: archive-guard.sh of the fixture (FXG overrides the copy) with the stub.
 guard() { rm -f "$GD/gh.log"; : > "$T/summary.md"
   GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok GH_TOKEN=ghtok GITHUB_STEP_SUMMARY="$T/summary.md" \
@@ -341,7 +388,7 @@ acrun() {
   return 0
 }
 acjson() { { cat; printf '{"databaseId": 900, "status": "in_progress", "conclusion": null, "createdAt": "%s", "updatedAt": "%s", "attempt": 1, "headBranch": "main", "displayTitle": "archive-check"}\n' "$(iso "$(date -u +%s)")" "$(iso "$(date -u +%s)")"; } | jq -s . > "$GD/ac.json"; }
-gdreset() { rm -f "$GD"/*.json "$GD"/*.log "$GD/published"; }
+gdreset() { rm -f "$GD"/*.json "$GD"/*.log "$GD/published" "$GD/unmarked"; rm -rf "$GD/rel"; }
 # pass DAY RET: a fresh pass of the scan job's guard step for scan-day.sh / check-day.sh.
 GP="$T/guardpass"
 gpass() { rm -rf "$GP"; mkdir -p "$GP"; echo "$1 $2 $(date -u +%s) 700 1" > "$GP/$1"; }
@@ -498,8 +545,8 @@ mkpd() {
   (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 }
 mkpd
-bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 9 ]] &&
-  ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity, per-unit log and sums" || no "publish-day create"
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 10 ]] && [[ -f "$T/rel/data-day-2026-09-30/readback-ok-2026-09-30" ]] &&
+  ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity, per-unit log, sums and the readback-ok marker" || no "publish-day create"
 echo "rerun QA report with different live results" > "$pd/qa-2026-09-30.md"; echo '{"rerun":1}' > "$pd/qa-2026-09-30.json"
 (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
@@ -627,7 +674,7 @@ gtok = [s.get("id") or s.get("name") for s in steps if "github.token" in str(s)]
 assert gtok == ["pickprogress", "guardscan", "guardqa"], gtok
 # OF-4: the store token as GH_TOKEN only in the skip, store, volume store and storage-check steps
 tok = [s for s in steps if (s.get("env") or {}).get("GH_TOKEN") == "${{ secrets.DATA_STORE_TOKEN }}"]
-assert [s.get("id") or s.get("name") for s in tok] == ["published", "store", "Store this day's volume hours", "Storage check after the batch"], tok
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "prior", "store", "Store this day's volume hours", "Storage check after the batch"], tok
 tok += [s for s in steps if (s.get("id") or s.get("name")) in ("guardscan", "guardqa")]
 pick = next(s for s in steps if s.get("id") == "pickprogress")
 assert pick["run"].endswith('research/historical/ci/progress-pick.sh" "$PREFIX"'), pick
@@ -1960,21 +2007,24 @@ assert ids.index("qatime") < ids.index("trim") == ids.index("guardqa") - 1 < ids
 t = steps[ids.index("trim")]
 assert t["if"] == "steps.published.outputs.complete != 'true' && inputs.source != 'helius'" and "github.token" not in str(t) and "secrets." not in str(t), t
 assert 'archive-guard.sh local "$DAY"' in t["run"], t
-# OF-3 ruling 18: both trim calls take the prior list scan-day checks (ARCHIVE_PRIOR_LIST, "-" until OF-5)
+# OF-3 ruling 18: both trim calls take the prior list scan-day checks (ARCHIVE_PRIOR_LIST, "-" for the first day)
 assert t["run"].count('trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" "${ARCHIVE_PRIOR_LIST:--}" "$RUNNER_TEMP/work/assets"') == 2 and " - " not in t["run"], t
-# ruling 23: declared once at job level (empty until OF-5); no step or other job sets either
+# ruling 23 (as wired by OF-5): one source, the prior step's outputs, set only on the scan
+# and trim steps; no job or workflow env sets either
 job = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]
-assert job.get("env", {}).get("ARCHIVE_PRIOR_LIST") == "" and job.get("env", {}).get("ARCHIVE_PRIOR_SUMS") == "", job.get("env")
+assert not set(job.get("env") or {}) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}, job.get("env")
 for st in steps:
-    assert not set(st.get("env") or {}) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}, st
+    e = st.get("env") or {}
+    if set(e) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}:
+        assert st.get("id") in ("scan", "trim") and e["ARCHIVE_PRIOR_LIST"] == "${{ steps.prior.outputs.list }}" and e["ARCHIVE_PRIOR_SUMS"] == "${{ steps.prior.outputs.sums }}", st
 wf = yaml.safe_load(open(sys.argv[1]))
 for jn, j in wf["jobs"].items():
-    if jn != "scan": assert not set(j.get("env") or {}) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}, jn
+    assert not set(j.get("env") or {}) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}, jn
 assert not set(wf.get("env") or {}) & {"ARCHIVE_PRIOR_LIST", "ARCHIVE_PRIOR_SUMS"}
 # ruling 20: a trim out of budget is not resumable
 assert "resumable" not in t["run"] and all("steps.trim.outputs.resumable" not in str(st.get("if", "")) for st in steps), t
 PY
-[[ -z "$bad" ]] && ok "OF-3 data-scan: the trim step runs after the scan and right before the QA guard, with no token, behind the local guard; both trim calls take \${ARCHIVE_PRIOR_LIST:--} (rulings 18; until OF-5 a K3 day other than the first fails closed); a trim out of budget is never chained (ruling 20); ARCHIVE_PRIOR_LIST and ARCHIVE_PRIOR_SUMS are declared once for the scan job and set by no step (ruling 23)" || no "OF-3 workflow trim:$bad"
+[[ -z "$bad" ]] && ok "OF-3 data-scan: the trim step runs after the scan and right before the QA guard, with no token, behind the local guard; both trim calls take \${ARCHIVE_PRIOR_LIST:--} (rulings 18; OF-5 hands both the stored prior list); a trim out of budget is never chained (ruling 20); ARCHIVE_PRIOR_LIST and ARCHIVE_PRIOR_SUMS are declared once for the scan job and set by no step (ruling 23)" || no "OF-3 workflow trim:$bad"
 bad=""
 
 # ---- OF-2 round 2 (docs/reviews/OF2.md rulings 1-10) ----
@@ -2560,7 +2610,7 @@ for s in steps:
 # the token reaches only clean guard, crypt and store steps, never scan, trim or QA
 for s in steps:
     if "DATA_STORE_TOKEN" in str(s.get("env", "")):
-        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh", "storage-check.sh")), s
+        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh", "storage-check.sh", "prior-fetch.sh")), s
 for k in ("scan", "qa"):
     assert "DATA_STORE_TOKEN" not in str(by[k]), k
 PY
@@ -3038,7 +3088,24 @@ names = list(asm); assert names.index("Download the days from the private store"
 steps = jobs["scan"]["steps"]; names = [s.get("id") or s.get("name") for s in steps]
 assert "Store this day's volume hours" in names and names.index("store") < names.index("Store this day's volume hours") < names.index("Storage check after the batch"), names
 sc = steps[names.index("Storage check after the batch")]
-assert sc["if"] == "steps.published.outputs.complete != 'true' && steps.store.outcome == 'success' && inputs.source != 'helius'", sc
+# OF-5 ruling 5: the check runs whenever the day was stored, also when a later step failed.
+# GitHub adds success() to an if without a status function, so model that.
+def runs(cond, **v):
+    import re as _re
+    if not _re.search(r"\b(success|failure|always|cancelled)\(\)", cond): cond = "success() && " + cond
+    e = cond.replace("!cancelled()", str(not v["cancelled"])).replace("success()", str(not v["failed"] and not v["cancelled"]))
+    e = e.replace("failure()", str(v["failed"])).replace("always()", "True").replace("cancelled()", str(v["cancelled"]))
+    e = e.replace("steps.published.outputs.complete", repr(v["complete"])).replace("steps.store.outcome", repr(v["store"]))
+    e = e.replace("steps.store.outputs.readback", repr(v["readback"])).replace("inputs.source", repr(v["source"]))
+    e = e.replace("&&", " and ").replace("||", " or ")
+    return eval(e, {})
+base = dict(cancelled=False, failed=False, complete="", store="success", readback="true", source="archive")
+cases = [(dict(), True), (dict(failed=True), True), (dict(failed=True, store="failure", readback=""), True),
+         (dict(store="skipped", readback="", complete="true"), False), (dict(cancelled=True, failed=True), False),
+         (dict(source="helius", store="skipped", readback=""), False)]
+for c, want in cases:
+    got = runs(sc["if"], **{**base, **c})
+    assert got == want, ("storage check", c, got)
 head = open(sys.argv[1]).read().split("\nname:")[0]
 assert "contents: write for this" not in head and "private store" in head, "header"
 ac = yaml.safe_load(open(sys.argv[2]))
@@ -3048,7 +3115,7 @@ assert all(hold["env"].get(k) == "" for k in ("BASH_ENV", "LD_PRELOAD", "LD_AUDI
 PY
 # The guard's own private-storage check passes on this tree (it refused while anything was public).
 (cd "$here" && . ./archive-limits.conf && . ./archive-guard.sh && ag_summary=/dev/null && ag_private_storage) >/dev/null 2>&1 || bad+=" [ag_private_storage refuses]"
-[[ -z "$bad" ]] && ok "OF-4: no data-scan job has contents: write, the only artifact is resume-, no 'Publish this day' step; every store, skip, volume and storage-check step holds the store token only under env -i; the storage check follows each stored day; archive-check's Holds step runs under env -i; the guard's ag_private_storage passes on this tree" || no "OF-4 workflows:$bad"
+[[ -z "$bad" ]] && ok "OF-4: no data-scan job has contents: write, the only artifact is resume-, no 'Publish this day' step; every store, skip, volume and storage-check step holds the store token only under env -i; the storage check follows each stored day, also when a later step failed (OF-5 ruling 5), never after a cancel; archive-check's Holds step runs under env -i; the guard's ag_private_storage passes on this tree" || no "OF-4 workflows:$bad"
 bad=""
 # The storage stop after every batch, against a fake private store.
 cat > "$T/storegh" <<'EOF'
@@ -3213,6 +3280,129 @@ out=$(bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/w5" 2>&1) && ba
 [[ -z "$bad" ]] && ok "OF-4 ruling 5: arming refuses the store token in a step outside a clean env -i step, in a job env or in the top-level env; assemble's build refuses to run with GH_TOKEN or GITHUB_TOKEN set, and --store refuses without a built release" || no "OF-4 store token:$bad"
 bad=""
 
+# ---- OF-5: completion from the private store; read done and B-10 done; the prior list from the store ----
+bad=""; export GH_BIN="$T/bin/gh"
+# --check: a complete data-day-D or data-day-D-k3 in the store is read done; nothing else is.
+cat > "$T/ckgh" <<'EOF'
+#!/usr/bin/env bash
+# serves the fake release store only for the repository in CK_REPO; any other is "release not found"
+repo=-; prev=""; for x in "$@"; do [[ "$prev" == --repo ]] && repo=$x; prev=$x; done
+[[ "$repo" == "$CK_REPO" ]] || { echo "release not found" >&2; exit 1; }
+exec "$T/bin/gh" "$@"
+EOF
+chmod +x "$T/ckgh"
+ck() { : > "$T/ckout"; rc=0; CK_REPO=${CK_REPO:-test/data} GH_BIN="$T/ckgh" GITHUB_OUTPUT="$T/ckout" bash "$here/publish-day.sh" --check "$1" >/dev/null 2>&1 || rc=$?; }
+d5=2026-09-27; rm -rf "$T/rel/data-day-$d5" "$T/rel/data-day-$d5-k3"
+ck $d5; [[ $rc == 0 ]] && grep -qx complete=false "$T/ckout" || bad+=" [none: $rc]"
+mk5() { local tag=$1; rm -rf "$T/rel/$tag"; mkdir -p "$T/rel/$tag"; for f in units-$d5.tar.part00 events-$d5.tar qa-$d5.md qa-$d5.json manifest-$d5.json parity-$d5.json units-$d5.log; do echo "$f" > "$T/rel/$tag/$f"; done
+  (cd "$T/rel/$tag" && sha256sum units-* events-* qa-* manifest-* parity-* > "SHA256SUMS-$d5")
+  printf 'readback-ok %s %s' "$tag" "$(sha256sum "$T/rel/$tag/SHA256SUMS-$d5" | cut -d' ' -f1)" > "$T/rel/$tag/readback-ok-$d5"; }
+mk5 "data-day-$d5"; ck $d5; [[ $rc == 0 ]] && grep -qx complete=true "$T/ckout" || bad+=" [plain: $rc]"
+rm -rf "$T/rel/data-day-$d5"; mk5 "data-day-$d5-k3"; ck $d5; [[ $rc == 0 ]] && grep -qx complete=true "$T/ckout" || bad+=" [k3: $rc]"
+CK_REPO=test/repo ck $d5; [[ $rc == 0 ]] && grep -qx complete=false "$T/ckout" || bad+=" [this repo counted: $rc]"
+rm "$T/rel/data-day-$d5-k3/units-$d5.log"; ck $d5; [[ $rc == 1 ]] && ! grep -q complete= "$T/ckout" || bad+=" [incomplete k3: $rc]"
+FAKE_GH_ERROR=1 ck $d5; [[ $rc == 1 ]] && ! grep -q complete= "$T/ckout" || bad+=" [store error: $rc]"
+rm -rf "$T/rel/data-day-$d5" "$T/rel/data-day-$d5-k3"
+[[ -z "$bad" ]] && ok "OF-5 read done (skip step): a complete data-day-D or data-day-D-k3 in the private store skips the day; none, or a release only in this repository, does not; an incomplete release or a store error fails the step with no output" || no "OF-5 read done:$bad"
+bad=""
+# OF-5 ruling 1: done only with the readback-ok marker, written after the read-back and read back.
+d6=2026-09-30
+mkpd; rm -rf "$T/rel/data-day-$d6"; : > "$T/ghout4"
+GH_BIN="$T/bin/gh" GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" $d6 "$pd" >/dev/null 2>&1 || bad+=" [store]"
+grep -qx readback=true "$T/ghout4" && [[ "$(cat "$T/rel/data-day-$d6/readback-ok-$d6")" == "readback-ok data-day-$d6 $(sha256sum "$T/rel/data-day-$d6/SHA256SUMS-$d6" | cut -d' ' -f1)" ]] || bad+=" [no marker after the read-back]"
+ck $d6; [[ $rc == 0 ]] && grep -qx complete=true "$T/ckout" || bad+=" [marked: $rc]"
+GH_BIN="$T/bin/gh" GITHUB_OUTPUT=/dev/null bash "$here/publish-day.sh" $d6 "$pd" >/dev/null 2>&1 || bad+=" [done rerun]"
+# complete names, one wrong byte: the read-back fails, no marker is written, the day is not done
+for c in units-$d6.tar.part01 units-$d6.log; do
+  rm -rf "$T/rel/data-day-$d6"; mkpd; : > "$T/ghout4"
+  FAKE_GH_CORRUPT=$c GH_BIN="$T/bin/gh" GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" $d6 "$pd" >/dev/null 2>&1 && bad+=" [$c stored]"
+  [[ ! -s "$T/ghout4" && ! -e "$T/rel/data-day-$d6/readback-ok-$d6" ]] || bad+=" [$c marked]"
+  ck $d6; [[ $rc == 1 ]] && ! grep -q complete= "$T/ckout" || bad+=" [$c counted: $rc $(cat "$T/ckout")]"
+  out=$(GH_BIN="$T/bin/gh" bash "$here/publish-day.sh" $d6 "$pd" 2>&1) && bad+=" [$c re-stored]"
+  [[ "$out" == *"stopped for review"* ]] || bad+=" [$c rerun: ${out:0:80}]"
+done
+# a marker that does not match the stored SHA256SUMS, or a lost marker read-back
+rm -rf "$T/rel/data-day-$d6"; mkpd; GH_BIN="$T/bin/gh" bash "$here/publish-day.sh" $d6 "$pd" >/dev/null 2>&1
+echo x >> "$T/rel/data-day-$d6/readback-ok-$d6"; ck $d6; [[ $rc == 1 ]] && ! grep -q complete= "$T/ckout" || bad+=" [bad marker: $rc]"
+rm -rf "$T/rel/data-day-$d6"; mkpd; : > "$T/ghout4"
+FAKE_GH_CORRUPT=readback-ok-$d6 GH_BIN="$T/bin/gh" GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" $d6 "$pd" >/dev/null 2>&1 && bad+=" [marker read-back passed]"
+[[ ! -s "$T/ghout4" ]] || bad+=" [marker read-back output]"
+rm -rf "$T/rel/data-day-$d6"
+# the guard: an unmarked day release is not read done and stops the queue
+gdreset; printf '2026-07-22\n2026-07-23\n' > "$GD/published"
+(export GD GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok; . "$here/archive-guard.sh"; ag_read_done) > "$T/rd" 2>/dev/null; [[ "$(tr '\n' ' ' < "$T/rd")" == "2026-07-22 2026-07-23 " ]] || bad+=" [marked read done: $(cat "$T/rd")]"
+echo 2026-07-23 > "$GD/unmarked"; rm -rf "$GD/rel"; rc=0
+(export GD GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok; . "$here/archive-guard.sh"; ag_read_done) > "$T/rd" 2> "$T/rde" || rc=$?
+[[ $rc != 0 && ! -s "$T/rd" ]] && grep -q "no readback-ok marker" "$T/rde" || bad+=" [unmarked: $rc $(cat "$T/rd")]"
+b10() { rc=0; GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok bash "$here/archive-guard.sh" b10-done > "$T/b10" 2>/dev/null || rc=$?; }
+printf '2026-07-22-k3\n2026-07-24\n' > "$GD/published"; echo 2026-07-24 > "$GD/unmarked"; rm -rf "$GD/rel"; b10
+[[ $rc == 0 && "$(tr '\n' ' ' < "$T/b10")" == "2026-07-22 " ]] || bad+=" [b10 unmarked: $rc $(tr '\n' ' ' < "$T/b10")]"
+# OF-5 ruling 3: a tagged release with one asset not uploaded is not done (guard and --check)
+gdreset; printf '2026-07-22\n2026-07-23\n' > "$GD/published"; GD="$GD" "$GD/bin/mkrel" 2026-07-23; echo events-2026-07-23.tar > "$GD/rel/data-day-2026-07-23/.partial"; rc=0
+(export GD GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok; . "$here/archive-guard.sh"; ag_read_done) > "$T/rd" 2> "$T/rde" || rc=$?
+[[ $rc != 0 && ! -s "$T/rd" ]] && grep -q "data-day-2026-07-23 .*not complete" "$T/rde" || bad+=" [guard partial: $rc $(cat "$T/rd")]"
+printf '2026-07-24\n' > "$GD/published"; GD="$GD" "$GD/bin/mkrel" 2026-07-24; echo qa-2026-07-24.md > "$GD/rel/data-day-2026-07-24/.partial"; b10
+[[ $rc == 0 && ! -s "$T/b10" ]] || bad+=" [b10 partial: $rc $(cat "$T/b10")]"
+mk5 "data-day-$d5"; echo "events-$d5.tar" > "$T/rel/data-day-$d5/.partial"; ck $d5; [[ $rc == 1 ]] && ! grep -q complete= "$T/ckout" || bad+=" [check partial: $rc]"
+rm -rf "$T/rel/data-day-$d5"
+gdreset
+[[ -z "$bad" ]] && ok "OF-5 ruling 1: a day release is done only with its readback-ok marker, stored after every asset was read back and itself read back; complete names with one wrong byte, a marker that does not match or a marker read-back that fails is not done (--check fails, a rerun stops for review); the guard's read done and B-10 done count only marked releases, and an unmarked one stops the queue; ruling 3: the guard judges a release as --check does (release-state.sh), so one asset not uploaded is not done for the guard, B-10 done or --check" || no "OF-5 ruling 1:$bad"
+bad=""
+# B-10 done: the -k3 release for the two measurement days, the plain one for the others.
+b10() { rc=0; GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok bash "$here/archive-guard.sh" b10-done > "$T/b10" 2>/dev/null || rc=$?; }
+gdreset
+echo 2026-07-22 > "$GD/published"; b10; [[ $rc == 0 && ! -s "$T/b10" ]] || bad+=" [K2 counted: $(cat "$T/b10" | tr '\n' ' ')]"
+printf '2026-07-22\n2026-07-22-k3\n2026-07-23\n2026-07-24\n2026-07-26\n' > "$GD/published"; b10
+[[ $rc == 0 && "$(tr '\n' ' ' < "$T/b10")" == "2026-07-22 2026-07-24 2026-07-26 " ]] || bad+=" [mix: $rc $(tr '\n' ' ' < "$T/b10")]"
+GD_STORE_FAIL=1 b10; [[ $rc == 2 ]] || bad+=" [store error: $rc]"
+# ... while the queue still counts the K2 release as read done (07-22 is never read twice)
+echo 2026-07-22 > "$GD/published"
+(export GD GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok; . "$here/archive-guard.sh"; ag_read_done) > "$T/rd" 2>/dev/null; [[ "$(cat "$T/rd")" == 2026-07-22 ]] || bad+=" [read done: $(cat "$T/rd")]"
+gdreset
+[[ -z "$bad" ]] && ok "OF-5 B-10 done: the K2 release data-day-2026-07-22 is read done but never B-10 done, data-day-2026-07-22-k3 is; 07-23 at K2 is not; other days at K3 count plain; a store error fails closed" || no "OF-5 B-10 done:$bad"
+bad=""
+# OF-5 ruling 2: B-10 done from the recorded retention (units-D.log all K3 with the list sha256), not the tag name.
+mkb() { GD="$GD" "$GD/bin/mkrel" "$@"; }
+gdreset; echo 2026-07-22 > "$GD/published"; mkb 2026-07-22 K3 K3; b10
+[[ $rc == 0 && "$(cat "$T/b10")" == 2026-07-22 ]] || bad+=" [07-22 K3 plain: $rc $(cat "$T/b10")]"
+mkb 2026-07-22 K3 K2; b10; [[ $rc == 0 && ! -s "$T/b10" ]] || bad+=" [mixed K3/K2 counted]"
+mkb 2026-07-22 K3 K3 "$(printf '0%.0s' {1..64})"; b10; [[ $rc == 0 && ! -s "$T/b10" ]] || bad+=" [another list's sha counted]"
+echo 2026-07-22-k3 > "$GD/published"; mkb 2026-07-22-k3 K2 K2; b10; [[ $rc == 0 && ! -s "$T/b10" ]] || bad+=" [K2 under the -k3 tag counted]"
+echo 2026-07-25 > "$GD/published"; mkb 2026-07-25 K2 K2; b10; [[ $rc == 0 && ! -s "$T/b10" ]] || bad+=" [K2 plain day counted]"
+mkb 2026-07-25 K3 K3; b10; [[ $rc == 0 && "$(cat "$T/b10")" == 2026-07-25 ]] || bad+=" [07-25 K3: $(cat "$T/b10")]"
+rm "$GD/rel/data-day-2026-07-25/units-2026-07-25.log"; b10; [[ $rc == 0 && ! -s "$T/b10" ]] || bad+=" [no units log counted]"
+gdreset
+[[ -z "$bad" ]] && ok "OF-5 ruling 2: B-10 done is judged from the recorded retention: 2026-07-22 stored at K3 under the plain tag counts; a unit line at K2, another list's sha256, K2 under a -k3 tag, a K2 plain day or a release without its per-unit log does not" || no "OF-5 ruling 2:$bad"
+bad=""
+# The prior list: none for the first allow-listed day; for D, list-<D-1>.txt and its SHA256SUMS from the store.
+pf() { : > "$T/pfout"; rc=0; GITHUB_OUTPUT="$T/pfout" bash "$here/prior-fetch.sh" "$1" "$T/pfdir" > "$T/pf.txt" 2>&1 || rc=$?; }
+rm -rf "$T/rel/data-day-2026-07-22" "$T/rel/data-day-2026-07-22-k3" "$T/pfdir"
+pf 2026-07-22; [[ $rc == 0 && "$(cat "$T/pfout")" == $'list=\nsums=' ]] || bad+=" [first: $rc $(cat "$T/pfout")]"
+pf 2026-07-23; [[ $rc == 1 && ! -s "$T/pfout" ]] || bad+=" [missing: $rc]"
+mkdir -p "$T/rel/data-day-2026-07-22"; echo "pool 1 2" > "$T/rel/data-day-2026-07-22/list-2026-07-22.txt"
+(cd "$T/rel/data-day-2026-07-22" && sha256sum list-2026-07-22.txt > SHA256SUMS-2026-07-22)
+pf 2026-07-23; [[ $rc == 0 ]] && grep -qx "list=$T/pfdir/list-2026-07-22.txt" "$T/pfout" && grep -qx "sums=$T/pfdir/SHA256SUMS-2026-07-22" "$T/pfout" || bad+=" [plain: $rc $(cat "$T/pf.txt")]"
+bash "$here/archive-guard.sh" prior 2026-07-23 "$T/pfdir/list-2026-07-22.txt" "$T/pfdir/SHA256SUMS-2026-07-22" >/dev/null 2>&1 || bad+=" [guard refused the fetched pair]"
+mv "$T/rel/data-day-2026-07-22" "$T/rel/data-day-2026-07-22-k3"
+pf 2026-07-23; [[ $rc == 0 ]] && grep -qx "list=$T/pfdir/list-2026-07-22.txt" "$T/pfout" || bad+=" [k3: $rc]"
+rm "$T/rel/data-day-2026-07-22-k3/SHA256SUMS-2026-07-22"; pf 2026-07-23; [[ $rc == 1 && ! -s "$T/pfout" ]] || bad+=" [no sums: $rc]"
+rm -rf "$T/rel/data-day-2026-07-22-k3"
+rc=0; DATA_REPO= GITHUB_OUTPUT="$T/pfout" bash "$here/prior-fetch.sh" 2026-07-23 "$T/pfdir" >/dev/null 2>&1 || rc=$?; [[ $rc == 1 ]] || bad+=" [no store: $rc]"
+unset GH_BIN
+python3 - "$wf/data-scan.yml" <<'PY' || bad+=" [workflow]"
+import sys, yaml
+job = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]
+assert "ARCHIVE_PRIOR_LIST" not in str(job.get("env") or {}), job.get("env")
+steps = job["steps"]; ids = [x.get("id") or x.get("name") for x in steps]
+pr = steps[ids.index("prior")]
+assert pr["env"]["GH_TOKEN"] == "${{ secrets.DATA_STORE_TOKEN }}" and pr["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin ") and 'prior-fetch.sh" "$DAY"' in pr["run"], pr
+assert "steps.published.outputs.complete != 'true'" in pr["if"] and "inputs.source != 'helius'" in pr["if"], pr
+assert ids.index("prior") < ids.index("scan") < ids.index("trim"), ids
+for k in ("scan", "trim"):
+    e = steps[ids.index(k)]["env"]
+    assert e["ARCHIVE_PRIOR_LIST"] == "${{ steps.prior.outputs.list }}" and e["ARCHIVE_PRIOR_SUMS"] == "${{ steps.prior.outputs.sums }}", (k, e)
+PY
+[[ -z "$bad" ]] && ok "OF-5 prior list: the first allow-listed day gets none; day D gets list-<D-1>.txt and SHA256SUMS-<D-1> from data-day-<D-1> (else its -k3) in the store, which archive-guard.sh prior accepts; a missing release or file, or no store, fails closed with no output; the scan job fetches it in a clean step and hands the same outputs to the scan and the trim" || no "OF-5 prior list:$bad"
 # ---- OF-4 round 2 (rulings 7-10) ----
 bad=""
 # 7. One archive day per run: the plan refuses two before any request, and the forget marker

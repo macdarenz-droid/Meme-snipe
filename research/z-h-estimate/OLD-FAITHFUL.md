@@ -329,6 +329,17 @@ migration raw record. Today's retention already keeps every curve and canonical-
   `ARCHIVE_STORE_CAP_BYTES` (5 × 10^11 bytes; the decimal reading is the stricter one). Above it, the script writes the
   published `storage-stop` release, never edits or deletes it, and exits 3, so the batch fails and nothing chains.
   A store it cannot read, or no per-day figure, fails closed without a marker.
+- **As built (OF-5):** "read done" is read only from `zeroed-data`, failing closed when it cannot be read: the
+  queue and the guard (`ag_read_done`) and the skip step (`publish-day.sh --check`) count a `data-day-D` or
+  `data-day-D-k3` release only when it is complete (every asset uploaded and named as its `SHA256SUMS-D` lists; both
+  judge it with `ci/release-state.sh`, ruling 3, as does `assemble.sh --download`, which takes only such days, ruling 4) and carries its `readback-ok-D` marker (OF-5 ruling 1): stored after every other asset
+  was read back, naming the tag and the sha256 of the stored `SHA256SUMS-D`, and itself read back. A release without it
+  (its read-back never passed) stops the chain for review and is never read again automatically. "B-10 done" is
+  `archive-guard.sh b10-done`: a marked release whose recorded retention is B-10's (ruling 2: every unit line of
+  `units-D.log` K3 with the sha256 of `list-D.txt` from its `SHA256SUMS-D`), whatever the tag name; it is for the
+  `B10-PULL` row and the evaluator only.
+  The scan job's clean `prior` step (`ci/prior-fetch.sh`) downloads `list-<D-1>.txt` and `SHA256SUMS-<D-1>` from D-1's
+  release in the store and hands them to the scan and the trim; `archive-guard.sh prior` checks the sha256.
 - **K2 progress is not stored in `zeroed-data`** (OF-4, deciding OF-3 ruling 7). A K2 day's progress (about 45 GB)
   does not fit the Actions cache. Putting partial K2 units in the private store would add a second store path for
   unfinished data, with its own read-back and clean-up, for two measurement days. Instead, a K2 day that cannot finish
