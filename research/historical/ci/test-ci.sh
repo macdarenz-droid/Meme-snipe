@@ -833,6 +833,16 @@ ARCHIVE_GO="$T/archive10.go" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" P
 [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "2026-09-21 is a Helius day" "$T/summary.md" || bad+=" helius-day:$rc"
 [[ -z "$bad" ]] && ok "ARCHIVE-SAFE: check-day (archive) exits 2 before any zeroed-scan call for max_mbps 41 or 0, a request cap of 40, 10.5 or none, and a Helius day (ARCHIVE-NODUP); 40 MB/s at 10/s runs" || no "check-day limits:$bad"
 [[ $p == determinism ]] && grep -q "^phase determinism" "$T/summary.md" && ok "check-day: finalize, QA, parity, volume and determinism durations are logged"
+# OF-6: a built scanner is never committed: the default go build outputs are ignored, and
+# (in a git checkout) no tracked file under research/historical is an executable binary.
+bad=""
+for f in scanner/scanner rpcscan/rpcscan scanner/zeroed-scan; do grep -qxF "$f" "$here/../.gitignore" || bad+=" [not ignored: $f]"; done
+if git -C "$here" rev-parse --git-dir >/dev/null 2>&1; then
+  while IFS= read -r -d '' f; do
+    [[ -f "$here/../../../$f" && "$(head -c 4 "$here/../../../$f" | od -An -tx1 | tr -d ' \n')" == 7f454c46 ]] && bad+=" [tracked ELF binary: $f]"
+  done < <(git -C "$here/../../.." ls-files -z research/historical)
+fi
+[[ -z "$bad" ]] && ok "OF-6: a built scanner (scanner/scanner, rpcscan/rpcscan, zeroed-scan) is ignored by git, and no tracked file under research/historical is an executable binary" || no "OF-6 no binary:$bad"
 # OF-6: the rescan reads exactly one unit; a unit range longer than unitSlots is refused before any read.
 bad=""
 rc=0; RESCAN_COPY=1 cdrun o1 0 || rc=$?; [[ $rc == 0 && $(grep -c '^unit ' "$T/zs.args") == 1 ]] && grep -q -- "-from-slot 1 -to-slot 2 " "$T/zs.args" || bad+=" [one: $rc]"

@@ -3,6 +3,9 @@ data/
 dataset/
 *.zst
 scanner/zeroed-scan
+# the default `go build` outputs (OF-6: a built scanner is never committed; test-ci checks it)
+scanner/scanner
+rpcscan/rpcscan
 # committed exceptions: the pilot's baseline digest (hashes only, no rows) and three
 # recorded public-RPC getBlock responses the RPC scanner tests read
 !pilot/baseline-*.json.zst
