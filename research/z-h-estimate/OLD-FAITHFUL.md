@@ -236,6 +236,13 @@ recommendation, before `ARCHIVE_ARM` is set:
    data-keep refreshes only sealed entries (ruling 51), so the unsealed `data-rpc-*` entries saved before this change
    (09-21's included) expire after 7 days unused. Arming holds while any unsealed `data-scan-*` or `data-rpc-*` entry
    remains; whether to delete one or wait for it to expire is the owner's decision.
+6. The `-k3` releases of the two measurement days (OF-6 ruling 12). After batches 1 and 2 are stored at K2 and the
+   reviewed change sets `ARCHIVE_RETENTION` to K3, and before batch 3, `data-scan.yml` runs in mode `k3` once for
+   07-22, then once for 07-23 (07-23 waits for `data-day-2026-07-22-k3`). Nothing is read from the archive:
+   `ci/k3-fetch.sh` brings the K2 day back from `zeroed-data`, `margin-fetch.sh` replaces the units it took with the
+   day before's K3 copies and writes `prev-day.txt`, `trim-day.sh --qa` trims it with QA, the list must equal the stored
+   one, and `publish-day.sh --k3` stores and reads back `data-day-DAY-k3` with its `readback-ok` marker. Batch 3
+   (07-24) takes its margin only from `data-day-2026-07-23-k3` (ruling 6), so it cannot start before.
 
 **Reads, and the one allowed second read (DERIVED).**
 - Each day's unit plan carries two units of margin on each side (`scanner/main.go:310`, 3,600 s), about 1.9 units each
