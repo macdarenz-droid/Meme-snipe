@@ -62,18 +62,21 @@ class PoolBook:
                     _widen(r)
         return self
 
-    def prune(self, pools) -> None:
+    def prune(self, pools, widen: bool = True) -> None:
         """Drop every pool not in `pools` (for a caller that reads no other pool). The kept pools' rows are copied
         out of the shared column arrays one column at a time, so those arrays are freed; their values are unchanged,
-        and columns the low-memory reader held as int32 are widened back to int64."""
+        and (widen=True) columns the low-memory reader held as int32 are widened back to int64. Stage 1 keeps them
+        int32 (widen=False): its readers use them only as indexes, codes, flags and times, never in arithmetic that
+        could overflow (tested byte-identical against the earlier reader)."""
         keep = {int(p) for p in pools}
         for p in [p for p in self.rows if p not in keep]:
             del self.rows[p]
         for c in BOOK_COLS:
             for r in self.rows.values():
-                r[c] = r[c].astype(np.int64) if r[c].dtype != np.int64 else r[c].copy()
-        for r in self.rows.values():
-            _widen(r)
+                r[c] = r[c].astype(np.int64) if widen and r[c].dtype != np.int64 else r[c].copy()
+        if widen:
+            for r in self.rows.values():
+                _widen(r)
 
     def _split(self, arrs: Dict[str, np.ndarray], pools: np.ndarray):
         cols = BOOK_COLS

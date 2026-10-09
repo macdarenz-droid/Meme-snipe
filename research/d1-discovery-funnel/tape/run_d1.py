@@ -96,7 +96,7 @@ def stage1(args):
     migs = migrations(tape, book, dev_unknown_migration=dev)
     pts = decision_points(tape, book, migs, clock)
     if lowmem:   # the features read only the pools of eligible points; the other pools' rows are freed
-        book.prune(pts.pool[pts.eligible] if len(pts) else ())
+        book.prune(pts.pool[pts.eligible] if len(pts) else (), widen=False)
     feats = compute_features(tape, book, pts, clock) if len(pts) else pd.DataFrame()
     pts.to_pickle(os.path.join(args.out, "points.pkl"))
     feats.to_pickle(os.path.join(args.out, "features.pkl"))
