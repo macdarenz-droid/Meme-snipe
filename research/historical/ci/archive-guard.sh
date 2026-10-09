@@ -510,6 +510,26 @@ ag_prior_ok() {
 
 # ---- the private store (DATA_REPO, zeroed-data) ----
 ag_store() { GH_TOKEN="${DATA_STORE_TOKEN:-}" "$ag_gh" "$@"; }
+# ag_prev_day DAY GH (OF-6 ruling 11): "none" when the store holds no data-day-<D-1> or
+# data-day-<D-1>-k3 release (absent, judged by release_state through the gh command GH,
+# which holds the store token), else the tags found; fails on a store error. Only the head
+# of ARCHIVE_DAYS with "none" is exempt from the prior list, the margin and -stored.
+ag_prev_day() {
+  local prev t st found=""
+  prev=$(date -u -d "$1 - 1 day" +%F 2>/dev/null) || return 1
+  for t in "data-day-$prev" "data-day-$prev-k3"; do
+    st=$(GH=$2 release_state "$t" "$prev")
+    case "$st" in absent) ;; error*) return 1 ;; *) found+="$t " ;; esac
+  done
+  if [[ -n "$found" ]]; then echo "${found% }"; else echo none; fi
+}
+# ag_exempt DAY OUT (no token): the day heads ARCHIVE_DAYS and the clean margin step
+# recorded in OUT/prev-day.txt that the store holds no release of the day before.
+ag_exempt() {
+  local prev
+  prev=$(date -u -d "$1 - 1 day" +%F 2>/dev/null) || return 1
+  [[ "$1" == "$(ag_first_day)" && -f "$2/prev-day.txt" && "$(cat "$2/prev-day.txt")" == "none $prev" ]]
+}
 # ag_store_ok: the store is named, is not this repository, answers, is private, and
 # holds no storage-stop tag (OF-4 writes it, append-only; only a reviewed change with
 # the owner's OK clears it).

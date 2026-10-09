@@ -358,6 +358,8 @@ migration raw record. Today's retention already keeps every curve and canonical-
   the margin tar may hold only regular files and directories; and the scanner refuses a planned unit that the day
   before stored but this day did not take (`-stored`, `-taken`), so a drift between the two time estimates never
   reads a unit twice.
+  Only the head of `ARCHIVE_DAYS` whose day before the store does not hold is exempt from the prior list, the margin
+  and `-stored`; the clean margin step records it in `prev-day.txt` (ruling 11).
 - **K2 progress is not stored in `zeroed-data`** (OF-4, deciding OF-3 ruling 7). A K2 day's progress (about 45 GB)
   does not fit the Actions cache. Putting partial K2 units in the private store would add a second store path for
   unfinished data, with its own read-back and clean-up, for two measurement days. Instead, a K2 day that cannot finish
