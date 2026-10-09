@@ -35,3 +35,8 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-6 bullet. Builder: data builder `session_
 10. **Reviewer MINOR, required (ruling 6 asks for it).** A Go test: trim a D-1 K2 unit with D-1's list (the `-k3` copy), take it into D next to one of D's own units trimmed with D's list, build D's `units-D.log` as trim-day does, then run `checkUnitLog` and finalize, expecting success, with the shared unit byte-equal to the `-k3` copy.
 11. **Red team MINOR, required.** A day is exempt from the prior-list, margin and `-stored` checks only when the store holds no `data-day-<D-1>[-k3]` release, not because it heads `ARCHIVE_DAYS`. Test: with D-1 stored, the head of an edited `ARCHIVE_DAYS` still runs the full checks.
 - OF-7 re-pins on the round 3 scanner tree.
+
+## Round 3 (head `d66e8fcb`)
+
+- Red team: PASS, 0 BLOCKER, 0 MAJOR, 1 MINOR. The first-day exemption cannot be gained with D-1 stored (a store error, a stale or forged `prev-day.txt`, or a head edit all lead to the full checks). Note: nothing in the workflow runs `trim-day --qa` / `publish-day --k3` yet, the producer of `data-day-07-22-k3` and `07-23-k3` that OF-3 requires before batch 3; whatever runs it must write `prev-day.txt` through a clean store step (it fails closed without it).
+12. **Supervisor ruling (9 Oct about 3:20 PM).** The `-k3` producer for 07-22 and 07-23 is part of OF-3's existing scope (the trim into `-k3` releases before batch 3), not a new card. It goes to the data builder after OF-7 merges, before any arm: a workflow path that runs the trim and `publish-day --k3` with `prev-day.txt` written by a clean store step, with tests. It is added to the arm checklist.

@@ -12,3 +12,8 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-7 bullet. Builder: data builder `session_
 1. **Red team m1, required.** In a git checkout the pin check requires a non-empty scanner tree hash and fails otherwise.
 2. **Red team m2, required.** A runtime check: the guard's attest step (or scan-day) refuses when `$SCANNER_REVISION` is not the pinned row's `scannerRev=<tree>-go<ver>`. Branch protection is not on yet (an owner step), so review-time tests alone do not cover every merge path. Test it.
 - Reviewer (round 1): PASS, 0 BLOCKER, 0 MAJOR, 1 MINOR, the same as red team m1 (ruling 1). The row matches the card; the changed OF-2 test is stricter (adds `! ag_armed`); `ARCHIVE_ARM` is empty. Arming is now a one-line change (`ARCHIVE_ARM=b10pull-of-1`); it stays a reviewed step taken only with the owner's arm-time steps (CLAUDE.md "Pause after the current tasks").
+
+## Round 2 (head `5931f1eb`, re-pinned `scannerRev=e684544b…-go1.24.7`)
+
+- Red team: PASS, 0 BLOCKER, 0 MAJOR, 1 MINOR. m1 and m2 closed: the tree hash must be 40 hex digits; scan-day refuses any `SCANNER_REVISION` other than the pinned row before any read, and no archive scan path skips it.
+3. **Red team MINOR (scan-day compares the environment value, not the binary's own revision), declined (9 Oct about 3:20 PM).** No step can rewrite `GITHUB_ENV` or `GITHUB_PATH` between the build and the scan, and every workflow change is reviewed and red-teamed. Possible later hardening: a `zeroed-scan revision` check.
