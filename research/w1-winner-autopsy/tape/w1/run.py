@@ -24,8 +24,17 @@ import sys
 
 import numpy as np
 
-from . import classes, clusters, flippers, guard, load, persist, positions, replay, rules
+from . import guard, load
 from .ledger import Ledger
+
+# The scoring modules are imported by the stages that use them, never by `ledger --prep-only` (the preparation run
+# on real tape imports no outcome, scoring or statistics module; tests/test_scale.py checks it).
+_SCORING = ("classes", "clusters", "flippers", "persist", "positions", "replay", "rules")
+
+
+def _mods():
+    import importlib
+    return [importlib.import_module("." + m, __package__) for m in _SCORING]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -70,6 +79,7 @@ def _write_manifest(work, m):
 
 
 def cmd_ledger(a):
+    load.READER = "legacy" if a.legacy_reader else "chunked"
     units = load.parse_units(a.units) if a.units else load.find_units(a.cache, a.days)
     if not units:
         sys.exit("no units")
@@ -83,13 +93,18 @@ def cmd_ledger(a):
                     guard.refuse(f"{day}: units differ from the frozen plan ({len(got)} given, {len(want)} planned)")
     os.makedirs(a.work, exist_ok=True)
     vocab = load.Vocab()
-    led = Ledger(vocab)
+    led = Ledger(vocab, prep_only=a.prep_only)
     led.allow_gaps = bool(a.dev_allow_gaps)
     manifest = {"units": [f"{u.day}/{u.lo}-{u.hi}" for u in units],
                 "unit_paths": {f"{u.day}/{u.lo}-{u.hi}": os.path.abspath(u.path) for u in units},
                 "input_paths": load.input_paths(units), "inputs": load.input_hashes(units),
-                "code": code_hashes(), "seed": persist.SEED, "bootstrap": persist.B, "days": {}, "ledger_sha": {},
-                "allow_gaps": bool(a.dev_allow_gaps)}
+                "code": code_hashes()}
+    if a.prep_only:
+        manifest["prep_only"] = True
+    else:
+        from . import persist
+        manifest.update({"seed": persist.SEED, "bootstrap": persist.B})
+    manifest.update({"days": {}, "ledger_sha": {}, "allow_gaps": bool(a.dev_allow_gaps)})
     excluded = {}
 
     def close_day():
@@ -122,7 +137,7 @@ def _day_counts(d):
             "owner_mint_rows": int(len(r)), "dirty_rows": int(r["dirty"].sum()),
             "dirty_start_only_rows": int(r["dirty_start_only"].sum()), "unresolved_rows": int(r["unresolved"].sum()),
             "partial_rows": int(r["partial"].sum()), "no_state_marks": int(r["no_state"].sum()),
-            "rows_with_signer_method": int((r["nsig"] > 0).sum()),
+            **({} if d.get("prep_only") else {"rows_with_signer_method": int((r["nsig"] > 0).sum())}),
             "owners": int(len(d["owners"])), "buys": int(len(d["buys"])), "big_buys": int(len(d["big"])),
             "transfers_between_tracked": int(len(d["xfers"])), "w_links": int(len(d["wedges"])),
             "t_links": int(len(d["tedges"])), "cg_events": int(len(d["cg"])),
@@ -131,6 +146,9 @@ def _day_counts(d):
 
 def cmd_counts(a):
     """Development check: shapes and counts per day. Reads no P&L value and no test statistic."""
+    classes, clusters, _, persist, _, _, _ = _mods()
+    if _manifest(a.work).get("prep_only"):
+        guard.refuse("a prep-only ledger has no cash or marks; `counts` needs a full ledger")
     days = _load_days(a.work, a.days)
     out = []
     for d in days:
@@ -153,6 +171,8 @@ def _scored(a, role):
                  "and a reviewer has passed the code)")
     spec = guard.check_args(role, a.rank, a.test, a.days)
     m = _manifest(a.work)
+    if m.get("prep_only"):
+        guard.refuse("a prep-only ledger cannot be scored")
     guard.verify(a.work, role, m, code_hashes())
     days = _load_days(a.work, spec["days"])
     got = sorted(d["day"] for d in days)
@@ -162,6 +182,7 @@ def _scored(a, role):
 
 
 def cmd_gate(a):
+    classes, clusters, flippers, persist, positions, replay, rules = _mods()
     m, spec, days = _scored(a, "gate")
     res = []
     for d in days:
@@ -177,6 +198,7 @@ def cmd_gate(a):
 def cmd_flippers(a):
     """AMENDMENT_4 rows on Step A: flipper class per day and over the tape, its persistence, a census of buy SOL by
     class, and the flows around flippers' trips. No P&L and no ranking."""
+    classes, clusters, flippers, persist, positions, replay, rules = _mods()
     m, spec, days = _scored(a, "gate")
     import pandas as pd
     t_last, _ = clusters.build(days, days[-1]["day"])
@@ -198,6 +220,7 @@ def cmd_flippers(a):
 
 
 def _persistence(a, role, with_replay):
+    classes, clusters, flippers, persist, positions, replay, rules = _mods()
     m, spec, days = _scored(a, role)
     by = {d["day"]: d for d in days}
     rank_day, test_days = spec["rank"], spec["test"]
@@ -245,6 +268,7 @@ def cmd_validation(a):
 
 def cmd_extract(a):
     """§8 extraction. Runs only after a validation pass recorded (and hashed) by `validation` in the same work."""
+    classes, clusters, flippers, persist, positions, replay, rules = _mods()
     m, spec, days = _scored(a, "extract")
     import pandas as pd
     with open(os.path.join(a.work, "validation.pkl"), "rb") as f:
@@ -319,6 +343,7 @@ def _excluder(led):
 
 
 def cmd_ruletest(a):
+    classes, clusters, flippers, persist, positions, replay, rules = _mods()
     m, spec, days = _scored(a, "ruletest")
     import pandas as pd
     if not a.rule_work:
@@ -370,6 +395,9 @@ def main(argv=None):
     p.add_argument("--rule-work")
     p.add_argument("--dev-allow-gaps", action="store_true", help="development only; scored stages refuse it")
     p.add_argument("--score", action="store_true")
+    p.add_argument("--prep-only", action="store_true",
+                   help="ledger only: no cash, cost or valuation is computed; no scoring module is imported")
+    p.add_argument("--legacy-reader", action="store_true", help="ledger only: the original whole-table reader")
     a = p.parse_args(argv)
     {"ledger": cmd_ledger, "counts": cmd_counts, "gate": cmd_gate, "flippers": cmd_flippers, "discovery": cmd_discovery,
      "validation": cmd_validation, "extract": cmd_extract, "ruletest": cmd_ruletest}[a.stage](a)

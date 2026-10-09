@@ -126,13 +126,45 @@ class Vocab:
         return len(self.strs)
 
 
+# "chunked" (default): the table is read CHUNK rows at a time; each chunk's integer columns become int64 at once and
+# its text cells are shared with equal cells already read, so a unit's text never sits in memory once per cell.
+# "legacy": the whole table as text first (the original reader; kept for the equality test). Same values either way.
+READER = "chunked"
+CHUNK = 50_000
+
+
 def read_table(path, cols, int_cols=(), nrows=None):
     """Reads the wanted columns as text, then integer columns exactly as int64 (missing -> 0 with a `<col>_na`
     flag; a value outside int64 -> 0 with its row flagged in `_overflow`). pandas' nullable Int64 reader wraps
     out-of-range values silently, so it is not used."""
     head = pd.read_csv(path, compression="zstd", nrows=0).columns
     use = [c for c in cols if c in head]
-    df = pd.read_csv(path, compression="zstd", usecols=use, dtype=str, nrows=nrows, keep_default_na=False)
+    if READER == "legacy" or nrows is not None:
+        df = pd.read_csv(path, compression="zstd", usecols=use, dtype=str, nrows=nrows, keep_default_na=False)
+        return _convert(df, cols, int_cols)
+    shared = {}
+    parts = []
+    for ch in pd.read_csv(path, compression="zstd", usecols=use, dtype=str, keep_default_na=False,
+                          chunksize=CHUNK):
+        for c in ch.columns:
+            if c not in int_cols:
+                ch[c] = _share(ch[c].to_numpy(dtype=object), shared.setdefault(c, {}))
+        parts.append(_convert(ch, cols, int_cols))
+    if not parts:
+        df = pd.read_csv(path, compression="zstd", usecols=use, dtype=str, keep_default_na=False)
+        return _convert(df, cols, int_cols)
+    return pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+
+
+def _share(vals, seen):
+    """The same text values, with equal cells pointing at one string object."""
+    out = np.empty(len(vals), object)
+    for i, x in enumerate(vals):
+        out[i] = seen.setdefault(x, x)
+    return out
+
+
+def _convert(df, cols, int_cols):
     bad = np.zeros(len(df), bool)
     for c in int_cols:
         if c not in df.columns:

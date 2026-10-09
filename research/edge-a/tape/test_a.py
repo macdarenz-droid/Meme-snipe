@@ -206,6 +206,41 @@ class TestPipeline(unittest.TestCase):
                              "--out", out, "--score-primary"], capture_output=True, text=True)
         self.assertNotEqual(rc.returncode, 0)  # scoring needs the confirmation
 
+    def test_prep_only_blocks_outcomes_and_gate_statistics(self):
+        """--prep-only (real-tape preparation runs): same outputs as check mode; the outcome module, count row 6 and
+        the gate statistics cannot be imported or called in the process."""
+        chk, prep = os.path.join(self.tmp.name, "chk"), os.path.join(self.tmp.name, "prep")
+        fee = fee_config(self.tmp.name)
+        args = ["--days", DAY, "--units", self.unit, "--fee-config", fee]
+        rc = subprocess.run([sys.executable, os.path.join(HERE, "run_a.py"), *args, "--out", chk],
+                            capture_output=True, text=True)
+        self.assertEqual(rc.returncode, 0, rc.stderr)
+        probe = (
+            "import sys, json; sys.path.insert(0, %r); import run_a, gates as G\n"
+            "rc = run_a.main(%r)\n"
+            "blocked = []\n"
+            "for m in ('outcomes', 'rows', 'run_step_a'):\n"
+            "    try:\n        __import__(m)\n    except ImportError:\n        blocked.append(m)\n"
+            "calls = []\n"
+            "for f in ('score_gates', 'pool_bootstrap', 'gate2_stat', 'gate3_stat'):\n"
+            "    try:\n        getattr(G, f)()\n    except RuntimeError:\n        calls.append(f)\n"
+            "print(json.dumps({'rc': rc, 'loaded': [m for m in ('outcomes', 'rows', 'run_step_a') if sys.modules.get(m)],"
+            " 'blocked': blocked, 'refused': calls}))\n"
+        ) % (HERE, args + ["--out", prep, "--prep-only"])
+        rc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+        self.assertEqual(rc.returncode, 0, rc.stderr)
+        res = json.loads(rc.stdout.strip().splitlines()[-1])
+        self.assertEqual(res, {"rc": 0, "loaded": [], "blocked": ["outcomes", "rows", "run_step_a"],
+                               "refused": ["score_gates", "pool_bootstrap", "gate2_stat", "gate3_stat"]})
+        self.assertEqual(sorted(os.listdir(prep)), ["entries.csv", "pools.csv", "summary.json"])
+        for name in os.listdir(chk):
+            with open(os.path.join(chk, name), "rb") as a, open(os.path.join(prep, name), "rb") as b:
+                self.assertEqual(a.read(), b.read(), name)
+        rc = subprocess.run([sys.executable, os.path.join(HERE, "run_a.py"), *args, "--out", prep, "--prep-only",
+                             "--score-primary", "--confirm", run_a.CONFIRM], capture_output=True, text=True)
+        self.assertNotEqual(rc.returncode, 0)
+        self.assertIn("--prep-only refuses --score-primary", rc.stderr)
+
 
 class TestCoverageAndTimeline(unittest.TestCase):
     def test_gap_is_not_counted(self):

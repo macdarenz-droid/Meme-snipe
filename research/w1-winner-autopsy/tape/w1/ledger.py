@@ -31,6 +31,10 @@ ACC_AGG = {"cash": "sum", "paid": "sum", "cash_alt": "sum", "paid_alt": "sum", "
            "nbuy": "sum", "nsell": "sum", "dirty": "any", "dstart": "any", "dother": "any", "buykey": "min",
            "closekey": "max", "lastkey": "max", "lastslot": "max", "n": "sum", "end_ver": "last"}
 ACC_COLS = list(ACC_AGG)
+# columns a prep-only day leaves out: every cash, cost and valuation column (they are not computed in that mode)
+PREP_DROP = {"rows": ("cash", "paid", "cash_alt", "paid_alt", "cash_nc", "paid_nc", "xin", "nsig", "ncap",
+                      "start_mark", "end_mark"),
+             "buys": ("paid",), "xfers": ("value",)}
 
 
 def _acct(acct, pair):
@@ -143,8 +147,12 @@ class States:
 
 
 class Ledger:
-    def __init__(self, vocab):
+    def __init__(self, vocab, prep_only=False):
         self.v = vocab
+        # prep_only: the preparation stage on real tape (no outcome before the scoring is released). It computes no
+        # cash, no cost split, no signer method and no valuation (no mark, no transfer value): those columns are left
+        # out of the day output, and costs.signer_cash / costs.amendment_tx_cost / venue.sell_vec are never called.
+        self.prep_only = bool(prep_only)
         self.states = States()
         # carry: open positions (bal > 0) by pair: bal, ok (start known, consistent), ver (verified by a swap), mark
         # ep_*: the open round trip (AMENDMENT_4): its opening time and key, and whether a transfer broke it
@@ -269,9 +277,21 @@ class Ledger:
             if t:
                 self.ex_seen.setdefault(t, set()).add(int(o))
         tracked = sw["sol"].to_numpy(bool) & ~sw["overflow"].to_numpy(bool) & (ex == "")
+        sw = sw.copy()
+        if self.prep_only:
+            z = np.zeros(len(sw))
+            sw["cost"], sw["net_alt"], sw["net"], sw["net_nc"] = z, z, z, z
+            sw["sig"], sw["sig_nc"] = np.zeros(len(sw), bool), np.zeros(len(sw), bool)
+        else:
+            self._costs(sw, tracked)
+        self.stats["overflow_rows"] += int(sw["overflow"].sum())
+        self.stats["excluded_rows"] += int((sw["sol"].to_numpy(bool) & (ex != "")).sum())
+        self._unit_rest(sw, mv, w, tracked)
+
+    def _costs(self, sw, tracked):
+        """Cash per swap row (in place on sw): cost, net_alt, net, sig, net_nc, sig_nc."""
         # transaction costs (PREREG §4, AMENDMENT_1, AMENDMENT_3 Q29): tx_fee + jito_tip is charged only to the
         # transaction's included rows, split evenly over them (one owner of every included row pays all of it)
-        sw = sw.copy()
         n_inc = pd.Series(tracked, index=sw.index).groupby(sw["txk"]).transform("sum").to_numpy()
         n_inc = np.maximum(n_inc, 1)
         cost = np.where(tracked, (sw["tx_fee"] + sw["jito"]).to_numpy(np.float64) / n_inc, 0.0)
@@ -296,9 +316,7 @@ class Ledger:
         # signer's SOL change where it owns every swap; *_nc: the same without the plausibility cap (OPEN_QUESTIONS Q37)
         sw["net"], sw["sig"], sw["net_nc"], sw["sig_nc"] = self._signer_method(sw)
 
-        self.stats["overflow_rows"] += int(sw["overflow"].sum())
-        self.stats["excluded_rows"] += int((sw["sol"].to_numpy(bool) & (ex != "")).sum())
-
+    def _unit_rest(self, sw, mv, w, tracked):
         unit_states = States.rows(sw)
 
         # §5 raw inputs: every tracked buy (lag to the previous swap on the mint) and every big buy
@@ -422,7 +440,10 @@ class Ledger:
         if len(mv) == 0:
             return pd.DataFrame(columns=cols)
         st = self.states.asof(unit_states, mv["mint"].to_numpy(), mv["key"].to_numpy())
-        val, has = mark(st, mv["amount"].to_numpy())
+        if self.prep_only:      # no valuation: only whether a venue state exists (sell_vec's own test)
+            val, has = np.zeros(len(mv)), np.asarray(st["kind"]) >= 0
+        else:
+            val, has = mark(st, mv["amount"].to_numpy())
         kind = mv["kind"].to_numpy()
         val = np.where(kind == 0, val, 0.0)
         ex_f = (self._excluded(mv["frm"].to_numpy()) != "") | (mv["frm"].to_numpy() < 0)
@@ -690,7 +711,10 @@ class Ledger:
         # end marks at the day's last state
         held = rows["end_bal"].to_numpy() > 0
         st = self.states.at_end(mint[held])
-        mv_, has = mark(st, rows["end_bal"].to_numpy()[held])
+        if self.prep_only:
+            mv_, has = np.zeros(int(held.sum())), np.asarray(st["kind"]) >= 0
+        else:
+            mv_, has = mark(st, rows["end_bal"].to_numpy()[held])
         em = np.zeros(len(rows))
         em[held] = mv_
         rows["end_mark"] = em
@@ -741,6 +765,11 @@ class Ledger:
             "excluded": {k: np.fromiter(s, np.int64, len(s)) for k, s in self.ex_seen.items()},
             "hub_excluded_nodes": self._all_excluded_ids(),
         }
+        if self.prep_only:
+            out["prep_only"] = True
+            out["rows"] = rows.drop(columns=list(PREP_DROP["rows"]))
+            out["buys"] = out["buys"].drop(columns=list(PREP_DROP["buys"]), errors="ignore")
+            out["xfers"] = out["xfers"].drop(columns=list(PREP_DROP["xfers"]))
         self.prev_day = None
         self.days_done += 1
         self._day_reset()

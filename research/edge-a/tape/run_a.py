@@ -116,6 +116,24 @@ def build(units: list[L.Unit], fee_config: str = FEE_CONFIG) -> dict:
             "n_creator_swaps_in_window": int((win & sw.is_creator.to_numpy()).sum())}
 
 
+PREP_BLOCKED_MODULES = ("outcomes", "rows", "run_step_a")  # the return test and count row 6 (SOL/USD)
+PREP_BLOCKED_GATES = ("score_gates", "pool_bootstrap", "gate2_stat", "gate3_stat")
+
+
+def prep_only_guard() -> None:
+    """--prep-only: the outcome stage, count row 6 and the gate statistics cannot run in this process. Importing a
+    blocked module raises ImportError (a None entry in sys.modules), and calling a gate statistic raises."""
+    for m in PREP_BLOCKED_MODULES:
+        if m in sys.modules and sys.modules[m] is not None:
+            raise RuntimeError(f"--prep-only: {m} was already imported")
+        sys.modules[m] = None
+
+    def refuse(*_a, **_k):
+        raise RuntimeError("--prep-only: gate statistics are not computed")
+    for name in PREP_BLOCKED_GATES:
+        setattr(G, name, refuse)
+
+
 def summary(b: dict, steps: tuple[str, ...]) -> dict:
     p = b["pools"]
     t = b["supply_tally"]
@@ -153,7 +171,13 @@ def main(argv=None) -> int:
     ap.add_argument("--score-primary", action="store_true")
     ap.add_argument("--confirm", default="")
     ap.add_argument("--n-boot", type=int, default=G.DEFAULT_B)
+    ap.add_argument("--prep-only", action="store_true",
+                    help="preparation stages only (check-mode outputs); outcome, row 6 and gate statistics are blocked")
     a = ap.parse_args(argv)
+    if a.prep_only:
+        if a.score_primary:
+            ap.error("--prep-only refuses --score-primary")
+        prep_only_guard()
     if a.score_primary:
         if a.confirm != CONFIRM:
             ap.error(f"--score-primary needs --confirm {CONFIRM}")
