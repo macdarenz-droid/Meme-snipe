@@ -28,3 +28,10 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-6 bullet. Builder: data builder `session_
 ## Round 2 (head `396e28f4`, base `d01875dc` merged)
 
 - Red team: PASS, 0 BLOCKER, 0 MAJOR, 1 MINOR. Round 1 MAJORs 1–2 and m1–m2 closed (no tag order or fallback brings K2 units into a K3 day; b10-done refuses forged "from" lines; tar `h`/`l` members refused; `-stored`/`-taken` refuse an overlapping untaken unit). MINOR: every first-day exemption keys on the head of `ARCHIVE_DAYS`, so a later edit of that list would skip the prior-list, margin and `-stored` checks for a day whose D-1 is stored. The reviewer's round 2 verdict is pending.
+- Reviewer (round 2): PASS, 0 BLOCKER, 0 MAJOR, 1 MINOR. Rulings 6–9 met; fail-before shown (and the new Go test does not build on `dd7dc504`). The evidence does not yet prove ruling 6's "finalizes": finalize and `checkUnitLog` never run on a day that mixes taken units with D's own.
+
+### Supervisor rulings for round 3 (9 Oct about 1:47 PM)
+
+10. **Reviewer MINOR, required (ruling 6 asks for it).** A Go test: trim a D-1 K2 unit with D-1's list (the `-k3` copy), take it into D next to one of D's own units trimmed with D's list, build D's `units-D.log` as trim-day does, then run `checkUnitLog` and finalize, expecting success, with the shared unit byte-equal to the `-k3` copy.
+11. **Red team MINOR, required.** A day is exempt from the prior-list, margin and `-stored` checks only when the store holds no `data-day-<D-1>[-k3]` release, not because it heads `ARCHIVE_DAYS`. Test: with D-1 stored, the head of an edited `ARCHIVE_DAYS` still runs the full checks.
+- OF-7 re-pins on the round 3 scanner tree.
