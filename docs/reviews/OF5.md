@@ -23,3 +23,7 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-5 bullet. Builder: data builder `session_
 - Round 2 delta review (`5c6f1ff2`): PASS, 0/0/0. Rulings 1–5 met; with the round 2 files set back, 8 rows fail; label matches. The changed lead-in test still checks what matters (lead-in days fetch only `events-D.tar`, window days their parts, the manifest is built).
 - **#316 approved at `5c6f1ff2`** (9 Oct about 11:53 AM). Next: merge base `f3ac2a35`, read the guarded diff, label after the head, CI, merge.
 - Head `dd60bd46` = `5c6f1ff2` + base `f3ac2a35` (same tree as `5c6f1ff2`). The supervisor read the guarded diff (data-scan.yml, 31+/12−): the prior-list step runs in the clean `env -i` shell and feeds the scan and the trim; the job-level empty env is gone; the storage check runs on `!cancelled()` after a stored or failed store step. Nothing loosened. Marked ready; label `deps-reviewed:85b4248c9eef73fae24498edf931dae6` added after the head (2026-10-09T00:53:58Z).
+
+## Merged (9 Oct 2026, about 12:23 PM)
+
+**#316 merged at `d01875dc`** (the new base). Labelled CI green on `dd60bd46`. `ARCHIVE_ARM` stays empty. #317 OF-6 is retargeted to the base.
