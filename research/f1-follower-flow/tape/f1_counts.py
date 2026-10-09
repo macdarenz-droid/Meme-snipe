@@ -340,6 +340,14 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
         records = (ev for b0 in range(0, len(lead), EV_BLOCK) for ev in lead.iloc[b0:b0 + EV_BLOCK].to_dict("records"))
     else:
         records = lead.to_dict("records")
+    cols = ["day", "leader", "mint", "slot", "tx_idx", "ev_idx", "dropped", "follow", "follower_sol",
+            "follower_sol_late", "placebo_owner", "placebo_slot", "placebo_follow", "q", "fee_bps", "placebo_late",
+            "placebo_q"]
+    if not with_follow:
+        cols = [c for c in cols if c in PREP_EVENT_COLS]
+    # compact: each row is kept as a tuple in column order with NaN for a missing field, which is what the
+    # DataFrame constructor makes of a list of dicts (memory only; test_f1_counts.Compact checks the bytes)
+    keep = (lambda o: tuple(o.get(c, np.nan) for c in cols)) if compact else (lambda o: o)
     rng = np.random.default_rng(seed)
     rows = []
     for ev in records:
@@ -348,7 +356,7 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
         lo, hi = ev["slot"] - PLACEBO_REACH, ev["slot"] + PLACEBO_REACH + FOLLOW_SLOTS
         if not covered(ranges, day, lo, hi):
             out["dropped"] = "window_not_on_tape"
-            rows.append(out)
+            rows.append(keep(out))
             continue
         mb = buys_by_mint[ev["mint"]]
         i0 = np.searchsorted(mb["slot"], ev["slot"] - PLACEBO_REACH, side="left")
@@ -356,7 +364,7 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
         reach = [i for i in range(i0, i1) if mb["owner"][i] not in candidates]
         if not reach:
             out["dropped"] = "no_placebo_in_reach"
-            rows.append(out)
+            rows.append(keep(out))
             continue
         j = reach[int(rng.integers(len(reach)))]
         pick = {"mint": ev["mint"], "owner": mb["owner"][j], "slot": int(mb["slot"][j]),
@@ -364,7 +372,7 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
         if not with_follow:
             out.update({"dropped": "", "placebo_owner": pick["owner"], "placebo_slot": pick["slot"],
                         "q": float(ev["q"]), "fee_bps": float(ev["fee_bps"]), "placebo_q": float(mb["q"][j])})
-            rows.append(out)
+            rows.append(keep(out))
             continue
         f, v, late = follow_stats(buys_by_mint, ev, sol_pairs, mint_pairs)
         pf, _, plate = follow_stats(buys_by_mint, pick, sol_pairs, mint_pairs)
@@ -373,12 +381,7 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
                     # AMENDMENT_8: each buy's own Q and fee fields, and the placebo's late follower SOL
                     "q": float(ev["q"]), "fee_bps": float(ev["fee_bps"]), "placebo_late": plate,
                     "placebo_q": float(mb["q"][j])})
-        rows.append(out)
-    cols = ["day", "leader", "mint", "slot", "tx_idx", "ev_idx", "dropped", "follow", "follower_sol",
-            "follower_sol_late", "placebo_owner", "placebo_slot", "placebo_follow", "q", "fee_bps", "placebo_late",
-            "placebo_q"]
-    if not with_follow:
-        cols = [c for c in cols if c in PREP_EVENT_COLS]
+        rows.append(keep(out))
     return pd.DataFrame(rows, columns=cols)
 
 

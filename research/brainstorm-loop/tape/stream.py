@@ -876,7 +876,7 @@ def _compute(tape: StreamTape, sol_usd, n_boot, minutes, log, prep):
         def keep(m, k=k):
             return tape.shard_of(m) == k
 
-        tm.append(('two', time.time()))
+        tm.append(('load', time.time()))
         labels = two.shard(s, ranks_of)
         s = R.prepare(st, labels)
         st.swaps = s
@@ -885,7 +885,7 @@ def _compute(tape: StreamTape, sol_usd, n_boot, minutes, log, prep):
         amm = s[s["venue"] == "amm"]
         pool_key = _key_of_first(amm)
         # DEV-ZERO (pools of this shard: by_pool only holds them)
-        tm.append(('prepare', time.time()))
+        tm.append(('two_sided_prepare', time.time()))
         dz_k = R.dev_zero_rows(st, s, adj, flows=flows)
         for r in dz_k:
             dz_recs.append((pool_key[r["pool"]], r))

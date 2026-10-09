@@ -79,7 +79,8 @@ class Interner:
         first = pd.unique(k[ok])                      # category positions in order of first appearance
         m = np.full(len(cats), INT_SENTINEL, dtype=np.int64)
         if len(first):
-            m[first] = np.fromiter((self.code(cats[i]) for i in first), dtype=np.int64, count=len(first))
+            m[first] = np.fromiter((self.code(v) for v in np.asarray(cats, dtype=object)[first]), dtype=np.int64,
+                                   count=len(first))
         out = np.full(len(k), INT_SENTINEL, dtype=np.int64)
         out[ok] = m[k[ok]]
         return out

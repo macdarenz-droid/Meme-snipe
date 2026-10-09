@@ -100,6 +100,27 @@ class LowMemReader(unittest.TestCase):
                     self.assertEqual(a.dtype, b.dtype, c)
                     np.testing.assert_array_equal(a, b, c)
 
+    def test_pool_book_subset_and_prune(self):
+        """consume(pools=...) and prune(...) keep exactly the named pools' rows (values, dtypes, order)."""
+        for units in self.inputs:
+            t = load(units, [S.DAY], lowmem=True)
+            full = PoolBook(t.amm)
+            keep = list(full.rows)[::2]
+            sub = PoolBook.consume(t, pools=keep)
+            pr = PoolBook(load(units, [S.DAY], lowmem=True).amm)
+            pr.prune(keep)
+            for b in (sub, pr):
+                self.assertEqual(list(b.rows), keep)
+                for p in keep:
+                    self.assertEqual(list(b.rows[p]), list(full.rows[p]))
+                    for c in full.rows[p]:
+                        self.assertEqual(full.rows[p][c].dtype, b.rows[p][c].dtype)
+                        np.testing.assert_array_equal(full.rows[p][c], b.rows[p][c])
+            for c in ("slot", "owner"):   # pruned rows no longer share the full book's column arrays
+                for r in pr.rows.values():
+                    self.assertIsNone(r[c].base)
+        self.assertEqual(PoolBook.consume(load(self.inputs[0], [S.DAY], lowmem=True), pools=()).rows, {})
+
     def test_link_index_equal(self):
         rng = np.random.default_rng(5)
         for n in (0, 1, 40, 3000):

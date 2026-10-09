@@ -124,17 +124,19 @@ class CompactHabits:
     def __init__(self, owner_codes, close_slot, hold_s, code_of: dict):
         o = np.lexsort((np.arange(len(owner_codes)), close_slot, owner_codes))
         self.oc, self.cs, self.hs = owner_codes[o], close_slot[o].astype(np.int64), hold_s[o].astype(float)
-        u, first, cnt = np.unique(self.oc, return_index=True, return_counts=True)
-        self.span = {int(c): (int(a), int(a + b)) for c, a, b in zip(u, first, cnt)}
+        self.u, self.first, cnt = np.unique(self.oc, return_index=True, return_counts=True)
+        self.end = self.first + cnt
         self.code_of = code_of
         self._cache = {}
 
     def median_before(self, owner: str, slot: int):
         c = self.code_of.get(owner)
-        sp = self.span.get(c) if c is not None else None
-        if sp is None:
+        if c is None:
             return None
-        a, b = sp
+        i = int(np.searchsorted(self.u, c))
+        if i == len(self.u) or self.u[i] != c:
+            return None
+        a, b = int(self.first[i]), int(self.end[i])
         k = int(np.searchsorted(self.cs[a:b], slot, "right"))
         if k == 0:
             return None

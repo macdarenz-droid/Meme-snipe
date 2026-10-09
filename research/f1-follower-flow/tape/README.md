@@ -6,7 +6,10 @@ Implements `../GATE.md` with `../AMENDMENT_1.md` (both frozen) as counts only. I
 ```
 nice -n 19 python3 f1_counts.py --unit <cache>/2026-09-11/<from>-<to> [--unit ...] --out OUTDIR [--boot 10000] [--decide] [--plan FILE]
 nice -n 19 python3 -m unittest -v        # from this folder
+flock /home/user/tape-work/mem.lock nice -n 19 python3 f1_counts.py --prep-only --unit ... --out OUTDIR   # real tape before the gate
 ```
+- `--prep-only`: preparation stages only, for real tape before the gate is evaluated: loading, links, day-1 leader candidates and the day-1 candidate-buy table (window drops and placebo draws). It computes no follow count, follower SOL, leader test, day 2, payer bar or decision; those functions raise `PrepOnlyError` while it runs. Writes `f1_prep_events_day1.csv` and `f1_prep_summary.json` (row counts). Refuses `--decide`.
+- Memory: the default reader shares owner and mint strings, builds the T/W links unit by unit, frees each day's sorted buy table once indexed, and draws the bootstrap in blocks (`BOOT_CHUNK_ELEMS`). Outputs are byte-identical to the original reader, kept as `--original-reader` for the equality tests (`Compact` in the test file). Run real tape under `flock /home/user/tape-work/mem.lock`.
 - `--unit`: a unit directory (`<day>/<from>-<to>`, or its `research/` folder), repeated. The day comes from the path. Units of 09-11 are day 1 and units of 09-10 are day 2; no other day is read.
 - `--decide` stops with an error unless the loaded units equal the plan rows for 09-11 and 09-10 exactly, with contiguous slots. The plan is `--plan`, by default `research/shared-tape/stepa-plan.txt`, and its sha256 goes into the summary.
 - A leader needs at least 8 valid (buy, placebo) pairs on a day (`AMENDMENT_1.md` item 7). With fewer, it is untestable, which counts as not followed or not persisting.

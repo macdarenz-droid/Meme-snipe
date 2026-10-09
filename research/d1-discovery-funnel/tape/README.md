@@ -15,6 +15,15 @@ nice -n 19 python3 run_d1.py search  --run RUN --out RUN/frozen_rules.json   # P
 nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --confirm-validation-read   # §6, later
 ```
 
+**Reader.** stage1 and stage2 use the low-memory reader by default (`load.load(lowmem=True)`, `pool_state.PoolBook.consume`, `PoolBook.prune`, the numpy `holders.LinkIndex`). It computes exactly what the earlier reader did: `tests/test_lowmem.py` checks the same tables, pool book and link answers, and byte-identical outputs of stage1, stage2, summary and the search on synthetic multi-unit inputs. `--old-reader` (stage1, stage2) runs the earlier reader, for that test. What changed is only how rows are held:
+- each unit's rows are sorted and kept as plain columns; tables are joined one column at a time;
+- the amm `signature` column, which nothing reads after the load, is not kept;
+- the pool book takes the amm columns one at a time;
+- stage1 frees the rows of pools without an eligible point once the points exist (`pool_days.pkl` is written from the whole book first);
+- stage2 holds only the pool rows of eligible points, and drops the other tables after counting them.
+
+**Preparation only.** stage1 is the preparation stage: universe, decision points, as-of features and pre-outcome counts. It never imports the outcome, search or validation code (`test_stage1_never_imports_outcome_code`). On real tape, run only stage1 (and `summary` while no `outcomes.pkl` exists) until scoring is allowed.
+
 **Inputs.** The inputs are a list of unit directories `<cache>/<day>/<from>-<to>`, each holding `research/*.csv.zst` and `E.jsonl.zst`, and the day(s) they belong to.
 - The load fails on any row at or after 2026-09-12T00:00Z.
 - Schema v1 units are accepted. Features they cannot supply are NaN (`top_program`, CF).
@@ -51,7 +60,7 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - **Future-marker test.** `test_planted_future_marker` plants extreme rows of every table one slot after a decision and requires every earlier decision's features to be unchanged. The test was mutation-checked: a one-slot leak in features, clusters or holders makes it fail.
 
 ## Tests
-`cd tape && python3 -m unittest -v` runs 64 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). They cover:
+`cd tape && python3 -m unittest -v` runs 73 tests on synthetic tables (plus one real PumpSwap sell row as a fixture). `tests/synth_units.py` writes synthetic units to disk with every table the reader reads. They cover:
 - costs;
 - pool state;
 - universe and timing;
@@ -64,7 +73,8 @@ nice -n 19 python3 run_d1.py validate --run VALRUN --frozen frozen_rules.json --
 - validation verdicts;
 - the amendments (rent by date band, binary and degenerate features, cost screen, H8 stratum and count row, AMENDMENT_3 ranking, H8_AMENDMENT_2 universe floors and bot gates);
 - BOOST flagging;
-- the guards (dev runs, partial days, overlapping days, plan sha, incomplete plan, input hashes, code sha).
+- the guards (dev runs, partial days, overlapping days, plan sha, incomplete plan, input hashes, code sha);
+- the low-memory reader against the earlier one, and the preparation run's imports (`tests/test_lowmem.py`).
 
 Every review and amendment fix was mutation-checked: undoing it makes a test fail.
 

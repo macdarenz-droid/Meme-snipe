@@ -32,25 +32,42 @@ class PoolBook:
         self._split(arrs, amm.pool.to_numpy())
 
     @classmethod
-    def consume(cls, tape) -> "PoolBook":
+    def consume(cls, tape, pools=None) -> "PoolBook":
         """Low-memory twin of PoolBook(tape.amm): the same rows in the same order (the same stable sort by pool,
         slot, tx_idx, ev_idx), but each column of tape.amm is reordered into the book and freed in turn, so the peak
-        is the table plus one column instead of two copies. tape.amm is left empty."""
+        is the table plus one column instead of two copies. tape.amm is left empty. `pools`: hold only these pools
+        (their rows and order are unchanged; for a caller that reads no other pool)."""
         amm = tape.amm
         tape.amm = amm.iloc[:0].copy()
         self = cls.__new__(cls)
         self.rows = {}
         if len(amm) == 0:
             return self
-        order = np.lexsort((amm.ev_idx.to_numpy(), amm.tx_idx.to_numpy(), amm.slot.to_numpy(), amm.pool.to_numpy()))
-        pools = amm.pool.to_numpy()[order]
+        sel = None
+        if pools is not None:
+            sel = np.flatnonzero(np.isin(amm.pool.to_numpy(), np.fromiter((int(p) for p in pools), dtype=np.int64)))
+        take = (lambda a: a) if sel is None else (lambda a: a[sel])
+        order = np.lexsort((take(amm.ev_idx.to_numpy()), take(amm.tx_idx.to_numpy()), take(amm.slot.to_numpy()),
+                            take(amm.pool.to_numpy())))
+        pool_col = take(amm.pool.to_numpy())[order]
         arrs = {}
         for c in BOOK_COLS:
-            arrs[c] = amm[c].to_numpy()[order]
+            arrs[c] = take(amm[c].to_numpy())[order]
             del amm[c]
-        del amm, order
-        self._split(arrs, pools)
+        del amm, order, sel
+        if len(pool_col):
+            self._split(arrs, pool_col)
         return self
+
+    def prune(self, pools) -> None:
+        """Drop every pool not in `pools` (for a caller that reads no other pool). The kept pools' rows are copied
+        out of the shared column arrays one column at a time, so those arrays are freed; their values are unchanged."""
+        keep = {int(p) for p in pools}
+        for p in [p for p in self.rows if p not in keep]:
+            del self.rows[p]
+        for c in BOOK_COLS:
+            for r in self.rows.values():
+                r[c] = r[c].copy()
 
     def _split(self, arrs: Dict[str, np.ndarray], pools: np.ndarray):
         cols = BOOK_COLS

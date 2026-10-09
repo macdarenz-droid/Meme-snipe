@@ -86,15 +86,18 @@ def stage1(args):
     else:
         book = PoolBook(tape.amm)
         tape.amm = tape.amm.iloc[:0]   # the pool book holds the rows from here on
+    from d1.h8 import pool_days
+    pdays = pool_days(book)         # every pool of the book, before the low-memory prune below
     clock = Clock(tape)
     migs = migrations(tape, book, dev_unknown_migration=dev)
     pts = decision_points(tape, book, migs, clock)
+    if lowmem:   # the features read only the pools of eligible points; the other pools' rows are freed
+        book.prune(pts.pool[pts.eligible] if len(pts) else ())
     feats = compute_features(tape, book, pts, clock) if len(pts) else pd.DataFrame()
     pts.to_pickle(os.path.join(args.out, "points.pkl"))
     feats.to_pickle(os.path.join(args.out, "features.pkl"))
     migs.to_pickle(os.path.join(args.out, "migrations.pkl"))
-    from d1.h8 import pool_days
-    pool_days(book).to_pickle(os.path.join(args.out, "pool_days.pkl"))
+    pdays.to_pickle(os.path.join(args.out, "pool_days.pkl"))
     m = manifest(tape)
     m.update({"stage": "stage1", "dev": dev, "code_sha256": code_hash(), "unit_dirs": units,
               "stepa_plan": plan, "clock_nonmonotone_blocks": clock.nonmonotone,
@@ -123,10 +126,13 @@ def stage2(args):
     lowmem = _reader(args)
     # stage 2 holds only the pool rows and the events; the other tables are still read, coded and counted (lowmem)
     tape = load(units, m1["days"], all_pools=dev, lowmem=lowmem, keep=("amm",) if lowmem else None)
-    book = PoolBook.consume(tape) if lowmem else PoolBook(tape.amm)
+    pts = pd.read_pickle(os.path.join(args.out, "points.pkl"))
+    if lowmem:   # the outcomes read only the pools of eligible points
+        book = PoolBook.consume(tape, pools=pts.pool[pts.eligible] if len(pts) else ())
+    else:
+        book = PoolBook(tape.amm)
     ce = tape.ev["CreateEvent"].drop_duplicates("mint")
     token_programs = dict(zip(ce.mint.astype(int), ce.token_program))
-    pts = pd.read_pickle(os.path.join(args.out, "points.pkl"))
     out = compute_outcomes(book, pts, token_programs) if len(pts) else pd.DataFrame()
     out.to_pickle(os.path.join(args.out, "outcomes.pkl"))
     m = manifest(tape)
