@@ -843,6 +843,32 @@ if git -C "$here" rev-parse --git-dir >/dev/null 2>&1; then
   done < <(git -C "$here/../../.." ls-files -z research/historical)
 fi
 [[ -z "$bad" ]] && ok "OF-6: a built scanner (scanner/scanner, rpcscan/rpcscan, zeroed-scan) is ignored by git, and no tracked file under research/historical is an executable binary" || no "OF-6 no binary:$bad"
+# OF-7: the one pinned B10-PULL row in docs/DECISIONS.md names the source, the frozen scanner
+# revision (equal to the scanner in this tree, so a scanner change re-pins it), the allow-listed
+# days, a past pinnedAt, the per-unit log, the 07-22 lead-in limit and the owner's decision.
+bad=""
+rev=""; git -C "$here" rev-parse --git-dir >/dev/null 2>&1 && rev=$(git -C "$here/../../.." rev-parse HEAD:research/historical/scanner 2>/dev/null || true)
+python3 - "$here/../../../docs/DECISIONS.md" "$here/archive-limits.conf" "$here/../../../.github/workflows/data-scan.yml" "$rev" > "$T/b10pull.txt" 2>&1 <<'PY' || bad+=" [$(tail -1 "$T/b10pull.txt")]"
+import re, sys, datetime
+dec, conf, wf, tree = sys.argv[1:5]
+rows = [l for l in open(dec) if re.match(r"\| \d{4}-\d{2}-\d{2} \| B10-PULL id=", l)]
+assert len(rows) == 1, "%d B10-PULL rows" % len(rows)
+r = rows[0]
+m = re.match(r"\| \d{4}-\d{2}-\d{2} \| B10-PULL id=([A-Za-z0-9._:-]+) source=old-faithful scannerRev=([0-9a-f]{40})-go(\S+) days=(\S+) pinnedAt=(\S+) unitLog=units-D\.log ", r)
+assert m, "row fields"
+days = re.search(r'^ARCHIVE_DAYS="([^"]*)"', open(conf).read(), re.M).group(1)
+assert m.group(4) == days, "days %s, ARCHIVE_DAYS %s" % (m.group(4), days)
+gov = re.search(r'^  GO_VERSION: "?([0-9.]+)"?', open(wf).read(), re.M).group(1)
+assert m.group(3) == gov, "go %s, data-scan.yml %s" % (m.group(3), gov)
+if tree: assert m.group(2) == tree, "scannerRev %s, scanner tree %s: re-pin the row" % (m.group(2), tree)
+t = datetime.datetime.strptime(m.group(5), "%Y-%m-%dT%H:%M:%SZ")
+assert t <= datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), "pinnedAt in the future"
+assert "lacks the pools migrated on 07-21 from 19:00 UTC" in r and "07-22 is lead-in only" in r, "07-22 limit"
+assert '"Old faithful but by batch to avoid blockage"' in r, "owner decision"
+print("ok", m.group(1))
+PY
+grep -q '^ok b10pull-of-1$' "$T/b10pull.txt" || bad+=" [id]"
+[[ -z "$bad" ]] && ok "OF-7: docs/DECISIONS.md holds one pinned B10-PULL row (source, scanner revision equal to this tree's scanner, ARCHIVE_DAYS, Go version, past pinnedAt, per-unit log, the 07-22 lead-in limit, the owner's decision)" || no "OF-7 B10-PULL row:$bad"
 # OF-6: the rescan reads exactly one unit; a unit range longer than unitSlots is refused before any read.
 bad=""
 rc=0; RESCAN_COPY=1 cdrun o1 0 || rc=$?; [[ $rc == 0 && $(grep -c '^unit ' "$T/zs.args") == 1 ]] && grep -q -- "-from-slot 1 -to-slot 2 " "$T/zs.args" || bad+=" [one: $rc]"
