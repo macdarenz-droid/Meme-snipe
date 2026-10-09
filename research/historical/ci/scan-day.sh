@@ -75,6 +75,14 @@ rps_ok "$archive_go" ||
 # a retention value, and the job's guard step passed it (store readable, no storage-stop
 # marker, the 3-failure stop not active). Otherwise nothing is read.
 cfg_ret=$("$(dirname "$0")/archive-guard.sh" entry "$day") || exit 2
+# OF-6 (docs/reviews/OF6.md ruling 3): whether the day had a counted scan failure since
+# ARCHIVE_REARM_AT (from the guard pass), and, with ARCHIVE_REREAD_ID, the units the one
+# pinned QA-REREAD row names (written only after the owner is told).
+failed=$("$(dirname "$0")/archive-guard.sh" failed "$day") || exit 2
+reread=""
+if [ -n "${ARCHIVE_REREAD_ID:-}" ]; then
+  reread=$("$(dirname "$0")/archive-guard.sh" reread "$ARCHIVE_REREAD_ID" "$day") || exit 2
+fi
 next=$(date -u -d "$day + 1 day" +%F)
 start=$(date +%s)
 case $budget in
@@ -112,6 +120,11 @@ backoff() {
 # request (a day never mixes revisions, and finalize refuses that too). The workflow
 # always sets SCANNER_REVISION (the revision built into zeroed-scan); it is required.
 [ -n "${SCANNER_REVISION:-}" ] || { echo "refused: SCANNER_REVISION is not set" | tee -a "$summary" >&2; exit 2; }
+# OF-7 (red team m2): the scanner built for this run is the one the pinned B10-PULL row names
+# (scannerRev), whatever path the change took to the default branch.
+pinrev=$(. "$(dirname "$0")/archive-guard.sh"; ag_pinned_rev)
+[ -n "$pinrev" ] && [ "$SCANNER_REVISION" = "$pinrev" ] ||
+  { echo "refused: the scanner revision '$SCANNER_REVISION' is not the pinned B10-PULL row's scannerRev '${pinrev:-none}' (docs/DECISIONS.md); nothing is read" | tee -a "$summary" >&2; exit 2; }
 for st in "$out"/units/*/*/stats.json; do
   [ -f "$st" ] || continue
   rev=$(sed -n 's/.*"scanner_revision": *"\([^"]*\)".*/\1/p' "$st" | head -1)
@@ -124,7 +137,37 @@ done
 # K3 (cfg_ret) is trimmed to K3 by trim-day.sh after the whole day is read, before it is
 # stored; units already kept must be K2 (a trimmed day is never read again here).
 rec=$("$(dirname "$0")/archive-guard.sh" recorded "$out") || exit 2
-if [ "$rec" = K3 ]; then
+taken=""; [ -f "$out/from-store.txt" ] && taken=$(awk '{print $1}' "$out/from-store.txt")
+own=0
+for u in "$out"/units/*/*; do
+  [[ -f "$u/stats.json" && "$u" != *.tmp ]] || continue
+  grep -qxF "$(basename "$(dirname "$u")")/$(basename "$u")" <<< "$taken" || own=$((own + 1))
+done
+# OF-6 ruling 3: after a counted failure, only the units a QA-REREAD row names are read
+# again; a fresh whole-day read of a failed day is refused (it counts as missing and the
+# owner is asked about a spare day). A resume from saved progress reads nothing twice.
+if [ "$failed" = 1 ] && [ -z "$reread" ] && [ "$own" -eq 0 ]; then
+  echo "refused: $day had a counted failure since ARCHIVE_REARM_AT and its progress holds none of its units: a whole-day re-read is refused; the day counts as missing and the owner is asked about a spare day (or a QA-REREAD row names the units to read again)" | tee -a "$summary" >&2
+  exit 2
+fi
+extra=()
+if [ -n "$reread" ]; then
+  ruse=$rec; [ -n "$ruse" ] || ruse=K2
+  while IFS= read -r u; do
+    grep -qxF "$u" <<< "$taken" && { echo "refused: $u was taken from the day before's store; it is never read again here" | tee -a "$summary" >&2; exit 2; }
+  done <<< "$reread"
+  if [ "$ruse" = K3 ]; then
+    [ -f "$out/list-$day.txt" ] && [ -f "$out/units.log" ] || { echo "refused: a K3 re-read needs the day's pinned list and per-unit log" | tee -a "$summary" >&2; exit 2; }
+    extra=(-migration-list "$out/list-$day.txt")
+  fi
+  printf '%s\n' "$reread" > "$out/reread.units"
+  sed "s/\$/ $ARCHIVE_REREAD_ID/" "$out/reread.units" > "$out/reread-units.txt"
+  # the named units go (renamed first), so the scanner reads exactly those again
+  while IFS= read -r u; do [ -d "$out/units/$u" ] && mv "$out/units/$u" "$out/units/$u.del" && rm -rf "$out/units/$u.del"; done <<< "$reread"
+  extra+=(-units "$out/reread.units")
+  echo "re-read under QA-REREAD $ARCHIVE_REREAD_ID: $(grep -c . "$out/reread.units") units of $day at $ruse; nothing else is read" | tee -a "$summary"
+fi
+if [ "$rec" = K3 ] && [ -z "$reread" ]; then
   # Ruling 9: a restored day already trimmed is read done when every unit is K3, its
   # per-unit log is present and checks, and expect_units (if set) is met: no request,
   # trim-day.sh then does nothing and check-day.sh runs. Anything else is refused.
@@ -138,16 +181,25 @@ if [ "$rec" = K3 ]; then
   echo "refused: the units of $day record retention K3 but the day is not a complete trimmed day (per-unit log, check or expect_units); it is never read again here" | tee -a "$summary" >&2
   exit 2
 fi
-[ -z "$rec" ] || [ "$rec" = K2 ] ||
+[ -z "$rec" ] || [ "$rec" = K2 ] || [ -n "$reread" ] ||
   { echo "refused: the units of $day record retention $rec; a day is read at K2 and trimmed once" | tee -a "$summary" >&2; exit 2; }
 # Ruling 8 (and 11): every day but the first allow-listed one needs the day before's
 # verified list (a K3 day to be trimmed, a K2 day for its own list-D.txt); without it
 # nothing is read (before the disk guard, the back-off and any scanner call).
-if [ "$day" != "$(. "$(dirname "$0")/archive-guard.sh"; ag_first_day)" ]; then
+# OF-6 ruling 11: only the head of ARCHIVE_DAYS whose day before the store does not hold
+# (OUT/prev-day.txt from the clean margin step) is exempt.
+if ! (. "$(dirname "$0")/archive-guard.sh"; ag_exempt "$day" "$out"); then
   "$(dirname "$0")/archive-guard.sh" prior "$day" "${ARCHIVE_PRIOR_LIST:-}" "${ARCHIVE_PRIOR_SUMS:-}" || exit 2
+  # OF-6 ruling 9: the day before's stored units (margin-fetch.sh) go to the scanner, which
+  # refuses a planned unit among them that was not taken from the store; without the list
+  # nothing is read.
+  [ -s "$out/prev-units.txt" ] && [ -f "$out/from-store.txt" ] ||
+    { echo "refused: $day has no list of the day before's stored units (prev-units.txt, from the margin step); nothing is read" | tee -a "$summary" >&2; exit 2; }
+  extra+=(-stored "$out/prev-units.txt" -taken "$out/from-store.txt")
 fi
 ret=K2
-echo "retention for $day: read at K2, stored as $cfg_ret" | tee -a "$summary"
+[ -z "$reread" ] || ret=$ruse
+echo "retention for $day: read at $ret, stored as $cfg_ret" | tee -a "$summary"
 # Ruling 3: the K2 day's peak must fit before any archive read (ARCHIVE_K2_PEAK_BYTES).
 "$(dirname "$0")/disk-guard.sh" "$out" "$ARCHIVE_K2_PEAK_BYTES" "a K2 day (units at the high estimate, then its trim and QA)" || exit 2
 # Ruling 14: while the day is read, between units, free space must stay above the
@@ -191,7 +243,7 @@ while true; do
   disk_watch "$$" &
   wpid=$!
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
-    -sample 0.05 -retention "$ret" -max-mbps "$mbps" -on-429 stop >> "$slog/run.log" 2>&1
+    -sample 0.05 -retention "$ret" "${extra[@]}" -max-mbps "$mbps" -on-429 stop >> "$slog/run.log" 2>&1
   rc=$?
   kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
   if [ -f "$out/disk-stop" ]; then
@@ -208,6 +260,11 @@ while true; do
     mv "$out/429.log" "$out/429-$(date -u +%Y%m%dT%H%M%S).log"
   fi
   if [ $rc -eq 0 ]; then
+    if [ -n "$reread" ] && [ "$ret" = K3 ]; then
+      # OF-6: the re-read K3 units carry no k2 lines; the per-unit log marks them instead
+      { grep -vE " ($(paste -sd'|' "$out/reread.units"))/[^/ ]+$" "$out/units.log" | grep -v '^reread '; sed 's/^/reread /' "$out/reread-units.txt"; } > "$out/units.log.tmp"
+      mv "$out/units.log.tmp" "$out/units.log"
+    fi
     echo "day $day scanned" | tee -a "$summary"
     exit 0
   fi

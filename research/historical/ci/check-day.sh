@@ -75,10 +75,19 @@ cp "$ds/qa/parity.json" "$assets/parity-$day.json"
 cp "$ds/manifest.json" "$assets/manifest-$day.json"
 
 # Determinism: rescan the day's first unit into a fresh directory; every data file
-# must be byte-identical.
-first=$(ls -d "$out"/units/*/* | grep -v '\.tmp$' | sort -V | head -1)
+# must be byte-identical. OF-6: never a unit taken from the day before's store
+# (from-store.txt), nor one read again after a QA failure: the first unit this day read.
+skip=$( { cat "$out/from-store.txt" "$out/reread-units.txt" 2>/dev/null || true; } | awk '{print $1}')
+first=$(for u in "$out"/units/*/*; do [[ -d "$u" && "$u" != *.tmp ]] || continue; r="$(basename "$(dirname "$u")")/$(basename "$u")"; grep -qxF "$r" <<< "$skip" || echo "$u"; done | sort -V | sed -n 1p)
+[ -n "$first" ] || { echo "refused: $day has no unit of its own to rescan" | tee -a "$summary"; exit 2; }
 epoch=$(basename "$(dirname "$first")")
 range=$(basename "$first")
+# OF-6: the determinism rescan is the one routine second read of an archive unit: exactly
+# one unit (at most unitSlots slots, scanner/main.go), never a longer range.
+us=$(sed -n 's/^const unitSlots = \([0-9][0-9]*\).*/\1/p' "$here/../scanner/main.go" 2>/dev/null)
+[[ "$us" =~ ^[0-9]+$ ]] || { echo "refused: the scanner's unit size (unitSlots, scanner/main.go) cannot be read" | tee -a "$summary"; exit 2; }
+[[ "$epoch" =~ ^[0-9]+$ && "$range" =~ ^([0-9]+)-([0-9]+)$ ]] && (( BASH_REMATCH[2] >= BASH_REMATCH[1] && BASH_REMATCH[2] - BASH_REMATCH[1] + 1 <= us )) ||
+  { echo "refused: the determinism rescan of $epoch/$range is not one unit (at most $us slots); nothing is read again" | tee -a "$summary"; exit 2; }
 again=$(mktemp -d)
 mkdir -p "$again/cache" && cp "$out"/cache/* "$again/cache/" 2>/dev/null || true
 # Archive: a 429 stops the rescan (scanner exit 75); the back-off in $out is held to at
@@ -128,6 +137,6 @@ if [ "${SOURCE:-archive}" != helius ]; then
   # OF-3: the release keeps the rescan unit's file hashes (equal to the day's unit, just
   # checked) and the per-unit log (revision, retention, migration list sha256 a unit).
   (cd "$again/units/$epoch/$range" && sha256sum -- *.zst | sed "s#  #  $epoch/$range/#") > "$assets/rescan-$day.sha256"
-  if [ -f "$out/units.log" ]; then cp "$out/units.log" "$assets/units-$day.log"; else units=$(zeroed-scan unitlog -out "$out" 2>> "$qlog/unitlog.log"); printf '%s\n' "$units" > "$assets/units-$day.log"; fi
+  if [ -f "$out/units.log" ]; then cp "$out/units.log" "$assets/units-$day.log"; else units=$(zeroed-scan unitlog -out "$out" 2>> "$qlog/unitlog.log"); { printf '%s\n' "$units"; [ ! -s "$out/from-store.txt" ] || sed 's/^/from /' "$out/from-store.txt" | LC_ALL=C sort; } > "$assets/units-$day.log"; fi
 fi
 rm -rf "$ds" "$qlog" "$again"

@@ -340,6 +340,26 @@ migration raw record. Today's retention already keeps every curve and canonical-
   `B10-PULL` row and the evaluator only.
   The scan job's clean `prior` step (`ci/prior-fetch.sh`) downloads `list-<D-1>.txt` and `SHA256SUMS-<D-1>` from D-1's
   release in the store and hands them to the scan and the trim; `archive-guard.sh prior` checks the sha256.
+- **As built (OF-6, `docs/reviews/OF6.md`):** each day release carries `margin-D.tar`, the units that reach the next
+  day (last block time at or after the next midnight minus 2 h), in its SHA256SUMS and read back. Before day D+1's scan, a
+  clean store step (`ci/margin-fetch.sh`) takes those units from D's release into D+1's progress and lists them in
+  `from-store.txt`. The scanner skips them (their stats.json is there), the trim passes them through untouched and the
+  per-unit log marks them `from EPOCH/RANGE TAG`. Because D's list is built from all of D's units, the forward margin
+  included, a coin migrating in D's forward margin keeps every raw record D+1's list keeps (scanner test
+  `TestMarginMigrationKeptForNextDay`). The determinism rescan reads exactly one unit, never a taken or re-read one.
+  After a counted scan failure, the guard pass flags the day: a fresh whole-day read of it is refused. Only a pinned
+  QA-REREAD row (id, day, units, toldAt, written after the owner is told) lets `scan-day.sh` read the named units again,
+  with `zeroed-scan run -units`, at the day's recorded retention; the per-unit log marks them `reread EPOCH/RANGE ID`.
+  The trimmed day is stored as `data-day-D-k3` only through `publish-day.sh --k3` (the same read-back and
+  `readback-ok-D` marker, so its first `-k3` release is done); test-ci refuses any other `data-day-*` release create
+  without the marker (ruling 5).
+  Round 2 (rulings 6–9): the margin comes only from a done release whose units carry the day's own retention, so a
+  K3 day after a K2 day waits for `data-day-<D-1>-k3`; B-10 done accepts a taken unit with the day before's list sha256;
+  the margin tar may hold only regular files and directories; and the scanner refuses a planned unit that the day
+  before stored but this day did not take (`-stored`, `-taken`), so a drift between the two time estimates never
+  reads a unit twice.
+  Only the head of `ARCHIVE_DAYS` whose day before the store does not hold is exempt from the prior list, the margin
+  and `-stored`; the clean margin step records it in `prev-day.txt` (ruling 11).
 - **K2 progress is not stored in `zeroed-data`** (OF-4, deciding OF-3 ruling 7). A K2 day's progress (about 45 GB)
   does not fit the Actions cache. Putting partial K2 units in the private store would add a second store path for
   unfinished data, with its own read-back and clean-up, for two measurement days. Instead, a K2 day that cannot finish

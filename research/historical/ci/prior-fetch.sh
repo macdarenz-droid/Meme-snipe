@@ -25,10 +25,15 @@ this_repo=${GITHUB_REPOSITORY:-}
 days=$(ag_days) || { echo "refused: ARCHIVE_DAYS in archive-limits.conf is malformed"; exit 1; }
 first=${days%%$'\n'*}
 [[ -n "$first" ]] || { echo "refused: ARCHIVE_DAYS in archive-limits.conf is empty"; exit 1; }
+# OF-6 ruling 11: only the head of ARCHIVE_DAYS whose day before the store does not hold
+# is exempt; with a release of the day before, the head gets the full check too.
 if [[ "$day" == "$first" ]]; then
-  printf 'list=\nsums=\n' >> "$out"
-  echo "prior: $day is the first allow-listed day; it needs no prior list" | tee -a "$summary"
-  exit 0
+  pd=$(ag_prev_day "$day" "$GH") || { echo "prior: the private store cannot be read; $day is not read (fail closed)" | tee -a "$summary"; exit 1; }
+  if [[ "$pd" == none ]]; then
+    printf 'list=\nsums=\n' >> "$out"
+    echo "prior: $day heads the allow-list and the store holds no release of the day before; it needs no prior list" | tee -a "$summary"
+    exit 0
+  fi
 fi
 prev=$(date -u -d "$day - 1 day" +%F)
 list="$dir/list-$prev.txt" sums="$dir/SHA256SUMS-$prev"
