@@ -39,6 +39,10 @@ AMM_STR = {"pool", "base_mint", "user", "user_token_owner", "signer"}
 T_COLS = ["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner", "amount"]
 W_COLS = ["slot", "from", "to"]
 F_COLS = ["slot", "tx_idx", "pool_or_curve", "mint", "ix_name", "err_class", "amount_arg", "limit_arg"]
+# Read as text (both readers): with inferred types, pandas 3.0.5 raises IndexError in _concatenate_chunks when a column's
+# type differs between the parser's chunks (F.limit_arg of 2026-09-11 446058000-446062499). G1 reads none of these
+# three columns of F after loading; amount_arg and limit_arg still go through _num.
+F_STR = {"mint", "amount_arg", "limit_arg"}
 INT_SENTINEL = -1
 # True: the original reader and the original index builders everywhere (graph.LinkGraph, features._buys_index,
 # flows.FastClass), kept for the equality tests; g1.py sets it with --reference-reader. Outputs are identical.
@@ -337,7 +341,12 @@ def _read_csv(path: str, cols: List[str], str_cols, cat_cols=()) -> pd.DataFrame
     for c in cat_cols:
         if c in use:
             dtypes[c] = "category"
-    df = pd.read_csv(path, compression="zstd", usecols=use, dtype=dtypes, keep_default_na=True)
+    try:
+        df = pd.read_csv(path, compression="zstd", usecols=use, dtype=dtypes, keep_default_na=True)
+    except IndexError:
+        # pandas 3.0.5 fails (IndexError in _concatenate_chunks) when an inferred column's type differs between the
+        # parser's chunks; a single-chunk read infers the column from all its rows instead (see F_STR)
+        df = pd.read_csv(path, compression="zstd", usecols=use, dtype=dtypes, keep_default_na=True, low_memory=False)
     for c in cols:
         if c not in df.columns:
             df[c] = np.nan
@@ -533,7 +542,7 @@ def _load_reference(units: List[Unit], links: bool = True, log=print) -> Tape:
             w = _read_csv(u.table("W.csv.zst"), W_COLS, set())
             Wl.append(pd.DataFrame({"slot": w["slot"].astype(np.int64).to_numpy(), "src": names.codes(w["from"].to_numpy()),
                                     "dst": names.codes(w["to"].to_numpy())}))
-        f = _read_csv(u.table("F.csv.zst"), F_COLS, set())
+        f = _read_csv(u.table("F.csv.zst"), F_COLS, F_STR)
         f = f[f["ix_name"] == "boost_buy_and_burn"].copy()
         _num(f, ["slot", "tx_idx", "amount_arg", "limit_arg"])
         f["pool_or_curve"] = names.codes(f["pool_or_curve"].to_numpy())
@@ -742,7 +751,7 @@ def _load_compact(units: List[Unit], links: bool = True, log=print, pool: bool =
             Wl.append({"slot": w["slot"].astype(np.int64).to_numpy().copy(), "src": names.codes_cat(w["from"]),
                        "dst": names.codes_cat(w["to"])})
             del w
-        f = _read_csv(u.table("F.csv.zst"), F_COLS, set())
+        f = _read_csv(u.table("F.csv.zst"), F_COLS, F_STR)
         f = f[f["ix_name"] == "boost_buy_and_burn"].copy()
         _num(f, ["slot", "tx_idx", "amount_arg", "limit_arg"])
         f["pool_or_curve"] = names.codes(f["pool_or_curve"].to_numpy())
