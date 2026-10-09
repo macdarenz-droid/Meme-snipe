@@ -1139,10 +1139,10 @@ rc=0; GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r REF=main GITHUB_STEP_SUMMARY="$A/
 bad=""
 
 # ---- OF-2 holds 1-3, 5-7 in archive-check (each: no request at all) ----
-gdreset
-rc=0; ACFX=$here ac env AC_STATUS=206 || rc=$?
+gdreset; mkfx "$T/fxunarmedac" ARCHIVE_ARM=
+rc=0; ACFX=$T/fxunarmedac/research/historical/ci ac env AC_STATUS=206 || rc=$?
 [[ ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" ]] && grep -q "held (1): the archive chain is not armed (ARCHIVE_ARM is empty" "$A/summary.md" &&
-  ok "OF-2 hold 1: today's archive-limits.conf (ARCHIVE_ARM empty) is unarmed: no request, no dispatch" || no "OF-2 unarmed: $(cat "$A/summary.md")"
+  ok "OF-2 hold 1: an archive-limits.conf with ARCHIVE_ARM empty is unarmed: no request, no dispatch" || no "OF-2 unarmed: $(cat "$A/summary.md")"
 mkfx "$T/fxother" ARCHIVE_ARM=b10pull-test-2
 ACFX=$T/fxother/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" ]] && grep -q "held (1): the archive chain is not armed (ARCHIVE_ARM 'b10pull-test-2' is not the one pinned B10-PULL id 'b10pull-test-1'" "$A/summary.md" &&
@@ -1716,9 +1716,9 @@ for l in "2026-07-22..2026-09-21" "2026-09-22" "2026-07-21..2026-07-23" "2026-07
 done
 [[ -z "$bad" ]] && ok "OF-2: an ARCHIVE_DAYS that holds 09-21, a holdout day or a day before 07-22, or is malformed, refuses every day" || no "OF-2 bad list:$bad"
 bad=""
-# Unarmed: today's archive-limits.conf.
+# Unarmed: ARCHIVE_ARM empty (the repository's own value until OF-ARM).
 mkfx "$T/fxunarmed" ARCHIVE_ARM=
-rc=0; FXG=$here guard full 2026-07-22 || rc=$?
+rc=0; FXG=$T/fxunarmed/research/historical/ci guard full 2026-07-22 || rc=$?
 [[ $rc == 2 && ! -e "$GD/gh.log" ]] && grep -q "the archive chain is not armed" "$T/gout.txt" || bad+=" plan:$rc"
 rc=0; sd 2026-07-22 "$T/fxunarmed/research/historical/ci" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "not armed" "$T/out.txt" || bad+=" scan-day:$rc"
@@ -1727,7 +1727,7 @@ rc=0; CFX=$T/fxunarmed/research/historical/ci cdrun of2 0 || rc=$?
 mkfx "$T/fxrearm" ARCHIVE_REARM_AT=2099-01-01T00:00:00Z
 rc=0; FXG=$T/fxrearm/research/historical/ci guard full 2026-07-22 || rc=$?
 [[ $rc == 2 ]] && grep -q "ARCHIVE_REARM_AT .* is not a past UTC time" "$T/gout.txt" || bad+=" rearm-future:$rc"
-[[ -z "$bad" ]] && ok "OF-2: unarmed (today's ARCHIVE_ARM, empty) a manual dispatch is refused at the plan job, and scan-day.sh and check-day.sh refuse too; an ARCHIVE_REARM_AT in the future is refused" || no "OF-2 unarmed entry points:$bad"
+[[ -z "$bad" ]] && ok "OF-2: unarmed (ARCHIVE_ARM empty) a manual dispatch is refused at the plan job, and scan-day.sh and check-day.sh refuse too; an ARCHIVE_REARM_AT in the future is refused" || no "OF-2 unarmed entry points:$bad"
 bad=""
 # Retention: unset → 07-22 only (K2); K2 → 07-22 and 07-23; K3 → every day.
 mkfx "$T/fxret0" ARCHIVE_RETENTION=
