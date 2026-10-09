@@ -183,6 +183,12 @@ fi
 # nothing is read (before the disk guard, the back-off and any scanner call).
 if [ "$day" != "$(. "$(dirname "$0")/archive-guard.sh"; ag_first_day)" ]; then
   "$(dirname "$0")/archive-guard.sh" prior "$day" "${ARCHIVE_PRIOR_LIST:-}" "${ARCHIVE_PRIOR_SUMS:-}" || exit 2
+  # OF-6 ruling 9: the day before's stored units (margin-fetch.sh) go to the scanner, which
+  # refuses a planned unit among them that was not taken from the store; without the list
+  # nothing is read.
+  [ -s "$out/prev-units.txt" ] && [ -f "$out/from-store.txt" ] ||
+    { echo "refused: $day has no list of the day before's stored units (prev-units.txt, from the margin step); nothing is read" | tee -a "$summary" >&2; exit 2; }
+  extra+=(-stored "$out/prev-units.txt" -taken "$out/from-store.txt")
 fi
 ret=K2
 [ -z "$reread" ] || ret=$ruse

@@ -141,3 +141,44 @@ func TestMarginMigrationKeptForNextDay(t *testing.T) {
 		t.Error("the stored copy's events differ from the unit's: events must be complete")
 	}
 }
+
+// OF-6 ruling 9: a planned unit overlapping one the day before stored must have been
+// taken from the store; anything else refuses before a unit is read.
+func TestCheckStored(t *testing.T) {
+	plan := []unitSpec{{1046, 1, 4500}, {1046, 4501, 9000}, {1046, 9001, 13500}}
+	dir := t.TempDir()
+	w := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte(body), 0o644)
+		return p
+	}
+	stored, err := readUnitNames(w("stored", "1045/1-4500\n1046/1-4500\n1046/4501-9000\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken, err := readUnitNames(w("taken", "1046/1-4500 data-day-2026-07-23-k3\n1046/4501-9000 data-day-2026-07-23-k3\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkStored(plan, stored, taken); err != nil {
+		t.Errorf("every overlapping unit taken, yet refused: %v", err)
+	}
+	one, _ := readUnitNames(w("one", "1046/1-4500 data-day-2026-07-23-k3\n"))
+	if err := checkStored(plan, stored, one); err == nil || !strings.Contains(err.Error(), "1046/4501-9000") {
+		t.Errorf("a stored unit planned again but not taken passed: %v", err)
+	}
+	// an overlap that is not the same range (a drifted boundary) is refused too
+	odd, _ := readUnitNames(w("odd", "1046/9000-9100\n"))
+	if err := checkStored(plan, odd, taken); err == nil {
+		t.Error("a partly overlapping stored unit passed")
+	}
+	none, _ := readUnitNames(w("none", ""))
+	if err := checkStored(plan, none, none); err != nil || len(none) != 0 {
+		t.Errorf("no stored units: %v", err)
+	}
+	for _, bad := range []string{"1046/1-4500x\n", "1046 1-4500\n", "1046/9-1\n"} {
+		if _, err := readUnitNames(w("bad", bad)); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

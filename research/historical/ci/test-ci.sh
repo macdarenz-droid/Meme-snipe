@@ -435,6 +435,8 @@ scan() {
   local d=${SDAY:-2026-07-22}
   [[ -n "${NOPASS:-}" ]] || gpass "$d" "${PASSRET:-K2}"
   [[ -n "${NOPRIOR:-}" ]] || mkprior "$d"
+  # OF-6 ruling 9: a day after the first gets the day before's stored units (none here overlap)
+  if [[ -z "${NOPREV:-}" && "$d" != 2026-07-22 && -d "$1" ]]; then [[ -s "$1/prev-units.txt" ]] || echo "1046/999000001-999004500" > "$1/prev-units.txt"; touch "$1/from-store.txt"; fi
   ARCHIVE_PRIOR_LIST=${SPL-$PRIORL} ARCHIVE_PRIOR_SUMS=${SPS-$PRIORS} \
   ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} ARCHIVE_GUARD_DIR="$GP" SCANNER_REVISION=${SREV-r1} ARCHIVE_MIGRATION_LIST="${SLIST:-}" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "${SFX:-$FX}/scan-day.sh" "$d" "$1" "${MBPS:-40}" "${2:-300}" > "$T/out.txt" 2>&1
 }
@@ -3565,23 +3567,80 @@ for f in qa-2026-09-29.md qa-2026-09-29.json parity-2026-09-29.json manifest-202
 FAKE_AVAIL=999000000000 GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/package-day.sh" 2026-09-29 "$pm/out" "$pm/assets" > "$T/out.txt" 2>&1 || bad+=" [package: $(tail -2 "$T/out.txt")]"
 [[ "$(tar -tf "$pm/assets/margin-2026-09-29.tar" 2>/dev/null | grep -E '^units/[0-9]+/[0-9-]+/?$' | sed 's#/$##' | LC_ALL=C sort | tr '\n' ' ')" == "units/1046/3-4 units/1046/5-6 " ]] || bad+=" [margin set: $(tar -tf "$pm/assets/margin-2026-09-29.tar" 2>&1 | tr '\n' ' ')]"
 grep -q "  margin-2026-09-29.tar$" "$pm/assets/SHA256SUMS-2026-09-29" 2>/dev/null || bad+=" [not in sums]"
-# 2. margin-fetch: day D takes D-1's margin units from the store, never from the archive.
+# 2. margin-fetch: day D takes D-1's margin units from a done release at D's retention,
+# never from the archive (rulings 1, 6, 8; prev-units.txt for ruling 9).
 export GH_BIN="$T/bin/gh"
-mf() { rc=0; GITHUB_STEP_SUMMARY="$T/mf.sum" bash "$here/margin-fetch.sh" "$1" "$T/mfout" > "$T/mf.txt" 2>&1 || rc=$?; }
-mkmargin() { rm -rf "$T/rel/data-day-2026-07-22" "$T/rel/data-day-2026-07-22-k3" "$T/mfsrc"; mkdir -p "$T/rel/data-day-2026-07-22" "$T/mfsrc/units/1046/3-4" "$T/mfsrc/units/1046/5-6"
-  for u in 3-4 5-6; do echo '{"retention": "K3"}' > "$T/mfsrc/units/1046/$u/stats.json"; echo "d$u" > "$T/mfsrc/units/1046/$u/events.jsonl.zst"; done
-  tar -C "$T/mfsrc" -cf "$T/rel/data-day-2026-07-22/margin-2026-07-22.tar" units/1046/3-4 units/1046/5-6
-  (cd "$T/rel/data-day-2026-07-22" && sha256sum margin-2026-07-22.tar > SHA256SUMS-2026-07-22); }
+mkfx "$T/fxm2" ARCHIVE_RETENTION=K2; mkfx "$T/fxm3" ARCHIVE_RETENTION=K3
+mf() { rc=0; GITHUB_STEP_SUMMARY="$T/mf.sum" bash "${MFX:-$T/fxm2/research/historical/ci}/margin-fetch.sh" "$1" "$T/mfout" > "$T/mf.txt" 2>&1 || rc=$?; }
+# mkmargin TAG RET [LINK]: a done release TAG of day ${TAG:9:10} whose units 1-2 (own), 3-4 and
+# 5-6 (the margin) record RET; LINK adds a symlink member to the margin tar.
+mkmargin() { local tag=$1 r=$2 d=${1:9:10} dir="$T/rel/$1" src="$T/mfsrc-$1" u
+  rm -rf "$dir" "$src"; mkdir -p "$dir"
+  for u in 1-2 3-4 5-6; do mkdir -p "$src/units/1046/$u"; printf '{"retention": "%s"}\n' "$r" > "$src/units/1046/$u/stats.json"; echo "$r d$u" > "$src/units/1046/$u/events.jsonl.zst"; done
+  [[ -z "${3:-}" ]] || ln -s /etc/passwd "$src/units/1046/5-6/link.zst"
+  tar -C "$src" -cf "$dir/units-$d.tar.part00" units
+  tar -C "$src" -cf "$dir/margin-$d.tar" units/1046/3-4 units/1046/5-6
+  echo "list $tag" > "$dir/list-$d.txt"; local ls; ls=$(sha256sum "$dir/list-$d.txt" | cut -d' ' -f1)
+  printf '1046/1-2 r1 %s %s\n1046/3-4 r1 %s %s\n1046/5-6 r1 %s %s\n' "$r" "$ls" "$r" "$ls" "$r" "$ls" > "$dir/units-$d.log"
+  for f in events-$d.tar qa-$d.md qa-$d.json manifest-$d.json parity-$d.json; do echo "$f" > "$dir/$f"; done
+  (cd "$dir" && sha256sum units-* events-* qa-* manifest-* parity-* list-* margin-* > "SHA256SUMS-$d")
+  printf 'readback-ok %s %s' "$tag" "$(sha256sum "$dir/SHA256SUMS-$d" | cut -d' ' -f1)" > "$dir/readback-ok-$d"; }
 rm -rf "$T/mfout"; mf 2026-07-22; [[ $rc == 0 && ! -e "$T/mfout/from-store.txt" ]] || bad+=" [first day: $rc]"
-mkmargin; rm -rf "$T/mfout"; mf 2026-07-23
-[[ $rc == 0 && -f "$T/mfout/units/1046/3-4/stats.json" && -f "$T/mfout/units/1046/5-6/events.jsonl.zst" ]] && [[ "$(cat "$T/mfout/from-store.txt")" == $'1046/3-4 data-day-2026-07-22\n1046/5-6 data-day-2026-07-22' ]] || bad+=" [take: $rc $(cat "$T/mf.txt")]"
+mkmargin data-day-2026-07-22 K2; rm -rf "$T/mfout"; mf 2026-07-23
+[[ $rc == 0 && -f "$T/mfout/units/1046/3-4/stats.json" && -f "$T/mfout/units/1046/5-6/events.jsonl.zst" && ! -e "$T/mfout/units/1046/1-2" ]] && [[ "$(cat "$T/mfout/from-store.txt")" == $'1046/3-4 data-day-2026-07-22\n1046/5-6 data-day-2026-07-22' ]] || bad+=" [take: $rc $(cat "$T/mf.txt")]"
+[[ "$(cat "$T/mfout/prev-units.txt" 2>/dev/null | tr '\n' ' ')" == "1046/1-2 1046/3-4 1046/5-6 " ]] || bad+=" [prev-units: $(cat "$T/mfout/prev-units.txt" 2>&1)]"
 echo own > "$T/mfout/units/1046/5-6/events.jsonl.zst"; mf 2026-07-23; [[ $rc == 0 && "$(cat "$T/mfout/units/1046/5-6/events.jsonl.zst")" == own && $(wc -l < "$T/mfout/from-store.txt") == 2 ]] || bad+=" [resume: $rc]"
-mkmargin; echo changed >> "$T/rel/data-day-2026-07-22/margin-2026-07-22.tar"; rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] || bad+=" [sha: $rc]"
-mkmargin; mkdir -p "$T/mfsrc/evil"; echo x > "$T/mfsrc/evil/x"; tar -C "$T/mfsrc" -cf "$T/rel/data-day-2026-07-22/margin-2026-07-22.tar" units evil
-(cd "$T/rel/data-day-2026-07-22" && sha256sum margin-2026-07-22.tar > SHA256SUMS-2026-07-22); rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] || bad+=" [path: $rc]"
+mkmargin data-day-2026-07-22 K2; echo changed >> "$T/rel/data-day-2026-07-22/margin-2026-07-22.tar"; rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] || bad+=" [sha: $rc]"
+mkmargin data-day-2026-07-22 K2; mkdir -p "$T/mfsrc-x/evil"; echo x > "$T/mfsrc-x/evil/x"; tar -C "$T/mfsrc-data-day-2026-07-22" -cf "$T/rel/data-day-2026-07-22/margin-2026-07-22.tar" units -C "$T/mfsrc-x" evil
+(d=$T/rel/data-day-2026-07-22; cd "$d" && sha256sum units-* events-* qa-* manifest-* parity-* list-* margin-* > SHA256SUMS-2026-07-22 && printf 'readback-ok data-day-2026-07-22 %s' "$(sha256sum SHA256SUMS-2026-07-22 | cut -d' ' -f1)" > readback-ok-2026-07-22)
+rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] || bad+=" [path: $rc]"
 rm -rf "$T/rel/data-day-2026-07-22"; rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] || bad+=" [missing: $rc]"
-mkmargin; mv "$T/rel/data-day-2026-07-22" "$T/rel/data-day-2026-07-22-k3"; rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 0 ]] && grep -q "data-day-2026-07-22-k3" "$T/mfout/from-store.txt" || bad+=" [k3: $rc]"
-rm -rf "$T/rel/data-day-2026-07-22-k3"; unset GH_BIN
+mkmargin data-day-2026-07-22 K2; rm "$T/rel/data-day-2026-07-22/readback-ok-2026-07-22"; rm -rf "$T/mfout"; mf 2026-07-23; [[ $rc == 1 && ! -e "$T/mfout/units" ]] && grep -q "not done" "$T/mf.txt" || bad+=" [unmarked: $rc]"
+rm -rf "$T/rel/data-day-2026-07-22"
+# ruling 8: a symlink member is refused before anything is extracted or taken
+mkmargin data-day-2026-07-22 K2 link; rm -rf "$T/mfout"; mf 2026-07-23
+[[ $rc == 1 && ! -e "$T/mfout/units" ]] && grep -q "not a regular file or a directory" "$T/mf.txt" || bad+=" [symlink: $rc $(tail -1 "$T/mf.txt")]"
+rm -rf "$T/rel/data-day-2026-07-22"
+grep -q -- "--no-same-owner --no-overwrite-dir" "$here/margin-fetch.sh" || bad+=" [extract flags]"
+# ruling 6: 07-23 read at K2, 07-24 at K3. With data-day-2026-07-23-k3 present, 07-24 takes its
+# K3 units (never the K2 copy), every unit K3, byte-equal to the -k3 release's own units;
+# without it, 07-24 is refused (nothing taken, no prev-units.txt, so scan-day reads nothing).
+MFX=$T/fxm3/research/historical/ci
+mkmargin data-day-2026-07-23 K2; rm -rf "$T/mfout"; MFX=$MFX mf 2026-07-24
+[[ $rc == 1 && ! -e "$T/mfout/units" && ! -e "$T/mfout/prev-units.txt" ]] && grep -q "waits for data-day-2026-07-23-k3" "$T/mf.txt" || bad+=" [K3 day took K2: $rc $(tail -1 "$T/mf.txt")]"
+mkmargin data-day-2026-07-23-k3 K3; rm -rf "$T/mfout"; MFX=$MFX mf 2026-07-24
+[[ $rc == 0 ]] && grep -qx "1046/3-4 data-day-2026-07-23-k3" "$T/mfout/from-store.txt" || bad+=" [K3 from -k3: $rc $(tail -1 "$T/mf.txt")]"
+for st in "$T"/mfout/units/*/*/stats.json; do grep -q '"retention": "K3"' "$st" || bad+=" [not K3: $st]"; done
+rm -rf "$T/mfk3"; mkdir -p "$T/mfk3"; tar -xf "$T/rel/data-day-2026-07-23-k3/units-2026-07-23.tar.part00" -C "$T/mfk3"
+for u in 3-4 5-6; do for f in stats.json events.jsonl.zst; do cmp -s "$T/mfout/units/1046/$u/$f" "$T/mfk3/units/1046/$u/$f" || bad+=" [$u/$f differs from the -k3 copy]"; done; done
+rm -rf "$T/rel/data-day-2026-07-23" "$T/rel/data-day-2026-07-23-k3"; MFX=$MFX mkmargin data-day-2026-07-23 K3; rm -rf "$T/mfout"; MFX=$MFX mf 2026-07-24
+[[ $rc == 0 ]] && grep -qx "1046/3-4 data-day-2026-07-23" "$T/mfout/from-store.txt" || bad+=" [K3 plain: $rc]"
+rm -rf "$T/rel/data-day-2026-07-23" "$T/rel/data-day-2026-07-23-k3" "$T/mfk3"; unset GH_BIN
+# ruling 7: B-10 done for a two-day K3 chain whose second day took a unit from the first
+# (its line carries the first day's list sha256, marked "from data-day-<D-1>").
+mkchain() { GD="$GD" "$GD/bin/mkrel" 2026-07-24; GD="$GD" "$GD/bin/mkrel" 2026-07-25
+  local a=$GD/rel/data-day-2026-07-24 b=$GD/rel/data-day-2026-07-25 as bs
+  as=$(sha256sum "$a/list-2026-07-24.txt" | cut -d' ' -f1); bs=$(sha256sum "$b/list-2026-07-25.txt" | cut -d' ' -f1)
+  printf '1046/1-4500 r1 K3 %s\n1046/4501-9000 r1 K3 %s\nfrom 1046/4501-9000 %s\n' "$bs" "${FROMSHA:-$as}" "${FROMTAG:-data-day-2026-07-24}" > "$b/units-2026-07-25.log"
+  (cd "$b" && rm -f SHA256SUMS-2026-07-25 readback-ok-2026-07-25 && sha256sum -- * > SHA256SUMS-2026-07-25 &&
+    printf 'readback-ok data-day-2026-07-25 %s' "$(sha256sum SHA256SUMS-2026-07-25 | cut -d' ' -f1)" > readback-ok-2026-07-25); }
+gdreset; printf '2026-07-24\n2026-07-25\n' > "$GD/published"; mkchain; b10
+[[ $rc == 0 && "$(tr '\n' ' ' < "$T/b10")" == "2026-07-24 2026-07-25 " ]] || bad+=" [chain: $rc $(tr '\n' ' ' < "$T/b10")]"
+v=$(sha256sum "$GD/rel/data-day-2026-07-25/list-2026-07-25.txt" | cut -d' ' -f1); FROMSHA=$v mkchain; b10
+[[ $rc == 0 && "$(tr '\n' ' ' < "$T/b10")" == "2026-07-24 " ]] || bad+=" [taken unit with its own day's sha: $(tr '\n' ' ' < "$T/b10")]"
+FROMTAG=data-day-2026-07-23 mkchain; b10; [[ "$(tr '\n' ' ' < "$T/b10")" == "2026-07-24 " ]] || bad+=" [from another day counted]"
+mkchain; rm "$GD/rel/data-day-2026-07-24/readback-ok-2026-07-24"; b10; [[ ! -s "$T/b10" ]] || bad+=" [from an unmarked release counted: $(tr '\n' ' ' < "$T/b10")]"
+gdreset
+# ruling 9: a day after the first is read only with the day before's stored units, handed
+# to the scanner with the taken ones (the scanner refuses a stored unit that was not taken).
+mkfx "$T/fx9"; o="$T/sc9"; rm -rf "$o"; mkdir -p "$o"; rc=0
+NOPREV=1 SFX=$T/fx9/research/historical/ci SDAY=2026-07-23 scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "no list of the day before's stored units" "$T/out.txt" || bad+=" [no prev-units: $rc $(calls)]"
+rm -rf "$o"; mkdir -p "$o"; echo "1046/1-4500" > "$o/prev-units.txt"; echo "1046/1-4500 data-day-2026-07-22" > "$o/from-store.txt"; rc=0
+SFX=$T/fx9/research/historical/ci SDAY=2026-07-23 scan "$o" || rc=$?
+[[ $rc == 0 ]] && grep -q -- "-stored $o/prev-units.txt -taken $o/from-store.txt" "$T/scan.args" || bad+=" [stored args: $rc $(cat "$T/scan.args" 2>/dev/null)]"
+rm -rf "$o"; mkdir -p "$o"; rc=0; SFX=$T/fx9/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 0 ]] && ! grep -q -- "-stored" "$T/scan.args" || bad+=" [first day: $rc]"
 # 3. scan-day: a day holding only D-1's taken (K3) units reads its own at K2, without refusing;
 # check-day rescans its first own unit, never a taken one; the trim passes taken units through.
 mkfx "$T/fx6"; o="$T/sc6"; rm -rf "$o"; mkdir -p "$o/units/1046/3-4"; printf '{\n  "scanner_revision": "r1",\n  "retention": "K3"\n}\n' > "$o/units/1046/3-4/stats.json"; echo "1046/3-4 data-day-2026-07-22" > "$o/from-store.txt"
@@ -3597,7 +3656,7 @@ grep -qx "from 1046/1-2 data-day-2026-07-21" "$T/cd6-assets/units-2026-07-22.log
 mkk2; mkdir -p "$T/tk2/units/1046/7-8"; echo '{"scanner_revision": "rF", "retention": "K3", "migration_list_sha256": "other"}' > "$T/tk2/units/1046/7-8/stats.json"; echo taken > "$T/tk2/units/1046/7-8/a.zst"
 echo "1046/7-8 data-day-2026-07-21" > "$T/tk2/from-store.txt"; rc=0; td 2026-07-22 - || rc=$?
 [[ $rc == 0 && "$(cat "$T/tk2/units/1046/7-8/a.zst" 2>/dev/null)" == taken ]] && ! grep -q -- "-in $T/tk2/units/1046/7-8" "$T/trim.args" && grep -qx "from 1046/7-8 data-day-2026-07-21" "$T/tk2/units.log" || bad+=" [trim pass-through: $rc $(tail -2 "$T/out.txt")]"
-[[ -z "$bad" ]] && ok "OF-6 margin: package-day stores margin-DAY.tar (the units reaching the next day) in SHA256SUMS; margin-fetch moves D-1's margin units into D's progress from data-day-<D-1> (else -k3) and lists them in from-store.txt, takes nothing for the first day, keeps a unit already there, and fails closed on a changed tar, a path outside units/ or no release; scan-day reads the rest at K2 with taken K3 units present; check-day rescans an own unit and logs from lines; the trim passes taken units through untouched with from lines" || no "OF-6 margin:$bad"
+[[ -z "$bad" ]] && ok "OF-6 margin: package-day stores margin-DAY.tar (the units reaching the next day) in SHA256SUMS; margin-fetch moves D-1's margin units into D's progress from a done release at D's retention (a K3 day after a K2 day only from data-day-<D-1>-k3, its units byte-equal to that release's, else refused; ruling 6) and lists them in from-store.txt and D-1's stored units in prev-units.txt, takes nothing for the first day, keeps a unit already there, and fails closed on a changed tar, a symlink member (ruling 8), a path outside units/, an unmarked or missing release; B-10 done counts a two-day K3 chain with a taken unit (ruling 7); scan-day reads a later day only with the stored units handed to the scanner (ruling 9); scan-day reads the rest at K2 with taken K3 units present; check-day rescans an own unit and logs from lines; the trim passes taken units through untouched with from lines" || no "OF-6 margin:$bad"
 bad=""; gdreset
 # 4. The guard pass records whether the day had a counted scan failure since ARCHIVE_REARM_AT.
 dsrun 391 "data-scan scan source=archive" failure 300 200 "Archive guard=success,scan (2026-07-22)=failure,continue=failure" | dsjson
