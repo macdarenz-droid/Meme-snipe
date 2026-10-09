@@ -232,6 +232,97 @@ def two_sided_clusters(tape: Tape, window=TWO_SIDED_SLOTS):
     return capped, summary
 
 
+class TwoSidedAsOf:
+    """COUNT_ROWS_AMENDMENT_10 (red team R2-19): `two_sided_clusters`' label for one owner and mint, from data strictly
+    before slot `st` only: links before st, hub status (more than HUB_CAP linked owners) as of st, the cluster of
+    either rule (hub-cap-50 components; hub-keyed by the earliest hub link) of 2-50 owners as of st, and the cluster's
+    buys and sells of the mint before st within TWO_SIDED_SLOTS of each other. A cluster that forms after st, or a
+    trade after st, never labels the owner."""
+
+    def __init__(self, tape: Tape, s: pd.DataFrame, window=TWO_SIDED_SLOTS, hub_cap=HUB_CAP):
+        self.window, self.hub_cap = window, hub_cap
+        L = tape.links
+        a = np.r_[L["from_owner"].values, L["to_owner"].values]
+        b = np.r_[L["to_owner"].values, L["from_owner"].values]
+        sl = np.r_[L["slot"].values, L["slot"].values].astype(np.int64)
+        e = pd.DataFrame({"a": a, "b": b, "slot": sl})
+        e = e[e["a"] != e["b"]].groupby(["a", "b"], sort=False)["slot"].min().reset_index().sort_values(
+            ["a", "slot"], kind="mergesort")
+        self.nb = {k: (g["slot"].to_numpy(), g["b"].to_numpy()) for k, g in e.groupby("a", sort=False)}
+        x = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
+        self.tr = {m: g for m, g in x.groupby("mint", sort=False)}
+        self._deg = {}
+
+    def _links(self, n, st):
+        v = self.nb.get(n)
+        if v is None:
+            return []
+        k = int(np.searchsorted(v[0], st, side="left"))
+        return list(zip(v[0][:k].tolist(), v[1][:k].tolist()))
+
+    def _hub(self, n, st) -> bool:
+        key = (n, st)
+        if key not in self._deg:
+            v = self.nb.get(n)
+            self._deg[key] = int(np.searchsorted(v[0], st, side="left")) if v is not None else 0
+        return self._deg[key] > self.hub_cap
+
+    def _capped(self, x, st):
+        """hub-cap-50 component of x as of st, or None once it holds more than LABEL_MAX owners."""
+        if self._hub(x, st):
+            return {x}
+        comp, q = {x}, deque([x])
+        while q:
+            n = q.popleft()
+            for _, y in self._links(n, st):
+                if y in comp or self._hub(y, st):
+                    continue
+                comp.add(y)
+                if len(comp) > LABEL_MAX:
+                    return None
+                q.append(y)
+        return comp
+
+    def _first_hub(self, n, st):
+        if self._hub(n, st):
+            return None
+        for _, y in self._links(n, st):
+            if self._hub(y, st):
+                return y
+        return None
+
+    def _keyed(self, x, st):
+        """hub-keyed cluster of x as of st (owners whose earliest hub link before st is to the same hub), or None."""
+        h = self._first_hub(x, st)
+        if h is None:
+            return None
+        members = set()
+        for _, y in self._links(h, st):
+            if self._first_hub(y, st) == h:
+                members.add(y)
+                if len(members) > LABEL_MAX:
+                    return None
+        return members
+
+    def labelled(self, mint, x, st) -> bool:
+        g = self.tr.get(mint)
+        if g is None:
+            return False
+        g = g[g["slot"].to_numpy() < st]
+        for cl in (self._capped(x, st), self._keyed(x, st)):
+            if cl is None or not (LABEL_MIN <= len(cl) <= LABEL_MAX):
+                continue
+            c = g[g["owner"].isin(cl)]
+            bs = np.sort(c.loc[c["is_buy"], "slot"].to_numpy())
+            ss = c.loc[~c["is_buy"], "slot"].to_numpy()
+            if not len(bs) or not len(ss):
+                continue
+            i = np.searchsorted(bs, ss - self.window, side="left")
+            if ((i < len(bs)) & (bs[np.minimum(i, len(bs) - 1)] <= ss + self.window)).any():
+                return True
+        return False
+
+
 def fake_demand_set(labels: pd.DataFrame):
     """Q13: an owner is excluded from first-time-buyer counts on a mint if either rule labels it, in a
     cluster of 2-50 owners."""

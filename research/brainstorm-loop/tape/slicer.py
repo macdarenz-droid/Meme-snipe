@@ -3,7 +3,9 @@ survivor 1, which the amendment summarises).
 
 Counts and flows only. No PREREG may be written before the owner rules whether riding a wallet's unfinished slices
 is "front-running other users"; when every row passes, the counts go to the owner, nothing else.
-As-of rule (Q14): the event and its exclusions read only rows at or before the event slot; after it, only flows.
+As-of rule (Q14, COUNT_ROWS_AMENDMENT_10): the event and its exclusions read only rows at or before the event slot (the
+two-sided-cluster label from data strictly before it, rows.TwoSidedAsOf); after it, only flows, and the buyers after the
+event carry their fast class as of the event (their buys strictly before its slot; none: "unclassed", reported).
 """
 from __future__ import annotations
 
@@ -62,6 +64,15 @@ class FastAsOf:
             return False
         return bool(x[1][n - 1] / n >= 0.10 or x[2][n - 1] / n >= 0.30)
 
+    def before(self, day, owner, slot):
+        """COUNT_ROWS_AMENDMENT_10 (red team R2-20): the class from the owner's buys of `day` strictly before `slot`;
+        None ("unclassed") when it has none, never filled in from later buys."""
+        x = self.idx.get((day, owner))
+        n = int(np.searchsorted(x[0], slot, side="left")) if x is not None else 0
+        if n == 0:
+            return None
+        return bool(x[1][n - 1] / n >= 0.10 or x[2][n - 1] / n >= 0.30)
+
 
 def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
     """Slicer events on canonical WSOL pools. One event per (mint, owner): the first buy k at which the owner has
@@ -78,6 +89,7 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
     sells_by = {k: g["block_time"].to_numpy() for k, g in sells.groupby(["mint", "owner"], sort=False)}
     ps_cache = {}
     fast_idx = FastAsOf(R.w1_fast_buys(tape, s))
+    two_sided = R.TwoSidedAsOf(tape, s)
     out, drops = [], Counter()
     for (mint, x), g in buys.groupby(["mint", "owner"], sort=False):
         if len(g) < 3:
@@ -101,7 +113,7 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
             why = "signer_not_owner"           # also rules out a PDA owner: a PDA cannot sign
         elif bool(last["schema_v2"]) and not sl_rows["top_program"].isin(DIRECT_PROGRAMS).all():
             why = "routed_or_app"
-        elif sl_rows["fake"].any():
+        elif two_sided.labelled(mint, x, st):   # as of the event slot (COUNT_ROWS_AMENDMENT_10, red team R2-19)
             why = "two_sided_cluster"
         elif fast_idx(last["day"], x, st):     # as of the event slot (red team R2-17); = R.w1_fast_asof
             why = "w1_fast_class"
@@ -148,10 +160,11 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
 def measure(tape: Tape, s: pd.DataFrame, ev: pd.DataFrame, fast, ctx):
     """Flows after each event (X's continuation, fast-class buying, bait) and as-of features before it."""
     if not len(ev):
-        return ev.assign(cont=[], a_hit=[], fast_ratio=[], bait=[], ret5=[], ret15=[], ret60=[], vol15=[], volume15=[],
+        return ev.assign(cont=[], a_hit=[], fast_ratio=[], unclassed_ratio=[], bait=[], ret5=[], ret15=[], ret60=[], vol15=[], volume15=[],
                          buys15=[], universe=[], ok5=[])
     x = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
     by_mint = {m: g for m, g in x.groupby("mint", sort=False)}
+    fast_idx = FastAsOf(R.w1_fast_buys(tape, s))
     res = []
     for e in ev.itertuples(index=False):
         g = by_mint[e.mint]
@@ -159,7 +172,11 @@ def measure(tape: Tape, s: pd.DataFrame, ev: pd.DataFrame, fast, ctx):
         win = mine[(mine["slot"] > e.slot + R.LANDING) & (mine["block_time"] <= e.t + CONT_S)]
         cont = float(win.loc[win["is_buy"], "sol"].sum() - win.loc[~win["is_buy"], "sol"].sum())
         early = g[(g["slot"] >= e.slot) & (g["slot"] <= e.slot + R.LANDING) & g["is_buy"] & (g["owner"] != e.owner)]
-        fast_sol = float(early.loc[[bool(fast.get((d, o), False)) for d, o in zip(early["day"], early["owner"])], "sol"].sum())
+        # COUNT_ROWS_AMENDMENT_10 (R2-20): each buyer's class as of the event, from its buys strictly before the
+        # event's slot; a buyer with none is unclassed and reported, never classed from later buys
+        cls = [fast_idx.before(d, o, e.slot) for d, o in zip(early["day"], early["owner"])]
+        fast_sol = float(early.loc[[c is True for c in cls], "sol"].sum())
+        unclassed_sol = float(early.loc[[c is None for c in cls], "sol"].sum())
         # bait: X sells at least half of the tokens it bought (through the end of its buying in the hour) within 4 h
         buys = mine[mine["is_buy"] & (mine["block_time"] <= e.t + CONT_S)]
         t_end = int(buys["block_time"].max())
@@ -184,6 +201,7 @@ def measure(tape: Tape, s: pd.DataFrame, ev: pd.DataFrame, fast, ctx):
         m = ctx.mig.get(e.pool)
         uni = H8.universe(e.t - m[0]) if m else "age_unknown"
         res.append({"cont": cont, "a_hit": bool(cont >= 0.5 * e.B), "fast_ratio": fast_sol / e.B if e.B > 0 else np.nan,
+                    "unclassed_ratio": unclassed_sol / e.B if e.B > 0 else np.nan,
                     "bait": bait, "ret5": back(300), "ret15": back(900), "ret60": back(3600), "vol15": vol15,
                     "volume15": float(pg["sol"].sum()), "buys15": int(pg["is_buy"].sum()), "universe": uni,
                     "ok5": ctx.check(e.pool, e.t, e.slot, e.Q, H8.TRIAL_SIZE_USD) == "ok" and uni == "U1"})
@@ -374,7 +392,9 @@ def slicer_rows(tape: Tape, s: pd.DataFrame, adj, fast, ctx, cmap):
     summ["e_r2"] = {"r2": r2, "passed": bool(r2 is not None and r2 <= R2_MAX)}
     # (f) competition
     fr = float(ev["fast_ratio"].median()) if len(ev) else None
-    summ["f_fast_class"] = {"median_fast_buy_over_b": fr, "passed": bool(fr is not None and fr <= FAST_MAX)}
+    ur = float(ev["unclassed_ratio"].median()) if len(ev) else None
+    summ["f_fast_class"] = {"median_fast_buy_over_b": fr, "median_unclassed_buy_over_b": ur,   # AMENDMENT_10
+                            "passed": bool(fr is not None and fr <= FAST_MAX)}
     # (g) bait
     bt = ev["bait"].dropna() if len(ev) else pd.Series(dtype=float)
     bs = float(bt.astype(float).mean()) if len(bt) else None

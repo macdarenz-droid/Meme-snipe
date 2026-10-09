@@ -64,6 +64,7 @@
   - hub-cap-50 = connected components after removing every edge that touches an address linked to more than 50 owners.
   - hub-keyed = each owner linked to such a hub is keyed by the hub of its earliest hub link, and owners with the same key form one cluster.
   - Both rules use all links on the loaded tape, not as-of. This matters only for a label; it reads no outcome.
+  - COUNT_ROWS_AMENDMENT_10 (red team R2-19, R2-20): the slicer's exclusion uses the label as of the event (`rows.TwoSidedAsOf`: links, hubs, clusters and trades strictly before the event's slot), and the buyers in [t, t + 23 slots] carry their fast class as of the event (their buys of the day strictly before its slot; with none they are unclassed, reported as `unclassed_ratio`, and never classed from later buys).
 - **Q12 "Short windows".** *Used:* 600 slots (F1's window): a cluster buy and a cluster sell of the same mint within 600 slots.
 - **Q13 Label use [A1].** Only clusters of 2–50 owners are labelled. The summary reports the share of swap rows labelled before and after the cap (`either_rule`, and per rule).
 - **Shape seen on two units of 09-11 [open].** The share is taken over owner-known, non-BOOST, SOL-quoted swap rows. It falls from 58% of rows labelled without the cap to 43% with it, so the label is still broad. The 600-slot window (Q12) is the remaining lever for the lead.
