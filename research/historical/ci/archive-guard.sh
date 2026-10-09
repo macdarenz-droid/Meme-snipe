@@ -579,15 +579,33 @@ ag_read_done() {
 # ag_b10_ok TAG DAY (OF-5 ruling 2): the marked release TAG holds DAY at the B-10
 # retention: every unit line of its units-DAY.log is K3 with the sha256 of list-DAY.txt
 # that its SHA256SUMS-DAY records. Judged from the recorded retention, never the tag name.
+# OF-6 ruling 7: a unit taken from the day before's store (a "from EPOCH/RANGE TAG" line,
+# TAG data-day-<D-1> or data-day-<D-1>-k3, a done release) carries instead the sha256 of
+# list-<D-1>.txt that TAG's SHA256SUMS-<D-1> records.
 ag_b10_ok() {
-  local tag=$1 d=$2 tmp sha rc=1
+  local tag=$1 d=$2 tmp sha prev ft fs maps="" rc=1
+  prev=$(date -u -d "$d - 1 day" +%F)
   tmp=$(mktemp -d)
   if ag_store release download "$tag" --repo "$DATA_REPO" --pattern "units-$d.log" --pattern "SHA256SUMS-$d" --dir "$tmp" >/dev/null 2>&1 &&
     [[ -f "$tmp/units-$d.log" && -f "$tmp/SHA256SUMS-$d" ]]; then
     sha=$(awk -v f="list-$d.txt" '$2 == f {print $1}' "$tmp/SHA256SUMS-$d")
-    if [[ "$sha" =~ ^[0-9a-f]{64}$ ]] && awk -v s="$sha" '
-        $1 ~ /^[0-9]+\/[0-9]+-[0-9]+$/ { n++; if (NF != 4 || $3 != "K3" || $4 != s) bad = 1 }
-        END { exit !(n > 0 && !bad) }' "$tmp/units-$d.log"; then rc=0; fi
+    rc=0
+    while read -r ft; do
+      [[ -n "$ft" ]] || continue
+      [[ "$ft" == "data-day-$prev" || "$ft" == "data-day-$prev-k3" ]] || { rc=1; break; }
+      [[ "$(GH=ag_store release_state "$ft" "$prev")" == done ]] || { rc=1; break; }
+      mkdir -p "$tmp/p"; rm -f "$tmp/p/SHA256SUMS-$prev"
+      ag_store release download "$ft" --repo "$DATA_REPO" --pattern "SHA256SUMS-$prev" --dir "$tmp/p" >/dev/null 2>&1 || { rc=1; break; }
+      fs=$(awk -v f="list-$prev.txt" '$2 == f {print $1}' "$tmp/p/SHA256SUMS-$prev" 2>/dev/null)
+      [[ "$fs" =~ ^[0-9a-f]{64}$ ]] || { rc=1; break; }
+      maps+="$ft $fs"$'\n'
+    done < <(awk '$1 == "from" {print $3}' "$tmp/units-$d.log" | LC_ALL=C sort -u)
+    if (( rc == 0 )) && [[ "$sha" =~ ^[0-9a-f]{64}$ ]] && awk -v s="$sha" -v maps="$maps" '
+        BEGIN { n = split(maps, m, "\n"); for (i = 1; i <= n; i++) if (split(m[i], kv, " ") == 2) tsha[kv[1]] = kv[2] }
+        NR == FNR { if ($1 == "from") { if (NF != 3 || ($2 in from)) bad = 1; from[$2] = $3 } next }
+        $1 ~ /^[0-9]+\/[0-9]+-[0-9]+$/ { n++; want = ($1 in from) ? tsha[from[$1]] : s
+          if (NF != 4 || $3 != "K3" || want == "" || $4 != want) bad = 1 }
+        END { exit !(n > 0 && !bad) }' "$tmp/units-$d.log" "$tmp/units-$d.log"; then rc=0; else rc=1; fi
   fi
   rm -rf "$tmp"
   return $rc

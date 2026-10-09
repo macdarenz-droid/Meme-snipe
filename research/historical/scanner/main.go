@@ -74,6 +74,50 @@ func readUnitsFile(path string) (map[string]bool, error) {
 	return want, nil
 }
 
+// readUnitNames reads EPOCH/FROM-TO names, the first field of each line (from-store.txt
+// lines carry the release tag after it); an empty file is an empty set.
+func readUnitNames(path string) (map[string]bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	for _, l := range strings.Split(string(b), "\n") {
+		f := strings.Fields(l)
+		if len(f) == 0 {
+			continue
+		}
+		var e, a, z uint64
+		if n, err := fmt.Sscanf(f[0], "%d/%d-%d", &e, &a, &z); err != nil || n != 3 || (unitSpec{e, a, z}).name() != f[0] || a > z {
+			return nil, fmt.Errorf("%s: bad unit %q (EPOCH/FROM-TO)", path, f[0])
+		}
+		names[f[0]] = true
+	}
+	return names, nil
+}
+
+// checkStored (OF-6 ruling 9): a planned unit that overlaps a unit the day before stored
+// (its units-<D-1>.log) must be one this day took from the store (from-store.txt);
+// otherwise the run refuses before any unit is read, so a drift between the planner's and
+// the margin's time estimates never reads an archive unit twice.
+func checkStored(units []unitSpec, stored, taken map[string]bool) error {
+	type span struct{ e, a, z uint64 }
+	var st []span
+	for k := range stored {
+		var s span
+		fmt.Sscanf(k, "%d/%d-%d", &s.e, &s.a, &s.z)
+		st = append(st, s)
+	}
+	for _, u := range units {
+		for _, s := range st {
+			if u.epoch == s.e && u.from <= s.z && s.a <= u.to && !taken[u.name()] {
+				return fmt.Errorf("planned unit %s overlaps %d/%d-%d, stored for the day before, and was not taken from the store", u.name(), s.e, s.a, s.z)
+			}
+		}
+	}
+	return nil
+}
+
 // onlyUnits keeps the planned units listed in want; a listed unit that is not in the
 // plan refuses the run.
 func onlyUnits(units []unitSpec, want map[string]bool) ([]unitSpec, error) {
@@ -217,6 +261,8 @@ func main() {
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		slots := fs.String("slots", "", "only units inside this slot range, FROM-TO (for tests)")
 		onlyFile := fs.String("units", "", "OF-6: only these units (a file of EPOCH/FROM-TO lines; a QA failure's named units)")
+		storedFile := fs.String("stored", "", "OF-6 ruling 9: the day before's stored units (EPOCH/FROM-TO lines); needs -taken")
+		takenFile := fs.String("taken", "", "OF-6 ruling 9: the units taken from the store (from-store.txt)")
 		maxMBps := fs.Float64("max-mbps", 40, "download cap in MB/s (1 MB = 1e6 bytes), above 0 and at most 40")
 		on429 := fs.String("on-429", "stop", "stop: end the run (exit code 75) so a scheduler can back off; pause: wait max(1 h, Retry-After) and retry")
 		retention := fs.String("retention", "", "K2 or K3 (OF-3; empty: today's units)")
@@ -230,6 +276,21 @@ func main() {
 		if *onlyFile != "" {
 			var err error
 			if onlyWant, err = readUnitsFile(*onlyFile); err != nil {
+				log.Printf("refused: %v", err)
+				os.Exit(2)
+			}
+		}
+		var stored, taken map[string]bool
+		if *storedFile != "" || *takenFile != "" {
+			var err error
+			if *storedFile == "" || *takenFile == "" {
+				log.Printf("refused: -stored and -taken go together")
+				os.Exit(2)
+			}
+			if stored, err = readUnitNames(*storedFile); err == nil {
+				taken, err = readUnitNames(*takenFile)
+			}
+			if err != nil {
 				log.Printf("refused: %v", err)
 				os.Exit(2)
 			}
@@ -287,6 +348,12 @@ func main() {
 		}
 		if onlyWant != nil {
 			if units, err = onlyUnits(units, onlyWant); err != nil {
+				log.Printf("refused: %v", err)
+				os.Exit(2)
+			}
+		}
+		if stored != nil {
+			if err := checkStored(units, stored, taken); err != nil {
 				log.Printf("refused: %v", err)
 				os.Exit(2)
 			}
