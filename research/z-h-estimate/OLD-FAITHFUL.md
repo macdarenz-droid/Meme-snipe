@@ -332,7 +332,7 @@ migration raw record. Today's retention already keeps every curve and canonical-
 - **As built (OF-5):** "read done" is read only from `zeroed-data`, failing closed when it cannot be read: the
   queue and the guard (`ag_read_done`) and the skip step (`publish-day.sh --check`) count a `data-day-D` or
   `data-day-D-k3` release only when it is complete (every asset uploaded and named as its `SHA256SUMS-D` lists; both
-  judge it with `ci/release-state.sh`, ruling 3) and carries its `readback-ok-D` marker (OF-5 ruling 1): stored after every other asset
+  judge it with `ci/release-state.sh`, ruling 3, as does `assemble.sh --download`, which takes only such days, ruling 4) and carries its `readback-ok-D` marker (OF-5 ruling 1): stored after every other asset
   was read back, naming the tag and the sha256 of the stored `SHA256SUMS-D`, and itself read back. A release without it
   (its read-back never passed) stops the chain for review and is never read again automatically. "B-10 done" is
   `archive-guard.sh b10-done`: a marked release whose recorded retention is B-10's (ruling 2: every unit line of

@@ -38,11 +38,14 @@ case "$cmd" in
       jq -s --argjson d "$draft" '{isDraft: $d, assets: .}' | jq -r "$jqx" ;;
   download)
     [[ -d "$dir" ]] || exit 1
-    echo "$tag" >> "$T/downloads.log"
     out="" pats=()
     while (( $# )); do
       case "$1" in --dir) out=$2; shift ;; --pattern) pats+=("$2"); shift ;; esac; shift
     done
+    # downloads.log lists data downloads; reading only SHA256SUMS or the readback-ok marker
+    # (release-state.sh judging a release) is not one
+    for p in "${pats[@]}"; do [[ "$p" == SHA256SUMS-* || "$p" == readback-ok-* ]] || { echo "$tag" >> "$T/downloads.log"; break; }; done
+    for p in "${pats[@]}"; do echo "$tag $p" >> "$T/dlpat.log"; done
     for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done
     # OF-4: FAKE_GH_CORRUPT=NAME hands back a changed copy of that asset (a read-back mismatch)
     [[ -n "${FAKE_GH_CORRUPT:-}" && -e "$out/$FAKE_GH_CORRUPT" ]] && echo changed >> "$out/$FAKE_GH_CORRUPT"
@@ -107,7 +110,10 @@ make_day() {
   (cd "$src" && tar -cf - units) | split -b 4000 -d -a 2 - "$dir/units-$day.tar.part"
   (cd "$src" && find units -mindepth 3 -maxdepth 3 \( -name events.jsonl.zst -o -name stats.json -o -name blocks.csv.zst \) | LC_ALL=C sort |
     tar --no-recursion -cf "$dir/events-$day.tar" -T -)
-  (cd "$dir" && sha256sum units-"$day".tar.part* events-"$day".tar > "SHA256SUMS-$day")
+  # the rest of a done release (OF-5 rulings 1 and 4): QA, manifest, parity, per-unit log and the readback-ok marker
+  for f in qa-$day.md qa-$day.json manifest-$day.json parity-$day.json units-$day.log; do echo "$f" > "$dir/$f"; done
+  (cd "$dir" && sha256sum units-"$day".tar.part* events-"$day".tar qa-* manifest-* parity-* units-"$day".log > "SHA256SUMS-$day")
+  printf 'readback-ok data-day-%s %s' "$day" "$(sha256sum "$dir/SHA256SUMS-$day" | cut -d' ' -f1)" > "$dir/readback-ok-$day"
   rm -rf "$src"
 }
 reset_store() {
@@ -156,6 +162,14 @@ run 2026-09-20 2026-09-22 "$T/w3" && no "existing dataset release replaced" || {
 reset_store; rm -rf "$T/rel/data-day-2026-09-10"
 run 2026-09-20 2026-09-22 "$T/work" && no "missing lead-in day skipped silently" ||
   { grep -q "data-day-2026-09-10 is missing" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "missing lead-in day fails before any download" || no "missing day: $(cat "$T/out.txt")"; }
+# OF-5 ruling 4: a complete day release without its readback-ok marker is refused before any download
+reset_store; rm "$T/rel/data-day-2026-09-21/readback-ok-2026-09-21"
+bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" > "$T/out.txt" 2>&1 && no "assemble took an unmarked day" ||
+  { grep -q "data-day-2026-09-21 is not done (complete); stopped for review" "$T/out.txt" && [[ ! -s "$T/downloads.log" && ! -d "$T/work" ]] &&
+    ok "OF-5 ruling 4: assemble --download refuses a complete day release without its readback-ok marker before any download" || no "OF-5 ruling 4: $(cat "$T/out.txt")"; }
+reset_store; echo units-2026-09-12.tar.part00 > "$T/rel/data-day-2026-09-12/.partial"
+bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" > "$T/out.txt" 2>&1 && no "assemble took a partial day" ||
+  { grep -q "data-day-2026-09-12 is not done (incomplete" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "OF-5 ruling 4: assemble --download refuses a day release with an asset not uploaded before any download" || no "OF-5 ruling 4 partial: $(cat "$T/out.txt")"; }
 
 reset_store
 FAKE_AVAIL=1000 run 2026-09-20 2026-09-22 "$T/work" && no "disk guard passed" || { grep -q "not enough disk" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "free-space guard (all the days' assets + 10 GB before the download; 2x a day's assets + 10 GB before its extraction)" || no "disk guard message"; }
@@ -164,9 +178,12 @@ reset_store; echo junk >> "$T/rel/data-day-2026-09-21/units-2026-09-21.tar.part0
 run 2026-09-20 2026-09-22 "$T/work" && no "corrupt part accepted" || { grep -q "checksum mismatch" "$T/out.txt" && ok "corrupt window part fails the checksum" || no "checksum message: $(cat "$T/out.txt")"; }
 reset_store; echo junk >> "$T/rel/data-day-2026-09-08/events-2026-09-08.tar"
 run 2026-09-20 2026-09-22 "$T/work" && no "corrupt events asset accepted" || { grep -q "events asset checksum mismatch" "$T/out.txt" && ok "corrupt lead-in events asset fails the checksum" || no "events checksum message: $(cat "$T/out.txt")"; }
-reset_store; rm "$T/rel/data-day-2026-09-10/units-2026-09-10.tar.part"*
-run 2026-09-20 2026-09-22 "$T/work"; grep -q "^data-day-2026-09-10$" "$T/downloads.log" && ! ls "$T/work"/dl-* >/dev/null 2>&1 && [[ -f "$T/rel/data-2026-09-20-2026-09-22/manifest.json" || -f "$T/finalize.args" ]] &&
-  ok "lead-in days download only the events asset (a lead-in day with no tar parts still assembles)" || no "lead-in events-only: $(tail -3 "$T/out.txt")"
+# (OF-5 ruling 4: a release without its tar parts is not done, so this reads the download patterns)
+reset_store; rm -f "$T/dlpat.log"
+run 2026-09-20 2026-09-22 "$T/work" || true
+grep -qx "data-day-2026-09-10 events-2026-09-10.tar" "$T/dlpat.log" && ! grep -q "^data-day-2026-09-10 units-" "$T/dlpat.log" && grep -q "^data-day-2026-09-21 units-2026-09-21.tar.part" "$T/dlpat.log" &&
+  ! ls "$T/work"/dl-* >/dev/null 2>&1 && [[ -f "$T/rel/data-2026-09-20-2026-09-22/manifest.json" ]] &&
+  ok "lead-in days download only the events asset (never their tar parts); window days their parts" || no "lead-in events-only: $(tail -3 "$T/out.txt")"
 
 STATS_REV_2026_09_20=r2 reset_store
 run 2026-09-20 2026-09-22 "$T/work" && no "midnight unit with another scanner_revision accepted" ||
@@ -3086,7 +3103,24 @@ names = list(asm); assert names.index("Download the days from the private store"
 steps = jobs["scan"]["steps"]; names = [s.get("id") or s.get("name") for s in steps]
 assert "Store this day's volume hours" in names and names.index("store") < names.index("Store this day's volume hours") < names.index("Storage check after the batch"), names
 sc = steps[names.index("Storage check after the batch")]
-assert sc["if"] == "steps.published.outputs.complete != 'true' && steps.store.outcome == 'success' && inputs.source != 'helius'", sc
+# OF-5 ruling 5: the check runs whenever the day was stored, also when a later step failed.
+# GitHub adds success() to an if without a status function, so model that.
+def runs(cond, **v):
+    import re as _re
+    if not _re.search(r"\b(success|failure|always|cancelled)\(\)", cond): cond = "success() && " + cond
+    e = cond.replace("!cancelled()", str(not v["cancelled"])).replace("success()", str(not v["failed"] and not v["cancelled"]))
+    e = e.replace("failure()", str(v["failed"])).replace("always()", "True").replace("cancelled()", str(v["cancelled"]))
+    e = e.replace("steps.published.outputs.complete", repr(v["complete"])).replace("steps.store.outcome", repr(v["store"]))
+    e = e.replace("steps.store.outputs.readback", repr(v["readback"])).replace("inputs.source", repr(v["source"]))
+    e = e.replace("&&", " and ").replace("||", " or ")
+    return eval(e, {})
+base = dict(cancelled=False, failed=False, complete="", store="success", readback="true", source="archive")
+cases = [(dict(), True), (dict(failed=True), True), (dict(failed=True, store="failure", readback=""), True),
+         (dict(store="skipped", readback="", complete="true"), False), (dict(cancelled=True, failed=True), False),
+         (dict(source="helius", store="skipped", readback=""), False)]
+for c, want in cases:
+    got = runs(sc["if"], **{**base, **c})
+    assert got == want, ("storage check", c, got)
 head = open(sys.argv[1]).read().split("\nname:")[0]
 assert "contents: write for this" not in head and "private store" in head, "header"
 ac = yaml.safe_load(open(sys.argv[2]))
@@ -3096,7 +3130,7 @@ assert all(hold["env"].get(k) == "" for k in ("BASH_ENV", "LD_PRELOAD", "LD_AUDI
 PY
 # The guard's own private-storage check passes on this tree (it refused while anything was public).
 (cd "$here" && . ./archive-limits.conf && . ./archive-guard.sh && ag_summary=/dev/null && ag_private_storage) >/dev/null 2>&1 || bad+=" [ag_private_storage refuses]"
-[[ -z "$bad" ]] && ok "OF-4: no data-scan job has contents: write, the only artifact is resume-, no 'Publish this day' step; every store, skip, volume and storage-check step holds the store token only under env -i; the storage check follows each stored day; archive-check's Holds step runs under env -i; the guard's ag_private_storage passes on this tree" || no "OF-4 workflows:$bad"
+[[ -z "$bad" ]] && ok "OF-4: no data-scan job has contents: write, the only artifact is resume-, no 'Publish this day' step; every store, skip, volume and storage-check step holds the store token only under env -i; the storage check follows each stored day, also when a later step failed (OF-5 ruling 5), never after a cancel; archive-check's Holds step runs under env -i; the guard's ag_private_storage passes on this tree" || no "OF-4 workflows:$bad"
 bad=""
 # The storage stop after every batch, against a fake private store.
 cat > "$T/storegh" <<'EOF'
