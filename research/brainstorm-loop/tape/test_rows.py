@@ -1648,5 +1648,30 @@ class VectorizedEdges(unittest.TestCase):
                         np.testing.assert_equal([mid[i], eq[i]], [m1, e1])
 
 
+class TwoSidedAsOfEquality(unittest.TestCase):
+    """R1 review of R2-19: with every row before the event slot, TwoSidedAsOf gives exactly two_sided_clusters' label."""
+
+    def test_as_of_label_equals_the_whole_tape_label_at_the_end(self):
+        checked = 0
+        for seed in (7, 8, 9):
+            u = Speed()._random_unit(seed)
+            for i in range(60):                                       # dense links: clusters of several sizes
+                u.w.append({"slot": 1 + i, "from": f"w{i % 13}", "to": f"w{(i * 7) % 29}"})
+            for i in range(55):                                       # a hub with more than 50 linked owners
+                u.w.append({"slot": 2, "from": "HUB", "to": f"h{i}"})
+            u.w.append({"slot": 3, "from": "HUB", "to": "w3"})
+            tape, s, _ = load(u)
+            labels, _ = R.two_sided_clusters(tape)
+            want = set(zip(labels["mint"], labels["owner"]))
+            ts = R.TwoSidedAsOf(tape, s)
+            x = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
+            end = int(s["slot"].max()) + 10**6
+            for mint, owner in set(zip(x["mint"], x["owner"])):
+                self.assertEqual(ts.labelled(mint, owner, end), (mint, owner) in want, (mint, owner))
+                checked += 1
+        self.assertGreater(len(want), 0)
+        self.assertGreater(checked, 100)
+
+
 if __name__ == "__main__":
     unittest.main()
