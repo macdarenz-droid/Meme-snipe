@@ -69,6 +69,23 @@ def read_table(unit: Unit, name: str, usecols=None) -> pd.DataFrame:
     return df
 
 
+def read_table_chunks(unit: Unit, name: str, usecols, chunksize: int = 200_000):
+    """`read_table` in row chunks, in file order (the low-memory reader). Each chunk has exactly `usecols`, as
+    strings; concatenated, the chunks equal `read_table(unit, name, usecols)[usecols]`."""
+    path = os.path.join(unit.dir, f"{name}.csv.zst")
+    if not os.path.exists(path):
+        yield pd.DataFrame(columns=list(usecols), dtype=str)
+        return
+    want = set(usecols)
+    with pd.read_csv(path, compression="zstd", dtype=str, keep_default_na=False, usecols=lambda c: c in want,
+                     chunksize=chunksize) as rd:
+        for df in rd:
+            for c in usecols:
+                if c not in df.columns:  # schema v1 lacks some columns
+                    df[c] = ""
+            yield df[list(usecols)]
+
+
 def read_events(unit: Unit, names) -> list:
     """E.jsonl.zst rows whose event is in `names`."""
     import zstandard
