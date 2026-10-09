@@ -24,3 +24,7 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-6 bullet. Builder: data builder `session_
 8. **Red team m1, required.** margin-fetch refuses any tar member that is not a regular file or a directory, and extracts with `--no-same-owner --no-overwrite-dir`. Test with a symlink member.
 9. **Red team m2, required.** `scan-day` refuses when a planned unit overlaps D-1's stored units but is not in `from-store.txt`, so a drift between the two time estimates can never cause a second archive read. Test it.
 - OF-7 #318 (B10-PULL row, `0de275aa`) pins the scanner tree at OF-6; it re-pins after OF-6 round 2, as its own test requires.
+
+## Round 2 (head `396e28f4`, base `d01875dc` merged)
+
+- Red team: PASS, 0 BLOCKER, 0 MAJOR, 1 MINOR. Round 1 MAJORs 1–2 and m1–m2 closed (no tag order or fallback brings K2 units into a K3 day; b10-done refuses forged "from" lines; tar `h`/`l` members refused; `-stored`/`-taken` refuse an overlapping untaken unit). MINOR: every first-day exemption keys on the head of `ARCHIVE_DAYS`, so a later edit of that list would skip the prior-list, margin and `-stored` checks for a day whose D-1 is stored. The reviewer's round 2 verdict is pending.
