@@ -41,3 +41,7 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-4 bullet, plus the OF2.md ruling 73 notes
 - Guarded diff (archive-check.yml, data-scan.yml) read by the supervisor's Opus read job: OK to label. No new write scope except the forget job's `actions: write`; all 21 store-token steps clean; `uses:` pinned; only the resume marker is an artifact; caps and `ARCHIVE_ARM` unchanged; nothing loosened.
 14. **Read job's note, ruled (9 Oct about 10:57 AM).** "Storage check after the batch" (data-scan.yml:739) is skipped if the volume step fails after the day is stored; the job still fails and the chain stops, so it fails closed. Fold into OF-5 #316 (same file): the storage check also runs when the day was stored and a later step failed (`!cancelled()` and the stored output), with a test.
 - #315 approved at `ab2c9b87`; marked ready; label `deps-reviewed:77c497b7b9abb6b3335ae2d31087e6f3` added 23:55 UTC after the head; merges on green labelled CI.
+
+## Merged (9 Oct 2026, about 11:26 AM)
+
+**#315 merged at `f3ac2a35`** (the new base). Labelled CI green on `ab2c9b87`, which contains base `a69981ab`. `ARCHIVE_ARM` stays empty. #316 OF-5 is retargeted to the base; it merges the new base after its delta review.
