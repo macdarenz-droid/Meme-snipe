@@ -51,7 +51,10 @@ def _tape(a, links=True, pool=True):
         sys.exit("no units found")
     log(f"{len(units)} units, days {sorted(set(u.day for u in units))}")
     reader = "reference" if getattr(a, "reference_reader", False) else "compact"
-    return units, load(units, links=links, log=log, reader=reader, pool=pool or reader == "reference")
+    tape = load(units, links=links, log=log, reader=reader, pool=pool or reader == "reference")
+    log("rows: " + ", ".join(f"{k} {len(getattr(tape, k)):,}" for k in ("blocks", "curve", "pool_rows", "buys", "T", "W", "F_boost"))
+        + ", " + ", ".join(f"{k} {len(v):,}" for k, v in tape.events.items()) + f", names {len(tape.names.names):,}")
+    return units, tape
 
 
 def cmd_decide(a):

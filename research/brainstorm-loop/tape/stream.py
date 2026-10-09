@@ -43,8 +43,8 @@ import slicer as SL
 from tapeio import (AMM_COLS, CURVE_COLS, EVENT_NAMES, STR_COLS, WSOL, Interner, Tape, _trim, compact_fails,
                     compact_moves, compact_swaps, compact_w, read_csv, read_events, sig_hash, swaps_from, unit_info)
 
-ROWS_PER_SHARD = 1_500_000          # target swaps a shard (the shard count only changes memory, never a result)
-BYTES_PER_ROW = 190                 # zstd S_amm + S_curve bytes a swap row, measured on 09-11 units
+ROWS_PER_SHARD = 600_000            # target swaps a shard (the shard count only changes memory, never a result)
+BYTES_PER_ROW = 195                 # zstd S_amm + S_curve bytes a swap row, measured on 09-11 units (197-201)
 EVENT_FIELDS = {"mint", "creator", "user", "is_mayhem_mode", "quote_mint", "name", "symbol", "pool", "base_mint",
                 "coin_creator", "pool_quote_amount", "pool_base_amount", "quote_amount_in_used",
                 "quote_amount_in_requested", "lp_token_amount_out", "lp_token_amount_in", "virtual_sol_reserves",
@@ -102,19 +102,34 @@ class Vocab:
         return [w.decode() for w in self.words[np.asarray(ranks, dtype=np.int64)]]
 
 
-def _csr(node, nbr, slot, first, n_nodes):
-    """Distinct (node, neighbour) pairs with their first (minimum) slot, sorted by (node, slot, first appearance)."""
-    key = node.astype(np.int64) * n_nodes + nbr
-    o = np.argsort(key, kind="stable")
-    ks = key[o]
-    starts = np.r_[0, np.nonzero(np.diff(ks))[0] + 1] if len(ks) else np.array([], dtype=np.int64)
-    uk = ks[starts]
-    mins = np.minimum.reduceat(slot[o], starts) if len(ks) else np.array([], dtype=np.int64)
-    fst = first[o][starts] if len(ks) else np.array([], dtype=np.int64)    # o is stable: the first appearance
-    del o, ks
+def _csr(a, b, slot, n_nodes):
+    """Undirected links (a, b, slot), in tape order, as a CSR over nodes: each node's distinct neighbours with their
+    first (minimum) slot, ordered by (node, slot, first appearance in [a->b over the links, then b->a]), the order
+    rows.TwoSidedAsOf builds. Arrays are freed as soon as they are used (this runs over both days' links)."""
+    n_nodes = np.int64(n_nodes)
+    key = np.concatenate([a.astype(np.int64) * n_nodes + b, b.astype(np.int64) * n_nodes + a])
+    s0 = int(slot.min()) if len(slot) else 0
+    s32 = (slot - s0).astype(np.int32) if len(slot) and int(slot.max()) - s0 < 2**31 else None
+    o = np.argsort(key, kind="stable")          # stable: o[first of each key] is its first appearance
+    key = key[o]
+    starts = np.r_[0, np.nonzero(key[1:] != key[:-1])[0] + 1] if len(key) else np.array([], dtype=np.int64)
+    uk = key[starts]
+    del key
+    if s32 is not None:
+        sl = np.concatenate([s32, s32])[o]
+        mins = (np.minimum.reduceat(sl, starts).astype(np.int64) + s0) if len(sl) else np.array([], np.int64)
+    else:
+        sl = np.concatenate([slot, slot])[o]
+        mins = np.minimum.reduceat(sl, starts) if len(sl) else np.array([], np.int64)
+    del sl
+    fst = o[starts]
+    del o, starts
     na, nb = uk // n_nodes, uk % n_nodes
+    del uk
     o = np.lexsort((fst, mins, na))
+    del fst
     na, nb, mins = na[o], nb[o].astype(np.int32), mins[o]
+    del o
     indptr = np.searchsorted(na, np.arange(n_nodes + 1))
     return indptr, nb, mins
 
@@ -148,12 +163,7 @@ class LinkGraph:
 
     def __init__(self, a, b, slot, vocab: Vocab, hub_cap=R.HUB_CAP):
         self.vocab, n = vocab, max(len(vocab), 1)
-        A = np.r_[a, b].astype(np.int64)
-        B = np.r_[b, a].astype(np.int64)
-        S = np.r_[slot, slot].astype(np.int64)
-        first = np.arange(len(A), dtype=np.int64)
-        self.indptr, self.nbr, self.slot = _csr(A, B, S, first, n)
-        del A, B, S, first
+        self.indptr, self.nbr, self.slot = _csr(a, b, slot, n)
         deg = np.diff(self.indptr)
         self.hub = deg > hub_cap
         self.hub_cap = hub_cap
@@ -225,10 +235,7 @@ class WGraph:
 
     def __init__(self, a, b, slot, vocab: Vocab):
         self.vocab, n = vocab, max(len(vocab), 1)
-        A = np.r_[a, b].astype(np.int64)
-        B = np.r_[b, a].astype(np.int64)
-        S = np.r_[slot, slot].astype(np.int64)
-        self.indptr, self.nbr, self.slot = _csr(A, B, S, np.arange(len(A), dtype=np.int64), n)
+        self.indptr, self.nbr, self.slot = _csr(a, b, slot, n)
 
     def within(self, seeds, as_of_slot, hops=2):
         seen = {x for x in seeds if isinstance(x, str) and x}
@@ -513,7 +520,9 @@ class StreamTape(Tape):
                 _dump(tt[km == k], self._piece("m", ui, k))
             self.n_rows.append(len(sw))
             unit_lo.append(lo)
-            self.log(f"unit {ui + 1}/{len(infos)} {day} {lo}-{hi}: {len(sw)} swaps, vocabulary {len(it.words)}")
+            top = int(np.bincount(np.maximum(sw["mint"].to_numpy(), 0)).max()) if len(sw) else 0
+            self.log(f"unit {ui + 1}/{len(infos)} {day} {lo}-{hi}: {len(sw)} swaps (largest mint {top}), vocabulary "
+                     f"{len(it.words)}, peak RSS so far {_maxrss_mb()} MB")
             del sw, tt, ww, ff, cff, b
             _trim()
         # ---- whole tape
