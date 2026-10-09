@@ -319,8 +319,9 @@ def h8_capacity(tape: Tape, s: pd.DataFrame, hourly, ctx=None):
     gr = pd.DataFrame(grads, columns=["day", "pool", "assessable"] + [f"why_{z}" for z in SIZES_USD]
                       + [f"ok_{z}" for z in SIZES_USD])
     fee0 = {}
-    if len(amm):
-        f = amm.groupby(["day", "pool"])["creator_fee_bps"].agg(lambda x: bool(x.notna().all() and (x == 0).all()))
+    paid = amm[~amm["excluded"]] if len(amm) else amm   # BOOST and protocol rows carry fee fields of 0 (R1-27)
+    if len(paid):
+        f = paid.groupby(["day", "pool"])["creator_fee_bps"].agg(lambda x: bool(x.notna().all() and (x == 0).all()))
         fee0 = {d: int(v.sum()) for d, v in f.groupby(level=0)}
     summ = {"size_notes": SIZE_NOTES}
     for d in days:

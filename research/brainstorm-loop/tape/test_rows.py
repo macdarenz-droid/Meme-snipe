@@ -1470,5 +1470,21 @@ class U2WindowEndR1_26(unittest.TestCase):
         self.assertEqual(H8.universe(240 * 60), "4_24h")
 
 
+class CreatorFeeZeroR1_27(unittest.TestCase):
+    """R1-27: BOOST slices and protocol swaps carry fee fields of 0 (red team R2-2), so they never make a pool count as
+    one whose creator fee is 0 (H8_AMENDMENT_2 item 4)."""
+
+    def test_fee_free_rows_do_not_count_a_pool_as_creator_fee_0(self):
+        u = rebuy_unit()
+        u.aswap(160, "o", "N2", "P2", fee_bps=0)                       # a real creator-fee-0 pool: counted
+        u.aswap(170, "b", "N3", "P3", fee_bps=0, sig="boostsig")       # its only row is a BOOST slice
+        u.event("BoostBuyAndBurnEvent", 170, {"mint": "N3", "pool": "P3"}, sig="boostsig")
+        r = u.aswap(180, "pr", "N4", "P4", fee_bps=0)                  # its only row is a protocol swap
+        r["protocol"] = 1
+        tape, s, _ = load(u)
+        _, _, summ = H8.h8_capacity(tape, s, flat_hourly(200.0))
+        self.assertEqual(summ[DAY]["canonical_pools_creator_fee_0"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
