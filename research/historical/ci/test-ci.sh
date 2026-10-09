@@ -3783,10 +3783,13 @@ mkk2rel() { local d=$1 dir="$T/rel/data-day-$1" src="$T/k2src-$1" u ls; rm -rf "
   for v in $2; do u=${v%%:*}; mkdir -p "$src/units/1046/$u"; printf '{"scanner_revision": "rF", "retention": "K2", "last_block_time": %s}\n' "${v#*:}" > "$src/units/1046/$u/stats.json"
     echo "K2 $d $u" > "$src/units/1046/$u/events.jsonl.zst"; echo "raw $u" > "$src/units/1046/$u/raw_canonical.jsonl.zst"; done
   tar -C "$src" -cf "$dir/units-$d.tar.part00" units
+  local nm; nm=$(date -u -d "$d + 1 day" +%s) # its margin, as package-day packs it
+  (cd "$src" && for v in $2; do [[ ${v#*:} -ge $(( nm - 7200 )) ]] && echo "units/1046/${v%%:*}"; done; true) > "$src/.m"
+  tar -C "$src" -cf "$dir/margin-$d.tar" -T "$src/.m"
   echo "$LIST7" > "$dir/list-$d.txt"
   { for v in $2; do echo "1046/${v%%:*} rF K2 -"; done; [[ -z "${3:-}" ]] || echo "from 1046/$3 data-day-$(date -u -d "$d - 1 day" +%F)"; } > "$dir/units-$d.log"
   for f in events-$d.tar qa-$d.md qa-$d.json manifest-$d.json parity-$d.json; do echo "$f" > "$dir/$f"; done
-  (cd "$dir" && sha256sum units-* events-* qa-* manifest-* parity-* list-* > "SHA256SUMS-$d")
+  (cd "$dir" && sha256sum units-* events-* qa-* manifest-* parity-* list-* margin-* > "SHA256SUMS-$d")
   printf 'readback-ok data-day-%s %s' "$d" "$(sha256sum "$dir/SHA256SUMS-$d" | cut -d' ' -f1)" > "$dir/readback-ok-$d"; }
 k3run() { local d=$1 w="$T/k3w-$1"; rm -rf "$w"; mkdir -p "$w/data" "$w/assets"; : > "$w/out"; K3RC=0
   { GITHUB_OUTPUT="$w/out" bash "$kc/k3-fetch.sh" "$d" "$w/data" &&
@@ -3826,10 +3829,10 @@ rm "$T/rel/data-day-2026-07-22/readback-ok-2026-07-22"; k3f 2026-07-22; [[ $rc =
 mkk2rel 2026-07-22 "1-2:1 3-4:2"; echo x >> "$T/rel/data-day-2026-07-22/units-2026-07-22.tar.part00"; k3f 2026-07-22
 [[ $rc == 1 && ! -e "$T/k3f/data/units/1046" ]] || bad+=" [changed part: $rc]"
 mkk2rel 2026-07-22 "1-2:1 3-4:2"; sed -i 's/ K2 -$/ K3 -/' "$T/rel/data-day-2026-07-22/units-2026-07-22.log"
-(d=$T/rel/data-day-2026-07-22; cd "$d" && sha256sum units-* events-* qa-* manifest-* parity-* list-* > SHA256SUMS-2026-07-22 && printf 'readback-ok data-day-2026-07-22 %s' "$(sha256sum SHA256SUMS-2026-07-22 | cut -d' ' -f1)" > readback-ok-2026-07-22)
+(d=$T/rel/data-day-2026-07-22; cd "$d" && sha256sum units-* events-* qa-* manifest-* parity-* list-* margin-* > SHA256SUMS-2026-07-22 && printf 'readback-ok data-day-2026-07-22 %s' "$(sha256sum SHA256SUMS-2026-07-22 | cut -d' ' -f1)" > readback-ok-2026-07-22)
 k3f 2026-07-22; [[ $rc == 1 ]] && grep -q "not K2" "$T/k3f/log" || bad+=" [K3 line in the K2 log: $rc]"
 mkk2rel 2026-07-22 "1-2:1 3-4:2"; ln -s /etc/passwd "$T/k2src-2026-07-22/units/1046/1-2/link.zst"; tar -C "$T/k2src-2026-07-22" -cf "$T/rel/data-day-2026-07-22/units-2026-07-22.tar.part00" units
-(d=$T/rel/data-day-2026-07-22; cd "$d" && sha256sum units-* events-* qa-* manifest-* parity-* list-* > SHA256SUMS-2026-07-22 && printf 'readback-ok data-day-2026-07-22 %s' "$(sha256sum SHA256SUMS-2026-07-22 | cut -d' ' -f1)" > readback-ok-2026-07-22)
+(d=$T/rel/data-day-2026-07-22; cd "$d" && sha256sum units-* events-* qa-* manifest-* parity-* list-* margin-* > SHA256SUMS-2026-07-22 && printf 'readback-ok data-day-2026-07-22 %s' "$(sha256sum SHA256SUMS-2026-07-22 | cut -d' ' -f1)" > readback-ok-2026-07-22)
 k3f 2026-07-22; [[ $rc == 1 && ! -e "$T/k3f/data/units/1046" ]] && grep -q "not a regular file or a directory" "$T/k3f/log" || bad+=" [symlink member: $rc]"
 mkdir -p "$T/rel/data-day-2026-07-22-k3"; echo x > "$T/rel/data-day-2026-07-22-k3/qa-2026-07-22.md"; k3f 2026-07-22; [[ $rc == 1 ]] && grep -q "stopped for review" "$T/k3f/log" || bad+=" [incomplete -k3: $rc]"
 rm -rf "$T/rel/data-day-2026-07-22" "$T/rel/data-day-2026-07-23" "$T/rel/data-day-2026-07-22-k3" "$T/rel/data-day-2026-07-23-k3" "$T/k3x" "$T"/k2src-* "$T"/k3w-*; unset GH_BIN
