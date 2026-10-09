@@ -45,6 +45,7 @@ case "$cmd" in
     # downloads.log lists data downloads; reading only SHA256SUMS or the readback-ok marker
     # (release-state.sh judging a release) is not one
     for p in "${pats[@]}"; do [[ "$p" == SHA256SUMS-* || "$p" == readback-ok-* ]] || { echo "$tag" >> "$T/downloads.log"; break; }; done
+    for p in "${pats[@]}"; do echo "$tag $p" >> "$T/dlpat.log"; done
     for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done
     # OF-4: FAKE_GH_CORRUPT=NAME hands back a changed copy of that asset (a read-back mismatch)
     [[ -n "${FAKE_GH_CORRUPT:-}" && -e "$out/$FAKE_GH_CORRUPT" ]] && echo changed >> "$out/$FAKE_GH_CORRUPT"
@@ -177,9 +178,12 @@ reset_store; echo junk >> "$T/rel/data-day-2026-09-21/units-2026-09-21.tar.part0
 run 2026-09-20 2026-09-22 "$T/work" && no "corrupt part accepted" || { grep -q "checksum mismatch" "$T/out.txt" && ok "corrupt window part fails the checksum" || no "checksum message: $(cat "$T/out.txt")"; }
 reset_store; echo junk >> "$T/rel/data-day-2026-09-08/events-2026-09-08.tar"
 run 2026-09-20 2026-09-22 "$T/work" && no "corrupt events asset accepted" || { grep -q "events asset checksum mismatch" "$T/out.txt" && ok "corrupt lead-in events asset fails the checksum" || no "events checksum message: $(cat "$T/out.txt")"; }
-reset_store; rm "$T/rel/data-day-2026-09-10/units-2026-09-10.tar.part"*
-run 2026-09-20 2026-09-22 "$T/work"; grep -q "^data-day-2026-09-10$" "$T/downloads.log" && ! ls "$T/work"/dl-* >/dev/null 2>&1 && [[ -f "$T/rel/data-2026-09-20-2026-09-22/manifest.json" || -f "$T/finalize.args" ]] &&
-  ok "lead-in days download only the events asset (a lead-in day with no tar parts still assembles)" || no "lead-in events-only: $(tail -3 "$T/out.txt")"
+# (OF-5 ruling 4: a release without its tar parts is not done, so this reads the download patterns)
+reset_store; rm -f "$T/dlpat.log"
+run 2026-09-20 2026-09-22 "$T/work" || true
+grep -qx "data-day-2026-09-10 events-2026-09-10.tar" "$T/dlpat.log" && ! grep -q "^data-day-2026-09-10 units-" "$T/dlpat.log" && grep -q "^data-day-2026-09-21 units-2026-09-21.tar.part" "$T/dlpat.log" &&
+  ! ls "$T/work"/dl-* >/dev/null 2>&1 && [[ -f "$T/rel/data-2026-09-20-2026-09-22/manifest.json" ]] &&
+  ok "lead-in days download only the events asset (never their tar parts); window days their parts" || no "lead-in events-only: $(tail -3 "$T/out.txt")"
 
 STATS_REV_2026_09_20=r2 reset_store
 run 2026-09-20 2026-09-22 "$T/work" && no "midnight unit with another scanner_revision accepted" ||
