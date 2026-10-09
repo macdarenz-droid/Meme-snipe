@@ -47,3 +47,9 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-6 bullet. Builder: data builder `session_
 - Data builder: `data-scan.yml` mode `k3` (k3fetch → prior → margin (clean) → trim `--qa` with a list `cmp` → package → `publish-day --k3` (clean) → storage check) and `ci/k3-fetch.sh` (measurement days only; retention K3, a done K2 release, regular tar members). test-ci 285/0, policy passes, tests fail on `fc38d3f7`. New label needed (`data-scan.yml` changed). `ARCHIVE_ARM` empty; nothing dispatched.
 - Round 1 sent to the OF-3 reviewer and red team (9 Oct about 5:06 PM).
 - Red team (round 1, `0f10e4de`): 0 BLOCKER, 1 MAJOR, 1 MINOR; test-ci 285/0. MAJOR 1: mode `k3` runs no store guard (the plan job's "Archive guard" runs only for `scan`), so a `k3` dispatch after the storage-stop tag still creates `data-day-D-k3`, against OF-4's rule that the marker stops every later dispatch. MINOR m1: `ag_history`/`ag_runs` count a `k3` run in the lane timing, so a finished `k3` run holds the next archive scan for 60 min. Held: the token only in clean `env -i` steps; day and retention checks; no overwrite of a `-k3` release; tar member types and paths; `prev-day.txt` from the clean margin step; no archive read; partial publish held by the marker.
+
+### Supervisor rulings for #319 round 2 (9 Oct about 5:38 PM)
+
+13. **Red team MAJOR 1, required.** Before any download, a clean `env -i` step of the `k3` job runs `archive-guard.sh` `ag_store_ok` (store named, not this repo, private, no storage-stop tag) and stops on failure. test-ci case: a storage-stop tag present stops mode `k3` with nothing stored (fails on `0f10e4de`).
+14. **Red team MINOR m1, required as a note only.** The lane timing stays as it is (a finished `k3` run holding the next archive scan for 60 min is the safe side); `OLD-FAITHFUL.md` says so in one line. No code change.
+- The reviewer's round 1 verdict is pending; its findings join round 2.
