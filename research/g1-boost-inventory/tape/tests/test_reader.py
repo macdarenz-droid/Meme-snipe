@@ -257,6 +257,44 @@ class LeanBuildersSameResults(unittest.TestCase):
         self.assertGreater(nonempty, 3)             # some owners are fast and some are not
 
 
+class MixedChunkTypes(unittest.TestCase):
+    """pandas 3.0.5 raises IndexError (in _concatenate_chunks) when an inferred column's type differs between the
+    parser's chunks and the column sits after the last used position; F.limit_arg of 09-11 446058000-446062499 did.
+    Both readers now read F's mint/amount_arg/limit_arg as text and retry any other table in one chunk."""
+
+    def test_wide_mixed_columns_load(self):
+        import numpy as np
+        root = tempfile.mkdtemp(prefix="g1x_")
+        self.addCleanup(shutil.rmtree, root)
+        s = scenario()
+        d1 = s.write(root, DAY, *U1)
+        s.write(root, DAY, *U2, schema_v2=False)
+        n = 300_000
+        lim = np.full(n, "5", dtype=object)
+        lim[-10:] = "not-a-number"
+        f = pd.DataFrame({"slot": U1[0] + np.arange(n) % 4000, "tx_idx": 0, **{f"x{i}": 1 for i in range(10)},
+                          "pool_or_curve": "poolA", "mint": "A", "ix_name": np.where(np.arange(n) % 1000 == 0, "boost_buy_and_burn", "buy"),
+                          "err_class": "slippage", "amount_arg": 1, "limit_arg": lim})
+        f.to_csv(os.path.join(d1, "F.csv.zst"), index=False, compression="zstd")
+        amount = np.full(n, "7", dtype=object)
+        amount[-10:] = "not-a-number"
+        big = pd.DataFrame({"slot": U1[0] + np.arange(n) % 4000, "block_time": 0, "tx_idx": 50, "outer_ix": 9, "inner_ix": 0,
+                            "mint": "A", "kind": "transfer", "from_owner": "o1", "to_owner": "o9",
+                            **{f"x{i}": 1 for i in range(10)}, "amount": amount})
+        big.to_csv(os.path.join(d1, "T.csv.zst"), index=False, compression="zstd")
+        from g1lib.load import F_COLS, T_COLS
+        for name, cols, strs in (("F", F_COLS, ("pool_or_curve", "ix_name", "err_class")),
+                                 ("T", T_COLS, ("kind", "from_owner", "to_owner"))):
+            with self.assertRaises(IndexError):          # the original read_csv call on these files
+                pd.read_csv(os.path.join(d1, f"{name}.csv.zst"), compression="zstd", usecols=cols,
+                            dtype={c: str for c in strs}, keep_default_na=True)
+        units = find_units([root], plan={DAY: [U1, U2]})
+        a = load(units, log=quiet, reader="reference")
+        assert_same_tape(self, a, load(units, log=quiet))
+        self.assertEqual(len(a.F_boost), n // 1000)
+        self.assertEqual(int((a.T["amount"] == -1).sum()), 10)
+
+
 class CompactInternerSameCodes(unittest.TestCase):
     """CompactInterner against Interner on random call sequences, with forced hash collisions, long strings, a trailing
     NUL, non-ASCII text, empty and missing values."""
