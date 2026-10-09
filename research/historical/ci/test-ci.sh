@@ -1750,7 +1750,7 @@ SDAY=2026-07-22 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" || bad+=
 [[ " $(cat "$T/scan.args") " == *" -retention K2 "* ]] || bad+=" reread:$(cat "$T/scan.args")"
 o="$T/of2f"; rm -rf "$o"; mkdir -p "$o"
 echo "$attr_list_line" > "$T/k3list.txt"
-SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" && [[ " $(cat "$T/scan.args") " == *" -retention K2 -max-mbps "* ]] || bad+=" fresh-K3-read-at-K2"
+SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci PASSRET=K3 scan "$o" && [[ " $(cat "$T/scan.args") " == *" -retention K2 "* && " $(cat "$T/scan.args") " != *" -migration-list "* ]] || bad+=" fresh-K3-read-at-K2"
 o="$T/of2m"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$o/units/1046/3-4"; echo '{"scanner_revision": "r1", "retention": "K2"}' > "$o/units/1046/1-2/stats.json"; echo '{"scanner_revision": "r1", "retention": "K3"}' > "$o/units/1046/3-4/stats.json"
 rc=0; PASSRET=K3 SDAY=2026-07-22 SFX=$T/fxk3/research/historical/ci scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "record retention 'K2 K3 '" "$T/out.txt" || bad+=" mixed:$rc"

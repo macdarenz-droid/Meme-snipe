@@ -86,6 +86,7 @@ done
   fail "the private store holds no done release of $prev whose margin units are at $day's retention $ret (${why# }; a K3 day after a K2 day waits for data-day-$prev-k3)"
 # OF-6 ruling 9: D-1's stored units, so the scanner refuses a planned unit among them that
 # was not taken (a drift between the two time estimates never causes a second read).
+mkdir -p "$out"
 { grep -E '^[0-9]+/[0-9]+-[0-9]+ ' "$tmp/dl/units-$prev.log" || true; } | awk '{print $1}' | LC_ALL=C sort -u > "$out/prev-units.tmp"
 [[ -s "$out/prev-units.tmp" ]] || fail "units-$prev.log of $tag lists no unit"
 mkdir -p "$out/units"
