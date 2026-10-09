@@ -1608,5 +1608,45 @@ class CompactReaderEdges(unittest.TestCase):
         self.assertEqual(list(a.swaps["day"].astype(object)), list(b.swaps["day"].astype(object)))
 
 
+class VectorizedEdges(unittest.TestCase):
+    """R1 review of 3f37fff4: the vectorized controls, fast-class index and as-of state equal their references on the
+    edge cases (same-slot ties, BOOST and protocol rows, missing owner or chain reading, a midnight boundary)."""
+
+    def test_vectorized_equal_reference_on_edges(self):
+        e = CompactReaderEdges()
+        d = tempfile.mkdtemp()
+        late = e._edge_unit(5000, 9999, shift=5000)
+        early = e._edge_unit(0, 4999)
+        early.aswap(4990, "x9", "EM", "EP", sol=5e8)
+        late.aswap(5003, "x9", "EM", "EP", sol=5e8, buy=False)
+        base = Speed()._random_unit(7)
+        tapes = [Tape([early.write(d, "2026-09-10"), late.write(d, DAY)]), Tape([e._edge_unit().write(d + "/x")]),
+                 Tape([base.write(d + "/y")])]
+        for tape in tapes:
+            labels, _ = R.two_sided_clusters(tape)
+            s = R.prepare(tape, labels)
+            ctx = H8.GateCtx(tape, s, flat_hourly(200.0, T0 - 7200, T0 + 40000))
+            cmap = R.cluster_maps(tape)[0]["hub_cap_50"]
+            a = SL.dispersed_controls_reference(tape, s, ctx, cmap)
+            b = SL.dispersed_controls(tape, s, ctx, cmap)
+            cols = list(a.columns)
+            pd.testing.assert_frame_equal(a.sort_values(cols[:2]).reset_index(drop=True),
+                                          b[cols].sort_values(cols[:2]).reset_index(drop=True))
+            fb = R.w1_fast_buys(tape, s)
+            idx = SL.FastAsOf(fb)
+            for day, owner in set(zip(fb["day"], fb["owner"])):
+                for slot in (0, 35, 400, 410, 4990, 5003, 5400, 20000):
+                    self.assertEqual(R.w1_fast_asof(fb, day, owner, slot), idx(day, owner, slot))
+            for pool, g in R.by_pool(s).items():
+                ps = RB.pool_state(g)
+                for t in range(T0, T0 + 20000, 211):
+                    st = RB.last_block_slot(tape, t)
+                    i, mid, eq = RB.state_asof(ps, t, st)
+                    j, m1, e1 = RB.state_at(ps, t, st)
+                    self.assertEqual(i, j)
+                    if i >= 0:
+                        np.testing.assert_equal([mid[i], eq[i]], [m1, e1])
+
+
 if __name__ == "__main__":
     unittest.main()
