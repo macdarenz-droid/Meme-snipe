@@ -13,6 +13,19 @@ import pandas as pd
 import zstandard
 
 _C = zstandard.ZstdCompressor(level=3)
+
+
+def trim():
+    """Hands freed heap pages back to the system (glibc malloc_trim), so the peak reflects live data rather than
+    fragments of freed string frames. No effect on any value; a no-op where glibc is absent."""
+    import gc
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
 _D = zstandard.ZstdDecompressor()
 
 

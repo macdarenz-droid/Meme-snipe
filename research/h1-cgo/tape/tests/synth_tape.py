@@ -72,7 +72,7 @@ class _Chain:
 
 def make_tape(root, days, units_per_day=3, slots_per_unit=3000, coins_per_day=6, amm_per_unit=600,
               noise_frac=0.3, curve_per_coin=20, t_per_unit=60, seed=0, n_owners=40, mig_prob=1.0, noise_pools=3,
-              t_amount_max=10**11,
+              t_amount_max=10**11, noncanon_p=0.01,
               log=None):
     """Writes units <root>/<day>/<from>-<to>/research and <root>/plan.txt. Returns (unit dirs, plan path).
     PumpSwap rows are generated and written one unit at a time, so large tapes fit in memory."""
@@ -157,7 +157,7 @@ def make_tape(root, days, units_per_day=3, slots_per_unit=3000, coins_per_day=6,
             mint, pool, _, ch, bal = pick[int(rng.integers(0, len(pick)))]
             o = owners[int(rng.integers(0, len(owners)))]
             r = ch.trade(s, tm(s), int(rng.integers(0, 50)), o, pool, mint, bal)
-            if rng.random() < 0.01:
+            if rng.random() < noncanon_p:
                 r["canonical"] = "0"
             if rng.random() < 0.02:  # a BOOST buy-and-burn matched by its event
                 ev.append(dict(event="BoostBuyAndBurnEvent", program="pump_amm", slot=s, block_time=tm(s),

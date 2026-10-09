@@ -57,17 +57,23 @@ class PoolBook:
         del amm, order, sel
         if len(pool_col):
             self._split(arrs, pool_col)
+            if pools is not None:
+                for r in self.rows.values():
+                    _widen(r)
         return self
 
     def prune(self, pools) -> None:
         """Drop every pool not in `pools` (for a caller that reads no other pool). The kept pools' rows are copied
-        out of the shared column arrays one column at a time, so those arrays are freed; their values are unchanged."""
+        out of the shared column arrays one column at a time, so those arrays are freed; their values are unchanged,
+        and columns the low-memory reader held as int32 are widened back to int64."""
         keep = {int(p) for p in pools}
         for p in [p for p in self.rows if p not in keep]:
             del self.rows[p]
         for c in BOOK_COLS:
             for r in self.rows.values():
-                r[c] = r[c].copy()
+                r[c] = r[c].astype(np.int64) if r[c].dtype != np.int64 else r[c].copy()
+        for r in self.rows.values():
+            _widen(r)
 
     def _split(self, arrs: Dict[str, np.ndarray], pools: np.ndarray):
         cols = BOOK_COLS
@@ -112,6 +118,13 @@ class PoolBook:
     def mid_before_first(self, pool: int) -> float:
         r = self.rows[pool]
         return float(r["vault_before"][0] + r["virt"][0]) / float(max(r["base_before"][0], 1))
+
+
+def _widen(r):
+    """Integer arrays the low-memory reader narrowed go back to int64, the dtype every reader of the book had."""
+    for c, a in r.items():
+        if a.dtype.kind == "i" and a.dtype != np.int64:
+            r[c] = a.astype(np.int64)
 
 
 def _paid_fee_rates(r):

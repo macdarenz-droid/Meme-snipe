@@ -472,6 +472,28 @@ class Compact(unittest.TestCase):
         finally:
             F.BOOT_CHUNK_ELEMS, F.EV_BLOCK = old
 
+    def test_event_column_store_matches_the_dict_row_frame(self):
+        # dtypes included: no drops, some drops, all dropped (window off tape), no placebo, empty; full and prep columns
+        with tempfile.TemporaryDirectory() as root:
+            u, _ = random_units(root, 31, units_per_day=2)
+            swaps, t, w, ranges = F.load_units(u)
+            sp, mp = F.build_links(t, w)
+            c = F.leader_candidates(swaps)
+            lo = min(a for d, a, b in ranges if d == F.DAY1)
+            cases = [(c, ranges), (c, [(F.DAY1, lo, lo + 100)]), (set(), ranges), ({"h0"}, ranges),
+                     (set(swaps["owner"]), ranges)]
+            for leaders, rg in cases:
+                for wf in (True, False):
+                    a = F.event_table(swaps, leaders, F.DAY1, rg, sp, mp, with_follow=wf, compact=False)
+                    b = F.event_table(swaps, leaders, F.DAY1, rg, sp, mp, with_follow=wf, compact=True)
+                    pd.testing.assert_frame_equal(a, b, check_exact=True)
+                    self.assertEqual(list(a.dtypes), list(b.dtypes))
+            no_drop = F.event_table(swaps, {"h0"}, F.DAY1, [(F.DAY1, 0, 10**8)], sp, mp, compact=True)
+            self.assertEqual(set(no_drop["dropped"]), {""})
+            self.assertEqual(no_drop["follow"].dtype, np.int64)
+            pd.testing.assert_frame_equal(
+                no_drop, F.event_table(swaps, {"h0"}, F.DAY1, [(F.DAY1, 0, 10**8)], sp, mp, compact=False))
+
     def test_blocked_bootstrap_draws_identical_means_and_rng_state(self):
         for n in (1, 2, 7, 8, 9, 1001, 40_000):
             d = np.random.default_rng(n).integers(-3, 4, n).astype(float)

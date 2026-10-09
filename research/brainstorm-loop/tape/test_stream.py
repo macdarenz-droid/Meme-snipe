@@ -218,6 +218,32 @@ class StreamEquality(unittest.TestCase):
         d2 = tempfile.mkdtemp()
         self._same([e._write_v1(e._edge_unit(), d2)], TR.CompactReader()._minutes(), shards=(3,))
 
+    def test_heavy_mints_streamed_apart(self):
+        """A mint with many swaps and no SOL quote (pools with WSOL as the base) is streamed row by row, not held in a
+        shard; a busy mint with one SOL-quoted swap stays in its shard. Outputs stay identical."""
+        import stream
+        from unittest import mock
+        units = random_units(5)
+        rng = np.random.default_rng(55)
+        for u, day in units:
+            for i in range(60):
+                sl = u.lo + int(rng.integers(0, UNIT_SLOTS))
+                r = u.aswap(sl, f"w{int(rng.integers(0, 70))}", "BIGM", f"PB{i % 4}", buy=bool(rng.random() < 0.6),
+                            creator=f"D{i % 3}")
+                r["quote_mint"], r["canonical"] = "USDCxx", 0
+                if i == 0 and u.lo == 0:
+                    r["signature"], r["top_program"] = "mh9_0", MAYHEM_PROGRAM   # shares a re-price signature
+                r2 = u.aswap(sl, f"w{int(rng.integers(0, 70))}", "BUSY", f"PC{i % 2}", buy=bool(rng.random() < 0.5))
+                if i:
+                    r2["quote_mint"] = "USDCxx"                       # one SOL-quoted swap: not heavy
+        d = tempfile.mkdtemp()
+        paths = write_units(units, d, 5)
+        with mock.patch.object(stream, "HEAVY_ROWS", 50):
+            t = stream.StreamTape(paths, shards=3)
+            self.assertEqual(t.heavy_mints, {"BIGM"})
+            t.cleanup()
+            self._same(paths, minutes_for(), shards=(3, 1))
+
     def test_without_sol_usd(self):
         d = tempfile.mkdtemp()
         self._same(write_units(random_units(3), d, 3), None, shards=(2,), sol_usd=None)

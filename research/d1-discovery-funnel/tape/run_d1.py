@@ -59,6 +59,7 @@ def _reader(args) -> bool:
     if getattr(args, "old_reader", False):
         from d1 import holders
         holders.LINK_INDEX = holders.LinkIndexDict
+        holders.FIRST_LINKS = holders.first_links_pandas
         return False
     return True
 
@@ -80,6 +81,9 @@ def stage1(args):
     os.makedirs(args.out, exist_ok=True)
     lowmem = _reader(args)
     tape = load(units, args.days, all_pools=dev, lowmem=lowmem)
+    if lowmem:   # stage 1 reads only the number of codes from here on
+        from d1.load import CodecSize
+        tape.codec = CodecSize(len(tape.codec))
     plan = plan_check(tape.units, args.days, plan_path)
     if lowmem:
         book = PoolBook.consume(tape)  # the pool book holds the rows from here on
@@ -127,7 +131,9 @@ def stage2(args):
     # stage 2 holds only the pool rows and the events; the other tables are still read, coded and counted (lowmem)
     tape = load(units, m1["days"], all_pools=dev, lowmem=lowmem, keep=("amm",) if lowmem else None)
     pts = pd.read_pickle(os.path.join(args.out, "points.pkl"))
-    if lowmem:   # the outcomes read only the pools of eligible points
+    if lowmem:   # the outcomes read only the pools of eligible points, and no address names
+        from d1.load import CodecSize
+        tape.codec = CodecSize(len(tape.codec))
         book = PoolBook.consume(tape, pools=pts.pool[pts.eligible] if len(pts) else ())
     else:
         book = PoolBook(tape.amm)

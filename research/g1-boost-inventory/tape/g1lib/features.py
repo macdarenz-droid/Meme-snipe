@@ -61,16 +61,85 @@ class FeatureContext:
                 self.t_by_mint[int(keys[s])] = order[s:e]
         self.graph: Optional[LinkGraph] = None
         if with_links:
+            from .load import REFERENCE
             tt = t[t["kind"] == "transfer"] if len(t) else t
-            src = np.concatenate([tape.W["src"].to_numpy(), tt["from_owner"].to_numpy()]).astype(np.int64)
-            dst = np.concatenate([tape.W["dst"].to_numpy(), tt["to_owner"].to_numpy()]).astype(np.int64)
+            # lean: the codes keep their int32 dtype (same values; LinkGraph widens a band at a time)
+            wide = np.int64 if REFERENCE else None
+            src = np.concatenate([tape.W["src"].to_numpy(), tt["from_owner"].to_numpy()]).astype(wide or np.result_type(tape.W["src"].dtype, tt["from_owner"].dtype))
+            dst = np.concatenate([tape.W["dst"].to_numpy(), tt["to_owner"].to_numpy()]).astype(wide or np.result_type(tape.W["dst"].dtype, tt["to_owner"].dtype))
             sl = np.concatenate([tape.W["slot"].to_numpy(), tt["slot"].to_numpy()]).astype(np.int64)
+            if not REFERENCE and len(sl) and 0 <= sl.min() and sl.max() <= np.iinfo(np.int32).max:
+                sl = sl.astype(np.int32)
+            del tt
             self.graph = LinkGraph(src, dst, sl, len(names.names))
+            del src, dst, sl
         self._buys_index()
         self._rivals()
 
     # ---- amendment 1 group 4: serial early buyers --------------------------------------------------
-    def _buys_index(self):
+    def _buys_index(self, lean: Optional[bool] = None):
+        if lean is None:
+            from .load import REFERENCE
+            lean = not REFERENCE
+        if not lean:
+            return self._buys_index_reference()
+        b = self.tape.buys
+        slot, owner, mint = b["slot"].to_numpy(), b["owner"].to_numpy(), b["mint"].to_numpy()
+        n = len(slot)
+        top = max(len(self.tape.names.names), int(mint.max()) + 1 if n else 0)
+
+        def lookup(d):
+            arr = np.full(top, -10 ** 12, dtype=np.int64)
+            if d:
+                k = np.fromiter(d.keys(), dtype=np.int64, count=len(d))
+                v = np.fromiter(d.values(), dtype=np.int64, count=len(d))
+                m = (k >= 0) & (k < top)
+                arr[k[m]] = v[m]
+            return arr
+
+        cs, ms = lookup(self.create_slot), lookup(self.mig_slot)
+        near = np.empty(n, dtype=bool)
+        for c0 in range(0, n, 1_000_000):                 # the reference's float arithmetic is exact here: ints < 2^53
+            c1 = min(c0 + 1_000_000, n)
+            mi, sl = mint[c0:c1], slot[c0:c1]
+            ok = mi >= 0
+            dc = sl - np.where(ok, cs[np.clip(mi, 0, None)], -10 ** 12)
+            dm = sl - np.where(ok, ms[np.clip(mi, 0, None)], -10 ** 12)
+            near[c0:c1] = ((dc >= 0) & (dc <= P.HC_SERIAL_NEAR_SLOTS)) | ((dm >= 0) & (dm <= P.HC_SERIAL_NEAR_SLOTS))
+        del cs, ms
+        i32 = np.iinfo(np.int32)
+        off = max(0, -int(owner.min())) if n else 0       # owner -1 (no address) sorts first, as in the reference
+        fits = n == 0 or (int(owner.max()) + off <= i32.max and int(slot.min()) >= 0 and int(slot.max()) <= i32.max)
+        if not fits:
+            order = np.lexsort((slot, owner))
+            self.b_owner, self.b_slot = owner[order], slot[order]
+            self.b_cumnear = np.cumsum(near[order])
+            return
+        # (owner, slot, near) packed into one uint64 (owner < 2^31, slot < 2^31) and sorted in place: the same
+        # b_owner and b_slot as np.lexsort((slot, owner)). Inside a run of equal (owner, slot) the near flags come
+        # sorted rather than in table order, so b_cumnear differs from the reference only inside such runs; `serial`
+        # reads it only at the end of a run (k - 1: last buy before the cutoff slot; a - 1: the previous owner's last).
+        key = np.empty(n, dtype=np.uint64)
+        for c0 in range(0, n, 1_000_000):
+            c1 = min(c0 + 1_000_000, n)
+            key[c0:c1] = (((owner[c0:c1].astype(np.int64) + off).astype(np.uint64) << np.uint64(33))
+                          | (slot[c0:c1].astype(np.uint64) << np.uint64(1))
+                          | near[c0:c1].astype(np.uint64))
+        del near
+        key.sort()
+        self.b_owner = np.empty(n, dtype=owner.dtype)
+        self.b_slot = np.empty(n, dtype=np.int32)
+        nr = np.empty(n, dtype=np.int32)
+        for c0 in range(0, n, 1_000_000):
+            c1 = min(c0 + 1_000_000, n)
+            k = key[c0:c1]
+            self.b_owner[c0:c1] = (k >> np.uint64(33)).astype(np.int64) - off
+            self.b_slot[c0:c1] = (k >> np.uint64(1)) & np.uint64(0xFFFFFFFF)
+            nr[c0:c1] = k & np.uint64(1)
+        del key
+        self.b_cumnear = np.cumsum(nr, dtype=np.int32 if n <= i32.max else np.int64)
+
+    def _buys_index_reference(self):
         b = self.tape.buys
         cs = pd.Series(self.create_slot)
         ms = pd.Series(self.mig_slot)
@@ -82,11 +151,6 @@ class FeatureContext:
         self.b_owner = b["owner"].to_numpy()[order]
         self.b_slot = b["slot"].to_numpy()[order]
         self.b_cumnear = np.cumsum(near[order])
-        # memory only: the same values held as int32 when they fit (slots < 2^31; a count of buys)
-        if len(self.b_slot) and self.b_slot.max() <= np.iinfo(np.int32).max and self.b_slot.min() >= 0:
-            self.b_slot = self.b_slot.astype(np.int32)
-        if len(self.b_cumnear) and self.b_cumnear[-1] <= np.iinfo(np.int32).max:
-            self.b_cumnear = self.b_cumnear.astype(np.int32)
 
     def serial(self, owner: int, cutoff: int) -> bool:
         """At least 5 buys on the tape before the slot, at least 10% of them within 2 slots after a create or

@@ -160,9 +160,14 @@ def _pair_checks(tape, adj, ctx, fast_idx, two_sided, sells_by, ps_cache, mint, 
         why = "w1_fast_class"
     else:
         seeds = {last["creator"]}
-        cr = tape.creates[tape.creates["mint"] == mint]
-        if len(cr):
-            seeds |= {cr["creator"].iloc[0], cr["user"].iloc[0]}
+        cs = getattr(tape, "create_seeds", None)     # the streaming reader's {mint: (creator, user)} of tape.creates
+        if cs is not None:
+            if mint in cs:
+                seeds |= set(cs[mint])
+        else:
+            cr = tape.creates[tape.creates["mint"] == mint]
+            if len(cr):
+                seeds |= {cr["creator"].iloc[0], cr["user"].iloc[0]}
         if x in R.creator_group(adj, seeds, st):
             why = "creator_group"
     if why is None:

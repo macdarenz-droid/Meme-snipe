@@ -594,8 +594,12 @@ class _LazyStreams:
         st, self.cur = self.cur, None
         if st is not None:
             self.protocol_rows += st.protocol_rows
+            big = len(st.events) > 200_000
             st.events, st.pool_rows, st.ledger, st.hist_t, st.hist_mid = [], [], Ledger(), [], []
             st.vol_t, st.vol_cum, st.candles, st.open_time = [], [], [], {}
+            if big:
+                from . import lowmem as LM
+                LM.trim()
 
     def __getitem__(self, m):
         self.retire()
@@ -679,11 +683,13 @@ def _run_lowmem(units, decision_days, creation_days, log):
             x = x[x.mint.isin(mints)]
             n["t"] += len(x)
             _put_by_mint(store, "t", x, x.mint, cut, T_COLS)
+        LM.trim()
         log(f"read {un.day} {un.from_slot}-{un.to_slot} (store {store.nbytes() >> 20} MB, {len(strings.values)} strings)")
     cc = {k: (np.concatenate(v) if v else np.empty(0, dtype=bool if k == "open" else np.int64)) for k, v in rte.items()}
     del rte
     ro, rs, rh = LM.round_trips_codes(cc["owner"], cc["mint"], cc["slot"], cc["tx"], cc["ev"], cc["time"], cc["open"])
     del cc
+    LM.trim()
     habits = LM.CompactHabits(ro, rs, rh, strings.code_of)
     streams = _LazyStreams(u, store, pool_of, unresolved_of(u, tcov), habits, lp_events_of(lpev))
     feats = compute_features(dp, streams)

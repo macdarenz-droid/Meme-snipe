@@ -40,6 +40,9 @@ T_COLS = ["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner"
 W_COLS = ["slot", "from", "to"]
 F_COLS = ["slot", "tx_idx", "pool_or_curve", "mint", "ix_name", "err_class", "amount_arg", "limit_arg"]
 INT_SENTINEL = -1
+# True: the original reader and the original index builders everywhere (graph.LinkGraph, features._buys_index,
+# flows.FastClass), kept for the equality tests; g1.py sets it with --reference-reader. Outputs are identical.
+REFERENCE = False
 
 
 class Interner:
@@ -437,12 +440,14 @@ def _offsets(keys: np.ndarray) -> Dict[int, tuple]:
     return {int(keys[s]): (int(s), int(e)) for s, e in zip(starts, ends)}
 
 
-def load(units: List[Unit], links: bool = True, log=print, reader: str = "compact", pool: bool = True) -> Tape:
+def load(units: List[Unit], links: bool = True, log=print, reader: Optional[str] = None, pool: bool = True) -> Tape:
     """Loads every table the G1 stages read. `links=False` skips W (amendment features then cannot be computed).
     reader="compact" (default) holds less memory and gives a Tape equal to reader="reference" (the original reader,
     kept for the equality tests in tests/test_reader.py): same tables, columns, dtypes, values, row order and codes.
     `pool=False` (compact reader, for `decide`, which never reads a PumpSwap pool row) leaves `pool_rows` empty; every
     other table and every code are unchanged, because S_amm is still read for the buys and the interner."""
+    if reader is None:
+        reader = "reference" if REFERENCE else "compact"
     if reader == "compact":
         return _load_compact(units, links=links, log=log, pool=pool)
     if reader != "reference":

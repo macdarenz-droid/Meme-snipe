@@ -19,7 +19,8 @@ Code for the frozen design in `../PREREG.md`, `../AMENDMENT_1.md`, `../AMENDMENT
 
 ### Memory (2026-10-09)
 - Every command reads the tape with the compact reader (`load.load`, `reader="compact"`): address columns are read as categoricals and interned per distinct value (`Interner.codes_cat`), names are held in byte arrays behind a hash table (`load.CompactInterner`), each unit's frames are freed as soon as they are cut down (with `malloc_trim` and a fixed glibc mmap threshold), and the final tables are assembled one column at a time. The Tape it returns equals the original reader's in every table, column, dtype, value, row order and address code, and every output file is byte-identical (`tests/test_reader.py`). `--reference-reader` (any command that reads the tape) runs the original reader.
-- `decide` does not load the PumpSwap pool rows (it never reads one; every other table and code is unchanged). `LinkGraph` and the serial-buyer index hold their arrays as int32 when the values fit (same values).
+- `decide` does not load the PumpSwap pool rows (it never reads one; every other table and code is unchanged).
+- Lean index builders (the same results, a bounded working set): `LinkGraph` is built one band of node codes at a time and held as int32; its components come from a chunked union-find (labelled by their smallest node; callers only compare and group labels); the serial-buyer index is one in-place sort of packed (owner, slot, near) keys; W1's fast class reads the day's buys in chunks, holds only the >= 1 SOL buys, replaces `merge_asof` with a search in their (mint, key) order and counts with bincounts. `--reference-reader` also switches these back to the original code (`load.REFERENCE`); `tests/test_reader.py::LeanBuildersSameResults` compares each pair on random inputs.
 - Peaks: see `OPEN_QUESTIONS.md`, "Scale (2026-10-09)". Real-tape memory runs go through `flock /home/user/tape-work/mem.lock`.
 
 Example (discovery, Step A):

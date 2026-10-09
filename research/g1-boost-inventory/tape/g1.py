@@ -51,6 +51,8 @@ def _tape(a, links=True, pool=True):
         sys.exit("no units found")
     log(f"{len(units)} units, days {sorted(set(u.day for u in units))}")
     reader = "reference" if getattr(a, "reference_reader", False) else "compact"
+    import g1lib.load as L
+    L.REFERENCE = reader == "reference"       # the original index builders too (graph, buys index, fast class)
     tape = load(units, links=links, log=log, reader=reader, pool=pool or reader == "reference")
     log("rows: " + ", ".join(f"{k} {len(getattr(tape, k)):,}" for k in ("blocks", "curve", "pool_rows", "buys", "T", "W", "F_boost"))
         + ", " + ", ".join(f"{k} {len(v):,}" for k, v in tape.events.items()) + f", names {len(tape.names.names):,}")
@@ -260,7 +262,7 @@ def main(argv=None):
             p.add_argument("--dev-subset", action="store_true",
                            help="development only: accept part of a day; freeze, score and outcome with returns refuse it")
             p.add_argument("--reference-reader", action="store_true",
-                           help="the original, memory-heavy reader (equality tests); outputs are identical")
+                           help="the original, memory-heavy reader and index builders (equality tests); outputs are identical")
 
     p = sub.add_parser("decide"); common(p); p.add_argument("--no-links", action="store_true"); p.set_defaults(f=cmd_decide)
     p = sub.add_parser("gate"); common(p); p.set_defaults(f=cmd_gate)

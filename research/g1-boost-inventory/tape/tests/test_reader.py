@@ -86,8 +86,10 @@ def argparse_ns(out):
 
 class ReaderEquality(unittest.TestCase):
     def setUp(self):
+        import g1lib.load as L
         self.root = tempfile.mkdtemp(prefix="g1r_")
         self.addCleanup(shutil.rmtree, self.root)
+        self.addCleanup(setattr, L, "REFERENCE", False)
 
     def compare_outputs(self, tape_root, plan, days):
         ref, new = os.path.join(self.root, "out_ref"), os.path.join(self.root, "out_new")
@@ -143,6 +145,116 @@ class ReaderEquality(unittest.TestCase):
             self.assertGreater(json.load(f)["G1"]["in_universe"], 0)        # the random tape reaches every stage
         trades = pd.read_csv(os.path.join(self.root, "out_new", "trades.csv"))
         self.assertGreater(int(trades["filled"].sum()), 0)
+
+
+class LeanBuildersSameResults(unittest.TestCase):
+    """The lean index builders against the reference ones on random inputs with ties, duplicates, self-links, missing
+    codes and several bands: LinkGraph arrays, the components (as a partition), the serial-buyer index and the fast
+    class owners."""
+
+    def setUp(self):
+        import g1lib.load as L
+        self.addCleanup(setattr, L, "REFERENCE", False)
+
+    @staticmethod
+    def partition(labels):
+        import numpy as np
+        _, first = np.unique(labels, return_index=True)
+        canon = {int(labels[i]): k for k, i in enumerate(sorted(first))}
+        return [canon[int(x)] for x in labels]
+
+    def random_graph(self, rng, n=400, e=3000):
+        import numpy as np
+        src = rng.integers(-1, n, e)
+        dst = rng.integers(-1, n, e)
+        dst[:50] = src[:50]                                   # self-links
+        src[100:200], dst[100:200] = dst[200:300], src[200:300]   # reversed duplicates
+        hub = rng.integers(0, n)
+        src[300:420] = hub                                    # a hub
+        slot = rng.integers(1000, 1100, e)
+        return src, dst, slot, n
+
+    def test_link_graph_and_components(self):
+        import numpy as np
+        from g1lib import graph as Gr
+        for seed in range(4):
+            rng = np.random.default_rng(seed)
+            src, dst, slot, n = self.random_graph(rng)
+            with mock.patch.object(Gr, "_BAND_HALF_EDGES", 500):
+                lean = Gr.LinkGraph(src.astype(np.int32), dst.astype(np.int32), slot, n + 3, lean=True)
+            ref = Gr.LinkGraph(src, dst, slot, n + 3, lean=False)
+            self.assertEqual(lean.n, ref.n)
+            for k in ("u", "col", "slot", "indptr"):
+                self.assertTrue(np.array_equal(getattr(lean, k), getattr(ref, k)), k)
+            self.assertEqual(lean.u.dtype, np.int32)
+            for cutoff in (999, 1020, 1050, 1100):
+                for hub in (3, 10, 50):
+                    self.assertEqual(self.partition(lean.components(cutoff, hub, lean=True)),
+                                     self.partition(ref.components(cutoff, hub, lean=False)))
+                    for x in rng.integers(0, n, 5):
+                        self.assertEqual(lean.cluster([int(x)], cutoff, hub), ref.cluster([int(x)], cutoff, hub))
+
+    def fake(self, rng, n_names=300, n_buys=6000, slots=(1000, 1400)):
+        """A FeatureContext-like object over random buys (ties on slot and tx, big buys, missing mints and owners)."""
+        import types
+        import numpy as np
+        from g1lib import graph as Gr
+        from g1lib.features import FeatureContext
+        sl = np.sort(rng.integers(slots[0], slots[1], n_buys))
+        buys = pd.DataFrame({"slot": sl.astype(np.int64), "tx_idx": rng.integers(0, 4, n_buys).astype(np.int32),
+                             "owner": rng.integers(-1, n_names // 2, n_buys).astype(np.int32),
+                             "mint": rng.integers(-1, 25, n_buys).astype(np.int32),
+                             "sol": np.where(rng.random(n_buys) < 0.3, 2 * 10 ** 9, 10 ** 7).astype(np.int64),
+                             "venue": np.zeros(n_buys, np.int8)})
+        names = types.SimpleNamespace(names=[None] * n_names)
+        mid = (slots[0] + slots[1]) // 2
+        tape = types.SimpleNamespace(buys=buys, names=names,
+                                     day_of_unit=[(slots[0], mid - 1, "d1"), (mid, slots[1], "d2")])
+        ctx = FeatureContext.__new__(FeatureContext)
+        ctx.tape = tape
+        ctx.create_slot = {int(m): int(rng.integers(slots[0], slots[1])) for m in range(0, 25, 2)}
+        ctx.mig_slot = {int(m): int(rng.integers(slots[0], slots[1])) for m in range(1, 25, 3)}
+        src, dst, slot, _ = self.random_graph(rng, n=n_names // 2, e=400)
+        ctx.graph = Gr.LinkGraph(src, dst, slot + (slots[0] - 1000), n_names, lean=False)
+        return ctx
+
+    def test_serial_buyer_index(self):
+        import numpy as np
+        for seed in range(4):
+            ctx = self.fake(np.random.default_rng(seed))
+            ctx._buys_index(lean=False)
+            ref = (ctx.b_owner.copy(), ctx.b_slot.copy(), ctx.b_cumnear.copy())
+            ctx._buys_index(lean=True)
+            self.assertTrue(np.array_equal(ref[0], ctx.b_owner))
+            self.assertTrue(np.array_equal(ref[1], ctx.b_slot))
+            # b_cumnear equals the reference at the end of every (owner, slot) run, the only places serial reads
+            o_, s_ = ctx.b_owner, ctx.b_slot
+            ends = np.flatnonzero(np.append((o_[1:] != o_[:-1]) | (s_[1:] != s_[:-1]), True))
+            self.assertTrue(np.array_equal(ref[2][ends], ctx.b_cumnear[ends]))
+            pairs = [(o, c) for o in range(-1, 160) for c in list(range(995, 1405, 3)) + [10 ** 6]]
+            got = [ctx.serial(o, c) for o, c in pairs]
+            self.assertTrue(any(got) and not all(got))
+            ctx._buys_index(lean=False)
+            self.assertEqual([ctx.serial(o, c) for o, c in pairs], got)
+
+    def test_fast_class(self):
+        import numpy as np
+        from g1lib import flows
+        nonempty = 0
+        for seed in range(10):
+            # seeds 6..9: dense ties (many big buys of one mint in the same slot and transaction by different traders)
+            ctx = self.fake(np.random.default_rng(seed), **({} if seed < 6 else {"slots": (1000, 1040)}))
+            for graph in (True, False):
+                if not graph:
+                    ctx.graph = None
+                lean, ref = flows.FastClass(ctx), flows.FastClass(ctx)
+                lean.CHUNK = 777                                   # several chunks
+                for day in ("d1", "d2"):
+                    a, b = lean.owners(day, lean=True), ref.owners(day, lean=False)
+                    self.assertTrue(np.array_equal(a, b), (seed, graph, day))
+                    self.assertEqual(a.dtype, b.dtype)
+                    nonempty += int(0 < len(a) < len(np.unique(ctx.tape.buys["owner"])))
+        self.assertGreater(nonempty, 3)             # some owners are fast and some are not
 
 
 class CompactInternerSameCodes(unittest.TestCase):

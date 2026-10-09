@@ -178,6 +178,37 @@ def insider_sets(tape: Tape, mint: int, create_slot: int, creator: int, funders)
     return (creation | cluster) - {creator}, cluster
 
 
+def first_links_pandas(u, v, slot):
+    """Each (u, v) pair once with its first slot, in order of first appearance (the earlier form; --old-reader)."""
+    df = pd.DataFrame({"u": u, "v": v, "slot": slot}).groupby(["u", "v"], sort=False).slot.min().reset_index()
+    return df.u.to_numpy(), df.v.to_numpy(), df.slot.to_numpy()
+
+
+def first_links(u, v, slot):
+    """The same pairs, first slots and order as first_links_pandas, with numpy sorts instead of a pandas groupby
+    (about half the transient memory on a day of links)."""
+    u, v, slot = (np.asarray(x, dtype=np.int64) for x in (u, v, slot))
+    if len(u) == 0:
+        return u.copy(), v.copy(), slot.copy()
+    n = int(max(u.max(), v.max())) + 1
+    assert u.min() >= 0 and v.min() >= 0 and n < 2**31
+    key = u * n + v
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    del key
+    start = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+    del ks
+    mins = np.minimum.reduceat(slot[order], start)
+    first = order[start]          # stable sort: the first appearance of each pair
+    del order, start
+    o2 = np.argsort(first, kind="stable")
+    first = first[o2]
+    return u[first], v[first], mins[o2]
+
+
+FIRST_LINKS = first_links   # run_d1.py --old-reader sets first_links_pandas
+
+
 def h13_link_pairs(tape: Tape):
     """AMENDMENT_4 item 37 (red team R2-18): the H13 proxy links the dev by "a W or T transfer on the tape": every W
     transfer and every T transfer of any mint (not only pump mints, as the fast-class clusters use). Each pair is
@@ -188,8 +219,7 @@ def h13_link_pairs(tape: Tape):
     slot = np.r_[tape.w.slot.to_numpy(), t.slot.to_numpy()].astype(np.int64)
     ok = (src >= 0) & (dst >= 0) & (src != dst)
     u, v = np.minimum(src[ok], dst[ok]), np.maximum(src[ok], dst[ok])
-    df = pd.DataFrame({"u": u, "v": v, "slot": slot[ok]}).groupby(["u", "v"], sort=False).slot.min().reset_index()
-    return df.u.to_numpy(), df.v.to_numpy(), df.slot.to_numpy()
+    return FIRST_LINKS(u, v, slot[ok])
 
 
 class LinkIndex:

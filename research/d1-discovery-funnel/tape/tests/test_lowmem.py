@@ -51,6 +51,19 @@ def _inputs(root):
     return out
 
 
+def _amm_cmp(old_amm, new_amm):
+    """The lowmem amm drops `signature` (read by nothing after the load) and may hold NARROW_AMM columns as int32;
+    every other column keeps its dtype. Returns the two frames with those columns compared as int64 values."""
+    from d1.load import NARROW_AMM
+    o = old_amm.drop(columns="signature")
+    n = new_amm.copy()
+    for c in n.columns:
+        if n[c].dtype != o[c].dtype:
+            assert c in NARROW_AMM and n[c].dtype == np.int32 and o[c].dtype == np.int64, c
+            n[c] = n[c].astype(np.int64)
+    return o, n
+
+
 class LowMemReader(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -70,7 +83,7 @@ class LowMemReader(unittest.TestCase):
                 for k in TABLES:
                     o, n = getattr(old, k), getattr(new, k)
                     if k == "amm":
-                        o = o.drop(columns="signature")   # read by nothing after the load; not kept by lowmem
+                        o, n = _amm_cmp(o, n)
                     pd.testing.assert_frame_equal(o, n, check_exact=True)
                 self.assertEqual(list(old.ev), list(new.ev))
                 for k in old.ev:
@@ -79,7 +92,7 @@ class LowMemReader(unittest.TestCase):
                 s2 = load(units, [S.DAY], all_pools=all_pools, lowmem=True, keep=("amm",))
                 self.assertEqual(old.counts, s2.counts)
                 self.assertEqual(old.codec.names, s2.codec.names)
-                pd.testing.assert_frame_equal(old.amm.drop(columns="signature"), s2.amm, check_exact=True)
+                pd.testing.assert_frame_equal(*_amm_cmp(old.amm, s2.amm), check_exact=True)
                 self.assertEqual(len(s2.t) + len(s2.w) + len(s2.buys) + len(s2.curve), 0)
 
     def test_keep_needs_lowmem(self):
@@ -87,11 +100,14 @@ class LowMemReader(unittest.TestCase):
             load(self.inputs[0], [S.DAY], keep=("amm",))
 
     def test_pool_book_equal(self):
+        narrowed = 0
         for units in self.inputs:
+            old = PoolBook(load(units, [S.DAY]).amm)
             t = load(units, [S.DAY], lowmem=True)
-            old = PoolBook(t.amm)
+            narrowed += sum(t.amm[c].dtype == np.int32 for c in t.amm.columns)
             new = PoolBook.consume(t)
             self.assertEqual(len(t.amm), 0)
+            new.prune(list(new.rows))   # widens what the reader narrowed
             self.assertEqual(list(old.rows), list(new.rows))
             for p in old.rows:
                 self.assertEqual(list(old.rows[p]), list(new.rows[p]))
@@ -99,15 +115,15 @@ class LowMemReader(unittest.TestCase):
                     a, b = old.rows[p][c], new.rows[p][c]
                     self.assertEqual(a.dtype, b.dtype, c)
                     np.testing.assert_array_equal(a, b, c)
+        self.assertGreater(narrowed, 0)
 
     def test_pool_book_subset_and_prune(self):
         """consume(pools=...) and prune(...) keep exactly the named pools' rows (values, dtypes, order)."""
         for units in self.inputs:
-            t = load(units, [S.DAY], lowmem=True)
-            full = PoolBook(t.amm)
+            full = PoolBook(load(units, [S.DAY]).amm)
             keep = list(full.rows)[::2]
-            sub = PoolBook.consume(t, pools=keep)
-            pr = PoolBook(load(units, [S.DAY], lowmem=True).amm)
+            sub = PoolBook.consume(load(units, [S.DAY], lowmem=True), pools=keep)
+            pr = PoolBook.consume(load(units, [S.DAY], lowmem=True))
             pr.prune(keep)
             for b in (sub, pr):
                 self.assertEqual(list(b.rows), keep)
@@ -116,10 +132,19 @@ class LowMemReader(unittest.TestCase):
                     for c in full.rows[p]:
                         self.assertEqual(full.rows[p][c].dtype, b.rows[p][c].dtype)
                         np.testing.assert_array_equal(full.rows[p][c], b.rows[p][c])
-            for c in ("slot", "owner"):   # pruned rows no longer share the full book's column arrays
+            for c in ("slot", "owner", "base_amount"):   # pruned rows no longer share the full column arrays
                 for r in pr.rows.values():
                     self.assertIsNone(r[c].base)
         self.assertEqual(PoolBook.consume(load(self.inputs[0], [S.DAY], lowmem=True), pools=()).rows, {})
+
+    def test_first_links_equal(self):
+        from d1.holders import first_links, first_links_pandas
+        rng = np.random.default_rng(9)
+        for n in (0, 1, 50, 5000):
+            u, v, s = rng.integers(0, 40, n), rng.integers(0, 40, n), rng.integers(100, 130, n)
+            for a, b in zip(first_links_pandas(u, v, s), first_links(u, v, s)):
+                self.assertEqual(a.dtype, b.dtype)
+                np.testing.assert_array_equal(a, b)
 
     def test_link_index_equal(self):
         rng = np.random.default_rng(5)

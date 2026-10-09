@@ -9,6 +9,8 @@ loaded alone. What crosses mints is built once over every unit and kept small:
 - the T/W links as an indexed graph (creator groups, both cluster rules, the as-of two-sided label, MIG-SEAT's W group);
 - W1's fast class per owner-day and its as-of index over every buy;
 - the failed transactions of graduation pools (G3), the only F rows a row reads.
+Heavy mints (more than HEAVY_ROWS swaps, none SOL-quoted, e.g. WSOL as a PumpSwap base) are read by no row by
+mint or pool; their swaps are streamed row by row for the counts, W1 buys, roles and re-price signatures.
 
 Pass 0 reads E of every unit. Pass 1 reads each unit once: compacts it as the Tape does (tapeio.compact_*), writes
 its swaps and T moves to shard files, and keeps the links, blocks and per-unit aggregates. Pass A reads each shard for
@@ -43,6 +45,7 @@ import slicer as SL
 from tapeio import (AMM_COLS, CURVE_COLS, EVENT_NAMES, STR_COLS, WSOL, Interner, Tape, _trim, compact_fails,
                     compact_moves, compact_swaps, compact_w, read_csv, read_events, sig_hash, swaps_from, unit_info)
 
+HEAVY_ROWS = 300_000               # a mint with more swaps than this and no SOL-quoted swap is streamed apart
 ROWS_PER_SHARD = 600_000            # target swaps a shard (the shard count only changes memory, never a result)
 BYTES_PER_ROW = 195                 # zstd S_amm + S_curve bytes a swap row, measured on 09-11 units (197-201)
 EVENT_FIELDS = {"mint", "creator", "user", "is_mayhem_mode", "quote_mint", "name", "symbol", "pool", "base_mint",
@@ -164,9 +167,14 @@ class LinkGraph:
     def __init__(self, a, b, slot, vocab: Vocab, hub_cap=R.HUB_CAP):
         self.vocab, n = vocab, max(len(vocab), 1)
         self.indptr, self.nbr, self.slot = _csr(a, b, slot, n)
-        deg = np.diff(self.indptr)
-        self.hub = deg > hub_cap
+        self.deg = np.diff(self.indptr).astype(np.int32)      # distinct neighbours over the whole tape
+        self.hub = self.deg > hub_cap
         self.hub_cap = hub_cap
+        # the slot at which a node gets its (hub_cap + 1)-th neighbour: a hub as of any slot from then on
+        big = np.nonzero(self.hub)[0]
+        self.hub_from = np.full(n, np.iinfo(np.int64).max, dtype=np.int64)
+        self.hub_from[big] = self.slot[self.indptr[big] + hub_cap]
+        self._visited = None
         # hub-cap-50 rule: components of the links that touch no hub (rows.cluster_maps)
         self.capped, self.capped_size = self._components(a, b)
         # hub-keyed rule: each owner linked to a hub, keyed by the hub of its earliest hub link (L is in slot order)
@@ -214,26 +222,39 @@ class LinkGraph:
         return int(np.searchsorted(self.slot[lo:hi], slot, side="right"))
 
     def creator_group(self, seeds, as_of_slot, hub_cap=R.HUB_CAP):
-        """rows.creator_group on node ranks: the same group (a breadth-first walk through non-hub nodes as of the
-        slot, seeds always in), without listing a hub's neighbours as text."""
+        """rows.creator_group on node ranks, one breadth-first layer at a time: the same group (every node reachable
+        from the seeds through nodes that are not hubs as of the slot, the seeds always in). A node is a hub as of a
+        slot when its (hub_cap + 1)-th neighbour is linked on or before it (hub_from)."""
         seeds = {s for s in seeds if isinstance(s, str) and s}
-        group, seen, q = set(seeds), set(), deque()
-        for sd in seeds:
-            r = self._rank(sd)
-            if r >= 0:
-                seen.add(r)
-                q.append(r)
-        while q:
-            r = q.popleft()
-            lo, hi = self.indptr[r], self.indptr[r + 1]
-            k = int(np.searchsorted(self.slot[lo:hi], as_of_slot, side="right"))
-            for y in self.nbr[lo:lo + k].tolist():
-                if y in seen or self._deg(y, as_of_slot) > hub_cap:
-                    continue
-                seen.add(y)
-                group.add(self.vocab.word(y))
-                q.append(y)
-        return group
+        if hub_cap != self.hub_cap:
+            raise StreamError("LinkGraph indexes hubs for one hub cap")
+        if self._visited is None:
+            self._visited = np.zeros(len(self.deg), dtype=bool)
+        vis = self._visited
+        start = np.unique(np.array([r for r in (self._rank(sd) for sd in seeds) if r >= 0], dtype=np.int64))
+        vis[start] = True
+        touched = []
+        frontier = start
+        try:
+            while len(frontier):
+                lo, hi = self.indptr[frontier], self.indptr[frontier + 1]
+                lens = hi - lo
+                tot = int(lens.sum())
+                if not tot:
+                    break
+                idx = np.repeat(lo - np.r_[0, np.cumsum(lens)[:-1]], lens) + np.arange(tot)
+                ys = self.nbr[idx][self.slot[idx] <= as_of_slot].astype(np.int64)
+                ys = ys[~vis[ys]]
+                ys = np.unique(ys[self.hub_from[ys] > as_of_slot])
+                vis[ys] = True
+                touched.append(ys)
+                frontier = ys
+        finally:
+            vis[start] = False
+            for t in touched:
+                vis[t] = False
+        members = np.concatenate(touched) if touched else np.array([], np.int64)
+        return seeds | set(self.vocab.words_of(np.sort(members)))
 
     def before(self, x, st):
         """TwoSidedAsOf._links: [(slot, neighbour)] with slot < st, in order."""
@@ -252,7 +273,7 @@ class LinkGraph:
         return int(np.searchsorted(self.slot[lo:hi], st, side="left"))
 
     def nbytes(self):
-        return sum(v.nbytes for v in (self.indptr, self.nbr, self.slot, self.hub, self.capped, self.capped_size,
+        return sum(v.nbytes for v in (self.indptr, self.nbr, self.slot, self.hub, self.deg, self.hub_from, self.capped, self.capped_size,
                                       self.keyed, self.keyed_size))
 
 
@@ -336,10 +357,11 @@ class StreamTwoSided(R.TwoSidedAsOf):
         return self.g.before(n, st)
 
     def _hub(self, n, st) -> bool:
-        key = (n, st)
-        if key not in self._deg:
-            self._deg[key] = self.g.count_before(n, st)
-        return self._deg[key] > self.hub_cap
+        """More than hub_cap neighbours linked before st: the (hub_cap + 1)-th neighbour's slot is before st."""
+        if self.hub_cap != self.g.hub_cap:
+            return self.g.count_before(n, st) > self.hub_cap
+        r = self.g.vocab.lookup(n)
+        return bool(r >= 0 and self.g.hub_from[r] < st)
 
 
 # ============================================================================ W1 fast class over every buy
@@ -498,6 +520,9 @@ class StreamTape(Tape):
         self.events = ev
         self._index_events()
         self.grad_pools = set(self.pool_creates["pool"].dropna())
+        self.create_seeds = {}
+        for m, c, u in zip(self.creates["mint"], self.creates["creator"], self.creates["user"]):
+            self.create_seeds.setdefault(m, (c, u))
         for df in (self.pool_creates, self.boosts, self.reprices):   # hashed as the compact Tape does
             df["signature"] = sig_hash(df["signature"]) if len(df) else df["signature"]
 
@@ -507,6 +532,7 @@ class StreamTape(Tape):
         code_shard = []
         self.n_rows, unit_lo = [], []
         canon, curve_mh, pool_mint = [], [], {}
+        mint_rows, mint_sq = Counter(), set()
         t_links, w_links, fails, blocks = [], [], [], []
         cf_by = Counter()
         self.template = None
@@ -541,6 +567,10 @@ class StreamTape(Tape):
                                           "pool"].to_numpy()))
             cm = sw[(sw["venue"].to_numpy() == c["curve"]) & sw["mayhem"].notna().to_numpy()].drop_duplicates("mint")
             curve_mh.append((lo, dict(zip(cm["mint"].tolist(), cm["mayhem"].tolist()))))
+            mcodes = sw["mint"].to_numpy()
+            uq, cnt = np.unique(mcodes[mcodes >= 0], return_counts=True)
+            mint_rows.update(dict(zip(uq.tolist(), cnt.tolist())))
+            mint_sq.update(np.unique(mcodes[sw["sol_quoted"].to_numpy(bool) & (mcodes >= 0)]).tolist())
             pm = sw.loc[is_amm, ["pool", "mint"]].drop_duplicates()
             for pc, mc in zip(pm["pool"].tolist(), pm["mint"].tolist()):
                 if pc < 0:
@@ -584,6 +614,12 @@ class StreamTape(Tape):
             raise StreamError("more than 2^31 swaps: the int32 order column of the compact Tape would overflow")
         self.vocab = Vocab(it.words)
         rank = self.vocab.rank
+        # heavy mints: their swaps are all PumpSwap swaps without a SOL quote (e.g. pools with WSOL as the base), so
+        # no row reads them by mint or pool; they reach the outputs only through the loader counts, first-time buys,
+        # W1's buy counts, the creator roles and the re-price signatures, which are gathered row by row (_heavy).
+        self.heavy_codes = np.array(sorted(c for c, n in mint_rows.items() if n > HEAVY_ROWS and c not in mint_sq),
+                                    dtype=np.int64)
+        self.heavy_mints = set(it.words[c] for c in self.heavy_codes.tolist())
         self.code_shard = np.asarray(code_shard, dtype=np.int32)
         del it, code_shard
         _trim()
@@ -626,10 +662,14 @@ class StreamTape(Tape):
         self._intervals()
         self.swaps = None
         self.moves = None
+        if self.heavy_mints:
+            elig = set(R.eligible_pools(self)["mint"]) | set(MS.graduations(self)["mint"])
+            if self.heavy_mints & elig:
+                raise StreamError(f"heavy mints {self.heavy_mints & elig} are eligible or graduation mints")
         _trim()
         self.log(f"whole tape: {self.n_swaps} swaps, vocabulary {len(V)} ({V.words.nbytes >> 20} MB), links graph "
                  f"{self.graph.nbytes() >> 20} MB, W graph {(self.w_graph.nbr.nbytes + self.w_graph.slot.nbytes) >> 20} MB, "
-                 f"{self.K} shards, peak RSS so far {_maxrss_mb()} MB")
+                 f"{self.K} shards, heavy mints {sorted(self.heavy_mints)}, peak RSS so far {_maxrss_mb()} MB")
 
     def _piece(self, kind, ui, k):
         return os.path.join(self.dir, f"{kind}{ui:04d}_{int(k):03d}.pkl.zst")
@@ -653,12 +693,27 @@ class StreamTape(Tape):
                 df[c] = pd.Categorical.from_codes(codes, dtype=dtype)
         return df, u
 
+    def heavy_pieces(self, k):
+        """The heavy mints' swaps of shard k, one unit at a time (reading codes, with the order column)."""
+        if not len(self.heavy_codes):
+            return
+        for ui in self.lo_order:
+            f = self._piece("s", ui, k)
+            if os.path.exists(f):
+                df = _load(f)
+                df = df[np.isin(df["mint"].to_numpy(), self.heavy_codes)]
+                if len(df):
+                    df["order"] = (self.offset[ui] + df.pop("ri").to_numpy(np.int64)).astype(np.int32)
+                    yield df.reset_index(drop=True)
+
     def load_shard(self, k, moves=True):
         parts = []
         for ui in self.lo_order:
             f = self._piece("s", ui, k)
             if os.path.exists(f):
                 df = _load(f)
+                if len(self.heavy_codes):
+                    df = df[~np.isin(df["mint"].to_numpy(), self.heavy_codes)]
                 df["order"] = (self.offset[ui] + df.pop("ri").to_numpy(np.int64)).astype(np.int32)
                 parts.append(df)
         if parts:
@@ -873,6 +928,8 @@ def _pass_a(tape: StreamTape, log):
     dix = {d: i for i, d in enumerate(days)}
     n = np.int64(max(len(tape.vocab), 1))
     parts, roles_pairs = [], set()
+    heavy = {"swaps": 0, "boost": 0, "ftb_keys": [], "roles": set(), "tops": {}}
+    heavy_before = 0
     for k in range(tape.K):
         st, s = tape.load_shard(k, moves=False)
         ranks_of = _ranks_of(tape)
@@ -883,7 +940,11 @@ def _pass_a(tape: StreamTape, log):
                       fb["near_anchor"].to_numpy(np.int8), fb["after_big"].to_numpy(np.int8)))
         cm = s[s["creator"].notna()][["creator", "mint"]].drop_duplicates()
         roles_pairs |= set(zip(cm["creator"].astype(object), cm["mint"].astype(object)))
-        log(f"pass A shard {k + 1}/{tape.K}: {len(s)} swaps")
+        hv = _heavy(tape, k, dix, n, heavy)
+        if hv is not None:
+            parts.append(hv)
+        log(f"pass A shard {k + 1}/{tape.K}: {len(s)} swaps (+{heavy['swaps'] - heavy_before} of heavy mints)")
+        heavy_before = heavy["swaps"]
         del st, s, fb
         _trim()
     cat = [np.concatenate([p[i] for p in parts]) for i in range(5)]
@@ -894,10 +955,59 @@ def _pass_a(tape: StreamTape, log):
     roles = {}
     for r in tape.creates.itertuples(index=False):
         roles.setdefault(r.creator, set()).add(r.mint)
-    for c, m in roles_pairs:
+    for c, m in roles_pairs | heavy["roles"]:
         roles.setdefault(c, set()).add(m)
     tape.roles = roles
+    fk = np.concatenate(heavy.pop("ftb_keys")) if heavy["ftb_keys"] else np.array([], np.int64)
+    heavy["first_time_buys"] = int(len(np.unique(fk)))
+    tape.heavy = heavy
     return idx
+
+
+def _heavy(tape: StreamTape, k, dix, n, acc):
+    """The heavy mints' swaps of shard k, row by row: their W1 buys (near a create or migration of the mint; never
+    after a >= 1 SOL buy, since they carry no SOL amount), first-time buyer pairs, creator roles, loader counts and
+    the top programs of re-price signatures. Returns the fast-index part, or None."""
+    rank, V = tape.vocab.rank, tape.vocab
+    anchors = {}
+    for df in (tape.creates, tape.migrations):
+        for m, sl in zip(df["mint"], df["slot"]):
+            if m in tape.heavy_mints:
+                anchors.setdefault(m, []).append(int(sl))
+    sigs = set(tape.reprices["signature"]) if len(tape.reprices) else set()
+    out = []
+    for df in tape.heavy_pieces(k):
+        acc["swaps"] += len(df)
+        acc["boost"] += int(df["boost"].sum())
+        oc = df["owner"].to_numpy(np.int64)
+        orank = np.where(oc >= 0, rank[np.maximum(oc, 0)], -1).astype(np.int64)
+        mrank = rank[df["mint"].to_numpy(np.int64)].astype(np.int64)
+        buy = df["is_buy"].to_numpy(bool) & ~df["excluded"].to_numpy(bool) & (oc >= 0)
+        acc["ftb_keys"].append(np.unique(mrank[buy] * n + orank[buy]))
+        ud, inv = np.unique(df["day"].to_numpy(np.int64), return_inverse=True)
+        days = np.array([dix[V.word(rank[c])] for c in ud.tolist()], dtype=np.int64)[inv.ravel()][buy]
+        slot = df["slot"].to_numpy(np.int64)[buy]
+        na = np.zeros(len(slot), np.int8)
+        for m in np.unique(mrank[buy]).tolist():
+            a = anchors.get(V.word(m))
+            if a:
+                sel = mrank[buy] == m
+                d = slot[sel][:, None] - np.array(a)[None, :]
+                na[np.nonzero(sel)[0][((d >= 0) & (d <= 2)).any(axis=1)]] = 1
+        out.append((days * n + orank[buy], slot, df["order"].to_numpy(np.int64)[buy], na, np.zeros(len(slot), np.int8)))
+        cr = df["creator"].to_numpy(np.int64)
+        pk = np.unique(rank[cr[cr >= 0]].astype(np.int64) * n + mrank[cr >= 0])
+        for c, m in zip((pk // n).tolist(), (pk % n).tolist()):
+            acc["roles"].add((V.word(c), V.word(m)))
+        if sigs:
+            hit = np.isin(df["signature"].to_numpy(), list(sigs))
+            for sg, tp in zip(df["signature"].to_numpy()[hit].tolist(), df["top_program"].to_numpy(np.int64)[hit].tolist()):
+                acc["tops"].setdefault(sg, set())
+                if tp >= 0:
+                    acc["tops"][sg].add(V.word(rank[tp]))
+    if not out:
+        return None
+    return tuple(np.concatenate([o[i] for o in out]) for i in range(5))
 
 
 def compute(units, sol_usd, n_boot, minutes, shards=None, workdir=None, log=None, prep=False):
@@ -1025,6 +1135,11 @@ def _compute(tape: StreamTape, sol_usd, n_boot, minutes, log, prep):
         gc.collect()
         _trim()
     # ------------------------------------------------------------------ merge
+    hv = tape.heavy
+    counts["swaps"] += hv["swaps"]
+    counts["boost_rows_excluded"] += hv["boost"]
+    counts["first_time_buys"] += hv["first_time_buys"]
+    mh_parts.append({"tops": hv["tops"], "nab": set(), "sol_curve_s": set(), "placebo_n": 0, "placebo_hits": 0})
     labels, two_s = two.merge()
     res = {"ranges": tape.ranges, "two": two_s, "labels": labels,
            "counts": {**{k: int(counts[k]) for k in ("swaps", "boost_rows_excluded", "first_time_buys",

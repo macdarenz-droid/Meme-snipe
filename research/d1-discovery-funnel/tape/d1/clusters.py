@@ -19,6 +19,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
 from . import config as C
+from . import holders
 from .load import Tape
 from .pool_state import PoolBook, flow_rows
 
@@ -30,9 +31,9 @@ def link_pairs(tape: Tape) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     slot = np.r_[tape.w.slot.to_numpy(), t.slot.to_numpy()].astype(np.int64)
     ok = (src >= 0) & (dst >= 0) & (src != dst)
     u, v = np.minimum(src[ok], dst[ok]), np.maximum(src[ok], dst[ok])
-    df = pd.DataFrame({"u": u, "v": v, "slot": slot[ok]}).groupby(["u", "v"], sort=False).slot.min().reset_index()
-    df = df.sort_values("slot", kind="mergesort")
-    return df.u.to_numpy(), df.v.to_numpy(), df.slot.to_numpy()
+    u, v, s = holders.FIRST_LINKS(u, v, slot[ok])   # each pair once, first slot, in first-appearance order
+    o = np.argsort(s, kind="stable")                 # = the earlier sort_values("slot", kind="mergesort")
+    return u[o], v[o], s[o]
 
 
 def near_event_flags(tape: Tape) -> np.ndarray:

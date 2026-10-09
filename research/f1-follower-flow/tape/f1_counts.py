@@ -347,9 +347,9 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
             "placebo_q"]
     if not with_follow:
         cols = [c for c in cols if c in PREP_EVENT_COLS]
-    # compact: each row is kept as a tuple in column order with NaN for a missing field, which is what the
-    # DataFrame constructor makes of a list of dicts (memory only; test_f1_counts.Compact checks the bytes)
-    keep = (lambda o: tuple(o.get(c, np.nan) for c in cols)) if compact else (lambda o: o)
+    # compact: rows go into typed column stores (_EventColumns) instead of a list of dicts (memory only)
+    acc = _EventColumns(cols) if compact else None
+    keep = acc.add if compact else (lambda o: o)
     rng = np.random.default_rng(seed)
     noncand_cs = {}
     rows = []
@@ -400,7 +400,77 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
                     "q": float(ev["q"]), "fee_bps": float(ev["fee_bps"]), "placebo_late": plate,
                     "placebo_q": float(mb["q"][j])})
         rows.append(keep(out))
+    if compact:
+        del buys_by_mint, noncand_cs, lead, records
+        return acc.frame()
     return pd.DataFrame(rows, columns=cols)
+
+
+_INT_COLS = {"slot", "tx_idx", "ev_idx", "follow", "follower_sol", "follower_sol_late", "placebo_slot",
+             "placebo_follow", "placebo_late"}
+_FLOAT_COLS = {"q", "fee_bps", "placebo_q"}
+
+
+class _EventColumns:
+    """Column store for event rows with the frame pd.DataFrame(list_of_row_dicts, columns=cols) would give:
+    integer fields in int64 storage (int64 column, or float64 with NaN where a row lacks the field, as the
+    constructor converts ints mixed with NaN), float fields in float64 (NaN where missing), text fields as lists
+    of the same (shared) string objects with NaN where missing. Holds ~8 bytes a field instead of a boxed Python
+    object; test_f1_counts.Compact compares the frames (dtypes included) with the constructor's."""
+
+    def __init__(self, cols):
+        import array
+        self.cols = list(cols)
+        self.n = 0
+        self.ints = {c: (array.array("q"), bytearray()) for c in self.cols if c in _INT_COLS}
+        self.floats = {c: array.array("d") for c in self.cols if c in _FLOAT_COLS}
+        self.objs = {c: [] for c in self.cols if c not in _INT_COLS and c not in _FLOAT_COLS}
+
+    def add(self, row):
+        nan = np.nan
+        for c, (vals, miss) in self.ints.items():
+            v = row.get(c)
+            if v is None:
+                vals.append(0)
+                miss.append(1)
+            else:
+                if type(v) is not int:
+                    raise TypeError(f"{c}: {type(v).__name__} in an integer field")
+                vals.append(v)
+                miss.append(0)
+        for c, vals in self.floats.items():
+            v = row.get(c, nan)
+            if type(v) is not float:
+                raise TypeError(f"{c}: {type(v).__name__} in a float field")
+            vals.append(v)
+        for c, vals in self.objs.items():
+            v = row.get(c, nan)
+            if not (type(v) is str or v is nan):
+                raise TypeError(f"{c}: {type(v).__name__} in a text field")
+            vals.append(v)
+        self.n += 1
+
+    def frame(self):
+        if not self.n:
+            return pd.DataFrame([], columns=self.cols)
+        data = {}
+        for c in self.cols:
+            if c in self.ints:
+                vals, miss = self.ints.pop(c)
+                a = np.frombuffer(vals, dtype=np.int64)
+                m = np.frombuffer(miss, dtype=np.uint8).astype(bool)
+                if m.any():
+                    a = a.astype(np.float64)
+                    a[m] = np.nan
+                else:
+                    a = a.copy()
+                del vals, miss
+                data[c] = a
+            elif c in self.floats:
+                data[c] = np.frombuffer(self.floats.pop(c), dtype=np.float64).copy()
+            else:
+                data[c] = self.objs.pop(c)
+        return pd.DataFrame(data, columns=self.cols)
 
 
 EV_BLOCK = 50_000

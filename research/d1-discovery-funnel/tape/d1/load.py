@@ -195,6 +195,37 @@ SORT_KEYS = {"b": ("slot",), "amm": ("slot", "tx_idx", "ev_idx"), "buys": ("slot
 TABLES = tuple(SORT_KEYS)
 
 
+class CodecSize:
+    """Stands in for a Codec once the names are no longer read: keeps only its length (clusters size their arrays
+    by it). run_d1 swaps it in after a low-memory load; every code stays as assigned."""
+
+    def __init__(self, n: int):
+        self.n = int(n)
+
+    def __len__(self):
+        return self.n
+
+
+# amm columns that hold slots, times, indexes, codes, bps or flags: held as int32 by the low-memory reader when a
+# unit's values fit, and widened back to int64 (the earlier dtype) before any feature or outcome reads them
+# (PoolBook.prune, PoolBook.consume(pools=...)). Amounts and reserves always stay int64.
+NARROW_AMM = ("slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "pool", "mint", "owner",
+              "coin_creator", "side", "lp_bps", "protocol_bps", "creator_bps", "boost", "protocol", "app_routed")
+
+
+def _fits32(a: np.ndarray) -> bool:
+    return a.dtype == np.int64 and (len(a) == 0 or (a.min() >= -2**31 and a.max() < 2**31))
+
+
+def _mmap_small():
+    """glibc: serve allocations of 1 MiB and up by mmap, so freed column parts go back to the OS at once instead
+    of staying in the heap (the dynamic threshold otherwise rises to 32 MiB). Memory only, never a result."""
+    try:
+        ctypes.CDLL("libc.so.6").mallopt(-3, 1 << 20)   # M_MMAP_THRESHOLD
+    except (OSError, AttributeError):
+        pass
+
+
 def _trim():
     """Hand freed heap pages back to the OS (glibc); a no-op elsewhere. Memory only, never a result."""
     try:
@@ -229,6 +260,7 @@ def _cat_lowmem(ps: List[Dict[str, np.ndarray]], sort: Sequence[str], down: bool
         else:   # pd.concat's common-dtype rule, as the old path's frame concat
             a = pd.concat([pd.Series(x) for x in arrs], ignore_index=True).to_numpy()
         del arrs
+        _trim()
         if down and a.dtype == np.int64 and len(a) and a.min() >= -2**31 and a.max() < 2**31:
             a = a.astype(np.int32)
         out[c] = a
@@ -247,7 +279,8 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False,
 
     lowmem=True reads the same rows into the same tables (tested equal to lowmem=False, outputs byte-identical) with
     less memory: each unit's part is sorted and stored as plain columns, tables are joined column by column, freed
-    heap is returned after each unit, and the amm `signature` column (read by nothing after the load) is not kept.
+    heap is returned after each unit, the amm `signature` column (read by nothing after the load) is not kept, and
+    the amm columns in NARROW_AMM are held as int32 where they fit (the pool book widens them back).
     `keep` (lowmem only) names the tables to hold; the others are still read, wall-checked, coded (so every address
     gets the same code) and counted, then dropped (stage 2 needs only the pool rows and the events)."""
     units = sorted((parse_unit(p) for p in unit_dirs), key=lambda u: u.from_slot)
@@ -260,6 +293,8 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False,
     codec = Codec()
     mig_pools = None if all_pools else migrated_pools(units)
     parts: Dict[str, list] = {k: [] for k in TABLES}
+    if lowmem:
+        _mmap_small()
     held = set(TABLES if keep is None else keep) | {"b"}
     if not lowmem and held != set(TABLES):
         raise ValueError("keep is a lowmem option")
@@ -271,6 +306,9 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False,
             return
         if name == "amm":
             df = df.drop(columns="signature")
+            for c in NARROW_AMM:
+                if _fits32(df[c].to_numpy()):
+                    df[c] = df[c].to_numpy().astype(np.int32)
         if name not in held:
             dropped[name] += len(df)
             return
