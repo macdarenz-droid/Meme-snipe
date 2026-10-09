@@ -1486,5 +1486,76 @@ class CreatorFeeZeroR1_27(unittest.TestCase):
         self.assertEqual(summ[DAY]["canonical_pools_creator_fee_0"], 1)
 
 
+class CompactReaderEdges(unittest.TestCase):
+    """R1 review of the compact reader (362ba5e8) and the vectorized scans (3f37fff4): equal outputs on edge cases."""
+
+    def _edge_unit(self, lo=0, hi=9999, v1=False, shift=0):
+        u = rebuy_unit() if shift == 0 and lo == 0 and hi == 9999 else Unit(lo, hi)   # rows stay inside the unit
+        u.lo, u.hi = lo, hi
+        sl = lambda x: x + shift                                       # noqa: E731
+        u.create(sl(30), "EM"); u.migrate(sl(120), "EM", "EP")
+        rows = [u.aswap(sl(400), f"t{k}", "EM", "EP", sol=(k + 1) * 1e8) for k in range(4)]
+        for k, r in enumerate(rows):                                   # four swaps in one slot, written out of order
+            r["tx_idx"], r["ev_idx"] = (7, 1 - k % 2) if k < 2 else (3, k)
+        u.amm[-4:] = u.amm[-4:][::-1]
+        b = u.aswap(sl(410), "boost", "EM", "EP", sig="bsig", fee_bps=0)        # a BOOST slice
+        u.event("BoostBuyAndBurnEvent", sl(410), {"mint": "EM", "pool": "EP"}, sig="bsig")
+        p = u.aswap(sl(420), "prot", "EM", "EP", fee_bps=0)
+        p["protocol"] = 1                                              # a protocol swap
+        m = u.aswap(sl(430), None, "EM", "EP", chain=False)            # missing owner and chain reading
+        m["coin_creator"] = None
+        u.cbuy(sl(35), "c1", "EM", sol=2e9)
+        if v1:
+            for r in u.amm + u.curve:
+                r.pop("top_program", None)
+        return u
+
+    def _write_v1(self, u, d, day=DAY):
+        path = u.write(d, day)
+        for name in ("S_amm", "S_curve"):
+            f = os.path.join(path, "research", name + ".csv.zst")
+            df = pd.read_csv(f, compression="zstd", dtype=str).drop(columns=["top_program"])
+            df.to_csv(f, index=False, compression="zstd")
+        return path
+
+    def _same_paths(self, paths):
+        import json as js
+        import run_step_a as RS
+        outs = []
+        for compact in (False, True):
+            o = tempfile.mkdtemp()
+            summ = RS.run(paths, o, n_boot=100, minutes=CompactReader()._minutes(), compact=compact)
+            outs.append((o, js.loads(js.dumps(summ, default=str))))
+        self.assertEqual(outs[0][1], outs[1][1])
+        import filecmp
+        files = sorted(f for f in os.listdir(outs[0][0]) if f.endswith(".csv"))
+        for f in files:
+            self.assertTrue(filecmp.cmp(os.path.join(outs[0][0], f), os.path.join(outs[1][0], f), shallow=False), f)
+
+    def test_ties_boost_protocol_and_missing_fields(self):
+        d = tempfile.mkdtemp()
+        self._same_paths([self._edge_unit().write(d)])
+
+    def test_v1_unit(self):
+        d = tempfile.mkdtemp()
+        p = self._write_v1(self._edge_unit(), d)
+        t = Tape([p], compact=True)
+        self.assertFalse(bool(t.swaps["schema_v2"].any()))
+        self._same_paths([p])
+
+    def test_empty_unit_and_midnight_boundary_given_out_of_order(self):
+        d = tempfile.mkdtemp()
+        late = self._edge_unit(5000, 9999, shift=5000)                 # 09-11, slots 5000-9999
+        early = self._edge_unit(0, 4999)                               # 09-10, the slots before, contiguous
+        early.aswap(4990, "x9", "EM", "EP", sol=5e8)                   # trades on both sides of the day boundary
+        late.aswap(5003, "x9", "EM", "EP", sol=5e8, buy=False)
+        empty = Unit(10000, 10999)                                     # 09-11, no rows at all
+        paths = [late.write(d, DAY), empty.write(d, DAY), early.write(d, "2026-09-10")]
+        self._same_paths(paths)
+        a, b = Tape(paths, compact=False), Tape(paths, compact=True)
+        self.assertEqual(list(a.swaps["slot"]), list(b.swaps["slot"]))
+        self.assertEqual(list(a.swaps["day"].astype(object)), list(b.swaps["day"].astype(object)))
+
+
 if __name__ == "__main__":
     unittest.main()

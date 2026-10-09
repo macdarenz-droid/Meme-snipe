@@ -87,7 +87,9 @@ def graduations(tape: Tape):
 
 def _is_other(row_top, owner, signer):
     """BOOST, buyback or mayhem rows are never 'non-linked buys'."""
-    return (row_top == MAYHEM_PROGRAM or owner == MAYHEM_VAULT_OWNER
+    # a missing value (a v1 unit has no top_program column: pd.NA in the plain reader) is never a match (red team R1-28)
+    return ((isinstance(row_top, str) and row_top == MAYHEM_PROGRAM)
+            or (isinstance(owner, str) and owner == MAYHEM_VAULT_OWNER)
             or (isinstance(signer, str) and signer.startswith(BUYBACK_AUTHORITY_PREFIX))
             or (isinstance(owner, str) and owner.startswith(BUYBACK_AUTHORITY_PREFIX)))
 
