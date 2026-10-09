@@ -72,7 +72,7 @@ fi
 # 1. The pinned list, built once and kept for a resumed trim.
 if [ ! -f "$list" ] || [ ! -d "$out/units.k3" ]; then
   if [ "$prior" = - ]; then
-    [ "$day" = "$(ag_first_day)" ] || refuse "$day is not the first allow-listed day, so it needs the day before's pinned list"
+    ag_exempt "$day" "$out" || refuse "$day is not the head of the allow-list with no release of the day before in the store (prev-day.txt), so it needs the day before's pinned list"
     prior_args=()
   else
     ag_prior_ok "$day" "$prior" "${ARCHIVE_PRIOR_SUMS:-}" || exit 2

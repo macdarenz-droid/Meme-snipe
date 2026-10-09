@@ -181,7 +181,9 @@ fi
 # Ruling 8 (and 11): every day but the first allow-listed one needs the day before's
 # verified list (a K3 day to be trimmed, a K2 day for its own list-D.txt); without it
 # nothing is read (before the disk guard, the back-off and any scanner call).
-if [ "$day" != "$(. "$(dirname "$0")/archive-guard.sh"; ag_first_day)" ]; then
+# OF-6 ruling 11: only the head of ARCHIVE_DAYS whose day before the store does not hold
+# (OUT/prev-day.txt from the clean margin step) is exempt.
+if ! (. "$(dirname "$0")/archive-guard.sh"; ag_exempt "$day" "$out"); then
   "$(dirname "$0")/archive-guard.sh" prior "$day" "${ARCHIVE_PRIOR_LIST:-}" "${ARCHIVE_PRIOR_SUMS:-}" || exit 2
   # OF-6 ruling 9: the day before's stored units (margin-fetch.sh) go to the scanner, which
   # refuses a planned unit among them that was not taken from the store; without the list

@@ -30,11 +30,16 @@ this_repo=${GITHUB_REPOSITORY:-}
 [[ "${DATA_REPO,,}" != "${this_repo,,}" ]] || { echo "refused: DATA_REPO is this repository, not the private store"; exit 1; }
 days=$(ag_days) || { echo "refused: ARCHIVE_DAYS in archive-limits.conf is malformed"; exit 1; }
 first=${days%%$'\n'*}
-if [[ "$day" == "$first" ]]; then
-  echo "margin: $day is the first allow-listed day; nothing to take from the store" | tee -a "$summary"
+# OF-6 ruling 11: OUT/prev-day.txt records whether the store holds the day before
+# ("none D-1", or its tags); only the head of ARCHIVE_DAYS with none takes nothing (and
+# scan-day and trim-day exempt it from the prior list and -stored).
+prev=$(date -u -d "$day - 1 day" +%F)
+pd=$(ag_prev_day "$day" "$GH") || { echo "margin: the private store cannot be read; $day is not read (fail closed)" | tee -a "$summary"; exit 1; }
+mkdir -p "$out"; echo "$pd $prev" > "$out/prev-day.txt"
+if [[ "$day" == "$first" && "$pd" == none ]]; then
+  echo "margin: $day heads the allow-list and the store holds no release of $prev; nothing to take" | tee -a "$summary"
   exit 0
 fi
-prev=$(date -u -d "$day - 1 day" +%F)
 # OF-6 ruling 6: the taken units must carry D's own retention (finalize refuses a mixed
 # day, and assemble's midnight merge needs both days' copies equal). A K3 day takes from
 # data-day-<D-1>-k3 (D-1 read at K2 and trimmed), else from data-day-<D-1> only when that

@@ -435,8 +435,15 @@ scan() {
   local d=${SDAY:-2026-07-22}
   [[ -n "${NOPASS:-}" ]] || gpass "$d" "${PASSRET:-K2}"
   [[ -n "${NOPRIOR:-}" ]] || mkprior "$d"
-  # OF-6 ruling 9: a day after the first gets the day before's stored units (none here overlap)
-  if [[ -z "${NOPREV:-}" && "$d" != 2026-07-22 && -d "$1" ]]; then [[ -s "$1/prev-units.txt" ]] || echo "1046/999000001-999004500" > "$1/prev-units.txt"; touch "$1/from-store.txt"; fi
+  # OF-6 rulings 9 and 11 (the clean margin step's records): 07-22 heads the allow-list with
+  # no 07-21 release in the store; a later day gets the day before's stored units (none here
+  # overlap)
+  if [[ -z "${NOPREV:-}" ]]; then
+    local pv; pv=$(date -u -d "$d - 1 day" +%F); mkdir -p "$1"
+    if [[ "$d" == 2026-07-22 ]]; then [[ -f "$1/prev-day.txt" ]] || echo "none $pv" > "$1/prev-day.txt"
+    else [[ -f "$1/prev-day.txt" ]] || echo "data-day-$pv $pv" > "$1/prev-day.txt"
+      [[ -s "$1/prev-units.txt" ]] || echo "1046/999000001-999004500" > "$1/prev-units.txt"; touch "$1/from-store.txt"; fi
+  fi
   ARCHIVE_PRIOR_LIST=${SPL-$PRIORL} ARCHIVE_PRIOR_SUMS=${SPS-$PRIORS} \
   ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} ARCHIVE_GUARD_DIR="$GP" SCANNER_REVISION=${SREV-r1} ARCHIVE_MIGRATION_LIST="${SLIST:-}" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "${SFX:-$FX}/scan-day.sh" "$d" "$1" "${MBPS:-40}" "${2:-300}" > "$T/out.txt" 2>&1
 }
@@ -1946,6 +1953,7 @@ STUB
 chmod +x "$TB"/*
 # two K2 units; files named so the C locale order (B before a) differs from en_US's
 mkk2() { rm -rf "$T/tk2" "$T/tassets" "$T/trim.args" "$T/net.log"; mkdir -p "$T/tk2/units/1046/1-2" "$T/tk2/units/1046/3-4" "$T/cd-ds"
+  echo "none 2026-07-21" > "$T/tk2/prev-day.txt" # OF-6 ruling 11: the margin step's record for the head day
   for u in 1-2 3-4; do echo '{"scanner_revision": "rF", "retention": "K2"}' > "$T/tk2/units/1046/$u/stats.json"
     echo "raw$u" > "$T/tk2/units/1046/$u/raw_canonical.jsonl.zst"; echo "B$u" > "$T/tk2/units/1046/$u/B.zst"; echo "a$u" > "$T/tk2/units/1046/$u/a.zst"; done; }
 td() { local d=$1 p=$2; shift 2; FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$TB:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
@@ -3667,6 +3675,32 @@ SFX=$T/fx9/research/historical/ci SDAY=2026-07-23 scan "$o" || rc=$?
 [[ $rc == 0 ]] && grep -q -- "-stored $o/prev-units.txt -taken $o/from-store.txt" "$T/scan.args" || bad+=" [stored args: $rc $(cat "$T/scan.args" 2>/dev/null)]"
 rm -rf "$o"; mkdir -p "$o"; rc=0; SFX=$T/fx9/research/historical/ci scan "$o" || rc=$?
 [[ $rc == 0 ]] && ! grep -q -- "-stored" "$T/scan.args" || bad+=" [first day: $rc]"
+# ruling 11: only the head of ARCHIVE_DAYS with no release of the day before in the store is
+# exempt. With ARCHIVE_DAYS edited to start at 07-23 and 07-22 stored, 07-23 gets the prior list,
+# takes the margin, and scan-day and trim-day refuse it without the prior list; with 07-22 not
+# stored, it is exempt.
+mkfx "$T/fx11" "ARCHIVE_DAYS=2026-07-23..2026-08-21" ARCHIVE_RETENTION=K2; c11=$T/fx11/research/historical/ci
+mkmargin data-day-2026-07-22 K2
+: > "$T/pfout"; rc=0; GH_BIN="$T/bin/gh" GITHUB_OUTPUT="$T/pfout" bash "$c11/prior-fetch.sh" 2026-07-23 "$T/pfdir11" > "$T/pf.txt" 2>&1 || rc=$?
+[[ $rc == 0 ]] && grep -qx "list=$T/pfdir11/list-2026-07-22.txt" "$T/pfout" || bad+=" [r11 prior: $rc $(cat "$T/pfout" "$T/pf.txt" | tr '\n' ' ')]"
+rm -rf "$T/mfout"; GH_BIN="$T/bin/gh" MFX=$c11 mf 2026-07-23
+[[ $rc == 0 && "$(cat "$T/mfout/prev-day.txt")" == "data-day-2026-07-22 2026-07-22" && -s "$T/mfout/prev-units.txt" ]] && grep -q "data-day-2026-07-22" "$T/mfout/from-store.txt" || bad+=" [r11 margin: $rc $(tail -1 "$T/mf.txt")]"
+o="$T/sc11"; rm -rf "$o"; mkdir -p "$o"; cp "$T/mfout/prev-day.txt" "$T/mfout/prev-units.txt" "$T/mfout/from-store.txt" "$o/"; rc=0
+NOPREV=1 NOPRIOR=1 SPL= SPS= SFX=$c11 SDAY=2026-07-23 scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "needs the day before's pinned list" "$T/out.txt" || bad+=" [r11 scan without prior: $rc $(tail -1 "$T/out.txt")]"
+mkk2; cp "$T/mfout/prev-day.txt" "$T/tk2/"; rc=0
+FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$TB:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$c11/trim-day.sh" 2026-07-23 "$T/tk2" - "$T/tassets" > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc != 0 ]] && grep -q "not the head of the allow-list with no release of the day before" "$T/out.txt" || bad+=" [r11 trim without prior: $rc $(tail -1 "$T/out.txt")]"
+rm -rf "$T/rel/data-day-2026-07-22"
+: > "$T/pfout"; rc=0; GH_BIN="$T/bin/gh" GITHUB_OUTPUT="$T/pfout" bash "$c11/prior-fetch.sh" 2026-07-23 "$T/pfdir11" > "$T/pf.txt" 2>&1 || rc=$?
+[[ $rc == 0 && "$(cat "$T/pfout")" == $'list=\nsums=' ]] || bad+=" [r11 head exempt prior: $rc]"
+rm -rf "$T/mfout"; GH_BIN="$T/bin/gh" MFX=$c11 mf 2026-07-23; [[ $rc == 0 && "$(cat "$T/mfout/prev-day.txt")" == "none 2026-07-22" && ! -e "$T/mfout/from-store.txt" ]] || bad+=" [r11 head exempt margin: $rc]"
+o="$T/sc11"; rm -rf "$o"; mkdir -p "$o"; cp "$T/mfout/prev-day.txt" "$o/"; rc=0
+NOPREV=1 NOPRIOR=1 SPL= SPS= SFX=$c11 SDAY=2026-07-23 scan "$o" || rc=$?
+[[ $rc == 0 ]] && ! grep -q -- "-stored" "$T/scan.args" || bad+=" [r11 head exempt scan: $rc $(tail -1 "$T/out.txt")]"
+mkk2; echo "none 2026-07-22" > "$T/tk2/prev-day.txt"; rc=0
+FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$TB:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$c11/trim-day.sh" 2026-07-23 "$T/tk2" - "$T/tassets" > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 0 ]] || bad+=" [r11 head exempt trim: $rc $(tail -1 "$T/out.txt")]"
 # 3. scan-day: a day holding only D-1's taken (K3) units reads its own at K2, without refusing;
 # check-day rescans its first own unit, never a taken one; the trim passes taken units through.
 mkfx "$T/fx6"; o="$T/sc6"; rm -rf "$o"; mkdir -p "$o/units/1046/3-4"; printf '{\n  "scanner_revision": "r1",\n  "retention": "K3"\n}\n' > "$o/units/1046/3-4/stats.json"; echo "1046/3-4 data-day-2026-07-22" > "$o/from-store.txt"

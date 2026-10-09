@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -180,5 +182,77 @@ func TestCheckStored(t *testing.T) {
 		if _, err := readUnitNames(w("bad", bad)); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// OF-6 ruling 10: day D-1's K2 unit trimmed with D-1's list (its -k3 copy) is taken into D
+// beside D's own unit trimmed with D's list; the per-unit log built as trim-day does (unit
+// lines, D's k2 lines, a from line for the taken unit) checks, finalize accepts the day, and
+// the taken unit stays byte-equal to the -k3 copy.
+func TestTakenK3UnitFinalizes(t *testing.T) {
+	prevList := writeList(t, k3Mint+" 100 200")
+	dList := writeList(t, k3Mint+" 100 201")
+	// D-1's unit reaches across midnight into D; D's own unit follows it, contiguous
+	a := spanUnit(1046, 1000, day("2026-09-01")-3600, day("2026-09-01")+3600)
+	a.oldRetention, a.retention = true, "K2"
+	pf := &fixture{t: t, out: t.TempDir()}
+	pf.spanUnit(a)
+	b := spanUnit(1046, a.to+1, day("2026-09-01")+7200, day("2026-09-02")+1800)
+	b.oldRetention, b.retention = true, "K2"
+	of := &fixture{t: t, out: t.TempDir()}
+	of.spanUnit(b)
+	name := func(u fxUnit) string { return fmt.Sprintf("%d-%d", u.from, u.to) }
+	k3copy := filepath.Join(t.TempDir(), "units", "1046", name(a))
+	os.MkdirAll(filepath.Dir(k3copy), 0o755)
+	if err := TrimUnit(filepath.Join(pf.out, "units", "1046", name(a)), k3copy, prevList); err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	taken := filepath.Join(out, "units", "1046", name(a))
+	os.MkdirAll(taken, 0o755)
+	files, _ := filepath.Glob(filepath.Join(k3copy, "*"))
+	for _, f := range files {
+		if err := copyFile(f, filepath.Join(taken, filepath.Base(f))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	own := filepath.Join(of.out, "units", "1046", name(b))
+	var k2lines []string
+	ownFiles, _ := filepath.Glob(filepath.Join(own, "*.zst"))
+	sort.Strings(ownFiles)
+	for _, f := range ownFiles {
+		h, _ := fileSha256(f)
+		k2lines = append(k2lines, "k2 "+h+" 1046/"+name(b)+"/"+filepath.Base(f))
+	}
+	if err := TrimUnit(own, filepath.Join(out, "units", "1046", name(b)), dList); err != nil {
+		t.Fatal(err)
+	}
+	units, err := unitLog(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := append(append(append([]string{}, units...), k2lines...), "from 1046/"+name(a)+" data-day-2026-08-31-k3")
+	if err := checkUnitLog(out, writeLog(t, lines)); err != nil {
+		t.Fatalf("the per-unit log with a taken K3 unit: %v", err)
+	}
+	if err := Finalize(out, t.TempDir(), "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatalf("finalize refused a day with a taken K3 unit: %v", err)
+	}
+	for _, f := range files {
+		x, _ := os.ReadFile(f)
+		y, _ := os.ReadFile(filepath.Join(taken, filepath.Base(f)))
+		if !bytes.Equal(x, y) {
+			t.Errorf("%s differs from the -k3 copy", filepath.Base(f))
+		}
+	}
+	// a taken unit still at K2 (the plain release of a K2 day) makes the day mixed: refused
+	os.RemoveAll(taken)
+	os.MkdirAll(taken, 0o755)
+	k2files, _ := filepath.Glob(filepath.Join(pf.out, "units", "1046", name(a), "*"))
+	for _, f := range k2files {
+		copyFile(f, filepath.Join(taken, filepath.Base(f)))
+	}
+	if err := Finalize(out, t.TempDir(), "2026-09-01", "2026-09-02", finalizeOpts{}); err == nil || !strings.Contains(err.Error(), "retention") {
+		t.Errorf("a taken K2 unit beside a K3 unit was accepted: %v", err)
 	}
 }
