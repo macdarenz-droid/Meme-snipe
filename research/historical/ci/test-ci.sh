@@ -1872,9 +1872,16 @@ bad=""
 # The repository's values: 30 days; 31 with the 07-22 lead-in, unarmed, retention unset, re-arm time valid.
 ( . "$here/archive-limits.conf"; . "$here/archive-guard.sh"
   days=$(ag_days) && [[ $(wc -l <<< "$days") == 31 && $(head -1 <<< "$days") == 2026-07-22 && $(tail -1 <<< "$days") == 2026-08-21 ]] &&
-  ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && -z "$ARCHIVE_ARM" && -z "$ARCHIVE_RETENTION" ]] &&
-  ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-1 ]] && ! ag_armed >/dev/null 2>&1 ) &&
-  ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only), ARCHIVE_ARM and ARCHIVE_RETENTION empty, ARCHIVE_REARM_AT a valid UTC time; the one pinned B10-PULL row (OF-7) is b10pull-of-1 and the chain stays unarmed" || no "OF-2 repository values"
+  ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && "$ARCHIVE_ARM" == b10pull-of-1 && "$ARCHIVE_RETENTION" == K2 ]] &&
+  [[ "$ARCHIVE_REARM_AT" == 2026-10-07T22:30:00Z ]] && ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-1 ]] ) &&
+  ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only); OF-ARM: ARCHIVE_ARM is the pinned B10-PULL id b10pull-of-1, ARCHIVE_RETENTION K2, ARCHIVE_REARM_AT kept at 2026-10-07T22:30:00Z" || no "OF-2 repository values"
+# OF-ARM: the armed repository config passes the local checks for the two measurement days (at K2)
+# and still refuses 07-24 until K3 is recorded.
+bad=""
+for d in 2026-07-22 2026-07-23; do rc=0; out=$(cd "$here" && bash ./archive-guard.sh local "$d" 2>/dev/null) || rc=$?; [[ $rc == 0 && "$(tail -1 <<< "$out")" == K2 ]] || bad+=" [$d: $rc $out]"; done
+rc=0; out=$(cd "$here" && bash ./archive-guard.sh local 2026-07-24 2>&1) || rc=$?; [[ $rc == 2 ]] && grep -q "2026-07-24 has no retention value" <<< "$out" || bad+=" [07-24: $rc]"
+[[ -z "$bad" ]] && ok "OF-ARM: archive-guard.sh local passes 2026-07-22 and 2026-07-23 at K2 with the armed repository config and refuses 2026-07-24 (no retention value at K2)" || no "OF-ARM armed config:$bad"
+bad=""
 
 # ---- OF-3: K3 reads take the pinned migration list; the K2 release keeps the rescan hashes and the per-unit log; the trim ----
 gdreset; bad=""
