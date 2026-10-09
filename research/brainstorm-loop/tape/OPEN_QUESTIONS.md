@@ -187,8 +187,6 @@
   - About 0.37 GB per added unit compact, against 0.85 GB plain.
   - Projected 62-unit day: about 23 GB compact (53 GB plain). That misses the 10 GB target.
   - What remains is mostly about 28 numeric columns × 8 bytes a row, plus the concat overlap.
-- **Next step (not built; the scope ruling stopped here).** A two-pass reader:
-  - read E first, to learn the migrations, eligible pools and creates;
-  - then keep, per stage, only the rows of the mints and pools that stage reads, with per-unit aggregates for the all-swap rows (two-sided clusters, W1 class, first buys).
+- **Next step.** Built on 2026-10-09 as the streaming reader: see "Scale (2026-10-09)" below.
 - **Q32 [open] Signature hashes.** These are pandas' 64-bit siphash. Signatures are only compared for equality, and a collision among about 35M transactions a day has probability about 3 × 10⁻⁵.
 
