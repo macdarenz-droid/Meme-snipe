@@ -3746,7 +3746,8 @@ job = wf["jobs"]["k3"]
 assert job["if"] == "inputs.mode == 'k3'" and job["permissions"] == {"contents": "read"} and job["strategy"]["max-parallel"] == 1, job
 steps = job["steps"]; ids = [s.get("id") or s.get("name") or s.get("uses") for s in steps]
 tok = [s.get("id") or s.get("name") for s in steps if "DATA_STORE_TOKEN" in str(s)]
-assert tok == ["k3fetch", "prior", "margin", "store", "Storage check after the -k3 release"], tok
+assert tok == ["storeok", "k3fetch", "prior", "margin", "store", "Storage check after the -k3 release"], tok
+assert steps[ids.index("storeok")]["run"].endswith('archive-guard.sh" store-ok') and ids.index("storeok") < ids.index("k3fetch"), steps[ids.index("storeok")]
 for s in steps:
     if "DATA_STORE_TOKEN" in str(s):
         assert s["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and s["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), s
@@ -3792,7 +3793,8 @@ mkk2rel() { local d=$1 dir="$T/rel/data-day-$1" src="$T/k2src-$1" u ls; rm -rf "
   (cd "$dir" && sha256sum units-* events-* qa-* manifest-* parity-* list-* margin-* > "SHA256SUMS-$d")
   printf 'readback-ok data-day-%s %s' "$d" "$(sha256sum "$dir/SHA256SUMS-$d" | cut -d' ' -f1)" > "$dir/readback-ok-$d"; }
 k3run() { local d=$1 w="$T/k3w-$1"; rm -rf "$w"; mkdir -p "$w/data" "$w/assets"; : > "$w/out"; K3RC=0
-  { GITHUB_OUTPUT="$w/out" bash "$kc/k3-fetch.sh" "$d" "$w/data" &&
+  { GD="$GD" GH_BIN="$GD/bin/gh" GH_REPO=o/r DATA_REPO=o/data DATA_STORE_TOKEN=tok bash "$kc/archive-guard.sh" store-ok &&
+    GITHUB_OUTPUT="$w/out" bash "$kc/k3-fetch.sh" "$d" "$w/data" &&
     { grep -qx done=true "$w/out" || {
       GITHUB_OUTPUT="$w/pf" bash "$kc/prior-fetch.sh" "$d" "$w/prior" &&
       bash "$kc/margin-fetch.sh" "$d" "$w/data" &&
@@ -3806,6 +3808,8 @@ rm -rf "$T/rel/data-day-2026-07-21" "$T/rel/data-day-2026-07-22-k3" "$T/rel/data
 mid=$(date -u -d 2026-07-23 +%s)
 mkk2rel 2026-07-22 "1-2:$(( mid - 20000 )) 3-4:$(( mid + 600 ))"
 mkk2rel 2026-07-23 "5-6:$(( mid + 40000 ))" 3-4
+# ruling 13: with the storage-stop marker in the store, mode k3 stops before any download; nothing is stored
+GD_STOP=1 k3run 2026-07-22; [[ $K3RC != 0 && ! -d "$T/rel/data-day-2026-07-22-k3" && ! -e "$T/k3w-2026-07-22/data/units" ]] && grep -q "storage-stop marker is present" "$T/k3w-2026-07-22/log" || bad+=" [storage-stop: $K3RC $(tail -1 "$T/k3w-2026-07-22/log")]"
 # 07-23 before 07-22-k3 exists: its K3 margin is refused (waits), nothing stored
 k3run 2026-07-23; [[ $K3RC != 0 && ! -d "$T/rel/data-day-2026-07-23-k3" ]] && grep -q "waits for data-day-2026-07-22-k3" "$T/k3w-2026-07-23/log" || bad+=" [07-23 before 07-22-k3: $K3RC $(tail -1 "$T/k3w-2026-07-23/log")]"
 k3run 2026-07-22; [[ $K3RC == 0 && "$(rstate data-day-2026-07-22-k3 2026-07-22)" == done ]] || bad+=" [07-22: $K3RC $(tail -2 "$T/k3w-2026-07-22/log" | tr '\n' ' ')]"

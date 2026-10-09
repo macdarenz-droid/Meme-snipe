@@ -242,7 +242,10 @@ recommendation, before `ARCHIVE_ARM` is set:
    `ci/k3-fetch.sh` brings the K2 day back from `zeroed-data`, `margin-fetch.sh` replaces the units it took with the
    day before's K3 copies and writes `prev-day.txt`, `trim-day.sh --qa` trims it with QA, the list must equal the stored
    one, and `publish-day.sh --k3` stores and reads back `data-day-DAY-k3` with its `readback-ok` marker. Batch 3
-   (07-24) takes its margin only from `data-day-2026-07-23-k3` (ruling 6), so it cannot start before.
+   (07-24) takes its margin only from `data-day-2026-07-23-k3` (ruling 6), so it cannot start before. The job first
+   checks the private store (`archive-guard.sh store-ok`: readable, private, no `storage-stop` marker) and stops before
+   any download if not (ruling 13). A k3 run is a `data-scan` run outside the Helius lane, so a finished one holds the
+   next archive scan for 60 min through the lane timing (ruling 14).
 
 **Reads, and the one allowed second read (DERIVED).**
 - Each day's unit plan carries two units of margin on each side (`scanner/main.go:310`, 3,600 s), about 1.9 units each

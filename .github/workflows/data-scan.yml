@@ -1006,6 +1006,22 @@ jobs:
           fi
           mkdir -p "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets"
           research/historical/ci/disk-guard.sh "$RUNNER_TEMP/work/" 30000000000 "a K2 day's parts, its units, the trim and QA dataset"
+      # OF-6 ruling 13: the private store is readable, private and holds no storage-stop
+      # marker before anything is downloaded or stored (archive-guard.sh ag_store_ok).
+      - name: Check the private store
+        id: storeok
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" store-ok
       - name: Bring the K2 day back from the store
         id: k3fetch
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
