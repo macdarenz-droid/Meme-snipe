@@ -19,3 +19,7 @@ Card: `docs/MIGRATION.md` Card Z-H, OF-7 bullet. Builder: data builder `session_
 3. **Red team MINOR (scan-day compares the environment value, not the binary's own revision), declined (9 Oct about 3:20 PM).** No step can rewrite `GITHUB_ENV` or `GITHUB_PATH` between the build and the scan, and every workflow change is reviewed and red-teamed. Possible later hardening: a `zeroed-scan revision` check.
 - Reviewer (round 2): PASS, 0/0/0. The re-pin equals the scanner tree at `5931f1eb`; rulings 1–2 met. **#318 approved at `5931f1eb`.**
 - Merge plan (9 Oct about 3:55 PM): #318 contains #317 and base `d01875dc`, so #318 merges alone and GitHub marks #317 merged. The supervisor read the guarded diff (data-scan.yml +27/−1: the margin step in the clean `env -i` shell, the `reread_id` input passed to the scan and the chained dispatch); nothing loosened. #318 retargeted to the base, marked ready, label `deps-reviewed:78e14f7f6f55669121708725b85d8605` added after the head (04:54 UTC).
+
+## Merged (9 Oct 2026, 4:23 PM)
+
+**#318 merged at `fc38d3f7`** (the new base), carrying OF-6; GitHub marked **#317 merged**. Labelled CI green on `5931f1eb`. OF-1 to OF-7 are all merged; `ARCHIVE_ARM` stays empty. Last piece before any arm: OF6.md ruling 12 (the `-k3` producer for 07-22 and 07-23), with the data builder on `claude/of3-k3-producer`.
