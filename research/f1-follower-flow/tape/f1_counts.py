@@ -329,7 +329,9 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
     with_follow=False (--prep-only) keeps the same rows, drops and placebo draws but computes no follow count or
     follower SOL: those columns are left out.
     compact=True (memory only, same rows): the day's sorted buy table is freed once indexed by mint, and the leader
-    buys are turned into records in blocks of EV_BLOCK rows instead of all at once; compact=False is the original."""
+    buys are turned into records in blocks of EV_BLOCK rows instead of all at once, and the placebo is drawn from
+    per-mint counts of non-candidate buys instead of a list of them (same index, same rng call); compact=False is the
+    original."""
     candidates = leaders if candidates is None else candidates
     buys = swaps[(swaps["day"] == day) & swaps["is_buy"]].sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort")
     buys_by_mint = {m: {c: g[c].to_numpy() for c in ("slot", "tx_idx", "ev_idx", "owner", "sol", "q", "fee_bps")}
@@ -349,6 +351,7 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
     # DataFrame constructor makes of a list of dicts (memory only; test_f1_counts.Compact checks the bytes)
     keep = (lambda o: tuple(o.get(c, np.nan) for c in cols)) if compact else (lambda o: o)
     rng = np.random.default_rng(seed)
+    noncand_cs = {}
     rows = []
     for ev in records:
         out = {"day": day, "leader": ev["owner"], "mint": ev["mint"], "slot": ev["slot"],
@@ -361,12 +364,27 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
         mb = buys_by_mint[ev["mint"]]
         i0 = np.searchsorted(mb["slot"], ev["slot"] - PLACEBO_REACH, side="left")
         i1 = np.searchsorted(mb["slot"], ev["slot"] + PLACEBO_REACH, side="right")
-        reach = [i for i in range(i0, i1) if mb["owner"][i] not in candidates]
-        if not reach:
-            out["dropped"] = "no_placebo_in_reach"
-            rows.append(keep(out))
-            continue
-        j = reach[int(rng.integers(len(reach)))]
+        if compact:
+            # same draw without building the reach list: cs[t] = non-candidate buys of this mint before index t;
+            # the k-th (0-based) non-candidate buy in [i0, i1) is reach[k] of the original
+            cs = noncand_cs.get(ev["mint"])
+            if cs is None:
+                cs = noncand_cs[ev["mint"]] = np.concatenate(
+                    ([0], np.cumsum(np.fromiter((o not in candidates for o in mb["owner"]), bool, len(mb["owner"])))))
+            n_reach = int(cs[i1] - cs[i0])
+            if not n_reach:
+                out["dropped"] = "no_placebo_in_reach"
+                rows.append(keep(out))
+                continue
+            k = int(rng.integers(n_reach))
+            j = int(np.searchsorted(cs, cs[i0] + k + 1, side="left")) - 1
+        else:
+            reach = [i for i in range(i0, i1) if mb["owner"][i] not in candidates]
+            if not reach:
+                out["dropped"] = "no_placebo_in_reach"
+                rows.append(keep(out))
+                continue
+            j = reach[int(rng.integers(len(reach)))]
         pick = {"mint": ev["mint"], "owner": mb["owner"][j], "slot": int(mb["slot"][j]),
                 "tx_idx": int(mb["tx_idx"][j]), "ev_idx": int(mb["ev_idx"][j])}
         if not with_follow:
