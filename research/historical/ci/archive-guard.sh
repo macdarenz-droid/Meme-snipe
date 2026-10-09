@@ -36,8 +36,8 @@
 #     failed, was cancelled or timed out and whose `continue` job did not chain it (a
 #     block exits 4, any other failure, or a second resumable stop of the day), unless
 #     the only failed steps are its guard steps (no request was made; round 4, ruling 22).
-# A success is a batch's first attempt whose "Publish this day" step succeeded (it stored
-# a day; a day already published skips that step). Failures count from ARCHIVE_REARM_AT, and
+# A success is a batch's first attempt whose "Store this day" step succeeded (it stored a
+# day in the private store and read it back, OF-4; a day already stored skips that step). Failures count from ARCHIVE_REARM_AT, and
 # only after the last success; 3 stop the chain until a reviewed change moves it.
 #
 # Env: GH_REPO (or GITHUB_REPOSITORY), GH_TOKEN, DATA_REPO, DATA_STORE_TOKEN, GITHUB_REF,
@@ -111,7 +111,7 @@ ag_armed() {
 #   - every release call in research/historical/ci/*.sh (gh/"$GH" release ..., or a
 #     .../releases API path) names `--repo "$DATA_REPO"` or `repos/$DATA_REPO/`, and none
 #     names GITHUB_REPOSITORY, GH_REPO or -R.
-# OF-4 and OF-5 must land first.
+# OF-4 (nothing public) makes these pass on this tree; test-ci checks it.
 ag_private_storage() {
   local wf="$ag_here/../../../.github/workflows/data-scan.yml" f bad
   [[ -f "$wf" ]] || { ag_refuse "the archive chain is not armed: data-scan.yml cannot be read"; return 2; }
@@ -270,7 +270,8 @@ if __name__ == "__main__" and len(sys.argv) == 1:
 # repeated key; an explicit top-level permissions mapping with contents: read; at any
 # level only contents: read|none and actions: read|none, actions: write only where it is
 # needed (archive-check.yml dispatches data-scan; data-scan.yml's continue job dispatches
-# the chained run), every other scope absent or none, never a string (write-all,
+# the chained run; its forget job, OF-4 ruling 1, deletes a stored day's progress cache
+# after the read-back and runs only a checkout and cache-forget.sh), every other scope absent or none, never a string (write-all,
 # read-all); the actions/upload-* family only as data-scan.yml's resume-* artifact in the
 # scan job; a local action (uses: ./) only as a composite whose steps pass the same checks;
 # every run: block, and every script outside ci/ it calls, passes ag_calls_py; and an
@@ -288,7 +289,7 @@ def mapping(loader, node, deep=False):
     return yaml.SafeLoader.construct_mapping(loader, node, deep)
 L.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
 MARK = re.compile(r"scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-|archive-check\.sh|archive-guard\.sh")
-WRITE_OK = {("archive-check.yml", None), ("data-scan.yml", "continue")}
+WRITE_OK = {("archive-check.yml", None), ("data-scan.yml", "continue"), ("data-scan.yml", "forget")}
 def scopes(perm, name, job):
     if perm is None: return None
     if not isinstance(perm, dict): return "grants " + str(perm)
@@ -300,6 +301,8 @@ def scopes(perm, name, job):
         if not ok: return "grants " + str(k) + ": " + v
     return None
 def fail(msg): print(msg); sys.exit(1)
+# OF-4 ruling 13: the store-token secret name is matched without regard to case
+def tok(x): return re.search(r"data_store_token", str(x), re.I) is not None
 ROOT = os.path.normpath(os.path.join(sys.argv[1], "..", ".."))
 SH = re.compile(r"(?:\$GITHUB_WORKSPACE/|\$\{\{\s*github\.workspace\s*\}\}/|\./)?((?:[\w.-]+/)*[\w.-]+\.sh)\b")
 def check_steps(steps, name, j, depth=0):
@@ -307,6 +310,16 @@ def check_steps(steps, name, j, depth=0):
         if not isinstance(st, dict): continue
         uses = str(st.get("uses", "")).strip()
         where = name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?")))
+        # OF-4 ruling 8: the store token is never written into a run: line
+        if re.search(r"secrets\s*\.\s*DATA_STORE_TOKEN", str(st.get("run", "")), re.I): fail(where + " writes secrets.DATA_STORE_TOKEN into its run: line (OF-4 ruling 8)")
+        # OF-4 ruling 5: the store token only in a clean env -i step (shell without BASH_ENV
+        # or ENV, the script under env -i with a fixed PATH, the loader variables emptied)
+        env = st.get("env") or {}
+        if tok(env) or tok(st.get("with") or {}):
+            clean = (str(st.get("shell", "")).startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc")
+                     and str(st.get("run", "")).startswith("/usr/bin/env -i PATH=/usr/bin:/bin ")
+                     and isinstance(env, dict) and all(str(env.get(k, "x")) == "" for k in ("BASH_ENV", "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH")))
+            if not clean: fail(where + " holds the store token outside a clean env -i step (OF-4 ruling 5)")
         # ruling 46: the whole upload family; only the resume- marker in data-scan scan
         if uses.startswith("actions/upload-"):
             art = str((st.get("with") or {}).get("name", ""))
@@ -346,6 +359,9 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
     text = open(f).read()
     if not MARK.search(text): continue
     name = os.path.basename(f)
+    # OF-4 ruling 8: no step reads the whole secrets context or forwards it
+    for rx, what in ((r"toJSON\(\s*secrets\s*\)", "toJSON(secrets)"), (r"secrets\s*\[", "secrets[...]"), (r"secrets\s*:\s*inherit", "secrets: inherit")):
+        if re.search(rx, text, re.I): fail(name + " uses " + what + " (OF-4 ruling 8)")
     try: wf = yaml.load(text, Loader=L)
     except Exception: fail(name + " does not parse as YAML (or repeats a key)")
     top = wf.get("permissions") if isinstance(wf, dict) else None
@@ -357,11 +373,17 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
         for k, v in (env or {}).items():
             if "zeroed-" in str(v): fail(where + " env " + str(k) + " names a scanner binary (ruling 57)")
     envcheck(wf.get("env"), name)
+    if tok(wf.get("env") or {}): fail(name + " holds the store token in its top-level env (OF-4 ruling 5)")
     for j, job in (wf.get("jobs") or {}).items():
         if not isinstance(job, dict): continue
         e = scopes(job.get("permissions"), name, j)
         if e: fail(name + " job " + str(j) + " " + e)
+        if (name, j) == ("data-scan.yml", "forget"):
+            sts = [st for st in job.get("steps") or [] if isinstance(st, dict)]
+            if len(sts) != 2 or not str(sts[0].get("uses", "")).startswith("actions/checkout@") or "uses" in sts[1] or str(sts[1].get("run", "")).strip() != "research/historical/ci/cache-forget.sh \"$PREFIX\"":
+                fail(name + " job forget holds actions: write and may run only a checkout and cache-forget.sh (OF-4 ruling 1)")
         envcheck(job.get("env"), name + " job " + str(j))
+        if tok(job.get("env") or {}): fail(name + " job " + str(j) + " holds the store token in its job env (OF-4 ruling 5)")
         for st in job.get("steps") or []:
             if isinstance(st, dict): envcheck(st.get("env"), name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))))
         # ruling 65: no job container, service containers or reusable workflow (none is checked)
@@ -707,7 +729,7 @@ ag_history() {
       # turns an earlier attempt's failure into a success.
       # Ruling 12 (a): only a default-branch run whose plan job's guard passed
       if (( k == 1 )) && [[ "$br" == "$AG_BRANCH" ]] && grep -qxF $'step\tArchive guard\tsuccess' <<< "$jobs" &&
-         grep -qxF $'step\tPublish this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
+         grep -qxF $'step\tStore this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
       if grep -qE $'^job\tscan[^\t]*\t(failure|cancelled|timed_out)(\t|$)' <<< "$jobs"; then
         if grep -qE $'^job\tcontinue\tsuccess(\t|$)' <<< "$jobs"; then
           d=$(sed -n $'s/^job\tscan (\\([0-9-]*\\))\t\\(failure\\|cancelled\\|timed_out\\)\\(\t.*\\)\\{0,1\\}$/\\1/p' <<< "$jobs" | head -1)

@@ -7,6 +7,8 @@ T=$(mktemp -d)
 export RUNNER_TEMP="$T/rt"; mkdir -p "$RUNNER_TEMP" # (assemble.sh and volume-day.sh keep their QA logs there, ruling 53)
 trap 'rm -rf "$T"' EXIT
 export T GITHUB_REPOSITORY=test/repo GITHUB_SHA=abc123 FAKE_AVAIL=999999999999999
+# OF-4: the private store the publish, volume and assemble scripts read and write
+export DATA_REPO=test/data
 mkdir -p "$T/bin" "$T/rel"
 pass=0 fail=0
 ok() { echo "ok   $1"; pass=$((pass + 1)); }
@@ -17,6 +19,9 @@ cat > "$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$1" == release ]] || exit 2
+# OF-4: every release call is logged with the repository it names and the token it holds
+repo=-; prev=""; for x in "$@"; do [[ "$prev" == --repo ]] && repo=$x; prev=$x; done
+echo "$2 $3 repo=$repo token=${GH_TOKEN:--}" >> "$T/ghrepo.log"
 cmd=$2 tag=$3; shift 3
 dir="$T/rel/$tag"
 case "$cmd" in
@@ -38,11 +43,16 @@ case "$cmd" in
     while (( $# )); do
       case "$1" in --dir) out=$2; shift ;; --pattern) pats+=("$2"); shift ;; esac; shift
     done
-    for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done ;;
+    for p in "${pats[@]}"; do for f in "$dir"/$p; do [[ -e "$f" ]] && cp "$f" "$out/"; done; done
+    # OF-4: FAKE_GH_CORRUPT=NAME hands back a changed copy of that asset (a read-back mismatch)
+    [[ -n "${FAKE_GH_CORRUPT:-}" && -e "$out/$FAKE_GH_CORRUPT" ]] && echo changed >> "$out/$FAKE_GH_CORRUPT"
+    true ;;
   create)
     mkdir "$dir"; echo "$tag" >> "$T/created.log"
     while (( $# )) && [[ "$1" != -- ]]; do shift; done
     (( $# )) && { shift; (( $# )) && cp -- "$@" "$dir/"; }
+    # OF-4 ruling 9: FAKE_GH_DROP=NAME loses that asset on create (an incomplete release)
+    [[ -n "${FAKE_GH_DROP:-}" ]] && rm -f "$dir/$FAKE_GH_DROP"
     true ;;
   upload)
     while (( $# )) && [[ "$1" != -- ]]; do shift; done; shift
@@ -110,12 +120,13 @@ reset_store() {
     else make_day "$d" "u$i"; fi
   done
 }
-run() { bash "$here/assemble.sh" "$@" > "$T/out.txt" 2>&1; }
+# OF-4 ruling 5: download (store token), build (no token), store (store token)
+run() { { bash "$here/assemble.sh" --download "$@" && env -u GH_TOKEN -u GITHUB_TOKEN bash "$here/assemble.sh" "$@" && bash "$here/assemble.sh" --store "$@"; } > "$T/out.txt" 2>&1; }
 
 # ---- 1. full offline run: FROM 09-20, TO 09-22, lead-in 09-06 .. 09-19 ----
 reset_store
 if run 2026-09-20 2026-09-22 "$T/work"; then ok "assemble runs end to end"; else no "assemble runs end to end"; cat "$T/out.txt"; fi
-dl=$(sort "$T/downloads.log" | tr '\n' ' ')
+dl=$(grep '^data-day-' "$T/downloads.log" | sort | tr '\n' ' ')
 exp=$(for i in $(seq 1 16); do date -u -d "2026-09-05 + $i days" +data-day-%F; done | sort | tr '\n' ' ')
 [[ "$dl" == "$exp" ]] && ok "downloads exactly the 14 lead-in and 2 window days" || no "downloads: $dl"
 grep -q data-day-2026-09-05 "$T/downloads.log" && no "day before the lead-in was downloaded" || ok "no day before the lead-in is read"
@@ -147,7 +158,7 @@ run 2026-09-20 2026-09-22 "$T/work" && no "missing lead-in day skipped silently"
   { grep -q "data-day-2026-09-10 is missing" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "missing lead-in day fails before any download" || no "missing day: $(cat "$T/out.txt")"; }
 
 reset_store
-FAKE_AVAIL=1000 run 2026-09-20 2026-09-22 "$T/work" && no "disk guard passed" || { grep -q "not enough disk" "$T/out.txt" && ok "free-space guard (3x tar + 10 GB)" || no "disk guard message"; }
+FAKE_AVAIL=1000 run 2026-09-20 2026-09-22 "$T/work" && no "disk guard passed" || { grep -q "not enough disk" "$T/out.txt" && [[ ! -s "$T/downloads.log" ]] && ok "free-space guard (all the days' assets + 10 GB before the download; 2x a day's assets + 10 GB before its extraction)" || no "disk guard message"; }
 
 reset_store; echo junk >> "$T/rel/data-day-2026-09-21/units-2026-09-21.tar.part00"
 run 2026-09-20 2026-09-22 "$T/work" && no "corrupt part accepted" || { grep -q "checksum mismatch" "$T/out.txt" && ok "corrupt window part fails the checksum" || no "checksum message: $(cat "$T/out.txt")"; }
@@ -182,25 +193,10 @@ mkfx() {
   local dir=$1 kv k; shift
   rm -rf "$dir"; mkdir -p "$dir/research/historical/ci" "$dir/research/historical/scanner" "$dir/docs"
   cp "$here"/*.sh "$here/archive-limits.conf" "$dir/research/historical/ci/"
-  # OF-4/OF-5 stand-in: days stored in the private store, no day-DAY artifact (ruling 9
-  # refuses to arm otherwise); PUBLICSTORE keeps today's public storage.
+  # OF-4 landed: the real scripts store days in the private store and data-scan.yml has no
+  # day-DAY artifact and no contents: write, so both are copied as they are.
   mkdir -p "$dir/.github/workflows"
   cp "$here/../../../.github/workflows/data-scan.yml" "$dir/.github/workflows/data-scan.yml"
-  if [[ -z "${PUBLICSTORE:-}" ]]; then
-    for f in "$dir/research/historical/ci/"*.sh; do
-      case $f in */archive-guard.sh|*/test-ci.sh) continue ;; esac
-      sed -i 's/--repo "\$GITHUB_REPOSITORY"/--repo "$DATA_REPO"/g' "$f"
-    done
-    python3 - "$dir/.github/workflows/data-scan.yml" <<'PY'
-import re, sys
-p = sys.argv[1]; s = open(p).read()
-s = s.replace("contents: write", "contents: read")
-# drop the day-DAY upload step (OF-4 drops it)
-s = re.sub(r"      - uses: actions/upload-artifact@[^\n]*\n        if: [^\n]*\n        with:\n          name: day-\$\{\{ matrix.day \}\}\n(          [^\n]*\n)*", "", s)
-assert "name: day-${{ matrix.day }}" not in s
-open(p, "w").write(s)
-PY
-  fi
   sed 's/^var reqLimiter = newLimiter([0-9.]*)$/var reqLimiter = newLimiter(10)/' "$here/../scanner/archive.go" > "$dir/research/historical/scanner/archive.go"
   printf '| 2026-10-08 | B10-PULL id=b10pull-test-1 source=old-faithful scannerRev=r1 days=2026-07-22..2026-08-21 pinnedAt=2026-10-08T00:00:00Z | t | t |\n' > "$dir/docs/DECISIONS.md"
   for kv in ARCHIVE_ARM=b10pull-test-1 ARCHIVE_REARM_AT=2026-10-01T00:00:00Z ARCHIVE_RETENTION=K2 "$@"; do
@@ -498,12 +494,12 @@ export GH_BIN="$T/bin/gh"
 pd="$T/pd"; mkdir -p "$pd"; rm -rf "$T/rel/data-day-2026-09-30"; : > "$T/created.log"
 mkpd() {
   rm -f "$pd"/*
-  for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 events-2026-09-30.tar qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json; do echo "$f" > "$pd/$f"; done
+  for f in units-2026-09-30.tar.part00 units-2026-09-30.tar.part01 events-2026-09-30.tar qa-2026-09-30.md qa-2026-09-30.json manifest-2026-09-30.json parity-2026-09-30.json units-2026-09-30.log; do echo "$f" > "$pd/$f"; done
   (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 }
 mkpd
-bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 8 ]] &&
-  ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity and sums" || no "publish-day create"
+bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(ls "$T/rel/data-day-2026-09-30" | wc -l) == 9 ]] &&
+  ok "publish-day: release data-day-DAY created with parts, QA, manifest, parity, per-unit log and sums" || no "publish-day create"
 echo "rerun QA report with different live results" > "$pd/qa-2026-09-30.md"; echo '{"rerun":1}' > "$pd/qa-2026-09-30.json"
 (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
 bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null && [[ $(grep -c data-day-2026-09-30 "$T/created.log") == 1 ]] &&
@@ -617,7 +613,7 @@ tree=$(cd "$here" && git rev-parse HEAD:research/historical/scanner)
   ok "scanner-rev: a toolchain other than go\$GO_VERSION fails the build"
 
 # ---- data-scan.yml: a published day is skipped before any archive read; the token only in two clean steps ----
-python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell; a resumable stop chains the next run, bounded, only after a saved progress; QA starts only with 45 min left" || no "workflow skip/token structure"
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, store) is skipped for a complete day; the store token only in the check, store and storage-check steps, all in a clean shell; a resumable stop chains the next run, bounded, only after a saved progress; QA starts only with 45 min left" || no "workflow skip/token structure"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
 i = next(k for k, s in enumerate(steps) if s.get("id") == "published")
@@ -627,8 +623,12 @@ for s in steps[i + 1:]:
     if "setup-node" in s.get("uses", ""):
         continue
     assert "steps.published.outputs.complete != 'true'" in s.get("if", ""), s
-tok = [s for s in steps if "github.token" in str(s)]
-assert [s.get("id") or s.get("name") for s in tok] == ["published", "pickprogress", "guardscan", "guardqa", "Publish this day", "Publish this day's volume hours"], tok
+gtok = [s.get("id") or s.get("name") for s in steps if "github.token" in str(s)]
+assert gtok == ["pickprogress", "guardscan", "guardqa"], gtok
+# OF-4: the store token as GH_TOKEN only in the skip, store, volume store and storage-check steps
+tok = [s for s in steps if (s.get("env") or {}).get("GH_TOKEN") == "${{ secrets.DATA_STORE_TOKEN }}"]
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "store", "Store this day's volume hours", "Storage check after the batch"], tok
+tok += [s for s in steps if (s.get("id") or s.get("name")) in ("guardscan", "guardqa")]
 pick = next(s for s in steps if s.get("id") == "pickprogress")
 assert pick["run"].endswith('research/historical/ci/progress-pick.sh" "$PREFIX"'), pick
 for s in tok:
@@ -663,10 +663,10 @@ vj = wf["jobs"]["volume"]
 assert vj["if"] == "inputs.mode == 'volume'" and vj["strategy"]["max-parallel"] == 1, vj
 vsteps = vj["steps"]
 assert not any("scan-day.sh" in str(st) or "zeroed-scan run" in str(st) or "zeroed-scan unit" in str(st) for st in vsteps), "the back-fill must not read the archive"
-vtok = [st["name"] for st in vsteps if "github.token" in str(st)]
-assert vtok == ["Download the day's units", "Publish the volume hours"], vtok
+vtok = [st["name"] for st in vsteps if "secrets.DATA_STORE_TOKEN" in str(st)]
+assert vtok == ["Download the day's units", "Store the volume hours"] and "github.token" not in str(vsteps), vtok
 dl = next(st for st in vsteps if st.get("name") == "Download the day's units")
-assert "volume-day.sh --download" in dl["run"] and "zeroed-scan" not in dl["run"] and "node" not in dl["run"], dl
+assert 'volume-day.sh" --download' in dl["run"] and "zeroed-scan" not in dl["run"] and "node" not in dl["run"], dl
 rb = next(st for st in vsteps if st.get("name") == "Rebuild the day's volume hours from its units")
 assert "GH_TOKEN" not in str(rb) and "--download" not in rb["run"], rb
 assert vsteps.index(dl) < vsteps.index(rb) < vsteps.index(vsteps[-1])
@@ -680,8 +680,8 @@ assert names[0] == "Record the job start (time budget of the QA phase)" and "JOB
 qt = next(s for s in steps if s.get("id") == "qatime")
 assert f'time-left.sh "$JOB_START" {wf["jobs"]["scan"]["timeout-minutes"]} ' in qt["run"] and '-eq 75 ]; then echo "resumable=true"' in qt["run"], qt
 order = lambda key: names.index(key)
-assert order("save") < order("qatime") < order("qa") < order("Package the day") < order("Publish this day")
-for k in ("qa", "Package the day", "Publish this day"):
+assert order("save") < order("qatime") < order("qa") < order("Package the day") < order("store")
+for k in ("qa", "Package the day", "store"):
     st = steps[order(k)]
     assert "always()" not in st.get("if", ""), st
 # chained only after a successful save, for either resumable stop
@@ -696,9 +696,9 @@ assert '-eq 75 ]; then echo "resumable=true"' in qa["run"] and 'exit "$rc"' in q
 for st in marks:
     assert "steps.qa.outputs.resumable == 'true'" in st["if"], st
     assert steps.index(st) > order("qa"), "resume markers must follow the QA step"
-# phase durations: artifact upload and publish timed around their steps
-day_up = next(i for i, st in enumerate(steps) if st.get("with", {}).get("name") == "day-${{ matrix.day }}")
-assert order("Note the upload start") < day_up < order("Note the publish start") < order("Publish this day") < order("Log the publish duration")
+# phase durations: the store (OF-4: no day artifact) timed around its step
+assert not any(st.get("with", {}).get("name") == "day-${{ matrix.day }}" for st in steps)
+assert order("Note the store start") < order("store") < order("Log the store duration")
 PY
 
 # ---- rpcscan: the scanner's own sources through symlinks; the IDLs byte-identical ----
@@ -1071,7 +1071,7 @@ ACFX=$T/fxr4/research/historical/ci ac env AC_STATUS=206
 [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$GD/dispatch.log" 2>/dev/null) == 1 ]] &&
   ok "OF-2 hold 3: the same 3 failures before a later ARCHIVE_REARM_AT → a request (and a dispatch)" || no "OF-2 re-armed: $(cat "$A/summary.md")"
 { dsrun 311 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
-  dsrun 314 "data-scan scan source=archive" success 410 390 "Archive guard=success,scan (2026-07-22)=success,Publish this day=success"
+  dsrun 314 "data-scan scan source=archive" success 410 390 "Archive guard=success,scan (2026-07-22)=success,Store this day=success"
   dsrun 312 "data-scan scan source=archive" failure 380 360 "scan (2026-07-23)=failure,continue=failure"
   dsrun 313 "data-scan scan source=archive" failure 320 300 "scan (2026-07-23)=failure,continue=failure"; } | dsjson
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
@@ -1207,7 +1207,7 @@ chk, probe, ann, ra, save, disp = steps[1:]
 # OF-2 round 4, ruling 25: the annotation in its own step right after the probe, on any end but success or skip
 assert ann["name"] == "Record the back-off annotation" and ann["if"] == "always() && steps.probe.outcome != 'success' && steps.probe.outcome != 'skipped'", ann
 assert ann["env"] == {"END": "${{ steps.probe.outputs.backoff_annotation }}"} and ann["run"].strip() == 'if [[ "$END" =~ ^([0-9]{9,11}|hold)$ ]]; then echo "::warning title=archive-backoff::end=$END"; fi', ann
-assert chk["id"] == "check" and chk["run"] == "research/historical/ci/archive-check.sh" and "github.token" in chk["env"]["GH_TOKEN"], chk
+assert chk["id"] == "check" and chk["run"].endswith('/usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-check.sh"') and "github.token" in chk["env"]["GH_TOKEN"], chk
 assert chk["env"]["DATA_REPO"] == "${{ vars.DATA_REPO }}" and chk["env"]["DATA_STORE_TOKEN"] == "${{ secrets.DATA_STORE_TOKEN }}", chk["env"]
 assert probe["name"] == "Archive probe (a failure unless served)" and probe["id"] == "probe" and probe["if"] == "steps.check.outputs.ready == 'true'", probe
 assert probe["run"] == 'research/historical/ci/archive-check.sh --probe "$DAY"' and probe["env"]["DAY"] == "${{ steps.check.outputs.day }}", probe
@@ -1359,7 +1359,7 @@ python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "HISTORY
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 job = wf["jobs"]["scan"]
-assert job["permissions"] == {"contents": "write", "actions": "read"}, job["permissions"]
+assert job["permissions"] == {"contents": "read", "actions": "read"}, job["permissions"]
 steps = job["steps"]
 ids = [s.get("id") or s.get("name") for s in steps]
 assert ids.index("pickprogress") < ids.index("restore") < ids.index("record") < ids.index("scan")
@@ -1903,9 +1903,13 @@ rm -f "$o/units.log"; rc=0; SDAY=2026-07-24 SFX=$T/fxk3/research/historical/ci P
 [[ -z "$bad" ]] && ok "OF-3 ruling 9: a restored day already trimmed (every unit K3, per-unit log present and checked, expect_units met) is read done: scan-day exits 0 with no request, trim-day does nothing but copy its log and list again; with expect_units unmet, a failing check or no log it is refused" || no "OF-3 restored trimmed day:$bad"
 bad=""
 # Ruling 11: a day stored at K2 writes its pinned list too.
-mkk2; td 2026-07-22 - --list-only && [[ -f "$T/tk2/list-2026-07-22.txt" && -f "$T/tassets/list-2026-07-22.txt" ]] && ! grep -q "^trim " "$T/trim.args" && [[ -d "$T/tk2/units/1046/1-2" && ! -e "$T/tk2/units.log" ]] || bad+=" list-only"
+mkk2; td 2026-07-22 - --list-only && [[ -f "$T/tk2/list-2026-07-22.txt" && -f "$T/tassets/list-2026-07-22.txt" ]] && ! grep "^trim " "$T/trim.args" | grep -qv -- "-out $T/tk2/units.measure/" && [[ -d "$T/tk2/units/1046/1-2" && ! -e "$T/tk2/units.log" && ! -e "$T/tk2/units.k3" ]] || bad+=" list-only"
+# OF-4 ruling 2: --list-only also measures the day's PM-01 subset (each unit trimmed into a
+# scratch copy that is deleted; the K2 units stay) into ASSET_DIR/pm01-subset-DAY.txt.
+[[ $(grep -c "^trim -in $T/tk2/units/1046/[13]-[24] -out $T/tk2/units.measure/1046/[13]-[24] -migration-list $T/tk2/list-2026-07-22.txt$" "$T/trim.args") == 2 && ! -e "$T/tk2/units.measure" ]] || bad+=" measure-trims"
+grep -qE '^[1-9][0-9]*$' "$T/tassets/pm01-subset-2026-07-22.txt" 2>/dev/null && ! grep -q '"retention": "K3"' "$T"/tk2/units/1046/*/stats.json || bad+=" subset-file"
 mkk2; rc=0; td 2026-07-23 - --list-only || rc=$?; [[ $rc == 2 ]] || bad+=" list-only-no-prior:$rc"
-[[ -z "$bad" ]] && ok "OF-3 ruling 11: a day stored at K2 writes list-D.txt (the next day's prior) and is not trimmed; a day after the first needs the verified prior for it too" || no "OF-3 K2 list:$bad"
+[[ -z "$bad" ]] && ok "OF-3 ruling 11 (OF-4 ruling 2): a day stored at K2 writes list-D.txt (the next day's prior) and pm01-subset-D.txt (its units trimmed only into a deleted scratch copy) and is not trimmed; a day after the first needs the verified prior for it too" || no "OF-3 K2 list:$bad"
 bad=""
 # Ruling 8: a day after the first is refused before the disk guard, the back-off and any
 # scanner call when no verified prior list is present.
@@ -1998,7 +2002,7 @@ rm -f "$GD"/jobs-* "$GD"/attempt-* "$GD/ac.json"
   dsrun 352 "data-scan scan source=archive" failure 400 360 "scan (2026-07-22)=failure,continue=failure"
   ATTEMPT=2 dsrun 353 "data-scan scan source=archive" success 320 240; } | dsjson
 attemptfile 353 1 failure 300; jobsfile 353 "scan (2026-07-22)=failure,continue=failure"; mv "$GD/jobs-353.json" "$GD/jobs-353-1.json"
-attemptfile 353 2 success 240; jobsfile 353 "scan (2026-07-22)=success,Publish this day=success"; mv "$GD/jobs-353.json" "$GD/jobs-353-2.json"
+attemptfile 353 2 success 240; jobsfile 353 "scan (2026-07-22)=success,Store this day=success"; mv "$GD/jobs-353.json" "$GD/jobs-353-2.json"
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" || bad+=" rerun-batch:$(cat "$A/summary.md")"
 FXG=$T/fxr8/research/historical/ci guard full 2026-07-22; rc=$?
@@ -2029,7 +2033,7 @@ bad=""
 # 3. A no-op success (the day was already published: no Publish step) does not reset.
 { dsrun 371 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
   dsrun 372 "data-scan scan source=archive" failure 400 360 "scan (2026-07-22)=failure,continue=failure"
-  dsrun 373 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Publish this day=skipped"
+  dsrun 373 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Store this day=skipped"
   dsrun 374 "data-scan scan source=archive" failure 320 300 "scan (2026-07-22)=failure,continue=failure"; } | dsjson
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" &&
@@ -2075,14 +2079,26 @@ rm -rf "$GP"; guard attest 2026-07-22 "$GP"; read -r d r t id at < "$GP/2026-07-
 [[ -z "$bad" ]] && ok "OF-2 r2 ruling 8: the guard pass carries retention, run id and attempt; scan-day refuses a pass for another retention, run or attempt" || no "OF-2 r2 pass binding:$bad"
 bad=""; gdreset
 # 9. Not armed while days would still be stored in this public repository.
-for v in day vol art; do
-  mkfx "$T/fxpub$v"; c="$T/fxpub$v/research/historical/ci"
-  case $v in day) cp "$here/publish-day.sh" "$c/" ;; vol) cp "$here/publish-volume.sh" "$c/" ;; art) cp "$here/../../../.github/workflows/data-scan.yml" "$T/fxpub$v/.github/workflows/" ;; esac
+# (OF-4 made the real files private, so the public forms are rebuilt here as fixtures.)
+for v in day vol art write; do
+  mkfx "$T/fxpub$v"; c="$T/fxpub$v/research/historical/ci" w="$T/fxpub$v/.github/workflows/data-scan.yml"
+  case $v in
+    day) sed 's/--repo "\$DATA_REPO"/--repo "$GITHUB_REPOSITORY"/' "$here/publish-day.sh" > "$c/publish-day.sh" ;;
+    vol) sed 's/--repo "\$DATA_REPO"/--repo "$GITHUB_REPOSITORY"/' "$here/publish-volume.sh" > "$c/publish-volume.sh" ;;
+    art) python3 - "$w" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read(); i = s.index("      - name: Store this day\n")
+s = s[:i] + "      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n        with:\n          name: day-${{ matrix.day }}\n          path: ${{ runner.temp }}/work/assets\n" + s[i:]
+open(p, "w").write(s)
+PY
+    ;;
+    write) sed -i 's/      contents: read # OF-4: nothing is written to this repository; the day goes to the private store/      contents: write/' "$w"; grep -q '^      contents: write$' "$w" || bad+=" fixture-write" ;;
+  esac
   ACFX=$c ac env AC_STATUS=206
-  [[ ! -e "$A/curl.calls" ]] && grep -qE "held \(1\): the archive chain is not armed: .*(publish-day.sh|publish-volume.sh|contents: write|artifact other than)" "$A/summary.md" || bad+=" check-$v"
+  [[ ! -e "$A/curl.calls" ]] && grep -qE "held \(1\): the archive chain is not armed: .*(publish-day.sh|publish-volume.sh|contents: write|artifact other than|uploads an artifact)" "$A/summary.md" || bad+=" check-$v"
   rc=0; FXG=$c guard full 2026-07-22 || rc=$?; [[ $rc == 2 ]] || bad+=" plan-$v:$rc"
 done
-[[ -z "$bad" ]] && ok "OF-2 r2 ruling 9: armed, the chain still refuses (archive-check and a manual dispatch) while publish-day.sh (and its skip check) or publish-volume.sh release to this repository, or data-scan.yml uploads the day-DAY artifact: OF-4/OF-5 land first" || no "OF-2 r2 public storage:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r2 ruling 9: armed, the chain still refuses (archive-check and a manual dispatch) while publish-day.sh (and its skip check) or publish-volume.sh release to this repository, or data-scan.yml uploads the day-DAY artifact or grants contents: write" || no "OF-2 r2 public storage:$bad"
 bad=""; gdreset
 # 10. Retry-After: the probe records it; hold 2 and the guard wait for max(3 h, the end).
 rc=0; ac env AC_STATUS=429 AC_RA=30000 || rc=$?
@@ -2142,11 +2158,11 @@ gdreset; bad=""; now=$(date -u +%s)
 # 12 (a): S only from a default-branch run whose plan job's "Archive guard" step passed.
 { dsrun 601 "data-scan scan source=archive" failure 500 420 "scan (2026-07-22)=failure,continue=failure"
   dsrun 602 "data-scan scan source=archive" failure 400 360 "scan (2026-07-22)=failure,continue=failure"
-  dsrun 603 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Publish this day=success"
+  dsrun 603 "data-scan scan source=archive" success 340 330 "scan (2026-07-22)=success,Store this day=success"
   dsrun 604 "data-scan scan source=archive" failure 320 300 "scan (2026-07-22)=failure,continue=failure"; } | dsjson
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" ]] && grep -q "held (3): the chain is stopped: 3 failures" "$A/summary.md" || bad+=" s-without-guard"
-jobsfile 603 "Archive guard=success,scan (2026-07-22)=success,Publish this day=success"
+jobsfile 603 "Archive guard=success,scan (2026-07-22)=success,Store this day=success"
 ACFX=$T/fxr8/research/historical/ci ac env AC_STATUS=206
 [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" s-with-guard:$(cat "$A/summary.md")"
 [[ -z "$bad" ]] && ok "OF-2 r3 ruling 12 (a): a stored day counts as a success only when the run's plan job passed the Archive guard: without it 2 failures + that run + 1 failure stop the chain; with it the count resets" || no "OF-2 r3 success needs the guard:$bad"
@@ -2186,11 +2202,11 @@ byp 'echo '"'"'GH_REPO=o/r gh release create x --repo "$DATA_REPO"'"'"' >> "$c/p
 byp 'echo '"'"'gh release create x'"'"' >> "$c/publish-day.sh"' no-repo
 byp 'printf "#!/usr/bin/env bash\ngh release view x \\\\\n  --repo o/public\n" > "$c/new-pub.sh"' new-script-continued
 byp 'echo '"'"'gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name=x'"'"' >> "$c/publish-day.sh"' api-releases
-byp 'cp "$here/assemble.sh" "$c/assemble.sh"' assemble
+byp 'sed "s/--repo \"\\\$DATA_REPO\"/--repo \"\$GITHUB_REPOSITORY\"/" "$here/assemble.sh" > "$c/assemble.sh"' assemble-public
 byp 'sed -i "0,/name: resume-\\\${{ matrix.day }}/s//name: day2-\${{ matrix.day }}/" "$w"' renamed-artifact
 byp 'python3 -c "import sys; p=sys.argv[1]; s=open(p).read(); i=s.index(\"  volume:\"); j=s.index(\"permissions:\", i); open(p,\"w\").write(s[:j] + \"permissions:\\n      contents: write\\n    \" + s[j:])" "$w"' volume-write
 mkfx "$T/fxb"; ACFX=$T/fxb/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" control"
-[[ -z "$bad" ]] && ok "OF-2 r3 ruling 13: arming refuses on the capability: \${GITHUB_REPOSITORY}, -R, GH_REPO=, a release call with no --repo, a new script (continued line), a releases API path, assemble.sh as it is, a renamed upload artifact and contents: write in the volume job; the private-store fixture arms" || no "OF-2 r3 capability:$bad"
+[[ -z "$bad" ]] && ok "OF-2 r3 ruling 13: arming refuses on the capability: \${GITHUB_REPOSITORY}, -R, GH_REPO=, a release call with no --repo, a new script (continued line), a releases API path, assemble.sh releasing to this repository, a renamed upload artifact and contents: write in the volume job; the private-store fixture arms" || no "OF-2 r3 capability:$bad"
 bad=""; gdreset
 # 14: the durable back-off record, a check-run annotation of each counted failure.
 acrun 621 failure 240 notserved | acjson
@@ -2544,7 +2560,7 @@ for s in steps:
 # the token reaches only clean guard, crypt and store steps, never scan, trim or QA
 for s in steps:
     if "DATA_STORE_TOKEN" in str(s.get("env", "")):
-        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh")), s
+        assert s["run"].startswith("/usr/bin/env -i ") and any(x in s["run"] for x in ("archive-guard.sh", "cache-crypt.sh", "publish-day.sh", "publish-volume.sh", "storage-check.sh")), s
 for k in ("scan", "qa"):
     assert "DATA_STORE_TOKEN" not in str(by[k]), k
 PY
@@ -2946,6 +2962,346 @@ bad=""
 bad=""
 bad=""
 bad=""; gdreset
+
+# ---- OF-4: nothing public; the private store; read-back; the storage stop after every batch ----
+bad=""; wf="$here/../../../.github/workflows"
+# Every release call any script made in this suite named the private store, never this repository.
+[[ -s "$T/ghrepo.log" ]] && ! grep -v ' repo=test/data ' "$T/ghrepo.log" >/dev/null || bad+=" [calls: $(grep -v ' repo=test/data ' "$T/ghrepo.log" | head -2 | tr '\n' ' ')]"
+# Each script refuses before any gh call without the private store, or when it is this repository.
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/ghcalls4.log"\nexit 1\n' "$T" > "$T/ghrec4"; chmod +x "$T/ghrec4"
+mkpd
+for dr in "" test/repo TEST/Repo; do
+  : > "$T/ghcalls4.log"
+  DATA_REPO="$dr" GH_BIN="$T/ghrec4" bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 && bad+=" [publish-day '$dr']"
+  DATA_REPO="$dr" GH_BIN="$T/ghrec4" bash "$here/publish-day.sh" --check 2026-09-30 >/dev/null 2>&1 && bad+=" [check '$dr']"
+  DATA_REPO="$dr" GH_BIN="$T/ghrec4" bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" >/dev/null 2>&1 && bad+=" [publish-volume '$dr']"
+  DATA_REPO="$dr" GH_BIN="$T/ghrec4" bash "$here/storage-check.sh" >/dev/null 2>&1 && bad+=" [storage-check '$dr']"
+  [[ ! -s "$T/ghcalls4.log" ]] || bad+=" [gh called with '$dr']"
+done
+DATA_REPO="" PATH="$T/bin:$PATH" bash "$here/volume-day.sh" --download 2026-09-30 "$T/v4" >/dev/null 2>&1 && bad+=" [volume-day download]"
+for m in --download --store; do
+  out=$(DATA_REPO=test/repo bash "$here/assemble.sh" $m 2026-09-20 2026-09-21 "$T/as4" 2>&1) && bad+=" [assemble $m]"
+  [[ "$out" == *"not the private store"* ]] || bad+=" [assemble $m msg: ${out:0:80}]"
+done
+[[ -z "$bad" ]] && ok "OF-4: every release call in this suite named the private store (DATA_REPO); publish-day (and --check), publish-volume, storage-check, volume-day --download and assemble refuse before any gh call without DATA_REPO or when it is this repository" || no "OF-4 private store only:$bad"
+bad=""
+# The day release carries the per-unit log, and the OF-3 files SHA256SUMS lists.
+export GH_BIN="$T/bin/gh"
+rm -rf "$T/rel/data-day-2026-09-30"; mkpd; echo "k2 abc u" > "$pd/rescan-2026-09-30.sha256"; echo "pool 1 2" > "$pd/list-2026-09-30.txt"
+(cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* rescan-* list-* > SHA256SUMS-2026-09-30)
+: > "$T/ghout4"; GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 &&
+  for f in units-2026-09-30.log rescan-2026-09-30.sha256 list-2026-09-30.txt; do [[ -f "$T/rel/data-day-2026-09-30/$f" ]] || bad+=" [no $f]"; done || bad+=" [store]"
+grep -qx readback=true "$T/ghout4" || bad+=" [no readback=true]"
+GITHUB_OUTPUT=/dev/null bash "$here/publish-day.sh" 2026-09-30 "$pd" >/dev/null 2>&1 || bad+=" [complete rerun]"
+rm -rf "$T/rel/data-day-2026-09-30"; mkpd; rm "$pd/units-2026-09-30.log"; (cd "$pd" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-2026-09-30)
+out=$(bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && bad+=" [stored without the per-unit log]"
+[[ "$out" == *"missing units-2026-09-30.log"* && ! -d "$T/rel/data-day-2026-09-30" ]] || bad+=" [log msg: ${out:0:80}]"
+[[ -z "$bad" ]] && ok "OF-4: the day release carries the per-unit log (and the rescan hashes and list when SHA256SUMS lists them), is read back (readback=true), and a day without its per-unit log is not stored" || no "OF-4 per-unit log:$bad"
+bad=""
+# A read-back mismatch fails the step (no readback=true), on a fresh store and on a complete rerun.
+for c in units-2026-09-30.tar.part01 units-2026-09-30.log SHA256SUMS-2026-09-30; do
+  rm -rf "$T/rel/data-day-2026-09-30"; mkpd; : > "$T/ghout4"
+  out=$(FAKE_GH_CORRUPT=$c GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && bad+=" [$c passed]"
+  [[ "$out" == *"read-back"* && ! -s "$T/ghout4" ]] || bad+=" [$c: ${out:0:80}]"
+done
+out=$(FAKE_GH_CORRUPT=units-2026-09-30.tar.part00 GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && bad+=" [rerun passed]"
+rm -rf "$T/rel/data-volume-2026-09-30"
+out=$(FAKE_GH_CORRUPT=volume-hours-2026-09-30.csv bash "$here/publish-volume.sh" 2026-09-30 "$vd/assets" 2>&1) && bad+=" [volume passed]"
+[[ "$out" == *"read-back"* ]] || bad+=" [volume: ${out:0:80}]"
+unset GH_BIN
+[[ -z "$bad" ]] && ok "OF-4: a read-back mismatch (a part, the per-unit log or SHA256SUMS; also on a rerun of a complete release; and the volume CSV) fails the store step without readback=true, so the progress cache is kept" || no "OF-4 read-back:$bad"
+bad=""
+# The workflows: nothing public, the store token only in clean steps, the storage check after each batch.
+python3 - "$wf/data-scan.yml" "$wf/archive-check.yml" <<'PY' || bad+=" [workflow]"
+import sys, yaml
+ds = yaml.safe_load(open(sys.argv[1])); jobs = ds["jobs"]
+for j, job in jobs.items():
+    perms = job.get("permissions") or {}
+    assert perms.get("contents") != "write" and perms != "write-all", j
+    for st in job.get("steps") or []:
+        u = str(st.get("uses", ""))
+        if u.startswith("actions/upload-artifact"):
+            assert j == "scan" and str(st["with"]["name"]).startswith("resume-"), (j, st)
+        assert st.get("name") != "Publish this day", st
+        run = str(st.get("run", "")); env = st.get("env") or {}
+        if any(k in run for k in ("publish-day.sh", "publish-volume.sh", "storage-check.sh", "volume-day.sh\" --download")):
+            assert env.get("GH_TOKEN") == "${{ secrets.DATA_STORE_TOKEN }}" and env.get("DATA_REPO") == "${{ vars.DATA_REPO }}", st
+            assert st["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and run.startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), st
+        if "DATA_STORE_TOKEN" in str(env):
+            assert run.startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), st
+# OF-4 ruling 5: assemble downloads and stores in clean steps; the build holds no token
+asm = {x.get("name"): x for x in jobs["assemble"]["steps"]}
+for k, m in (("Download the days from the private store", "--download"), ("Store the dataset in the private store", "--store")):
+    assert asm[k]["env"]["GH_TOKEN"] == "${{ secrets.DATA_STORE_TOKEN }}" and asm[k]["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin ") and ('assemble.sh" ' + m + ' "$FROM" "$TO" /mnt/work') in asm[k]["run"], asm[k]
+b = asm["Assemble the dataset"]; assert "TOKEN" not in str(b.get("env")) and b["run"] == 'research/historical/ci/assemble.sh "$FROM" "$TO" /mnt/work', b
+names = list(asm); assert names.index("Download the days from the private store") < names.index("Assemble the dataset") < names.index("Store the dataset in the private store"), names
+steps = jobs["scan"]["steps"]; names = [s.get("id") or s.get("name") for s in steps]
+assert "Store this day's volume hours" in names and names.index("store") < names.index("Store this day's volume hours") < names.index("Storage check after the batch"), names
+sc = steps[names.index("Storage check after the batch")]
+assert sc["if"] == "steps.published.outputs.complete != 'true' && steps.store.outcome == 'success' && inputs.source != 'helius'", sc
+head = open(sys.argv[1]).read().split("\nname:")[0]
+assert "contents: write for this" not in head and "private store" in head, "header"
+ac = yaml.safe_load(open(sys.argv[2]))
+hold = next(s for j in ac["jobs"].values() for s in j["steps"] if s.get("name") == "Holds")
+assert hold["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and hold["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), hold
+assert all(hold["env"].get(k) == "" for k in ("BASH_ENV", "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH")) and "archive-check.sh" in hold["run"], hold
+PY
+# The guard's own private-storage check passes on this tree (it refused while anything was public).
+(cd "$here" && . ./archive-limits.conf && . ./archive-guard.sh && ag_summary=/dev/null && ag_private_storage) >/dev/null 2>&1 || bad+=" [ag_private_storage refuses]"
+[[ -z "$bad" ]] && ok "OF-4: no data-scan job has contents: write, the only artifact is resume-, no 'Publish this day' step; every store, skip, volume and storage-check step holds the store token only under env -i; the storage check follows each stored day; archive-check's Holds step runs under env -i; the guard's ag_private_storage passes on this tree" || no "OF-4 workflows:$bad"
+bad=""
+# The storage stop after every batch, against a fake private store.
+cat > "$T/storegh" <<'EOF'
+#!/usr/bin/env bash
+# a fake private store: $T/store/<tag>/ files; .draft marks a draft; .bytes is the rest of the
+# release's size; .sizes holds "NAME BYTES" lines for named assets (they add to the total)
+set -euo pipefail
+S="$T/store"; mkdir -p "$S"
+case "$1" in
+  api)
+    shift; [[ "$1" == --paginate ]] && shift; path=$1; shift; q="."
+    while (( $# )); do [[ "$1" == --jq ]] && q=$2; shift; done
+    case "$path" in
+      repos/test/data) echo '{"private":true}' | jq -r "$q" ;;
+      repos/test/data/releases\?*)
+        for d in "$S"/*/; do [ -d "$d" ] || continue
+          t=$(basename "$d"); dr=false; [ -e "$d/.draft" ] && dr=true; b=$(cat "$d/.bytes" 2>/dev/null || echo 0)
+          sz=$( { cat "$d/.sizes" 2>/dev/null || true; } | jq -R 'split(" ") | {(.[0]): (.[1] | tonumber)}' | jq -s 'add // {}')
+          (cd "$d" && ls) | jq -R . | jq -s --arg t "$t" --argjson dr "$dr" --argjson b "$b" --argjson sz "$sz" \
+            '{tag_name: $t, draft: $dr, assets: ([.[] | {name: ., size: ($sz[.] // 0)}] + [{name: ".bulk", size: $b}])}'
+        done | jq -s . | jq -r "$q" ;;
+      repos/test/data/git/matching-refs/tags/storage-stop)
+        if [ -d "$S/storage-stop" ] && [ ! -e "$S/storage-stop/.draft" ]; then echo '[{"ref":"refs/tags/storage-stop"}]'; else echo '[]'; fi | jq -r "$q" ;;
+      *) echo "HTTP 404" >&2; exit 1 ;;
+    esac ;;
+  release)
+    cmd=$2 tag=$3; shift 3; repo=""; out=""; pats=()
+    while (( $# )); do case "$1" in --repo) repo=$2; shift ;; --dir) out=$2; shift ;; --pattern) pats+=("$2"); shift ;; esac; shift; done
+    [[ "$repo" == test/data ]] || exit 9
+    case "$cmd" in
+      create) mkdir "$S/$tag"; echo "$tag" >> "$T/storecreated.log" ;;
+      download) for p in "${pats[@]}"; do cp "$S/$tag"/$p "$out/"; done ;;
+      *) exit 2 ;;
+    esac ;;
+esac
+EOF
+chmod +x "$T/storegh"
+# mkday TAG BYTES [SUBSET [EVENTS]]: a day release of BYTES in all; a K2 one (SUBSET given) also
+# carries pm01-subset-DAY.txt and an events-DAY.tar of EVENTS bytes (default 1 GB) within BYTES
+mkday() { local d=${1#data-day-} ev=${4:-1000000000}; mkdir -p "$T/store/$1"
+  if [[ -z "${3:-}" ]]; then echo "$2" > "$T/store/$1/.bytes"; return; fi
+  echo "$3" > "$T/store/$1/pm01-subset-$d.txt"; : > "$T/store/$1/events-$d.tar"
+  echo "events-$d.tar $ev" > "$T/store/$1/.sizes"; echo $(( $2 - ev )) > "$T/store/$1/.bytes"; }
+sck() { : > "$T/sck.sum"; rc=0; GH_BIN="$T/storegh" GITHUB_STEP_SUMMARY="$T/sck.sum" bash "$here/storage-check.sh" > "$T/sck.out" 2>&1 || rc=$?; }
+# After batch 5: 31 days, 5 stored, 26 left. Stored 75 GB (two K2 days 40 + 35 with 5 GB subsets) + 3 x 15 GB
+# K3 days = 120 GB; + 26 x 15 GB = 510 GB (0.51 TB) -> the marker and exit 3.
+rm -rf "$T/store"; : > "$T/storecreated.log"
+mkday data-day-2026-07-22 40000000000 5000000000; mkday data-day-2026-07-23 35000000000 5000000000
+for d in 24 25 26; do mkday data-day-2026-07-$d 15000000000; done; mkday data-volume-2026-07-22 0
+sck; [[ $rc == 3 && -d "$T/store/storage-stop" && ! -e "$T/store/storage-stop/.draft" ]] && grep -q "= 510000000000 bytes" "$T/sck.sum" || bad+=" [0.51: $rc $(head -c 200 "$T/sck.out")]"
+# the stop from both sides: the marker it wrote is the one the guard refuses on
+(DATA_REPO=test/data DATA_STORE_TOKEN=x GH_REPO=test/repo GH_BIN="$T/storegh"; . "$here/archive-guard.sh"; ag_summary=/dev/null; ag_store_ok) >/dev/null 2>&1 && bad+=" [guard passed with the marker]"
+sck; [[ $rc == 3 && $(grep -c storage-stop "$T/storecreated.log") == 1 ]] || bad+=" [marker rewritten or not refused: $rc]"
+# Same day sizes with the K2 days at 30 + 25 GB: 100 GB + 390 GB = 490 GB (0.49 TB) -> no marker, exit 0.
+rm -rf "$T/store"; : > "$T/storecreated.log"
+mkday data-day-2026-07-22 30000000000 5000000000; mkday data-day-2026-07-23 25000000000 5000000000
+for d in 24 25 26; do mkday data-day-2026-07-$d 15000000000; done
+sck; [[ $rc == 0 && ! -e "$T/store/storage-stop" ]] && grep -q "= 490000000000 bytes" "$T/sck.sum" || bad+=" [0.49: $rc $(head -c 200 "$T/sck.out")]"
+(DATA_REPO=test/data DATA_STORE_TOKEN=x GH_REPO=test/repo GH_BIN="$T/storegh"; . "$here/archive-guard.sh"; ag_summary=/dev/null; ag_store_ok) >/dev/null 2>&1 || bad+=" [guard refused without the marker]"
+# A draft storage-stop does not count: the guard passes, and a stop still writes the published marker.
+mkdir -p "$T/store/storage-stop"; touch "$T/store/storage-stop/.draft"
+(DATA_REPO=test/data DATA_STORE_TOKEN=x GH_REPO=test/repo GH_BIN="$T/storegh"; . "$here/archive-guard.sh"; ag_summary=/dev/null; ag_store_ok) >/dev/null 2>&1 || bad+=" [a draft counted]"
+# After batch 1: the K2 day (45 GB) counts as its 5 GB PM-01 subset + its 1 GB events: 45 + 30 x 6 = 225 GB, not 45 + 30 x 45 = 1395 GB.
+rm -rf "$T/store"; mkday data-day-2026-07-22 45000000000 5000000000
+sck; [[ $rc == 0 && ! -e "$T/store/storage-stop" ]] && grep -q "= 225000000000 bytes" "$T/sck.sum" && grep -q "measured PM-01 subset" "$T/sck.sum" || bad+=" [batch 1: $rc $(head -c 200 "$T/sck.out")]"
+# OF-4 ruling 6: everything stored for a day counts. After batch 1, the K2 day (45 GB with a 1 GB
+# events tar) and its 1 GB volume release: 46 GB stored + 30 x (14 GB subset + 1 GB events + 1 GB
+# volume) = 526 GB > 0.5 TB -> the marker (the subset alone would give 466 GB and pass).
+rm -rf "$T/store"; mkday data-day-2026-07-22 45000000000 14000000000; mkday data-volume-2026-07-22 1000000000
+sck; [[ $rc == 3 && -d "$T/store/storage-stop" ]] && grep -q "= 526000000000 bytes" "$T/sck.sum" || bad+=" [near cap: $rc $(head -c 300 "$T/sck.sum")]"
+rm -rf "$T/store"; mkday data-day-2026-07-22 45000000000 5000000000
+# Fail closed, no marker: an unreadable subset file, an empty store, an unreadable store.
+echo "n/a" > "$T/store/data-day-2026-07-22/pm01-subset-2026-07-22.txt"; sck; [[ $rc == 1 && ! -e "$T/store/storage-stop" ]] || bad+=" [bad subset: $rc]"
+rm -rf "$T/store"; mkdir -p "$T/store"; sck; [[ $rc == 1 ]] || bad+=" [empty: $rc]"
+rc=0; GH_BIN="$T/ghrec4" bash "$here/storage-check.sh" >/dev/null 2>&1 || rc=$?; [[ $rc == 1 ]] || bad+=" [unreadable: $rc]"
+[[ -z "$bad" ]] && ok "OF-4 storage stop: after batch 5, 120 GB stored + 26 x 15 GB = 0.51 TB writes the published storage-stop marker (once) and exits 3, and the guard then refuses; 0.49 TB passes; a draft marker does not count; after batch 1 the K2 day counts as its measured PM-01 subset plus its events and volume (225 GB, not 1.395 TB), and near the cap (526 GB with them, 466 GB without) it stops; a bad subset, an empty or unreadable store fail closed without a marker" || no "OF-4 storage stop:$bad"
+bad=""
+
+# ---- OF-4 ruling 1: the stored day's progress cache is deleted after the read-back, by the forget job alone ----
+bad=""
+cat > "$T/cfgh" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$T/cf.log"
+[[ "$1 $2" == "api -X" ]] && exit 0
+[[ -n "${CF_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+printf '11\tdata-scan-2026-07-24-k0123456789ab-77-1\n12\tdata-scan-2026-07-24-k0123456789ab-77-1-qa\n13\tdata-scan-2026-07-24-k0123456789ab-78-2-logs\n14\tdata-scan-2026-07-25-k0123456789ab-79-1\n15\tdata-scan-2026-07-24-kfedcba987654-77-1\n'
+EOF
+chmod +x "$T/cfgh"
+: > "$T/cf.log"; GH_BIN="$T/cfgh" GH_REPO=o/r bash "$here/cache-forget.sh" data-scan-2026-07-24-k0123456789ab- >/dev/null 2>&1 || bad+=" [run]"
+[[ "$(grep -- '-X DELETE' "$T/cf.log" | sed 's#.*/caches/##' | tr '\n' ' ')" == "11 12 13 " ]] || bad+=" [deleted: $(grep -- '-X DELETE' "$T/cf.log" | tr '\n' ' ')]"
+for pf in "" data-scan-2026-07-24- data-scan-2026-07-24-k0123456789ab data-rpc-2026-07-24-k0123456789ab- 'data-scan-2026-07-24-k0123456789ab-*' data-scan-; do
+  : > "$T/cf.log"; rc=0; GH_BIN="$T/cfgh" GH_REPO=o/r bash "$here/cache-forget.sh" "$pf" >/dev/null 2>&1 || rc=$?
+  [[ $rc == 2 && ! -s "$T/cf.log" ]] || bad+=" [prefix '$pf': $rc]"
+done
+: > "$T/cf.log"; rc=0; CF_FAIL=1 GH_BIN="$T/cfgh" GH_REPO=o/r bash "$here/cache-forget.sh" data-scan-2026-07-24-k0123456789ab- >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 ]] && ! grep -q -- '-X DELETE' "$T/cf.log" || bad+=" [list error: $rc]"
+python3 - "$wf/data-scan.yml" <<'PY' || bad+=" [workflow]"
+import sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
+for j, job in jobs.items():
+    if (job.get("permissions") or {}).get("actions") == "write":
+        assert j in ("continue", "forget"), j
+f = jobs["forget"]
+assert f["needs"] == "scan" and f["if"] == "always() && inputs.mode == 'scan' && needs.scan.outputs.forget != ''", f
+assert f["permissions"] == {"contents": "read", "actions": "write"}, f["permissions"]
+st = f["steps"]; assert len(st) == 2 and st[0]["uses"].startswith("actions/checkout@") and st[0]["with"]["persist-credentials"] is False, st
+assert st[1]["run"] == 'research/historical/ci/cache-forget.sh "$PREFIX"' and st[1]["env"]["PREFIX"] == "${{ needs.scan.outputs.forget }}", st
+scan = jobs["scan"]; assert scan["outputs"] == {"forget": "${{ steps.forgetmark.outputs.prefix }}"}, scan.get("outputs")
+steps = scan["steps"]; ids = [x.get("id") or x.get("name") for x in steps]
+m = steps[ids.index("forgetmark")]
+assert "steps.store.outputs.readback == 'true'" in m["if"] and "always()" not in m["if"] and ids.index("store") < ids.index("forgetmark"), m
+assert 'echo "prefix=data-scan-$DAY-k$KID-" >> "$GITHUB_OUTPUT"' in m["run"], m
+PY
+# the guard: the forget job alone may hold actions: write, and only with a checkout and cache-forget.sh
+gdreset; touch "$GD/noguard-$NG"
+for v in extra-step scan-write other-run; do
+  mkfx "$T/fxf"; w="$T/fxf/.github/workflows/data-scan.yml"
+  python3 - "$w" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+if v == "extra-step":
+    s = s.replace('        run: research/historical/ci/cache-forget.sh "$PREFIX"\n', '        run: research/historical/ci/cache-forget.sh "$PREFIX"\n      - run: research/historical/ci/scan-day.sh x\n', 1)
+elif v == "scan-write":
+    s = s.replace("      actions: read # \"Pick the fullest progress cache\"", "      actions: write # \"Pick the fullest progress cache\"", 1)
+else:
+    s = s.replace('        run: research/historical/ci/cache-forget.sh "$PREFIX"\n', '        run: research/historical/ci/cache-forget.sh "$PREFIX" && gh workflow run data-scan.yml\n', 1)
+open(p, "w").write(s)
+PY
+  ACFX=$T/fxf/research/historical/ci ac env AC_STATUS=206
+  [[ ! -e "$A/curl.calls" ]] && grep -qE "held \(1\): the archive chain is not armed: .*(job forget holds actions: write|job scan grants actions: write)" "$A/summary.md" || bad+=" [guard $v]"
+done
+mkfx "$T/fxf"; ACFX=$T/fxf/research/historical/ci ac env AC_STATUS=206; [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 ]] || bad+=" [control: $(tail -c 300 "$A/summary.md")]"
+[[ -z "$bad" ]] && ok "OF-4 ruling 1: cache-forget deletes exactly the stored day's data-scan-DAY-k<kid>-* entries (progress, -qa, -logs; not another day or key id), refuses any other prefix before a call and deletes nothing when the list fails; the forget job alone (with continue) holds actions: write, needs the scan job's prefix, which is set only after the read-back passed; the guard refuses an extra step, another command in it, or actions: write in the scan job; the tree as it is arms" || no "OF-4 forget:$bad"
+bad=""
+
+# ---- OF-4 ruling 5: the store token only in clean env -i steps; the assemble build holds none ----
+bad=""; gdreset; touch "$GD/noguard-$NG"
+for v in step job top; do
+  mkfx "$T/fxt"; w="$T/fxt/.github/workflows/data-scan.yml"
+  python3 - "$w" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+if v == "step":
+    a = "          ALLOW_REVISIONS: ${{ inputs.allow_revisions }}\n"
+    assert s.count(a) == 1; s = s.replace(a, a + "          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}\n")
+elif v == "job":
+    i = s.index("\n  assemble:"); j = s.index("\n    runs-on:", i)
+    s = s[:j] + "\n    env:\n      TOK: ${{ secrets.DATA_STORE_TOKEN }}" + s[j:]
+else:
+    a = "\nenv:\n"; assert s.count(a) == 1; s = s.replace(a, a + "  TOK: ${{ secrets.DATA_STORE_TOKEN }}\n")
+open(p, "w").write(s)
+PY
+  ACFX=$T/fxt/research/historical/ci ac env AC_STATUS=206
+  [[ ! -e "$A/curl.calls" ]] && grep -q "holds the store token" "$A/summary.md" || bad+=" [guard $v: $(grep -o 'refused[^|]*' "$A/summary.md" | head -1 | cut -c1-120)]"
+done
+reset_store; rc=0; bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" >/dev/null 2>&1 || rc=$?
+out=$(GH_TOKEN=x bash "$here/assemble.sh" 2026-09-20 2026-09-22 "$T/work" 2>&1) && bad+=" [build with GH_TOKEN]"
+[[ $rc == 0 && "$out" == *"runs without a token"* && ! -e "$T/work/data/units" ]] || bad+=" [build msg: $rc ${out:0:80}]"
+out=$(env -u GH_TOKEN GITHUB_TOKEN=y bash "$here/assemble.sh" 2026-09-20 2026-09-22 "$T/work" 2>&1) && bad+=" [build with GITHUB_TOKEN]"
+out=$(bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/w5" 2>&1) && bad+=" [store without a build]"
+[[ "$out" == *"no built release"* ]] || bad+=" [store msg: ${out:0:80}]"
+[[ -z "$bad" ]] && ok "OF-4 ruling 5: arming refuses the store token in a step outside a clean env -i step, in a job env or in the top-level env; assemble's build refuses to run with GH_TOKEN or GITHUB_TOKEN set, and --store refuses without a built release" || no "OF-4 store token:$bad"
+bad=""
+
+# ---- OF-4 round 2 (rulings 7-10) ----
+bad=""
+# 7. One archive day per run: the plan refuses two before any request, and the forget marker
+# refuses a matrix of more than one job.
+python3 - "$wf/data-scan.yml" > "$T/plan7.py" <<'PY'
+import sys, yaml
+st = next(x for x in yaml.safe_load(open(sys.argv[1]))["jobs"]["plan"]["steps"] if x.get("id") == "days")
+r = st["run"]; i = r.index("\n", r.index("<<'EOF'")) + 1; print(r[i:r.rindex("EOF")])
+PY
+rc=0; MODE=scan DAYS=2026-07-22,2026-07-23 MAX_MBPS=40 SOURCE=archive MAX_CREDITS=0 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 python3 "$T/plan7.py" > "$T/plan7.out" 2>&1 || rc=$?
+[[ $rc != 0 ]] && grep -q "one UTC day per batch" "$T/plan7.out" && ! grep -q '^days=' "$T/plan7.out" || bad+=" [plan two days: $rc]"
+rc=0; MODE=scan DAYS=2026-07-22 MAX_MBPS=40 SOURCE=archive MAX_CREDITS=0 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 python3 "$T/plan7.py" > "$T/plan7.out" 2>&1 || rc=$?
+[[ $rc == 0 ]] && grep -qx 'archive_day=2026-07-22' "$T/plan7.out" || bad+=" [plan one day: $rc]"
+python3 - "$wf/data-scan.yml" <<'PY' || bad+=" [forget marker]"
+import sys, yaml
+st = next(x for x in yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"] if x.get("id") == "forgetmark")
+assert st["env"]["JOBS"] == "${{ strategy.job-total }}" and st["run"].lstrip().startswith('[[ "$JOBS" == 1 ]] ||'), st
+PY
+[[ -z "$bad" ]] && ok "OF-4 ruling 7: the plan refuses a two-day archive scan (no day list, so no request) and passes one day; the forget marker refuses a matrix of more than one job" || no "OF-4 one day:$bad"
+bad=""; gdreset; touch "$GD/noguard-$NG"
+# 8. The guard refuses secrets.DATA_STORE_TOKEN in a run: line, toJSON(secrets), secrets[...] and secrets: inherit.
+for v in run tojson index inherit; do
+  mkfx "$T/fx8"; w="$T/fx8/.github/workflows/data-scan.yml"
+  python3 - "$w" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+a = "        run: research/historical/ci/assemble.sh \"$FROM\" \"$TO\" /mnt/work\n"
+assert s.count(a) == 1
+add = {"run": "        run: echo ${{ secrets.DATA_STORE_TOKEN }} >/dev/null; research/historical/ci/assemble.sh \"$FROM\" \"$TO\" /mnt/work\n",
+       "tojson": a + "      - name: all\n        env:\n          ALL: ${{ toJSON(secrets) }}\n        run: true\n",
+       "index": a + "      - name: one\n        env:\n          ONE: ${{ secrets['DATA_STORE_TOKEN'] }}\n        run: true\n",
+       "inherit": a.replace("        run:", "        run:") + "    secrets: inherit\n"}[v]
+open(p, "w").write(s.replace(a, add))
+PY
+  ACFX=$T/fx8/research/historical/ci ac env AC_STATUS=206
+  case $v in run) m="writes secrets.DATA_STORE_TOKEN into its run: line" ;; tojson) m="uses toJSON(secrets)" ;; index) m="uses secrets\[...\]" ;; inherit) m="uses secrets: inherit" ;; esac
+  [[ ! -e "$A/curl.calls" ]] && grep -q "$m" "$A/summary.md" || bad+=" [$v: $(grep -o 'refused[^|]*' "$A/summary.md" | head -1 | cut -c1-120)]"
+done
+[[ -z "$bad" ]] && ok "OF-4 ruling 8: arming refuses secrets.DATA_STORE_TOKEN written into a run: line, toJSON(secrets), secrets[...] and secrets: inherit in an archive workflow" || no "OF-4 secrets text:$bad"
+# ---- OF-4 ruling 13: the store-token secret name matches without regard to case ----
+bad=""; gdreset; touch "$GD/noguard-$NG"
+for v in step job top mixed; do
+  mkfx "$T/fx13"; w="$T/fx13/.github/workflows/data-scan.yml"
+  python3 - "$w" "$v" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]; s = open(p).read()
+if v in ("step", "mixed"):
+    a = "          ALLOW_REVISIONS: ${{ inputs.allow_revisions }}\n"
+    assert s.count(a) == 1; s = s.replace(a, a + "          GH_TOKEN: ${{ secrets.data_store_token }}\n")
+    if v == "mixed": s = s.replace("GH_TOKEN: ${{ secrets.data_store_token }}", "GH_TOKEN: ${{ secrets.Data_Store_Token }}")
+elif v == "job":
+    i = s.index("\n  assemble:"); j = s.index("\n    runs-on:", i)
+    s = s[:j] + "\n    env:\n      TOK: ${{ secrets.data_store_token }}" + s[j:]
+else:
+    a = "\nenv:\n"; assert s.count(a) == 1; s = s.replace(a, a + "  TOK: ${{ secrets.Data_Store_Token }}\n")
+open(p, "w").write(s)
+PY
+  ACFX=$T/fx13/research/historical/ci ac env AC_STATUS=206
+  [[ ! -e "$A/curl.calls" ]] && grep -q "holds the store token" "$A/summary.md" || bad+=" [$v: $(grep -o 'refused[^|]*' "$A/summary.md" | head -1 | cut -c1-120)]"
+done
+[[ -z "$bad" ]] && ok "OF-4 ruling 13: arming refuses secrets.data_store_token (any case) in a step that is not clean, in a job env and in the top-level env" || no "OF-4 token case:$bad"
+bad=""
+bad=""; gdreset
+# 9. After create, an incomplete release (an asset lost) fails before readback=true.
+export GH_BIN="$T/bin/gh"
+rm -rf "$T/rel/data-day-2026-09-30"; mkpd; : > "$T/ghout9"
+out=$(FAKE_GH_DROP=parity-2026-09-30.json GITHUB_OUTPUT="$T/ghout9" bash "$here/publish-day.sh" 2026-09-30 "$pd" 2>&1) && bad+=" [passed]"
+[[ "$out" == *"after create"* && ! -s "$T/ghout9" ]] || bad+=" [msg: ${out:0:120}]"
+rm -rf "$T/rel/data-day-2026-09-30"; unset GH_BIN
+[[ -z "$bad" ]] && ok "OF-4 ruling 9: a release missing an asset right after create fails the store step before any read-back, with no readback=true" || no "OF-4 complete after create:$bad"
+bad=""
+# 10. assemble --store: one create call with exactly the SHA256SUMS set, then a read-back.
+reset_store; : > "$T/ghrepo.log"; run 2026-09-20 2026-09-22 "$T/work" || bad+=" [run: $(tail -2 "$T/out.txt")]"
+R="$T/rel/data-2026-09-20-2026-09-22"
+[[ $(grep -c "^create data-2026-09-20-2026-09-22 " "$T/ghrepo.log") == 1 ]] && ! grep -q "^upload data-2026-09-20-2026-09-22 " "$T/ghrepo.log" || bad+=" [calls]"
+[[ "$(cd "$R" && ls | LC_ALL=C sort | tr '\n' ' ')" == "$( (awk '{print $2}' "$R/SHA256SUMS"; echo SHA256SUMS) | LC_ALL=C sort | tr '\n' ' ')" ]] || bad+=" [set]"
+grep -q "files read back" "$T/out.txt" || bad+=" [no read-back line]"
+reset_store; { bash "$here/assemble.sh" --download 2026-09-20 2026-09-22 "$T/work" && env -u GH_TOKEN -u GITHUB_TOKEN bash "$here/assemble.sh" 2026-09-20 2026-09-22 "$T/work"; } >/dev/null 2>&1
+echo extra > "$T/work/release/stray.txt"
+out=$(bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/work" 2>&1) || bad+=" [stray: ${out:0:100}]"
+[[ ! -e "$T/rel/data-2026-09-20-2026-09-22/stray.txt" ]] || bad+=" [stray uploaded]"
+rm -rf "$T/rel/data-2026-09-20-2026-09-22"
+out=$(FAKE_GH_CORRUPT=manifest.json bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/work" 2>&1) && bad+=" [corrupt passed]"
+[[ "$out" == *"read-back"* ]] || bad+=" [corrupt msg: ${out:0:100}]"
+rm -rf "$T/rel/data-2026-09-20-2026-09-22"
+out=$(FAKE_GH_DROP=manifest.json bash "$here/assemble.sh" --store 2026-09-20 2026-09-22 "$T/work" 2>&1) && bad+=" [dropped passed]"
+[[ "$out" == *"differ from its SHA256SUMS set"* ]] || bad+=" [dropped msg: ${out:0:100}]"
+[[ -z "$bad" ]] && ok "OF-4 ruling 10: assemble --store creates the dataset release in one call with exactly the files SHA256SUMS lists (a stray file stays behind), and fails when a stored file differs or one is missing" || no "OF-4 assemble store:$bad"
+bad=""
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

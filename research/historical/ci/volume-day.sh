@@ -2,20 +2,22 @@
 # Back-fill (DATA-1c): rebuilds one published day's regime volume per hour from its own
 # units, with no archive access. Two steps, so the token never reaches the rebuild:
 #   volume-day.sh --download DAY WORK_DIR        downloads the units tar parts and
-#       SHA256SUMS-DAY of release data-day-DAY into WORK_DIR/dl-DAY (gh reads GH_TOKEN);
+#       SHA256SUMS-DAY of release data-day-DAY in the private store (DATA_REPO, OF-4) into
+#       WORK_DIR/dl-DAY (gh reads GH_TOKEN, the store token);
 #   volume-day.sh DAY WORK_DIR ASSET_DIR         (no token) checks every part listed in
 #       that SHA256SUMS is present and intact, extracts them, finalizes the day
 #       (-lead-in-days 0), runs the exact cross-check (qa/volume.ts) and writes the
 #       volume asset (volume-asset.sh).
-# Publishing is ci/publish-volume.sh, in its own step.
+# Storing is ci/publish-volume.sh, in its own step.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 if [ "${1:-}" = --download ]; then
   day=$2 work=$3
   [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day $day"; exit 1; }
+  [[ "${DATA_REPO:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "refused: DATA_REPO (the private store) is not set"; exit 1; }
   dl="$work/dl-$day"
   rm -rf "$dl"; mkdir -p "$dl"
-  gh release download "data-day-$day" --repo "$GITHUB_REPOSITORY" --pattern "units-$day.tar.part*" --pattern "SHA256SUMS-$day" --dir "$dl"
+  gh release download "data-day-$day" --repo "$DATA_REPO" --pattern "units-$day.tar.part*" --pattern "SHA256SUMS-$day" --dir "$dl"
   exit 0
 fi
 [ -z "${GH_TOKEN:-}" ] || { echo "the rebuild runs without GH_TOKEN"; exit 1; }

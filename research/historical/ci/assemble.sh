@@ -1,29 +1,39 @@
 #!/usr/bin/env bash
 # Builds the multi-day dataset FROM..TO (TO exclusive) from the per-day releases
-# `data-day-YYYY-MM-DD` and publishes it as release `data-FROM-TO`
+# `data-day-YYYY-MM-DD` and stores it as release `data-FROM-TO` in the private store
 # (used by .github/workflows/data-scan.yml, mode=assemble).
-#   assemble.sh FROM TO OUT_DIR
+#   assemble.sh --download FROM TO OUT_DIR   (the store token, in a clean env -i step)
+#   assemble.sh FROM TO OUT_DIR              (no token: refuses when GH_TOKEN is set)
+#   assemble.sh --store FROM TO OUT_DIR      (the store token, in a clean env -i step)
+# OF-4 ruling 5: the store token reaches only the download and store steps; extraction,
+# finalize, QA and parity run without it.
 # Environment:
-#   GITHUB_REPOSITORY  owner/repo of the releases (required)
-#   GH_TOKEN           token for gh (the workflow's publish job)
+#   DATA_REPO          owner/repo of the private store the releases are read from and the
+#                      dataset is stored in (required; OF-4: never this repository)
+#   GH_TOKEN           the store token for gh (the workflow's assemble job)
 #   MAX_WINDOW_DAYS    largest window in days (default 3: units keep every curve and canonical-pool
 #                      trade, about 6.4-8.5 GB a day, so a runner holds about three days with the dataset)
 #   ALLOW_REVISIONS    optional comma list passed to finalize as -allow-revisions
 #   GITHUB_SHA         recorded in the release notes
-# Steps, one day at a time so the disk holds one day's parts at most:
-#   1. every lead-in day (FROM-14 .. FROM-1) and every window day must have a day
-#      release, or the script stops before downloading anything; no earlier day is read;
-#   2. per day: free-space guard (3x the day's tar + 10 GB), download parts and
-#      SHA256SUMS, verify, extract (lead-in days: only the small events-DAY.tar asset,
-#      which holds each unit's events, stats and block rows),
-#      delete the parts, move each unit into OUT_DIR/data/units/EPOCH/RANGE. A unit that
+# Steps:
+#   1. (--download) every lead-in day (FROM-14 .. FROM-1) and every window day must have a
+#      day release, or the script stops before downloading anything; no earlier day is
+#      read; free-space guard (all the days' assets + 10 GB); then each day's parts (lead-in
+#      days: only the small events-DAY.tar asset, which holds each unit's events, stats and
+#      block rows) and SHA256SUMS go to OUT_DIR/dl-DAY;
+#   2. (build) per day: free-space guard (2x the day's downloaded assets + 10 GB: room to
+#      extract them with the same margin as before), verify, extract, delete the parts,
+#      move each unit into OUT_DIR/data/units/EPOCH/RANGE. A unit that
 #      crosses midnight arrives twice: every *.zst present in both copies must have the
 #      same sha256, and its two stats.json must agree on epoch, slots, blocks, schema and
 #      scanner revision (two revisions both in ALLOW_REVISIONS are accepted; the first copy
 #      is kept), else stop; files only the new copy has are moved in;
-#   3. free-space guard (finalize_guard: 2x the extracted units + 10 GB), finalize,
-#      strict QA, decoder parity, then the release directory is built by
-#      moving files (never copying), checksummed and published.
+#   3. (build) free-space guard (finalize_guard: 2x the extracted units + 10 GB), finalize,
+#      strict QA, decoder parity, then OUT_DIR/release is built by moving files (never
+#      copying) and checksummed;
+#   4. (--store) release data-FROM-TO is created in the private store from OUT_DIR/release.
+# The overall disk peak is still finalize (units + dataset); holding all the days' parts
+# before extraction does not raise it.
 set -euo pipefail
 
 LEAD_IN_DAYS=14
@@ -59,19 +69,19 @@ day_list() {
 # (units-DAY.tar.part for window days, events-DAY.tar for lead-in days); fails when none.
 tar_bytes() {
   local day=$1 prefix=$2 n
-  n=$(gh release view "data-day-$day" --repo "$GITHUB_REPOSITORY" --json assets \
+  n=$(gh release view "data-day-$day" --repo "$DATA_REPO" --json assets \
     --jq "[.assets[] | select(.name | startswith(\"$prefix\")) | .size] | if length == 0 then -1 else add end") ||
     die "release data-day-$day is missing (every lead-in and window day is required)"
   [[ "$n" =~ ^[0-9]+$ ]] || die "release data-day-$day has no $prefix* asset"
   echo "$n"
 }
 
-# free_guard DIR TAR_BYTES: free space on DIR's volume must be >= 3x the tar + 10 GB.
+# free_guard DIR BYTES MULT: free space on DIR's volume must be >= MULT x BYTES + 10 GB.
 free_guard() {
-  local dir=$1 tar=$2 avail need
+  local dir=$1 tar=$2 mult=$3 avail need
   avail=$(df -B1 --output=avail "$dir" | tail -1 | tr -d ' ')
-  need=$(( 3 * tar + 10 * 1000 * 1000 * 1000 ))
-  (( avail >= need )) || die "not enough disk on $dir: $avail bytes free, need $need (3 x $tar + 10 GB)"
+  need=$(( mult * tar + 10 * 1000 * 1000 * 1000 ))
+  (( avail >= need )) || die "not enough disk on $dir: $avail bytes free, need $need ($mult x $tar + 10 GB)"
 }
 
 # stats_match A B: two stats.json copies of one unit describe the same scan. They are
@@ -141,15 +151,29 @@ merge_unit() {
   rmdir "$src"
 }
 
-# fetch_day DAY LEADIN(0|1) WORK DATA: download, verify, extract, merge one day.
+# download_day DAY LEADIN(0|1) WORK: the day's assets and SHA256SUMS into WORK/dl-DAY
+# (lead-in days: only events-DAY.tar). The --download step, with the store token.
+download_day() {
+  local day=$1 leadin=$2 work=$3 dl
+  dl="$work/dl-$day"
+  rm -rf "$dl"; mkdir -p "$dl"
+  if (( leadin )); then
+    gh release download "data-day-$day" --repo "$DATA_REPO" --dir "$dl" \
+      --pattern "events-$day.tar" --pattern "SHA256SUMS-$day"
+  else
+    gh release download "data-day-$day" --repo "$DATA_REPO" --dir "$dl" \
+      --pattern "units-$day.tar.part*" --pattern "SHA256SUMS-$day"
+  fi
+}
+
+# fetch_day DAY LEADIN(0|1) WORK DATA: verify, extract and merge one downloaded day (no token).
 fetch_day() {
   local day=$1 leadin=$2 work=$3 data=$4 dl x u rel
   dl="$work/dl-$day"; x="$dl/x"
-  rm -rf "$dl"; mkdir -p "$x"
+  [[ -f "$dl/SHA256SUMS-$day" ]] || die "day $day was not downloaded (run assemble.sh --download first)"
+  rm -rf "$x"; mkdir -p "$x"
   if (( leadin )); then
     # Lead-in days need only events, stats and block rows: the day's small events asset.
-    gh release download "data-day-$day" --repo "$GITHUB_REPOSITORY" --dir "$dl" \
-      --pattern "events-$day.tar" --pattern "SHA256SUMS-$day"
     [[ -f "$dl/events-$day.tar" ]] || die "day $day: no events-$day.tar in its release"
     (cd "$dl" && grep -E "  events-$day\.tar$" "SHA256SUMS-$day" | sha256sum -c --quiet -) || die "day $day: events asset checksum mismatch"
     tar -xf "$dl/events-$day.tar" -C "$x"
@@ -165,11 +189,9 @@ fetch_day() {
   rm -rf "$dl"
 }
 
-# fetch_parts DAY DL X: download, verify and extract the day's full units tar parts.
+# fetch_parts DAY DL X: verify and extract the day's downloaded full units tar parts.
 fetch_parts() {
   local day=$1 dl=$2 x=$3 parts listed
-  gh release download "data-day-$day" --repo "$GITHUB_REPOSITORY" --dir "$dl" \
-    --pattern "units-$day.tar.part*" --pattern "SHA256SUMS-$day"
   parts=$(find "$dl" -maxdepth 1 -name "units-$day.tar.part*" | wc -l)
   listed=$(grep -cE "  units-$day\.tar\.part[0-9]+$" "$dl/SHA256SUMS-$day" || true)
   (( parts > 0 && parts == listed )) || die "day $day: $parts parts downloaded, $listed listed in SHA256SUMS-$day"
@@ -197,31 +219,56 @@ build_release() {
   (( n <= 990 )) || die "release would hold $n assets; GitHub allows 1000 (limit here 990): use a smaller window"
 }
 
-main() {
-  (( $# == 3 )) || die "usage: assemble.sh FROM TO OUT_DIR"
-  local from=$1 to=$2 work=$3 day leadin bytes tag
-  [[ -n "${GITHUB_REPOSITORY:-}" ]] || die "GITHUB_REPOSITORY is not set"
+store_ok() {
+  [[ "${DATA_REPO:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || die "DATA_REPO (the private store) is not set"
+  local this_repo=${GITHUB_REPOSITORY:-}
+  [[ "${DATA_REPO,,}" != "${this_repo,,}" ]] || die "DATA_REPO is this repository, not the private store"
+}
+
+# --download FROM TO WORK: with the store token, in a clean env -i step.
+download_main() {
+  local from=$1 to=$2 work=$3 day leadin total=0
+  store_ok
   check_window "$from" "$to"
-  local -a extra=()
-  if [[ -n "${ALLOW_REVISIONS:-}" ]]; then
-    [[ "$ALLOW_REVISIONS" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] || die "ALLOW_REVISIONS must be a comma list of revisions, got '$ALLOW_REVISIONS'"
-    extra=(-allow-revisions "$ALLOW_REVISIONS")
-  fi
-  ! gh release view "data-$from-$to" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+  ! gh release view "data-$from-$to" --repo "$DATA_REPO" >/dev/null 2>&1 ||
     die "release data-$from-$to already exists; a published dataset is never replaced"
-  mkdir -p "$work/data/units"
   local -a days
   mapfile -t days < <(day_list "$from" "$to")
   # Every required day must exist before any download.
   local -A size
   for day in "${days[@]}"; do
     if [[ "$day" < "$from" ]]; then size[$day]=$(tar_bytes "$day" "events-$day.tar"); else size[$day]=$(tar_bytes "$day" "units-$day.tar.part"); fi
+    total=$(( total + size[$day] ))
   done
-  echo "assemble: $from..$to with lead-in from ${days[0]}: ${#days[@]} day releases found"
+  echo "assemble: $from..$to with lead-in from ${days[0]}: ${#days[@]} day releases found ($total bytes)"
+  mkdir -p "$work"
+  free_guard "$work" "$total" 1
   for day in "${days[@]}"; do
     leadin=0; [[ "$day" < "$from" ]] && leadin=1
-    bytes=${size[$day]}
-    free_guard "$work" "$bytes"
+    echo "assemble: downloading day $day (${size[$day]} bytes, lead-in=$leadin)"
+    download_day "$day" "$leadin" "$work"
+  done
+}
+
+# FROM TO WORK: no token (OF-4 ruling 5); verify, extract, finalize, QA, build the release dir.
+main() {
+  (( $# == 3 )) || die "usage: assemble.sh [--download | --store] FROM TO OUT_DIR"
+  local from=$1 to=$2 work=$3 day leadin bytes
+  [[ -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]] || die "the build runs without a token (GH_TOKEN or GITHUB_TOKEN is set); the store token stays in the download and store steps"
+  check_window "$from" "$to"
+  local -a extra=()
+  if [[ -n "${ALLOW_REVISIONS:-}" ]]; then
+    [[ "$ALLOW_REVISIONS" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] || die "ALLOW_REVISIONS must be a comma list of revisions, got '$ALLOW_REVISIONS'"
+    extra=(-allow-revisions "$ALLOW_REVISIONS")
+  fi
+  mkdir -p "$work/data/units"
+  local -a days
+  mapfile -t days < <(day_list "$from" "$to")
+  for day in "${days[@]}"; do
+    leadin=0; [[ "$day" < "$from" ]] && leadin=1
+    [[ -d "$work/dl-$day" ]] || die "day $day was not downloaded (run assemble.sh --download first)"
+    bytes=$(du -sb "$work/dl-$day" | cut -f1)
+    free_guard "$work" "$bytes" 2
     echo "assemble: day $day ($bytes bytes, lead-in=$leadin)"
     fetch_day "$day" "$leadin" "$work" "$work/data"
   done
@@ -233,15 +280,56 @@ main() {
     die "finalize failed; its output is kept in the private log next to the data"
   node "$repo_root/research/historical/qa/check.mjs" "$work/dataset" --live 60 --strict > "$qlog/qa.log" 2>&1 || die "strict QA failed; its output is kept in the private log next to the data"
   node --no-warnings "$repo_root/research/historical/qa/parity.ts" "$work/dataset" > "$qlog/parity.log" 2>&1 || die "decoder parity failed; its output is kept in the private log next to the data"
+  rm -rf "$work/release"
   build_release "$work/dataset" "$work/release"
+  echo "assemble: release directory built ($work/release)"
+}
+
+# --store FROM TO WORK: with the store token, in a clean env -i step.
+store_main() {
+  local from=$1 to=$2 work=$3 tag first
+  store_ok
+  check_window "$from" "$to"
+  [[ -f "$work/release/SHA256SUMS" ]] || die "no built release in $work/release (run the build first)"
+  (cd "$work/release" && sha256sum -c --quiet SHA256SUMS) || die "the built release fails its SHA256SUMS"
   tag="data-$from-$to"
-  gh release create "$tag" --repo "$GITHUB_REPOSITORY" --prerelease --title "Historical dataset $from to $to" \
-    --notes "Built by data-scan.yml at ${GITHUB_SHA:-unknown} from releases data-day-${days[0]} .. data-day-${days[-1]} (14 lead-in days). Strict QA and decoder parity passed (qa-report.md, parity.json). Format: docs/research/historical-data.md."
-  (cd "$work/release" && gh release upload "$tag" --repo "$GITHUB_REPOSITORY" -- *)
-  echo "assemble: published $tag"
+  ! gh release view "$tag" --repo "$DATA_REPO" >/dev/null 2>&1 ||
+    die "release $tag already exists; a published dataset is never replaced"
+  first=$(date -u -d "$from - $LEAD_IN_DAYS days" +%F)
+  # OF-4 ruling 10: exactly the files SHA256SUMS lists (and SHA256SUMS), in one create call
+  local -a files
+  mapfile -t files < <(awk '{print $2}' "$work/release/SHA256SUMS")
+  (( ${#files[@]} > 0 )) || die "the built release's SHA256SUMS lists no file"
+  local f
+  for f in "${files[@]}"; do [[ "$f" =~ ^[A-Za-z0-9._-]+$ && -f "$work/release/$f" ]] || die "SHA256SUMS lists '$f', which is not a file of the built release"; done
+  (cd "$work/release" && gh release create "$tag" --repo "$DATA_REPO" --prerelease --title "Historical dataset $from to $to" \
+    --notes "Built by data-scan.yml at ${GITHUB_SHA:-unknown} from releases data-day-$first onwards (14 lead-in days) to the day before $to. Strict QA and decoder parity passed (qa-report.md, parity.json). Format: docs/research/historical-data.md." \
+    -- "${files[@]}" SHA256SUMS)
+  # read-back: the stored names equal the SHA256SUMS set, the stored SHA256SUMS equals the
+  # built one, and every stored file (one at a time) hashes to its line
+  local names want rb got
+  names=$(gh release view "$tag" --repo "$DATA_REPO" --json assets --jq '.assets[].name' | LC_ALL=C sort) || die "read-back: the assets of $tag cannot be listed"
+  want=$(printf '%s\n' "${files[@]}" SHA256SUMS | LC_ALL=C sort)
+  [[ "$names" == "$want" ]] || die "read-back: the assets of $tag differ from its SHA256SUMS set"
+  rb=$(mktemp -d)
+  gh release download "$tag" --repo "$DATA_REPO" --pattern SHA256SUMS --dir "$rb" >/dev/null 2>&1 && cmp -s "$rb/SHA256SUMS" "$work/release/SHA256SUMS" ||
+    { rm -rf "$rb"; die "read-back: the stored SHA256SUMS of $tag differs or cannot be read"; }
+  for f in "${files[@]}"; do
+    gh release download "$tag" --repo "$DATA_REPO" --pattern "$f" --dir "$rb" >/dev/null 2>&1 && [[ -f "$rb/$f" ]] ||
+      { rm -rf "$rb"; die "read-back: $f could not be downloaded from $tag"; }
+    got=$(sha256sum "$rb/$f" | cut -d' ' -f1)
+    grep -qxF "$got  $f" "$rb/SHA256SUMS" || { rm -rf "$rb"; die "read-back: $f in $tag does not match its SHA256SUMS"; }
+    rm -f "$rb/$f"
+  done
+  rm -rf "$rb"
+  echo "assemble: stored $tag in the private store; ${#files[@]} files read back"
 }
 
 # Sourcing the script (tests) only defines the functions.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
+  case "${1:-}" in
+    --download) shift; (( $# == 3 )) || die "usage: assemble.sh --download FROM TO OUT_DIR"; download_main "$@" ;;
+    --store) shift; (( $# == 3 )) || die "usage: assemble.sh --store FROM TO OUT_DIR"; store_main "$@" ;;
+    *) main "$@" ;;
+  esac
 fi
