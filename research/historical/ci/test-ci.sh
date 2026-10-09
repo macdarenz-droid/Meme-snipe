@@ -856,7 +856,11 @@ fi
 # revision (equal to the scanner in this tree, so a scanner change re-pins it), the allow-listed
 # days, a past pinnedAt, the per-unit log, the 07-22 lead-in limit and the owner's decision.
 bad=""
-rev=""; git -C "$here" rev-parse --git-dir >/dev/null 2>&1 && rev=$(git -C "$here/../../.." rev-parse HEAD:research/historical/scanner 2>/dev/null || true)
+rev=""; if git -C "$here" rev-parse --git-dir >/dev/null 2>&1; then
+  # OF-7 red team m1: in a git checkout the scanner's tree hash must be read, never skipped
+  rev=$(git -C "$here/../../.." rev-parse HEAD:research/historical/scanner 2>/dev/null || true)
+  [[ "$rev" =~ ^[0-9a-f]{40}$ ]] || bad+=" [the scanner tree hash cannot be read in this checkout]"
+fi
 python3 - "$here/../../../docs/DECISIONS.md" "$here/archive-limits.conf" "$here/../../../.github/workflows/data-scan.yml" "$rev" > "$T/b10pull.txt" 2>&1 <<'PY' || bad+=" [$(tail -1 "$T/b10pull.txt")]"
 import re, sys, datetime
 dec, conf, wf, tree = sys.argv[1:5]
@@ -878,6 +882,18 @@ print("ok", m.group(1))
 PY
 grep -q '^ok b10pull-of-1$' "$T/b10pull.txt" || bad+=" [id]"
 [[ -z "$bad" ]] && ok "OF-7: docs/DECISIONS.md holds one pinned B10-PULL row (source, scanner revision equal to this tree's scanner, ARCHIVE_DAYS, Go version, past pinnedAt, per-unit log, the 07-22 lead-in limit, the owner's decision)" || no "OF-7 B10-PULL row:$bad"
+# OF-7 (red team m2): scan-day refuses a scanner revision other than the pinned row's scannerRev.
+bad=""; mkfx "$T/fxpin"; o="$T/scpin"; rm -rf "$o"; mkdir -p "$o"; rc=0
+SREV=r2 SFX=$T/fxpin/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "is not the pinned B10-PULL row's scannerRev 'r1'" "$T/out.txt" || bad+=" [other revision: $rc $(tail -1 "$T/out.txt")]"
+sed -i 's/scannerRev=r1 /scannerRev=r2 /' "$T/fxpin/docs/DECISIONS.md"; rm -rf "$o"; mkdir -p "$o"; rc=0
+SREV=r2 SFX=$T/fxpin/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 0 ]] || bad+=" [pinned revision: $rc $(tail -1 "$T/out.txt")]"
+: > "$T/fxpin/docs/DECISIONS.md"; rm -rf "$o"; mkdir -p "$o"; rc=0
+SFX=$T/fxpin/research/historical/ci scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] || bad+=" [no pinned row: $rc]"
+[[ -z "$bad" ]] && ok "OF-7: scan-day reads only with the scanner revision the pinned B10-PULL row names (another revision, or no pinned row, reads nothing)" || no "OF-7 pinned revision:$bad"
+bad=""
 # OF-6: the rescan reads exactly one unit; a unit range longer than unitSlots is refused before any read.
 bad=""
 rc=0; RESCAN_COPY=1 cdrun o1 0 || rc=$?; [[ $rc == 0 && $(grep -c '^unit ' "$T/zs.args") == 1 ]] && grep -q -- "-from-slot 1 -to-slot 2 " "$T/zs.args" || bad+=" [one: $rc]"

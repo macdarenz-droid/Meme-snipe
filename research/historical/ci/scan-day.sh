@@ -120,6 +120,11 @@ backoff() {
 # request (a day never mixes revisions, and finalize refuses that too). The workflow
 # always sets SCANNER_REVISION (the revision built into zeroed-scan); it is required.
 [ -n "${SCANNER_REVISION:-}" ] || { echo "refused: SCANNER_REVISION is not set" | tee -a "$summary" >&2; exit 2; }
+# OF-7 (red team m2): the scanner built for this run is the one the pinned B10-PULL row names
+# (scannerRev), whatever path the change took to the default branch.
+pinrev=$(. "$(dirname "$0")/archive-guard.sh"; ag_pinned_rev)
+[ -n "$pinrev" ] && [ "$SCANNER_REVISION" = "$pinrev" ] ||
+  { echo "refused: the scanner revision '$SCANNER_REVISION' is not the pinned B10-PULL row's scannerRev '${pinrev:-none}' (docs/DECISIONS.md); nothing is read" | tee -a "$summary" >&2; exit 2; }
 for st in "$out"/units/*/*/stats.json; do
   [ -f "$st" ] || continue
   rev=$(sed -n 's/.*"scanner_revision": *"\([^"]*\)".*/\1/p' "$st" | head -1)

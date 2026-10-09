@@ -95,6 +95,13 @@ ag_pinned_id() {
   ids=$(sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL id=\([A-Za-z0-9._:-]\{1,\}\) source=old-faithful .*/\1/p' "$ag_decisions" 2>/dev/null | LC_ALL=C sort -u)
   [[ -n "$ids" && $(wc -l <<< "$ids") == 1 ]] && echo "$ids"
 }
+# ag_pinned_rev (OF-7 red team m2): the scannerRev of the one pinned B10-PULL row, or nothing.
+ag_pinned_rev() {
+  local id
+  id=$(ag_pinned_id) || return 0
+  [[ -n "$id" ]] || return 0
+  sed -n "s/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL id=$id source=old-faithful scannerRev=\([^ |]\{1,\}\) .*/\1/p" "$ag_decisions" 2>/dev/null | head -1
+}
 # ag_armed: ARCHIVE_ARM is set and is the pinned B10-PULL id; ARCHIVE_REARM_AT is a
 # valid UTC time that is not in the future.
 ag_armed() {
