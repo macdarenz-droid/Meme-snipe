@@ -77,91 +77,117 @@ class FastAsOf:
 EV_COLS = ["day", "pool", "mint", "owner", "t", "slot", "Q", "B", "n_slices", "slice_sol", "first_t"]
 
 
-def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False, fast_idx=None, two_sided=None, trace=None):
+def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False, fast_idx=None, two_sided=None, trace=None,
+                memo=None):
     """Slicer events on canonical WSOL pools. One event per (mint, owner): the first buy k at which the owner has
     at least 3 buys of the mint in (t_k - 30 min, t_k], spanning at least 3 slots and 60 s (Q27). Returns
-    (events, drops). The streaming reader passes the whole-tape `fast_idx` and `two_sided` indexes and a `trace`
-    list, which gets (the pair's first buy order, drop reason or None, event record) for each pair checked."""
-    sw = s[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL) & ~s["excluded"] & s["owner"].notna()]
-    allx = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
-    buys = sw[sw["is_buy"]]
-    n = buys.groupby(["mint", "owner"], sort=False)["order"].transform("size")
-    buys = buys[n >= 3]                               # a pair with fewer than 3 buys can never fire
-    pairs = pd.MultiIndex.from_frame(buys[["mint", "owner"]]).unique()
-    sells = allx[~allx["is_buy"]]
-    sells = sells[pd.MultiIndex.from_frame(sells[["mint", "owner"]]).isin(pairs)]
-    sells_by = {k: g["block_time"].to_numpy() for k, g in sells.groupby(["mint", "owner"], sort=False)}
-    ps_cache = {}
-    fast_idx = fast_idx or FastAsOf(R.w1_fast_buys(tape, s))
-    two_sided = two_sided or R.TwoSidedAsOf(tape, s)
+    (events, drops). The streaming reader passes the whole-tape `fast_idx` and `two_sided` indexes, a `trace`
+    list, which gets (the pair's first buy order, drop reason or None, event record) for each pair checked, and a
+    `memo` dict shared by the event and placebo calls: every check before the B range does not depend on low_b, so
+    the second call reuses the first call's checks (same pairs, same order, same results)."""
+    def checked():
+        if memo is not None and memo.get("complete"):
+            yield from memo["pairs"]
+            return
+        sw = s[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL) & ~s["excluded"] & s["owner"].notna()]
+        allx = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
+        buys = sw[sw["is_buy"]]
+        n = buys.groupby(["mint", "owner"], sort=False)["order"].transform("size")
+        buys = buys[n >= 3]                               # a pair with fewer than 3 buys can never fire
+        pairs = pd.MultiIndex.from_frame(buys[["mint", "owner"]]).unique()
+        sells = allx[~allx["is_buy"]]
+        sells = sells[pd.MultiIndex.from_frame(sells[["mint", "owner"]]).isin(pairs)]
+        sells_by = {k: g["block_time"].to_numpy() for k, g in sells.groupby(["mint", "owner"], sort=False)}
+        ps_cache = {}
+        fidx = fast_idx or FastAsOf(R.w1_fast_buys(tape, s))
+        ts = two_sided or R.TwoSidedAsOf(tape, s)
+        acc = []
+        for (mint, x), g in buys.groupby(["mint", "owner"], sort=False):
+            m = _pair_checks(tape, adj, ctx, fidx, ts, sells_by, ps_cache, mint, x, g)
+            if m is not None:
+                acc.append(m)
+                yield m
+        if memo is not None:
+            memo["pairs"], memo["complete"] = acc, True
+
     out, drops = [], Counter()
-    for (mint, x), g in buys.groupby(["mint", "owner"], sort=False):
-        if len(g) < 3:
-            continue
-        g = g.sort_values("order")
-        bt, sl = g["block_time"].to_numpy(), g["slot"].to_numpy()
-        hit = None
-        for k in range(2, len(g)):
-            w = np.nonzero((bt > bt[k] - WINDOW_S) & (np.arange(len(g)) <= k))[0]
-            if len(w) >= 3 and sl[k] - sl[w[0]] >= MIN_SPAN_SLOTS and bt[k] - bt[w[0]] >= MIN_SPAN_S:
-                hit = (k, w)
-                break
-        if hit is None:
-            continue
-        k, w = hit
-        sl_rows = g.iloc[w]
-        last = g.iloc[k]
-        pool, t, st = last["pool"], int(last["block_time"]), int(last["slot"])
-        why = None
-        if (sl_rows["signer"] != sl_rows["owner"]).any():
-            why = "signer_not_owner"           # also rules out a PDA owner: a PDA cannot sign
-        elif bool(last["schema_v2"]) and not sl_rows["top_program"].isin(DIRECT_PROGRAMS).all():
-            why = "routed_or_app"
-        elif two_sided.labelled(mint, x, st):   # as of the event slot (COUNT_ROWS_AMENDMENT_10, red team R2-19)
-            why = "two_sided_cluster"
-        elif fast_idx(last["day"], x, st):     # as of the event slot (red team R2-17); = R.w1_fast_asof
-            why = "w1_fast_class"
-        else:
-            seeds = {last["creator"]}
-            cr = tape.creates[tape.creates["mint"] == mint]
-            if len(cr):
-                seeds |= {cr["creator"].iloc[0], cr["user"].iloc[0]}
-            if x in R.creator_group(adj, seeds, st):
-                why = "creator_group"
+    for key, why, info in checked():
         if why is None:
-            sb = sells_by.get((mint, x))
-            if sb is not None and ((sb >= t - NO_SELL_S) & (sb < t)).any():
-                why = "sold_in_prior_24h"
-        if why is None:
-            gaps = np.diff(sl_rows["block_time"].to_numpy(float))
-            if _cv(gaps) <= CV_INTERVAL or _cv(sl_rows["sol"]) <= CV_SIZE:
-                why = "regular_cadence"
-            elif (sl_rows["signer_sol_pre"].to_numpy()[1:] == sl_rows["signer_sol_post"].to_numpy()[:-1]).any():
-                why = "sol_pure_next_slice"
-        if why is None:
-            if pool not in ps_cache:
-                ps_cache[pool] = RB.pool_state(ctx.pp[pool])
-            i, _, eq_i = RB.state_at(ps_cache[pool], t, st)
-            q = eq_i if i >= 0 and np.isfinite(eq_i) else np.nan
-            b = float(last["signer_sol_post"]) if pd.notna(last["signer_sol_post"]) else np.nan
-            if not np.isfinite(q) or q <= 0 or not np.isfinite(b):
-                why = "no_q_or_b"
-            elif float(sl_rows["sol"].sum()) < MIN_BUYS_Q * q:
-                why = "buys_under_1pct_q"
-            elif (b >= LOW_B_Q * q) if low_b else (b < MIN_B_Q * q):    # placebo keeps B < 0.5% of Q
+            q, b = info["Q"], info["B"]
+            if (b >= LOW_B_Q * q) if low_b else (b < MIN_B_Q * q):    # placebo keeps B < 0.5% of Q
                 why = "b_out_of_range"
-            elif not tape.covered(st, t + CONT_S):
+            elif not tape.covered(info["slot"], info["t"] + CONT_S):
                 why = "window_not_on_tape"
         if why:
             drops[why] += 1
             if trace is not None:
-                trace.append((int(g["order"].iloc[0]), why, None))
+                trace.append((key, why, None))
             continue
-        out.append({"day": last["day"], "pool": pool, "mint": mint, "owner": x, "t": t, "slot": st, "Q": q, "B": b,
-                    "n_slices": len(w), "slice_sol": float(sl_rows["sol"].sum()), "first_t": int(bt[w[0]])})
+        out.append(dict(info))
         if trace is not None:
-            trace.append((int(g["order"].iloc[0]), None, out[-1]))
+            trace.append((key, None, out[-1]))
     return pd.DataFrame(out, columns=EV_COLS), dict(drops)
+
+
+def _pair_checks(tape, adj, ctx, fast_idx, two_sided, sells_by, ps_cache, mint, x, g):
+    """find_events' checks of one (mint, owner) pair up to the B range: None when no event buy is found, else
+    (the pair's first buy order, the first failing reason or None, the event record)."""
+    if len(g) < 3:
+        return None
+    g = g.sort_values("order")
+    bt, sl = g["block_time"].to_numpy(), g["slot"].to_numpy()
+    hit = None
+    for k in range(2, len(g)):
+        w = np.nonzero((bt > bt[k] - WINDOW_S) & (np.arange(len(g)) <= k))[0]
+        if len(w) >= 3 and sl[k] - sl[w[0]] >= MIN_SPAN_SLOTS and bt[k] - bt[w[0]] >= MIN_SPAN_S:
+            hit = (k, w)
+            break
+    if hit is None:
+        return None
+    k, w = hit
+    sl_rows = g.iloc[w]
+    last = g.iloc[k]
+    pool, t, st = last["pool"], int(last["block_time"]), int(last["slot"])
+    why = None
+    q = b = np.nan
+    if (sl_rows["signer"] != sl_rows["owner"]).any():
+        why = "signer_not_owner"           # also rules out a PDA owner: a PDA cannot sign
+    elif bool(last["schema_v2"]) and not sl_rows["top_program"].isin(DIRECT_PROGRAMS).all():
+        why = "routed_or_app"
+    elif two_sided.labelled(mint, x, st):   # as of the event slot (COUNT_ROWS_AMENDMENT_10, red team R2-19)
+        why = "two_sided_cluster"
+    elif fast_idx(last["day"], x, st):     # as of the event slot (red team R2-17); = R.w1_fast_asof
+        why = "w1_fast_class"
+    else:
+        seeds = {last["creator"]}
+        cr = tape.creates[tape.creates["mint"] == mint]
+        if len(cr):
+            seeds |= {cr["creator"].iloc[0], cr["user"].iloc[0]}
+        if x in R.creator_group(adj, seeds, st):
+            why = "creator_group"
+    if why is None:
+        sb = sells_by.get((mint, x))
+        if sb is not None and ((sb >= t - NO_SELL_S) & (sb < t)).any():
+            why = "sold_in_prior_24h"
+    if why is None:
+        gaps = np.diff(sl_rows["block_time"].to_numpy(float))
+        if _cv(gaps) <= CV_INTERVAL or _cv(sl_rows["sol"]) <= CV_SIZE:
+            why = "regular_cadence"
+        elif (sl_rows["signer_sol_pre"].to_numpy()[1:] == sl_rows["signer_sol_post"].to_numpy()[:-1]).any():
+            why = "sol_pure_next_slice"
+    if why is None:
+        if pool not in ps_cache:
+            ps_cache[pool] = RB.pool_state(ctx.pp[pool])
+        i, _, eq_i = RB.state_at(ps_cache[pool], t, st)
+        q = eq_i if i >= 0 and np.isfinite(eq_i) else np.nan
+        b = float(last["signer_sol_post"]) if pd.notna(last["signer_sol_post"]) else np.nan
+        if not np.isfinite(q) or q <= 0 or not np.isfinite(b):
+            why = "no_q_or_b"
+        elif float(sl_rows["sol"].sum()) < MIN_BUYS_Q * q:
+            why = "buys_under_1pct_q"
+    rec = {"day": last["day"], "pool": pool, "mint": mint, "owner": x, "t": t, "slot": st, "Q": q, "B": b,
+           "n_slices": len(w), "slice_sol": float(sl_rows["sol"].sum()), "first_t": int(bt[w[0]])}
+    return int(g["order"].iloc[0]), why, rec
 
 
 FLOW_COLS = ["cont", "a_hit", "fast_ratio", "unclassed_ratio", "bait"]

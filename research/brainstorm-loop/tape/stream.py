@@ -714,6 +714,9 @@ class TwoSidedParts:
             cl = np.where(xr >= 0, cl_arr[np.maximum(xr, 0)], -1)
             multi = (cl >= 0) & (size[np.maximum(cl, 0)] >= 2)
             xx = x[multi].assign(cluster=cl[multi])
+            if len(xx):     # only groups with both a buy and a sell can be two-sided (rows.two_sided_clusters skips the rest)
+                gb = xx.groupby(["cluster", "mint"], sort=False, observed=True)["is_buy"]
+                xx = xx[(gb.transform("any") & ~gb.transform("all")).to_numpy(bool)]
             for (c, mint), g in xx.groupby(["cluster", "mint"], sort=False, observed=True):
                 if g["is_buy"].all() or (~g["is_buy"]).all():
                     continue
@@ -940,9 +943,11 @@ def _compute(tape: StreamTape, sol_usd, n_boot, minutes, log, prep):
         tm.append(('h8', time.time()))
         # slicer
         two_sided = StreamTwoSided(tape.graph, s)
+        memo = {}
         for low_b, tr, res in ((False, ev_tr, ev_res), (True, plc_tr, plc_res)):
             t_k = []
-            SL.find_events(st, s, adj, fast, ctx, low_b=low_b, fast_idx=fast_idx, two_sided=two_sided, trace=t_k)
+            SL.find_events(st, s, adj, fast, ctx, low_b=low_b, fast_idx=fast_idx, two_sided=two_sided, trace=t_k,
+                           memo=memo)
             tr += t_k
             evk = pd.DataFrame([r for _, w, r in t_k if w is None], columns=SL.EV_COLS)
             rs = SL.measure_rows(st, s, evk, ctx, fast_idx, flows=flows) if len(evk) else []

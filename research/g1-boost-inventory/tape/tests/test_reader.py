@@ -30,8 +30,13 @@ TABLES = ("blocks", "curve", "pool_rows", "buys", "T", "W", "F_boost")
 
 
 def assert_same_tape(tc, a, b, pool=True):
-    tc.assertEqual(a.names.names, b.names.names)
-    tc.assertEqual(a.names.idx, b.names.idx)
+    tc.assertEqual(list(a.names.names), list(b.names.names))
+    tc.assertEqual(len(a.names.names), len(b.names.names))
+    for s, c in a.names.idx.items():
+        if b.names.get(s) != c:
+            tc.fail(f"code of {s!r}: {b.names.get(s)} != {c}")
+    for s in ("", "not-on-the-tape", "x" * 50):
+        tc.assertEqual(a.names.get(s), b.names.get(s))
     for k in TABLES:
         if k == "pool_rows" and not pool:
             tc.assertEqual(len(b.pool_rows), 0)
@@ -138,6 +143,45 @@ class ReaderEquality(unittest.TestCase):
             self.assertGreater(json.load(f)["G1"]["in_universe"], 0)        # the random tape reaches every stage
         trades = pd.read_csv(os.path.join(self.root, "out_new", "trades.csv"))
         self.assertGreater(int(trades["filled"].sum()), 0)
+
+
+class CompactInternerSameCodes(unittest.TestCase):
+    """CompactInterner against Interner on random call sequences, with forced hash collisions, long strings, a trailing
+    NUL, non-ASCII text, empty and missing values."""
+
+    def run_seq(self, seed, hash_mod=None):
+        import numpy as np
+        from g1lib.load import CompactInterner, Interner
+        rng = np.random.default_rng(seed)
+        pool = [f"addr{i}" for i in range(300)] + ["", "é漢字", "x" * 60, "tail\0", "So1111", "a" * 44, "b" * 45]
+        a, b = Interner(), CompactInterner()
+        if hash_mod:
+            base = CompactInterner._hash
+            b._hash = staticmethod(lambda v: base(v) % np.uint64(hash_mod))
+        for step in range(400):
+            op = rng.integers(0, 5)
+            vals = [pool[i] for i in rng.integers(0, len(pool), int(rng.integers(1, 30)))]
+            if op == 0:
+                self.assertEqual([a.code(v) for v in vals], [b.code(v) for v in vals])
+            elif op == 1:
+                arr = np.array(vals + [None, float("nan")], dtype=object)
+                self.assertEqual(a.codes(arr).tolist(), b.codes(arr).tolist())
+            elif op == 2:
+                cat = pd.Categorical([v if v else None for v in vals])
+                self.assertEqual(a.codes_cat(pd.Series(cat)).tolist(), b.codes_cat(pd.Series(cat)).tolist())
+            elif op == 3:
+                b.merge()
+            self.assertEqual([a.get(v) for v in pool + ["never"]], [b.get(v) for v in pool + ["never"]])
+        b.merge()
+        self.assertEqual(list(a.names), list(b.names))
+        self.assertEqual([a.name(c) for c in range(-1, len(a.names))], [b.name(c) for c in range(-1, len(b.names))])
+
+    def test_plain(self):
+        self.run_seq(1)
+
+    def test_forced_collisions(self):
+        self.run_seq(2, hash_mod=5)
+        self.run_seq(3, hash_mod=1)
 
 
 class DecideImportsNoOutcome(unittest.TestCase):

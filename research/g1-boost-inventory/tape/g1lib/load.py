@@ -61,7 +61,7 @@ class Interner:
 
     def codes(self, values) -> np.ndarray:
         local, uniques = pd.factorize(pd.Series(values, dtype=object), use_na_sentinel=True)
-        g = np.fromiter((self.code(u) for u in uniques), dtype=np.int64, count=len(uniques))
+        g = self._code_seq(uniques)
         out = np.full(len(local), INT_SENTINEL, dtype=np.int64)
         m = local >= 0
         out[m] = g[local[m]]
@@ -79,17 +79,186 @@ class Interner:
         first = pd.unique(k[ok])                      # category positions in order of first appearance
         m = np.full(len(cats), INT_SENTINEL, dtype=np.int64)
         if len(first):
-            m[first] = np.fromiter((self.code(v) for v in np.asarray(cats, dtype=object)[first]), dtype=np.int64,
-                                   count=len(first))
+            m[first] = self._code_seq(np.asarray(cats, dtype=object)[first])
         out = np.full(len(k), INT_SENTINEL, dtype=np.int64)
         out[ok] = m[k[ok]]
         return out
+
+    def _code_seq(self, values) -> np.ndarray:
+        """`code` of each value, in order."""
+        return np.fromiter((self.code(u) for u in values), dtype=np.int64, count=len(values))
 
     def get(self, s) -> int:
         return self.idx.get(s, INT_SENTINEL)
 
     def name(self, c: int) -> Optional[str]:
         return self.names[c] if c >= 0 else None
+
+
+class _NameView:
+    """`names` of a CompactInterner: length, indexing and iteration like the reference interner's list."""
+
+    def __init__(self, it):
+        self._it = it
+
+    def __len__(self):
+        return self._it._n
+
+    def __getitem__(self, c):
+        if not isinstance(c, (int, np.integer)) or not 0 <= c < self._it._n:
+            raise IndexError(c)
+        return self._it.name(int(c))
+
+    def __iter__(self):
+        return (self._it.name(i) for i in range(self._it._n))
+
+
+class CompactInterner(Interner):
+    """The same codes as Interner (each new string gets the next code, in the same call order), held compactly: merged
+    strings live as UTF-8 in fixed-width byte arrays (one per unit) and are found through a sorted array of their
+    64-bit hashes, verified against the stored bytes. Strings added since the last `merge` sit in a dict; strings the
+    byte arrays cannot hold exactly (too long, a trailing NUL, not a str) or whose hash equals another's sit in a
+    small exact dict. About 60 bytes a name instead of about 140."""
+
+    WIDTH = 44
+
+    def __init__(self):
+        self._n = 0
+        self._merged = 0
+        self._chunks: List[np.ndarray] = []
+        self._starts: List[int] = []
+        self._h = np.empty(0, dtype=np.uint64)
+        self._hc = np.empty(0, dtype=np.int64)
+        self._recent: Dict[object, int] = {}
+        self._recent_list: List[object] = []
+        self._special: Dict[object, int] = {}
+        self._special_names: Dict[int, object] = {}
+
+    @property
+    def names(self):
+        return _NameView(self)
+
+    @property
+    def idx(self):
+        raise AttributeError("CompactInterner has no idx dict; use get()")
+
+    @staticmethod
+    def _hash(vals: np.ndarray) -> np.ndarray:
+        return pd.util.hash_array(vals, categorize=False)
+
+    def code(self, s) -> int:
+        if s is None or (isinstance(s, float) and np.isnan(s)) or s == "":
+            return INT_SENTINEL
+        c = self.get(s)
+        if c < 0:
+            c = self._n
+            self._n += 1
+            self._recent[s] = c
+            self._recent_list.append(s)
+        return c
+
+    def get(self, s) -> int:
+        c = self._recent.get(s)
+        if c is None:
+            c = self._special.get(s)
+        if c is not None:
+            return c
+        if not isinstance(s, str) or not len(self._h):
+            return INT_SENTINEL
+        return int(self._lookup(np.array([s], dtype=object))[0])
+
+    def _encode(self, vals):
+        """Fixed-width bytes and whether each value fits exactly."""
+        enc = [v.encode("utf-8") for v in vals]
+        ok = np.fromiter(((len(b) <= self.WIDTH and not b.endswith(b"\0")) for b in enc), dtype=bool, count=len(enc))
+        return np.array([b if o else b"" for b, o in zip(enc, ok)], dtype=f"S{self.WIDTH}"), ok
+
+    def _gather(self, codes: np.ndarray) -> np.ndarray:
+        out = np.empty(len(codes), dtype=f"S{self.WIDTH}")
+        if not len(codes):
+            return out
+        ci = np.searchsorted(np.asarray(self._starts), codes, "right") - 1
+        for j in np.unique(ci):
+            m = ci == j
+            out[m] = self._chunks[j][codes[m] - self._starts[j]]
+        return out
+
+    def _lookup(self, vals: np.ndarray) -> np.ndarray:
+        """Codes of merged strings found through the hash table (-1 otherwise). `vals`: an object array of str."""
+        out = np.full(len(vals), INT_SENTINEL, dtype=np.int64)
+        if not len(vals) or not len(self._h):
+            return out
+        h = self._hash(vals)
+        pos = np.minimum(np.searchsorted(self._h, h), len(self._h) - 1)
+        hit = np.flatnonzero(self._h[pos] == h)
+        if not len(hit):
+            return out
+        enc, ok = self._encode(vals[hit])
+        cand = self._hc[pos[hit]]
+        same = ok & (self._gather(cand) == enc)
+        out[hit[same]] = cand[same]
+        return out
+
+    def _code_seq(self, values) -> np.ndarray:
+        vals = np.asarray(values, dtype=object)
+        if len(vals) and all(isinstance(v, str) for v in vals):
+            tab = self._lookup(vals)
+        else:
+            tab = np.full(len(vals), INT_SENTINEL, dtype=np.int64)
+        out = np.empty(len(vals), dtype=np.int64)
+        for i, v in enumerate(vals):
+            c = tab[i]
+            out[i] = c if c >= 0 else self.code(v)
+        return out
+
+    def merge(self):
+        """Moves the strings added since the last merge into a byte array and the hash table."""
+        k = len(self._recent_list)
+        if not k:
+            return
+        strs = self._recent_list
+        codes = np.arange(self._merged, self._merged + k, dtype=np.int64)
+        is_str = np.fromiter((isinstance(x, str) for x in strs), dtype=bool, count=k)
+        enc, ok = self._encode([x if isinstance(x, str) else "" for x in strs])
+        ok &= is_str
+        self._chunks.append(enc)
+        self._starts.append(self._merged)
+        for i in np.flatnonzero(~ok):
+            self._special[strs[i]] = int(codes[i])
+            self._special_names[int(codes[i])] = strs[i]
+        good = np.flatnonzero(ok)
+        if len(good):
+            h = self._hash(np.array([strs[i] for i in good], dtype=object))
+            order = np.argsort(h, kind="stable")
+            h, good = h[order], good[order]
+            dup = np.zeros(len(h), dtype=bool)
+            if len(h) > 1:
+                d = h[1:] == h[:-1]
+                dup[1:] |= d
+                dup[:-1] |= d
+            if len(self._h):
+                pos = np.minimum(np.searchsorted(self._h, h), len(self._h) - 1)
+                dup |= self._h[pos] == h
+            for i in good[dup]:
+                self._special[strs[i]] = int(codes[i])      # exact lookup; the bytes still hold its name
+            h, good = h[~dup], good[~dup]
+            at = np.searchsorted(self._h, h)
+            self._h = np.insert(self._h, at, h)
+            self._hc = np.insert(self._hc, at, codes[good])
+        self._merged += k
+        self._recent = {}
+        self._recent_list = []
+
+    def name(self, c: int) -> Optional[str]:
+        if c < 0:
+            return None
+        if c >= self._merged:
+            return self._recent_list[c - self._merged]
+        sn = self._special_names.get(c)
+        if sn is not None:
+            return sn
+        j = int(np.searchsorted(np.asarray(self._starts), c, "right")) - 1
+        return self._chunks[j][c - self._starts[j]].decode("utf-8")
 
 
 @dataclass
@@ -485,7 +654,7 @@ def _load_compact(units: List[Unit], links: bool = True, log=print, pool: bool =
     freed as soon as they are cut down, and the final tables assembled column by column. Every interner call happens in
     the reference reader's order, so codes are identical."""
     fixed_mmap_threshold()
-    names = Interner()
+    names = CompactInterner()
     B, E, C, Tl, Wl, Fl = [], [], [], [], [], []
     for u in units:
         b = pd.read_csv(u.table("B.csv.zst"), compression="zstd", usecols=["slot", "block_time"])
@@ -574,6 +743,7 @@ def _load_compact(units: List[Unit], links: bool = True, log=print, pool: bool =
         f["pool_or_curve"] = names.codes(f["pool_or_curve"].to_numpy())
         Fl.append(f)
         del f
+        names.merge()
         _trim()
 
     curve = _assemble(C, sort_by=["mint", "slot", "tx_idx", "ev_idx"])
@@ -598,6 +768,7 @@ def _load_compact(units: List[Unit], links: bool = True, log=print, pool: bool =
         for col in ("mint", "pool", "bonding_curve", "creator", "user", "base_mint", "quote_mint", "coin_creator"):
             if col in df.columns:
                 df[col + "_c"] = names.codes(df[col].to_numpy())
+    names.merge()
     _trim()
     tape = Tape(units, segments(units), names, blocks, events, curve, pool_rows, buys, T, W, F_boost)
     tape.build_indexes()
