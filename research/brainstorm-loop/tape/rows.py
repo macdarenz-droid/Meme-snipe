@@ -62,6 +62,8 @@ def adjacency(links: pd.DataFrame):
 
 
 def degree_as_of(adj, node, slot):
+    if hasattr(adj, "degree_as_of"):     # the streaming reader's link graph (stream.LinkGraph): same count, indexed
+        return adj.degree_as_of(node, slot)
     return len({n for n, s in adj.get(node, ()) if s <= slot})
 
 
@@ -133,8 +135,10 @@ def eff_quote(row):
 def eligible_pools(tape: Tape):
     """Canonical PumpSwap WSOL pools of pump graduates whose migration is on the tape, not mayhem
     (mayhem unknown is dropped, Q4). Returns DataFrame of pool, mint, m_slot, m_time."""
-    s = tape.swaps
-    canon = set(s.loc[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL), "pool"].dropna())
+    canon = getattr(tape, "canon_pools", None)      # the streaming reader gathers this set over every unit
+    if canon is None:
+        s = tape.swaps
+        canon = set(s.loc[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL), "pool"].dropna())
     rows = []
     for r in tape.migrations.itertuples(index=False):
         if r.pool not in canon or r.quote_mint not in SOL_QUOTES:
@@ -357,6 +361,13 @@ NEAR_FULL_LEFT = 0.10   # Q5: "leave 0-10%" read as 0 < post <= 10% of the dev's
 
 
 def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
+    df = pd.DataFrame(dev_zero_rows(tape, s, adj, require_history))
+    return df, dev_summary(df, sorted({d for d, _, _ in tape.ranges}))
+
+
+def dev_zero_rows(tape: Tape, s: pd.DataFrame, adj, require_history=True, flows=True):
+    """DEV-ZERO's row records, in pool order (pools first seen first). flows=False (prep only): the event and control
+    candidates with their as-of state, and no read after the event (no window flow, no "dev sold again" check)."""
     pools = eligible_pools(tape).set_index("pool")
     pp = by_pool(s)
     cand = []
@@ -392,6 +403,17 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
             out["dropped"] = "window_not_on_tape"
         elif require_history and not history_on_tape(tape, r["mint"], e_slot):
             out["dropped"] = "history_not_on_tape"
+        if not flows:
+            if not out["dropped"]:
+                seeds = {r["owner"], r["creator"]}
+                cr = tape.creates[tape.creates["mint"] == r["mint"]]
+                if len(cr):
+                    seeds |= {cr["creator"].iloc[0], cr["user"].iloc[0]}
+                out.update({"eff_quote": eff_quote(r),
+                            "base": r["pool_base_post"] if pd.notna(r["pool_base_post"]) else r["pool_base_pre"],
+                            "supply": r["supply"], "group_size": len(creator_group(adj, seeds, e_slot))})
+            rows.append(out)
+            continue
         win = g[(g["order"] > e_order) & (g["block_time"] <= e_time + DEV_WINDOW_S)]
         if kind == "control" and arm == "zero" and not out["dropped"]:
             if ((win["owner"] == r["owner"]) & ~win["is_buy"]).any():
@@ -418,8 +440,7 @@ def dev_zero(tape: Tape, s: pd.DataFrame, adj, require_history=True):
                     "holder_sell_late": float(w.loc[holder & late, "sol"].sum()), "group_size": len(grp)})
         out["net"] = (out["ftb_sol_late"] - out["holder_sell_late"]) / eq if eq > 0 else np.nan
         rows.append(out)
-    df = pd.DataFrame(rows)
-    return df, dev_summary(df, sorted({d for d, _, _ in tape.ranges}))
+    return rows
 
 
 def dev_summary(df, days):
@@ -476,6 +497,30 @@ def _norm_name(x):
 
 
 def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
+    return seat_drift_finish(seat_drift_rows(tape, s, adj, require_history))
+
+
+def seat_drift_finish(rows, flows=True):
+    """The row table from seat_drift_rows' records (all eligible graduates, in eligible-pool order), the day terciles
+    and, with flows, the summary."""
+    df = pd.DataFrame(rows)
+    ok = df[df["dropped"] == ""] if len(df) else df
+    ok, tie_counts = assign_terciles(ok)
+    if len(ok):
+        df.loc[ok.index, "tercile"] = ok["tercile"]
+    if not flows:
+        return df, {"graduates": int(len(df)), "used": int(len(ok)),
+                    "busy": int((ok["tercile"] == 2).sum()) if len(ok) else 0,
+                    "lone": int((ok["tercile"] == 0).sum()) if len(ok) else 0,
+                    "dropped": df["dropped"].value_counts().to_dict() if len(df) else {},
+                    "tercile_cuts_and_ties": tie_counts or {}}
+    return df, seat_summary(df, ok, tie_counts)
+
+
+def seat_drift_rows(tape: Tape, s: pd.DataFrame, adj, require_history=True, keep=None, flows=True):
+    """SEAT-DRIFT's per-graduate records. `keep(mint)` limits the records to some graduates (the streaming reader's
+    shard), while N_m and the theme-wave check still read every eligible graduate. flows=False (prep only): N_m and
+    the as-of states, no window flow."""
     pools = eligible_pools(tape)
     pp = by_pool(s)
     names = {}
@@ -496,6 +541,8 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
 
     rows = []
     for r in pools.itertuples(index=False):
+        if keep is not None and not keep(r.mint):
+            continue
         m, ms = int(r.m_time), int(r.m_slot)
         out = {"pool": r.pool, "mint": r.mint, "day": r.day, "m_slot": ms, "m_time": m, "dropped": ""}
         if not (tape.covered_back(ms, m - N_HALF_S) and tape.covered(ms, m + 7200)):
@@ -520,27 +567,25 @@ def seat_drift(tape: Tape, s: pd.DataFrame, adj, require_history=True):
         g = pp.get(r.pool, pd.DataFrame(columns=s.columns))
         res = {"N_m": n_m}
         for name, t0, t1, plus23 in (("w1", m + 3600, m + 7200, True), ("w2", m + 2400, m + 3600, False)):
-            s0 = slot_at_time(tape, t0)
-            w = g[(g["block_time"] <= t1) & ((g["slot"] > s0 + LANDING) if plus23 else (g["block_time"] >= t0))]
-            w = w[w["is_buy"] & w["ftb"] & ~w["fake"] & ~w["excluded"]]
+            if flows:
+                s0 = slot_at_time(tape, t0)
+                w = g[(g["block_time"] <= t1) & ((g["slot"] > s0 + LANDING) if plus23 else (g["block_time"] >= t0))]
+                w = w[w["is_buy"] & w["ftb"] & ~w["fake"] & ~w["excluded"]]
             before = g[g["block_time"] <= t0]
             last = before.iloc[-1] if len(before) else None
             eq = eff_quote(last) if last is not None else np.nan
-            res[f"{name}_ftb_sol"] = float(w["sol"].sum())
+            if flows:
+                res[f"{name}_ftb_sol"] = float(w["sol"].sum())
             res[f"{name}_eff_quote"] = eq
             # the same as-of state's base reserve and supply, for the tier in the payer-mass bar (AMENDMENT_7)
             res[f"{name}_base"] = (last["pool_base_post"] if pd.notna(last["pool_base_post"]) else last["pool_base_pre"]) \
                 if last is not None else np.nan
             res[f"{name}_supply"] = last["supply"] if last is not None else np.nan
-            res[f"{name}_share"] = res[f"{name}_ftb_sol"] / eq if eq and eq > 0 else np.nan
+            if flows:
+                res[f"{name}_share"] = res[f"{name}_ftb_sol"] / eq if eq and eq > 0 else np.nan
         out.update(res)
         rows.append(out)
-    df = pd.DataFrame(rows)
-    ok = df[df["dropped"] == ""] if len(df) else df
-    ok, tie_counts = assign_terciles(ok)
-    if len(ok):
-        df.loc[ok.index, "tercile"] = ok["tercile"]
-    return df, seat_summary(df, ok, tie_counts)
+    return rows
 
 
 def seat_summary(df, ok, tie_counts=None):
@@ -633,16 +678,31 @@ PLACEBO_OFF = [3, 4, 5, 7, 11]
 AGE_W_S = 60   # Q16: the "around" window is not fixed; +/-60 s
 
 
+AGE_COLS = ["anchor", "mint", "round_min", "type", "age_min", "cls", "step_sol"]
+
+
 def age_gate(tape: Tape, s: pd.DataFrame, fast):
     """Step in first-time buyer SOL at round coin ages (from create and from migration) vs local placebo ages,
     by W1 class. Step(x) = FTB SOL in [x, x+w) - FTB SOL in [x-w, x)."""
+    return age_gate_finish(pd.DataFrame(age_gate_rows(tape, s, fast), columns=AGE_COLS))
+
+
+def age_gate_anchors(tape: Tape):
+    anchors = [("create", r.mint, int(r.slot), int(r.block_time)) for r in tape.creates.itertuples(index=False)]
+    anchors += [("migration", r.mint, int(r.m_slot), int(r.m_time)) for r in eligible_pools(tape).itertuples(index=False)]
+    return anchors
+
+
+def age_gate_rows(tape: Tape, s: pd.DataFrame, fast, keep=None, flows=True, with_index=False):
+    """AGE-GATE's records in anchor order; `keep(mint)` limits them to some anchors (a shard). with_index adds the
+    anchor's position as a last field. flows=False (prep only): the anchor ages on the tape, no step."""
     fb = s[s["is_buy"] & s["ftb"] & ~s["fake"] & ~s["excluded"] & s["sol_quoted"]].copy()
     fb["cls"] = ["fast" if fast.get((d, o), False) else "slow" for d, o in zip(fb["day"], fb["owner"])]
     by_mint = {m: g for m, g in fb.groupby("mint", sort=False)}
-    anchors = [("create", r.mint, int(r.slot), int(r.block_time)) for r in tape.creates.itertuples(index=False)]
-    anchors += [("migration", r.mint, int(r.m_slot), int(r.m_time)) for r in eligible_pools(tape).itertuples(index=False)]
     rows = []
-    for kind, mint, aslot, at in anchors:
+    for ai, (kind, mint, aslot, at) in enumerate(age_gate_anchors(tape)):
+        if keep is not None and not keep(mint):
+            continue
         g = by_mint.get(mint)
         for a in ROUND_MIN:
             ages = [("round", a)] + [("placebo", a + sgn * o) for o in PLACEBO_OFF for sgn in (-1, 1)
@@ -652,6 +712,10 @@ def age_gate(tape: Tape, s: pd.DataFrame, fast):
                 if not (tape.covered_back(aslot, x - AGE_W_S) and tape.covered(aslot, x + AGE_W_S)):
                     continue
                 for cls in ("fast", "slow"):
+                    if not flows:
+                        rows.append({"anchor": kind, "mint": mint, "round_min": a, "type": typ, "age_min": age,
+                                     "cls": cls, **({"ai": ai} if with_index else {})})
+                        continue
                     if g is None:
                         step = 0.0
                     else:
@@ -659,8 +723,11 @@ def age_gate(tape: Tape, s: pd.DataFrame, fast):
                         step = float(h.loc[(h["block_time"] >= x) & (h["block_time"] < x + AGE_W_S), "sol"].sum()
                                      - h.loc[(h["block_time"] >= x - AGE_W_S) & (h["block_time"] < x), "sol"].sum())
                     rows.append({"anchor": kind, "mint": mint, "round_min": a, "type": typ, "age_min": age,
-                                 "cls": cls, "step_sol": step / LAMPORTS})
-    df = pd.DataFrame(rows, columns=["anchor", "mint", "round_min", "type", "age_min", "cls", "step_sol"])
+                                 "cls": cls, "step_sol": step / LAMPORTS, **({"ai": ai} if with_index else {})})
+    return rows
+
+
+def age_gate_finish(df):
     summ = []
     for (k, a, c), g in df.groupby(["anchor", "round_min", "cls"]):
         r = g[g["type"] == "round"]["step_sol"]
@@ -716,7 +783,10 @@ def usd_level_flags(sol_usd, days):
     return flags, ns
 
 
-def mcap_segments(tape: Tape, s: pd.DataFrame):
+SEG_COLS = ["pool", "mint", "day", "t0", "t1", "mcap", "w_start", "w_end"]
+
+
+def mcap_segments(tape: Tape, s: pd.DataFrame, keep=None):
     """Per eligible pool: time segments [t, t_next) holding the market cap in SOL after each swap, for
     hours 0-72 after migration, outside the BOOST window (A amendment (b)). Market cap = effective quote
     / pool base * supply (Q19)."""
@@ -724,6 +794,8 @@ def mcap_segments(tape: Tape, s: pd.DataFrame):
     pp = by_pool(s)
     segs = []
     for r in pools.itertuples(index=False):
+        if keep is not None and not keep(r.mint):
+            continue
         g = pp.get(r.pool)
         if g is None or not len(g):
             continue
@@ -746,7 +818,7 @@ def mcap_segments(tape: Tape, s: pd.DataFrame):
             a_, b_ = max(ti, start), min(tj, end)
             segs.append({"pool": r.pool, "mint": r.mint, "day": r.day, "t0": a_, "t1": max(a_, b_), "mcap": mci,
                          "w_start": start, "w_end": end})
-    return pd.DataFrame(segs, columns=["pool", "mint", "day", "t0", "t1", "mcap", "w_start", "w_end"])
+    return pd.DataFrame(segs, columns=SEG_COLS)
 
 
 def band_time(seg, lo, hi):
@@ -760,14 +832,16 @@ def log_ratio(seg, L):
     return float(np.log(up / dn)) if up > 0 and dn > 0 else np.nan
 
 
-def round_usd(tape: Tape, s: pd.DataFrame, sol_usd: dict | None, adj, n_boot=BOOT_N):
+def round_usd(tape: Tape, s: pd.DataFrame, sol_usd: dict | None, adj, n_boot=BOOT_N, seg=None, gate3_rows=None):
     """Bunching at the SOL levels equal to $50k and $100k each tape day, with the day's placebo grid;
-    flags 420 within 5% of a round USD level; Gate 3 focused-vs-spread creator split (descriptive)."""
+    flags 420 within 5% of a round USD level; Gate 3 focused-vs-spread creator split (descriptive).
+    The streaming reader passes the segments and Gate 3's pool rows it gathered shard by shard."""
     days = sorted({d for d, _, _ in tape.ranges})
     if not sol_usd:
         return pd.DataFrame(), {"status": "needs SOL/USD per day (--sol-usd CSV from the Binance public archive)",
                                 "days": days}
-    seg = mcap_segments(tape, s)
+    if seg is None:
+        seg = mcap_segments(tape, s)
     out, flags = [], {}
     for d in days:
         px = sol_usd.get(d)
@@ -799,7 +873,7 @@ def round_usd(tape: Tape, s: pd.DataFrame, sol_usd: dict | None, adj, n_boot=BOO
                 lb = q if np.isfinite(q) else None
             out.append({"day": d, "sol_usd": px, "usd_level": usd, "sol_level": L, "pools": len(plist),
                         "placebos": len(grid), "bunching_logratio_minus_placebo": point, "lb95": lb})
-    gate3 = gate3_split(tape, s, seg, adj)
+    gate3 = gate3_split(tape, s, seg, adj) if gate3_rows is None else gate3_summary(gate3_rows)
     summ = {"days": days, "a_within_5pct_of_round_usd": flags,
             "a_not_separable_from_usd_level": (None if (not flags or any(v is None for v in flags.values()))
                                                else all(flags.values())),
@@ -812,12 +886,16 @@ def gate3_split(tape: Tape, s: pd.DataFrame, seg: pd.DataFrame, adj, return_rows
     minus the median of the same in +/-5% bands around the placebo cutoffs), split by creators focused on
     one coin vs spread over several (same creator-group definition; Q20). CF collections are reported."""
     grid = placebo_grid()
-    roles = defaultdict(set)
-    for r in tape.creates.itertuples(index=False):
-        roles[r.creator].add(r.mint)
-    for r in s[s["creator"].notna()][["creator", "mint"]].drop_duplicates().itertuples(index=False):
-        roles[r.creator].add(r.mint)
-    cf_by = tape.cf.groupby("creator").size().to_dict() if len(tape.cf) else {}
+    roles = getattr(tape, "roles", None)        # the streaming reader gathers the roles over every unit
+    if roles is None:
+        roles = defaultdict(set)
+        for r in tape.creates.itertuples(index=False):
+            roles[r.creator].add(r.mint)
+        for r in s[s["creator"].notna()][["creator", "mint"]].drop_duplicates().itertuples(index=False):
+            roles[r.creator].add(r.mint)
+    cf_by = getattr(tape, "cf_by", None)
+    if cf_by is None:
+        cf_by = tape.cf.groupby("creator").size().to_dict() if len(tape.cf) else {}
     pp = by_pool(s)
     end_slot = max(b for _, _, b in tape.ranges)
     rows = []
@@ -854,6 +932,10 @@ def gate3_split(tape: Tape, s: pd.DataFrame, seg: pd.DataFrame, adj, return_rows
     df = pd.DataFrame(rows)
     if return_rows:
         return df
+    return gate3_summary(df)
+
+
+def gate3_summary(df):
     if not len(df):
         return {}
     return {c: {"pools": int(len(g)), "pools_with_measure": int(g["measure_minus_placebo"].notna().sum()),

@@ -74,10 +74,14 @@ class FastAsOf:
         return bool(x[1][n - 1] / n >= 0.10 or x[2][n - 1] / n >= 0.30)
 
 
-def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
+EV_COLS = ["day", "pool", "mint", "owner", "t", "slot", "Q", "B", "n_slices", "slice_sol", "first_t"]
+
+
+def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False, fast_idx=None, two_sided=None, trace=None):
     """Slicer events on canonical WSOL pools. One event per (mint, owner): the first buy k at which the owner has
     at least 3 buys of the mint in (t_k - 30 min, t_k], spanning at least 3 slots and 60 s (Q27). Returns
-    (events, drops)."""
+    (events, drops). The streaming reader passes the whole-tape `fast_idx` and `two_sided` indexes and a `trace`
+    list, which gets (the pair's first buy order, drop reason or None, event record) for each pair checked."""
     sw = s[(s["venue"] == "amm") & s["canonical"] & (s["quote_mint"] == WSOL) & ~s["excluded"] & s["owner"].notna()]
     allx = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
     buys = sw[sw["is_buy"]]
@@ -88,8 +92,8 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
     sells = sells[pd.MultiIndex.from_frame(sells[["mint", "owner"]]).isin(pairs)]
     sells_by = {k: g["block_time"].to_numpy() for k, g in sells.groupby(["mint", "owner"], sort=False)}
     ps_cache = {}
-    fast_idx = FastAsOf(R.w1_fast_buys(tape, s))
-    two_sided = R.TwoSidedAsOf(tape, s)
+    fast_idx = fast_idx or FastAsOf(R.w1_fast_buys(tape, s))
+    two_sided = two_sided or R.TwoSidedAsOf(tape, s)
     out, drops = [], Counter()
     for (mint, x), g in buys.groupby(["mint", "owner"], sort=False):
         if len(g) < 3:
@@ -150,24 +154,46 @@ def find_events(tape: Tape, s: pd.DataFrame, adj, fast, ctx, low_b=False):
                 why = "window_not_on_tape"
         if why:
             drops[why] += 1
+            if trace is not None:
+                trace.append((int(g["order"].iloc[0]), why, None))
             continue
         out.append({"day": last["day"], "pool": pool, "mint": mint, "owner": x, "t": t, "slot": st, "Q": q, "B": b,
                     "n_slices": len(w), "slice_sol": float(sl_rows["sol"].sum()), "first_t": int(bt[w[0]])})
-    cols = ["day", "pool", "mint", "owner", "t", "slot", "Q", "B", "n_slices", "slice_sol", "first_t"]
-    return pd.DataFrame(out, columns=cols), dict(drops)
+        if trace is not None:
+            trace.append((int(g["order"].iloc[0]), None, out[-1]))
+    return pd.DataFrame(out, columns=EV_COLS), dict(drops)
 
 
-def measure(tape: Tape, s: pd.DataFrame, ev: pd.DataFrame, fast, ctx):
+FLOW_COLS = ["cont", "a_hit", "fast_ratio", "unclassed_ratio", "bait"]
+ASOF_COLS = ["ret5", "ret15", "ret60", "vol15", "volume15", "buys15", "universe", "ok5"]
+
+
+def measure(tape: Tape, s: pd.DataFrame, ev: pd.DataFrame, fast, ctx, fast_idx=None):
     """Flows after each event (X's continuation, fast-class buying, bait) and as-of features before it."""
+    return measure_frame(ev, measure_rows(tape, s, ev, ctx, fast_idx) if len(ev) else [])
+
+
+def measure_frame(ev: pd.DataFrame, res, flows=True):
     if not len(ev):
-        return ev.assign(cont=[], a_hit=[], fast_ratio=[], unclassed_ratio=[], bait=[], ret5=[], ret15=[], ret60=[], vol15=[], volume15=[],
-                         buys15=[], universe=[], ok5=[])
+        return ev.assign(**{c: [] for c in (FLOW_COLS if flows else []) + ASOF_COLS})
+    return pd.concat([ev.reset_index(drop=True), pd.DataFrame(res)], axis=1)
+
+
+def measure_rows(tape: Tape, s: pd.DataFrame, ev: pd.DataFrame, ctx, fast_idx=None, flows=True):
+    """One record per event: the flows after it (flows=True) and its as-of features. flows=False (prep only) reads
+    nothing after the event."""
+    if not len(ev):
+        return []
     x = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
     by_mint = {m: g for m, g in x.groupby("mint", sort=False)}
-    fast_idx = FastAsOf(R.w1_fast_buys(tape, s))
+    if flows:
+        fast_idx = fast_idx or FastAsOf(R.w1_fast_buys(tape, s))
     res = []
     for e in ev.itertuples(index=False):
         g = by_mint[e.mint]
+        if not flows:
+            res.append(_asof_features(tape, e, ctx))
+            continue
         mine = g[g["owner"] == e.owner]
         win = mine[(mine["slot"] > e.slot + R.LANDING) & (mine["block_time"] <= e.t + CONT_S)]
         cont = float(win.loc[win["is_buy"], "sol"].sum() - win.loc[~win["is_buy"], "sol"].sum())
@@ -184,31 +210,35 @@ def measure(tape: Tape, s: pd.DataFrame, ev: pd.DataFrame, fast, ctx):
         if tape.covered(e.slot, t_end + BAIT_S):
             sold = mine[~mine["is_buy"] & (mine["block_time"] > e.t) & (mine["block_time"] <= t_end + BAIT_S)]["base"].sum()
             bait = bool(sold >= 0.5 * buys["base"].sum())
-        # as-of features from the pool's trades at or before the event
-        tr = ctx.trades(e.pool)
-        k = int(np.searchsorted(tr["slot"], e.slot, side="right"))
-        bt, post = tr["bt"][:k], tr["post"][:k]
-
-        def back(dt):
-            j = int(np.searchsorted(bt, e.t - dt, side="right")) - 1
-            return float(post[k - 1] / post[j] - 1) if j >= 0 and post[j] > 0 and k > 0 else np.nan
-
-        recent = (bt > e.t - 900)
-        pg = ctx.pp[e.pool]
-        pg = pg[(pg["slot"] <= e.slot) & (pg["block_time"] > e.t - 900) & pg["sol_quoted"]]
-        closes = pd.Series(post[recent], index=bt[recent] // 60).groupby(level=0).last()
-        vol15 = float(np.diff(np.log(closes.to_numpy())).std()) if len(closes) > 2 else np.nan
-        m = ctx.mig.get(e.pool)
-        uni = H8.universe(e.t - m[0]) if m else "age_unknown"
         res.append({"cont": cont, "a_hit": bool(cont >= 0.5 * e.B), "fast_ratio": fast_sol / e.B if e.B > 0 else np.nan,
                     "unclassed_ratio": unclassed_sol / e.B if e.B > 0 else np.nan,
-                    "bait": bait, "ret5": back(300), "ret15": back(900), "ret60": back(3600), "vol15": vol15,
-                    "volume15": float(pg["sol"].sum()), "buys15": int(pg["is_buy"].sum()), "universe": uni,
-                    "ok5": ctx.check(e.pool, e.t, e.slot, e.Q, H8.TRIAL_SIZE_USD) == "ok" and uni == "U1"})
-    return pd.concat([ev.reset_index(drop=True), pd.DataFrame(res)], axis=1)
+                    "bait": bait, **_asof_features(tape, e, ctx)})
+    return res
 
 
-def dispersed_controls_reference(tape: Tape, s: pd.DataFrame, ctx, cmap):
+def _asof_features(tape: Tape, e, ctx):
+    """As-of features from the pool's trades at or before the event."""
+    tr = ctx.trades(e.pool)
+    k = int(np.searchsorted(tr["slot"], e.slot, side="right"))
+    bt, post = tr["bt"][:k], tr["post"][:k]
+
+    def back(dt):
+        j = int(np.searchsorted(bt, e.t - dt, side="right")) - 1
+        return float(post[k - 1] / post[j] - 1) if j >= 0 and post[j] > 0 and k > 0 else np.nan
+
+    recent = (bt > e.t - 900)
+    pg = ctx.pp[e.pool]
+    pg = pg[(pg["slot"] <= e.slot) & (pg["block_time"] > e.t - 900) & pg["sol_quoted"]]
+    closes = pd.Series(post[recent], index=bt[recent] // 60).groupby(level=0).last()
+    vol15 = float(np.diff(np.log(closes.to_numpy())).std()) if len(closes) > 2 else np.nan
+    m = ctx.mig.get(e.pool)
+    uni = H8.universe(e.t - m[0]) if m else "age_unknown"
+    return {"ret5": back(300), "ret15": back(900), "ret60": back(3600), "vol15": vol15,
+            "volume15": float(pg["sol"].sum()), "buys15": int(pg["is_buy"].sum()), "universe": uni,
+            "ok5": ctx.check(e.pool, e.t, e.slot, e.Q, H8.TRIAL_SIZE_USD) == "ok" and uni == "U1"}
+
+
+def dispersed_controls_reference(tape: Tape, s: pd.DataFrame, ctx, cmap, flows=True):
     """Row-by-row version of `dispersed_controls`, kept as the reference the tests compare it with.
     SWEEP_4 (c) control: at least 3 wallets, each with exactly 1 buy in (t' - 30 min, t'], in different hub-cap-50
     clusters, whose buys sum to at least 1% of Q; the first such t' per pool and 2-h block (Q28). Its continuation
@@ -234,17 +264,23 @@ def dispersed_controls_reference(tape: Tape, s: pd.DataFrame, ctx, cmap):
             q = eq_i if i >= 0 and np.isfinite(eq_i) else np.nan
             if not np.isfinite(q) or single["sol"].sum() < MIN_BUYS_Q * q or not tape.covered(int(r.slot), int(r.block_time) + CONT_S):
                 continue
-            later = g[(g["slot"] > r.slot + R.LANDING) & (g["block_time"] <= r.block_time + CONT_S)
-                      & g["owner"].isin(set(single["owner"]))]
-            cont = float(later.loc[later["is_buy"], "sol"].sum() - later.loc[~later["is_buy"], "sol"].sum())
+            rec = {"day": r.day, "pool": pool, "t": int(r.block_time), "Q": q}
+            if flows:
+                later = g[(g["slot"] > r.slot + R.LANDING) & (g["block_time"] <= r.block_time + CONT_S)
+                          & g["owner"].isin(set(single["owner"]))]
+                rec["cont"] = float(later.loc[later["is_buy"], "sol"].sum() - later.loc[~later["is_buy"], "sol"].sum())
             m = ctx.mig.get(pool)
-            out.append({"day": r.day, "pool": pool, "t": int(r.block_time), "Q": q, "cont": cont,
-                        "age_s": (int(r.block_time) - m[0]) if m else np.nan})
+            rec["age_s"] = (int(r.block_time) - m[0]) if m else np.nan
+            out.append(rec)
             done.add(blk)
-    return pd.DataFrame(out, columns=["day", "pool", "t", "Q", "cont", "age_s"])
+    return pd.DataFrame(out, columns=ctl_cols(flows))
 
 
-def dispersed_controls(tape: Tape, s: pd.DataFrame, ctx, cmap):
+def ctl_cols(flows=True):
+    return ["day", "pool", "t", "Q"] + (["cont"] if flows else []) + ["age_s"]
+
+
+def dispersed_controls(tape: Tape, s: pd.DataFrame, ctx, cmap, flows=True, records=False):
     """SWEEP_4 (c) control (Q28), same result as `dispersed_controls_reference`, in one pass per pool: a sliding
     30-min window over the pool's buys keeps each owner's buy count, the sum of single-buy SOL and the clusters that
     hold a single buyer; the exact cluster-deduplicated sum is formed only when the cheap bounds allow a hit.
@@ -258,12 +294,13 @@ def dispersed_controls(tape: Tape, s: pd.DataFrame, ctx, cmap):
             continue
         bt = b["block_time"].to_numpy(np.int64)
         if (np.diff(bt) < 0).any():
-            ref = dispersed_controls_reference(tape, g, ctx, cmap)
+            ref = dispersed_controls_reference(tape, g, ctx, cmap, flows)
             out += ref.to_dict("records")
             continue
         sl, sol = b["slot"].to_numpy(np.int64), b["sol"].to_numpy(float)
         owners = b["owner"].to_numpy(object)
-        clus = np.array([cmap.get(o, o) for o in owners], dtype=object)
+        clus = (cmap.many(owners) if hasattr(cmap, "many")      # the streaming reader's cluster map
+                else np.array([cmap.get(o, o) for o in owners], dtype=object))
         days = b["day"].to_numpy(object)
         ps = RB.pool_state(ctx.pp[pool])
         g_slot, g_bt = g["slot"].to_numpy(np.int64), g["block_time"].to_numpy(np.int64)
@@ -320,13 +357,17 @@ def dispersed_controls(tape: Tape, s: pd.DataFrame, ctx, cmap):
                     kept.append(j)
             if len(kept) < 3 or sol[kept].sum() < MIN_BUYS_Q * q:
                 continue
-            ks = {owners[j] for j in kept}
-            lm = (g_slot > sl[k] + R.LANDING) & (g_bt <= bt[k] + CONT_S) & np.array([x in ks for x in g_owner], bool)
-            cont = float(g_sol[lm & g_buy].sum() - g_sol[lm & ~g_buy].sum())
-            out.append({"day": days[k], "pool": pool, "t": int(bt[k]), "Q": q, "cont": cont,
-                        "age_s": (int(bt[k]) - m[0]) if m else np.nan})
+            rec = {"day": days[k], "pool": pool, "t": int(bt[k]), "Q": q}
+            if flows:
+                ks = {owners[j] for j in kept}
+                lm = (g_slot > sl[k] + R.LANDING) & (g_bt <= bt[k] + CONT_S) & np.array([x in ks for x in g_owner], bool)
+                rec["cont"] = float(g_sol[lm & g_buy].sum() - g_sol[lm & ~g_buy].sum())
+            rec["age_s"] = (int(bt[k]) - m[0]) if m else np.nan
+            out.append(rec)
             done.add(blk)
-    return pd.DataFrame(out, columns=["day", "pool", "t", "Q", "cont", "age_s"])
+    if records:
+        return out
+    return pd.DataFrame(out, columns=ctl_cols(flows))
 
 
 def _cells(df, ref):
@@ -344,12 +385,16 @@ def _cells(df, ref):
 
 
 def slicer_rows(tape: Tape, s: pd.DataFrame, adj, fast, ctx, cmap):
-    days = sorted({d for d, _, _ in tape.ranges})
     ev, drops = find_events(tape, s, adj, fast, ctx)
     ev = measure(tape, s, ev, fast, ctx)
     plc, plc_drops = find_events(tape, s, adj, fast, ctx, low_b=True)
     plc = measure(tape, s, plc, fast, ctx)
     ctl = dispersed_controls(tape, s, ctx, cmap)
+    return slicer_finish(tape, ev, drops, plc, ctl, ctx)
+
+
+def slicer_finish(tape: Tape, ev, drops, plc, ctl, ctx):
+    days = sorted({d for d, _, _ in tape.ranges})
     summ = {"events": int(len(ev)), "drops": drops, "events_by_universe": dict(Counter(ev["universe"])) if len(ev) else {},
             "placebo_low_b_events": int(len(plc)), "dispersed_controls": int(len(ctl))}
     # (a) budget realisation

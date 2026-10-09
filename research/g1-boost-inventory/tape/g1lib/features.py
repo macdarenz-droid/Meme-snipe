@@ -82,6 +82,11 @@ class FeatureContext:
         self.b_owner = b["owner"].to_numpy()[order]
         self.b_slot = b["slot"].to_numpy()[order]
         self.b_cumnear = np.cumsum(near[order])
+        # memory only: the same values held as int32 when they fit (slots < 2^31; a count of buys)
+        if len(self.b_slot) and self.b_slot.max() <= np.iinfo(np.int32).max and self.b_slot.min() >= 0:
+            self.b_slot = self.b_slot.astype(np.int32)
+        if len(self.b_cumnear) and self.b_cumnear[-1] <= np.iinfo(np.int32).max:
+            self.b_cumnear = self.b_cumnear.astype(np.int32)
 
     def serial(self, owner: int, cutoff: int) -> bool:
         """At least 5 buys on the tape before the slot, at least 10% of them within 2 slots after a create or

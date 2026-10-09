@@ -1,4 +1,5 @@
 """Unit tests for f1_counts.py on small synthetic tables.  Run: python3 -m unittest -v (from this folder)."""
+import contextlib
 import io
 import json
 import os
@@ -341,6 +342,199 @@ class PayerMassF1(unittest.TestCase):
             self.assertIn("passed", summ["payer_mass_bar"])
             d = F.decide(summ, payer=summ["payer_mass_bar"])
             self.assertEqual(d["gate_passes"], bool(not d["f1_closes"] and summ["payer_mass_bar"]["passed"] is True))
+
+
+# ---------------------------------------------------------------- low-memory reader (2026-10-09)
+CURVE_COLS = ["slot", "tx_idx", "ev_idx", "signature", "user_token_owner", "mint", "is_buy", "sol_amount", "quote_mint",
+              "protocol", "virtual_sol_reserves", "fee_basis_points", "creator_fee_basis_points"]
+AMM_COLS = ["slot", "tx_idx", "ev_idx", "signature", "user_token_owner", "base_mint", "side", "quote_amount",
+            "quote_mint", "protocol", "chain_pool_quote", "virtual_quote_reserves", "lp_fee_basis_points",
+            "protocol_fee_basis_points", "coin_creator_fee_basis_points"]
+
+
+def random_units(root, seed, units_per_day=3, span=4000, rows_per_unit=900):
+    """Random multi-unit tape for both days: curve and pool swaps (some sells, non-SOL quotes, protocol rows, BOOST
+    signatures, missing owners), T transfers (mint, WSOL, mint/burn kinds, self transfers, missing owners) and W rows.
+    A few heavy buyers spread over many mints so that leaders pass the 10-mint and 8-pair rules."""
+    r = np.random.default_rng(seed)
+    owners = [f"o{i:03d}" for i in range(120)]
+    heavy = [f"h{i}" for i in range(6)]
+    mints = [f"m{i:02d}" for i in range(25)]
+    paths, plan = [], []
+    for day, base in ((F.DAY1, 1_000_000), (F.DAY2, 2_000_000)):
+        for u in range(units_per_day):
+            lo, hi = base + u * span, base + (u + 1) * span - 1
+            curve, amm, boost = [], [], []
+            for k in range(rows_per_unit):
+                slot = int(r.integers(lo, hi + 1))
+                who = heavy[int(r.integers(len(heavy)))] if r.random() < 0.25 else owners[int(r.integers(len(owners)))]
+                if r.random() < 0.02:
+                    who = None
+                mint = mints[int(r.integers(len(mints)))]
+                sig = f"{day}-{u}-{k}"
+                if r.random() < 0.02:
+                    boost.append(sig)
+                proto = "1" if r.random() < 0.02 else "0"
+                if r.random() < 0.6:
+                    curve.append({"slot": slot, "tx_idx": int(r.integers(0, 4)), "ev_idx": int(r.integers(0, 3)),
+                                  "signature": sig, "user_token_owner": who, "mint": mint,
+                                  "is_buy": int(r.random() < 0.8), "sol_amount": int(r.integers(1, 10**9)),
+                                  "quote_mint": F.SOL_NATIVE if r.random() < 0.97 else "USDC", "protocol": proto,
+                                  "virtual_sol_reserves": int(r.integers(10**9, 10**11)) if r.random() < 0.95 else None,
+                                  "fee_basis_points": 95, "creator_fee_basis_points": int(r.integers(0, 60))})
+                else:
+                    amm.append({"slot": slot, "tx_idx": int(r.integers(0, 4)), "ev_idx": int(r.integers(0, 3)),
+                                "signature": sig, "user_token_owner": who, "base_mint": mint,
+                                "side": "buy" if r.random() < 0.8 else "sell", "quote_amount": int(r.integers(1, 10**9)),
+                                "quote_mint": F.WSOL if r.random() < 0.97 else "USDC", "protocol": proto,
+                                "chain_pool_quote": int(r.integers(10**10, 10**12)),
+                                "virtual_quote_reserves": int(r.integers(0, 10**9)), "lp_fee_basis_points": 20,
+                                "protocol_fee_basis_points": 5, "coin_creator_fee_basis_points": int(r.integers(0, 96))})
+            pool = owners + heavy + [None]
+            t = [{"mint": [*mints, F.WSOL][int(r.integers(len(mints) + 1))],
+                  "kind": ["transfer", "transfer", "transfer", "mint", "burn"][int(r.integers(5))],
+                  "from_owner": pool[int(r.integers(len(pool)))], "to_owner": pool[int(r.integers(len(pool)))]}
+                 for _ in range(40)]
+            w = [{"from": pool[int(r.integers(len(pool)))], "to": pool[int(r.integers(len(pool)))]} for _ in range(40)]
+            p = os.path.join(root, day, f"{lo}-{hi}", "research")
+            os.makedirs(p, exist_ok=True)
+            pd.DataFrame(curve, columns=CURVE_COLS).to_csv(os.path.join(p, "S_curve.csv.zst"), index=False,
+                                                           compression="zstd")
+            pd.DataFrame(amm, columns=AMM_COLS).to_csv(os.path.join(p, "S_amm.csv.zst"), index=False, compression="zstd")
+            pd.DataFrame(t, columns=["mint", "kind", "from_owner", "to_owner"]).to_csv(
+                os.path.join(p, "T.csv.zst"), index=False, compression="zstd")
+            pd.DataFrame(w, columns=["from", "to"]).to_csv(os.path.join(p, "W.csv.zst"), index=False, compression="zstd")
+            lines = "".join(json.dumps({"event": "BoostBuyAndBurnEvent", "signature": x}) + "\n" for x in boost)
+            with open(os.path.join(p, "E.jsonl.zst"), "wb") as fh:
+                fh.write(zstandard.ZstdCompressor().compress(lines.encode()))
+            paths.append(os.path.dirname(p))
+            plan.append(f"{day} 1 {lo} {hi}")
+    planf = os.path.join(root, "plan.txt")
+    with open(planf, "w") as fh:
+        fh.write("\n".join(plan) + "\n")
+    return paths, planf
+
+
+def outputs(d):
+    res = {}
+    for f in sorted(os.listdir(d)):
+        with open(os.path.join(d, f), "rb") as fh:
+            res[f] = fh.read()
+    return res
+
+
+class Compact(unittest.TestCase):
+    """The low-memory reader (default) writes byte-identical files to the original reader (--original-reader)."""
+
+    def _both(self, args, root):
+        a, b = os.path.join(root, "orig"), os.path.join(root, "compact")
+        with contextlib.redirect_stdout(io.StringIO()):
+            F.main(args + ["--out", a, "--original-reader"])
+            F.main(args + ["--out", b])
+        oa, ob = outputs(a), outputs(b)
+        self.assertEqual(sorted(oa), sorted(ob))
+        self.assertTrue(oa)
+        for f in oa:
+            self.assertEqual(oa[f], ob[f], f)
+        return oa
+
+    def test_identical_outputs_on_the_end_to_end_fixture(self):
+        with tempfile.TemporaryDirectory() as root:
+            rows = lambda base: [r for i in range(10) for r in
+                                 [curve_row(base + 3000 + i * 100, "L", f"m{i}"),
+                                  curve_row(base + 3700 + i * 100, f"pl{i}", f"m{i}")]
+                                 + [curve_row(base + 3030 + i * 100 + k, f"f{i}_{k}", f"m{i}", sol=1000)
+                                    for k in range(3 + i % 2)]]
+            u = [write_unit(root, F.DAY1, 1000, 9999, rows(1000)), write_unit(root, F.DAY2, 20000, 29999, rows(20000))]
+            plan = os.path.join(root, "plan.txt")
+            with open(plan, "w") as fh:
+                fh.write(f"{F.DAY1} 1 1000 9999\n{F.DAY2} 1 20000 29999\n")
+            args = sum([["--unit", x] for x in u], [])
+            out = self._both(args + ["--decide", "--plan", plan], os.path.join(root, "full"))
+            self.assertIn("f1_events_day2.csv", out)
+            self._both(args + ["--prep-only"], os.path.join(root, "prep"))
+
+    def test_identical_outputs_on_random_multi_unit_tapes(self):
+        old = (F.BOOT_CHUNK_ELEMS, F.EV_BLOCK)
+        F.BOOT_CHUNK_ELEMS, F.EV_BLOCK = 37, 7          # many bootstrap and record blocks, odd sizes
+        try:
+            for seed in (11, 12, 13):
+                with tempfile.TemporaryDirectory() as root:
+                    u, plan = random_units(root, seed)
+                    args = sum([["--unit", x] for x in u], [])
+                    out = self._both(args + ["--decide", "--plan", plan], os.path.join(root, "full"))
+                    s = json.loads(out["f1_summary.json"])
+                    self.assertGreater(s["leader_candidates_day1"], 0, seed)   # the leader stages really ran
+                    self.assertGreater(s["day1_buys_used"], 8, seed)
+                    lt = pd.read_csv(io.BytesIO(out["f1_leaders_day1.csv"]))
+                    self.assertTrue(lt["testable"].any(), seed)                  # the bootstrap really ran
+                    self._both(args + ["--prep-only"], os.path.join(root, "prep"))
+        finally:
+            F.BOOT_CHUNK_ELEMS, F.EV_BLOCK = old
+
+    def test_blocked_bootstrap_draws_identical_means_and_rng_state(self):
+        for n in (1, 2, 7, 8, 9, 1001, 40_000):
+            d = np.random.default_rng(n).integers(-3, 4, n).astype(float)
+            for chunk in (1, 5, 64, 1 << 16):
+                r1, r2 = np.random.default_rng(3), np.random.default_rng(3)
+                m1, m2 = F._boot_means(d, 300, r1, None), F._boot_means(d, 300, r2, chunk)
+                self.assertTrue(np.array_equal(m1, m2), (n, chunk))
+                self.assertTrue(np.array_equal(r1.integers(0, 2**40, 4), r2.integers(0, 2**40, 4)), (n, chunk))
+
+
+class PrepOnly(unittest.TestCase):
+    """--prep-only (real tape before the gate) computes no follow count, statistic, payer bar or decision."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.units, self.plan = random_units(self.root, 21, units_per_day=2)
+
+    def test_guarded_stages_raise_in_prep_only(self):
+        F._PREP_ONLY = True
+        try:
+            for call in (lambda: F.follow_stats({}, {}, set(), {}), lambda: F.leader_test(pd.DataFrame()),
+                         lambda: F.round_trip_share(1.0, 1.0), lambda: F.f1_payer_bar(pd.DataFrame()),
+                         lambda: F.decide({}), lambda: F._boot_means(np.ones(3), 2, np.random.default_rng(0), None)):
+                with self.assertRaises(F.PrepOnlyError):
+                    call()
+        finally:
+            F._PREP_ONLY = False
+
+    def test_prep_run_never_reaches_an_outcome_stage(self):
+        seen = []
+        names = ("follow_stats", "leader_test", "round_trip_share", "f1_payer_bar", "decide", "_boot_means", "run")
+        saved = {n: getattr(F, n) for n in names}
+        for n in names:
+            setattr(F, n, lambda *a, _n=n, **k: seen.append(_n))
+        out = os.path.join(self.root, "o")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                F.main(sum([["--unit", x] for x in self.units], []) + ["--out", out, "--prep-only"])
+        finally:
+            for n, fn in saved.items():
+                setattr(F, n, fn)
+        self.assertEqual(seen, [])
+        self.assertFalse(F._PREP_ONLY)                          # the guard is reset after the run
+        self.assertEqual(sorted(os.listdir(out)), ["f1_prep_events_day1.csv", "f1_prep_summary.json"])
+        ev = pd.read_csv(os.path.join(out, "f1_prep_events_day1.csv"))
+        self.assertEqual(tuple(ev.columns), F.PREP_EVENT_COLS)
+        self.assertGreater(len(ev), 0)
+        with open(os.path.join(out, "f1_prep_summary.json")) as fh:
+            s = json.load(fh)
+        banned = ("follow", "persist", "late", "payer", "decision", "untestable", "passes", "kills")
+        self.assertEqual([k for k in s if any(b in k for b in banned)], [])
+
+    def test_prep_rows_and_placebos_match_the_full_event_table(self):
+        swaps, t, w, ranges = F.load_units(self.units)
+        sp, mp = F.build_links(t, w)
+        c = F.leader_candidates(swaps)
+        full = F.event_table(swaps, c, F.DAY1, ranges, sp, mp)
+        prep = F.event_table(swaps, c, F.DAY1, ranges, sp, mp, with_follow=False)
+        pd.testing.assert_frame_equal(prep, full[list(F.PREP_EVENT_COLS)])
+
+    def test_prep_only_refuses_decide(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            F.main(["--unit", self.units[0], "--out", os.path.join(self.root, "x"), "--prep-only", "--decide"])
 
 
 if __name__ == "__main__":

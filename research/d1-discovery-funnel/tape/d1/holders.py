@@ -194,7 +194,36 @@ def h13_link_pairs(tape: Tape):
 
 class LinkIndex:
     """W and T links (h13_link_pairs: each pair dated by its first link) for the H13 tape proxy, read as of a slot:
-    an address's degree and its neighbours count only links on or before that slot."""
+    an address's degree and its neighbours count only links on or before that slot.
+
+    Held as sorted numpy arrays (address, slot, neighbour), not Python lists of tuples: the same answers as
+    LinkIndexDict (the earlier form, kept for the equality test; the same neighbour order, sorted by slot then
+    neighbour) at about a sixth of the memory on a full day of links."""
+
+    def __init__(self, u, v, slot):
+        u, v, s = (np.asarray(x, dtype=np.int64).ravel() for x in (u, v, slot))
+        a, b, ss = np.r_[u, v], np.r_[v, u], np.r_[s, s]
+        order = np.lexsort((b, ss, a))
+        a, self.s, self.b = a[order], ss[order], b[order]
+        self.keys, self.lo = np.unique(a, return_index=True)
+        self.hi = np.r_[self.lo[1:], len(a)].astype(np.int64)
+
+    def _asof(self, a: int, d: int) -> np.ndarray:
+        i = int(np.searchsorted(self.keys, int(a)))
+        if i >= len(self.keys) or self.keys[i] != int(a):
+            return self.b[:0]
+        lo, hi = int(self.lo[i]), int(self.hi[i])
+        return self.b[lo:lo + int(np.searchsorted(self.s[lo:hi], d, side="right"))]
+
+    def neighbours(self, a: int, d: int) -> list:
+        return self._asof(a, d).tolist()
+
+    def degree(self, a: int, d: int) -> int:
+        return len(np.unique(self._asof(a, d)))
+
+
+class LinkIndexDict:
+    """The earlier LinkIndex (Python lists of (slot, neighbour) per address); `run_d1.py --old-reader` uses it."""
 
     def __init__(self, u, v, slot):
         self.nb: Dict[int, list] = {}
@@ -209,6 +238,9 @@ class LinkIndex:
 
     def degree(self, a: int, d: int) -> int:
         return len({b for s, b in self.nb.get(int(a), ()) if s <= d})
+
+
+LINK_INDEX = LinkIndex   # run_d1.py --old-reader sets LinkIndexDict
 
 
 def h13_proxy_sets(tape: Tape, links: "LinkIndex", mint: int, create_slot: int, dev, d: int) -> tuple:
@@ -259,7 +291,7 @@ def holder_features(tape: Tape, book: PoolBook, el: pd.DataFrame, funders: dict 
                                                         "gate_h12", "gate_h13"])
     ce = tape.ev["CreateEvent"].drop_duplicates("mint").set_index("mint")
     mg = tape.ev["CompletePumpAmmMigrationEvent"]
-    links = LinkIndex(*h13_link_pairs(tape)) if funders is None else None
+    links = LINK_INDEX(*h13_link_pairs(tape)) if funders is None else None
     for (pool, mint), g in el.groupby(["pool", "mint"], sort=False):
         curves = set(mg[mg.mint == mint].bonding_curve.tolist())
         if mint in ce.index:

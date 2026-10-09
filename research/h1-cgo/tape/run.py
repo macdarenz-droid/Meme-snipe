@@ -8,6 +8,10 @@
   score     --out DIR --frozen FROZEN                                            primary.json, secondary.json (validation only)
 
 Run every data command with `nice -n 19`. Unit directories are <cache>/<day>/<from>-<to>[/research].
+`--reader lowmem` (default) reads the tape in chunks and holds rows compactly; `--reader direct` is the original
+reader, kept for the equality tests (tests/test_lowmem.py): both give the same files, byte for byte.
+The features stage is the preparation stage: it never imports outcomes.py or stats.py (they load only in the stages
+that use them; tests/test_lowmem.py checks it).
 """
 import argparse
 import json
@@ -17,7 +21,7 @@ import sys
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from h1cgo import features, outcomes, stats, tapeio  # noqa: E402
+from h1cgo import features, tapeio  # noqa: E402  (outcomes and stats are imported only by the stages that use them)
 from h1cgo import h8 as H8  # noqa: E402
 from h1cgo.constants import DISCOVERY_DAYS, VALIDATION_DAYS  # noqa: E402
 
@@ -90,8 +94,13 @@ def main(argv=None):
     a.add_argument("--counts-only", action="store_true", help="outcomes: print status counts, write no returns")
     a.add_argument("--sol-usd", default=H8.SOL_USD_DIR, help="committed SOL/USD folder with SHA256SUMS (AMENDMENT_4)")
     a.add_argument("--plan", default=tapeio.PLAN_PATH, help="committed unit plan (DAY EPOCH FROM TO per unit)")
+    a.add_argument("--reader", choices=["lowmem", "direct"], default="lowmem",
+                   help="tape reader: lowmem (chunked, compact) or direct (original); same outputs")
     o = a.parse_args(argv)
     os.makedirs(o.out, exist_ok=True)
+    lowmem = o.reader == "lowmem"
+    if o.stage != "features":
+        from h1cgo import outcomes, stats  # noqa: F401  (never loaded by the preparation stage)
 
     if o.stage == "features":
         us = _units(o.units)
@@ -107,7 +116,8 @@ def main(argv=None):
             tapeio.check_complete(us, days, tapeio.load_plan(o.plan))
         except ValueError as e:
             sys.exit(f"features: {e}")
-        feats, uni, diag = features.run(us, o.decision_days, o.creation_days, log=lambda m: print(m, file=sys.stderr))
+        feats, uni, diag = features.run(us, o.decision_days, o.creation_days, log=lambda m: print(m, file=sys.stderr),
+                                       lowmem=lowmem)
         feats.to_csv(os.path.join(o.out, "features.csv"), index=False)
         uni.to_csv(os.path.join(o.out, "universe.csv"), index=False)
         diag.update(decision_days=o.decision_days, creation_days=o.creation_days or o.decision_days, days_used=days,
@@ -143,13 +153,13 @@ def main(argv=None):
             sys.exit("outcomes: an input file changed since the features stage (sha256)")
         if f.empty:
             sys.exit("outcomes: no decision points")
-        books = outcomes.load_books(us, set(f[f.eligible].pool))
+        books = outcomes.load_books(us, set(f[f.eligible].pool), lowmem=lowmem)
         out = outcomes.run(f, books)
         if o.counts_only:
             print(json.dumps(dict(priced=len(out), status=out.status.value_counts().to_dict() if len(out) else {})))
         else:
             out.to_csv(os.path.join(o.out, "outcomes.csv"), index=False)
-            fl = outcomes.load_flows(us, f)  # AMENDMENT_3 gate flows
+            fl = outcomes.load_flows(us, f, lowmem=lowmem)  # AMENDMENT_3 gate flows
             fl.to_csv(os.path.join(o.out, "flows.csv"), index=False)
             print(f"outcomes: {len(out)} rows; flows: {len(fl)} rows")
 

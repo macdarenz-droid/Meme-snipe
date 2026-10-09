@@ -321,20 +321,28 @@ def follow_stats(buys_by_mint, ev, sol_pairs, mint_pairs, window=FOLLOW_SLOTS, d
 
 
 def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=None, seed=PLACEBO_SEED,
-                with_follow=True):
+                with_follow=True, compact=True):
     """One row per buy by an owner in `leaders` on `day`, with its follow count and its placebo's.
     The placebo buyer is never in `candidates` (default: `leaders`), the day-1 candidate set.
     Leader buys with no placebo buy in reach, or whose windows are not on loaded tape, are dropped
     (kept as rows with a reason).
     with_follow=False (--prep-only) keeps the same rows, drops and placebo draws but computes no follow count or
-    follower SOL: those columns are left out."""
+    follower SOL: those columns are left out.
+    compact=True (memory only, same rows): the day's sorted buy table is freed once indexed by mint, and the leader
+    buys are turned into records in blocks of EV_BLOCK rows instead of all at once; compact=False is the original."""
     candidates = leaders if candidates is None else candidates
     buys = swaps[(swaps["day"] == day) & swaps["is_buy"]].sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort")
     buys_by_mint = {m: {c: g[c].to_numpy() for c in ("slot", "tx_idx", "ev_idx", "owner", "sol", "q", "fee_bps")}
                     for m, g in buys.groupby("mint", sort=False)}
+    lead = buys[buys["owner"].isin(leaders)]
+    if compact:
+        del buys
+        records = (ev for b0 in range(0, len(lead), EV_BLOCK) for ev in lead.iloc[b0:b0 + EV_BLOCK].to_dict("records"))
+    else:
+        records = lead.to_dict("records")
     rng = np.random.default_rng(seed)
     rows = []
-    for ev in buys[buys["owner"].isin(leaders)].to_dict("records"):
+    for ev in records:
         out = {"day": day, "leader": ev["owner"], "mint": ev["mint"], "slot": ev["slot"],
                "tx_idx": ev["tx_idx"], "ev_idx": ev["ev_idx"]}
         lo, hi = ev["slot"] - PLACEBO_REACH, ev["slot"] + PLACEBO_REACH + FOLLOW_SLOTS
@@ -374,6 +382,8 @@ def event_table(swaps, leaders, day, ranges, sol_pairs, mint_pairs, candidates=N
     return pd.DataFrame(rows, columns=cols)
 
 
+EV_BLOCK = 50_000
+
 PREP_EVENT_COLS = ("day", "leader", "mint", "slot", "tx_idx", "ev_idx", "dropped", "placebo_owner", "placebo_slot",
                    "q", "fee_bps", "placebo_q")
 
@@ -384,7 +394,7 @@ def run_prep(paths, day1=DAY1, compact=True):
     payer bar or decision."""
     swaps, sol_pairs, mint_pairs, ranges, n_t, n_w = _load(paths, compact)
     cands = leader_candidates(swaps, day1)
-    ev1 = event_table(swaps, cands, day1, ranges, sol_pairs, mint_pairs, with_follow=False)
+    ev1 = event_table(swaps, cands, day1, ranges, sol_pairs, mint_pairs, with_follow=False, compact=compact)
     slots = {day1: sum(b - a + 1 for dd, a, b in ranges if dd == day1)}
     summary = {
         "mode": "prep-only",
@@ -463,10 +473,10 @@ def run(paths, n_boot=BOOT_N, day1=DAY1, day2=DAY2, compact=True):
     swaps, sol_pairs, mint_pairs, ranges, _, _ = _load(paths, compact)
     boot_chunk = BOOT_CHUNK_ELEMS if compact else None
     cands = leader_candidates(swaps, day1)
-    ev1 = event_table(swaps, cands, day1, ranges, sol_pairs, mint_pairs)
+    ev1 = event_table(swaps, cands, day1, ranges, sol_pairs, mint_pairs, compact=compact)
     lt1 = leader_test(ev1, n_boot, boot_chunk=boot_chunk)
     followed = set(lt1.loc[lt1["followed"], "leader"])
-    ev2 = event_table(swaps, followed, day2, ranges, sol_pairs, mint_pairs, candidates=cands)
+    ev2 = event_table(swaps, followed, day2, ranges, sol_pairs, mint_pairs, candidates=cands, compact=compact)
     lt2 = leader_test(ev2, n_boot, boot_chunk=boot_chunk)
     persistent = set(lt2.loc[lt2["followed"], "leader"])
     e2p = ev2[(ev2["dropped"] == "") & ev2["leader"].isin(persistent)]
@@ -565,13 +575,19 @@ def main(argv=None):
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="committed Step A plan (checked with --decide)")
     ap.add_argument("--prep-only", action="store_true",
                     help="preparation stages only (no follow counts, statistics or decision); for real tape before the gate")
+    ap.add_argument("--original-reader", action="store_true",
+                    help="the original all-in-memory reader and one-shot bootstrap (equality tests only)")
     a = ap.parse_args(argv)
+    compact = not a.original_reader
     if a.prep_only:
         if a.decide:
             ap.error("--prep-only and --decide exclude each other")
         global _PREP_ONLY
         _PREP_ONLY = True
-        summary, tables = run_prep(a.unit)
+        try:
+            summary, tables = run_prep(a.unit, compact=compact)
+        finally:
+            _PREP_ONLY = False
         os.makedirs(a.out, exist_ok=True)
         for k, df in tables.items():
             df.to_csv(os.path.join(a.out, f"f1_{k}.csv"), index=False)
@@ -588,7 +604,7 @@ def main(argv=None):
             plan_sha = check_plan([unit_info(u)[1:] for u in a.unit], a.plan)
         except PlanError as e:
             ap.error(f"--decide refused: {e}")
-    summary, tables = run(a.unit, a.boot)
+    summary, tables = run(a.unit, a.boot, compact=compact)
     if a.decide:
         summary["plan"] = {"path": a.plan, "sha256": plan_sha}
         summary["decision"] = decide(summary, payer=summary["payer_mass_bar"])

@@ -160,22 +160,50 @@ def last_block_slot(tape: Tape, t):
 
 
 # ------------------------------------------------------------------ the rows
+EXIT_COLS = ["owner", "slot", "block_time", "day", "proceeds", "tokens_sold", "exit_vwap", "gain", "readable",
+             "pool", "mint", "next_buy_slot"]
+POINT_COLS = ["pool", "mint", "day", "t", "hour", "decision_slot", "mid", "eff_quote", "RB", "net_rebuy_flow",
+              "past_return_1h", "drawdown", "age_h", "depth_sol", "supply"]
+PAIR_COLS = ["pool", "mint", "day", "t", "hour", "owner", "exit_slot", "proceeds", "gain", "readable", "below", "rebuy_2h"]
+
+
 def rebuy_anchor(tape: Tape, s: pd.DataFrame, require_history=True, Ledger=None):
+    exits_all, points, pairs = rebuy_rows(tape, s, require_history, Ledger)
+    exits, pts, prs = rebuy_frames(exits_all, points, pairs)
+    return exits, pts, prs, summarise(tape, exits, pts, prs)
+
+
+def rebuy_frames(exits_all, points, pairs, flows=True):
+    drop = [] if flows else ["net_rebuy_flow", "rebuy_2h"]
+    exits = pd.concat(exits_all, ignore_index=True) if exits_all else pd.DataFrame(columns=EXIT_COLS)
+    pts = pd.DataFrame(points, columns=[c for c in POINT_COLS if c not in drop])
+    prs = pd.DataFrame(pairs, columns=[c for c in PAIR_COLS if c not in drop])
+    return exits, pts, prs
+
+
+def rebuy_rows(tape: Tape, s: pd.DataFrame, require_history=True, Ledger=None, keep=None, flows=True, tag=None):
+    """REBUY-ANCHOR's per-pool exits (a list of frames), decision points and (ex-holder, point) pairs, in eligible-pool
+    order. `keep(mint)` limits them to some pools (a shard); `tag(pool_position)` returns a value added to each
+    exits frame, point and pair as "_k" (the streaming reader's merge key). flows=False (prep only): no flow after a
+    decision point (no net rebuy flow, no rebuy within 2 h)."""
     Ledger = Ledger or load_ledger_class()
     pools = R.eligible_pools(tape)
     pp = R.by_pool(s)
     by_mint = {m: g for m, g in s.groupby("mint", sort=False)}
     mv = {m: g for m, g in tape.moves[tape.moves["kind"].isin(["transfer", "mint", "burn"])].groupby("mint", sort=False)}
-    flows = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
-    fl_by_mint = {m: g for m, g in flows.groupby("mint", sort=False)}
+    flow_rows = s[~s["excluded"] & s["owner"].notna() & s["sol_quoted"]]
+    fl_by_mint = {m: g for m, g in flow_rows.groupby("mint", sort=False)}
     exits_all, points, pairs = [], [], []
-    for r in pools.itertuples(index=False):
+    for pi, r in enumerate(pools.itertuples(index=False)):
+        if keep is not None and not keep(r.mint):
+            continue
+        kt = {} if tag is None else {"_k": tag(pi)}
         if require_history and not R.history_on_tape(tape, r.mint, int(r.m_slot)):
             continue
         ex = ledger_exits(by_mint[r.mint], mv.get(r.mint, tape.moves.iloc[:0]), Ledger)
         ex["pool"] = r.pool
         ex["mint"] = r.mint
-        f = fl_by_mint.get(r.mint, flows.iloc[:0])
+        f = fl_by_mint.get(r.mint, flow_rows.iloc[:0])
         buys = f[f["is_buy"]]
         # next buy of the mint by the same owner after each exit (ends ex-holder status)
         nb = []
@@ -183,7 +211,7 @@ def rebuy_anchor(tape: Tape, s: pd.DataFrame, require_history=True, Ledger=None)
             later = buys[(buys["owner"] == e.owner) & (buys["slot"] > e.slot)]["slot"]
             nb.append(int(later.min()) if len(later) else np.iinfo(np.int64).max)
         ex["next_buy_slot"] = nb
-        exits_all.append(ex)
+        exits_all.append(ex.assign(**kt) if kt else ex)
         g = pp.get(r.pool)
         if g is None or not len(g):
             continue
@@ -204,31 +232,30 @@ def rebuy_anchor(tape: Tape, s: pd.DataFrame, require_history=True, Ledger=None)
             past = float(mid_t / mid[j] - 1) if j >= 0 and mid[j] > 0 else np.nan
             exh = ex[(ex["slot"] <= st) & (ex["next_buy_slot"] > st)]
             recent = exh[exh["block_time"] > t - EXIT_LOOKBACK_S]
-            win = f[(f["slot"] > st) & (f["block_time"] <= t + REBUY_S)]
-            win_rebuy = set(win.loc[win["is_buy"], "owner"])
+            if flows:
+                win = f[(f["slot"] > st) & (f["block_time"] <= t + REBUY_S)]
+                win_rebuy = set(win.loc[win["is_buy"], "owner"])
             for e in recent.itertuples(index=False):
-                pairs.append({"pool": r.pool, "mint": r.mint, "day": r.day, "t": t, "hour": k, "owner": e.owner,
-                              "exit_slot": e.slot, "proceeds": e.proceeds, "gain": e.gain, "readable": e.readable,
-                              "below": bool(mid_t < e.exit_vwap), "rebuy_2h": e.owner in win_rebuy})
+                pr = {"pool": r.pool, "mint": r.mint, "day": r.day, "t": t, "hour": k, "owner": e.owner,
+                      "exit_slot": e.slot, "proceeds": e.proceeds, "gain": e.gain, "readable": e.readable,
+                      "below": bool(mid_t < e.exit_vwap)}
+                if flows:
+                    pr["rebuy_2h"] = e.owner in win_rebuy
+                pairs.append({**pr, **kt})
             rb_set = recent[(recent["gain"] > 0) & (recent["exit_vwap"] > mid_t) & recent["readable"]]
-            late = win[win["slot"] > st + R.LANDING]
-            exset = set(exh["owner"])
-            ex_buy = float(late.loc[late["is_buy"] & late["owner"].isin(exset), "sol"].sum())
-            other_sell = float(late.loc[~late["is_buy"] & ~late["owner"].isin(exset), "sol"].sum())
-            points.append({"pool": r.pool, "mint": r.mint, "day": r.day, "t": t, "hour": k, "decision_slot": st,
-                           "mid": mid_t, "eff_quote": eq_t, "RB": float(rb_set["proceeds"].sum()) / eq_t,
-                           "net_rebuy_flow": (ex_buy - other_sell) / eq_t,
-                           "past_return_1h": past, "drawdown": float(1 - mid_t / peak) if peak > 0 else np.nan,
-                           "age_h": k, "depth_sol": eq_t / R.LAMPORTS,
-                           "supply": float(ps["supply"][i])})   # the swap at or before t (payer bar's tier, AMENDMENT_8)
-    exits = pd.concat(exits_all, ignore_index=True) if exits_all else pd.DataFrame(
-        columns=["owner", "slot", "block_time", "day", "proceeds", "tokens_sold", "exit_vwap", "gain", "readable",
-                 "pool", "mint", "next_buy_slot"])
-    pts = pd.DataFrame(points, columns=["pool", "mint", "day", "t", "hour", "decision_slot", "mid", "eff_quote", "RB",
-                                        "net_rebuy_flow", "past_return_1h", "drawdown", "age_h", "depth_sol", "supply"])
-    prs = pd.DataFrame(pairs, columns=["pool", "mint", "day", "t", "hour", "owner", "exit_slot", "proceeds", "gain",
-                                       "readable", "below", "rebuy_2h"])
-    return exits, pts, prs, summarise(tape, exits, pts, prs)
+            pt = {"pool": r.pool, "mint": r.mint, "day": r.day, "t": t, "hour": k, "decision_slot": st,
+                  "mid": mid_t, "eff_quote": eq_t, "RB": float(rb_set["proceeds"].sum()) / eq_t}
+            if flows:
+                late = win[win["slot"] > st + R.LANDING]
+                exset = set(exh["owner"])
+                ex_buy = float(late.loc[late["is_buy"] & late["owner"].isin(exset), "sol"].sum())
+                other_sell = float(late.loc[~late["is_buy"] & ~late["owner"].isin(exset), "sol"].sum())
+                pt["net_rebuy_flow"] = (ex_buy - other_sell) / eq_t
+            pt.update({"past_return_1h": past, "drawdown": float(1 - mid_t / peak) if peak > 0 else np.nan,
+                       "age_h": k, "depth_sol": eq_t / R.LAMPORTS,
+                       "supply": float(ps["supply"][i])})   # the swap at or before t (payer bar's tier, AMENDMENT_8)
+            points.append({**pt, **kt})
+    return exits_all, points, pairs
 
 
 # ------------------------------------------------------------------ statistics

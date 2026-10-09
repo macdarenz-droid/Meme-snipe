@@ -44,6 +44,8 @@ def slot_time(tape: Tape, slot):
 def w_group(tape: Tape, seeds, as_of_slot, hops=2):
     """AMENDMENT_5 creator group: the LAUNCHER-ID set (create `creator` and `user`, pool `coin_creator`) plus every
     address within 2 W (SOL) links, on or before the slot. No hub cap is named, so none is applied (Q29)."""
+    if getattr(tape, "w_graph", None) is not None:      # the streaming reader's indexed W links: the same set
+        return tape.w_graph.within(seeds, as_of_slot, hops)
     adj = defaultdict(set)
     w = tape.w_links[tape.w_links["slot"] <= as_of_slot]
     for a, b in zip(w["from_owner"].values, w["to_owner"].values):
@@ -96,16 +98,31 @@ def _is_other(row_top, owner, signer):
 
 def mig_seat(tape: Tape, s: pd.DataFrame, ctx):
     gr = graduations(tape)
+    return mig_seat_finish(tape, gr, mig_seat_rows(tape, s, ctx, gr))
+
+
+def mig_seat_rows(tape: Tape, s: pd.DataFrame, ctx, gr, keep=None, flows=True, tag=None):
+    """MIG-SEAT's per-graduation records in graduation order; `keep(mint)` limits them to some graduations (a shard),
+    `tag(position)` adds "_k". flows=False (prep only): the graduation, its coverage and its as-of Q at the end of
+    s0 + 2, nothing after s0."""
     pp = R.by_pool(s)
     rows = []
-    for g in gr.itertuples(index=False):
+    for gi, g in enumerate(gr.itertuples(index=False)):
+        if keep is not None and not keep(g.mint):
+            continue
         rec = {"day": g.day, "pool": g.pool, "speed": g.speed, "s0": g.s0}
+        if tag is not None:
+            rec["_k"] = tag(gi)
         t2 = slot_time(tape, g.s0 + SEAT_SLOTS)
         if t2 is None or not tape.covered(g.s0, t2 + max(PAYER_WINDOW_S, BOOST_WINDOW_S)):
             rec["dropped"] = "window_not_on_tape"
             rows.append(rec)
             continue
         rec["dropped"] = ""
+        if not flows:
+            rec["Q"] = R_state(ctx, g.pool, t2, int(g.s0 + SEAT_SLOTS))[2]
+            rows.append(rec)
+            continue
         grp = w_group(tape, {g.coin_creator, g.creator, g.user}, g.s0)
         p = pp.get(g.pool, s.iloc[:0])
         p = p[p["slot"] >= g.s0]
@@ -144,6 +161,10 @@ def mig_seat(tape: Tape, s: pd.DataFrame, ctx):
         rec["seat_rank_tip_spearman"] = (float(pd.Series(np.arange(len(tips))).corr(pd.Series(tips), method="spearman"))
                                          if len(tips) > 2 and np.std(tips) > 0 else np.nan)
         rows.append(rec)
+    return rows
+
+
+def mig_seat_finish(tape: Tape, gr, rows):
     df = pd.DataFrame(rows)
     days = sorted({d for d, _, _ in tape.ranges})
     out = {"graduations": int(len(gr)), "by_speed": dict(Counter(gr["speed"])) if len(gr) else {},
@@ -220,15 +241,44 @@ POSITION_USD = 100.0
 MIN_REAL_SOL = 5 * 10**9
 
 
-def reprice_steps(tape: Tape, s: pd.DataFrame):
+def mayhem_reads(tape: Tape, s: pd.DataFrame, placebo=True) -> dict:
+    """Everything MAYHEM-SNAP reads from the swap table, limited to the re-priced mints and signatures: the top
+    programs of each re-price signature's S rows, the (mint, slot) of non-agent curve buys, the mints with a
+    SOL-quoted curve trade, and the non-agent-sell placebo's hits. Each part is a union or a sum over rows, so the
+    streaming reader merges it over shards (merge_mayhem_reads)."""
+    rp = tape.reprices
+    sigs, mints = set(rp["signature"]), set(rp["mint"])
+    x = s[s["signature"].isin(sigs)]
+    tops = x["top_program"].astype(object).groupby(x["signature"]).agg(lambda v: set(v.dropna()))
+    agent = s["top_program"].eq(MAYHEM_PROGRAM) | s["owner"].eq(MAYHEM_VAULT_OWNER)
+    nab = s[s["is_buy"] & ~agent & (s["venue"] == "curve") & s["mint"].isin(mints)]
+    hits = _non_agent_sell_hits(s) if placebo else []      # the placebo reads prices after a sell: not in prep
+    return {"tops": {k: set(v) for k, v in tops.items()}, "nab": set(zip(nab["mint"], nab["slot"].astype(int))),
+            "sol_curve_s": set(s.loc[(s["venue"] == "curve") & s["sol_quoted"] & s["mint"].isin(mints), "mint"]),
+            "placebo_n": len(hits), "placebo_hits": int(sum(hits))}
+
+
+def merge_mayhem_reads(parts) -> dict:
+    out = {"tops": {}, "nab": set(), "sol_curve_s": set(), "placebo_n": 0, "placebo_hits": 0}
+    for p in parts:
+        for k, v in p["tops"].items():
+            out["tops"].setdefault(k, set()).update(v)
+        out["nab"] |= p["nab"]
+        out["sol_curve_s"] |= p["sol_curve_s"]
+        out["placebo_n"] += p["placebo_n"]
+        out["placebo_hits"] += p["placebo_hits"]
+    return out
+
+
+def reprice_steps(tape: Tape, s: pd.DataFrame, reads=None):
     r = tape.reprices.copy()
     if not len(r):
         return r.assign(j=[], attributed=[], has_s_row=[])
     old = r["virtual_sol_reserves"].astype(float) / r["virtual_token_reserves"].astype(float)
     new = r["new_virtual_sol_reserves"].astype(float) / r["new_virtual_token_reserves"].astype(float)
     r["j"] = new / old - 1
-    tops = s["top_program"].astype(object).groupby(s["signature"]).agg(lambda x: set(x.dropna()))
-    r["has_s_row"] = r["signature"].isin(tops.index)
+    tops = (reads or mayhem_reads(tape, s))["tops"]
+    r["has_s_row"] = r["signature"].isin(set(tops))
     r["attributed"] = [MAYHEM_PROGRAM in tops.get(sig, set()) for sig in r["signature"]]
     return r.sort_values(["slot", "tx_idx"], kind="mergesort").reset_index(drop=True)
 
@@ -241,9 +291,21 @@ def _followed(times, js, i, need):
     return (True, int(times[hit[0]] - t)) if len(hit) else (False, None)
 
 
-def mayhem_snap(tape: Tape, s: pd.DataFrame, hourly):
-    r = reprice_steps(tape, s)
+def mayhem_snap(tape: Tape, s: pd.DataFrame, hourly, reads=None, flows=True):
+    """MAYHEM-SNAP's down steps and rows (a)-(e). `reads` is mayhem_reads' result (the streaming reader merges it
+    over shards). flows=False (prep only): the down-step events and their counts, nothing after a step."""
+    reads = reads if reads is not None else mayhem_reads(tape, s)
+    r = reprice_steps(tape, s, reads)
     days = sorted({d for d, _, _ in tape.ranges})
+    if not flows:
+        dn = r[r["j"] <= DOWN_STEP][["mint", "day", "slot", "block_time", "j", "real_sol_reserves", "attributed",
+                                      "has_s_row"]].rename(columns={"block_time": "t", "real_sol_reserves": "real_sol"}) \
+            if len(r) else pd.DataFrame(columns=["mint", "day", "slot", "t", "j", "real_sol", "attributed", "has_s_row"])
+        sol_curve = {m for m, q in zip(tape.creates["mint"], tape.creates["quote_mint"]) if q in SOL_QUOTES}
+        sol_curve |= reads["sol_curve_s"]
+        q = dn[dn["mint"].isin(sol_curve) & (dn["real_sol"].astype(float) >= MIN_REAL_SOL)] if len(dn) else dn
+        return dn.reset_index(drop=True), {"reprice_rows": int(len(r)), "down_steps": int(len(dn)),
+                                           "down_steps_qualifying_per_day": {d: int((q["day"] == d).sum()) for d in days}}
     out = {"reprice_rows": int(len(r))}
     if not len(r):
         out.update({k: {"passed": False, "n": 0} for k in ("a", "b", "d", "e")})
@@ -277,12 +339,11 @@ def mayhem_snap(tape: Tape, s: pd.DataFrame, hourly):
           if len(dn) else None)
     out["b"] = {"down_steps": int(len(dn)), "share_followed_by_up": share, "lb95_mint_clustered": lb,
                 "placebo_up_steps_share_followed_by_down": float(np.mean(plc_up)) if plc_up else None,
-                "placebo_non_agent_sells": non_agent_sell_placebo(s),
+                "placebo_non_agent_sells": {"n": reads["placebo_n"], "share_followed_by_up":
+                                            (reads["placebo_hits"] / reads["placebo_n"]) if reads["placebo_n"] else None},
                 "passed": bool(share is not None and share >= MECH_MIN and lb is not None and lb > MECH_LB)}
     up = dn[dn["up"]]
-    agent = s["top_program"].eq(MAYHEM_PROGRAM) | s["owner"].eq(MAYHEM_VAULT_OWNER)
-    nab = s[s["is_buy"] & ~agent & (s["venue"] == "curve")]
-    same = [((nab["mint"] == x.mint) & (nab["slot"] == x.slot)).any() for x in dn.itertuples(index=False)]
+    same = [(x.mint, int(x.slot)) in reads["nab"] for x in dn.itertuples(index=False)]
     out["c"] = {"median_seconds_to_up_step": float(up["dt"].median()) if len(up) else None,
                 "share_with_non_agent_buy_in_down_step_slot": float(np.mean(same)) if same else None}
     # (d) exit depth at the up step: real SOL >= 2 x a $100 position's proceeds (at that hour's SOL/USD)
@@ -296,7 +357,7 @@ def mayhem_snap(tape: Tape, s: pd.DataFrame, hourly):
     out["d"] = {"share": ds, "n": len(depth), "passed": bool(ds is not None and ds >= DEPTH_SHARE)}
     # (e) qualifying down steps a day on SOL mayhem curves with at least 5 real SOL
     sol_curve = {m for m, q in zip(tape.creates["mint"], tape.creates["quote_mint"]) if q in SOL_QUOTES}
-    sol_curve |= set(s.loc[(s["venue"] == "curve") & s["sol_quoted"], "mint"])
+    sol_curve |= reads["sol_curve_s"]
     qual = dn[dn["mint"].isin(sol_curve) & (dn["real_sol"].astype(float) >= MIN_REAL_SOL)]
     per_day = {d: int((qual["day"] == d).sum()) for d in days}
     out["e"] = {"per_day": per_day, "passed": bool(per_day and min(per_day.values()) >= COUNT_MIN)}
@@ -308,6 +369,11 @@ def mayhem_snap(tape: Tape, s: pd.DataFrame, hourly):
 def non_agent_sell_placebo(s: pd.DataFrame):
     """Second placebo: curve sells by non-agent owners on mayhem curves that move the curve price by -6.2% or more;
     share followed within 120 s by a price at least |j|/2 above the post-sell price (curve trades only)."""
+    hits = _non_agent_sell_hits(s)
+    return {"n": len(hits), "share_followed_by_up": float(np.mean(hits)) if hits else None}
+
+
+def _non_agent_sell_hits(s: pd.DataFrame):
     agent = s["top_program"].eq(MAYHEM_PROGRAM) | s["owner"].eq(MAYHEM_VAULT_OWNER)
     c = s[(s["venue"] == "curve") & (s["mayhem"] == 1) & s["curve_vsol"].notna() & s["curve_vtok"].notna()]
     hits = []
@@ -325,4 +391,4 @@ def non_agent_sell_placebo(s: pd.DataFrame):
                 continue
             k = (bt > bt[i]) & (bt <= bt[i] + UP_WITHIN_S)
             hits.append(bool(k.any() and px[k].max() >= px[i] * (1 + abs(j) / 2)))
-    return {"n": len(hits), "share_followed_by_up": float(np.mean(hits)) if hits else None}
+    return hits

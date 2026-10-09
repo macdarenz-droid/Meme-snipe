@@ -67,6 +67,23 @@ class Interner:
         out[m] = g[local[m]]
         return out
 
+    def codes_cat(self, values) -> np.ndarray:
+        """`codes` for a categorical column: the same codes in the same order of first appearance, without building a
+        Python string per row. A non-categorical column goes through `codes`."""
+        cat = values.array if isinstance(values, pd.Series) else values
+        if not isinstance(cat, pd.Categorical):
+            return self.codes(np.asarray(values, dtype=object))
+        k = np.asarray(cat.codes).astype(np.int64)
+        cats = cat.categories
+        ok = k >= 0
+        first = pd.unique(k[ok])                      # category positions in order of first appearance
+        m = np.full(len(cats), INT_SENTINEL, dtype=np.int64)
+        if len(first):
+            m[first] = np.fromiter((self.code(cats[i]) for i in first), dtype=np.int64, count=len(first))
+        out = np.full(len(k), INT_SENTINEL, dtype=np.int64)
+        out[ok] = m[k[ok]]
+        return out
+
     def get(self, s) -> int:
         return self.idx.get(s, INT_SENTINEL)
 
@@ -137,11 +154,16 @@ def segments(units: List[Unit]) -> List[tuple]:
     return segs
 
 
-def _read_csv(path: str, cols: List[str], str_cols) -> pd.DataFrame:
+def _read_csv(path: str, cols: List[str], str_cols, cat_cols=()) -> pd.DataFrame:
+    """`cat_cols` (compact reader only): address columns read as categoricals; each is turned into interner codes by
+    `Interner.codes_cat`, never held as one Python string per row."""
     hdr = _header(path)
     use = [c for c in cols if c in hdr]
     dtypes = {c: str for c in use if c in str_cols or c in ("quote_mint", "side", "ix_name", "kind", "err_class",
                                                                "pool_or_curve", "from", "to", "from_owner", "to_owner")}
+    for c in cat_cols:
+        if c in use:
+            dtypes[c] = "category"
     df = pd.read_csv(path, compression="zstd", usecols=use, dtype=dtypes, keep_default_na=True)
     for c in cols:
         if c not in df.columns:
@@ -245,8 +267,21 @@ def _offsets(keys: np.ndarray) -> Dict[int, tuple]:
     return {int(keys[s]): (int(s), int(e)) for s, e in zip(starts, ends)}
 
 
-def load(units: List[Unit], links: bool = True, log=print) -> Tape:
-    """Loads every table the G1 stages read. `links=False` skips W (amendment features then cannot be computed)."""
+def load(units: List[Unit], links: bool = True, log=print, reader: str = "compact", pool: bool = True) -> Tape:
+    """Loads every table the G1 stages read. `links=False` skips W (amendment features then cannot be computed).
+    reader="compact" (default) holds less memory and gives a Tape equal to reader="reference" (the original reader,
+    kept for the equality tests in tests/test_reader.py): same tables, columns, dtypes, values, row order and codes.
+    `pool=False` (compact reader, for `decide`, which never reads a PumpSwap pool row) leaves `pool_rows` empty; every
+    other table and every code are unchanged, because S_amm is still read for the buys and the interner."""
+    if reader == "compact":
+        return _load_compact(units, links=links, log=log, pool=pool)
+    if reader != "reference":
+        raise ValueError(f"unknown reader {reader!r}")
+    return _load_reference(units, links=links, log=log)
+
+
+def _load_reference(units: List[Unit], links: bool = True, log=print) -> Tape:
+    """The original reader (every string column as Python strings, whole tables concatenated and sorted at the end)."""
     names = Interner()
     B, E, C, Tl, Wl, Fl = [], [], [], [], [], []
     for u in units:
@@ -345,6 +380,224 @@ def load(units: List[Unit], links: bool = True, log=print) -> Tape:
         for col in ("mint", "pool", "bonding_curve", "creator", "user", "base_mint", "quote_mint", "coin_creator"):
             if col in df.columns:
                 df[col + "_c"] = names.codes(df[col].to_numpy())
+    tape = Tape(units, segments(units), names, blocks, events, curve, pool_rows, buys, T, W, F_boost)
+    tape.build_indexes()
+    return tape
+
+
+# ---------------------------------------------------------------------------------------------- compact reader
+def _libc():
+    try:
+        import ctypes
+        return ctypes.CDLL("libc.so.6")
+    except (OSError, AttributeError):
+        return None
+
+
+def fixed_mmap_threshold():
+    """glibc raises its mmap threshold each time a large block is freed, after which large numpy arrays land on the
+    heap and their freed pages stay in the process. A fixed threshold (128 KiB) keeps every large array mmapped, so
+    freeing it returns its memory. Memory only; no value changes."""
+    lc = _libc()
+    if lc is not None:
+        try:
+            lc.mallopt(-3, 128 * 1024)      # M_MMAP_THRESHOLD
+        except AttributeError:
+            pass
+
+
+def _trim():
+    """Hands freed heap back to the system between units (glibc), so reading peaks do not pile up."""
+    import gc
+    gc.collect()
+    lc = _libc()
+    if lc is not None:
+        try:
+            lc.malloc_trim(0)
+        except AttributeError:
+            pass
+
+
+def _coalesce_cat(a: pd.Series, b: pd.Series):
+    """`a.where(a.notna() & (a != ""), b)` for two categorical columns, as a categorical over their joint categories
+    (the reference reader's owner = user_token_owner, else user). None if either column is not categorical."""
+    ac, bc = a.array, b.array
+    if not (isinstance(ac, pd.Categorical) and isinstance(bc, pd.Categorical)):
+        return None
+    ka, kb = np.asarray(ac.codes).astype(np.int64), np.asarray(bc.codes).astype(np.int64)
+    union = ac.categories.append(bc.categories).unique()
+    ia = np.asarray(union.get_indexer(ac.categories), dtype=np.int64)
+    ib = np.asarray(union.get_indexer(bc.categories), dtype=np.int64)
+    va = ka >= 0
+    if len(ac.categories):
+        empty = np.asarray(ac.categories == "", dtype=bool)
+        va[va] = ~empty[ka[va]]
+    out = np.full(len(ka), -1, dtype=np.int64)
+    out[va] = ia[ka[va]]
+    vb = ~va & (kb >= 0)
+    out[vb] = ib[kb[vb]]
+    return pd.Categorical.from_codes(out, categories=union)
+
+
+def _owner_codes(names: Interner, df: pd.DataFrame) -> np.ndarray:
+    cat = _coalesce_cat(df["user_token_owner"], df["user"])
+    if cat is not None:
+        return names.codes_cat(cat)
+    uto = df["user_token_owner"].astype(object)
+    owner = uto.where(uto.notna() & (uto != ""), df["user"].astype(object))
+    return names.codes(owner.to_numpy())
+
+
+def _columns(df: pd.DataFrame) -> dict:
+    """The frame as independent column arrays (so the unit's frame and its blocks can be freed)."""
+    return {k: df[k]._values.copy() for k in df.columns}
+
+
+def _assemble(parts: List[dict], sort_by=None, astype=None) -> pd.DataFrame:
+    """pd.concat(frames, ignore_index=True)[.sort_values(sort_by, kind="stable").reset_index(drop=True)][.astype(...)]
+    of the reference reader, built one column at a time from `parts` (consumed), so at most about one table and two
+    columns are held at once. Each column's dtype is resolved by pd.concat exactly as for the whole frames."""
+    cols = list(parts[0].keys())
+    order = None
+    if sort_by:
+        keys = pd.DataFrame({k: pd.concat([pd.Series(p[k], copy=False) for p in parts], ignore_index=True)
+                             for k in sort_by}, copy=False)
+        order = keys.sort_values(sort_by, kind="stable").index.to_numpy()
+        del keys
+    out = {}
+    for k in cols:
+        s = pd.concat([pd.Series(p.pop(k), copy=False) for p in parts], ignore_index=True)
+        if order is not None:
+            s = s.take(order)
+        v = s._values
+        del s
+        if astype and k in astype:
+            v = v.astype(astype[k])
+        elif order is None:
+            v = v.copy()
+        out[k] = v
+    return pd.DataFrame(out, copy=False)
+
+
+def _load_compact(units: List[Unit], links: bool = True, log=print, pool: bool = True) -> Tape:
+    """The reference reader with address columns read as categoricals and interned per category, each unit's frames
+    freed as soon as they are cut down, and the final tables assembled column by column. Every interner call happens in
+    the reference reader's order, so codes are identical."""
+    fixed_mmap_threshold()
+    names = Interner()
+    B, E, C, Tl, Wl, Fl = [], [], [], [], [], []
+    for u in units:
+        b = pd.read_csv(u.table("B.csv.zst"), compression="zstd", usecols=["slot", "block_time"])
+        B.append(b)
+        E.append(read_events(u))
+    blocks = pd.concat(B).drop_duplicates("slot").sort_values("slot").reset_index(drop=True)
+    ev = pd.concat(E, ignore_index=True) if E else pd.DataFrame(columns=["event"])
+    del B, E
+    events = {k: ev[ev["event"] == k].dropna(axis=1, how="all").reset_index(drop=True) for k in E_KINDS}
+    del ev
+    for k in events:
+        if "slot" not in events[k].columns:
+            events[k] = pd.DataFrame(columns=["event", "slot", "block_time", "tx_idx", "ev_idx", "mint", "pool"])
+    mig = events["CompletePumpAmmMigrationEvent"]
+    pools = {}
+    for p, s in zip(mig.get("pool", []), mig.get("slot", [])):
+        pools[p] = min(pools.get(p, s), s)
+    pool_codes = {names.code(p): s for p, s in pools.items()}
+
+    P_rows, Buys = [], []
+    for u in units:
+        log(f"  reading {u.day} {u.from_slot}-{u.to_slot} ({u.schema})")
+        c = _read_csv(u.table("S_curve.csv.zst"), CURVE_COLS, CURVE_STR, cat_cols=CURVE_STR)
+        _num(c, ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "is_buy", "sol_amount", "token_amount",
+                 "virtual_sol_reserves", "virtual_token_reserves", "real_sol_reserves", "real_token_reserves",
+                 "fee_basis_points", "fee", "creator_fee_basis_points", "creator_fee", "quote_amount",
+                 "virtual_quote_reserves", "real_quote_reserves", "owner_token_post"])
+        for col in ("mayhem_mode", "cashback_fee_basis_points"):   # keep NaN: an unreadable flag stays unreadable
+            c[col] = pd.to_numeric(c[col], errors="coerce")
+        c["owner"] = _owner_codes(names, c)
+        c["mint"] = names.codes_cat(c["mint"])
+        c["creator"] = names.codes_cat(c["creator"])
+        auth = names.code(P.BUYBACK_AUTHORITY)
+        c["is_buyback"] = (names.codes_cat(c["signer"]) == auth) | (names.codes_cat(c["user"]) == auth)
+        c = c.drop(columns=["user", "user_token_owner", "signer"])
+        cb = c[c["is_buy"] == 1]
+        Buys.append({"slot": cb["slot"].to_numpy().copy(), "tx_idx": cb["tx_idx"].to_numpy().copy(),
+                     "owner": cb["owner"].to_numpy().copy(), "mint": cb["mint"].to_numpy().copy(),
+                     "sol": cb["sol_amount"].to_numpy().copy(), "venue": np.zeros(len(cb), np.int8)})
+        del cb
+        C.append(_columns(c))
+        del c
+
+        a = _read_csv(u.table("S_amm.csv.zst"), AMM_COLS, AMM_STR, cat_cols=AMM_STR)
+        _num(a, ["slot", "block_time", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "base_amount", "quote_amount",
+                 "quote_amount_lp_adjusted", "pool_base_token_reserves", "pool_quote_token_reserves",
+                 "virtual_quote_reserves", "lp_fee_basis_points", "protocol_fee_basis_points",
+                 "coin_creator_fee_basis_points", "lp_fee", "protocol_fee", "coin_creator_fee", "min_base_amount_out",
+                 "base_supply", "chain_pool_base", "chain_pool_quote", "canonical"])
+        a["owner"] = _owner_codes(names, a)
+        a["pool"] = names.codes_cat(a["pool"])
+        a["base_mint"] = names.codes_cat(a["base_mint"])
+        a["signer"] = names.codes_cat(a["signer"])
+        a["user_c"] = names.codes_cat(a["user"])
+        a = a.drop(columns=["user", "user_token_owner"])
+        wsol = names.code(P.WSOL)
+        coin_is_base = a["base_mint"] != wsol
+        is_buy = np.where(coin_is_base, a["side"] == "buy", a["side"] == "sell")
+        ab = a[is_buy & coin_is_base]
+        Buys.append({"slot": ab["slot"].to_numpy().copy(), "tx_idx": ab["tx_idx"].to_numpy().copy(),
+                     "owner": ab["owner"].to_numpy().copy(), "mint": ab["base_mint"].to_numpy().copy(),
+                     "sol": ab["quote_amount_lp_adjusted"].to_numpy().copy(), "venue": np.ones(len(ab), np.int8)})
+        del ab, is_buy, coin_is_base
+        if pool_codes and pool:
+            mslot = a["pool"].map(pool_codes)
+            keep = mslot.notna() & (a["slot"] <= mslot.fillna(0) + P.BOOST_COMPLETE_HORIZON_SLOTS + 1_000)
+            P_rows.append(_columns(a[keep]))
+            del mslot, keep
+        del a
+        _trim()
+
+        t = _read_csv(u.table("T.csv.zst"), T_COLS, set(), cat_cols=("mint", "from_owner", "to_owner"))
+        _num(t, ["slot", "tx_idx", "outer_ix", "inner_ix", "amount"])
+        for col in ("mint", "from_owner", "to_owner"):
+            t[col] = names.codes_cat(t[col])
+        Tl.append(_columns(t))
+        del t
+        if links:
+            w = _read_csv(u.table("W.csv.zst"), W_COLS, set(), cat_cols=("from", "to"))
+            Wl.append({"slot": w["slot"].astype(np.int64).to_numpy().copy(), "src": names.codes_cat(w["from"]),
+                       "dst": names.codes_cat(w["to"])})
+            del w
+        f = _read_csv(u.table("F.csv.zst"), F_COLS, set())
+        f = f[f["ix_name"] == "boost_buy_and_burn"].copy()
+        _num(f, ["slot", "tx_idx", "amount_arg", "limit_arg"])
+        f["pool_or_curve"] = names.codes(f["pool_or_curve"].to_numpy())
+        Fl.append(f)
+        del f
+        _trim()
+
+    curve = _assemble(C, sort_by=["mint", "slot", "tx_idx", "ev_idx"])
+    del C
+    if P_rows:
+        pool_rows = _assemble(P_rows, sort_by=["pool", "slot", "tx_idx", "ev_idx"])
+    else:
+        pool_rows = pd.DataFrame(columns=AMM_COLS + ["owner"])
+        pool_rows = pool_rows.sort_values(["pool", "slot", "tx_idx", "ev_idx"], kind="stable").reset_index(drop=True)
+    del P_rows
+    pool_rows = _pool_after_state(pool_rows)
+    buys = _assemble(Buys, sort_by=["slot", "tx_idx"], astype={"owner": np.int32, "mint": np.int32, "tx_idx": np.int32})
+    del Buys
+    T = _assemble(Tl, sort_by=["slot", "tx_idx", "outer_ix", "inner_ix"],
+                  astype={"mint": np.int32, "from_owner": np.int32, "to_owner": np.int32})
+    del Tl
+    W = (_assemble(Wl, astype={"src": np.int32, "dst": np.int32}) if Wl
+         else pd.DataFrame({"slot": [], "src": [], "dst": []}).astype(np.int64).astype({"src": np.int32, "dst": np.int32}))
+    del Wl
+    F_boost = pd.concat(Fl, ignore_index=True) if Fl else pd.DataFrame(columns=F_COLS)
+    for k, df in events.items():
+        for col in ("mint", "pool", "bonding_curve", "creator", "user", "base_mint", "quote_mint", "coin_creator"):
+            if col in df.columns:
+                df[col + "_c"] = names.codes(df[col].to_numpy())
+    _trim()
     tape = Tape(units, segments(units), names, blocks, events, curve, pool_rows, buys, T, W, F_boost)
     tape.build_indexes()
     return tape

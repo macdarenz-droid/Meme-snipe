@@ -241,6 +241,40 @@ def compact_frame(df: pd.DataFrame, cols, it: Interner):
     return df
 
 
+def compact_swaps(sw: pd.DataFrame, it: Interner) -> pd.DataFrame:
+    """One unit's swaps (swaps_from) in compact form, sorted in tape order, string columns as reading codes."""
+    sw = sw.drop(columns=DROP_SWAP_COLS)
+    sw["signature"] = sig_hash(sw["signature"])
+    for c, d in SMALL_INTS.items():
+        sw[c] = sw[c].astype(d)
+    for c in EXACT_F32:            # values below 2^24, so float32 holds them exactly
+        sw[c] = sw[c].astype(np.float32)
+    # each unit sorted on its own: units hold disjoint slot ranges, so ordering the units by their first
+    # slot and concatenating gives the same rows in the same order as one stable sort of everything
+    sw = sw.sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort").reset_index(drop=True)
+    return compact_frame(sw, STR_COLS["swaps"], it)
+
+
+def compact_fails(ff: pd.DataFrame, it: Interner) -> pd.DataFrame:
+    ff["signature"] = sig_hash(ff["signature"])
+    for c in ("slot", "block_time"):
+        ff[c] = _num(ff[c]).astype("Int64")
+    return compact_frame(ff, STR_COLS["fails"], it)
+
+
+def compact_moves(tt: pd.DataFrame, it: Interner) -> pd.DataFrame:
+    for col in ("slot", "tx_idx", "outer_ix", "inner_ix", "amount"):
+        tt[col] = _num(tt[col]).fillna(-1).astype(np.int64)
+    return compact_frame(tt, STR_COLS["moves"], it)
+
+
+def compact_w(ww: pd.DataFrame, it: Interner) -> pd.DataFrame:
+    ww = ww.dropna(subset=["from_owner", "to_owner"])
+    ww = ww[ww["from_owner"] != ww["to_owner"]]
+    ww["slot"] = _num(ww["slot"]).astype(np.int64)
+    return compact_frame(ww, STR_COLS["w_links"], it)
+
+
 def finish_frame(df: pd.DataFrame, cols, dtype, rank):
     for c in cols:
         if c in df.columns:
@@ -273,37 +307,20 @@ class Tape:
             ff = read_csv(p, "F", ["slot", "block_time", "signature", "venue", "pool_or_curve", "err_class"])
             ff["day"] = day
             if compact:
-                sw = swaps[-1].drop(columns=DROP_SWAP_COLS)
-                sw["signature"] = sig_hash(sw["signature"])
-                for c, d in SMALL_INTS.items():
-                    sw[c] = sw[c].astype(d)
-                for c in EXACT_F32:            # values below 2^24, so float32 holds them exactly
-                    sw[c] = sw[c].astype(np.float32)
-                # each unit sorted on its own: units hold disjoint slot ranges, so ordering the units by their first
-                # slot and concatenating gives the same rows in the same order as one stable sort of everything
-                sw = sw.sort_values(["slot", "tx_idx", "ev_idx"], kind="mergesort").reset_index(drop=True)
-                swaps[-1] = compact_frame(sw, STR_COLS["swaps"], it)
+                swaps[-1] = compact_swaps(swaps[-1], it)
                 unit_lo.append(lo)
-                ff["signature"] = sig_hash(ff["signature"])
-                for c in ("slot", "block_time"):
-                    ff[c] = _num(ff[c]).astype("Int64")
-                ff = compact_frame(ff, STR_COLS["fails"], it)
+                ff = compact_fails(ff, it)
             fails.append(ff)
             if compact:
                 _trim()
             tt = read_csv(p, "T", ["slot", "tx_idx", "outer_ix", "inner_ix", "mint", "kind", "from_owner", "to_owner",
                                    "amount"])
             if compact:
-                for col in ("slot", "tx_idx", "outer_ix", "inner_ix", "amount"):
-                    tt[col] = _num(tt[col]).fillna(-1).astype(np.int64)
-                tt = compact_frame(tt, STR_COLS["moves"], it)
+                tt = compact_moves(tt, it)
             t.append(tt)
             ww = read_csv(p, "W", ["slot", "from", "to"]).rename(columns={"from": "from_owner", "to": "to_owner"})
             if compact:
-                ww = ww.dropna(subset=["from_owner", "to_owner"])
-                ww = ww[ww["from_owner"] != ww["to_owner"]]
-                ww["slot"] = _num(ww["slot"]).astype(np.int64)
-                ww = compact_frame(ww, STR_COLS["w_links"], it)
+                ww = compact_w(ww, it)
             w.append(ww)
             cff = read_csv(p, "CF", ["slot", "creator", "amount", "event"])
             cf.append(cff)

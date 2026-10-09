@@ -5,6 +5,7 @@ Every address is coded to an int (`Tape.codec`), -1 for empty. Rows at or after 
 (they never exist in the tape; fail closed). Units of schema v1 have no `top_program` (S) and no CF table: the
 dependent feature is NaN there.
 """
+import ctypes
 import hashlib
 import json
 import os
@@ -188,9 +189,67 @@ def _down(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False) -> Tape:
+SORT_KEYS = {"b": ("slot",), "amm": ("slot", "tx_idx", "ev_idx"), "buys": ("slot", "tx_idx", "ev_idx"),
+             "curve": ("slot", "tx_idx", "ev_idx"), "t": ("slot", "tx_idx", "outer_ix", "inner_ix"), "w": ("slot",),
+             "f": ("slot",), "cf": ("slot",)}
+TABLES = tuple(SORT_KEYS)
+
+
+def _trim():
+    """Hand freed heap pages back to the OS (glibc); a no-op elsewhere. Memory only, never a result."""
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
+def _is_sorted(keys: Sequence[np.ndarray]) -> bool:
+    """True when the rows are already in (non-decreasing) lexicographic order of `keys`."""
+    if len(keys[0]) < 2:
+        return True
+    eq = np.ones(len(keys[0]) - 1, dtype=bool)
+    for k in keys:
+        a, b = k[:-1], k[1:]
+        if (eq & (a > b)).any():
+            return False
+        eq &= a == b
+    return True
+
+
+def _cat_lowmem(ps: List[Dict[str, np.ndarray]], sort: Sequence[str], down: bool) -> pd.DataFrame:
+    """The low-memory twin of load's `cat`: same rows, order, columns and dtypes. Each part is already sorted by
+    `sort` (stable), so the stable sort of their concatenation is the concatenation itself unless unit ranges overlap,
+    and then the same stable lexicographic sort is applied. Columns are joined one at a time and each part's copy is
+    freed as it goes, so the peak is the table plus one column (the old path held parts + concat + sorted copy)."""
+    out: Dict[str, np.ndarray] = {}
+    for c in list(ps[0].keys()):
+        arrs = [p.pop(c) for p in ps]
+        if len({a.dtype for a in arrs}) == 1:
+            a = np.concatenate(arrs)
+        else:   # pd.concat's common-dtype rule, as the old path's frame concat
+            a = pd.concat([pd.Series(x) for x in arrs], ignore_index=True).to_numpy()
+        del arrs
+        if down and a.dtype == np.int64 and len(a) and a.min() >= -2**31 and a.max() < 2**31:
+            a = a.astype(np.int32)
+        out[c] = a
+    keys = [out[k] for k in sort]
+    if not _is_sorted(keys):
+        order = np.lexsort(keys[::-1])
+        for c in out:
+            out[c] = out[c][order]
+    return pd.DataFrame(out, copy=False)
+
+
+def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False, lowmem: bool = False,
+         keep: Optional[Sequence[str]] = None) -> Tape:
     """all_pools=False keeps pool rows only for pools migrated on the tape (the universe); True keeps every canonical
-    WSOL pool (dev shape checks)."""
+    WSOL pool (dev shape checks).
+
+    lowmem=True reads the same rows into the same tables (tested equal to lowmem=False, outputs byte-identical) with
+    less memory: each unit's part is sorted and stored as plain columns, tables are joined column by column, freed
+    heap is returned after each unit, and the amm `signature` column (read by nothing after the load) is not kept.
+    `keep` (lowmem only) names the tables to hold; the others are still read, wall-checked, coded (so every address
+    gets the same code) and counted, then dropped (stage 2 needs only the pool rows and the events)."""
     units = sorted((parse_unit(p) for p in unit_dirs), key=lambda u: u.from_slot)
     days = tuple(sorted(days))
     for u in units:
@@ -200,7 +259,23 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
             raise ValueError(f"day {u.day} is at or after the holdout start 2026-09-12")
     codec = Codec()
     mig_pools = None if all_pools else migrated_pools(units)
-    parts: Dict[str, list] = {k: [] for k in ("b", "amm", "buys", "curve", "t", "w", "f", "cf")}
+    parts: Dict[str, list] = {k: [] for k in TABLES}
+    held = set(TABLES if keep is None else keep) | {"b"}
+    if not lowmem and held != set(TABLES):
+        raise ValueError("keep is a lowmem option")
+    dropped = {k: 0 for k in TABLES}   # lowmem: rows read and counted but not kept
+
+    def put(name: str, df: pd.DataFrame):
+        if not lowmem:
+            parts[name].append(df)
+            return
+        if name == "amm":
+            df = df.drop(columns="signature")
+        if name not in held:
+            dropped[name] += len(df)
+            return
+        df = df.sort_values(list(SORT_KEYS[name]), kind="mergesort")
+        parts[name].append({c: np.array(df[c].to_numpy(), copy=True) for c in df.columns})
     evp: Dict[str, list] = {k: [] for k in E_EVENTS}
     v1 = []
     for u in units:
@@ -218,7 +293,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
             boost_sigs = set(e.loc[e.event == "BoostBuyAndBurnEvent", "signature"])
         b = _read(u, "B.csv.zst", ["slot", "block_time"])
         _wall(b, "B", u)
-        parts["b"].append(pd.DataFrame({"slot": _int(b.slot), "block_time": _int(b.block_time)}))
+        put("b", pd.DataFrame({"slot": _int(b.slot), "block_time": _int(b.block_time)}))
 
         a = _read(u, "S_amm.csv.zst", AMM_COLS)
         _wall(a, "S_amm", u)
@@ -235,7 +310,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
         else:
             isb = (a.side == "buy").to_numpy()
         ab = a[isb]
-        parts["buys"].append(pd.DataFrame({
+        put("buys", pd.DataFrame({
             "slot": _int(ab.slot), "tx_idx": _int(ab.tx_idx), "ev_idx": _int(ab.ev_idx), "venue": 1,
             "mint": codec.encode(ab.base_mint), "owner": codec.encode(ab.user_token_owner),
             "sol": np.where(ab.quote_mint.isin(SOL_QUOTES).to_numpy(), _num(ab.quote_amount), np.nan)}))
@@ -247,7 +322,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
         k_boost, k_prot = a_boost[keep], a_prot[keep]
         side = np.where((k.side == "buy").to_numpy(), 1, -1)
         tp = k.top_program
-        parts["amm"].append(pd.DataFrame({
+        put("amm", pd.DataFrame({
             "slot": _int(k.slot), "block_time": _int(k.block_time), "tx_idx": _int(k.tx_idx), "ev_idx": _int(k.ev_idx),
             "outer_ix": _int(k.outer_ix), "inner_ix": _int(k.inner_ix),
             "pool": codec.encode(k.pool), "mint": codec.encode(k.base_mint), "side": side,
@@ -274,11 +349,11 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
         is_buy = (c.is_buy == "1").to_numpy()
         c_proto = (_int(c.protocol, 0) != 0) | c.signature.isin(boost_sigs).to_numpy()
         b_keep = is_buy & ~c_proto if C.EXCLUDE_PROTOCOL_SWAPS else is_buy
-        parts["buys"].append(pd.DataFrame({
+        put("buys", pd.DataFrame({
             "slot": _int(c.slot)[b_keep], "tx_idx": _int(c.tx_idx)[b_keep], "ev_idx": _int(c.ev_idx)[b_keep],
             "venue": 0, "mint": mint_c[b_keep], "owner": owner_c[b_keep],
             "sol": np.where(sol_curve, _num(c.sol_amount), np.nan)[b_keep]}))
-        parts["curve"].append(pd.DataFrame({
+        put("curve", pd.DataFrame({
             "slot": _int(c.slot), "block_time": _int(c.block_time), "tx_idx": _int(c.tx_idx), "ev_idx": _int(c.ev_idx),
             "outer_ix": _int(c.outer_ix), "inner_ix": _int(c.inner_ix), "mint": mint_c, "is_buy": is_buy.astype(int),
             "sol_amount": _int(c.sol_amount, 0), "token_amount": _int(c.token_amount, 0), "fee": _int(c.fee, 0),
@@ -289,7 +364,7 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
 
         t = _read(u, "T.csv.zst", T_COLS)
         _wall(t, "T", u)
-        parts["t"].append(pd.DataFrame({
+        put("t", pd.DataFrame({
             "slot": _int(t.slot), "tx_idx": _int(t.tx_idx), "outer_ix": _int(t.outer_ix), "inner_ix": _int(t.inner_ix),
             "mint": codec.encode(t.mint), "pump_mint": t.mint.fillna("").str.endswith("pump").to_numpy().astype(int),
             "kind": t.kind.map({"transfer": 0, "burn": 1, "mint": 2}).fillna(-1).astype(int).to_numpy(),
@@ -299,25 +374,29 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
         w = _read(u, "W.csv.zst", W_COLS)
         if w is not None:
             _wall(w, "W", u)
-            parts["w"].append(pd.DataFrame({"slot": _int(w.slot), "src": codec.encode(w["from"]), "dst": codec.encode(w["to"])}))
+            put("w", pd.DataFrame({"slot": _int(w.slot), "src": codec.encode(w["from"]), "dst": codec.encode(w["to"])}))
             del w
 
         f = _read(u, "F.csv.zst", F_COLS)
         if f is not None:
             _wall(f, "F", u)
             f = f[(f.venue == "pumpswap") & (f.side == "buy") & (f.err_class == "slippage")]
-            parts["f"].append(pd.DataFrame({"slot": _int(f.slot), "block_time": _int(f.block_time),
+            put("f", pd.DataFrame({"slot": _int(f.slot), "block_time": _int(f.block_time),
                                             "pool": codec.encode(f.pool_or_curve)}))
         cf = _read(u, "CF.csv.zst", CF_COLS)
         if cf is not None:
             _wall(cf, "CF", u)
-            parts["cf"].append(pd.DataFrame({"slot": _int(cf.slot), "block_time": _int(cf.block_time),
+            put("cf", pd.DataFrame({"slot": _int(cf.slot), "block_time": _int(cf.block_time),
                                              "creator": codec.encode(cf.creator)}))
-
+        if lowmem:
+            _trim()
 
     def cat(name, cols=None, sort=("slot",)):
         if not parts[name]:
             return pd.DataFrame({c: pd.Series(dtype=np.int64) for c in (cols or ["slot"])})
+        if lowmem:
+            ps, parts[name] = parts[name], []
+            return _cat_lowmem(ps, sort, down=name not in ("amm",))
         df = pd.concat(parts[name], ignore_index=True)
         parts[name] = []
         if name not in ("amm",):
@@ -338,7 +417,9 @@ def load(unit_dirs: Sequence[str], days: Sequence[str], all_pools: bool = False)
                 t=cat("t", sort=("slot", "tx_idx", "outer_ix", "inner_ix")),
                 w=cat("w", ["slot", "src", "dst"]), f=cat("f", ["slot", "block_time", "pool"]),
                 cf=cat("cf", ["slot", "block_time", "creator"]), ev=ev, schema_v1_slots=v1)
-    tape.counts = {k: len(getattr(tape, k)) for k in ("b", "amm", "buys", "curve", "t", "w", "f", "cf")}
+    tape.counts = {k: len(getattr(tape, k)) + dropped[k] for k in TABLES}
+    if lowmem:
+        _trim()
     tape.counts.update({f"E:{k}": len(v) for k, v in ev.items()})
     return tape
 

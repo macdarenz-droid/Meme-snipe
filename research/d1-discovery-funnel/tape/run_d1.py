@@ -54,6 +54,15 @@ def _units(args):
     return units
 
 
+def _reader(args) -> bool:
+    """True: the low-memory reader (default). --old-reader: the earlier reader, kept for the equality test."""
+    if getattr(args, "old_reader", False):
+        from d1 import holders
+        holders.LINK_INDEX = holders.LinkIndexDict
+        return False
+    return True
+
+
 def stage1(args):
     from d1.features import compute_features
     from d1.load import dump_json, file_hashes, load, manifest
@@ -69,10 +78,14 @@ def stage1(args):
         sys.exit(f"refusing: Step A plan sha256 {sha} != {C.STEPA_PLAN_SHA256}")
     units = [os.path.abspath(u) for u in _units(args)]
     os.makedirs(args.out, exist_ok=True)
-    tape = load(units, args.days, all_pools=dev)
+    lowmem = _reader(args)
+    tape = load(units, args.days, all_pools=dev, lowmem=lowmem)
     plan = plan_check(tape.units, args.days, plan_path)
-    book = PoolBook(tape.amm)
-    tape.amm = tape.amm.iloc[:0]   # the pool book holds the rows from here on
+    if lowmem:
+        book = PoolBook.consume(tape)  # the pool book holds the rows from here on
+    else:
+        book = PoolBook(tape.amm)
+        tape.amm = tape.amm.iloc[:0]   # the pool book holds the rows from here on
     clock = Clock(tape)
     migs = migrations(tape, book, dev_unknown_migration=dev)
     pts = decision_points(tape, book, migs, clock)
@@ -107,8 +120,10 @@ def stage2(args):
         now = file_hashes([parse_unit(u) for u in units])
         if now != m1["input_sha256"]:
             sys.exit("refusing: the unit files differ from the ones stage 1 read")
-    tape = load(units, m1["days"], all_pools=dev)
-    book = PoolBook(tape.amm)
+    lowmem = _reader(args)
+    # stage 2 holds only the pool rows and the events; the other tables are still read, coded and counted (lowmem)
+    tape = load(units, m1["days"], all_pools=dev, lowmem=lowmem, keep=("amm",) if lowmem else None)
+    book = PoolBook.consume(tape) if lowmem else PoolBook(tape.amm)
     ce = tape.ev["CreateEvent"].drop_duplicates("mint")
     token_programs = dict(zip(ce.mint.astype(int), ce.token_program))
     pts = pd.read_pickle(os.path.join(args.out, "points.pkl"))
@@ -293,8 +308,10 @@ def main(argv=None):
     p.add_argument("--dev-unknown-migration", action="store_true",
                    help="DEV ONLY: pseudo migrations for pools migrated before the tape (shape checks)")
     p.add_argument("--no-hash", action="store_true", help="skip input sha256 (dev runs only)")
+    p.add_argument("--old-reader", action="store_true", help="the earlier, high-memory reader (equality tests)")
     p = sub.add_parser("stage2", help="reads the units and days from the stage 1 manifest")
     p.add_argument("--out", required=True, help="run directory of stage 1")
+    p.add_argument("--old-reader", action="store_true", help="the earlier, high-memory reader (equality tests)")
     p = sub.add_parser("summary")
     p.add_argument("--run", required=True)
     p.add_argument("--solusd", help="pinned SOL/USD directory for the H8 count row (default research/brainstorm-loop/sol-usd)")

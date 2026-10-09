@@ -15,18 +15,45 @@ from . import config as C
 from .costs import Pool
 
 
+BOOK_COLS = ["slot", "block_time", "side", "base_amount", "quote_amount", "user_quote", "base_before", "vault_before",
+             "base_after", "vault_after", "virt", "lp_bps", "protocol_bps", "creator_bps", "supply", "owner",
+             "coin_creator", "app_routed", "tx_idx", "ev_idx", "mint", "outer_ix", "inner_ix", "owner_pre",
+             "owner_post", "boost", "protocol"]
+
+
 class PoolBook:
     def __init__(self, amm: pd.DataFrame):
         self.rows: Dict[int, Dict[str, np.ndarray]] = {}
         if len(amm) == 0:
             return
         amm = amm.sort_values(["pool", "slot", "tx_idx", "ev_idx"], kind="mergesort")
-        cols = ["slot", "block_time", "side", "base_amount", "quote_amount", "user_quote", "base_before", "vault_before",
-                "base_after", "vault_after", "virt", "lp_bps", "protocol_bps", "creator_bps", "supply", "owner",
-                "coin_creator", "app_routed", "tx_idx", "ev_idx", "mint", "outer_ix", "inner_ix", "owner_pre",
-                "owner_post", "boost", "protocol"]
+        cols = BOOK_COLS
         arrs = {c: amm[c].to_numpy() for c in cols}
-        pools = amm.pool.to_numpy()
+        self._split(arrs, amm.pool.to_numpy())
+
+    @classmethod
+    def consume(cls, tape) -> "PoolBook":
+        """Low-memory twin of PoolBook(tape.amm): the same rows in the same order (the same stable sort by pool,
+        slot, tx_idx, ev_idx), but each column of tape.amm is reordered into the book and freed in turn, so the peak
+        is the table plus one column instead of two copies. tape.amm is left empty."""
+        amm = tape.amm
+        tape.amm = amm.iloc[:0].copy()
+        self = cls.__new__(cls)
+        self.rows = {}
+        if len(amm) == 0:
+            return self
+        order = np.lexsort((amm.ev_idx.to_numpy(), amm.tx_idx.to_numpy(), amm.slot.to_numpy(), amm.pool.to_numpy()))
+        pools = amm.pool.to_numpy()[order]
+        arrs = {}
+        for c in BOOK_COLS:
+            arrs[c] = amm[c].to_numpy()[order]
+            del amm[c]
+        del amm, order
+        self._split(arrs, pools)
+        return self
+
+    def _split(self, arrs: Dict[str, np.ndarray], pools: np.ndarray):
+        cols = BOOK_COLS
         starts = np.flatnonzero(np.r_[True, pools[1:] != pools[:-1]])
         ends = np.r_[starts[1:], len(pools)]
         for s, e in zip(starts, ends):

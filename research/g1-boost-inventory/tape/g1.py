@@ -45,18 +45,19 @@ def _json(path, obj):
         json.dump(obj, f, indent=1, default=conv, allow_nan=True)
 
 
-def _tape(a, links=True):
+def _tape(a, links=True, pool=True):
     units = find_units(a.units, a.days, allow_subset=getattr(a, "dev_subset", False))
     if not units:
         sys.exit("no units found")
     log(f"{len(units)} units, days {sorted(set(u.day for u in units))}")
-    return units, load(units, links=links, log=log)
+    reader = "reference" if getattr(a, "reference_reader", False) else "compact"
+    return units, load(units, links=links, log=log, reader=reader, pool=pool or reader == "reference")
 
 
 def cmd_decide(a):
     from g1lib.decide import decisions, timing
     from g1lib.features import FeatureContext, compute_features
-    units, tape = _tape(a, links=not a.no_links)
+    units, tape = _tape(a, links=not a.no_links, pool=False)   # decide reads no PumpSwap pool row
     d = timing(tape, decisions(tape, log=log))
     ctx = FeatureContext(tape, with_links=not a.no_links)
     d = compute_features(tape, d, ctx, log=log)
@@ -255,6 +256,8 @@ def main(argv=None):
             p.add_argument("--days", nargs="*")
             p.add_argument("--dev-subset", action="store_true",
                            help="development only: accept part of a day; freeze, score and outcome with returns refuse it")
+            p.add_argument("--reference-reader", action="store_true",
+                           help="the original, memory-heavy reader (equality tests); outputs are identical")
 
     p = sub.add_parser("decide"); common(p); p.add_argument("--no-links", action="store_true"); p.set_defaults(f=cmd_decide)
     p = sub.add_parser("gate"); common(p); p.set_defaults(f=cmd_gate)

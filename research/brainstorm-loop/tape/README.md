@@ -5,14 +5,17 @@ Implements `../STEP_A_COUNT_ROWS.md` with `../COUNT_ROWS_AMENDMENT_1.md`, `../CO
 ## Run
 ```
 nice -n 19 python3 run_step_a.py --unit <cache>/<day>/<from>-<to> [--unit ...] --out OUTDIR \
-    [--sol-usd FOLDER] [--boot 10000] [--decide] [--plan FILE]
-nice -n 19 python3 -m unittest -v        # from this folder
+    [--sol-usd FOLDER] [--boot 10000] [--decide] [--plan FILE] [--engine stream|memory] [--shards N] [--workdir DIR]
+nice -n 19 python3 run_step_a.py --prep-only --unit ... --out OUTDIR [--shards N] [--workdir DIR]
+nice -n 19 python3 -m unittest -v        # from this folder (test_rows and test_stream)
 ```
+- `--engine`: `stream` (the default) is `stream.py`'s sharded reader; `memory` loads every unit into one `Tape`. Both write byte-identical files (`test_stream.StreamEquality`). `--shards` sets the shard count (default: from the units' size, about 1.5M swaps a shard); it changes memory only, never a result. `--workdir` holds the shard files while the run lasts (default: a temporary folder); they are deleted at the end.
+- `--prep-only`: the preparation stages only (`stream.run_prep`), for real-data checks before Step A is scored. It writes `prep_<table>.csv` and `prep_summary.json` (row counts): the two-sided labels, DEV-ZERO's event and control candidates, REBUY-ANCHOR's exits and decision points with their as-of features, SEAT-DRIFT's graduates with N_m and terciles, the AGE-GATE anchor ages, the H8 capacity row, the slicer events, low-B placebo events and dispersed controls with their as-of features, the MIG-SEAT graduations and the MAYHEM-SNAP down steps. It computes no flow after an event or decision point, no outcome, no bootstrap, no payer bar and no gate, and does not import `payer.py` (`test_stream.PrepOnly`). Row 6 (bunching and Gate 3 read the market-cap path) and the H8 strata are not run.
 - `--unit`: a unit directory (`<day>/<from>-<to>`, or its `research/` folder), repeated. The day comes from the path. Windows must lie inside contiguous loaded units.
 - `--sol-usd`: a folder of Binance `SOLUSDT-1m-<day>.zip` files with `SHA256SUMS`. The default is the committed `research/brainstorm-loop/sol-usd/`. Every loaded tape day's file is checked against `SHA256SUMS`, and the run stops with an error on a missing day or a mismatch (`load_sol_usd_dir`). The shas go into the summary. Row 6 and the H8 rows read this input. The code makes no network request.
 - `--decide` stops with an error unless the loaded units equal the plan rows for 09-11 and 09-10 exactly, with contiguous slots. The plan is `--plan`, by default `research/shared-tape/stepa-plan.txt`, and its sha256 goes into the summary (`tapeio.check_plan`).
 - DEV-ZERO's events per day list every loaded day, with 0 for a day that has no events. Row 6 reports `None` (not `False`) for "not separable" when any day lacks a SOL/USD price. Gate 3 counts only the creator's swaps inside the pool's window (end of BOOST or m + 5 min, up to hour 72 or the end of the tape).
-- Needs pandas, numpy, zstandard. One unit takes about 4 minutes and 1.5 GB of RAM with 10,000 resamples (measured 2026-10-08). Memory grows with the units loaded (about 1.2 GB a unit), so a whole 62-unit day does not fit in this machine's 15 GB; see OPEN_QUESTIONS "Scale".
+- Needs pandas, numpy, zstandard. With `--engine memory`, memory grows by about 0.37 GB a unit, so a whole day does not fit in 15 GB; the stream engine keeps one shard of swaps at a time. Measured memory: OPEN_QUESTIONS "Scale (2026-10-09)".
 
 ## Outputs (in OUTDIR)
 - `stepa_summary.json`: one block per row (`1_dev_zero` … `6_round_usd`). It also gives the loader counts: swaps, BOOST rows excluded, first-time buys, and rows labelled as fake demand. With `--decide`, a `decision` block is added: each row's own thresholds (`own_thresholds`; DEV-ZERO's arms in the frozen order, each only after the earlier ones pass), the `PAYER_MASS.md` bar per row as defined by `../COUNT_ROWS_AMENDMENT_7.md` (`payer.py`: computed for SEAT-DRIFT, DEV-ZERO (per arm, Q terciles per `../COUNT_ROWS_AMENDMENT_9.md`) and REBUY-ANCHOR, in shares of each event's own Q per `../COUNT_ROWS_AMENDMENT_8.md`), and the result per row. `--decide` refuses any `--boot` other than 10,000.
@@ -40,8 +43,10 @@ nice -n 19 python3 -m unittest -v        # from this folder
 - `slicer.py`: the slicer-ride count rows (`../COUNT_ROWS_AMENDMENT_4.md`). Counts only; when every row passes, the counts go to the owner and no PREREG is written.
 - `migseat.py`: the MIG-SEAT rows G1–G8 with the kill row, and the MAYHEM-SNAP rows (a)–(e) (`../COUNT_ROWS_AMENDMENT_5.md`, `_6.md`).
 - `rebuy.py`: row 2. It uses H1-CGO's ledger (`research/h1-cgo/tape/h1cgo/ledger.py`), loaded read-only.
+- `stream.py`: the streaming reader (pass 0 reads E, pass 1 each unit once into mint shards on disk plus the whole-tape parts: links as an indexed graph, both cluster rules, coverage, eligible pools; pass A W1's buys; pass B every row shard by shard, merged back into the in-memory order), and `run_prep`.
 - `run_step_a.py`: the entry point.
 - `test_rows.py`: unit tests on synthetic units written to a temporary folder.
+- `test_stream.py`: the stream engine against the memory engine (every file byte-identical, outcome rows included) on the fixtures, random two-day four-unit inputs, edge units and several shard counts; the prep-only mode.
 
 ## Mapping: registered item → function (`rows.py`)
 | Item | Function |

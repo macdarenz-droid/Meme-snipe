@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import h8 as H8  # noqa: E402
 import migseat as MS  # noqa: E402
-import payer as PM  # noqa: E402
 import rebuy as RB  # noqa: E402
 import rows as R  # noqa: E402
 import slicer as SL  # noqa: E402
@@ -156,8 +155,19 @@ REGISTERED_BOOT = 10_000   # COUNT_ROWS_AMENDMENT_1 Q1; run() overwrites R.BOOT_
 
 
 def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_usd_files=None, minutes=None,
-        compact=True):
+        compact=True, engine="memory", shards=None, workdir=None):
+    """engine="memory": every unit in one in-memory Tape (the reference). engine="stream": stream.py's sharded
+    reader, which gives the same outputs (test_stream) and fits both Step A days in memory."""
     R.BOOT_N = n_boot
+    if engine == "stream":
+        import stream
+        res = stream.compute(units, sol_usd, n_boot, minutes, shards=shards, workdir=workdir)
+    else:
+        res = compute_memory(units, sol_usd, n_boot, minutes, compact)
+    return finish(res, out, decide, plan, sol_usd_files)
+
+
+def compute_memory(units, sol_usd, n_boot, minutes, compact=True):
     tape = Tape(units, compact=compact)
     adj = R.adjacency(tape.links)
     labels, two = R.two_sided_clusters(tape)
@@ -166,10 +176,6 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
     dz, dz_s = R.dev_zero(tape, s, adj)
     rb, rb_pts, rb_pairs, rb_s = RB.rebuy_anchor(tape, s)
     sd, sd_s = R.seat_drift(tape, s, adj)
-    seat_bar = PM.seat_drift_bar(sd, sorted({d for d, _, _ in tape.ranges}))   # COUNT_ROWS_AMENDMENT_7, 8
-    rb_bar = PM.rebuy_bar(rb_pts, sorted({d for d, _, _ in tape.ranges}))   # AMENDMENT_8
-    dev_bar = {"passed": None, "status": "per arm (by_arm)",
-               "by_arm": PM.dev_zero_bar(dz, sorted({d for d, _, _ in tape.ranges}))}   # AMENDMENT_8
     ag, ag_s = R.age_gate(tape, s, fast)
     ru, ru_s = R.round_usd(tape, s, sol_usd, adj, n_boot=min(n_boot, 1000))
     # H8_AMENDMENT: rows 1-3 on the H8-eligible stratum at $5, $20, $50, and the H8 capacity count row
@@ -191,14 +197,33 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
     sl_ev, sl_plc, sl_ctl, sl_s = SL.slicer_rows(tape, s, adj, fast, gctx, cmaps["hub_cap_50"])
     ms_df, ms_s = MS.mig_seat(tape, s, gctx)
     mh_df, mh_s = MS.mayhem_snap(tape, s, hourly)
+    counts = {"swaps": int(len(s)), "boost_rows_excluded": int(s["boost"].sum()),
+              "first_time_buys": int(s["ftb"].sum()), "fake_demand_rows": int(s["fake"].sum()),
+              "w1_fast_owner_days": int(fast.sum()), "w1_owner_days": int(len(fast))}
+    return {k: v for k, v in locals().items() if k in RESULT_KEYS} | {"ranges": tape.ranges}
+
+
+RESULT_KEYS = ("counts", "dz", "dz_s", "rb", "rb_pts", "rb_pairs", "rb_s", "sd", "sd_s", "ag", "ag_s", "ru", "ru_s",
+               "two", "labels", "h8_strata", "h8_ph", "h8_gr", "h8_cap", "sl_ev", "sl_plc", "sl_ctl", "sl_s", "ms_df",
+               "ms_s", "mh_df", "mh_s")
+
+
+def finish(res, out, decide=False, plan=None, sol_usd_files=None):
+    """The payer-mass bars, the summary and the files, from either reader's results."""
+    import payer as PM
+    g = res
+    dz, sd, rb_pts = g["dz"], g["sd"], g["rb_pts"]
+    days = sorted({d for d, _, _ in g["ranges"]})
+    seat_bar = PM.seat_drift_bar(sd, days)   # COUNT_ROWS_AMENDMENT_7, 8
+    rb_bar = PM.rebuy_bar(rb_pts, days)   # AMENDMENT_8
+    dev_bar = {"passed": None, "status": "per arm (by_arm)", "by_arm": PM.dev_zero_bar(dz, days)}   # AMENDMENT_8
+    dz_s, rb_s, sd_s, sl_s, ms_s, mh_s = g["dz_s"], g["rb_s"], g["sd_s"], g["sl_s"], g["ms_s"], g["mh_s"]
     summary = {
-        "units": [f"{d} {a}-{b}" for d, a, b in tape.ranges],
-        "swaps": int(len(s)), "boost_rows_excluded": int(s["boost"].sum()),
-        "first_time_buys": int(s["ftb"].sum()), "fake_demand_rows": int(s["fake"].sum()),
-        "w1_fast_owner_days": int(fast.sum()), "w1_owner_days": int(len(fast)),
-        "1_dev_zero": dz_s, "2_rebuy_anchor": rb_s, "3_seat_drift": sd_s, "4_age_gate": ag_s,
-        "5_two_sided_clusters": two, "6_round_usd": ru_s, "sol_usd_files": sol_usd_files or [],
-        "h8_stratum_rows_1_3": h8_strata, "7_h8_capacity": h8_cap,
+        "units": [f"{d} {a}-{b}" for d, a, b in g["ranges"]],
+        **g["counts"],
+        "1_dev_zero": dz_s, "2_rebuy_anchor": rb_s, "3_seat_drift": sd_s, "4_age_gate": g["ag_s"],
+        "5_two_sided_clusters": g["two"], "6_round_usd": g["ru_s"], "sol_usd_files": sol_usd_files or [],
+        "h8_stratum_rows_1_3": g["h8_strata"], "7_h8_capacity": g["h8_cap"],
         "8_slicer_ride": sl_s, "9_mig_seat": ms_s, "10_mayhem_snap": mh_s,
     }
     summary["payer_mass_3_seat_drift"] = _strip(seat_bar)
@@ -213,10 +238,12 @@ def run(units, out, sol_usd=None, n_boot=R.BOOT_N, decide=False, plan=None, sol_
             "9_mig_seat_prereg_gradual": ms_s["prereg_gradual"],
             "10_mayhem_snap_prereg_may_be_written": mh_s["prereg_may_be_written"]})
     os.makedirs(out, exist_ok=True)
-    for name, df in (("dev_zero", dz), ("rebuy_exits", rb), ("rebuy_points", rb_pts), ("rebuy_pairs", rb_pairs), ("seat_drift", sd), ("age_gate", ag),
-                     ("two_sided_labels", labels), ("round_usd", ru), ("h8_pool_hours", h8_ph), ("h8_graduates", h8_gr),
-                     ("slicer_events", sl_ev), ("slicer_low_b_placebo", sl_plc), ("slicer_controls", sl_ctl),
-                     ("mig_seat", ms_df), ("mayhem_snap_down_steps", mh_df)):
+    for name, key in (("dev_zero", "dz"), ("rebuy_exits", "rb"), ("rebuy_points", "rb_pts"), ("rebuy_pairs", "rb_pairs"),
+                      ("seat_drift", "sd"), ("age_gate", "ag"), ("two_sided_labels", "labels"), ("round_usd", "ru"),
+                      ("h8_pool_hours", "h8_ph"), ("h8_graduates", "h8_gr"), ("slicer_events", "sl_ev"),
+                      ("slicer_low_b_placebo", "sl_plc"), ("slicer_controls", "sl_ctl"), ("mig_seat", "ms_df"),
+                      ("mayhem_snap_down_steps", "mh_df")):
+        df = g[key]
         df.to_csv(os.path.join(out, f"stepa_{name}.csv"), index=False)
     with open(os.path.join(out, "stepa_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1, default=str)
@@ -232,7 +259,26 @@ def main(argv=None):
     ap.add_argument("--boot", type=int, default=REGISTERED_BOOT)
     ap.add_argument("--decide", action="store_true")
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="committed Step A plan (checked with --decide)")
+    ap.add_argument("--engine", choices=("stream", "memory"), default="stream",
+                    help="stream (default): stream.py's sharded reader; memory: every unit in one Tape (same outputs)")
+    ap.add_argument("--shards", type=int, default=None, help="stream: shard count (default: from the units' size)")
+    ap.add_argument("--workdir", default=None, help="stream: folder for the shard files (default: a temporary one)")
+    ap.add_argument("--prep-only", action="store_true",
+                    help="the preparation stages only (stream.run_prep): no flow after an event, no outcome, no gate")
     a = ap.parse_args(argv)
+    if a.prep_only:
+        if a.decide:
+            ap.error("--prep-only computes no decision")
+        try:
+            _, _, minutes = load_sol_usd_dir(sorted({unit_info(u)[1] for u in a.unit}), a.sol_usd)
+        except SolUsdError as e:
+            ap.error(f"SOL/USD refused: {e}")
+        import stream
+        s = stream.run_prep(a.unit, a.out, minutes=minutes, shards=a.shards, workdir=a.workdir,
+                            log=lambda m: print(m, file=sys.stderr, flush=True))
+        json.dump(s, sys.stdout, indent=1, default=str)
+        print()
+        return
     plan_sha = None
     if a.decide:
         if a.boot != REGISTERED_BOOT:   # COUNT_ROWS_AMENDMENT_1 Q1: 10,000 resamples (red team R1-4)
@@ -246,7 +292,8 @@ def main(argv=None):
     except SolUsdError as e:
         ap.error(f"SOL/USD refused: {e}")
     s = run(a.unit, a.out, px, a.boot, a.decide, sol_usd_files=px_sha, minutes=minutes,
-            plan={"path": a.plan, "sha256": plan_sha} if a.decide else None)
+            plan={"path": a.plan, "sha256": plan_sha} if a.decide else None, engine=a.engine, shards=a.shards,
+            workdir=a.workdir)
     json.dump(s, sys.stdout, indent=1, default=str)
     print()
 

@@ -13,7 +13,7 @@ import pandas as pd
 
 from . import tapeio
 from .constants import D_SLOTS, DEFAULT_KEY, HOLD_S, SECONDARY_HOLDS_S, SECONDARY_SIZES_USD, TRADE_USD, spend_of
-from .pumpswap import amm_post_state, buy_exact_quote_in, expected_fixed, load_tiers, sell, token_account_rent
+from .pumpswap import Pool, amm_post_state, buy_exact_quote_in, expected_fixed, load_tiers, sell, token_account_rent
 
 BOOK_COLS = ["slot", "tx_idx", "ev_idx", "outer_ix", "inner_ix", "pool", "side", "base_amount", "quote_amount",
              "quote_amount_lp_adjusted", "lp_fee", "pool_base_token_reserves", "pool_quote_token_reserves",
@@ -56,9 +56,12 @@ class Book:
         return r[2], r[3], r[4]
 
 
+def _book_key(r):
+    return (int(r["slot"]), int(r["tx_idx"]), int(r["outer_ix"] or 0), int(r["inner_ix"] or -1), int(r["ev_idx"] or -1))
+
+
 def books_from_rows(amm: pd.DataFrame, lo: int, hi: int) -> dict:
-    def k(r):
-        return (int(r["slot"]), int(r["tx_idx"]), int(r["outer_ix"] or 0), int(r["inner_ix"] or -1), int(r["ev_idx"] or -1))
+    k = _book_key
     by = {}
     for r in sorted(amm.to_dict("records"), key=k):
         pre, post = amm_post_state(r)
@@ -68,16 +71,91 @@ def books_from_rows(amm: pd.DataFrame, lo: int, hi: int) -> dict:
     return {p: Book(v, lo, hi) for p, v in by.items()}
 
 
-def load_books(units, pools) -> dict:
+def load_books(units, pools, lowmem: bool = False) -> dict:
     pools = set(pools)
+    iv = tapeio.coverage_intervals(units)
+    if lowmem:
+        if len(iv) != 1:
+            raise ValueError(f"outcome units are not one contiguous range: {iv}")
+        return _books_lowmem(units, pools, iv[0][0], iv[0][1])
     fs = []
     for u in sorted(units, key=lambda x: x.from_slot):
         a = tapeio.read_table(u, "S_amm", BOOK_COLS)
         fs.append(a[a.pool.isin(pools)])
-    iv = tapeio.coverage_intervals(units)
     if len(iv) != 1:
         raise ValueError(f"outcome units are not one contiguous range: {iv}")
     return books_from_rows(pd.concat(fs, ignore_index=True) if fs else pd.DataFrame(columns=BOOK_COLS), iv[0][0], iv[0][1])
+
+
+# ---------------------------------------------------------------- low-memory books (same states as books_from_rows)
+
+class _Rows:
+    """Book rows held as int64 columns; row k is the tuple books_from_rows builds: (slot, pre, post, supply,
+    creator_charged)."""
+
+    def __init__(self, a):
+        self.a = a
+
+    def __len__(self):
+        return len(self.a["slot"])
+
+    def __getitem__(self, k):
+        a = self.a
+        sup = None if a["no_supply"][k] else int(a["supply"][k])
+        return (int(a["slot"][k]), Pool(int(a["pb"][k]), int(a["pv"][k]), int(a["pq"][k])),
+                Pool(int(a["qb"][k]), int(a["qv"][k]), int(a["qq"][k])), sup, bool(a["charged"][k]))
+
+
+class CompactBook(Book):
+    def __init__(self, a: dict, lo: int, hi: int):
+        self.rows = _Rows(a)
+        self.slots = a["slot"]  # int64, ascending: bisect reads it as Book does
+        self.lo, self.hi = lo, hi
+
+
+_BOOK_FIELDS = ("slot", "tx", "outer", "inner", "ev", "pb", "pv", "pq", "qb", "qv", "qq", "supply")
+
+
+def _book_chunk(df: pd.DataFrame) -> dict:
+    cols = {f: [] for f in _BOOK_FIELDS}
+    nosup, charged, pool = [], [], []
+    for r in df.to_dict("records"):
+        key = _book_key(r)
+        pre, post = amm_post_state(r)
+        for f, v in zip(_BOOK_FIELDS, key + (pre.base, pre.vault, pre.virtual, post.base, post.vault, post.virtual)):
+            cols[f].append(v)
+        cols["supply"].append(int(r["base_supply"]) if r["base_supply"] else 0)
+        nosup.append(not r["base_supply"])
+        charged.append(r["coin_creator"] != DEFAULT_KEY)  # empty: charged (the dearer reading)
+        pool.append(r["pool"])
+    out = {f: np.array(v, dtype=np.int64) for f, v in cols.items()}  # an int64 overflow raises, never wraps
+    out.update(no_supply=np.array(nosup, dtype=bool), charged=np.array(charged, dtype=bool),
+               pool=np.array(pool, dtype=object))
+    return out
+
+
+def _books_lowmem(units, pools, lo, hi) -> dict:
+    parts = []
+    for u in sorted(units, key=lambda x: x.from_slot):
+        for a in tapeio.read_table_chunks(u, "S_amm", BOOK_COLS):
+            a = a[a.pool.isin(pools)]
+            if len(a):
+                parts.append(_book_chunk(a))
+    if not parts:
+        return {}
+    allc = {f: np.concatenate([p[f] for p in parts]) for f in parts[0]}
+    del parts
+    codes, uniq = pd.factorize(allc.pop("pool"), sort=False)
+    out = {}
+    order = np.lexsort((np.arange(len(codes)), codes))  # rows of each pool, in read order
+    bounds = np.searchsorted(codes[order], np.arange(len(uniq) + 1))
+    for c, p in enumerate(uniq):
+        ix = order[bounds[c]:bounds[c + 1]]
+        o = ix[np.lexsort((np.arange(len(ix)), allc["ev"][ix], allc["inner"][ix], allc["outer"][ix], allc["tx"][ix],
+                           allc["slot"][ix]))]  # sorted() by key, stable
+        a = {f: allc[f][o] for f in ("slot", "pb", "pv", "pq", "qb", "qv", "qq", "supply", "no_supply", "charged")}
+        out[p] = CompactBook(a, lo, hi)
+    return out
 
 
 def price_trade(book: Book, entry_slot: int, exit_slot: int, spend: int, tiers, fixed: float) -> dict:
@@ -143,12 +221,20 @@ def flows(decisions: pd.DataFrame, amm: pd.DataFrame, boosts=frozenset()) -> pd.
     """Per eligible decision point whose flow window is in time: the pool's swaps in (decision slot, flow_end_slot]
     (the hour after the decision): tokens sold, SOL paid by buyers (fees included) and SOL received by sellers.
     Protocol and BOOST swaps are left out."""
+    return _flow_windows(decisions, _flow_prep(amm, boosts))
+
+
+def _flow_prep(amm: pd.DataFrame, boosts=frozenset()) -> pd.DataFrame:
     a = amm[amm.protocol.isin(["", "0"])]
     a = a[[k not in boosts for k in zip(a.signature, a.outer_ix, a.pool)]]
     a = a.assign(slot=a.slot.astype("int64"), sell_tok=(a.side == "sell") * a.base_amount.astype("int64"),
                  buy_sol=(a.side == "buy") * (a.quote_amount_lp_adjusted.astype("int64") + a.protocol_fee.astype("int64")
                                               + a.coin_creator_fee.astype("int64")),
                  sell_sol=(a.side == "sell") * a.user_quote_amount.astype("int64"))
+    return a
+
+
+def _flow_windows(decisions: pd.DataFrame, a: pd.DataFrame) -> pd.DataFrame:
     by = {p: g.sort_values("slot") for p, g in a.groupby("pool")}
     out = []
     d = decisions[decisions.eligible & decisions.in_time_flow]
@@ -167,8 +253,20 @@ def flows(decisions: pd.DataFrame, amm: pd.DataFrame, boosts=frozenset()) -> pd.
     return f
 
 
-def load_flows(units, decisions) -> pd.DataFrame:
+def load_flows(units, decisions, lowmem: bool = False) -> pd.DataFrame:
     pools = set(decisions[decisions.eligible].pool)
+    if lowmem:  # the same rows, reduced chunk by chunk to the columns the windows read
+        boosts, parts = tapeio.read_boost_keys(units), []
+        keep = ["pool", "slot", "sell_tok", "buy_sol", "sell_sol"]
+        for u in sorted(units, key=lambda x: x.from_slot):
+            for x in tapeio.read_table_chunks(u, "S_amm", FLOW_COLS):
+                x = x[x.pool.isin(pools)]
+                x = x[x.protocol.isin(["", "0"])]
+                if len(x):  # (_flow_prep on a frame with no rows left loses its columns, as flows() does)
+                    parts.append(_flow_prep(x, boosts)[keep])
+        if not parts:  # no non-protocol row at all: exactly what flows() does with such a frame
+            return flows(decisions, pd.DataFrame(columns=FLOW_COLS), boosts)
+        return _flow_windows(decisions, pd.concat(parts, ignore_index=True))
     fs = []
     for u in sorted(units, key=lambda x: x.from_slot):
         x = tapeio.read_table(u, "S_amm", FLOW_COLS)

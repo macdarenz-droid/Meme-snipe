@@ -12,6 +12,13 @@ from scipy.sparse.csgraph import connected_components
 from . import params as P
 
 
+def _narrow(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x)
+    if len(x) == 0 or (x.min() >= np.iinfo(np.int32).min and x.max() <= np.iinfo(np.int32).max):
+        return x.astype(np.int32)
+    return x
+
+
 class LinkGraph:
     def __init__(self, src: np.ndarray, dst: np.ndarray, slot: np.ndarray, n_nodes: int):
         m = (src >= 0) & (dst >= 0) & (src != dst)
@@ -30,12 +37,12 @@ class LinkGraph:
             u, v = key // n, key % n
             order = np.lexsort((s, u))          # by node, then by first-link slot
             u, v, s = u[order], v[order], s[order]
-        self.col, self.slot = v, s
         self.indptr = np.zeros(n + 1, dtype=np.int64)
         if len(u):
             np.add.at(self.indptr, u + 1, 1)
         self.indptr = np.cumsum(self.indptr)
-        self.u = u
+        # held as int32 when every node code and slot fits (memory only: the same values, compared and indexed alike)
+        self.col, self.slot, self.u = _narrow(v), _narrow(s), _narrow(u)
 
     def neighbours(self, x: int, cutoff: int) -> np.ndarray:
         if x < 0 or x >= self.n:

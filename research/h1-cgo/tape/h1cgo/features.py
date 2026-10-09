@@ -394,6 +394,15 @@ def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd
     """One MintStream per universe coin, from the coin's rows only. A PumpSwap row is protocol flow when the tape flags
     it (`protocol`) or when it matches a BoostBuyAndBurnEvent (`boosts`); protocol rows never enter the holders."""
     ev = {m: [] for m in u.mint}
+    add_curve(ev, curve)
+    pool_of = dict(zip(u.pool, u.mint))
+    prow = {m: [] for m in u.mint}
+    add_amm(ev, prow, pool_of, amm, boosts)
+    add_t(ev, t)
+    return make_streams(u, ev, prow, unresolved_of(u, tcov), habits, lp_events)
+
+
+def add_curve(ev: dict, curve: pd.DataFrame):
     for r in curve.itertuples(index=False):
         if r.mint not in ev:
             continue
@@ -401,8 +410,9 @@ def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd
         ev[r.mint].append((_key(r.slot, r.tx_idx, r.outer_ix, r.inner_ix, r.ev_idx), "curve",
                            (r.user_token_owner, r.is_buy == "1", int(r.token_amount), cost,
                             r.protocol not in ("", "0"), r.owner_token_post, r.owner_token_pre, int(r.block_time))))
-    pool_of = dict(zip(u.pool, u.mint))
-    prow = {m: [] for m in u.mint}
+
+
+def add_amm(ev: dict, prow: dict, pool_of: dict, amm: pd.DataFrame, boosts=frozenset()):
     for r in amm.to_dict("records"):
         m = pool_of.get(r["pool"])
         if m is None:
@@ -419,14 +429,24 @@ def build_streams(u: pd.DataFrame, curve: pd.DataFrame, amm: pd.DataFrame, t: pd
                                    r["protocol"] not in ("", "0")
                                    or (r["signature"], r["outer_ix"], r["pool"]) in boosts, r["owner_token_post"],
                                    r["owner_token_pre"], int(r["block_time"]))))
+
+
+def add_t(ev: dict, t: pd.DataFrame):
     for r in t.itertuples(index=False):
         if r.mint in ev:
             ev[r.mint].append((_key(r.slot, r.tx_idx, r.outer_ix, r.inner_ix, -1), "t",
                                (r.kind, r.from_owner, r.to_owner, int(r.amount))))
+
+
+def unresolved_of(u: pd.DataFrame, tcov: pd.DataFrame) -> dict:
     unres = {m: [] for m in u.mint}
     for r in tcov.itertuples(index=False):
         if r.mint in unres and r.scope == "unresolved" and r.slot != "":
             unres[r.mint].append(int(r.slot))
+    return unres
+
+
+def make_streams(u: pd.DataFrame, ev: dict, prow: dict, unres: dict, habits=None, lp_events: dict = None) -> dict:
     streams = {}
     for r in u.itertuples(index=False):
         excl = {o: "burn" for o in BURN_OWNERS}
@@ -480,13 +500,15 @@ def compute_features(dp: pd.DataFrame, streams: dict) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- loading
 
-def load(units, creation_days, log=print):
-    """Read the tables the features need, filtered to the universe. Returns a dict of frames and diagnostics."""
-    units = sorted(units, key=lambda x: x.from_slot)
+_E_NAMES = {"CreateEvent", "CompletePumpAmmMigrationEvent", "BoostBuyAndBurnEvent", "CreatePoolEvent", "DepositEvent",
+            "WithdrawEvent"}
+
+
+def _read_small(units):
+    """E events, B and T_coverage of every unit (small tables), in unit order."""
     creates, migs, blocks, tcov, boosts, pcreated, lpev = [], [], [], [], set(), [], []
     for un in units:
-        e = tapeio.read_events(un, {"CreateEvent", "CompletePumpAmmMigrationEvent", "BoostBuyAndBurnEvent", "CreatePoolEvent",
-                                    "DepositEvent", "WithdrawEvent"})
+        e = tapeio.read_events(un, _E_NAMES)
         pcreated += [x for x in e if x["event"] == "CreatePoolEvent"]
         lpev += [x for x in e if x["event"] in ("DepositEvent", "WithdrawEvent")]
         boosts |= boost_keys(e)
@@ -494,6 +516,24 @@ def load(units, creation_days, log=print):
         migs += [x for x in e if x["event"] == "CompletePumpAmmMigrationEvent"]
         blocks.append(tapeio.read_table(un, "B", ["slot", "block_time"]))
         tcov.append(tapeio.read_table(un, "T_coverage", TCOV_COLS))
+    return creates, migs, blocks, tcov, boosts, pcreated, lpev
+
+
+def _cat(fs, cols):
+    return pd.concat(fs, ignore_index=True) if fs else pd.DataFrame(columns=cols)
+
+
+def _with_boosts(a: pd.DataFrame, boosts) -> pd.DataFrame:
+    """S_amm rows matching a BoostBuyAndBurnEvent are protocol flow (`protocol` = "1")."""
+    return a.assign(protocol=a.protocol.where(~pd.Series([k in boosts for k in zip(a.signature, a.outer_ix, a.pool)],
+                                                         index=a.index, dtype=bool), "1"))
+
+
+def load(units, creation_days, log=print):
+    """Read the tables the features need, filtered to the universe. Returns a dict of frames and diagnostics.
+    (The direct reader: every universe row as strings. `run(..., lowmem=True)` holds the same rows compactly.)"""
+    units = sorted(units, key=lambda x: x.from_slot)
+    creates, migs, blocks, tcov, boosts, pcreated, lpev = _read_small(units)
     u, why = build_universe(creates, migs, set(creation_days), pcreated)
     mints, pools = set(u.mint), set(u.pool)
     curve, amm, tt, rte = [], [], [], []
@@ -501,24 +541,25 @@ def load(units, creation_days, log=print):
         c = tapeio.read_table(un, "S_curve", CURVE_COLS)
         rte.append(HB.events_from(c, "curve"))  # every coin's positions, for the D60 habits
         curve.append(c[c.mint.isin(mints)])
-        a = tapeio.read_table(un, "S_amm", AMM_COLS)
-        a = a.assign(protocol=a.protocol.where(~pd.Series([k in boosts for k in zip(a.signature, a.outer_ix, a.pool)],
-                                                           index=a.index, dtype=bool), "1"))
+        a = _with_boosts(tapeio.read_table(un, "S_amm", AMM_COLS), boosts)
         rte.append(HB.events_from(a, "amm"))
         amm.append(a[a.pool.isin(pools)])
         x = tapeio.read_table(un, "T", T_COLS)
         tt.append(x[x.mint.isin(mints)])
         del c, a, x
         log(f"read {un.day} {un.from_slot}-{un.to_slot}")
-    cat = lambda fs, cols: pd.concat(fs, ignore_index=True) if fs else pd.DataFrame(columns=cols)
+    cat = _cat
     rt = HB.round_trips(pd.concat(rte, ignore_index=True)) if rte else HB.round_trips(pd.DataFrame())
     return dict(universe=u, universe_counts=why, boosts=boosts, round_trips=rt, lp_events=lp_events_of(lpev), blocks=cat(blocks, ["slot", "block_time"]),
                 tcov=cat(tcov, TCOV_COLS), curve=cat(curve, CURVE_COLS), amm=cat(amm, AMM_COLS), t=cat(tt, T_COLS))
 
 
-def run(units, decision_days, creation_days=None, log=print) -> tuple:
-    """Decision table with features and the time schedule, and diagnostics."""
+def run(units, decision_days, creation_days=None, log=print, lowmem=False) -> tuple:
+    """Decision table with features and the time schedule, and diagnostics. `lowmem` reads the tape in chunks and
+    holds the rows compactly (same outputs, byte for byte; tests/test_lowmem.py)."""
     creation_days = creation_days or decision_days
+    if lowmem:
+        return _run_lowmem(units, decision_days, creation_days, log)
     data = load(units, creation_days, log)
     clock = Clock.from_blocks(data["blocks"])
     iv = tapeio.coverage_intervals(units)
@@ -535,3 +576,120 @@ def run(units, decision_days, creation_days=None, log=print) -> tuple:
                 boost_events=len(data["boosts"]), round_trips=len(data["round_trips"]),
                 protocol_rows=int(sum(st.protocol_rows for st in streams.values())))
     return feats, data["universe"], diag
+
+
+# ---------------------------------------------------------------- low-memory reader (same outputs)
+
+class _LazyStreams:
+    """streams[m] for compute_features, built from the compact store when asked and retired when the next coin is
+    asked (compute_features visits each coin once). Each stream gets exactly the rows the direct reader gives it,
+    in the same order; rows after the coin's last decision slot are not held (advance never applies them)."""
+
+    def __init__(self, u, store, pool_of, unres, habits, lp_events):
+        self.u, self.store, self.pool_of, self.unres = u, store, pool_of, unres
+        self.habits, self.lp_events = habits, lp_events
+        self.cur, self.protocol_rows = None, 0
+
+    def retire(self):
+        st, self.cur = self.cur, None
+        if st is not None:
+            self.protocol_rows += st.protocol_rows
+            st.events, st.pool_rows, st.ledger, st.hist_t, st.hist_mid = [], [], Ledger(), [], []
+            st.vol_t, st.vol_cum, st.candles, st.open_time = [], [], [], {}
+
+    def __getitem__(self, m):
+        self.retire()
+        ev, prow = {m: []}, {m: []}
+        for f in self.store.frames("curve", m):
+            add_curve(ev, f)
+        for f in self.store.frames("amm", m):
+            f["signature"] = ""  # boost matches are already folded into `protocol` (_with_boosts)
+            add_amm(ev, prow, self.pool_of, f)
+        for f in self.store.frames("t", m):
+            add_t(ev, f)
+        u1 = self.u[self.u.mint == m]
+        self.cur = make_streams(u1, ev, prow, {m: self.unres[m]}, self.habits, self.lp_events)[m]
+        return self.cur
+
+
+def _put_by_mint(store, table, df, mint, cut, cols):
+    keep = df.slot.astype("int64").to_numpy() <= mint.map(cut).to_numpy(dtype=float, na_value=-1.0)
+    if not keep.any():
+        return
+    d = df.loc[keep, cols]
+    for m, g in d.groupby(mint[keep].to_numpy(), sort=False):
+        store.put(table, m, g)
+
+
+def _run_lowmem(units, decision_days, creation_days, log):
+    from . import lowmem as LM
+    given = list(units)
+    units = sorted(units, key=lambda x: x.from_slot)
+    creates, migs, blocks, tcov, boosts, pcreated, lpev = _read_small(units)
+    u, why = build_universe(creates, migs, set(creation_days), pcreated)
+    del creates, migs, pcreated
+    blocks, tcov = _cat(blocks, ["slot", "block_time"]), _cat(tcov, TCOV_COLS)
+    clock = Clock.from_blocks(blocks)
+    del blocks
+    iv = tapeio.coverage_intervals(units)
+    dp = decision_points(u, clock, iv)
+    n_all = len(dp)
+    dp = dp[dp.decision_day.isin(set(decision_days))]
+    dp = schedule_windows(dp, clock)
+    cut = dp.groupby("mint").decision_slot.max().to_dict() if len(dp) else {}
+    mints, pools, pool_of = set(u.mint), set(u.pool), dict(zip(u.pool, u.mint))
+    strings = LM.Strings()
+    store = LM.Store(strings)
+    n = dict(curve=0, amm=0, t=0)
+    rte = {k: [] for k in ("owner", "mint", "slot", "tx", "ev", "time", "open")}
+
+    def add_events(parts):
+        for e in parts:
+            if not len(e):
+                continue
+            rte["owner"].append(strings.codes(e.owner.to_numpy(dtype=object)))
+            rte["mint"].append(strings.codes(e.mint.to_numpy(dtype=object)))
+            for k in ("slot", "tx", "ev", "time"):
+                rte[k].append(e[k].to_numpy(dtype=np.int64))
+            rte["open"].append((e.kind == "o").to_numpy())
+
+    amm_keep = [c for c in AMM_COLS if c != "signature"]
+    for un in units:
+        for name, cols in (("S_curve", CURVE_COLS), ("S_amm", AMM_COLS)):
+            opens, closes = [], []
+            for c in tapeio.read_table_chunks(un, name, cols):
+                venue = "curve" if name == "S_curve" else "amm"
+                if venue == "amm":
+                    c = _with_boosts(c, boosts)
+                e = HB.events_from(c, venue)
+                opens.append(e[e.kind == "o"])
+                closes.append(e[e.kind == "c"])
+                if venue == "curve":
+                    c = c[c.mint.isin(mints)]
+                    n["curve"] += len(c)
+                    _put_by_mint(store, "curve", c, c.mint, cut, CURVE_COLS)
+                else:
+                    c = c[c.pool.isin(pools)]
+                    n["amm"] += len(c)
+                    _put_by_mint(store, "amm", c, c.pool.map(pool_of), cut, amm_keep)
+                del c, e
+            add_events(opens + closes)  # one events_from per unit and venue: opens, then closes (as the direct reader)
+            del opens, closes
+        for x in tapeio.read_table_chunks(un, "T", T_COLS):
+            x = x[x.mint.isin(mints)]
+            n["t"] += len(x)
+            _put_by_mint(store, "t", x, x.mint, cut, T_COLS)
+        log(f"read {un.day} {un.from_slot}-{un.to_slot} (store {store.nbytes() >> 20} MB, {len(strings.values)} strings)")
+    cc = {k: (np.concatenate(v) if v else np.empty(0, dtype=bool if k == "open" else np.int64)) for k, v in rte.items()}
+    del rte
+    ro, rs, rh = LM.round_trips_codes(cc["owner"], cc["mint"], cc["slot"], cc["tx"], cc["ev"], cc["time"], cc["open"])
+    del cc
+    habits = LM.CompactHabits(ro, rs, rh, strings.code_of)
+    streams = _LazyStreams(u, store, pool_of, unresolved_of(u, tcov), habits, lp_events_of(lpev))
+    feats = compute_features(dp, streams)
+    streams.retire()
+    diag = dict(units=[f"{x.day} {x.from_slot}-{x.to_slot}" for x in given], intervals=iv,
+                universe=why, decision_points_any_day=n_all, decision_points=len(dp),
+                rows=dict(curve=n["curve"], amm=n["amm"], t=n["t"]),
+                boost_events=len(boosts), round_trips=len(ro), protocol_rows=int(streams.protocol_rows))
+    return feats, u, diag

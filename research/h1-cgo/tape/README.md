@@ -5,6 +5,10 @@ This code scores the frozen design in `../PREREG.md` on the shared on-chain tape
 ## Entry point
 `run.py`, one stage per call. Each stage reads the files the previous stage wrote to `--out`. Run every data command with `nice -n 19`. A unit is `/home/user/tape-cache/<day>/<from>-<to>` (the `research/` subfolder is optional).
 
+**Reader (`--reader`, 2026-10-09).** `lowmem` (the default) reads each table in chunks of 200,000 rows and holds only compact rows (`h1cgo/lowmem.py`): integers as int64, other strings as codes into one string table, zstd-compressed per coin and unit, and decoded back to the exact strings when that coin's stream is built. Coins are built and scored one at a time; rows after a coin's last decision slot are not held (the stream never applies them); D60 round trips are held by owner code; outcome books are int64 columns. `direct` is the original reader, kept so `tests/test_lowmem.py` can prove both readers write the same files, byte for byte. Nothing computed changed.
+
+**Preparation only.** The `features` stage is the preparation stage (loading, as-of features, decision table, counts). It never imports `outcomes.py` or `stats.py`: `run.py` loads them only in the stages that use them, and `tests/test_lowmem.py` (`PrepOnly`) checks `sys.modules` after a features run. On real tape before scoring, run `features` only.
+
 | Stage | Inputs | Outputs | Reads forward prices |
 |---|---|---|---|
 | `features --units U… --decision-days D… [--creation-days D…]` | tape units (E, B, T_coverage, S_curve, S_amm, T) | `features.csv`: one row per decision point, with the as-of features, eligibility and time schedule. `universe.csv`. `features_meta.json`: counts, contiguous intervals, sha256 of every input and source file. | no |
@@ -31,7 +35,7 @@ nice -n 19 python3 run.py features --units /home/user/tape-cache/2026-09-11/4462
   /home/user/tape-cache/2026-09-11/446278500-446282999 --decision-days 2026-09-11 --out /tmp/h1   # now refused: 09-11 is incomplete (Step A guard)
 ```
 
-Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 104 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`.
+Tests: `cd research/h1-cgo/tape && python3 -m unittest` runs 112 tests on synthetic tables, the repo's mainnet golden quotes and `research/edge/costs.json`. `tests/test_lowmem.py` runs every stage with each reader on the fixture world and on random multi-unit tapes (`tests/synth_tape.py`, read in small chunks) and compares the output files byte for byte.
 
 ## Look-ahead
 - `h1cgo/features.py` builds one stream per coin. `MintStream.advance(d)` applies exactly the rows with slot ≤ d, and every feature reads only what has been applied:
