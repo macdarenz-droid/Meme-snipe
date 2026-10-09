@@ -692,6 +692,57 @@ class SlicerAsOfR2_17(unittest.TestCase):
         self.assertIsNone(summ["drops"].get("w1_fast_class"))
 
 
+class SlicerAmendment10(unittest.TestCase):
+    """COUNT_ROWS_AMENDMENT_10 (red team R2-19, R2-20): the slicer's two-sided-cluster exclusion and the class of the
+    buyers after the event are computed strictly as of the event; a buyer with no earlier buy that day is unclassed."""
+
+    def _run(self, u):
+        tape, s, adj = load(u)
+        fast = R.w1_fast_class(tape, s)
+        ctx = H8.GateCtx(tape, s, flat_hourly(200.0))
+        maps, _ = R.cluster_maps(tape)
+        return SL.slicer_rows(tape, s, adj, fast, ctx, maps["hub_cap_50"])
+
+    def test_cluster_formed_only_after_the_event_does_not_exclude_R2_19(self):
+        u = slicer_unit()
+        u.aswap(1150, "Y2", "M", "P", sol=0.1e9)                            # Y2 buys and sells within 600 slots
+        u.aswap(1200, "Y2", "M", "P", sol=0.05e9, buy=False, tokens=1)
+        u.w.append({"slot": 2000, "from": "X", "to": "Y2"})                 # X and Y2 linked only after t
+        tape, s, adj = load(u)
+        self.assertTrue(s.loc[s["owner"] == "X", "fake"].any())             # the whole-tape label marks X
+        ev, _, _, summ = self._run(u)
+        self.assertEqual(list(ev["owner"]), ["X"])                           # as of t: no cluster, still an event
+        self.assertIsNone(summ["drops"].get("two_sided_cluster"))
+        u.w.append({"slot": 1000, "from": "X", "to": "Y2"})                  # linked before t: excluded
+        ev2, _, _, summ2 = self._run(u)
+        self.assertEqual(len(ev2), 0)
+        self.assertEqual(summ2["drops"].get("two_sided_cluster"), 1)
+
+    def test_buyer_class_flips_only_on_later_trades_R2_20(self):
+        u = slicer_unit()
+        u.aswap(900, "G", "M", "P", sol=0.1e9)                              # G's only earlier buy: slow
+        u.aswap(1305, "G", "M", "P", sol=0.5e9)                             # G buys in [t, t + 23 slots]
+        for k, sl in enumerate((7000, 7100, 7200, 7300, 7400)):              # later: G follows big buys, fast for the day
+            u.aswap(sl, f"W{k}", "M", "P", sol=1.5e9)
+            u.aswap(sl + 1, "G", "M", "P", sol=0.1e9)
+        tape, s, _ = load(u)
+        self.assertTrue(bool(R.w1_fast_class(tape, s).get((DAY, "G"), False)))
+        ev, _, _, _ = self._run(u)
+        e = ev.iloc[0]
+        self.assertAlmostEqual(e["fast_ratio"], 0.2)                         # only F's 1 SOL; G is slow as of t
+
+    def test_buyer_without_earlier_trades_is_unclassed_R2_20(self):
+        u = slicer_unit()
+        u.aswap(1306, "H", "M", "P", sol=0.3e9)                             # H's first buy of the day, in the window
+        for k, sl in enumerate((7000, 7100, 7200, 7300, 7400)):
+            u.aswap(sl, f"W{k}", "M", "P", sol=1.5e9)
+            u.aswap(sl + 2, "H", "M", "P", sol=0.1e9)                        # later trades would make H fast
+        ev, _, _, summ = self._run(u)
+        e = ev.iloc[0]
+        self.assertAlmostEqual(e["fast_ratio"], 0.2)                         # H is never filled in from later data
+        self.assertAlmostEqual(e["unclassed_ratio"], 0.3e9 / 5e9)            # reported as unclassed
+
+
 class SlicerControl(unittest.TestCase):
     def _ctl(self, link):
         u = Unit(0, 20000)
