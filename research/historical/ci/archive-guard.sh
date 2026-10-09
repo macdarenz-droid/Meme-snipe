@@ -1015,6 +1015,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     reread)
       [[ $# -eq 3 ]] || { echo "usage: archive-guard.sh reread ID DAY" >&2; exit 2; }
       ag_reread "$2" "$3"; exit $? ;;
+    store-ok)
+      # OF-6 ruling 13: the private store is readable, private and holds no storage-stop
+      # marker (data-scan.yml's k3 job, before any download)
+      [[ $# -eq 1 ]] || { echo "usage: archive-guard.sh store-ok" >&2; exit 2; }
+      ag_store_ok; exit $? ;;
     b10-done)
       [[ $# -eq 1 ]] || { echo "usage: archive-guard.sh b10-done" >&2; exit 2; }
       ag_b10_done || { ag_refuse "the private store's day releases cannot be read (fail closed)"; exit 2; }
@@ -1023,6 +1028,6 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh restarts DAY" >&2; exit 2; }
       ag_history || { ag_refuse "the run history cannot be read"; exit 2; }
       ag_restarts "$2"; exit $? ;;
-    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR [qa] | recorded OUT | b10-done" >&2; exit 2 ;;
+    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR [qa] | recorded OUT | b10-done | store-ok" >&2; exit 2 ;;
   esac
 fi

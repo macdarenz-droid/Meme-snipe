@@ -61,11 +61,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: scan (days below), assemble (dataset for from..to) or volume (back-fill data-volume-DAY of published days below)
+        description: scan (days below), assemble (dataset for from..to), volume (back-fill data-volume-DAY of published days below) or k3 (trim a measurement day stored at K2 into data-day-DAY-k3)
         required: true
         default: scan
         type: choice
-        options: [scan, assemble, volume]
+        options: [scan, assemble, volume, k3]
       days:
         description: "scan: UTC days in scan order, comma-separated (YYYY-MM-DD,...)"
         required: false
@@ -168,7 +168,7 @@ jobs:
               if not re.fullmatch(r"[0-9]+", os.environ["RPC_RPS"]) or not 1 <= int(os.environ["RPC_RPS"]) <= 50:
                   sys.exit("rpc_rps must be from 1 to 50")
           days = []
-          if os.environ["MODE"] in ("scan", "volume"):
+          if os.environ["MODE"] in ("scan", "volume", "k3"):
               for d in [x.strip() for x in os.environ["DAYS"].split(",") if x.strip()]:
                   if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
                       sys.exit(f"bad day {d!r}")
@@ -178,6 +178,10 @@ jobs:
                   days.append(d)
               if not days:
                   sys.exit(os.environ["MODE"] + " mode needs at least one day")
+              if os.environ["MODE"] == "k3":
+                  # OF-6 ruling 12: one measurement day, from the private store only
+                  if os.environ["SOURCE"] != "archive" or len(days) != 1:
+                      sys.exit("k3 mode trims one measurement day stored from the archive (source archive, one day)")
               if os.environ["MODE"] == "scan" and os.environ["SOURCE"] == "archive":
                   if len(days) != 1:
                       sys.exit("an archive scan reads one UTC day per batch (OF-2)")
@@ -953,6 +957,164 @@ jobs:
           /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
           GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-volume.sh" "$DAY" "$RUNNER_TEMP/assets"
+
+  # OF-6 ruling 12 (OF-3's scope): a measurement day stored at K2 (the first two
+  # allow-listed days) becomes data-day-DAY-k3 once ARCHIVE_RETENTION records K3, before
+  # batch 3. Nothing is read from the archive: the day comes back from the private store
+  # (k3-fetch.sh), the day before's -k3 margin replaces the units it took (margin-fetch.sh,
+  # which writes prev-day.txt), the trim runs with QA (trim-day.sh --qa), the list must
+  # equal the stored one, and publish-day.sh --k3 stores and reads it back with its
+  # readback-ok marker. The store token is held only by the clean env -i steps.
+  k3:
+    needs: plan
+    if: inputs.mode == 'k3'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read # OF-6 ruling 12: data-day-DAY is read from, and data-day-DAY-k3 stored in, the private store
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        day: ${{ fromJSON(needs.plan.outputs.days) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install Go (pinned by version and checksum)
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "$RUNNER_TEMP/go.tgz" && rm "$RUNNER_TEMP/go.tgz"
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - name: Build scanner
+        working-directory: research/historical/scanner
+        run: |
+          go test ./...
+          rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Prepare the work volume and check its free space
+        run: |
+          if sudo mkdir -p /mnt/work 2>/dev/null && sudo chown "$USER" /mnt/work; then
+            ln -sfn /mnt/work "$RUNNER_TEMP/work"
+          else
+            mkdir -p "$RUNNER_TEMP/work"
+          fi
+          mkdir -p "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets"
+          research/historical/ci/disk-guard.sh "$RUNNER_TEMP/work/" 30000000000 "a K2 day's parts, its units, the trim and QA dataset"
+      # OF-6 ruling 13: the private store is readable, private and holds no storage-stop
+      # marker before anything is downloaded or stored (archive-guard.sh ag_store_ok).
+      - name: Check the private store
+        id: storeok
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" DATA_STORE_TOKEN="$DATA_STORE_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/archive-guard.sh" store-ok
+      - name: Bring the K2 day back from the store
+        id: k3fetch
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" GITHUB_OUTPUT="$GITHUB_OUTPUT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/k3-fetch.sh" "$DAY" "$RUNNER_TEMP/work/data"
+      - name: Fetch the day before's pinned list
+        id: prior
+        if: steps.k3fetch.outputs.done != 'true'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" GITHUB_OUTPUT="$GITHUB_OUTPUT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/prior-fetch.sh" "$DAY" "$RUNNER_TEMP/prior"
+      - name: Take the day before's K3 margin units from the store
+        id: margin
+        if: steps.k3fetch.outputs.done != 'true'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/margin-fetch.sh" "$DAY" "$RUNNER_TEMP/work/data"
+      # No token from here until storing: the trim, finalize, QA and packaging run without it.
+      - name: Trim the day to K3 with QA
+        if: steps.k3fetch.outputs.done != 'true'
+        env:
+          ARCHIVE_PRIOR_LIST: ${{ steps.prior.outputs.list }}
+          ARCHIVE_PRIOR_SUMS: ${{ steps.prior.outputs.sums }}
+          DAY: ${{ matrix.day }}
+        run: |
+          research/historical/ci/trim-day.sh "$DAY" "$RUNNER_TEMP/work/data" "${ARCHIVE_PRIOR_LIST:--}" "$RUNNER_TEMP/work/assets" --qa
+          cmp -s "$RUNNER_TEMP/work/assets/list-$DAY.txt" "$RUNNER_TEMP/work/data/k2-list-$DAY.txt" ||
+            { echo "the trimmed day's list differs from the list stored with data-day-$DAY; nothing is stored" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+      - name: Package the day
+        if: steps.k3fetch.outputs.done != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: research/historical/ci/package-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets"
+      - name: Store this day as data-day-DAY-k3
+        id: store
+        if: steps.k3fetch.outputs.done != 'true'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" GITHUB_OUTPUT="$GITHUB_OUTPUT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/work/assets" --k3
+      - name: Storage check after the -k3 release
+        if: "!cancelled() && steps.k3fetch.outputs.done != 'true' && steps.store.outcome != 'skipped'"
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" DATA_REPO="$DATA_REPO"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/storage-check.sh"
 
   assemble:
     needs: plan
