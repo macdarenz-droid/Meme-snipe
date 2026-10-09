@@ -533,17 +533,18 @@ echo '{}' > "$ds/manifest.json"; : > "$ds/qa/report.md"; : > "$ds/qa/report.json
 out=$( ( build_release "$ds" "$T/bigrel" ) 2>&1 ) && no "990-asset guard passed" || { [[ "$out" == *"990"* ]] && ok "more than 990 assets refused" || no "asset guard: $out"; }
 
 # ---- scan-day.sh: OF-3 (P2) a cached unit of another scanner revision is refused, never read again ----
+# (r1 is the fixture's pinned B10-PULL scannerRev, the revision this run is built with; OF-7)
 bad=""
 for st in '{"scanner_revision": "rOld"}' '{"blocks": 3}'; do
   o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o/units/1047/1-2" "$o/units/1047/3-4"
-  printf '{\n  "scanner_revision": "rNew"\n}\n' > "$o/units/1047/3-4/stats.json"; echo "$st" > "$o/units/1047/1-2/stats.json"
-  rc=0; SREV=rNew scan "$o" || rc=$?
+  printf '{\n  "scanner_revision": "r1"\n}\n' > "$o/units/1047/3-4/stats.json"; echo "$st" > "$o/units/1047/1-2/stats.json"
+  rc=0; SREV=r1 scan "$o" || rc=$?
   [[ $rc == 2 && ! -s "$T/calls.log" && -d "$o/units/1047/1-2" && -d "$o/units/1047/3-4" ]] && grep -q "a unit of another revision is never read again" "$T/out.txt" || bad+=" [$st]:$rc"
 done
 o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o"; rc=0; SREV= scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "SCANNER_REVISION is not set" "$T/out.txt" || bad+=" [no-rev]:$rc"
-o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o/units/1047/3-4"; printf '{\n  "scanner_revision": "rNew",\n  "retention": "K2"\n}\n' > "$o/units/1047/3-4/stats.json"
-SREV=rNew scan "$o" && [[ $(calls) == "scan " ]] || bad+=" [same-rev]"
+o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o/units/1047/3-4"; printf '{\n  "scanner_revision": "r1",\n  "retention": "K2"\n}\n' > "$o/units/1047/3-4/stats.json"
+SREV=r1 scan "$o" && [[ $(calls) == "scan " ]] || bad+=" [same-rev]"
 [[ -z "$bad" ]] && ok "OF-3: scan-day refuses (exit 2, no scanner call, nothing deleted) a cached unit of another revision or with none, and a run without SCANNER_REVISION; units of the frozen revision resume" || no "OF-3 revision refusal:$bad"
 
 # ---- publish-day.sh: one day, one create call, existing releases checked, never edited ----
