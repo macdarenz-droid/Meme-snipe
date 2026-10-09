@@ -350,6 +350,9 @@ migration raw record. Today's retention already keeps every curve and canonical-
   After a counted scan failure, the guard pass flags the day: a fresh whole-day read of it is refused. Only a pinned
   QA-REREAD row (id, day, units, toldAt, written after the owner is told) lets `scan-day.sh` read the named units again,
   with `zeroed-scan run -units`, at the day's recorded retention; the per-unit log marks them `reread EPOCH/RANGE ID`.
+  The trimmed day is stored as `data-day-D-k3` only through `publish-day.sh --k3` (the same read-back and
+  `readback-ok-D` marker, so its first `-k3` release is done); test-ci refuses any other `data-day-*` release create
+  without the marker (ruling 5).
 - **K2 progress is not stored in `zeroed-data`** (OF-4, deciding OF-3 ruling 7). A K2 day's progress (about 45 GB)
   does not fit the Actions cache. Putting partial K2 units in the private store would add a second store path for
   unfinished data, with its own read-back and clean-up, for two measurement days. Instead, a K2 day that cannot finish

@@ -6,7 +6,10 @@
 # GH_TOKEN is the store token. The workflow runs it under `env -i` with a fixed PATH, so
 # nothing an earlier step planted (GITHUB_ENV, GITHUB_PATH, BASH_ENV) reaches it; gh is
 # called by absolute path.
-#   publish-day.sh DAY ASSET_DIR
+#   publish-day.sh DAY ASSET_DIR [--k3]
+# --k3 (OF-6 ruling 5): the trimmed day (trim-day.sh --qa) is stored as data-day-DAY-k3
+# through this same path, so it gets the same read-back and readback-ok marker; no other
+# script creates a data-day-* release (test-ci checks it).
 # The release is created with all its files in one call: the parts, events, QA, manifest,
 # parity, the per-unit log units-DAY.log (OF-4) and whatever else SHA256SUMS-DAY lists
 # (rescan-DAY.sha256, list-DAY.txt, pm01-subset-DAY.txt, and OF-6's margin-DAY.tar). An existing release is never
@@ -55,7 +58,9 @@ if [ "${1:-}" = --check ]; then
   exit 0
 fi
 
-d=$1 assets=$2
+[[ $# -eq 2 || ( $# -eq 3 && "$3" == --k3 ) ]] || { echo "usage: publish-day.sh DAY ASSET_DIR [--k3] | --check DAY"; exit 1; }
+d=$1 assets=$2 sfx=""
+[[ "${3:-}" == --k3 ]] && sfx=-k3
 [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day $d"; exit 1; }
 [[ "$d" < "$REGIME_BOUNDARY_DAY" ]] || { echo "refused: $d is on or after the regime boundary $REGIME_BOUNDARY_DAY"; exit 1; }
 # DATA-PUB: a day read over RPC (source helius) is never published. Its units carry raw
@@ -76,7 +81,7 @@ for f in "${files[@]}"; do
 done
 sha256sum -c --strict "$sums"
 files+=("$sums")
-tag="data-day-$d"
+tag="data-day-$d$sfx"
 st=$(release_state "$tag" "$d")
 case "$st" in
   done) echo "release $tag is already stored and read back; left unchanged" | tee -a "$summary" ;;

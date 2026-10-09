@@ -3386,6 +3386,42 @@ echo 2026-07-22 > "$GD/published"
 gdreset
 [[ -z "$bad" ]] && ok "OF-5 B-10 done: the K2 release data-day-2026-07-22 is read done but never B-10 done, data-day-2026-07-22-k3 is; 07-23 at K2 is not; other days at K3 count plain; a store error fails closed" || no "OF-5 B-10 done:$bad"
 bad=""
+# OF-6 ruling 5: the -k3 release goes through publish-day.sh --k3 (same read-back and marker),
+# and every release create of a data-day-* tag sits in a script that writes and reads back the marker.
+d7=2026-09-30; mkpd; rm -rf "$T/rel/data-day-$d7" "$T/rel/data-day-$d7-k3"; : > "$T/ghout4"
+GH_BIN="$T/bin/gh" GITHUB_OUTPUT="$T/ghout4" bash "$here/publish-day.sh" $d7 "$pd" --k3 >/dev/null 2>&1 || bad+=" [k3 store]"
+[[ ! -d "$T/rel/data-day-$d7" ]] && grep -qx readback=true "$T/ghout4" &&
+  [[ "$(cat "$T/rel/data-day-$d7-k3/readback-ok-$d7" 2>/dev/null)" == "readback-ok data-day-$d7-k3 $(sha256sum "$T/rel/data-day-$d7-k3/SHA256SUMS-$d7" | cut -d' ' -f1)" ]] || bad+=" [k3 marker]"
+ck $d7; [[ $rc == 0 ]] && grep -qx complete=true "$T/ckout" || bad+=" [k3 not done: $rc]"
+rm -rf "$T/rel/data-day-$d7-k3"; mkpd
+GH_BIN="$T/bin/gh" bash "$here/publish-day.sh" $d7 "$pd" --k2 >/dev/null 2>&1 && bad+=" [bad flag taken]"
+[[ ! -d "$T/rel/data-day-$d7" && ! -d "$T/rel/data-day-$d7-k3" ]] || bad+=" [bad flag stored]"
+rm -rf "$T/rel/data-day-$d7" "$T/rel/data-day-$d7-k3"
+cat > "$T/creates.py" <<'PY'
+import os, re, sys
+# every `release create` whose tag is (or a variable assigned) data-day-*, in any script or
+# workflow, must sit in a file that uploads readback-ok and downloads it back
+root = sys.argv[1]; bad = []
+for d, _, fs in os.walk(root):
+    if "/node_modules" in d or "/.git" in d: continue
+    for f in fs:
+        if not f.endswith((".sh", ".yml", ".yaml")) or f == "test-ci.sh": continue
+        p = os.path.join(d, f); t = open(p, errors="replace").read()
+        for m in re.finditer(r"release\s+create\s+(\S+)", t):
+            a = m.group(1).strip("'\"")
+            v = re.fullmatch(r"\$\{?(\w+)\}?", a)
+            vals = re.findall(r"\b" + v.group(1) + r"=[\"']?([^\s\"';]+)", t) if v else [a]
+            if any("data-day-" in x for x in vals) and not (re.search(r"release upload[^\n]*readback-ok", t) and re.search(r"release download[^\n]*readback-ok", t)):
+                bad.append(os.path.relpath(p, root))
+print(" ".join(sorted(set(bad))))
+PY
+r=$(python3 "$T/creates.py" "$here/../../..") ; [[ -z "$r" ]] || bad+=" [creates without the marker: $r]"
+mkdir -p "$T/cr/x"; printf 'tag="data-day-$d-k3"\ngh release create "$tag" --repo "$DATA_REPO" -- a\n' > "$T/cr/x/k3.sh"
+[[ "$(python3 "$T/creates.py" "$T/cr")" == "x/k3.sh" ]] || bad+=" [planted producer not caught]"
+printf 'gh release create data-day-2026-07-22-k3 --repo "$DATA_REPO" -- a\n' > "$T/cr/x/k3.sh"
+[[ "$(python3 "$T/creates.py" "$T/cr")" == "x/k3.sh" ]] || bad+=" [planted literal not caught]"
+[[ -z "$bad" ]] && ok "OF-6 ruling 5: publish-day.sh --k3 stores the trimmed day as data-day-D-k3 with the same read-back and readback-ok marker (done at once for --check); an unknown flag stores nothing; every data-day-* release create in a script or workflow sits in a file that writes and reads back the marker (a planted producer without it is caught)" || no "OF-6 ruling 5:$bad"
+bad=""
 # OF-5 ruling 2: B-10 done from the recorded retention (units-D.log all K3 with the list sha256), not the tag name.
 mkb() { GD="$GD" "$GD/bin/mkrel" "$@"; }
 gdreset; echo 2026-07-22 > "$GD/published"; mkb 2026-07-22 K3 K3; b10
