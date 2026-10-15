@@ -25,4 +25,8 @@ export const M14_LOG_CODES = {
   'm14.mode_changed': { fields: { rpc_mode: 'symbol', reason: 'symbol' } },
   'm14.all_providers_down': { fields: {} },
   'm14.providers_recovered': { fields: {} },
+  // A-M14-03 (card Z08)
+  'm14.service_paused': { fields: { service: 'name', pause_ms: 'number', http_status: 'integer' } },
+  'm14.service_stopped': { fields: { service: 'name', limited_in_window: 'integer' } },
+  'm14.service_resumed': { fields: { service: 'name' } },
 } as const satisfies LogCodes;

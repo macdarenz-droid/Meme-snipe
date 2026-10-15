@@ -55,6 +55,8 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
       'rpc.default_timeout_ms.p0', 'rpc.default_timeout_ms.p1', 'rpc.default_timeout_ms.p2', 'rpc.default_timeout_ms.p3', 'rpc.default_timeout_ms.p4',
       'rpc.degraded.enter_after_ms', 'rpc.degraded.exit_after_ms', 'rpc.health.down_after_ms', 'rpc.helius.rolling_31d_credit_cap',
       'rpc.max_response_bytes', 'rpc.p0_reserve_bps', 'rpc.providers_file', 'rpc.reserve_block_units', 'rpc.send_enabled',
+      'services.coingecko.base_url', 'services.coingecko.monthly_cap', 'services.dexscreener.base_url', 'services.jupiter.base_url',
+      'services.rugcheck.base_url',
     ]);
   });
 

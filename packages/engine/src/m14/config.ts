@@ -41,6 +41,18 @@ export const M14_CONFIG = [
     label: 'Ledger block', description: 'Units written to the usage ledger at once, before the first request they pay for.' },
   { ...base, key: 'rpc.allocation_file', type: 'string', default: '/etc/bot/rpc-allocation.json', label: 'RPC allocation file',
     description: 'Root-owned split of every provider budget (rates and credits) between the engine, the sentinel and the signer.' },
+  // A-M14-03 (card Z08): service base URLs (https only) and the CoinGecko monthly cap. Keys stay in the secret store
+  // (JUPITER_API_KEY, COINGECKO_DEMO_KEY); the limits are fixed at 50% of the documented ones (services.ts).
+  { ...base, section: 'services', key: 'services.jupiter.base_url', type: 'string', default: 'https://api.jup.ag', label: 'Jupiter URL',
+    description: 'Jupiter API base [DA-29]. Swap, Price and Tokens share one limit.' },
+  { ...base, section: 'services', key: 'services.dexscreener.base_url', type: 'string', default: 'https://api.dexscreener.com', label: 'DexScreener URL',
+    description: 'DexScreener API base [DA-26]; used only for the coverage cross-check.' },
+  { ...base, section: 'services', key: 'services.rugcheck.base_url', type: 'string', default: 'https://api.rugcheck.xyz', label: 'RugCheck URL',
+    description: 'RugCheck API base [TH-21].' },
+  { ...base, section: 'services', key: 'services.coingecko.base_url', type: 'string', default: 'https://api.coingecko.com', label: 'CoinGecko URL',
+    description: 'CoinGecko Demo API host [DA-27].' },
+  { ...base, section: 'services', key: 'services.coingecko.monthly_cap', type: 'int', min: '0', max: '2000', step: '1', default: 2_000, label: 'CoinGecko monthly calls',
+    description: 'Calls a UTC month; at the cap every call waits for the next month.' },
   { ...base, key: 'rpc.send_enabled', type: 'bool', riskDirectionOnIncrease: 'increases_risk', modeScope: ['live_small', 'live'], default: false,
     label: 'RPC sends', description: 'Off until the send path is built (M4); while off, every send call is refused before any request.' },
 ] as const satisfies readonly ConfigFieldDef[];

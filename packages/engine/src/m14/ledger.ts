@@ -13,6 +13,26 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import type { UnixMs } from '@bot/types';
 import { DAY_MS, monthKeyUtc, monthStartUtc, ROLLING_WINDOW_MS, type LedgerCounts, type Outcome } from './usage.ts';
 
+/**
+ * A monthly call cap on the ledger (A-M14-03: CoinGecko's 2,000 calls a month): one unit per call, counted from the start
+ * of the UTC month, in the same exclusive transaction as every other reservation. Throws when the ledger fails.
+ */
+export function monthlyCapOn(open: () => UsageLedgerPort): { take(service: string, atMs: UnixMs, cap: number): boolean } {
+  let l: UsageLedgerPort | null = null;
+  return {
+    take(service: string, atMs: UnixMs, cap: number): boolean {
+      try {
+        l ??= open();
+        return l.reserveMonthly(service, atMs, cap);
+      } catch (e) {
+        try { l?.close(); } catch { /* already broken */ }
+        l = null;
+        throw e;
+      }
+    },
+  };
+}
+
 export type ReserveResult = 'ok' | 'over_account' | 'over_consumer';
 export interface ReserveRequest { provider: string; consumer: string; units: number; atMs: UnixMs; accountCap: number; consumerCap: number }
 export interface LedgerTotals { accountRolling: number; consumerRolling: number; monthToDate: number; last24h: number }
@@ -20,6 +40,8 @@ export interface LedgerTotals { accountRolling: number; consumerRolling: number;
 /** What the meter needs from the ledger; tests pass an in-memory one or a failing one. */
 export interface UsageLedgerPort {
   reserve(r: ReserveRequest): ReserveResult;
+  /** One call against a cap counted from the start of the UTC month (consumer `month`). */
+  reserveMonthly(provider: string, atMs: UnixMs, cap: number): boolean;
   totals(provider: string, consumer: string, atMs: UnixMs): LedgerTotals;
   count(provider: string, consumer: string, atMs: UnixMs, what: 'attempt' | Outcome): void;
   counts(provider: string, consumer: string, monthKey: string): LedgerCounts;
@@ -77,6 +99,18 @@ export function openUsageLedger(path: string): UsageLedgerPort {
         return result;
       } catch (e) {
         // node:sqlite on Node 22 has no isTransaction [VF-08]: a failed COMMIT or statement leaves the transaction open.
+        try { db.exec('ROLLBACK'); } catch { /* none open */ }
+        throw e;
+      }
+    },
+    reserveMonthly(provider: string, atMs: UnixMs, cap: number): boolean {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const ok = num(sumFrom, provider, monthStartUtc(atMs)) + 1 <= cap;
+        if (ok) insert.run(provider, 'month', atMs, 1);
+        db.exec('COMMIT');
+        return ok;
+      } catch (e) {
         try { db.exec('ROLLBACK'); } catch { /* none open */ }
         throw e;
       }

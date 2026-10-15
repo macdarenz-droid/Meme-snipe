@@ -213,7 +213,10 @@ export const METRICS = {
   fresh_read_stale_total: counter(),
   exit_read_lag_slots: histogram(BUCKETS.slots),
   pool_source_kind: gauge('kind'),                              // A-M04-03
-  rpc_credit_refused_total: counter('provider'),                // A-M14-05 (card Z08): refused by the account ledger before sending
+  rpc_credit_refused_total: counter('provider'),
+  service_requests_total: counter('service', 'status'),         // A-M14-03 (card Z08; SPEC's http_requests_total{service} would clash with B-M28's {route})
+  jupiter_exit_reserved_total: counter(),
+  service_budget_remaining: gauge('service'),                // A-M14-05 (card Z08): refused by the account ledger before sending
 } as const;
 
 export type MetricName = keyof typeof METRICS;
