@@ -1,0 +1,14 @@
+{
+  "note": "FX-RPC-EPOCHINFO and FX-RPC-PERFSAMPLES: the example responses of the official Solana RPC pages, copied as printed (read 2026-10-15). No recorded mainnet response of either method is in this repository; recording one needs a live read.",
+  "FX-RPC-EPOCHINFO": {
+    "source": "https://solana.com/docs/rpc/http/getepochinfo.md, Result example",
+    "response": { "jsonrpc": "2.0", "result": { "absoluteSlot": 166598, "blockHeight": 166500, "epoch": 27, "slotIndex": 2790, "slotsInEpoch": 8192, "transactionCount": 22661093 }, "id": 1 }
+  },
+  "FX-RPC-PERFSAMPLES": {
+    "source": "https://solana.com/docs/rpc/http/getrecentperformancesamples.md, Result example",
+    "response": { "jsonrpc": "2.0", "result": [
+      { "slot": 348125, "numTransactions": 126, "numSlots": 126, "samplePeriodSecs": 60, "numNonVoteTransactions": 1 },
+      { "slot": 347999, "numTransactions": 126, "numSlots": 126, "samplePeriodSecs": 60, "numNonVoteTransactions": 1 }
+    ], "id": 1 }
+  }
+}
