@@ -294,6 +294,21 @@ export const WORKFLOW_WRITE_PERMISSIONS: Readonly<Record<string, readonly string
 };
 
 /**
+ * Secrets a checked workflow may name, by file (M0X-1). Each is read only as one `NAME: ${{ secrets.NAME }}` line of a
+ * step's `env`, in a workflow that runs on `workflow_dispatch` alone, and no other secret use is allowed in it (see
+ * workflows.ts). provider-reads.yml reads only the two provider URLs the engine's m14 defaults name
+ * (packages/engine/src/m14/defaults.ts): RPC_SHYFT_URL and RPC_CHAINSTACK_URL, in one step's env, with `contents: read`.
+ */
+export const WORKFLOW_SECRET_REFS: Readonly<Record<string, readonly string[]>> = {
+  '.github/workflows/provider-reads.yml': ['RPC_SHYFT_URL', 'RPC_CHAINSTACK_URL'],
+};
+
+/** The one command the step holding a file's secrets may run (M0X-3), with no `uses:`. */
+export const WORKFLOW_SECRET_STEP_RUN: Readonly<Record<string, string>> = {
+  '.github/workflows/provider-reads.yml': 'node --no-warnings packages/engine/scripts/provider-reads.ts',
+};
+
+/**
  * pnpm subcommands a checked workflow may run: an install only with --frozen-lockfile, the root scripts and a recursive
  * run of the packages' own scripts. Anything else (add, dlx, exec, update, audit, …) is refused, and so are npm, npx,
  * yarn, bun and corepack. The audit runs as tools/policy/bin/audit.ts (`pnpm audit` cannot be limited to the checked
