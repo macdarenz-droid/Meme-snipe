@@ -88,6 +88,13 @@ export const VERIFY_FAST_MS = 60_000;
 export const VERIFY_SLOW_SPACING_MS = 30_000;
 /** Ruling Z07-13.3: a clock fault ends after this many consecutive under-ceiling reads from at least 2 providers. */
 export const FAULT_END_READS = 3;
+/**
+ * Ruling Z07-27(c): a source of unconfirmed past-ceiling evidence is blamed and excluded after this many verification
+ * reads on other providers that do not confirm it; entries are refused until then.
+ */
+export const EXCLUDE_AFTER_STRIKES = 3;
+/** The evidence source for M15's highest slot when M15 does not say which provider set it. */
+export const M15_UNKNOWN_SOURCE = 'm15';
 /** Ruling Z07-23: the lag logged and published for a slot past the ceiling (whose lag is +∞ inside M04). */
 export const LAG_SENTINEL_SLOTS = 2_147_483_647;
 const finite = (lag: number): number => (lag === Number.POSITIVE_INFINITY ? LAG_SENTINEL_SLOTS : lag);
@@ -256,13 +263,39 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     return d > 0n ? Number(d) : 0;
   };
 
+  // ---- Ruling Z07-27 (MAJOR-R6c). Witnesses must be independent: a past-ceiling read is confirmed only by another
+  // provider's recent slot past the ceiling, or by M15's highest when another provider set it, within
+  // max_provider_lag_slots; confirmed means a clock fault. Unconfirmed past-ceiling evidence (a read, or M15's highest)
+  // is held by source: while any is unresolved no entry passes (E_CLOCK) and exits behave as before. A source is
+  // blamed and excluded after EXCLUDE_AFTER_STRIKES verification reads on other providers that do not confirm it; its
+  // later past-ceiling reads are refused and blamed, and entries resume. A provider that agrees past the ceiling with
+  // another independent one is never excluded. Honest reads are never refused beyond that bounded window. ----
+  const evidence = new Map<string, { slot: Slot; strikes: number }>();
+  const excluded = new Set<string>();
+  let m15Source: string | null = null;
+
+  /** M15's highest is independent of `provider` only when another, known provider set it. */
+  const m15Witness = (provider: string, slot: Slot, c: Slot): boolean => {
+    const seen = deps.chain.highestSeenSlot();
+    const by = deps.chain.highestSeenBy();
+    const lag = BigInt(settings.maxProviderLagSlots);
+    return by !== null && by !== provider && !excluded.has(by) && seen > c && (seen > slot ? seen - slot : slot - seen) <= lag;
+  };
+
+  function blame(source: string, slot: Slot, poolId: Pubkey): void {
+    deps.metrics?.counter('snapshot_future_slot_total', { provider: source });
+    deps.log.event('error', 'm04.read_ahead_of_clock', { pool: poolId, provider: source, slots_ahead: slot - ceiling() });
+  }
+
   type SlotVerdict = 'ok' | 'lone' | 'unverified' | 'clock';
   function judgeSlot(provider: string, slot: Slot, poolId: Pubkey): SlotVerdict {
     const now = deps.clock.nowMs();
     const c = ceiling();
-    const peers = [...recentByProvider].filter(([p, r]) => p !== provider && now - r.atMs <= PEER_WINDOW_MS).map(([, r]) => r.slot);
+    const lag = BigInt(settings.maxProviderLagSlots);
+    const peers = [...recentByProvider].filter(([p, r]) => p !== provider && now - r.atMs <= PEER_WINDOW_MS);
     recentByProvider.set(provider, { slot, atMs: now, under: slot <= c });
     if (slot <= c) {
+      evidence.delete(provider);                                  // its own reads are back under the ceiling
       // An unconfirmed exit alert (no fault) ends with the first read back under the ceiling.
       if (fault === null) alerted = false;
       else {
@@ -277,19 +310,61 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       return 'ok';
     }
     underStreak = [];
-    const lag = BigInt(settings.maxProviderLagSlots);
-    if (peers.some((q) => q > c && (q > slot ? q - slot : slot - q) <= lag)) {
+    const witness = peers.find(([, r]) => r.slot > c && (r.slot > slot ? r.slot - slot : slot - r.slot) <= lag);
+    if (witness !== undefined || m15Witness(provider, slot, c)) {
       fault ??= { sinceMs: now };
+      evidence.clear();
+      excluded.delete(provider);
+      if (witness !== undefined) excluded.delete(witness[0]);
       clockAlert(provider, slot, c);
       return 'clock';
     }
-    if (peers.some((q) => q <= c)) {
-      deps.metrics?.counter('snapshot_future_slot_total', { provider });
-      deps.log.event('error', 'm04.read_ahead_of_clock', { pool: poolId, provider, slots_ahead: slot - c });
+    if (fault !== null) return 'clock';
+    if (excluded.has(provider)) {
+      blame(provider, slot, poolId);
       return 'lone';
     }
-    return fault !== null ? 'clock' : 'unverified';
+    const known = evidence.get(provider);
+    evidence.set(provider, { slot, strikes: known?.strikes ?? 0 });
+    if (known === undefined) deps.log.event('warn', 'm04.clock_suspect', { source: provider, slot, ceiling: c });
+    return 'unverified';
   }
+
+  /**
+   * M15's highest slot past the ceiling is evidence too (Z07-22, Z07-27), held under the provider that set it (or
+   * `M15_UNKNOWN_SOURCE`), unless that source is excluded. While any evidence is unresolved (the suspect state) it
+   * returns the oldest source, else null.
+   */
+  function suspect(): string | null {
+    if (fault !== null) return null;
+    const seen = deps.chain.highestSeenSlot();
+    const c = ceiling();
+    const src = deps.chain.highestSeenBy() ?? M15_UNKNOWN_SOURCE;
+    if (m15Source !== null && (seen <= c || m15Source !== src)) {
+      evidence.delete(m15Source);
+      m15Source = null;
+    }
+    if (seen > c && !excluded.has(src) && !evidence.has(src)) {
+      evidence.set(src, { slot: seen, strikes: 0 });
+      m15Source = src;
+      deps.log.event('warn', 'm04.clock_suspect', { source: src, slot: seen, ceiling: c });
+    }
+    const [oldest] = evidence.keys();
+    return oldest ?? null;
+  }
+
+  /** A verification read that another provider answered without confirming `source`: one strike. */
+  function strike(source: string, answeredBy: string | undefined, poolId: Pubkey): void {
+    const ev = evidence.get(source);
+    if (ev === undefined || answeredBy === undefined || answeredBy === source || fault !== null) return;
+    ev.strikes++;
+    if (ev.strikes < EXCLUDE_AFTER_STRIKES) return;
+    evidence.delete(source);
+    if (m15Source === source) m15Source = null;
+    excluded.add(source);
+    blame(source, ev.slot, poolId);
+  }
+
   function clockAlert(provider: string, slot: Slot, c: Slot): void {
     if (alerted) return;                                          // one alert per episode
     alerted = true;
@@ -336,29 +411,23 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       const s = snapshotOf(e, accounts, r.contextSlot, r.providerLabel, r.latencyMs);
       if (s === null) continue;
       const outcome = store(e, s, false);
-      // A past-ceiling read with no peer evidence is checked on the next provider; during a fault, under-ceiling
-      // reads are confirmed there too, so the episode can end on two providers (Z07-13.3).
-      if (outcome === 'unverified' || (fault !== null && outcome !== 'clock') || suspect()) verify(poolId, r.providerLabel);
+      // A past-ceiling read is checked on the next provider; during a fault, under-ceiling reads are confirmed there
+      // too, so the episode can end on two providers (Z07-13.3); unresolved evidence is verified (Z07-27).
+      if (outcome === 'unverified') verify(poolId, r.providerLabel, r.providerLabel);
+      else if (fault !== null && outcome !== 'clock') verify(poolId, r.providerLabel, null);
+      else {
+        const src = suspect();
+        if (src !== null) verify(poolId, src, src);
+      }
     }
   }
   source.onAccounts(onRecord);
 
   /**
-   * Z07-22: M15's highest slot seen past the ceiling is clock-fault evidence (or a bogus provider M15 believed): warn
-   * once per episode, and the caller verifies on the next provider. Never an alert or a refusal on its own.
+   * One read of the pool on the provider after `provider`, spaced by the Z07-25 back-off and never overlapping. When it
+   * verifies `source`'s evidence, an answer from another provider that does not confirm it is a strike (Z07-27).
    */
-  let suspected = false;
-  function suspect(): boolean {
-    const seen = deps.chain.highestSeenSlot();
-    const c = ceiling();
-    if (fault !== null || seen <= c) { suspected = false; return false; }
-    if (!suspected) deps.log.event('warn', 'm04.clock_suspect', { highest_seen: seen, ceiling: c });
-    suspected = true;
-    return true;
-  }
-
-  /** One read of the pool on the next provider, spaced by the Z07-25 back-off and never overlapping. */
-  function verify(poolId: Pubkey, provider: string): void {
+  function verify(poolId: Pubkey, provider: string, source: string | null): void {
     const now = deps.clock.nowMs();
     if (now - lastVerifyAskMs > VERIFY_SLOW_SPACING_MS) verifySinceMs = now;     // a new episode
     lastVerifyAskMs = now;
@@ -366,15 +435,17 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     if (verifying || now - lastVerifyMs < spacing) return;
     verifying = true;
     lastVerifyMs = now;
-    void readPool(poolId, 2, nextProvider(provider), false).finally(() => { verifying = false; });
+    void readPool(poolId, 2, nextProvider(provider), false)
+      .then((r) => { if (source !== null) strike(source, r.by, poolId); })
+      .finally(() => { verifying = false; });
   }
 
   /**
    * A read. `snap`: what a caller may use (stored, or the stored latest when the read was older; a read refused for lag
    * comes back for the caller's own limit). `held`: a past-ceiling read, unverified or in a clock fault, never stored
-   * (exit grade only). `provider`: who answered, to re-read elsewhere.
+   * (exit grade only). `provider`: who answered a refused read, to re-read elsewhere. `by`: who answered.
    */
-  type Read = { snap: PoolSnapshot<P> | null; held: PoolSnapshot<P> | null; provider?: string };
+  type Read = { snap: PoolSnapshot<P> | null; held: PoolSnapshot<P> | null; provider?: string; by?: string };
   async function readPool(poolId: Pubkey, priority: 0 | 1 | 2, provider: string | undefined, exit: boolean): Promise<Read> {
     const none: Read = { snap: null, held: null };
     const e = pools.get(poolId);
@@ -386,10 +457,11 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     const s = snapshotOf(now, r.value.accounts, r.value.contextSlot, r.value.providerLabel, r.value.latencyMs);
     if (s === null) return none;
     const outcome = store(now, s, exit);
-    if (outcome === 'older') return { snap: trustedLatest(now.ring as SnapshotRing<P>), held: null };
-    if (outcome === 'ahead') return { ...none, provider: s.providerLabel };
-    if (outcome === 'unverified' || outcome === 'clock') return { snap: null, held: s };
-    return { snap: s, held: null };
+    const by = s.providerLabel;
+    if (outcome === 'older') return { snap: trustedLatest(now.ring as SnapshotRing<P>), held: null, by };
+    if (outcome === 'ahead') return { ...none, provider: by, by };
+    if (outcome === 'unverified' || outcome === 'clock') return { snap: null, held: s, by };
+    return { snap: s, held: null, by };
   }
 
   const nextProvider = (after: string): string | undefined => {
@@ -409,7 +481,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   async function entryRead(poolId: Pubkey, maxLag: number): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {
     const r1 = await readPool(poolId, 1, undefined, false);
     const first = r1.snap;
-    if (first !== null && lagOf(first.providerSlot) <= maxLag) return { ok: true, value: first };
+    if (first !== null && suspect() === null && lagOf(first.providerSlot) <= maxLag) return { ok: true, value: first };
     // Z07-24: one provider past the ceiling and no other to confirm it: the clock alert, and E_CLOCK.
     if (r1.held !== null && after(r1) === undefined) {
       clockAlert(r1.held.providerLabel, r1.held.providerSlot, ceiling());
@@ -418,6 +490,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     // Entry reads never use a past-ceiling read; the re-read on the next provider may show a clock fault.
     const again = await readPool(poolId, 1, after(r1), false);
     if (fault !== null) return clockError(null, 'clock fault: entries are refused');
+    if (suspect() !== null) return clockError(null, 'unresolved evidence past the slot clock: entries wait (Z07-27)');
     if (again.snap !== null && lagOf(again.snap.providerSlot) <= maxLag) return { ok: true, value: again.snap };
     if (first === null && again.snap === null) return { ok: false, error: { code: 'E_RPC', detail: 'every read failed' } };
     deps.metrics?.counter('fresh_read_stale_total', {});
@@ -530,12 +603,19 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       const slot = inflight.get(poolId) ?? {};
       inflight.set(poolId, slot);
       let result: Result<PoolSnapshot<P>, FreshReadError<P>>;
+      let pending: string | null;
       if (exit) {
         slot.exit ??= exitRead(poolId).finally(() => { delete slot.exit; });
         result = await slot.exit;
       } else if (fault !== null) {
         // Z07-13.2: for the whole clock-fault episode entries are refused.
         result = clockError(null, 'clock fault: entries are refused');
+      } else if ((pending = suspect()) !== null) {
+        // Z07-27(b): while past-ceiling evidence is unresolved no entry passes; the evidence is verified meanwhile.
+        // Z07-24: with no other provider nothing can confirm it, so the clock alert is raised.
+        if (deps.providerOrder().length < 2) clockAlert(pending, (evidence.get(pending) as { slot: Slot }).slot, ceiling());
+        verify(poolId, pending, pending);
+        result = clockError(null, 'unresolved evidence past the slot clock: entries wait');
       } else if (slot.exit !== undefined) {
         // Edge 3: an exit read in flight serves the entry caller, who applies its own limit and never gets a held read.
         const r = await slot.exit;

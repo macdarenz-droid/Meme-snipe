@@ -76,7 +76,10 @@ export class FakeChain implements ChainStatePort {
   slotMs = 250;
   /** The slot clock's estimate; null: follow `highest` (an honest cluster). */
   expected: bigint | null = null;
+  /** Who set `highest` (null: unknown). */
+  highestBy: string | null = null;
   highestSeenSlot(): Slot { return this.highest as Slot; }
+  highestSeenBy(): string | null { return this.highestBy; }
   expectedSlot(): Slot { return (this.expected ?? this.highest) as Slot; }
   slotDurationMsEstimate(): number { return this.slotMs; }
 }

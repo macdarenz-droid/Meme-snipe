@@ -52,7 +52,15 @@ export interface AccountsReader {
  * measured slot time, Z06). The estimate bounds what a provider may claim: one provider's future slot cannot poison it,
  * whereas the highest slot seen takes every provider's word (#325 red team, MAJOR-1).
  */
-export interface ChainStatePort { highestSeenSlot(): Slot; slotDurationMsEstimate(): number; expectedSlot(nowMs: number): Slot }
+export interface ChainStatePort {
+  highestSeenSlot(): Slot; slotDurationMsEstimate(): number; expectedSlot(nowMs: number): Slot;
+  /**
+   * The provider whose reading set `highestSeenSlot()`, or null when unknown (ruling Z07-27: M15's highest is an
+   * independent witness only when it came from another provider). M15 does not expose it yet; Z10's adapter supplies
+   * it or null, and null is never independent (SPEC-A C-84).
+   */
+  highestSeenBy(): string | null;
+}
 
 /** Timers on the monotonic clock (M14 `Scheduler`). */
 export interface SchedulerPort { nowMs(): number; set(fn: () => void, ms: number): () => void }

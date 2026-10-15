@@ -16,6 +16,8 @@ export interface GuardMetrics {
   orientationCheck(status: OrientationResult['status']): void; poolQuarantined(reason: QuarantineReason): void;
   /** Gauge `pools_quarantined` (ruling Z07-19): entries in the quarantine set. */
   quarantinedPools(entries: number): void;
+  /** Histogram `orientation_deviation_bps` (ruling Z07-28): every evaluated swap's deviation from the model. */
+  orientationDeviation(bps: number): void;
 }
 
 export interface GuardSettings extends OrientationSettings { checkIntervalMs: number; sampleSignatures: number }
@@ -32,6 +34,11 @@ export function checkGuardSettings(s: GuardSettings): Result<GuardSettings, { co
 }
 
 const REPUBLISH_MS = 3_600_000;
+/**
+ * POLICY (ruling Z07-28): a passing swap further than this from the model is logged as a warning; it quarantines
+ * nothing (the old 1% figure stays a metric only, `orientation_deviation_bps`).
+ */
+export const DEVIATION_WARN_BPS = 2_000;
 /**
  * POLICY (ruling Z07-19): the quarantine set holds this many pools before a critical alert. It evicts nothing: a pool
  * leaves the set only by review, never on unwatch, so a re-watched pool stays quarantined.
@@ -70,6 +77,10 @@ export function createOrientationGuard(deps: { clock: Clock; log: GuardLog; publ
     checkAgainstEvent(p, e) {
       const r = checkOrientation(p, e, settings);
       deps.metrics?.orientationCheck(r.status);
+      if (r.observedBps !== null) {
+        deps.metrics?.orientationDeviation(r.observedBps);
+        if (r.status === 'pass' && r.observedBps > DEVIATION_WARN_BPS) deps.log.event('warn', 'm01.orientation_deviation', { pool: p.poolId, observed_bps: r.observedBps, slot: e.slot });
+      }
       if (r.status === 'fail') {
         deps.log.event('critical', 'm01.orientation_fail', { pool: p.poolId, observed_bps: r.observedBps, slot: e.slot });
         quarantine(p.poolId, 'orientation');

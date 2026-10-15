@@ -7,7 +7,7 @@ import { describe, it } from 'vitest';
 import type { Slot, UnixMs } from '@bot/types';
 import { SnapshotRing } from '../../src/m04/ring.ts';
 import { checkM04Settings, M04_DEFAULTS, type M04Settings } from '../../src/m04/settings.ts';
-import { createPoolTracker, BOOT_RETRY_MS, LAG_SENTINEL_SLOTS } from '../../src/m04/tracker.ts';
+import { createPoolTracker, BOOT_RETRY_MS, LAG_SENTINEL_SLOTS, M15_UNKNOWN_SOURCE } from '../../src/m04/tracker.ts';
 import type { PoolSnapshot } from '../../src/m04/types.ts';
 import { FakeTime } from '../m14/helpers.ts';
 import { FakeChain, fakeModel, Logs, Metrics, Outputs, poolAccounts, ScriptedReader, u64, type FakePool } from './fake.ts';
@@ -564,30 +564,42 @@ describe('#325 red team round 1 (each test is the red team\'s probe)', () => {
     s.chain.highest = 1_000_000_000n;                              // M15's highest seen takes the bogus provider's word
     await s.time.advance(1_000);
     assert.equal(s.outputs.snapshots.length, 1);
-    // The poll's read, then the verification read that M15's poisoned highest triggers (Z07-22), both from it.
-    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'bogus' }), 2);
-    assert.ok(s.log.lines.some(([l, c, f]) => l === 'error' && c === 'm04.read_ahead_of_clock' && f.provider === 'bogus'));
-    // Honest reads at the clock's slot: stored, with their lag measured against the clock, not the poisoned highest.
-    s.reader.provider = () => 'primary';
+    // Z07-27: unconfirmed evidence (the read, and M15's highest from an unknown source) is held, not yet blamed.
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'bogus' }), 0);
+    assert.ok(s.log.codes().includes('m04.clock_suspect'));
+    // Honest reads at the clock's slot: stored, with their lag measured against the clock, not the poisoned highest;
+    // entries wait while the evidence is unresolved.
+    s.reader.provider = (c) => c.provider ?? 'primary';
     for (let t = 1; t <= 5; t++) {
       s.chain.expected = 1_000n + BigInt(t);
       s.reader.slot = () => s.chain.expected as bigint;
       await s.time.advance(1_000);
     }
-    // 5 polls plus 2 verification reads (2 s apart) that M15's poisoned highest triggers (Z07-22); all honest.
-    assert.equal(s.outputs.snapshots.length, 8);
-    assert.ok(s.log.codes().includes('m04.clock_suspect'));
     assert.equal(s.tracker.latest('a')?.providerSlot, 1_005n);
     assert.equal(s.tracker.lagNow(s.tracker.latest('a') as PoolSnapshot<FakePool>), 0);
     assert.deepEqual(s.outputs.staleEvents, []);
-    // A future slot on an entry read is never used; on the exit grade, one unconfirmed provider is handed back
-    // unstored as E_CLOCK (ruling Z07-9).
-    s.reader.slot = () => 1_000_001_000n;
+    const waiting = await s.tracker.freshRead('a', 8);
+    assert.ok(!waiting.ok && waiting.error.code === 'E_CLOCK' && waiting.error.snapshot === null);
+    // Verification reads on another provider strike each source three times: the bogus provider, then M15's unknown
+    // source, are blamed once each and excluded; entries resume within a bounded time; no honest provider is blamed.
+    for (let t = 6; t <= 20; t++) {
+      s.chain.expected = 1_000n + BigInt(t);
+      await s.time.advance(1_000);
+    }
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'bogus' }), 1);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'm15' }), 1);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'primary' }) + s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+    const resumed = await s.tracker.freshRead('a', 8);
+    assert.ok(resumed.ok && resumed.value.providerSlot === 1_020n);
+    // The excluded provider's later future slots are refused and blamed at once; entries and exits use the next one.
+    s.reader.slot = (c) => (c.provider === undefined ? 1_000_001_000n : s.chain.expected as bigint);
+    s.reader.provider = (c) => c.provider ?? 'bogus';
     const entry = await s.tracker.freshRead('a', 8);
-    assert.ok(!entry.ok && entry.error.code !== 'E_CLOCK');
-    const r = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(!r.ok && r.error.code === 'E_CLOCK' && r.error.snapshot?.providerSlot === 1_000_001_000n);
-    assert.equal(s.tracker.latest('a')?.providerSlot, 1_005n);
+    assert.ok(entry.ok && entry.value.providerLabel === 'primary');
+    const exit = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(exit.ok && exit.value.providerLabel === 'primary');
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'bogus' }), 3);
+    assert.equal(s.tracker.latest('a')?.providerSlot, 1_020n);
     s.tracker.stop();
   });
 
@@ -683,6 +695,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     await s.tracker.settled();
     s.tracker.start();
     s.chain.highest = 2_050n;
+    s.chain.highestBy = 'primary';                                 // M15 reads the primary (B-M15-01)
     s.chain.expected = 2_000n;
     s.reader.slot = (c) => 2_050n - (c.provider === 'backup' ? 1n : 0n);
     s.reader.provider = (c) => c.provider ?? 'primary';
@@ -719,9 +732,25 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     s.tracker.stop();
   });
 
+  it('Z07-27(a): M15\'s highest set by another provider is an independent witness, ahead of the read or behind it', async () => {
+    for (const seen of [2_052n, 2_046n]) {
+      const s = await trailing();
+      s.tracker.stop();
+      s.chain.highest = seen;                                      // the primary's reading, through M15
+      s.reader.slot = () => 2_049n;
+      s.reader.provider = () => 'backup';                           // only the backup answers
+      const e = await s.tracker.freshRead('a', 8);
+      assert.ok(!e.ok && e.error.code === 'E_CLOCK');
+      await s.time.advance(10);
+      assert.equal(s.tracker.clockFault(), true, `${seen}`);
+      assert.equal(alerts(s), 1);
+    }
+  });
+
   it('an entry read whose re-read on the next provider shows the clock fault is refused with E_CLOCK and no snapshot', async () => {
     const s = await trailing();
     s.tracker.stop();                                              // no polls: the entry read alone finds the fault
+    s.chain.highest = 2_000n;                                      // M15 has not seen the tip: no evidence before the read
     const e = await s.tracker.freshRead('a', 8);
     assert.ok(!e.ok && e.error.code === 'E_CLOCK' && e.error.snapshot === null);
     assert.equal(s.tracker.clockFault(), true);
@@ -770,7 +799,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     s.tracker.watch('b', 'candidate');
     await s.tracker.settled();
     s.chain.expected = 2_000n;                                     // the tip is 2,005
-    s.chain.highest = 1_000_000_000_000n;                          // M15 poisoned: no help
+    s.chain.highest = 2_000n;                                      // M15 at the clock: only the peer read shows the tip
     s.reader.provider = (c) => (c.keys[0] === 'b' ? 'backup' : 'primary');
     s.reader.slot = (c) => (c.keys[0] === 'b' ? 1_990n : 2_005n);
     const a = await s.tracker.freshRead('a', 8);
@@ -795,7 +824,8 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     const r = await s.tracker.freshRead('a', 12);
     assert.ok(!r.ok && r.error.code === 'E_STALE');
     assert.deepEqual(s.outputs.lagging[0], ['primary', 20]);
-    // M15 past the ceiling: one warning per episode and a verification read on the next provider; no critical alert.
+    // M15 past the ceiling (source unknown): one warning, verification reads on another provider, entries wait (Z07-27);
+    // no critical alert. Three unconfirming verifications exclude M15's source and entries resume.
     s.tracker.start();
     s.chain.highest = 2_050n;
     s.reader.slot = () => 2_005n;
@@ -803,9 +833,13 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     s.reader.calls = [];
     await s.time.advance(3_000);
     assert.equal(s.log.lines.filter(([l, c]) => l === 'warn' && c === 'm04.clock_suspect').length, 1);
-    assert.ok(s.reader.calls.some((c) => c.priority === 2 && c.provider === 'backup'));
+    assert.ok(s.reader.calls.some((c) => c.priority === 2 && c.provider !== undefined));
     assert.ok(!s.log.codes().includes('m04.clock_fault'));
-    assert.ok((await s.tracker.freshRead('a', 8)).ok);              // an honest read at the clock stays usable
+    const waiting = await s.tracker.freshRead('a', 8);
+    assert.ok(!waiting.ok && waiting.error.code === 'E_CLOCK');
+    await s.time.advance(10_000);
+    assert.ok((await s.tracker.freshRead('a', 8)).ok);              // an honest read at the clock is usable again
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: M15_UNKNOWN_SOURCE }), 1);
     s.tracker.stop();
   });
 
@@ -900,8 +934,9 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     await s.time.advance(10_000);
     assert.equal(s.tracker.clockFault(), true);
     assert.equal(s.tracker.latest('a')?.providerSlot ?? 2_000n, 2_000n);
-    // Under the ceiling, but every answer from one provider: not enough.
+    // Under the ceiling, but every answer from one provider: not enough. M15 reads the primary, so it follows.
     s.reader.slot = () => 2_000n;
+    s.chain.highest = 2_000n;
     s.reader.provider = () => 'primary';
     await s.time.advance(10_000);
     assert.equal(s.tracker.clockFault(), true);
@@ -914,29 +949,160 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     assert.equal(s.log.lines.filter(([, c]) => c === 'm04.clock_recovered').length, 1);
     assert.equal(alerts(s), 1);
     assert.ok((await s.tracker.freshRead('a', 8)).ok);
-    // A new episode alerts again, once the backup's under-ceiling read has left the peer window (until then the
-    // primary alone is ahead and blamed).
+    // A new episode alerts again: the primary past the ceiling is evidence (not blamed), and the backup confirms it.
     s.reader.slot = () => 2_050n;
-    await s.time.advance(8_000);
+    s.chain.highest = 2_050n;
+    await s.time.advance(3_000);
     assert.equal(s.tracker.clockFault(), true);
     assert.equal(alerts(s), 2);
     s.tracker.stop();
   });
 
-  it('a lone provider ahead of both the clock and the other provider is refused and counted against it', async () => {
+  /** Entries until one passes, `step` ms apart: the time entries waited, or -1 if none passed within `maxMs`. */
+  async function waitForEntry(s: ReturnType<typeof setup>, maxMs: number, step = 1_000): Promise<number> {
+    for (let t = 0; t <= maxMs; t += step) {
+      const r = await s.tracker.freshRead('a', 12);
+      if (r.ok) return t;
+      assert.ok(r.error.code === 'E_CLOCK', r.error.code);
+      await s.time.advance(step);
+    }
+    return -1;
+  }
+
+  async function r6c(expected: bigint) {
     const s = setup();
     add(s.reader, 'a');
     s.tracker.watch('a', 'candidate');
     await s.tracker.settled();
-    s.chain.highest = 2_000n;
-    s.reader.slot = (c) => (c.provider === 'backup' ? 2_500n : 2_000n);
+    s.chain.expected = expected;                                   // the clock trails the tip (2,050)
+    s.chain.highest = 2_050n;
+    s.chain.highestBy = 'backup';                                  // M15 took the backup's reading
+    s.reader.slot = (c) => (c.provider === 'backup' ? 2_050n : 2_030n);   // the primary is 20 behind the tip
     s.reader.provider = (c) => c.provider ?? 'primary';
-    assert.ok((await s.tracker.freshRead('a', 8)).ok);              // the primary at the clock
-    s.reader.slot = (c) => (c.provider === undefined ? 2_500n : 2_000n);
-    s.reader.provider = (c) => (c.provider === undefined ? 'liar' : c.provider);
-    const r = await s.tracker.freshRead('a', 8);
-    assert.ok(r.ok && r.value.providerLabel !== 'liar');
+    return s;
+  }
+
+  it('MAJOR-R6c probe (Z07-27): clock 15 behind, primary 20 behind, backup at the tip: the entry gets E_CLOCK, not a read 20 slots old, and the backup is not blamed by the lagging primary', async () => {
+    const s = await r6c(2_035n);
+    const e = await s.tracker.freshRead('a', 12);
+    assert.ok(!e.ok && e.error.code === 'E_CLOCK' && e.error.snapshot === null);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+    // The backup's own past-ceiling read (a verification read) has no independent witness: M15 took the backup's word
+    // and the primary is under the ceiling. It stays evidence, is never stored, and entries keep waiting.
+    await s.time.advance(2_000);
+    const again = await s.tracker.freshRead('a', 12);
+    assert.ok(!again.ok && again.error.code === 'E_CLOCK');
+    assert.ok(s.outputs.snapshots.every(({ s: x }) => x.providerSlot <= 2_045n));
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+  });
+
+  it('Z07-27: M15\'s highest back under the ceiling resolves its evidence: entries resume with no one blamed', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.chain.highest = 2_050n;
+    s.chain.highestBy = 'primary';
+    s.reader.slot = () => 2_000n;
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    assert.ok(!(await s.tracker.freshRead('a', 8)).ok);
+    s.chain.expected = 2_045n;                                     // the clock catches up: M15's 2,050 is within the ceiling
+    s.reader.slot = () => 2_045n;
+    assert.ok((await s.tracker.freshRead('a', 8)).ok);
+    s.chain.highest = 3_000n;                                      // a new reading from another source replaces the old evidence
+    s.chain.highestBy = 'backup';
+    assert.ok(!(await s.tracker.freshRead('a', 8)).ok);
+    s.chain.highestBy = 'primary';
+    assert.ok(!(await s.tracker.freshRead('a', 8)).ok);
+    assert.equal([...s.metrics.counts.keys()].filter((k) => k.startsWith('snapshot_future_slot_total')).length, 0);
+  });
+
+  it('Z07-24 and edge 3: one provider and no M15 evidence: the entry read itself finds the past-ceiling slot (E_CLOCK and the alert); an entry sharing an exit read in flight gets E_CLOCK with no snapshot', async () => {
+    const s = setup(undefined, ['only']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.highest = 2_000n;
+    s.chain.expected = 2_000n;
+    s.reader.slot = () => 2_050n;
+    s.reader.provider = () => 'only';
+    let release = (): void => {};
+    s.reader.gate = new Promise((r) => { release = r; });
+    const xs = s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    const es = s.tracker.freshRead('a', 8);
+    await Promise.resolve();
+    release();
+    s.reader.gate = null;
+    const [rx, re] = await Promise.all([xs, es]);
+    assert.ok(!rx.ok && rx.error.code === 'E_CLOCK' && rx.error.snapshot !== null);
+    assert.ok(!re.ok && re.error.code === 'E_CLOCK' && re.error.snapshot === null);
+    const t = setup(undefined, ['only']);
+    add(t.reader, 'a');
+    t.tracker.watch('a', 'candidate');
+    await t.tracker.settled();
+    t.chain.highest = 2_000n;
+    t.chain.expected = 2_000n;
+    t.reader.slot = () => 2_050n;
+    t.reader.provider = () => 'only';
+    const e = await t.tracker.freshRead('a', 8);
+    assert.ok(!e.ok && e.error.code === 'E_CLOCK' && e.error.snapshot === null);
+    assert.equal(t.log.lines.filter(([l, c]) => l === 'critical' && c === 'm04.clock_fault').length, 1);
+  });
+
+  it('MAJOR-R6c variant (Z07-27): the clock at the primary\'s slot: entries also get E_CLOCK while the backup\'s evidence is unresolved', async () => {
+    const s = await r6c(2_030n);
+    const e = await s.tracker.freshRead('a', 12);
+    assert.ok(!e.ok && e.error.code === 'E_CLOCK');
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+  });
+
+  it('Z07-27(c): a bogus M15 highest at 1e12 from a bogus source: entries wait a bounded time, then resume; only that source is blamed', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.chain.highest = 1_000_000_000_000n;
+    s.chain.highestBy = 'bogus';
+    s.reader.slot = () => 2_000n;
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    const waited = await waitForEntry(s, 20_000);
+    assert.ok(waited > 0 && waited <= 10_000, `${waited} ms`);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'bogus' }), 1);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'primary' }) + s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+    assert.ok(!s.log.codes().includes('m04.clock_fault'));
+    // Excluded: M15's bogus highest no longer holds entries.
+    await s.time.advance(5_000);
+    assert.ok((await s.tracker.freshRead('a', 12)).ok);
+  });
+
+  it('Z07-27(c): a bogus lone provider at 1e12: entries wait a bounded time, then resume; only it is blamed, and its later future slots are refused at once', async () => {
+    const s = setup(undefined, ['primary', 'backup', 'liar']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.chain.highest = 2_000n;
+    s.chain.highestBy = 'primary';
+    s.reader.slot = (c) => (c.provider === undefined ? 1_000_000_000_000n : 2_000n);
+    s.reader.provider = (c) => c.provider ?? 'liar';
+    const first = await s.tracker.freshRead('a', 12);
+    assert.ok(!first.ok && first.error.code === 'E_CLOCK');
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'liar' }), 0);   // not blamed yet
+    s.reader.slot = () => 2_000n;                                    // the honest providers keep answering
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    // The liar's evidence is verified on the next providers: three unconfirming answers exclude it.
+    const waited = await waitForEntry(s, 20_000);
+    assert.ok(waited > 0 && waited <= 10_000, `${waited} ms`);
     assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'liar' }), 1);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'primary' }) + s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+    // Its next future slot is refused and blamed at once; entries use the next provider and do not wait.
+    s.reader.slot = (c) => (c.provider === undefined ? 1_000_000_000_000n : 2_000n);
+    s.reader.provider = (c) => c.provider ?? 'liar';
+    const r = await s.tracker.freshRead('a', 12);
+    assert.ok(r.ok && r.value.providerLabel !== 'liar');
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'liar' }), 2);
     assert.equal(s.tracker.clockFault(), false);
     assert.ok(!s.log.codes().includes('m04.clock_fault'));
   });

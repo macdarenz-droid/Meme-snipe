@@ -6,7 +6,7 @@ import { describe, it } from 'vitest';
 import { createDecoders, verifyPinnedIdls, VENDORED_IDL_DIR, type DecodedAccount } from '@bot/decoders';
 import type { BaseUnits, Bps, Clock, DecodedEvent, Lamports, RawTransaction, Signature, Slot, UnixMs } from '@bot/types';
 import { MINTS, PROGRAMS, pumpPoolAuthorityPda } from '../src/constants.ts';
-import { checkGuardSettings, createOrientationGuard, createOrientationSampler, GUARD_DEFAULTS, QUARANTINE_ALERT_ENTRIES, type PoolQuarantined, type SwapSource } from '../src/guard.ts';
+import { checkGuardSettings, createOrientationGuard, createOrientationSampler, DEVIATION_WARN_BPS, GUARD_DEFAULTS, QUARANTINE_ALERT_ENTRIES, type PoolQuarantined, type SwapSource } from '../src/guard.ts';
 import { checkOrientation, normalisePool, type SwapEvent } from '../src/orientation.ts';
 import type { CpPoolState } from '../src/pool.ts';
 import { pool, readJson } from './helpers.ts';
@@ -167,12 +167,32 @@ describe('A-M01-04 spot-vs-swap check', () => {
     assert.equal(worst, 1_524);                                    // the widest real move: 15%, far inside a factor of 10
   });
 
+  it('ruling Z07-28: every evaluated swap\'s deviation goes to orientation_deviation_bps; a passing swap past 2,000 bps warns and quarantines nothing', () => {
+    const lines: Array<[string, string, Record<string, unknown>]> = [];
+    const deviations: number[] = [];
+    const guard = createOrientationGuard({ clock: { kind: 'sim', nowMs: () => 0 as UnixMs }, log: { event: (l, c, f) => lines.push([l, c, { ...f }]) }, publish: () => {},
+      metrics: { orientationCheck: () => {}, poolQuarantined: () => {}, quarantinedPools: () => {}, orientationDeviation: (bps) => deviations.push(bps) } });
+    const v = BIG.find((x) => x.kind === 'sell') as PoolVector;
+    assert.equal(guard.checkAgainstEvent(snapshotOf(v), eventOf(v)).status, 'pass');
+    assert.equal(lines.filter(([, c]) => c === 'm01.orientation_deviation').length, 0);
+    assert.equal(guard.checkAgainstEvent({ ...snapshotOf(v), poolId: 'other' }, eventOf(v)).status, 'not_evaluable');   // nothing to record
+    // The same swap on a snapshot whose quote reserve is 30% higher: about 2,300 bps off, still within a factor 10.
+    const moved = { ...snapshotOf(v), quoteReserveReal: (snapshotOf(v).quoteReserveReal * 13n) / 10n as Lamports };
+    const r = guard.checkAgainstEvent(moved, eventOf(v));
+    assert.equal(r.status, 'pass');
+    assert.ok((r.observedBps as number) > DEVIATION_WARN_BPS, `${r.observedBps}`);
+    assert.deepEqual(lines.filter(([, c]) => c === 'm01.orientation_deviation'), [['warn', 'm01.orientation_deviation', { pool: v.pool.address, observed_bps: r.observedBps, slot: BigInt(v.slot) }]]);
+    assert.equal(deviations.length, 2);
+    assert.equal(deviations[1], r.observedBps);
+    assert.equal(guard.quarantined(v.pool.address), false);
+  });
+
   it('ruling Z07-19: the quarantine set is never pruned; a gauge follows it; at 10,000 pools one critical alert and nothing is evicted', async () => {
     const clock = { t: 0, kind: 'sim' as const, nowMs: () => clock.t as UnixMs };
     const lines: Array<[string, string, Record<string, unknown>]> = [];
     const gauge: number[] = [];
     const guard = createOrientationGuard({ clock, log: { event: (l, c, f) => lines.push([l, c, { ...f }]) }, publish: () => {},
-      metrics: { orientationCheck: () => {}, poolQuarantined: () => {}, quarantinedPools: (k) => gauge.push(k) } });
+      metrics: { orientationCheck: () => {}, poolQuarantined: () => {}, quarantinedPools: (k) => gauge.push(k), orientationDeviation: () => {} } });
     for (let i = 0; i <= QUARANTINE_ALERT_ENTRIES; i++) guard.quarantine(`p${i}`, 'owner_changed');
     assert.equal(gauge.at(-1), QUARANTINE_ALERT_ENTRIES + 1);
     assert.deepEqual(lines.filter(([, c]) => c === 'm01.quarantine_set_large'), [['critical', 'm01.quarantine_set_large', { entries: 10_000, alert_entries: 10_000 }]]);

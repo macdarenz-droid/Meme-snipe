@@ -10,6 +10,7 @@ export const M01_VENUE_LOG_CODES = {
   'm01.venue_status_changed': { fields: { venue: 'string', reason: 'string', quotable: 'boolean' } },
   'm01.fee_mismatch': { fields: { venue: 'string', pool: 'id', realised_bps: 'integer', candidates: 'json' } },
   'm01.orientation_fail': { fields: { pool: 'id', observed_bps: 'integer', slot: 'bigint' } },
+  'm01.orientation_deviation': { fields: { pool: 'id', observed_bps: 'integer', slot: 'bigint' } },
   'm01.orientation_read_failed': { fields: { pool: 'id', error_code: 'string' } },
   'm01.pool_quarantined': { fields: { pool: 'id', reason: 'string' } },
   'm01.quarantine_set_large': { fields: { entries: 'integer', alert_entries: 'integer' } },

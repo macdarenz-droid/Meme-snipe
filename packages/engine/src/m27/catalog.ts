@@ -199,6 +199,7 @@ export const METRICS = {
   venue_config_version: gauge('venue'),
   quote_compute_us: histogram(BUCKETS.latencyMs, 'venue'),      // A-M01-03 (µs, on the latency buckets)
   orientation_checks_total: counter('status'),                  // A-M01-04
+  orientation_deviation_bps: histogram(BUCKETS.bps),            // ruling Z07-28 (the 1% figure, a metric only)
   pools_quarantined_total: counter('reason'),
   pools_quarantined: gauge(),                                   // ruling Z07-19
   venue_quotable: gauge('venue'),                               // A-M01-05
