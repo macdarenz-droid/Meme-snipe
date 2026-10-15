@@ -191,9 +191,28 @@ export const METRICS = {
   rpc_429_total: counter('provider'),
   rpc_byte_budget_refused_total: counter('provider', 'method'), // A-M14-02 owner byte rule (C03 red team R6-1)
   decode_accounts_total: counter('kind', 'result'),             // A-M02-02
-  decode_events_total: counter('kind'),                         // A-M02-03
+  decode_events_total: counter('kind', 'source'),               // A-M02-03; `source` A-M02-04 (card Z07)
   decode_gap_total: counter('reason'),
   decode_layout_extended_total: counter('kind'),                // A-M02-03, Z03 ruling 2
+  quarantine_records_total: counter('program'),                 // A-M02-05 (card Z07)
+  venue_config_age_ms: gauge('venue'),                          // A-M01-02 (card Z07)
+  venue_config_version: gauge('venue'),
+  quote_compute_us: histogram(BUCKETS.latencyMs, 'venue'),      // A-M01-03 (µs, on the latency buckets)
+  orientation_checks_total: counter('status'),                  // A-M01-04
+  orientation_deviation_bps: histogram(BUCKETS.bps),            // ruling Z07-28 (the 1% figure, a metric only)
+  pools_quarantined_total: counter('reason'),
+  pools_quarantined: gauge(),                                   // ruling Z07-19
+  venue_quotable: gauge('venue'),                               // A-M01-05
+  fee_mismatch_total: counter('venue'),
+  poll_skipped_total: counter('class'),                         // A-M04-01
+  partial_read_total: counter(),
+  snapshot_out_of_order_total: counter(),
+  snapshot_future_slot_total: counter('provider'),             // #325 red team MAJOR-1
+  watch_refused_total: counter('class'),                        // #325 red team MINOR-1
+  fresh_read_latency_ms: histogram(BUCKETS.latencyMs, 'grade'), // A-M04-02
+  fresh_read_stale_total: counter(),
+  exit_read_lag_slots: histogram(BUCKETS.slots),
+  pool_source_kind: gauge('kind'),                              // A-M04-03
 } as const;
 
 export type MetricName = keyof typeof METRICS;

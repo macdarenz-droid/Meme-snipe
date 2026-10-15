@@ -1,0 +1,20 @@
+// M04 log codes (card Z07) for the engine's M27 logger (merged with mergeLogCodes).
+export const M04_LOG_CODES = {
+  'm04.poll_failed': { fields: { class: 'string', error_code: 'string' } },
+  'm04.pool_closed': { fields: { pool: 'id', reason: 'string' } },
+  'm04.first_read_failed': { fields: { pool: 'id', error_code: 'string' } },
+  'm04.pool_unreadable': { fields: { pool: 'id', error_code: 'string' } },
+  'm04.pool_stale': { fields: { pool: 'id', lag_slots: 'integer', age_ms: 'number' } },
+  'm04.read_ahead_of_clock': { fields: { pool: 'id', provider: 'string', slots_ahead: 'bigint' } },
+  'm04.watch_refused': { fields: { pool: 'id', class: 'string' } },
+  'm04.clock_fault': { fields: { error_code: 'string', provider: 'string', slot: 'bigint', ceiling: 'bigint' } },
+  'm04.clock_recovered': { fields: { provider: 'string' } },
+  'm04.slot_time_invalid': { fields: { estimate: 'string' } },
+  'm04.internal_error': { fields: { where: 'string', error_code: 'string' } },
+  'm04.exit_clock_prices': { fields: { pool: 'id', past_ceiling_proceeds: 'bigint', under_ceiling_proceeds: 'bigint', decided_on: 'string', min_out: 'bigint', emergency_slippage_bps: 'integer', floor_applied: 'boolean', partner_age_ms: 'number', slot_gap: 'bigint' } },
+  'm04.clock_disagreement': { fields: { error_code: 'string', source: 'string', slot: 'bigint', ceiling: 'bigint' } },
+  'm04.clock_suspect': { fields: { source: 'string', slot: 'bigint', ceiling: 'bigint' } },
+  'm04.exit_read_lagging': { fields: { pool: 'id', lag_slots: 'integer' } },
+  'm04.source_refused': { fields: { kind: 'string', error_code: 'string' } },
+  'm04.subscribe_closed': { fields: { pools: 'integer' } },
+} as const;

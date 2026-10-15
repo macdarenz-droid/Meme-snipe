@@ -4,7 +4,7 @@
 // stays free of every dependency but @bot/types (C-02).
 import type { DecodedEvent, Pubkey, RawTransaction } from '@bot/types';
 import { createAccountDecoder, type DecodedAccount, type DecodeFlags, type TokenPrograms } from './accounts.ts';
-import { decodedOnly, decodeEventsLocated, decodeEventsWithGaps, type DecodedTransactionEvents, type EventHooks, type LocatedEvent } from './events.ts';
+import { decodedOnly, decodeEventsWithProvenance, type DecodedTransactionEvents, type EventHooks, type LocatedEvent, type ProvenancedEvents } from './events.ts';
 import type { PinnedIdl } from './idl.ts';
 
 export class UnknownProgramError extends Error {
@@ -18,6 +18,11 @@ export interface DecodersOptions {
   wsolMint?: Pubkey;
   /** M27 metrics: `decode_accounts_total{kind,result}`, `decode_events_total{kind}`, `decode_gap_total{reason}`, `decode_layout_extended_total{kind}`. */
   metrics?: { counter(name: 'decode_accounts_total' | 'decode_events_total' | 'decode_gap_total' | 'decode_layout_extended_total', labels: Readonly<Record<string, string>>): { inc(by?: number): void } };
+  /**
+   * `decoders.log_fallback_enabled` (A-M02-04; default true): events from `Program data:` log lines for swaps that
+   * emitted no self-CPI event, when the logs are complete.
+   */
+  logFallback?: boolean;
   /** M27 log for `m02.unknown_event`, written once per discriminator per hour of `clock` time. */
   unknownEventLog?: { log: { event(level: 'warn', code: string, fields: Readonly<Record<string, unknown>>): void }; clock: { nowMs(): number } };
 }
@@ -35,6 +40,8 @@ export interface Decoders {
   decodeTransactionEventsLocated(tx: RawTransaction): LocatedEvent[];
   /** The located events and the gaps with their places, from one decode: the input of `pumpBuyTotals` (ruling 43). */
   decodeTransactionEventsWithGaps(tx: RawTransaction): DecodedTransactionEvents;
+  /** The same, with each event's source (`self_cpi` or `log`) in a parallel array (A-M02-04; tests and metrics). */
+  decodeTransactionEventsWithProvenance(tx: RawTransaction): ProvenancedEvents;
 }
 
 export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions = {}): Decoders {
@@ -44,7 +51,7 @@ export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions
   const lastLogged = new Map<string, number>();
   const quote = opts.wsolMint === undefined ? {} : { wsolMint: opts.wsolMint };
   const hooks: EventHooks = {
-    onEvent: (kind) => opts.metrics?.counter('decode_events_total', { kind }).inc(),
+    onEvent: (kind, source) => opts.metrics?.counter('decode_events_total', { kind, source }).inc(),
     onGap: (reason) => opts.metrics?.counter('decode_gap_total', { reason }).inc(),
     onLayoutExtended: (kind) => opts.metrics?.counter('decode_layout_extended_total', { kind }).inc(),
     onUnknown: (programId, discriminatorHex, signature) => {
@@ -58,6 +65,8 @@ export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions
       u.log.event('warn', 'm02.unknown_event', { program: programId, discriminator: discriminatorHex, signature });
     },
   };
+  const logFallback = opts.logFallback ?? true;
+  const withProvenance = (tx: RawTransaction): ProvenancedEvents => decodeEventsWithProvenance(tx, idls, hooks, quote, logFallback);
   return {
     idlVersion(program) {
       const idl = byProgram.get(program);
@@ -66,8 +75,12 @@ export function createDecoders(idls: readonly PinnedIdl[], opts: DecodersOptions
     },
     decodeAccount: accounts.decodeAccount,
     decodeAccountWithFlags: accounts.decodeAccountWithFlags,
-    decodeTransactionEvents: (tx) => decodedOnly(decodeEventsLocated(tx, idls, hooks, quote)),
-    decodeTransactionEventsLocated: (tx) => decodeEventsLocated(tx, idls, hooks, quote),
-    decodeTransactionEventsWithGaps: (tx) => decodeEventsWithGaps(tx, idls, hooks, quote),
+    decodeTransactionEvents: (tx) => decodedOnly(withProvenance(tx).events),
+    decodeTransactionEventsLocated: (tx) => withProvenance(tx).events,
+    decodeTransactionEventsWithGaps: (tx) => {
+      const { events, gaps } = withProvenance(tx);
+      return { events, gaps };
+    },
+    decodeTransactionEventsWithProvenance: withProvenance,
   };
 }
