@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 11:48 PM: e2e root cause** (subagent, ~95% confident). The push e2e on `430ea35c` failed at ops/test/e2e.sh:413, "off-server timer enabled without approval".
+  - The e2e deploys the newest signed merge. #312 set `offsite_backup: true`, so the timer is correctly enabled, but the assertion still assumes off.
+  - It is deterministic, so a re-run cannot pass. Every ops e2e fails until it is fixed.
+  - Card E2E-OFFSITE, builder `session_01CZgfBugm9AKzS562i6KM5h` (Sonnet). The assertion follows the deployed config, a stand-in tests the off path, sendDocument is counted rather than searched, and the switch-on uses jq. No assertion is weakened.
+  - After it merges, its push e2e becomes the deploy gate's e2e verdict, and Deploy can reach today's head.
+  - Process gap, tracked as an identified item for later: the PR e2e deploys the base's signed merge, not the PR's own host-config, so a switch change goes untested until after merge.
 - **15 Oct 11:41 PM: Deploy run 38736540178** on the owner's "ready". The gate tagged `deploy` → `455739ae` (#311 PATHS-FIX), not `cf508be1`.
   - tag.sh skipped every commit from `430ea35c` (#312 OFFSITE-ON) to `cf508be1`: "the ops end-to-end of 430ea35c: e2e failed". e2e was green on the PR head `d500af7a`, so this is the push-run e2e on the merge commit.
   - The deploy tag is now on a guarded commit, which helps OF-ARM item 1. OFFSITE-ON is not live, so the owner holds `zeroed-backup-code` until a later deploy carries #312.
