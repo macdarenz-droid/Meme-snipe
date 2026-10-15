@@ -32,7 +32,7 @@
 import {
   AUDIT_JOB, AUDIT_SCHEDULE_WORKFLOW, CI_CHECKOUT_INPUTS, CI_CONCURRENCY_GROUP, CI_JOB, CI_JOB_IF, CI_REQUIRED_STEP_ENV, CI_REQUIRED_STEPS, CI_SETUP_NODE_INPUTS, CI_WORKFLOW, GUARD_BASE_CHECKOUT, GUARD_COMMAND,
   GUARD_PR_CHECKOUT, GUARD_SETUP_NODE, GUARD_WORKFLOW, INTEGRATION_BRANCH, PR_TRIGGER_KEYS, PR_TRIGGER_TYPES, PUSH_TRIGGER_KEYS,
-  WORKFLOW_ENV_VALUES, WORKFLOW_GUARDED_ENV, WORKFLOW_PNPM_COMMANDS, WORKFLOW_WRITE_PERMISSIONS,
+  WORKFLOW_ENV_VALUES, WORKFLOW_GUARDED_ENV, WORKFLOW_PNPM_COMMANDS, WORKFLOW_SECRET_REFS, WORKFLOW_SECRET_STEP_RUN, WORKFLOW_WRITE_PERMISSIONS,
 } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import type { RepoSnapshot } from './repo.ts';
@@ -77,6 +77,57 @@ function allowedWrites(file: string): string[] {
   return [...(WORKFLOW_WRITE_PERMISSIONS[file] ?? [])];
 }
 
+/** Secret names `file` may read (config.ts WORKFLOW_SECRET_REFS); none for any other workflow. */
+function allowedSecretLine(file: string, line: string): boolean {
+  const names = WORKFLOW_SECRET_REFS[file] ?? [];
+  const m = /^\s*([A-Z][A-Z0-9_]*):\s*\$\{\{\s*secrets\.([A-Z][A-Z0-9_]*)\s*\}\}\s*$/.exec(line);
+  return m !== null && m[1] === m[2] && names.includes(m[2] as string);
+}
+
+/** True when a value anywhere under `v` names a secret. */
+function namesSecret(v: YamlValue | undefined): boolean {
+  if (typeof v === 'string') return /\bsecrets\b/.test(v);
+  if (Array.isArray(v)) return v.some(namesSecret);
+  return isMap(v) && Object.values(v).some(namesSecret);
+}
+
+/**
+ * A workflow with allowed secrets runs on workflow_dispatch alone and names them only in the env of steps, in one step
+ * (M0X-1): never at the top level or a job's env, and not in a run, if, with or any other key.
+ */
+function checkSecretUse(file: string, doc: YamlMap, findings: Finding[]): void {
+  if (WORKFLOW_SECRET_REFS[file] === undefined) return;
+  const bad = (message: string): void => { findings.push(finding('E_WORKFLOW_SECRETS', file, message)); };
+  const on = triggers(doc['on']);
+  if (on.length !== 1 || on[0] !== 'workflow_dispatch') bad('a workflow that reads secrets runs on workflow_dispatch alone');
+  if (namesSecret(doc['env'])) bad('secrets may not be set in the workflow-level env');
+  let stepsWithSecrets = 0;
+  for (const j of Object.values(mapOf(doc['jobs']))) {
+    const job = mapOf(j);
+    if (namesSecret(job['env'])) bad('secrets may not be set in a job env; set them in one step');
+    const steps = Array.isArray(job['steps']) ? job['steps'] : [];
+    for (const st of steps) {
+      const { env, ...rest } = mapOf(st);
+      if (namesSecret(rest)) bad('a step may name secrets only in its env');
+      if (namesSecret(env)) stepsWithSecrets += 1;
+    }
+    const { steps: _steps, env: _env, ...other } = job;
+    if (namesSecret(other)) bad('a job may name secrets only in a step env');
+  }
+  if (stepsWithSecrets > 1) bad('secrets go to one step only');
+  // M0X-3: the one step that holds the secrets runs the reviewed script and nothing else, and no step may upload or cache.
+  for (const j of Object.values(mapOf(doc['jobs']))) {
+    for (const st of Array.isArray(mapOf(j)['steps']) ? (mapOf(j)['steps'] as YamlValue[]) : []) {
+      const step = mapOf(st);
+      const uses = textOf(step['uses']) ?? '';
+      if (/^actions\/(upload-artifact|cache)(\/|@)/.test(uses)) bad('a workflow that reads secrets may not upload artifacts or use a cache');
+      if (namesSecret(step['env']) && (step['uses'] !== undefined || step['run'] !== WORKFLOW_SECRET_STEP_RUN[file])) {
+        bad(`the step that holds secrets must run exactly "${WORKFLOW_SECRET_STEP_RUN[file] ?? ''}" and use no action`);
+      }
+    }
+  }
+}
+
 function readOnly(p: YamlValue | undefined, file: string): boolean {
   const writes = allowedWrites(file);
   return p === 'read-all' || (isMap(p) && Object.entries(p).every(([scope, v]) => v === 'read' || v === 'none' || writes.includes(`${scope}: ${String(v)}`)));
@@ -94,7 +145,7 @@ function checkLines(file: string, text: string, findings: Finding[]): void {
   text.split('\n').forEach((raw, i) => {
     const line = raw.replace(/(^|\s)#.*$/, '');
     const where = `${file}:${i + 1}`;
-    if (SECRETS_USE.some((re) => re.test(line))) findings.push(finding('E_WORKFLOW_SECRETS', where, 'CI holds no secrets; do not reference secrets'));
+    if (SECRETS_USE.some((re) => re.test(line)) && !allowedSecretLine(file, line)) findings.push(finding('E_WORKFLOW_SECRETS', where, 'CI holds no secrets; do not reference secrets'));
     if ((/:\s*write\b|write-all/.test(line)) && !writes.includes(line.trim())) {
       findings.push(finding('E_WORKFLOW_PERMISSIONS', where, `CI permissions must be read-only${writes.length > 0 ? ` (this workflow may declare only ${writes.join(', ')})` : ''}`));
     }
@@ -317,6 +368,7 @@ function checkWorkflow(file: string, text: string, findings: Finding[], scope: S
     findings.push(finding('E_WORKFLOW_PARSE', file, 'a workflow must be a mapping'));
     return null;
   }
+  checkSecretUse(file, doc, findings);
   if (!readOnly(doc['permissions'], file)) findings.push(finding('E_WORKFLOW_PERMISSIONS', file, 'set a top-level "permissions:" block that is read-only'));
   for (const t of triggers(doc['on'])) {
     if (PRIVILEGED_TRIGGERS.includes(t) && !(file === GUARD_WORKFLOW && t === 'pull_request_target')) {
