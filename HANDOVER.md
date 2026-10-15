@@ -138,6 +138,18 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 8:52 AM: Z08 #327 and OF-FIX #328 in review.**
+  - Z08 #327 (builder `session_01BfyLKa4mpPN4WMmaJK3m4v`; reviewer `session_01Eo8pMLZFtqf7VtkTnqyVoZ` has not reported yet; red team `session_01Et9a7HZLsEkdhHRWQQamJ1`). PR ready since `dd4034f2`.
+    - Red team round 1: 2 BLOCKER (a same-hour restart reopened a manifested file; an ENOSPC/EIO flush dropped lines silently and md-pull signed a corrupt file, so the only copy could be deleted), 3 MAJOR (a write-fail halt never resumed; the disk manager could delete the open hour; degraded mode got stuck with no position) and 5 MINOR. Fixed at `0f7a4450` (Z08-13..22).
+    - Round 2: BLOCKER whole-hour decode into one string (>512 MiB cuts good frames, and md-pull never signs, so the disk fills); MAJOR a failed rotate is never recovered; MINOR 120 alerts an hour. Fixed at `c6f29374` (Z08-23..25: streaming frames.ts, broken-list, back-off). Red team re-attack running.
+  - OF-FIX #328 (builder `session_01JfcmEyJ1AqL4BQbyoGAZHT`), head `cf2a667c`.
+    - Proof test: the old planner opens epochs 991–996 for 07-22 (real ~1005).
+    - The new planner brackets from B2/B4/Oct anchors at 0.20–0.50 s, then bisects; ≤ 10 probes; 07-22 costs 14 requests and about 20 MiB.
+    - 0 planned or 0 finished units fails at the scan step.
+    - New pin row b10pull-of-2 (scannerRev `fb0074b0…-go1.24.7`) and an append-only B10-PULL-RETIRED row for of-1.
+    - OFX-6: the summary shows only the unit count and epoch numbers (amends OF-2 ruling 36).
+    - test-ci 287/0, Go 74/0. Review + red team `session_01RChWiiJc1Gz9XYnCmdC1wm`.
+    - ARCHIVE_ARM stays empty; re-arming is a separate reviewed change afterwards. The failure count stays 1 of 3.
 - **16 Oct 7:27 AM: #326 OF-DISARM merged at `fa741fb4`**, before the 20:41 UTC archive-check, so 07-22 is not re-dispatched into the same failure.
   - It is an exact revert of the #321 merge `2e194600`, verified by the supervisor: the diff equals the reverse of `2e194600` against its first parent, and the three research files are byte-equal to `2b880bca`. `ARCHIVE_ARM=""` again.
   - CI green on `fd0ece94` (run 38796137494). No reviewer or red team: an exact revert to a state that was itself reviewed and red-teamed, under time pressure (supervisor ruling, recorded here).
