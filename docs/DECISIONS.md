@@ -3926,4 +3926,11 @@ Builder notes (for review):
   - Corked bytes still count toward the shed and lost bounds (`writableLength`).
   - Unchanged: the synchronous open with its error path, compression (rulings 8 and 17), and `close()`.
 
-  The test seam is `createStream`, an injected stream whose flush the test holds (`test/m27/log-order.test.ts`). Its 4 tests fail 5 out of 5 times on fa741fb4 with only the seam added.
+  The test seam is `createStream`, an injected stream whose flush the test holds (`test/m27/log-order.test.ts`).
+  - Tests 1 to 3 (the CI case, rotating away and back while held, and `close()` while waiting) are fail-before tests. They fail 5 out of 5 times on fa741fb4 with only the seam added, because the later 10-07 line reaches the file before the held one.
+  - Test 4 (held bytes count toward the shed bound) is a guard, not a fail-before test (ruling LOG-3). The old code holds nothing, so it has no held bytes to count. On fa741fb4 with the seam it differs only because the debug line is written straight through, not because of a defect in the accounting.
+- **LOG-2 · the queue bounds count every unfinished stream** (red team on 73058b5f). The shed (`queueBytes`) and lost (twice `queueBytes`) bounds were per stream, so held streams escaped them: a clock flapping across midnight 50 times while the first stream was held accepted 101,610 bytes against a 2,000-byte cap. Now:
+  - the bounds count the `writableLength` of every stream the sink has not finished: the current one, held ones and ending ones;
+  - a stream leaves that set on `finish`, on `close`, or when it is destroyed as broken.
+
+  So the bytes in memory stay within the existing caps. Test: the flap probe, with 100 info lines and then warn and error lines. The info bytes held stay at or below `queueBytes` plus one line, and warn and error are written up to twice `queueBytes` in total, then lost. It fails on 73058b5f (9,198 info bytes held, 3 out of 3 runs) and passes after.

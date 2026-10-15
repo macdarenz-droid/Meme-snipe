@@ -3,7 +3,7 @@
 // the first was still flushing, and the two streams' writes ran in either order. Here the first stream's flush is held
 // by the test (an injected stream), so the old order fails every time, not by timing.
 import { strict as assert } from 'node:assert';
-import { closeSync, readdirSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, readdirSync, readFileSync, statSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { gunzipSync } from 'node:zlib';
@@ -110,5 +110,42 @@ describe('LOG-1: a day\'s lines reach its file in write order across a clock ste
     assert.equal(t.s.write('{"d":1}', 'debug'), 'shed');
     t.release();
     await t.s.close();
+  });
+
+  it('LOG-2: a clock flapping across midnight while the first stream is held never lets held bytes pass the queue caps', async () => {
+    const queueBytes = 2_000;
+    const t = setup({ queueBytes });
+    const line = (k: number, level: string): string => `{"k":${k},"level":"${level}","pad":"${'x'.repeat(60)}"}`;
+    const bytes = (l: string): number => Buffer.byteLength(`${l}\n`);
+    const size = bytes(line(9_999, 'error'));                            // the longest line written here
+    let info = 0;
+    let warn = 0;
+    const results: string[] = [];
+    for (let k = 0; k < 100; k += 1) {
+      t.clock.set(k % 2 === 0 ? at(7, 23, 59, k % 60) : at(8, 0, 1, k % 60));      // 50 flaps across midnight
+      const r = t.s.write(line(k, 'info'), 'info');
+      if (r === 'written') info += bytes(line(k, 'info'));
+      results.push(r);
+    }
+    // Bytes accepted but not yet on disk are held in memory. Info stops at queueBytes over every unfinished stream (one
+    // line may cross it), not per stream (101,610 bytes before).
+    const onDisk = (): number => ['07', '08'].reduce((n, d) => { try { return n + statSync(join(t.dir, `engine-2026-10-${d}.ndjson`)).size; } catch { return n; } }, 0);
+    const heldInfo = info - onDisk();
+    assert.ok(heldInfo <= queueBytes + size, `${heldInfo} info bytes held`);
+    assert.ok(results.includes('shed'));
+    // Warn and error still follow the rule: written up to twice queueBytes in total, then lost.
+    for (let k = 0; k < 60; k += 1) {
+      const level = k % 2 === 0 ? 'warn' : 'error';
+      const r = t.s.write(line(1_000 + k, level), level);
+      if (r === 'written') warn += bytes(line(1_000 + k, level));
+      else assert.equal(r, 'lost');
+    }
+    const held = info + warn - onDisk();
+    assert.ok(held <= 2 * queueBytes + size, `${held} bytes held`);
+    assert.ok(warn > 0);
+    assert.equal(t.s.write(line(9_999, 'warn'), 'warn'), 'lost');
+    t.release();
+    await t.s.close();
+    assert.deepEqual(t.errors, []);
   });
 });
