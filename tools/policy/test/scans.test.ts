@@ -280,6 +280,10 @@ describe('workflows', () => {
     refused('a job-level env', prText.replace('    timeout-minutes: 5\n', `    timeout-minutes: 5\n    env:\n${shyft.replace('          ', '      ')}`));
     refused('a second step', `${prText}      - name: Again\n        env:\n${shyft}        run: echo again\n`);
     refused('the same file under another name', prText, '.github/workflows/other-reads.yml');
+    refused('another command in the secret step', prText.replace('run: node --no-warnings packages/engine/scripts/provider-reads.ts', 'run: node --no-warnings other.ts'));
+    refused('an action in the secret step', prText.replace('        run: node --no-warnings packages/engine/scripts/provider-reads.ts', '        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n        run: node --no-warnings packages/engine/scripts/provider-reads.ts'));
+    refused('upload-artifact', `${prText}      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n`);
+    refused('cache', `${prText}      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n`);
     refused('inherit', `${prText}    secrets: inherit\n`);
   });
 

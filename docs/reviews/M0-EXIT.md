@@ -1,6 +1,6 @@
 # M0 exit check
 
-Base `cf508be1`. Clauses are the M0 row of `docs/blueprint/INTEGRATION.md` (line 21). Read-only: no code was changed to meet a clause. Status is met, not met or pending. "Not re-run" means the evidence is a merged PR with green CI, not a fresh run here.
+Base `d36dd320`. Clauses are the M0 row of `docs/blueprint/INTEGRATION.md` (line 21). Read-only: no code was changed to meet a clause. Status is met, not met or pending. "Not re-run" means the evidence is a merged PR with green CI, not a fresh run here.
 
 | # | Clause | Status | Evidence |
 |---|---|---|---|

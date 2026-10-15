@@ -303,6 +303,11 @@ export const WORKFLOW_SECRET_REFS: Readonly<Record<string, readonly string[]>> =
   '.github/workflows/provider-reads.yml': ['RPC_SHYFT_URL', 'RPC_CHAINSTACK_URL'],
 };
 
+/** The one command the step holding a file's secrets may run (M0X-3), with no `uses:`. */
+export const WORKFLOW_SECRET_STEP_RUN: Readonly<Record<string, string>> = {
+  '.github/workflows/provider-reads.yml': 'node --no-warnings packages/engine/scripts/provider-reads.ts',
+};
+
 /**
  * pnpm subcommands a checked workflow may run: an install only with --frozen-lockfile, the root scripts and a recursive
  * run of the packages' own scripts. Anything else (add, dlx, exec, update, audit, …) is refused, and so are npm, npx,

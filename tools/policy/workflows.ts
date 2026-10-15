@@ -32,7 +32,7 @@
 import {
   AUDIT_JOB, AUDIT_SCHEDULE_WORKFLOW, CI_CHECKOUT_INPUTS, CI_CONCURRENCY_GROUP, CI_JOB, CI_JOB_IF, CI_REQUIRED_STEP_ENV, CI_REQUIRED_STEPS, CI_SETUP_NODE_INPUTS, CI_WORKFLOW, GUARD_BASE_CHECKOUT, GUARD_COMMAND,
   GUARD_PR_CHECKOUT, GUARD_SETUP_NODE, GUARD_WORKFLOW, INTEGRATION_BRANCH, PR_TRIGGER_KEYS, PR_TRIGGER_TYPES, PUSH_TRIGGER_KEYS,
-  WORKFLOW_ENV_VALUES, WORKFLOW_GUARDED_ENV, WORKFLOW_PNPM_COMMANDS, WORKFLOW_SECRET_REFS, WORKFLOW_WRITE_PERMISSIONS,
+  WORKFLOW_ENV_VALUES, WORKFLOW_GUARDED_ENV, WORKFLOW_PNPM_COMMANDS, WORKFLOW_SECRET_REFS, WORKFLOW_SECRET_STEP_RUN, WORKFLOW_WRITE_PERMISSIONS,
 } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import type { RepoSnapshot } from './repo.ts';
@@ -115,6 +115,17 @@ function checkSecretUse(file: string, doc: YamlMap, findings: Finding[]): void {
     if (namesSecret(other)) bad('a job may name secrets only in a step env');
   }
   if (stepsWithSecrets > 1) bad('secrets go to one step only');
+  // M0X-3: the one step that holds the secrets runs the reviewed script and nothing else, and no step may upload or cache.
+  for (const j of Object.values(mapOf(doc['jobs']))) {
+    for (const st of Array.isArray(mapOf(j)['steps']) ? (mapOf(j)['steps'] as YamlValue[]) : []) {
+      const step = mapOf(st);
+      const uses = textOf(step['uses']) ?? '';
+      if (/^actions\/(upload-artifact|cache)(\/|@)/.test(uses)) bad('a workflow that reads secrets may not upload artifacts or use a cache');
+      if (namesSecret(step['env']) && (step['uses'] !== undefined || step['run'] !== WORKFLOW_SECRET_STEP_RUN[file])) {
+        bad(`the step that holds secrets must run exactly "${WORKFLOW_SECRET_STEP_RUN[file] ?? ''}" and use no action`);
+      }
+    }
+  }
 }
 
 function readOnly(p: YamlValue | undefined, file: string): boolean {
