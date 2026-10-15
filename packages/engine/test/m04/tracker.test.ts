@@ -847,6 +847,49 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     assert.equal(s.tracker.latest('a'), null);
   });
 
+  it('ruling Z07-25: during a 10-minute clock fault verification reads back off: one every 2 s for the first minute, then one every 30 s', async () => {
+    const s = await trailing();
+    await s.time.advance(1_010);
+    assert.equal(s.tracker.clockFault(), true);
+    // The fault never ends: under-ceiling reads all answer as one provider.
+    s.reader.slot = () => 2_000n;
+    s.reader.provider = () => 'primary';
+    s.reader.calls = [];
+    const at: number[] = [];
+    const read = s.reader.read.bind(s.reader);
+    s.reader.read = (keys, o) => { if (o.priority === 2 && o.provider !== undefined) at.push(s.time.nowMs()); return read(keys, o); };   // verification reads name their provider
+    await s.time.advance(600_000);
+    assert.equal(s.tracker.clockFault(), true);
+    const firstMinute = at.filter((t) => t < at[0]! + 60_000).length;
+    assert.deepEqual([at.length, firstMinute], [47, 29]);
+    for (let i = 1; i < at.length; i++) assert.ok(at[i]! - at[i - 1]! >= (at[i]! - at[0]! < 60_000 ? 2_000 : 30_000) - 1_000, `${i}`);
+    assert.ok(at.length <= 30 + 18 + 2);                            // vs 300 at one every 2 s
+    s.tracker.stop();
+  });
+
+  it('ruling Z07-26: after a downward re-basis latest(), history() and snapshotBefore() can return a snapshot above the new ceiling; lagNow is +∞ until the clock passes it', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.reader.slot = () => 2_000n;
+    assert.ok((await s.tracker.freshRead('a', 8)).ok);
+    s.chain.expected = 1_980n;
+    s.chain.highest = 1_980n;
+    const last = s.tracker.latest('a') as PoolSnapshot<FakePool>;
+    assert.equal(last.providerSlot, 2_000n);
+    assert.equal(s.tracker.history('a', 0 as UnixMs, 1e15 as UnixMs).at(-1)?.providerSlot, 2_000n);
+    assert.equal(s.tracker.snapshotBefore('a', 2_001n as Slot)?.providerSlot, 2_000n);
+    assert.equal(s.tracker.lagNow(last), Number.POSITIVE_INFINITY);
+    s.reader.slot = () => 1_985n;                                    // a read at 1,985 is older: never stored, never fresh
+    const e = await s.tracker.freshRead('a', 8);
+    assert.ok(!e.ok);
+    assert.equal(s.tracker.latest('a')?.providerSlot, 2_000n);
+    s.chain.expected = 1_995n;                                      // ceiling 2,005: the clock passed it again
+    assert.equal(s.tracker.lagNow(last), 0);
+  });
+
   it('Z07-13.3 fault end: flip-flopping reads and under-ceiling reads from one provider keep the fault; 3 in a row from 2 providers end it', async () => {
     const s = await trailing();
     await s.time.advance(1_010);

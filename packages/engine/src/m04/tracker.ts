@@ -36,6 +36,11 @@ export interface PoolTracker<P extends PoolStateLike> {
   /** False when the class is at its cap (`pool_tracker.max_*`): the watch is refused and nothing changes. */
   watch(poolId: Pubkey, priority: PoolClass): boolean;
   unwatch(poolId: Pubkey): void;
+  /**
+   * The newest stored snapshot. Ruling Z07-26: after the slot clock re-bases downward it can sit above the new ceiling
+   * (as can `history()` and `snapshotBefore()`); the monotonic rule still holds against it, and `lagNow` treats it as
+   * +∞, so it is never fresh until the clock passes it again.
+   */
   latest(poolId: Pubkey): PoolSnapshot<P> | null;
   history(poolId: Pubkey, fromMs: UnixMs, toMs: UnixMs): ReadonlyArray<PoolSnapshot<P>>;
   /** M01's orientation guard: the newest snapshot strictly before `slot`. */
@@ -72,6 +77,15 @@ export const BOOT_RETRY_MS = 10_000;
 export const PEER_WINDOW_MS = 5_000;
 /** POLICY (ruling Z07-9): at most one verification read of a past-ceiling poll read this often. */
 export const VERIFY_SPACING_MS = 2_000;
+/**
+ * POLICY (ruling Z07-25): verification reads back off. For the first `VERIFY_FAST_MS` of an episode they are at most
+ * one every `VERIFY_SPACING_MS`, then at most one every `VERIFY_SLOW_SPACING_MS` (a 10-minute fault costs about 48
+ * P2 reads, not 300; Chainstack's owner rate is one read every 2 s, ARCH 11.2). An episode starts at the first request
+ * after `VERIFY_SLOW_SPACING_MS` with none. The reads go through M14, whose limiter holds each provider to 50% of its
+ * documented limit.
+ */
+export const VERIFY_FAST_MS = 60_000;
+export const VERIFY_SLOW_SPACING_MS = 30_000;
 /** Ruling Z07-13.3: a clock fault ends after this many consecutive under-ceiling reads from at least 2 providers. */
 export const FAULT_END_READS = 3;
 /** Ruling Z07-23: the lag logged and published for a slot past the ceiling (whose lag is +∞ inside M04). */
@@ -220,6 +234,8 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   let underStreak: string[] = [];
   let verifying = false;
   let lastVerifyMs = -Infinity;
+  let verifySinceMs = -Infinity;
+  let lastVerifyAskMs = -Infinity;
 
   /**
    * MINOR-R6 and MAJOR-R6b (Z07-22): lag against max(the clock's estimate, M15's highest slot seen when it is within
@@ -341,10 +357,13 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     return true;
   }
 
-  /** One read of the pool on the next provider, at most every VERIFY_SPACING_MS and never overlapping. */
+  /** One read of the pool on the next provider, spaced by the Z07-25 back-off and never overlapping. */
   function verify(poolId: Pubkey, provider: string): void {
     const now = deps.clock.nowMs();
-    if (verifying || now - lastVerifyMs < VERIFY_SPACING_MS) return;
+    if (now - lastVerifyAskMs > VERIFY_SLOW_SPACING_MS) verifySinceMs = now;     // a new episode
+    lastVerifyAskMs = now;
+    const spacing = now - verifySinceMs < VERIFY_FAST_MS ? VERIFY_SPACING_MS : VERIFY_SLOW_SPACING_MS;
+    if (verifying || now - lastVerifyMs < spacing) return;
     verifying = true;
     lastVerifyMs = now;
     void readPool(poolId, 2, nextProvider(provider), false).finally(() => { verifying = false; });
