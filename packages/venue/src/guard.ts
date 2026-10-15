@@ -11,7 +11,7 @@ import type { CpPoolState } from './pool.ts';
 
 export type QuarantineReason = 'orientation' | 'negative_effective' | 'owner_changed';
 export interface PoolQuarantined { poolId: Pubkey; reason: QuarantineReason; atMs: UnixMs }
-export interface GuardLog { event(level: 'info' | 'warning' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void }
+export interface GuardLog { event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void }
 export interface GuardMetrics { orientationCheck(status: OrientationResult['status']): void; poolQuarantined(reason: QuarantineReason): void }
 
 export interface GuardSettings extends OrientationSettings { checkIntervalMs: number; sampleSignatures: number }
@@ -58,7 +58,7 @@ export function createOrientationGuard(deps: { clock: Clock; log: GuardLog; publ
       const r = checkOrientation(p, e, settings);
       deps.metrics?.orientationCheck(r.status);
       if (r.status === 'fail') {
-        deps.log.event('critical', 'm01.orientation_fail', { pool: p.poolId, observedBps: r.observedBps, slot: e.slot });
+        deps.log.event('critical', 'm01.orientation_fail', { pool: p.poolId, observed_bps: r.observedBps, slot: e.slot });
         quarantine(p.poolId, 'orientation');
       }
       return r;
@@ -102,10 +102,10 @@ export function createOrientationSampler(deps: {
 
   async function samplePool(poolId: Pubkey): Promise<void> {
     const sigs = await deps.source.signatures(poolId, settings.sampleSignatures);
-    if (!sigs.ok) { deps.log.event('warning', 'm01.orientation_read_failed', { pool: poolId, code: sigs.error.code }); return; }
+    if (!sigs.ok) { deps.log.event('warn', 'm01.orientation_read_failed', { pool: poolId, error_code: sigs.error.code }); return; }
     for (const sig of sigs.value) {
       const tx = await deps.source.transaction(sig);
-      if (!tx.ok) { deps.log.event('warning', 'm01.orientation_read_failed', { pool: poolId, code: tx.error.code }); return; }
+      if (!tx.ok) { deps.log.event('warn', 'm01.orientation_read_failed', { pool: poolId, error_code: tx.error.code }); return; }
       // Edge 4: failed transactions are skipped (the decoder returns no events for them too).
       if (tx.value === null || tx.value.meta.err !== null) continue;
       checkEvents(poolId, deps.decode(tx.value));

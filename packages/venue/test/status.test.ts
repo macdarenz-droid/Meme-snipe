@@ -155,6 +155,32 @@ describe('A-M01-05 transitions and failure injection', () => {
   });
 });
 
+describe('A-M01-05 / addendum A16: an unknown event length demotes the venue', () => {
+  it('an unknown_length layout makes the venue unquotable (unknown_layout) until the pair is reviewed; the other venue is unaffected', async () => {
+    const reviewed = new Set<string>();
+    const reader = fakeReader();
+    const clock = fakeClock();
+    const cache = createVenueConfigCache({ reader, decoder: decoders, clock, log });
+    const statuses: VenueStatus[] = [];
+    const service = createVenueStatusService({ clock, cache, log, publishStatus: (x) => statuses.push(x), publishScheduleChange: () => {}, isReviewed: (p, d) => reviewed.has(`${p}:${d}`) });
+    await cache.refresh();
+    service.onUnknownLayout({ venue: 'pumpswap', programId: 'amm', discriminatorHex: '67f4521f2cf57777' });
+    service.onUnknownLayout({ venue: 'pumpswap', programId: 'amm', discriminatorHex: '67f4521f2cf57777' });
+    const st = service.status('pumpswap');
+    assert.deepEqual([st.quotable, st.reason, st.extraExitSlippageBps], [false, 'unknown_layout', 100]);
+    assert.equal(service.status('pump_curve').reason, 'ok');
+    assert.equal(statuses.at(-1)?.reason, 'unknown_layout');
+    reviewed.add('amm:67f4521f2cf57777');
+    service.evaluate();
+    assert.equal(service.status('pumpswap').reason, 'ok');
+    assert.equal(statuses.at(-1)?.reason, 'ok');
+    // Without a review port nothing is reviewed.
+    const s2 = await setup();
+    s2.service.onUnknownLayout({ venue: 'pump_curve', programId: 'pump', discriminatorHex: 'bddb7fd34ee661ee' });
+    assert.equal(s2.service.status('pump_curve').reason, 'unknown_layout');
+  });
+});
+
 describe('A-M01-05 direction and settings', () => {
   const fc = (flat: number, tiers: Array<[bigint, number]>) => ({
     kind: 'pump_fee_config', flat: { lpBps: 0, protocolBps: flat, creatorBps: 0 }, raw: {},

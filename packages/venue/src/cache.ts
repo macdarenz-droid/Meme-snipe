@@ -26,7 +26,7 @@ export interface AccountsReader {
   read(accounts: readonly Pubkey[]): Promise<Result<{ contextSlot: Slot; accounts: ReadonlyArray<RawAccount | null> }, { code: string; message?: string }>>;
 }
 export interface ConfigDecoder { decodeAccount(owner: Pubkey, data: Uint8Array): ConfigAccount }
-export interface VenueLog { event(level: 'info' | 'warning' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void }
+export interface VenueLog { event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void }
 
 export type ConfigName = 'feeConfigCurve' | 'feeConfigPumpSwap' | 'pumpSwapGlobalConfig' | 'pumpGlobal';
 const CONFIGS: ReadonlyArray<{ name: ConfigName; account: Pubkey; owner: Pubkey; kind: string }> = [
@@ -108,7 +108,7 @@ export function createVenueConfigCache(deps: { reader: AccountsReader; decoder: 
     const r = await deps.reader.read(CONFIGS.map((c) => c.account));
     if (!r.ok) {
       // Edge 3: keep the last entries; `inputs` turns stale after max_age_ms.
-      deps.log.event('warning', 'm01.fee_config_refresh_failed', { code: r.error.code });
+      deps.log.event('warn', 'm01.fee_config_refresh_failed', { error_code: r.error.code });
       emit({ kind: 'refreshed', ok: false });
       return;
     }
@@ -131,7 +131,7 @@ export function createVenueConfigCache(deps: { reader: AccountsReader; decoder: 
       };
       entries.set(c.name, entry);
       if (!same) {
-        deps.log.event(prev === null ? 'info' : 'warning', 'm01.fee_config_changed', { name: c.name, oldHash: prev?.configHash ?? null, newHash: configHash, version: entry.version });
+        deps.log.event(prev === null ? 'info' : 'warn', 'm01.fee_config_changed', { name: c.name, old_hash: prev?.configHash ?? null, new_hash: configHash, version: entry.version });
         emit({ kind: 'changed', previous: prev, entry });
       }
     });

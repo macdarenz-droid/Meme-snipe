@@ -16,7 +16,8 @@ import type { ConfigAccount, ConfigEvent, FeeForError, VenueConfigCache, VenueCo
 import { ACCOUNTS } from './constants.ts';
 import { chainTierIndex, checkTiers, type FeeTierView } from './fees.ts';
 
-export type VenueStatusReason = 'ok' | 'decode_failed' | 'config_stale' | 'fee_mismatch' | 'disabled_flag' | 'venue_not_specified';
+/** `unknown_layout` (NEW, addendum A16, card Z07): an event of the venue's program with a length the pinned layout does not describe. */
+export type VenueStatusReason = 'ok' | 'decode_failed' | 'config_stale' | 'fee_mismatch' | 'unknown_layout' | 'disabled_flag' | 'venue_not_specified';
 export interface VenueStatus {
   venue: VenueId; quotable: boolean; enabledBuy: boolean | null; enabledSell: boolean | null; reason: VenueStatusReason;
   lastScheduleChangeAtMs: UnixMs | null; lastScheduleChangeDirection: 'raised' | 'lowered' | 'mixed' | null;
@@ -24,7 +25,7 @@ export interface VenueStatus {
 }
 export interface FeeScheduleChanged { venue: VenueId; oldHash: string; newHash: string; direction: 'raised' | 'lowered' | 'mixed'; atMs: UnixMs }
 
-export interface StatusLog { event(level: 'info' | 'warning' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void }
+export interface StatusLog { event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void }
 export interface StatusMetrics { quotable(venue: VenueId, value: 0 | 1): void; feeMismatch(venue: VenueId): void }
 
 export interface StatusSettings { toleranceBps: number; maxPer24h: number; acks: ReadonlyArray<{ venue: VenueId; ackedAtMs: number }> }
@@ -89,11 +90,19 @@ export interface VenueStatusService {
   evaluate(): void;
   /** A new `venue.fee_mismatch_ack` list (applied config): mismatches up to each ack are cleared. */
   setAcks(acks: StatusSettings['acks']): void;
+  /**
+   * Addendum A16: M02 found an event of this venue's program whose length the pinned layout does not describe
+   * (`decoder.unknown_layout`, kind `unknown_length`). The venue is unquotable until the pair is in
+   * `decoders.reviewed_discriminators` (`isReviewed`, re-read at every evaluation).
+   */
+  onUnknownLayout(e: { venue: VenueId; programId: Pubkey; discriminatorHex: string }): void;
 }
 
 export function createVenueStatusService(deps: {
   clock: Clock; cache: VenueConfigCache; log: StatusLog; metrics?: StatusMetrics; settings?: StatusSettings;
   publishStatus(s: VenueStatus): void; publishScheduleChange(e: FeeScheduleChanged): void;
+  /** `decoders.reviewed_discriminators` (A-M02-05 `Quarantine.isReviewed`); none reviewed when absent. */
+  isReviewed?(programId: Pubkey, discriminatorHex: string): boolean;
 }): VenueStatusService {
   const settings = { ...(deps.settings ?? STATUS_DEFAULTS) };
   const checked = checkStatusSettings(settings);
@@ -103,11 +112,12 @@ export function createVenueStatusService(deps: {
   const latchedAt = new Map<VenueId, number>();
   const lastChange = new Map<VenueId, { atMs: UnixMs; direction: FeeScheduleChanged['direction'] }>();
   const published = new Map<VenueId, string>();
+  const unknownLayouts = new Map<VenueId, Array<{ programId: Pubkey; discriminatorHex: string }>>();
+  const demoted = (venue: VenueId): boolean => (unknownLayouts.get(venue) ?? []).some((u) => !(deps.isReviewed?.(u.programId, u.discriminatorHex) ?? false));
 
   deps.cache.onEvent((e: ConfigEvent) => {
-    if (e.kind === 'decode_failed') {
-      deps.log.event('critical', 'm01.venue_config_decode_failed', { name: e.name, reason: e.reason });
-    } else if (e.kind === 'changed' && e.previous !== null && (e.entry.name === 'feeConfigCurve' || e.entry.name === 'feeConfigPumpSwap')) {
+    // A decode failure is logged by the cache (`m01.fee_config_decode_failed`); the status change below alerts too.
+    if (e.kind === 'changed' && e.previous !== null && (e.entry.name === 'feeConfigCurve' || e.entry.name === 'feeConfigPumpSwap')) {
       scheduleChanged(e.previous, e.entry);
     }
     evaluate();
@@ -117,7 +127,7 @@ export function createVenueStatusService(deps: {
     const direction = changeDirection(prev.decoded, next.decoded);
     const atMs = deps.clock.nowMs();
     lastChange.set(next.venue, { atMs, direction });
-    deps.log.event('warning', 'm01.fee_schedule_changed', { venue: next.venue, oldHash: prev.configHash, newHash: next.configHash, direction });
+    deps.log.event('warn', 'm01.fee_schedule_changed', { venue: next.venue, old_hash: prev.configHash, new_hash: next.configHash, direction });
     deps.publishScheduleChange({ venue: next.venue, oldHash: prev.configHash, newHash: next.configHash, direction, atMs });
   }
 
@@ -142,6 +152,7 @@ export function createVenueStatusService(deps: {
     const names = venue === 'pump_curve' ? (['feeConfigCurve'] as const) : (['feeConfigPumpSwap', 'pumpSwapGlobalConfig'] as const);
     if (names.some((n) => deps.cache.decodeFailed(n))) return unquotable('decode_failed');
     if (latched(venue)) return unquotable('fee_mismatch');
+    if (demoted(venue)) return unquotable('unknown_layout');
     const inputs: Result<unknown, FeeForError> = deps.cache.inputs(venue);
     // Decode failures were caught above, so what is left is a config never read or older than max_age_ms.
     if (!inputs.ok) return unquotable('config_stale');
@@ -182,12 +193,18 @@ export function createVenueStatusService(deps: {
       mismatches.set(r.venue, [...recent(r.venue, now), now]);
       if (recent(r.venue, now).length >= settings.maxPer24h) latchedAt.set(r.venue, now);
       deps.metrics?.feeMismatch(r.venue);
-      deps.log.event('error', 'm01.fee_mismatch', { venue: r.venue, pool: expected.poolId, realisedBps: r.bps, candidates: expected.candidates.map((c) => c.totalBps) });
+      deps.log.event('error', 'm01.fee_mismatch', { venue: r.venue, pool: expected.poolId, realised_bps: r.bps, candidates: expected.candidates.map((c) => c.totalBps) });
       evaluate();
     },
     evaluate,
     setAcks(acks) {
       settings.acks = acks;
+      evaluate();
+    },
+    onUnknownLayout(e) {
+      const list = unknownLayouts.get(e.venue) ?? [];
+      if (!list.some((u) => u.programId === e.programId && u.discriminatorHex === e.discriminatorHex)) list.push({ programId: e.programId, discriminatorHex: e.discriminatorHex });
+      unknownLayouts.set(e.venue, list);
       evaluate();
     },
   };
