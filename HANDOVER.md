@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 11:33 PM: OF-ARM draft PR #321**, head `ac79d132` (ls-remote). The data builder pushed it on the owner's direct instruction in its own session.
+  - Finisher `session_0168HNmszjFeWWhbGLCFmdsz` (Sonnet) merges base `cf508be1`, fills the DECISIONS owner-answer placeholders, and re-runs test-ci and `pnpm check`.
+  - Then a fresh reviewer and red team. It merges only after owner item 5 (fork-PR approval) and the deps-reviewed label.
+  - The data builder stays parked; it is not woken, because of its 700K context.
 - **15 Oct 11:30 PM: owner "Do ur own thing and whats recommended".** The supervisor applied its OF-ARM recommendations:
   - Items 1–2: KEEP the old refs and runs, under the standing rule: no one dispatches `data-scan.yml` or `archive-check.yml` on any ref but the default branch, and no one re-runs an old run of either. A run that breaks the rule stops the chain through the guard (AG_FOREIGN). Option B is not taken.
   - Item 3: 90 days.
