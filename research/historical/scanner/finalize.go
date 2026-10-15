@@ -1280,7 +1280,27 @@ func checkUnitLog(out, logPath string) error {
 	}
 	var want []string
 	k2 := map[string]map[string]string{} // unit -> file -> sha256
+	// OF-6: "from EPOCH/RANGE data-day-D" (a unit taken whole from the day before's stored
+	// release) and "reread EPOCH/RANGE ID" (a unit a QA failure named, read again under the
+	// QA-REREAD row ID) mark K3 units that carry no k2 lines: their K2 bytes were never on
+	// this day's disk.
+	exempt := map[string]string{}
 	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		if strings.HasPrefix(l, "from ") || strings.HasPrefix(l, "reread ") {
+			f := strings.Split(l, " ")
+			var e, a, z uint64
+			if len(f) != 3 || f[2] == "" {
+				return fmt.Errorf("unit log: malformed line %q", l)
+			}
+			if n, err := fmt.Sscanf(f[1], "%d/%d-%d", &e, &a, &z); err != nil || n != 3 || fmt.Sprintf("%d/%d-%d", e, a, z) != f[1] {
+				return fmt.Errorf("unit log: malformed line %q", l)
+			}
+			if _, dup := exempt[f[1]]; dup {
+				return fmt.Errorf("unit log: two from/reread lines for %s", f[1])
+			}
+			exempt[f[1]] = f[0]
+			continue
+		}
 		if !strings.HasPrefix(l, "k2 ") {
 			want = append(want, l)
 			continue
@@ -1298,7 +1318,7 @@ func checkUnitLog(out, logPath string) error {
 		}
 		k2[unit][file] = f[1]
 	}
-	if err := checkK2Lines(out, k2); err != nil {
+	if err := checkK2Lines(out, k2, exempt); err != nil {
 		return err
 	}
 	have, err := unitLog(out)
@@ -1395,7 +1415,7 @@ func migrationList(dirs []string, horizonS int64, prior string, dayStart int64) 
 
 // checkK2Lines: each K3 unit under out has exactly its files' k2 lines, and every copied
 // file still has its K2 sha256; a unit that is not K3 has none.
-func checkK2Lines(out string, k2 map[string]map[string]string) error {
+func checkK2Lines(out string, k2 map[string]map[string]string, exempt map[string]string) error {
 	stats, err := filepath.Glob(filepath.Join(out, "units", "*", "*", "stats.json"))
 	if err != nil {
 		return err
@@ -1416,6 +1436,12 @@ func checkK2Lines(out string, k2 map[string]map[string]string) error {
 		if st.Retention != "K3" {
 			if len(lines) > 0 {
 				return fmt.Errorf("unit log: k2 lines for %s, a %s unit", unit, st.Retention)
+			}
+			continue
+		}
+		if exempt[unit] != "" {
+			if len(lines) > 0 {
+				return fmt.Errorf("unit log: k2 lines for %s, which is marked %s", unit, exempt[unit])
 			}
 			continue
 		}
@@ -1447,6 +1473,11 @@ func checkK2Lines(out string, k2 map[string]map[string]string) error {
 	for unit := range k2 {
 		if !seen[unit] {
 			return fmt.Errorf("unit log: k2 lines for %s, which is not a unit", unit)
+		}
+	}
+	for unit, kind := range exempt {
+		if !seen[unit] {
+			return fmt.Errorf("unit log: a %s line for %s, which is not a unit", kind, unit)
 		}
 	}
 	return nil

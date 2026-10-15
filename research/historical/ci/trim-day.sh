@@ -10,7 +10,8 @@
 #   1. The day's pinned list: PRIOR_LIST's windows that reach the day + the day's own
 #      migrations read from its K2 units, each from the migration to + 300 min (zeroed-scan
 #      migrations; PM-01 PREREG §3), kept as OUT/list-DAY.txt and copied to the assets (the
-#      next day's prior). --list-only stops here (a day stored at K2).
+#      next day's prior). --list-only stops here (a day stored at K2), after measuring the
+#      day's PM-01 subset into ASSET_DIR/pm01-subset-DAY.txt (OF-4 ruling 2).
 #   2. Per unit: it is trimmed into OUT/units.k3 (zeroed-scan trim); its K2 file hashes are
 #      written to a temp file, appended to OUT/units.log.partial and fsynced; its K2 copy is
 #      renamed to .del and deleted only when that file holds one k2 line per .zst file of it
@@ -40,9 +41,14 @@ list="$out/list-$day.txt" log="$out/units.log" partial="$out/units.log.partial"
 # saved with it, sealed (OF-3 ruling 24).
 tlog="$out/logs"
 mkdir -p "$assets" "$tlog"
-k2=() k3=()
+k2=() k3=() fs=()
+# OF-6 (rulings 1, 2): units taken whole from the day before's stored release
+# (margin-fetch.sh, OUT/from-store.txt) are passed through untouched: never trimmed again,
+# kept across the trim, and logged as "from EPOCH/RANGE TAG" instead of k2 lines.
+taken=""; [ -f "$out/from-store.txt" ] && taken=$(awk '{print $1}' "$out/from-store.txt")
 for u in "$out"/units/*/*; do
   [[ -d "$u" && "$u" != *.tmp && "$u" != *.del ]] || continue
+  if grep -qxF "$(basename "$(dirname "$u")")/$(basename "$u")" <<< "$taken"; then fs+=("$u"); continue; fi
   [ -f "$u/stats.json" ] || refuse "$u is not a finished unit"
   if grep -q '"retention": *"K2"' "$u/stats.json"; then k2+=("$u")
   elif grep -q '"retention": *"K3"' "$u/stats.json"; then k3+=("$u")
@@ -66,7 +72,7 @@ fi
 # 1. The pinned list, built once and kept for a resumed trim.
 if [ ! -f "$list" ] || [ ! -d "$out/units.k3" ]; then
   if [ "$prior" = - ]; then
-    [ "$day" = "$(ag_first_day)" ] || refuse "$day is not the first allow-listed day, so it needs the day before's pinned list"
+    ag_exempt "$day" "$out" || refuse "$day is not the head of the allow-list with no release of the day before in the store (prev-day.txt), so it needs the day before's pinned list"
     prior_args=()
   else
     ag_prior_ok "$day" "$prior" "${ARCHIVE_PRIOR_SUMS:-}" || exit 2
@@ -83,7 +89,24 @@ fi
 cp "$list" "$assets/list-$day.txt"
 sha=$(sha256sum "$list" | cut -d' ' -f1)
 if [ "$mode" = --list-only ]; then
-  echo "list: $day's pinned list written (sha256 $sha); the day is stored at K2" | tee -a "$summary"
+  # OF-4 ruling 2: the measured PM-01 subset of a K2 day (batches 1 and 2), the per-day
+  # figure of the storage stop until a K3 day is stored. Each K2 unit is trimmed with the
+  # day's list into a scratch copy, its bytes added up and the copy deleted (one unit's
+  # K3 on disk at a time); the K2 units stay as they are. Same time budget as a trim.
+  meas="$out/units.measure"; rm -rf "$meas"; start=$(date +%s) bytes=0
+  for u in "${k2[@]}"; do
+    if [ $(( $(date +%s) - start )) -ge "$ARCHIVE_TRIM_BUDGET_S" ]; then
+      rm -rf "$meas"; echo "measure: time budget ($ARCHIVE_TRIM_BUDGET_S s) spent; the day fails (not resumable)" | tee -a "$summary"; exit 1
+    fi
+    epoch=$(basename "$(dirname "$u")") range=$(basename "$u")
+    mkdir -p "$meas/$epoch"
+    zeroed-scan trim -in "$u" -out "$meas/$epoch/$range" -migration-list "$list" >> "$tlog/trim.log" 2>&1
+    b=$(du -sb "$meas/$epoch/$range" | cut -f1); bytes=$(( bytes + b ))
+    rm -rf "${meas:?}/$epoch/$range"
+  done
+  rm -rf "$meas"
+  echo "$bytes" > "$assets/pm01-subset-$day.txt"
+  echo "list: $day's pinned list written (sha256 $sha); the day is stored at K2; its PM-01 subset measures $bytes bytes" | tee -a "$summary"
   exit 0
 fi
 # 2. Per unit: trim, log the K2 hashes durably, delete the K2 copy.
@@ -124,14 +147,19 @@ for u in "${k2[@]}"; do
   mv "$u" "$u.del" && rm -rf "$u.del"
   n=$((n + 1))
 done
-# 3. The trimmed units replace the K2 ones; the per-unit log is checked.
+# 3. The trimmed units replace the K2 ones (the taken units move across untouched); the
+# per-unit log is checked.
+for u in "${fs[@]}"; do mkdir -p "$out/units.k3/$(basename "$(dirname "$u")")"; mv "$u" "$out/units.k3/$(basename "$(dirname "$u")")/$(basename "$u")"; done
 rm -rf "$out"/units/*/*.del
 find "$out/units" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 if compgen -G "$out/units/*/*" > /dev/null; then refuse "$out/units still holds units after the trim"; fi
 rm -rf "$out/units" && mv "$out/units.k3" "$out/units"
 ulines=$(zeroed-scan unitlog -out "$out" 2>> "$tlog/unitlog.log")
-while read -r l; do [[ "$l" == *" K3 $sha" ]] || refuse "unit line '$l' is not K3 with the pinned list $sha"; done <<< "$ulines"
-{ printf '%s\n' "$ulines"; LC_ALL=C sort -k3,3 "$partial"; } > "$log.tmp"
+while read -r l; do
+  grep -qxF "${l%% *}" <<< "$taken" && continue
+  [[ "$l" == *" K3 $sha" ]] || refuse "unit line '$l' is not K3 with the pinned list $sha"
+done <<< "$ulines"
+{ printf '%s\n' "$ulines"; LC_ALL=C sort -k3,3 "$partial"; [ -z "$taken" ] || sed 's/^/from /' "$out/from-store.txt" | LC_ALL=C sort; } > "$log.tmp"
 mv "$log.tmp" "$log"
 zeroed-scan unitlog -out "$out" -check "$log" >> "$tlog/unitlog.log" 2>&1
 rm -f "$partial"

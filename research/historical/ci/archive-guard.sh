@@ -26,6 +26,8 @@
 #       other-run and 60-min checks.
 #   archive-guard.sh restarts DAY     the resumable stops (exit 75, chained) DAY already
 #       had since ARCHIVE_REARM_AT, from run history (the continue job allows one).
+#   archive-guard.sh b10-done         the B-10 done days, from the private store (OF-5: the
+#       -k3 release for the two measurement days, the plain release for the others).
 # Any refusal exits 2 with the reason on stderr (and the step summary). When sourced, it
 # defines the ag_* functions archive-check.sh uses.
 #
@@ -36,8 +38,8 @@
 #     failed, was cancelled or timed out and whose `continue` job did not chain it (a
 #     block exits 4, any other failure, or a second resumable stop of the day), unless
 #     the only failed steps are its guard steps (no request was made; round 4, ruling 22).
-# A success is a batch's first attempt whose "Publish this day" step succeeded (it stored
-# a day; a day already published skips that step). Failures count from ARCHIVE_REARM_AT, and
+# A success is a batch's first attempt whose "Store this day" step succeeded (it stored a
+# day in the private store and read it back, OF-4; a day already stored skips that step). Failures count from ARCHIVE_REARM_AT, and
 # only after the last success; 3 stop the chain until a reviewed change moves it.
 #
 # Env: GH_REPO (or GITHUB_REPOSITORY), GH_TOKEN, DATA_REPO, DATA_STORE_TOKEN, GITHUB_REF,
@@ -47,6 +49,8 @@ set -uo pipefail
 ag_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=archive-limits.conf
 . "$ag_here/archive-limits.conf"
+# shellcheck source=release-state.sh
+. "$ag_here/release-state.sh"
 ag_gh=${GH_BIN:-gh}
 ag_repo=${GH_REPO:-${GITHUB_REPOSITORY:-}}
 ag_summary=${GITHUB_STEP_SUMMARY:-/dev/null}
@@ -91,6 +95,13 @@ ag_pinned_id() {
   ids=$(sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL id=\([A-Za-z0-9._:-]\{1,\}\) source=old-faithful .*/\1/p' "$ag_decisions" 2>/dev/null | LC_ALL=C sort -u)
   [[ -n "$ids" && $(wc -l <<< "$ids") == 1 ]] && echo "$ids"
 }
+# ag_pinned_rev (OF-7 red team m2): the scannerRev of the one pinned B10-PULL row, or nothing.
+ag_pinned_rev() {
+  local id
+  id=$(ag_pinned_id) || return 0
+  [[ -n "$id" ]] || return 0
+  sed -n "s/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL id=$id source=old-faithful scannerRev=\([^ |]\{1,\}\) .*/\1/p" "$ag_decisions" 2>/dev/null | head -1
+}
 # ag_armed: ARCHIVE_ARM is set and is the pinned B10-PULL id; ARCHIVE_REARM_AT is a
 # valid UTC time that is not in the future.
 ag_armed() {
@@ -111,7 +122,7 @@ ag_armed() {
 #   - every release call in research/historical/ci/*.sh (gh/"$GH" release ..., or a
 #     .../releases API path) names `--repo "$DATA_REPO"` or `repos/$DATA_REPO/`, and none
 #     names GITHUB_REPOSITORY, GH_REPO or -R.
-# OF-4 and OF-5 must land first.
+# OF-4 (nothing public) makes these pass on this tree; test-ci checks it.
 ag_private_storage() {
   local wf="$ag_here/../../../.github/workflows/data-scan.yml" f bad
   [[ -f "$wf" ]] || { ag_refuse "the archive chain is not armed: data-scan.yml cannot be read"; return 2; }
@@ -270,7 +281,8 @@ if __name__ == "__main__" and len(sys.argv) == 1:
 # repeated key; an explicit top-level permissions mapping with contents: read; at any
 # level only contents: read|none and actions: read|none, actions: write only where it is
 # needed (archive-check.yml dispatches data-scan; data-scan.yml's continue job dispatches
-# the chained run), every other scope absent or none, never a string (write-all,
+# the chained run; its forget job, OF-4 ruling 1, deletes a stored day's progress cache
+# after the read-back and runs only a checkout and cache-forget.sh), every other scope absent or none, never a string (write-all,
 # read-all); the actions/upload-* family only as data-scan.yml's resume-* artifact in the
 # scan job; a local action (uses: ./) only as a composite whose steps pass the same checks;
 # every run: block, and every script outside ci/ it calls, passes ag_calls_py; and an
@@ -288,7 +300,7 @@ def mapping(loader, node, deep=False):
     return yaml.SafeLoader.construct_mapping(loader, node, deep)
 L.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
 MARK = re.compile(r"scan-day\.sh|zeroed-scan|data-scan-|data-rpc-|data-day-|data-volume-|archive-check\.sh|archive-guard\.sh")
-WRITE_OK = {("archive-check.yml", None), ("data-scan.yml", "continue")}
+WRITE_OK = {("archive-check.yml", None), ("data-scan.yml", "continue"), ("data-scan.yml", "forget")}
 def scopes(perm, name, job):
     if perm is None: return None
     if not isinstance(perm, dict): return "grants " + str(perm)
@@ -300,6 +312,8 @@ def scopes(perm, name, job):
         if not ok: return "grants " + str(k) + ": " + v
     return None
 def fail(msg): print(msg); sys.exit(1)
+# OF-4 ruling 13: the store-token secret name is matched without regard to case
+def tok(x): return re.search(r"data_store_token", str(x), re.I) is not None
 ROOT = os.path.normpath(os.path.join(sys.argv[1], "..", ".."))
 SH = re.compile(r"(?:\$GITHUB_WORKSPACE/|\$\{\{\s*github\.workspace\s*\}\}/|\./)?((?:[\w.-]+/)*[\w.-]+\.sh)\b")
 def check_steps(steps, name, j, depth=0):
@@ -307,6 +321,16 @@ def check_steps(steps, name, j, depth=0):
         if not isinstance(st, dict): continue
         uses = str(st.get("uses", "")).strip()
         where = name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?")))
+        # OF-4 ruling 8: the store token is never written into a run: line
+        if re.search(r"secrets\s*\.\s*DATA_STORE_TOKEN", str(st.get("run", "")), re.I): fail(where + " writes secrets.DATA_STORE_TOKEN into its run: line (OF-4 ruling 8)")
+        # OF-4 ruling 5: the store token only in a clean env -i step (shell without BASH_ENV
+        # or ENV, the script under env -i with a fixed PATH, the loader variables emptied)
+        env = st.get("env") or {}
+        if tok(env) or tok(st.get("with") or {}):
+            clean = (str(st.get("shell", "")).startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc")
+                     and str(st.get("run", "")).startswith("/usr/bin/env -i PATH=/usr/bin:/bin ")
+                     and isinstance(env, dict) and all(str(env.get(k, "x")) == "" for k in ("BASH_ENV", "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH")))
+            if not clean: fail(where + " holds the store token outside a clean env -i step (OF-4 ruling 5)")
         # ruling 46: the whole upload family; only the resume- marker in data-scan scan
         if uses.startswith("actions/upload-"):
             art = str((st.get("with") or {}).get("name", ""))
@@ -346,6 +370,9 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
     text = open(f).read()
     if not MARK.search(text): continue
     name = os.path.basename(f)
+    # OF-4 ruling 8: no step reads the whole secrets context or forwards it
+    for rx, what in ((r"toJSON\(\s*secrets\s*\)", "toJSON(secrets)"), (r"secrets\s*\[", "secrets[...]"), (r"secrets\s*:\s*inherit", "secrets: inherit")):
+        if re.search(rx, text, re.I): fail(name + " uses " + what + " (OF-4 ruling 8)")
     try: wf = yaml.load(text, Loader=L)
     except Exception: fail(name + " does not parse as YAML (or repeats a key)")
     top = wf.get("permissions") if isinstance(wf, dict) else None
@@ -357,11 +384,17 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml")) + glob.glob(os.pat
         for k, v in (env or {}).items():
             if "zeroed-" in str(v): fail(where + " env " + str(k) + " names a scanner binary (ruling 57)")
     envcheck(wf.get("env"), name)
+    if tok(wf.get("env") or {}): fail(name + " holds the store token in its top-level env (OF-4 ruling 5)")
     for j, job in (wf.get("jobs") or {}).items():
         if not isinstance(job, dict): continue
         e = scopes(job.get("permissions"), name, j)
         if e: fail(name + " job " + str(j) + " " + e)
+        if (name, j) == ("data-scan.yml", "forget"):
+            sts = [st for st in job.get("steps") or [] if isinstance(st, dict)]
+            if len(sts) != 2 or not str(sts[0].get("uses", "")).startswith("actions/checkout@") or "uses" in sts[1] or str(sts[1].get("run", "")).strip() != "research/historical/ci/cache-forget.sh \"$PREFIX\"":
+                fail(name + " job forget holds actions: write and may run only a checkout and cache-forget.sh (OF-4 ruling 1)")
         envcheck(job.get("env"), name + " job " + str(j))
+        if tok(job.get("env") or {}): fail(name + " job " + str(j) + " holds the store token in its job env (OF-4 ruling 5)")
         for st in job.get("steps") or []:
             if isinstance(st, dict): envcheck(st.get("env"), name + " job " + str(j) + " step " + str(st.get("name", st.get("id", "?"))))
         # ruling 65: no job container, service containers or reusable workflow (none is checked)
@@ -405,17 +438,41 @@ ag_local() {
 
 # ag_attested DAY RET: the scan job's clean guard step (attest) passed DAY within the
 # last 30 min, for this run and attempt: ARCHIVE_GUARD_DIR/DAY reads "DAY RETENTION TIME
-# RUN_ID ATTEMPT", and DAY, RET, GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT all match.
-# scan-day.sh and check-day.sh hold no token, so this is how the store, history and
-# order checks reach them.
+# RUN_ID ATTEMPT FAILED", and DAY, RET, GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT all match;
+# FAILED (OF-6) is 1 when DAY had a counted scan failure since ARCHIVE_REARM_AT, else 0
+# (AG_PASS_FAILED). scan-day.sh and check-day.sh hold no token, so this is how the store,
+# history and order checks reach them.
 ag_attested() {
-  local f="${ARCHIVE_GUARD_DIR:-}/$1" d r t id at
+  local f="${ARCHIVE_GUARD_DIR:-}/$1" d r t id at fl
   [[ -n "${ARCHIVE_GUARD_DIR:-}" && -f "$f" ]] ||
     { ag_refuse "no archive guard pass for $1 (the guard step checks the store, the storage-stop marker, the history and the order)"; return 2; }
-  read -r d r t id at < "$f"
-  [[ "$d" == "$1" && "$r" == "$2" && "$t" =~ ^[0-9]+$ && -n "${GITHUB_RUN_ID:-}" && "$id" == "${GITHUB_RUN_ID:-}" && "$at" == "${GITHUB_RUN_ATTEMPT:-}" ]] &&
+  read -r d r t id at fl < "$f"
+  [[ "$d" == "$1" && "$r" == "$2" && "$t" =~ ^[0-9]+$ && -n "${GITHUB_RUN_ID:-}" && "$id" == "${GITHUB_RUN_ID:-}" && "$at" == "${GITHUB_RUN_ATTEMPT:-}" && "$fl" =~ ^[01]$ ]] &&
     (( t <= $(ag_now) && $(ag_now) - t <= 1800 )) ||
     { ag_refuse "the archive guard pass for $1 is malformed, older than 30 min, or for another retention, run or attempt"; return 2; }
+  AG_PASS_FAILED=$fl
+}
+# ag_reread ID DAY (OF-6 ruling 3): the units the one pinned QA-REREAD row with this id
+# names for DAY, one "EPOCH/FROM-TO" a line. The row, written only after the owner is told:
+#   | DATE | QA-REREAD id=ID day=DAY units=EPOCH/FROM-TO[,EPOCH/FROM-TO...] toldAt=UTC-TIME ...
+# Refuses when there is no such row, more than one, another day, a malformed unit list,
+# or a toldAt that is not a past UTC time.
+ag_reread() {
+  local rows n told units u list=""
+  [[ "${1:-}" =~ ^[A-Za-z0-9._:-]+$ ]] || { ag_refuse "bad QA-REREAD id '${1:-}'"; return 2; }
+  rows=$(grep -F "| QA-REREAD id=$1 " "$ag_decisions" 2>/dev/null || true)
+  n=$(grep -c . <<< "$rows" || true)
+  [[ "$n" == 1 ]] || { ag_refuse "no single pinned QA-REREAD row with id $1 in docs/DECISIONS.md ($n found); nothing is read again before the owner is told"; return 2; }
+  [[ "$rows" =~ \|\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ \|\ QA-REREAD\ id="$1"\ day=([0-9-]+)\ units=([0-9/,-]+)\ toldAt=([0-9TZ:-]+)( |$) ]] ||
+    { ag_refuse "the QA-REREAD row $1 is malformed"; return 2; }
+  [[ "${BASH_REMATCH[1]}" == "$2" ]] || { ag_refuse "the QA-REREAD row $1 is for ${BASH_REMATCH[1]}, not $2"; return 2; }
+  units=${BASH_REMATCH[2]} told=${BASH_REMATCH[3]}
+  told=$(ag_ts "$told") && (( told <= $(ag_now) )) || { ag_refuse "the QA-REREAD row $1 has no past toldAt (UTC)"; return 2; }
+  while IFS= read -r u; do
+    [[ "$u" =~ ^[0-9]+/[0-9]+-[0-9]+$ ]] || { ag_refuse "the QA-REREAD row $1 names a malformed unit '$u'"; return 2; }
+    list+="$u"$'\n'
+  done <<< "$(tr ',' '\n' <<< "$units")"
+  printf '%s' "$list"
 }
 # ag_entry DAY: what scan-day.sh and check-day.sh check: ag_local plus ag_attested.
 ag_entry() {
@@ -429,9 +486,12 @@ ag_entry() {
 # other than K2 or K3: a day keeps its recorded retention (a unit read again, the
 # determinism rescan), never the current ARCHIVE_RETENTION.
 ag_recorded() {
-  local vals
+  local vals taken=""
+  # OF-6: units taken from the day before's store (from-store.txt) keep that day's retention
+  [[ -f "$1/from-store.txt" ]] && taken=$(awk '{print $1}' "$1/from-store.txt")
   vals=$(for st in "$1"/units/*/*/stats.json; do
     [[ -f "$st" ]] || continue
+    u=${st%/stats.json}; grep -qxF "$(basename "$(dirname "$u")")/$(basename "$u")" <<< "$taken" && continue
     v=$(sed -n 's/.*"retention": *"\([^"]*\)".*/\1/p' "$st" | head -1); echo "${v:-none}"
   done | LC_ALL=C sort -u)
   [[ -z "$vals" ]] && return 0
@@ -457,6 +517,26 @@ ag_prior_ok() {
 
 # ---- the private store (DATA_REPO, zeroed-data) ----
 ag_store() { GH_TOKEN="${DATA_STORE_TOKEN:-}" "$ag_gh" "$@"; }
+# ag_prev_day DAY GH (OF-6 ruling 11): "none" when the store holds no data-day-<D-1> or
+# data-day-<D-1>-k3 release (absent, judged by release_state through the gh command GH,
+# which holds the store token), else the tags found; fails on a store error. Only the head
+# of ARCHIVE_DAYS with "none" is exempt from the prior list, the margin and -stored.
+ag_prev_day() {
+  local prev t st found=""
+  prev=$(date -u -d "$1 - 1 day" +%F 2>/dev/null) || return 1
+  for t in "data-day-$prev" "data-day-$prev-k3"; do
+    st=$(GH=$2 release_state "$t" "$prev")
+    case "$st" in absent) ;; error*) return 1 ;; *) found+="$t " ;; esac
+  done
+  if [[ -n "$found" ]]; then echo "${found% }"; else echo none; fi
+}
+# ag_exempt DAY OUT (no token): the day heads ARCHIVE_DAYS and the clean margin step
+# recorded in OUT/prev-day.txt that the store holds no release of the day before.
+ag_exempt() {
+  local prev
+  prev=$(date -u -d "$1 - 1 day" +%F 2>/dev/null) || return 1
+  [[ "$1" == "$(ag_first_day)" && -f "$2/prev-day.txt" && "$(cat "$2/prev-day.txt")" == "none $prev" ]]
+}
 # ag_store_ok: the store is named, is not this repository, answers, is private, and
 # holds no storage-stop tag (OF-4 writes it, append-only; only a reviewed change with
 # the owner's OK clears it).
@@ -488,12 +568,93 @@ ag_caches_sealed() {
   [[ -z "$bad" ]] ||
     { ag_refuse "$(grep -c . <<< "$bad") Actions cache entries hold progress or assets unsealed ($(head -3 <<< "$bad" | tr '\n' ' ')); the owner decides whether to delete them or wait for them to expire"; return 2; }
 }
-# ag_read_done: the days with a data-day-D or data-day-D-k3 tag in the store ("read
-# done", OF-5), one a line. Fails when the store cannot be read.
-ag_read_done() {
+# ag_day_tags: the store's data-day-D and data-day-D-k3 tags as "TAG DAY" lines. Fails
+# when the store cannot be read.
+ag_day_tags() {
   local refs
   refs=$(ag_store api --paginate "repos/$DATA_REPO/git/matching-refs/tags/data-day-" --jq '.[].ref' 2>/dev/null) || return 1
-  sed -n 's#^refs/tags/data-day-\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)\(-k3\)\{0,1\}$#\1#p' <<< "$refs" | LC_ALL=C sort -u
+  sed -n 's#^refs/tags/\(data-day-\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)\(-k3\)\{0,1\}\)$#\1 \2#p' <<< "$refs" | LC_ALL=C sort -u
+}
+# ag_marked (OF-5 rulings 1 and 3): each day tag as "TAG STATE", STATE from release_state
+# (release-state.sh, the judgement publish-day.sh --check uses): done (complete, every
+# asset uploaded and named as its SHA256SUMS-D lists, and carrying its read-back
+# readback-ok-D marker), or anything else. Fails when the store cannot be read.
+ag_marked() {
+  local tags tag d st
+  tags=$(ag_day_tags) || return 1
+  while read -r tag d; do
+    [[ -n "$tag" ]] || continue
+    st=$(GH=ag_store release_state "$tag" "$d")
+    [[ "$st" != error* ]] || return 1
+    echo "$tag ${st%%:*}"
+  done <<< "$tags"
+}
+# ag_read_done: the days with a data-day-D or data-day-D-k3 release in the store that is
+# done ("read done", OF-5 rulings 1 and 3), one a line. Any other day release (not
+# complete, or without its readback-ok marker: its read-back never passed) stops the
+# queue for review: it is never counted and never read again automatically, so this
+# refuses. Fails when the store cannot be read.
+ag_read_done() {
+  local rows bad
+  rows=$(ag_marked) || return 1
+  bad=$(awk '$2 != "done" {print $1}' <<< "$rows")
+  [[ -z "$bad" ]] ||
+    { ag_refuse "day release(s) $(tr '\n' ' ' <<< "$bad")in the private store are not complete or carry no readback-ok marker (the read-back never passed); stopped for review, never read again automatically"; return 1; }
+  awk '$2 == "done" {print substr($1, 10, 10)}' <<< "$rows" | LC_ALL=C sort -u
+}
+
+# ag_b10_ok TAG DAY (OF-5 ruling 2): the marked release TAG holds DAY at the B-10
+# retention: every unit line of its units-DAY.log is K3 with the sha256 of list-DAY.txt
+# that its SHA256SUMS-DAY records. Judged from the recorded retention, never the tag name.
+# OF-6 ruling 7: a unit taken from the day before's store (a "from EPOCH/RANGE TAG" line,
+# TAG data-day-<D-1> or data-day-<D-1>-k3, a done release) carries instead the sha256 of
+# list-<D-1>.txt that TAG's SHA256SUMS-<D-1> records.
+ag_b10_ok() {
+  local tag=$1 d=$2 tmp sha prev ft fs maps="" rc=1
+  prev=$(date -u -d "$d - 1 day" +%F)
+  tmp=$(mktemp -d)
+  if ag_store release download "$tag" --repo "$DATA_REPO" --pattern "units-$d.log" --pattern "SHA256SUMS-$d" --dir "$tmp" >/dev/null 2>&1 &&
+    [[ -f "$tmp/units-$d.log" && -f "$tmp/SHA256SUMS-$d" ]]; then
+    sha=$(awk -v f="list-$d.txt" '$2 == f {print $1}' "$tmp/SHA256SUMS-$d")
+    rc=0
+    while read -r ft; do
+      [[ -n "$ft" ]] || continue
+      [[ "$ft" == "data-day-$prev" || "$ft" == "data-day-$prev-k3" ]] || { rc=1; break; }
+      [[ "$(GH=ag_store release_state "$ft" "$prev")" == done ]] || { rc=1; break; }
+      mkdir -p "$tmp/p"; rm -f "$tmp/p/SHA256SUMS-$prev"
+      ag_store release download "$ft" --repo "$DATA_REPO" --pattern "SHA256SUMS-$prev" --dir "$tmp/p" >/dev/null 2>&1 || { rc=1; break; }
+      fs=$(awk -v f="list-$prev.txt" '$2 == f {print $1}' "$tmp/p/SHA256SUMS-$prev" 2>/dev/null)
+      [[ "$fs" =~ ^[0-9a-f]{64}$ ]] || { rc=1; break; }
+      maps+="$ft $fs"$'\n'
+    done < <(awk '$1 == "from" {print $3}' "$tmp/units-$d.log" | LC_ALL=C sort -u)
+    if (( rc == 0 )) && [[ "$sha" =~ ^[0-9a-f]{64}$ ]] && awk -v s="$sha" -v maps="$maps" '
+        BEGIN { n = split(maps, m, "\n"); for (i = 1; i <= n; i++) if (split(m[i], kv, " ") == 2) tsha[kv[1]] = kv[2] }
+        NR == FNR { if ($1 == "from") { if (NF != 3 || ($2 in from)) bad = 1; from[$2] = $3 } next }
+        $1 ~ /^[0-9]+\/[0-9]+-[0-9]+$/ { n++; want = ($1 in from) ? tsha[from[$1]] : s
+          if (NF != 4 || $3 != "K3" || want == "" || $4 != want) bad = 1 }
+        END { exit !(n > 0 && !bad) }' "$tmp/units-$d.log" "$tmp/units-$d.log"; then rc=0; else rc=1; fi
+  fi
+  rm -rf "$tmp"
+  return $rc
+}
+# ag_b10_done (OF-5): the days that are B-10 done, one a line, oldest first: an
+# allow-listed day with a marked release (data-day-D-k3 or data-day-D) whose recorded
+# retention is K3 with its list (ag_b10_ok; ruling 2: a measurement day stored at K3 under
+# the plain tag counts, a K2 release never does). It drives only the B10-PULL row and the
+# evaluator, never the queue (that is ag_read_done). Fails when the store cannot be read.
+ag_b10_done() {
+  local rows days d t
+  [[ "${DATA_REPO:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || return 1
+  rows=$(ag_marked) || return 1
+  days=$(ag_days) || return 1
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    for t in "data-day-$d-k3" "data-day-$d"; do
+      grep -qx "$t done" <<< "$rows" || continue
+      if ag_b10_ok "$t" "$d"; then echo "$d"; break; fi
+    done
+  done <<< "$days"
+  return 0
 }
 
 # ---- run history of this repository ----
@@ -634,6 +795,8 @@ ag_history() {
   AG_AC_RUNS=$(ag_runs archive-check.yml) || return 1
   AG_DS_RUNS=$(ag_runs data-scan.yml) || return 1
   AG_FAILS=0 AG_LAST_FAIL=0 AG_LANE_END=0 AG_LANE_RESUME="" AG_RESTARTS="" AG_FAIL_JOBS="" AG_FAIL_GROUPS="" AG_FOREIGN=0 AG_BUSY=0
+  AG_FAILED_DAYS=""
+  local failed_raw=""
   while IFS=$'\t' read -r id st co cr up at br sha ti; do
     [[ -n "$id" && "$st" == completed ]] || continue
     up=$(ag_ts "$up") || return 1
@@ -707,7 +870,7 @@ ag_history() {
       # turns an earlier attempt's failure into a success.
       # Ruling 12 (a): only a default-branch run whose plan job's guard passed
       if (( k == 1 )) && [[ "$br" == "$AG_BRANCH" ]] && grep -qxF $'step\tArchive guard\tsuccess' <<< "$jobs" &&
-         grep -qxF $'step\tPublish this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
+         grep -qxF $'step\tStore this day\tsuccess' <<< "$jobs"; then events+="$kup S"$'\n'; fi
       if grep -qE $'^job\tscan[^\t]*\t(failure|cancelled|timed_out)(\t|$)' <<< "$jobs"; then
         if grep -qE $'^job\tcontinue\tsuccess(\t|$)' <<< "$jobs"; then
           d=$(sed -n $'s/^job\tscan (\\([0-9-]*\\))\t\\(failure\\|cancelled\\|timed_out\\)\\(\t.*\\)\\{0,1\\}$/\\1/p' <<< "$jobs" | head -1)
@@ -718,6 +881,9 @@ ag_history() {
         else
           ids=$(awk -F'\t' '$1 == "job" {printf "%s ", $4}' <<< "$jobs")
           events+="$kup F S $ids"$'\n'
+          # OF-6: the day of a counted scan failure (its job "scan (DAY)")
+          fd=$(sed -n $'s/^job\tscan (\\([0-9-]*\\))\t.*$/\\1/p' <<< "$jobs" | sed -n 1p)
+          [[ -n "$fd" ]] && failed_raw+="$kup $fd"$'\n'
         fi
       fi
     done
@@ -726,6 +892,8 @@ ag_history() {
     [[ -n "$t" ]] || continue
     if [[ "$ev" == S ]]; then (( t > lastok )) && lastok=$t; else (( t > AG_LAST_FAIL )) && AG_LAST_FAIL=$t; fi
   done <<< "$events"
+  # OF-6: the days with a counted scan failure since ARCHIVE_REARM_AT, one a line
+  AG_FAILED_DAYS=$(while read -r t fd; do [[ -n "$t" ]] && (( t >= rearm )) && echo "$fd"; done <<< "$failed_raw" | LC_ALL=C sort -u)
   while read -r t ev kind ids; do
     [[ "$ev" == F ]] && (( t >= rearm )) && { AG_FAIL_JOBS+="$ids "; AG_FAIL_GROUPS+="$kind $ids"$'\n'; }
     [[ "$ev" == F ]] && (( t >= rearm && t > lastok )) && AG_FAILS=$(( AG_FAILS + 1 ))
@@ -816,7 +984,7 @@ ag_full() {
   if [[ "$qa" != qa ]] && (( AG_LANE_END > 0 && now - AG_LANE_END < 3600 )) && [[ "$AG_LANE_RESUME" != "$1" ]]; then
     ag_refuse "the last archive-lane run ended $(date -u -d "@$AG_LANE_END" +%FT%TZ), less than 60 min ago"; return 2
   fi
-  next=$(ag_next_day) || { ag_refuse "the private store's day releases cannot be read (fail closed)"; return 2; }
+  next=$(ag_next_day) || { ag_refuse "the private store's day releases cannot be read, or one carries no readback-ok marker (fail closed)"; return 2; }
   [[ "$next" == "$1" ]] ||
     { ag_refuse "$1 is not the oldest allow-listed day not read done (${next:-none left}); days are read in order, once"; return 2; }
   echo "$ret"
@@ -832,12 +1000,34 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     attest)
       [[ $# -eq 3 || ( $# -eq 4 && "$4" == qa ) ]] || { echo "usage: archive-guard.sh attest DAY DIR [qa]" >&2; exit 2; }
       rm -f "$3/$2"
-      ret=$(ag_full "$2" "${4:-}") || exit 2
-      mkdir -p "$3" && echo "$2 $ret $(ag_now) ${GITHUB_RUN_ID:-none} ${GITHUB_RUN_ATTEMPT:-none}" > "$3/$2" && echo "archive guard: $2 may be read ($ret)" | tee -a "$ag_summary" ;;
+      mkdir -p "$3"
+      # run in this shell (not $( )) so the history ag_full read is still here: OF-6 adds
+      # whether the day had a counted scan failure
+      ag_full "$2" "${4:-}" > "$3/.ret-$2" || { rm -f "$3/.ret-$2"; exit 2; }
+      ret=$(cat "$3/.ret-$2"); rm -f "$3/.ret-$2"
+      fl=0; grep -qxF "$2" <<< "${AG_FAILED_DAYS:-}" && fl=1
+      echo "$2 $ret $(ag_now) ${GITHUB_RUN_ID:-none} ${GITHUB_RUN_ATTEMPT:-none} $fl" > "$3/$2" && echo "archive guard: $2 may be read ($ret)" | tee -a "$ag_summary" ;;
+    failed)
+      [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh failed DAY" >&2; exit 2; }
+      ret=$(ag_local "$2") || exit 2
+      ag_attested "$2" "$ret" || exit 2
+      echo "$AG_PASS_FAILED"; exit 0 ;;
+    reread)
+      [[ $# -eq 3 ]] || { echo "usage: archive-guard.sh reread ID DAY" >&2; exit 2; }
+      ag_reread "$2" "$3"; exit $? ;;
+    store-ok)
+      # OF-6 ruling 13: the private store is readable, private and holds no storage-stop
+      # marker (data-scan.yml's k3 job, before any download)
+      [[ $# -eq 1 ]] || { echo "usage: archive-guard.sh store-ok" >&2; exit 2; }
+      ag_store_ok; exit $? ;;
+    b10-done)
+      [[ $# -eq 1 ]] || { echo "usage: archive-guard.sh b10-done" >&2; exit 2; }
+      ag_b10_done || { ag_refuse "the private store's day releases cannot be read (fail closed)"; exit 2; }
+      exit 0 ;;
     restarts)
       [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh restarts DAY" >&2; exit 2; }
       ag_history || { ag_refuse "the run history cannot be read"; exit 2; }
       ag_restarts "$2"; exit $? ;;
-    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR [qa] | recorded OUT" >&2; exit 2 ;;
+    *) echo "usage: archive-guard.sh local|entry|full|restarts DAY | attest DAY DIR [qa] | recorded OUT | b10-done | store-ok" >&2; exit 2 ;;
   esac
 fi

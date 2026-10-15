@@ -236,6 +236,16 @@ recommendation, before `ARCHIVE_ARM` is set:
    data-keep refreshes only sealed entries (ruling 51), so the unsealed `data-rpc-*` entries saved before this change
    (09-21's included) expire after 7 days unused. Arming holds while any unsealed `data-scan-*` or `data-rpc-*` entry
    remains; whether to delete one or wait for it to expire is the owner's decision.
+6. The `-k3` releases of the two measurement days (OF-6 ruling 12). After batches 1 and 2 are stored at K2 and the
+   reviewed change sets `ARCHIVE_RETENTION` to K3, and before batch 3, `data-scan.yml` runs in mode `k3` once for
+   07-22, then once for 07-23 (07-23 waits for `data-day-2026-07-22-k3`). Nothing is read from the archive:
+   `ci/k3-fetch.sh` brings the K2 day back from `zeroed-data`, `margin-fetch.sh` replaces the units it took with the
+   day before's K3 copies and writes `prev-day.txt`, `trim-day.sh --qa` trims it with QA, the list must equal the stored
+   one, and `publish-day.sh --k3` stores and reads back `data-day-DAY-k3` with its `readback-ok` marker. Batch 3
+   (07-24) takes its margin only from `data-day-2026-07-23-k3` (ruling 6), so it cannot start before. The job first
+   checks the private store (`archive-guard.sh store-ok`: readable, private, no `storage-stop` marker) and stops before
+   any download if not (ruling 13). A k3 run is a `data-scan` run outside the Helius lane, so a finished one holds the
+   next archive scan for 60 min through the lane timing (ruling 14).
 
 **Reads, and the one allowed second read (DERIVED).**
 - Each day's unit plan carries two units of margin on each side (`scanner/main.go:310`, 3,600 s), about 1.9 units each
@@ -323,6 +333,47 @@ migration raw record. Today's retention already keeps every curve and canonical-
   plus the remaining allow-listed days × the largest K3 day stored so far must stay ≤ 0.5 TB; otherwise OF-4 writes the
   append-only `storage-stop` marker in `zeroed-data`, the chain stops and the owner is asked. For batches 1 and 2, the per-day figure is the
   **measured PM-01 subset of the K2 days** (round 4 item 40), since no K3 day exists yet.
+  **As built (OF-4):** `ci/storage-check.sh` runs after each stored day. It sums every release in `zeroed-data`, counts
+  the allow-listed days with no `data-day-D` or `data-day-D-k3` release, and takes the largest stored day as the per-day
+  figure, a K2 release (it carries `pm01-subset-DAY.txt`) counting as that measured subset. The cap is
+  `ARCHIVE_STORE_CAP_BYTES` (5 × 10^11 bytes; the decimal reading is the stricter one). Above it, the script writes the
+  published `storage-stop` release, never edits or deletes it, and exits 3, so the batch fails and nothing chains.
+  A store it cannot read, or no per-day figure, fails closed without a marker.
+- **As built (OF-5):** "read done" is read only from `zeroed-data`, failing closed when it cannot be read: the
+  queue and the guard (`ag_read_done`) and the skip step (`publish-day.sh --check`) count a `data-day-D` or
+  `data-day-D-k3` release only when it is complete (every asset uploaded and named as its `SHA256SUMS-D` lists; both
+  judge it with `ci/release-state.sh`, ruling 3, as does `assemble.sh --download`, which takes only such days, ruling 4) and carries its `readback-ok-D` marker (OF-5 ruling 1): stored after every other asset
+  was read back, naming the tag and the sha256 of the stored `SHA256SUMS-D`, and itself read back. A release without it
+  (its read-back never passed) stops the chain for review and is never read again automatically. "B-10 done" is
+  `archive-guard.sh b10-done`: a marked release whose recorded retention is B-10's (ruling 2: every unit line of
+  `units-D.log` K3 with the sha256 of `list-D.txt` from its `SHA256SUMS-D`), whatever the tag name; it is for the
+  `B10-PULL` row and the evaluator only.
+  The scan job's clean `prior` step (`ci/prior-fetch.sh`) downloads `list-<D-1>.txt` and `SHA256SUMS-<D-1>` from D-1's
+  release in the store and hands them to the scan and the trim; `archive-guard.sh prior` checks the sha256.
+- **As built (OF-6, `docs/reviews/OF6.md`):** each day release carries `margin-D.tar`, the units that reach the next
+  day (last block time at or after the next midnight minus 2 h), in its SHA256SUMS and read back. Before day D+1's scan, a
+  clean store step (`ci/margin-fetch.sh`) takes those units from D's release into D+1's progress and lists them in
+  `from-store.txt`. The scanner skips them (their stats.json is there), the trim passes them through untouched and the
+  per-unit log marks them `from EPOCH/RANGE TAG`. Because D's list is built from all of D's units, the forward margin
+  included, a coin migrating in D's forward margin keeps every raw record D+1's list keeps (scanner test
+  `TestMarginMigrationKeptForNextDay`). The determinism rescan reads exactly one unit, never a taken or re-read one.
+  After a counted scan failure, the guard pass flags the day: a fresh whole-day read of it is refused. Only a pinned
+  QA-REREAD row (id, day, units, toldAt, written after the owner is told) lets `scan-day.sh` read the named units again,
+  with `zeroed-scan run -units`, at the day's recorded retention; the per-unit log marks them `reread EPOCH/RANGE ID`.
+  The trimmed day is stored as `data-day-D-k3` only through `publish-day.sh --k3` (the same read-back and
+  `readback-ok-D` marker, so its first `-k3` release is done); test-ci refuses any other `data-day-*` release create
+  without the marker (ruling 5).
+  Round 2 (rulings 6–9): the margin comes only from a done release whose units carry the day's own retention, so a
+  K3 day after a K2 day waits for `data-day-<D-1>-k3`; B-10 done accepts a taken unit with the day before's list sha256;
+  the margin tar may hold only regular files and directories; and the scanner refuses a planned unit that the day
+  before stored but this day did not take (`-stored`, `-taken`), so a drift between the two time estimates never
+  reads a unit twice.
+  Only the head of `ARCHIVE_DAYS` whose day before the store does not hold is exempt from the prior list, the margin
+  and `-stored`; the clean margin step records it in `prev-day.txt` (ruling 11).
+- **K2 progress is not stored in `zeroed-data`** (OF-4, deciding OF-3 ruling 7). A K2 day's progress (about 45 GB)
+  does not fit the Actions cache. Putting partial K2 units in the private store would add a second store path for
+  unfinished data, with its own read-back and clean-up, for two measurement days. Instead, a K2 day that cannot finish
+  in one job holds the chain for a decision, as OF-3 ruling 7 already does.
 - The days may wait unused in the store until a strategy reaches gate B, and under A17 (C-56) they may never be used.
 - A future slot strategy that needs raw records for other
   pools reads those days again from the archive: 0 credits, only time, under the same batch rules, and only with the
