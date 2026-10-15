@@ -73,11 +73,19 @@ describe('Sharpe statistics', () => {
     close(dsrFromVariance(sr, 88, v, 1_250, 0, 3), 0.9505, 5e-5, 'N=88');
   });
 
-  it('dsr from trial Sharpe ratios uses their sample variance; one trial gives SR0 = 0 (PSR against 0)', () => {
-    const trials = [0.05, 0.1, 0.15];                                  // sample variance 0.0025
+  it('dsr from trial Sharpe ratios uses their sample variance when it is above 1/(T − 1); one trial gives SR0 = 0', () => {
+    const trials = [0.05, 0.1, 0.15];                                  // sample variance 0.0025 > 1/499
     close(dsr(0.15, trials, 500, 0, 3), dsrFromVariance(0.15, 3, 0.0025, 500, 0, 3), 1e-15);
     close(dsr(0.15, [0.15], 500, 0, 3), psr(0.15, 0, 500, 0, 3), 1e-15);
     assert.throws(() => dsr(0.1, [], 10, 0, 3), /E_INPUT/);
+  });
+
+  it('ruling Z06-1: V is floored at 1/(T − 1), so near-identical trials cannot remove the deflation', () => {
+    const trials = [0.1, 0.1001, 0.1002, 0.1003];                    // sample variance ≈ 1.7e-8, far below 1/499
+    const floored = dsrFromVariance(0.1003, 4, 1 / 499, 500, 0, 3);
+    const unfloored = dsrFromVariance(0.1003, 4, 1.6666666666666667e-8, 500, 0, 3);
+    close(dsr(0.1003, trials, 500, 0, 3), floored, 1e-15);
+    assert.ok(floored < unfloored - 0.05, `${floored} vs ${unfloored}`);   // without the floor the DSR would be far higher
   });
 
   it('MinTRL reproduces ARCH: 1,085 / 273 / 70 trades at per-trade Sharpe 0.05 / 0.10 / 0.20 (skew 0, kurtosis 3), ±1', () => {

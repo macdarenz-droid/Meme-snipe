@@ -59,13 +59,17 @@ export function dsrFromVariance(sr: number, nTrials: number, variance: number, n
 
 /**
  * Deflated Sharpe ratio of the selected trial (Sharpe `sr` over `n` observations) against every trial's Sharpe ratio,
- * the selected one included. V is the sample variance (N − 1) of `trialSrs`; one trial gives SR0 = 0.
+ * the selected one included. V = max(sample variance (N − 1) of `trialSrs`, 1/(n − 1)): the floor is the sampling
+ * variance of one Sharpe ratio under the null, so near-identical trials cannot remove the deflation (supervisor ruling
+ * Z06-1, the safest reading; carried from Zeroed `stats/sharpe.ts`). It only raises SR0, so it only lowers the DSR.
+ * One trial gives SR0 = 0. `dsrFromVariance` stays the paper's raw formula (worked-example reproduction).
  */
 export function dsr(sr: number, trialSrs: readonly number[], n: number, skew: number, kurt: number): number {
   checkFinite(trialSrs, 'trialSrs');
   if (trialSrs.length === 0) throw new RangeError('E_INPUT: no trials');
-  const v = trialSrs.length === 1 ? 0 : sampleVariance(trialSrs) ?? 0;
-  return dsrFromVariance(sr, trialSrs.length, v, n, skew, kurt);
+  if (!Number.isInteger(n) || n < 2) throw new RangeError('E_INPUT: n must be an integer >= 2');
+  const sample = trialSrs.length === 1 ? 0 : sampleVariance(trialSrs) ?? 0;
+  return dsrFromVariance(sr, trialSrs.length, Math.max(sample, 1 / (n - 1)), n, skew, kurt);
 }
 
 /** Minimum track record length in observations; null when sr ≤ srRef (no track record is long enough). */
