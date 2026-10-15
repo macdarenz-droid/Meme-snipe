@@ -18,3 +18,9 @@ Review log for the arming change (`research/historical/ci/archive-limits.conf`: 
 2. Item 3: the owner reads the retention days (Settings → Actions → General → Artifact and log retention); recommended 90, the guard reads 35 days back.
 3. Item 5: the owner sets fork pull request workflows to the strictest approval option, and does not rotate `DATA_STORE_TOKEN` while the download runs. Unsealed caches: wait for them to expire (no action); the arm run reports any that hold it.
 - The data builder prepares the arming change as a draft meanwhile; it merges only after the owner's answers, with a fresh review and red team.
+
+## Owner answers (15 Oct)
+
+- About 11:28 PM, "A and 90": the owner pushes the arming change from the data builder's session; log retention is 90 days.
+- About 11:30 PM, "Do ur own thing and whats recommended": items 1–2 are KEEP under the standing rule (recommendation 1). Item 5 (fork-PR approval set to strictest) stays an owner step, because the agent proxy refuses the Actions settings API.
+- The arming change merges only after item 5 and the push, with a fresh review and red team.

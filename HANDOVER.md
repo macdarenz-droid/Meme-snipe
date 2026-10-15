@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 11:30 PM: owner "Do ur own thing and whats recommended".** The supervisor applied its OF-ARM recommendations:
+  - Items 1–2: KEEP the old refs and runs, under the standing rule: no one dispatches `data-scan.yml` or `archive-check.yml` on any ref but the default branch, and no one re-runs an old run of either. A run that breaks the rule stops the chain through the guard (AG_FOREIGN). Option B is not taken.
+  - Item 3: 90 days.
+  - Not doable by an agent, so put back to the owner as the only steps left:
+    - item 5, the fork-PR approval setting: the agent proxy refuses Actions settings paths (9 Oct, HTTP 403), and it is not re-routed;
+    - the push instruction typed in the data builder's own session, since its safety check refused the agent push.
 - **15 Oct 11:28 PM: owner "1. A and 90".**
   - OF-ARM push: option A. The owner instructs the data builder `session_01SP5ftusK23iJPxYXEMY9y7` directly in that session. It is not relayed through the supervisor (refusals are never re-routed). The builder is disconnected since 04:44 UTC, so its local `claude/of-arm` commits may need a rebuild.
   - OF-ARM item 3, log retention: 90 days.
