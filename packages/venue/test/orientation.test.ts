@@ -4,7 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import { createDecoders, verifyPinnedIdls, VENDORED_IDL_DIR, type DecodedAccount } from '@bot/decoders';
-import type { Bps, Clock, DecodedEvent, Lamports, RawTransaction, Signature, Slot, UnixMs } from '@bot/types';
+import type { BaseUnits, Bps, Clock, DecodedEvent, Lamports, RawTransaction, Signature, Slot, UnixMs } from '@bot/types';
 import { MINTS, PROGRAMS, pumpPoolAuthorityPda } from '../src/constants.ts';
 import { checkGuardSettings, createOrientationGuard, createOrientationSampler, GUARD_DEFAULTS, type PoolQuarantined, type SwapSource } from '../src/guard.ts';
 import { checkOrientation, normalisePool, type SwapEvent } from '../src/orientation.ts';
@@ -110,7 +110,7 @@ const snapshotOf = (v: PoolVector, slotsBefore = 1n): CpPoolState => pool({
 });
 /** Swaps of more than 0.001 SOL: always evaluable. */
 const BIG = G.filter((v) => n(v.kind === 'buy' ? v.event.quote_amount_in : v.event.quote_amount_out) > 1_000_000n);
-const inverted = (p: CpPoolState): CpPoolState => ({ ...p, baseReserve: p.quoteReserveReal + p.quoteReserveVirtual, quoteReserveReal: p.baseReserve, quoteReserveVirtual: 0n });
+const inverted = (p: CpPoolState): CpPoolState => ({ ...p, baseReserve: (p.quoteReserveReal + p.quoteReserveVirtual) as BaseUnits, quoteReserveReal: p.baseReserve as bigint as Lamports, quoteReserveVirtual: 0n });
 const settings = { toleranceBps: 100, maxSlotGap: 2 };
 
 describe('A-M01-04 spot-vs-swap check', () => {
