@@ -138,6 +138,16 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 9:21 PM: #320 round 1.**
+  - Red team FAIL at `65de5be8`, 2 MAJOR and 3 MINOR. These became rulings Z06-2..6:
+    - no fill before the decision slot;
+    - optimistic hand-edited sim params refused unless backed by empirical data with n ≥ the POLICY minimum and a source hash;
+    - day-key format;
+    - dsrFromVariance not exported;
+    - 2 surviving mutants killed.
+  - Reviewer FAIL at `65de5be8`, 1 MAJOR, which became ruling Z06-7: history anchors at most 60 s apart, ±2 s, E_SLOT_BASIS, and a DECISIONS record.
+  - The 3 local failures are verified as environment-only on the base.
+  - Tracked for later: a recorded mainnet getEpochInfo/getRecentPerformanceSamples fixture at the first live read; A14's matched-random lower bound on the gate card (A-M13-06/R-2).
 - **15 Oct 8:50 PM: Z06 draft PR #320**, head `d7fe9c28` (ls-remote), on base `90bac78d`.
   - Builder report: `pnpm check` 8,710 passed and 4 failed. 1 was fixed; 3 the builder says fail on the untouched base in its container (Node 22.22 vs pinned 22.23.3, no sqlite3 CLI, react in load-packages). CI decides.
   - Ruling Z06-1: DSR variance V = max(the paper's V, 1/(T−1)), the safest reading, with a fail-before test. It is a delta commit.
