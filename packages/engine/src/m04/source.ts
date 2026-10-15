@@ -40,6 +40,12 @@ export function packBatches(pools: readonly SourcePool[], max: number): SourcePo
   return out;
 }
 
+/** The `code` of something thrown, or `E_THROWN` (Z07-34: background failures are logged, never unhandled). */
+export const thrownCode = (e: unknown): string => {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === undefined ? 'E_THROWN' : String(code);
+};
+
 export function createPollSource(deps: { reader: AccountsReader; scheduler: SchedulerPort; settings: M04Settings; log: TrackerLog; metrics?: TrackerMetrics }): PoolSource {
   const handlers = new Set<(r: SourceRecord) => void>();
   let pools: readonly SourcePool[] = [];
@@ -79,7 +85,10 @@ export function createPollSource(deps: { reader: AccountsReader; scheduler: Sche
     const now = deps.scheduler.nowMs();
     timers.set(cls, deps.scheduler.set(() => {
       const started = deps.scheduler.nowMs();
-      void tick(cls);
+      // A tick that throws (a reader or a handler) is logged; the next tick runs as scheduled (Z07-34).
+      void tick(cls).catch((e: unknown) => {
+        deps.log.event('error', 'm04.poll_failed', { class: cls, error_code: thrownCode(e) });
+      });
       const interval = intervalOf(deps.settings, cls);
       // Edge 5: a tick late by a whole interval or more runs once and the next is one interval after it (no burst).
       arm(cls, dueAt + interval > started ? dueAt + interval : started + interval);

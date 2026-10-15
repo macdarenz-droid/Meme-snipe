@@ -1075,6 +1075,66 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     assert.equal(s.tracker.latest('a'), null);
   });
 
+  it('Z07-34: a slot time of 0, NaN or Infinity never throws; nothing is implausible, so a 1e12 liar is not excluded and entries stay refused; logged once', async () => {
+    for (const bad of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const s = setup(undefined, ['primary', 'backup', 'liar']);
+      add(s.reader, 'a');
+      s.tracker.watch('a', 'candidate');
+      await s.tracker.settled();
+      s.chain.expected = 2_000n;
+      s.chain.highest = 2_000n;
+      s.chain.highestBy = 'primary';
+      s.reader.slot = (c) => (s.reader.provider(c) === 'liar' ? 1_000_000_000_000n : 2_000n);
+      s.reader.provider = (c) => c.provider ?? 'primary';
+      s.tracker.start();
+      await s.time.advance(1_000);
+      s.reader.provider = (c) => c.provider ?? 'backup';             // the backup agrees under the ceiling
+      await s.time.advance(1_000);
+      s.chain.slotMs = bad;
+      s.reader.provider = (c) => c.provider ?? 'liar';               // one poll answered by the liar
+      await s.time.advance(1_000);
+      s.reader.provider = (c) => c.provider ?? 'primary';
+      assert.equal(await waitForEntry(s, 20_000), -1, String(bad));
+      assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'liar' }), 0);
+      assert.equal(s.log.lines.filter(([l, c]) => l === 'warn' && c === 'm04.slot_time_invalid').length, 1);
+      // A usable estimate again: the liar is implausible, struck and excluded; entries resume.
+      s.chain.slotMs = 400;
+      assert.ok((await waitForEntry(s, 20_000)) >= 0);
+      assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'liar' }), 1);
+      s.tracker.stop();
+    }
+  });
+
+  it('Z07-34: a reader that throws never leaves an unhandled rejection: the first read, the poll, a verification read and the supply refresh are logged and retried', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    const read = s.reader.read.bind(s.reader);
+    let boom = true;
+    s.reader.read = async (keys, o) => { if (boom) throw { code: 'E_BOOM' }; return read(keys, o); };
+    s.tracker.watch('a', 'candidate');
+    s.tracker.watch('gone', 'candidate');
+    s.tracker.unwatch('gone');                                      // unwatched while its first read throws
+    await s.tracker.settled();
+    assert.deepEqual(s.tracker.ready(), []);
+    assert.ok(s.log.lines.some(([l, c, f]) => l === 'error' && c === 'm04.internal_error' && f.where === 'first_read' && f.error_code === 'E_BOOM'));
+    boom = false;
+    s.tracker.start();
+    await s.time.advance(BOOT_RETRY_MS + 1_000);
+    await s.tracker.settled();
+    assert.deepEqual(s.tracker.ready(), ['a']);
+    s.reader.read = async () => { throw new Error('no code'); };
+    await s.time.advance(60_000);                                   // polls and the supply refresh throw
+    assert.ok(s.log.lines.some(([l, c, f]) => l === 'error' && c === 'm04.poll_failed' && f.error_code === 'E_THROWN'));
+    assert.ok(s.log.lines.some(([, c, f]) => c === 'm04.internal_error' && f.where === 'supply'));
+    // A verification read that throws (a past-ceiling poll answered, then the next provider throws).
+    s.chain.expected = 1_000n;
+    s.reader.read = async (keys, o) => { if (o.provider !== undefined) throw { code: 'E_VERIFY' }; return read(keys, o); };
+    s.reader.slot = () => 5_000n;
+    await s.time.advance(1_000);
+    assert.ok(s.log.lines.some(([, c, f]) => c === 'm04.internal_error' && f.where === 'verify' && f.error_code === 'E_VERIFY'));
+    s.tracker.stop();
+  });
+
   /** Polls for `ms`, trying an entry every second: true when every entry was refused with E_CLOCK. */
   async function refusedFor(s: ReturnType<typeof setup>, ms: number): Promise<boolean> {
     let refused = true;

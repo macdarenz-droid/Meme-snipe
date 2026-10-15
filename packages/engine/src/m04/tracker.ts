@@ -17,7 +17,7 @@ import { createHash } from 'node:crypto';
 import type { Clock, Pubkey, Result, Slot, UnixMs } from '@bot/types';
 import { SnapshotRing } from './ring.ts';
 import { capOf, checkM04Settings, intervalOf, M04_DEFAULTS, type M04Settings, type UniverseLimits } from './settings.ts';
-import { createPollSource, type PoolSource, type SourceRecord } from './source.ts';
+import { createPollSource, thrownCode, type PoolSource, type SourceRecord } from './source.ts';
 import type {
   AccountsReader, ChainStatePort, MintInfo, PoolAddresses, PoolClass, PoolModelPort, PoolSnapshot, PoolStateLike, RawAccount, SchedulerPort,
   TrackerLog, TrackerMetrics, TrackerOutputs,
@@ -189,6 +189,13 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     drop(poolId);
   }
 
+  /** A first read that throws is logged and retried after BOOT_RETRY_MS, never an unhandled rejection (Z07-34). */
+  const boot = (poolId: Pubkey): Promise<void> => bootstrap(poolId).catch((e: unknown) => {
+    caught('first_read')(e);
+    const now = pools.get(poolId);
+    if (now !== undefined) Object.assign(now, { boot: null, bootRetryAtMs: deps.clock.nowMs() + BOOT_RETRY_MS });
+  });
+
   async function bootstrap(poolId: Pubkey): Promise<void> {
     const first = await deps.reader.read([poolId], { priority: 2 });
     const e = pools.get(poolId);
@@ -289,14 +296,31 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   let suspectSinceMs: number | null = null;
   let disagreementAlerted = false;
 
-  /** Z07-29(1): ahead of max(ceiling, the last agreed slot moved on by wall time) by more than PLAUSIBLE_MARGIN_SLOTS. */
+  /**
+   * Z07-29(1): ahead of max(ceiling, the last agreed slot moved on by wall time) by more than PLAUSIBLE_MARGIN_SLOTS.
+   * Z07-34: with no usable slot time (0, NaN, ±∞) nothing is implausible, so no source is excluded and entries stay
+   * refused (fail closed); logged once until the estimate is usable again.
+   */
+  let slotTimeBad = false;
   const implausible = (slot: Slot): boolean => {
     let limit = ceiling() as bigint;
     if (agreed !== null) {
-      const moved = agreed.slot + BigInt(Math.ceil((deps.clock.nowMs() - agreed.atMs) / deps.chain.slotDurationMsEstimate()));
+      const ms = deps.chain.slotDurationMsEstimate();
+      if (!(Number.isFinite(ms) && ms > 0)) {
+        if (!slotTimeBad) deps.log.event('warn', 'm04.slot_time_invalid', { estimate: String(ms) });
+        slotTimeBad = true;
+        return false;
+      }
+      slotTimeBad = false;
+      const moved = agreed.slot + BigInt(Math.ceil((deps.clock.nowMs() - agreed.atMs) / ms));
       if (moved > limit) limit = moved;
     }
     return slot > limit + PLAUSIBLE_MARGIN_SLOTS;
+  };
+
+  /** No promise of M04 rejects unhandled (Z07-34): a background failure is logged and the work retries on schedule. */
+  const caught = (where: string) => (e: unknown): void => {
+    deps.log.event('error', 'm04.internal_error', { where, error_code: thrownCode(e) });
   };
   const excluded = new Set<string>();
   let m15Source: string | null = null;
@@ -489,6 +513,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     lastVerifyMs = now;
     void readPool(poolId, 2, nextProvider(provider), false)
       .then((r) => { if (source !== null) strike(source, r.by, poolId); })
+      .catch(caught('verify'))
       .finally(() => { verifying = false; });
   }
 
@@ -600,7 +625,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   function monitor(): void {
     const now = deps.clock.nowMs();
     for (const [poolId, e] of pools) {
-      if (e.ring === null && e.boot === null && now >= e.bootRetryAtMs) e.boot = bootstrap(poolId);
+      if (e.ring === null && e.boot === null && now >= e.bootRetryAtMs) e.boot = boot(poolId);
       const last = e.ring?.latest() ?? null;
       if (last === null) continue;
       deps.metrics?.gauge('pool_snapshot_age_ms', { pool: poolId }, now - last.pool.observedAtMs);
@@ -662,7 +687,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       }
       const entry: Entry<P> = { cls: priority, addr: null, canonical: null, mint: null, ring: null, staleSinceMs: null, boot: null, bootRetryAtMs: 0 };
       pools.set(poolId, entry);
-      entry.boot = bootstrap(poolId);
+      entry.boot = boot(poolId);
       return true;
     },
     unwatch: drop,
@@ -713,7 +738,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     ringBytes: () => [...pools.values()].reduce((n, e) => n + (e.ring?.bytes ?? 0), 0),
     start() {
       every(settings.staleCheckMs, monitor);
-      every(settings.supplyRefreshMs, () => { void refreshMints(); });
+      every(settings.supplyRefreshMs, () => { void refreshMints().catch(caught('supply')); });
       deps.metrics?.gauge('pool_source_kind', { kind: source.kind }, 1);
     },
     stop() {
