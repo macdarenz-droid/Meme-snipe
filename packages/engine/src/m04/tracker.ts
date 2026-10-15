@@ -34,7 +34,14 @@ import type {
  */
 export type FreshReadError<P extends PoolStateLike = PoolStateLike> =
   | { code: 'E_STALE' | 'E_RPC'; detail: string }
-  | { code: 'E_CLOCK'; detail: string; snapshot: PoolSnapshot<P> | null; underCeiling: PoolSnapshot<P> | null };
+  | {
+    code: 'E_CLOCK'; detail: string; snapshot: PoolSnapshot<P> | null; underCeiling: PoolSnapshot<P> | null;
+    /**
+     * Ruling Z07-35: the partner is fresh while its age (now − `underCeiling.pool.observedAtMs`) is at most this
+     * (`stale_age_ms` + the pool's class interval); pass both to `decideClockExit`. Null with no partner.
+     */
+    partnerFreshWithinMs: number | null;
+  };
 
 export interface PoolTracker<P extends PoolStateLike> {
   /** False when the class is at its cap (`pool_tracker.max_*`): the watch is refused and nothing changes. */
@@ -553,8 +560,8 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     return label === undefined ? undefined : nextProvider(label);
   };
 
-  const clockError = (snapshot: PoolSnapshot<P> | null, detail: string, underCeiling: PoolSnapshot<P> | null = null): { ok: false; error: FreshReadError<P> } =>
-    ({ ok: false, error: { code: 'E_CLOCK', detail, snapshot, underCeiling } });
+  const clockError = (snapshot: PoolSnapshot<P> | null, detail: string, underCeiling: PoolSnapshot<P> | null = null, partnerFreshWithinMs: number | null = null):
+    { ok: false; error: FreshReadError<P> } => ({ ok: false, error: { code: 'E_CLOCK', detail, snapshot, underCeiling, partnerFreshWithinMs } });
 
   async function entryRead(poolId: Pubkey, maxLag: number): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {
     const r1 = await readPool(poolId, 1, undefined, false);
@@ -577,9 +584,12 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
 
   /** Z07-32: a past-ceiling read goes out only with an under-ceiling partner (`under`, else the trusted stored latest). */
   function withPartner(poolId: Pubkey, past: PoolSnapshot<P>, under: PoolSnapshot<P> | null, detail: string): { ok: false; error: FreshReadError<P> } {
-    // Called right after a read of this pool built a snapshot, so the pool is watched and its ring exists.
-    const partner = under ?? trustedLatest((pools.get(poolId) as Entry<P>).ring as SnapshotRing<P>);
-    return partner === null ? clockError(null, `${detail}; no read under the ceiling: the exit waits and retries`) : clockError(past, detail, partner);
+    // Z07-36: the pool may have been unwatched or closed during the exit's second read; then there is no partner.
+    const e = pools.get(poolId);
+    const ring = e?.ring ?? null;
+    const partner = under ?? (ring === null ? null : trustedLatest(ring));
+    if (e === undefined || partner === null) return clockError(null, `${detail}; no read under the ceiling: the exit waits and retries`);
+    return clockError(past, detail, partner, settings.staleAgeMs + intervalOf(settings, e.cls));
   }
 
   async function exitRead(poolId: Pubkey): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {

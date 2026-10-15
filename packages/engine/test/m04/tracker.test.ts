@@ -7,7 +7,7 @@ import { describe, it } from 'vitest';
 import type { Slot, UnixMs } from '@bot/types';
 import { SnapshotRing } from '../../src/m04/ring.ts';
 import { checkM04Settings, M04_DEFAULTS, type M04Settings } from '../../src/m04/settings.ts';
-import { worseProceeds } from '../../src/m04/exit-price.ts';
+import { decideClockExit, worseProceeds } from '../../src/m04/exit-price.ts';
 import { createPoolTracker, BOOT_RETRY_MS, LAG_SENTINEL_SLOTS, M15_UNKNOWN_SOURCE } from '../../src/m04/tracker.ts';
 import type { PoolSnapshot } from '../../src/m04/types.ts';
 import { FakeTime } from '../m14/helpers.ts';
@@ -1133,6 +1133,60 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     await s.time.advance(1_000);
     assert.ok(s.log.lines.some(([, c, f]) => c === 'm04.internal_error' && f.where === 'verify' && f.error_code === 'E_VERIFY'));
     s.tracker.stop();
+  });
+
+  it('Z07-35 (the reviewer\'s case): a 60 s clock fault while the price falls 30%: the partner is the stored read frozen at the fault\'s start, it is stale, so no floor; the exit lands on the tip read', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    s.chain.expected = 2_000n;
+    s.reader.slot = () => 2_000n;
+    s.tracker.start();
+    await s.time.advance(1_000);                                     // a read at 2,000 is stored (quote 2,000)
+    s.chain.highest = 2_050n;
+    s.chain.highestBy = 'primary';
+    s.reader.slot = (c) => (c.provider === 'backup' ? 2_049n : 2_050n);
+    await s.time.advance(2_000);
+    assert.equal(s.tracker.clockFault(), true);
+    s.reader.accounts.set('a:q', { owner: 'tok', data: u64(1_400n) });   // the price falls 30% during the fault
+    await s.time.advance(60_000);
+    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot !== null && x.error.underCeiling !== null);
+    assert.equal(x.error.underCeiling.pool.quote, 2_000n);
+    assert.equal(x.error.partnerFreshWithinMs, M04_DEFAULTS.staleAgeMs + M04_DEFAULTS.candidateIntervalMs);
+    const age = s.time.nowMs() - x.error.underCeiling.pool.observedAtMs;
+    const tip = { snapshot: x.error.snapshot, proceedsLamports: sellOut(x.error.snapshot.pool) };
+    const partner = { snapshot: x.error.underCeiling, proceedsLamports: sellOut(x.error.underCeiling.pool) };
+    const worseMinOut = (tip.proceedsLamports * 9_900n) / 10_000n;
+    const d = decideClockExit('a', tip, partner, worseMinOut, 2_500, { partnerAgeMs: age, freshWithinMs: x.error.partnerFreshWithinMs as number, flooredReverts: 0 }, { event: () => {} });
+    assert.equal(d.floorApplied, false);
+    assert.ok(d.minOutLamports <= tip.proceedsLamports, `${d.minOutLamports} > ${tip.proceedsLamports}`);   // it lands
+    s.tracker.stop();
+  });
+
+  it('Z07-36: the pool unwatched during the exit\'s second read: no partner, so E_CLOCK with no reads (the exit waits), never a throw', async () => {
+    const s = setup(undefined, ['liar', 'primary']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.chain.highest = 2_040n;
+    s.chain.highestBy = 'liar';                                     // plausible evidence (+30) from the liar
+    s.reader.slot = () => 2_040n;
+    s.reader.provider = (c) => c.provider ?? 'liar';
+    const read = s.reader.read.bind(s.reader);
+    let n = 0;
+    let release = (): void => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    s.reader.read = async (keys, o) => { if (o.priority === 0 && ++n === 2) await gate; return read(keys, o); };
+    const pending = s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    for (let i = 0; i < 10 && n < 2; i++) await Promise.resolve();
+    s.tracker.unwatch('a');
+    release();
+    const x = await pending;
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot === null && x.error.underCeiling === null && x.error.partnerFreshWithinMs === null);
   });
 
   /** Polls for `ms`, trying an entry every second: true when every entry was refused with E_CLOCK. */
