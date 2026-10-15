@@ -76,6 +76,26 @@ jobs:
         run: node tools/policy/bin/age.ts
       - run: pnpm -r --if-present build
 
+  coverage:
+    # B-M30-01 coverage gate (Z01-COV): 100% branch coverage per file on tools/pure-files.txt. A job of its own, in parallel
+    # with check, so the pinned check steps and wall time are unchanged (docs/DECISIONS.md Z01-COV-3). No secrets:
+    # read-only token, credentials not persisted, no package-manager cache, installs run no scripts.
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Install (frozen lockfile; .npmrc ignore-scripts)
+        run: pnpm install --frozen-lockfile
+      - name: Branch coverage of the pure-function files
+        run: pnpm test --project blueprint --coverage
+
   dashboard:
     # Dashboard browser tests (UI-T01 acceptance 4; card Z05): end-to-end with axe accessibility checks, then screenshot
     # comparisons, against a production build served on 127.0.0.1 with the production CSP. The runner image's

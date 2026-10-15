@@ -1,12 +1,24 @@
-# Files held to 100% branch coverage, one glob or path per line: `<glob>  # <reason>`.
-# Rule (SPEC-B Common DoD #8, ARCH 16.1, SPEC-A 318 and 640; supervisor ruling Z01-COV-1): pure functions (quote maths, fee
-# tiers, minOut, cost model, statistics, state transitions) and every decoder. A file that only computes from its inputs
-# belongs here; a file with I/O or side effects does not. `vitest.config.ts` reads this list for `pnpm test:coverage`,
-# which fails when any listed file has a branch no test reaches. The list is a guarded file: a change needs the review label.
-packages/decoders/src/**/*.ts  # all decoders: account, event and instruction decoding and the byte codec (SPEC-A 640)
-packages/venue/src/**/*.ts  # venue constants and fee tiers (ARCH 16.1)
-packages/engine/src/m13/stats/**/*.ts  # statistics: intervals, Sharpe and DSR, PBO, special functions (ARCH 16.1)
+# Files held to 100% branch coverage, one path per line: `<path>  # <reason>`.
+# Rule (SPEC-B Common DoD #8, ARCH 16.1, SPEC-A 318 and 640; supervisor rulings Z01-COV-1 and Z01-COV-2): pure functions
+# (quote maths, fee tiers, minOut, cost model, statistics, state transitions) and decoders. A file that only computes from
+# its inputs belongs here; a file with I/O or side effects does not. `vitest.config.ts` reads this list for
+# `pnpm test:coverage`, which fails when any listed file has a branch no test reaches. The list is a guarded file: a
+# change needs the review label.
+# Four in-category files are NOT listed because 15 of their branches cannot be reached by any test: m13/stats/special.ts,
+# m13/stats/intervals.ts, decoders/src/events.ts and m10/latency.ts (docs/DECISIONS.md "Z01-COV"). They join this list when
+# a reviewed card that changes them for its own reasons removes those branches.
+packages/decoders/src/accounts.ts  # decoders: account decoding (SPEC-A 640)
+packages/decoders/src/codec.ts  # decoders: the byte codec (SPEC-A 640)
+packages/decoders/src/decoders.ts  # decoders: the decoder set (SPEC-A 640)
+packages/decoders/src/idl.ts  # decoders: the pinned IDL reader (SPEC-A 640)
+packages/decoders/src/index.ts  # decoders: exports (SPEC-A 640)
+packages/decoders/src/log.ts  # decoders: log codes (SPEC-A 640)
+packages/venue/src/constants.ts  # venue constants and fee tiers (ARCH 16.1)
+packages/venue/src/index.ts  # venue exports (ARCH 16.1)
+packages/engine/src/m13/stats/descriptive.ts  # statistics: mean, variance, moments (ARCH 16.1)
+packages/engine/src/m13/stats/index.ts  # statistics exports (ARCH 16.1)
+packages/engine/src/m13/stats/pbo.ts  # statistics: probability of backtest overfitting, rank stability (ARCH 16.1)
+packages/engine/src/m13/stats/sharpe.ts  # statistics: PSR, DSR, MinTRL, MinBTL (ARCH 16.1)
 packages/engine/src/m10/rng.ts  # the seeded random generator: a pure state transition (A-M10-01 logic 1)
-packages/engine/src/m10/latency.ts  # latency model maths: lognormal parameters and slot-after-latency (A-M10-01 logic 5)
 packages/engine/src/m10/params.ts  # cost-model and fill-model parameter checks and versions: pure validation (A-M10-01 logic 2-4)
 packages/engine/src/m15/slot-time.ts  # slot-to-time and time-to-slot maths (B-M15-01, C-61)

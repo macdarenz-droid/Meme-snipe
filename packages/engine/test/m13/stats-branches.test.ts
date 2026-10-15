@@ -242,7 +242,7 @@ describe('intervals: remaining branches', () => {
     const seen = new Set<string>();
     for (let seed = 1; seed <= 12 && seen.size < 2; seed++) {
       const x = normals(seed, 60, 0.05, 1);
-      const days = seed % 2 ? DAYS(60, 20) : DAYS(60, 1).map((d, i) => `2026-09-${String(1 + (i % 28)).padStart(2, '0')}`);
+      const days = seed % 2 ? DAYS(60, 20) : DAYS(60, 1).map((_d, i) => `2026-09-${String(1 + (i % 28)).padStart(2, '0')}`);
       const g = gateMeanCi(x, days, { rng: createRng(seed) }) as NonNullable<ReturnType<typeof gateMeanCi>>;
       assert.equal(g.low, g.chosen === 'day_cluster_t' ? g.cluster.low : g.bootstrap.low);
       assert.ok(g.low <= g.cluster.low && g.low <= g.bootstrap.low);
