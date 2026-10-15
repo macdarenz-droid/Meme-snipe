@@ -78,7 +78,7 @@ func epochBracket(t0, t1 int64) (lo, hi uint64, a slotAnchor) {
 }
 
 // pickEpochs returns the first and last epoch holding blocks with time in [t0, t1):
-// the last epoch whose first block is at or before t0, through the last epoch whose
+// the last epoch whose first block is before t0, through the last epoch whose
 // first block is before t1. firstTime(e) is epoch e's first block time; every error of
 // it (an epoch not in the archive yet included) fails the plan. probes counts the
 // distinct epochs asked.
@@ -106,17 +106,19 @@ func pickEpochs(t0, t1 int64, firstTime func(uint64) (int64, error)) (first, las
 	if err != nil {
 		return 0, 0, len(seen), err
 	}
-	if t > t0 {
-		return 0, 0, len(seen), fmt.Errorf("epoch %d, the start of the bracket from %s, begins at %d, after the window start %d: the window is outside the bracket", lo, a.src, t, t0)
+	if t >= t0 {
+		return 0, 0, len(seen), fmt.Errorf("epoch %d, the start of the bracket from %s, begins at %d, not before the window start %d: the window is outside the bracket", lo, a.src, t, t0)
 	}
-	// invariant: first block of lo at or before t0; hi+1 not yet known
+	// invariant: first block of lo before t0; hi+1 not yet known. Strictly before (OFX-8):
+	// block times are whole seconds, so the tail of the epoch before one starting at t0
+	// can hold blocks of second t0; that epoch is kept.
 	l, h := lo, hi+1
 	for h-l > 1 {
 		mid := l + (h-l)/2
 		if t, err = ft(mid); err != nil {
 			return 0, 0, len(seen), err
 		}
-		if t <= t0 {
+		if t < t0 {
 			l = mid
 		} else {
 			h = mid

@@ -779,6 +779,23 @@ assert not any(st.get("with", {}).get("name") == "day-${{ matrix.day }}" for st 
 assert order("Note the store start") < order("store") < order("Log the store duration")
 PY
 
+# ---- OFX-10: no build sets the archive host (archiveBase is a test-only seam) ----
+# ldseam DIR...: lines that set archiveBase at build time (-X ...archiveBase, in any
+# spelling) or name it at all, in workflows and CI scripts; test-ci.sh itself is skipped.
+ldseam() { grep -rnE -e '-X[= ]*["'"'"']?[A-Za-z0-9_./-]*\.archiveBase' -e 'archiveBase' "$@" --exclude=test-ci.sh 2>/dev/null; }
+bad=""
+hits=$(ldseam "$here/../../../.github" "$here") && bad+=" [repo: $hits]"
+for v in '-ldflags "-X main.archiveBase=http://127.0.0.1:1"' "-ldflags='-X=main.archiveBase=http://x'" 'GOFLAGS=-ldflags=-X=zeroed/historical/scanner.archiveBase=x' 'X=archiveBase'; do
+  rm -rf "$T/ldx"; mkdir -p "$T/ldx/.github/workflows" "$T/ldx/ci"
+  printf 'jobs:\n  b:\n    steps:\n      - run: go build %s -o zeroed-scan .\n' "$v" > "$T/ldx/.github/workflows/w.yml"
+  ldseam "$T/ldx/.github" "$T/ldx/ci" > /dev/null || bad+=" [workflow not refused: $v]"
+  rm -f "$T/ldx/.github/workflows/w.yml"; echo "go build $v ." > "$T/ldx/ci/b.sh"
+  ldseam "$T/ldx/.github" "$T/ldx/ci" > /dev/null || bad+=" [script not refused: $v]"
+done
+rm -rf "$T/ldx"; mkdir -p "$T/ldx/ci"; echo 'go build -ldflags "-s -w" .' > "$T/ldx/ci/b.sh"
+ldseam "$T/ldx/ci" > /dev/null && bad+=" [plain ldflags refused]"
+[[ -z "$bad" ]] && ok "OFX-10: no workflow or CI script sets archiveBase at build time (-X ...archiveBase in any spelling, or any mention of it); fixtures that do are refused, plain -ldflags is not" || no "OFX-10 archiveBase ldflags:$bad"
+
 # ---- rpcscan: the scanner's own sources through symlinks; the IDLs byte-identical ----
 rs="$here/../rpcscan"; sc="$here/../scanner"; bad=""
 for f in $(cd "$sc" && git ls-files '*.go' | grep -v '_test.go$' | grep -v '^main.go$') go.mod go.sum; do
@@ -1189,11 +1206,19 @@ pb='| 2026-10-15 | B10-PULL id=b10pull-b source=old-faithful scannerRev=r2 x | t
 [[ $(pin "$pa") == b10pull-a ]] || bad+=" one"
 [[ -z $(pin "$pa$pb") ]] || bad+=" two"
 [[ $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") == b10pull-b ]] || bad+=" retired"
-[[ $(pin "$pa| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") == b10pull-a ]] || bad+=" by-unknown"
+# OFX-7: a successor that is not a pinned row, an older pin retiring a newer one, a
+# retirement of an unknown id or a RETIRED row that cannot be read: nothing pinned
+[[ -z $(pin "$pa| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") ]] || bad+=" by-unknown"
+[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" older-retires-newer"
+[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-z by=b10pull-b x | t | t |\n") ]] || bad+=" retires-unknown"
+[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a x | t | t |\n") ]] || bad+=" malformed"
+[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL id=b10pull-a source=old-faithful scannerRev=r3 x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") ]] || bad+=" two-dates"
+pc='| 2026-10-20 | B10-PULL id=b10pull-c source=old-faithful scannerRev=r3 x | t | t |\n'
+[[ $(pin "$pa$pb$pc| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-20 | B10-PULL-RETIRED id=b10pull-b by=b10pull-c x | t | t |\n") == b10pull-c ]] || bad+=" chain"
 [[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-c x | t | t |\n") ]] || bad+=" by-other"
 [[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" mutual"
 (. "$here/archive-guard.sh"; [[ $(ag_pinned_id) == b10pull-of-2 ]]) || bad+=" repo-pin"
-[[ -z "$bad" ]] && ok "OF-FIX: a B10-PULL pin is retired only by a RETIRED row naming a pinned successor (unknown successor or mutual retirement: nothing pinned); the repo's pin is b10pull-of-2" || no "OF-FIX pin retirement:$bad"
+[[ -z "$bad" ]] && ok "OF-FIX: a B10-PULL pin is retired only by a RETIRED row naming a pinned successor dated on or after it; a successor that is not pinned, an older pin retiring a newer one, an unknown retired id, an unreadable RETIRED row, an id pinned under two dates or mutual retirement leave nothing pinned (OFX-7); a chain keeps its newest; the repo's pin is b10pull-of-2" || no "OF-FIX pin retirement:$bad"
 # 2: back-off from run history: a block (a data-scan archive batch whose scan job failed
 # and whose continue job did not chain it) 61 min ago, a non-served check 2 h ago.
 now=$(date -u +%s)

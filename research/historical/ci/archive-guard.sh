@@ -91,14 +91,27 @@ ag_days() {
 }
 # ag_pinned_id: the id of the one pinned B10-PULL row in docs/DECISIONS.md, or nothing.
 # The rows are append-only: an older pin stays as history and is retired by a row
-# "B10-PULL-RETIRED id=<old> by=<new>" whose <new> is itself a B10-PULL row (OF-FIX,
-# OFX-3). Exactly one id must remain; anything else is unpinned (fail closed).
+# "B10-PULL-RETIRED id=<old> by=<new>" (OF-FIX, OFX-3). Every RETIRED row must name an
+# <old> and a <new> that are both B10-PULL rows, with <new> dated on or after <old>
+# (OFX-7); any other RETIRED row, or one id pinned under two dates, leaves nothing
+# pinned. Exactly one id must remain unretired; anything else is unpinned (fail closed).
 ag_pinned_id() {
-  local ids retired
-  ids=$(sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL id=\([A-Za-z0-9._:-]\{1,\}\) source=old-faithful .*/\1/p' "$ag_decisions" 2>/dev/null | LC_ALL=C sort -u)
-  retired=$(sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL-RETIRED id=\([A-Za-z0-9._:-]\{1,\}\) by=\([A-Za-z0-9._:-]\{1,\}\) .*/\1 \2/p' "$ag_decisions" 2>/dev/null |
-    while read -r o n; do [[ "$o" != "$n" ]] && grep -qxF -- "$n" <<< "$ids" && echo "$o"; done | LC_ALL=C sort -u)
-  [[ -z "$retired" ]] || ids=$(LC_ALL=C comm -23 <(echo "$ids") <(echo "$retired"))
+  local rows ids retired o n od nd bad=0
+  rows=$(sed -n 's/^| \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) | B10-PULL id=\([A-Za-z0-9._:-]\{1,\}\) source=old-faithful .*/\2 \1/p' "$ag_decisions" 2>/dev/null | LC_ALL=C sort -u)
+  ids=$(cut -d' ' -f1 <<< "$rows" | LC_ALL=C uniq)
+  [[ $(wc -l <<< "$rows") == $(wc -l <<< "$ids") ]] || return 0
+  retired=""
+  while read -r o n; do
+    [[ -n "$o" ]] || continue
+    od=$(awk -v i="$o" '$1 == i { print $2 }' <<< "$rows"); nd=$(awk -v i="$n" '$1 == i { print $2 }' <<< "$rows")
+    if [[ "$o" == "$n" || -z "$od" || -z "$nd" || "$nd" < "$od" ]]; then bad=1; break; fi
+    retired+="$o"$'\n'
+  done < <(sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL-RETIRED id=\([A-Za-z0-9._:-]\{1,\}\) by=\([A-Za-z0-9._:-]\{1,\}\) .*/\1 \2/p' "$ag_decisions" 2>/dev/null)
+  (( bad == 0 )) || return 0
+  # a RETIRED-looking row the pattern above cannot read is a malformed retirement
+  if grep -q '^| [^|]* | B10-PULL-RETIRED' "$ag_decisions" 2>/dev/null &&
+     [[ $(grep -c '^| [^|]* | B10-PULL-RETIRED' "$ag_decisions") != $(sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL-RETIRED id=\([A-Za-z0-9._:-]\{1,\}\) by=\([A-Za-z0-9._:-]\{1,\}\) .*/x/p' "$ag_decisions" | wc -l) ]]; then return 0; fi
+  [[ -z "$retired" ]] || ids=$(LC_ALL=C comm -23 <(echo "$ids") <(printf '%s' "$retired" | LC_ALL=C sort -u))
   [[ -n "$ids" && $(wc -l <<< "$ids") == 1 ]] && echo "$ids"
 }
 # ag_pinned_rev (OF-7 red team m2): the scannerRev of the one pinned B10-PULL row, or nothing.

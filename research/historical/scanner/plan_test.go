@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -43,9 +44,10 @@ func utcDay(t *testing.T, d string) int64 {
 	return x.Unix()
 }
 
-// covers checks [first, last] is exactly the epochs holding [t0, t1) under ft.
+// covers checks [first, last] is exactly the epochs holding [t0, t1) under ft: the
+// first starts before t0 (its tail can share second t0, OFX-8), the next one not.
 func covers(t0, t1 int64, first, last uint64, ft func(uint64) int64) error {
-	if ft(first) > t0 || ft(first+1) <= t0 {
+	if ft(first) >= t0 || ft(first+1) < t0 {
 		return fmt.Errorf("epoch %d does not hold the window start", first)
 	}
 	if ft(last) >= t1 || ft(last+1) < t1 {
@@ -110,6 +112,25 @@ func TestPickEpochs0722IsNear1005(t *testing.T) {
 	}
 	if first != 1005 || last > 1006 {
 		t.Fatalf("07-22 in epochs %d-%d, want 1005 to at most 1006", first, last)
+	}
+}
+
+// OFX-8: an epoch whose first block is exactly at t0 does not drop the epoch before it,
+// whose last blocks can carry the same second.
+func TestPickEpochsSameSecondBoundary(t *testing.T) {
+	ft := func(e uint64) int64 { return chainTime(epochFirstSlot(e)) }
+	for _, e := range []uint64{1005, 1006, 1010} {
+		t0 := ft(e)
+		first, last, _, err := pickEpochs(t0, t0+86400, func(x uint64) (int64, error) { return ft(x), nil })
+		if err != nil {
+			t.Fatalf("t0 = first block of %d: %v", e, err)
+		}
+		if first != e-1 || last < e {
+			t.Errorf("t0 = first block of %d: epochs %d-%d, want %d to at least %d", e, first, last, e-1, e)
+		}
+		if err := covers(t0, t0+86400, first, last, ft); err != nil {
+			t.Errorf("t0 = first block of %d: %v", e, err)
+		}
 	}
 }
 
@@ -360,5 +381,38 @@ func TestPlanLine(t *testing.T) {
 	}
 	if got := planLine(nil); got != "0 units planned (epochs )" {
 		t.Fatalf("planLine(nil) = %q", got)
+	}
+}
+
+// OFX-9: a CAR region holding valid sections but no block node fails the probe after
+// at most 64 MiB of walking (plus one read window), never read to the end of the file.
+func TestFirstBlockFromCapsTheWalk(t *testing.T) {
+	resetPoliteness(t, t.TempDir())
+	var car []byte
+	car = append(car, append(binary.AppendUvarint(nil, 10), make([]byte, 10)...)...)
+	other := section(append([]byte{0x81, 0x09}, make([]byte, 1<<20)...)) // a 1 MiB non-block node
+	for len(car) < 96<<20 {
+		car = append(car, other...)
+	}
+	var served atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var a, b int64
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &a, &b); err != nil || b >= int64(len(car)) {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		served.Add(b - a + 1)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", a, b, len(car)))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(car[a : b+1])
+	}))
+	defer srv.Close()
+	e := &Epoch{N: 1, CarURL: srv.URL + "/1/epoch-1.car", CarSize: int64(len(car)), headerEnd: 11}
+	_, err := e.firstBlockFrom(context.Background(), 0)
+	if err == nil || errors.Is(err, errNoBlock) || !strings.Contains(err.Error(), "no block node within 64 MiB") {
+		t.Fatalf("err = %v, want the 64 MiB walk cap", err)
+	}
+	if n := served.Load(); n > maxBlockWalk+2*(probeWindow+(2<<20)) {
+		t.Errorf("%d bytes read, want about 64 MiB at most", n)
 	}
 }
