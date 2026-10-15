@@ -44,6 +44,9 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
 
   it('CA-24: the keys that do not affect returns are listed here for review', () => {
     assert.deepEqual(CONFIG_FIELDS.filter((f) => !f.affectsReturns).map((f) => f.key), [
+      // Z06 (B-M15-01 "Config": all affectsReturns false): the live slot clock's polling; simulation dates slots from
+      // history anchors, never from these.
+      'm15.height_poll_ms', 'm15.height_timeout_ms', 'm15.max_future_slot_jump', 'm15.slot_ms_initial',
       'm24.db_path', 'm24.synchronous', 'm27.log_dir', 'm27.log_max_bytes_per_day', 'm27.log_queue_bytes', 'm27.log_retention_days', 'm27.metrics_port',
       'm27.ring_budget_bytes', 'm27.rollup_max_bytes', 'm27.series_cap',
       // Z03 (A-M14-01/02): read-path plumbing; backtest and replay make no RPC call, and the live read path's limits are

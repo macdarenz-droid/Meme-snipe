@@ -9,7 +9,10 @@
 //   getBalance [pubkey, {commitment, minContextSlot}]
 //   getBlock [slot, {commitment: confirmed|finalized, encoding, transactionDetails, maxSupportedTransactionVersion, rewards}]
 //   getBlockHeight [{commitment, minContextSlot}]
+//   getEpochInfo [{commitment, minContextSlot}] (added for B-M15-01, page read 2026-10-15)
 //   getHealth [] (no parameters)
+//   getRecentPerformanceSamples [limit] (no configuration object; limit default and maximum 720; added for B-M15-01, read
+//   2026-10-15)
 //   getLatestBlockhash [{commitment, minContextSlot}]
 //   getMultipleAccounts [pubkeys, {commitment, minContextSlot, dataSlice, encoding}]
 //   getProgramAccounts [pubkey, {commitment, minContextSlot, withContext, encoding, dataSlice, filters, sortResults}]
@@ -39,6 +42,8 @@ export interface MethodSpec {
   methodClass: MethodClass;
   /** The call role the method needs: only `sendTransaction` is a send. */
   role: 'read' | 'send';
+  /** For a method without a configuration object: how many positional parameters it may take (default 0). */
+  positionalParams?: number;
 }
 
 const ALL: readonly Commitment[] = ['processed', 'confirmed', 'finalized'];
@@ -54,10 +59,12 @@ export const METHODS: Readonly<Record<string, MethodSpec>> = Object.freeze({
   getBalance: read(1, ALL),
   getBlock: read(1, CONFIRMED_UP, { versioned: true, methodClass: 'heavy' }),
   getBlockHeight: read(0, ALL),
+  getEpochInfo: read(0, ALL),
   getHealth: read(null, NONE),
   getLatestBlockhash: read(0, ALL),
   getMultipleAccounts: read(1, ALL, { encodingRequired: true }),
   getProgramAccounts: read(1, ALL, { encodingRequired: true, methodClass: 'heavy' }),
+  getRecentPerformanceSamples: read(null, NONE, { positionalParams: 1 }),
   getSignaturesForAddress: read(1, CONFIRMED_UP),
   getSignatureStatuses: read(1, NONE),
   getSlot: read(0, ALL),
@@ -97,7 +104,7 @@ export function prepareParams(method: string, params: readonly unknown[], role: 
   }
   const out = [...params];
   if (spec.configIndex === null) {
-    return out.length === 0 ? { ok: true, params: out } : { ok: false, problem: 'bad_params' };
+    return out.length <= (spec.positionalParams ?? 0) ? { ok: true, params: out } : { ok: false, problem: 'bad_params' };
   }
   const at = spec.configIndex;
   if (out.length < at || out.length > at + 1) return { ok: false, problem: 'bad_params' };
