@@ -5,10 +5,20 @@ import { describe, it } from 'vitest';
 import type { Slot } from '@bot/types';
 import { createLatencyModel, slotAfterLatency } from '../../src/m10/latency.ts';
 import { createRng } from '../../src/m10/rng.ts';
-import { PRIOR_2026_10 } from '../../src/m10/params.ts';
+import { parseSimParamSet, PRIOR_2026_10, simParamSetJson, type LatencySpec } from '../../src/m10/params.ts';
+import { createHash } from 'node:crypto';
 import { historySlotTimeBasis, liveSlotTimeBasis, slotToTimeMs } from '../../src/m15/slot-time.ts';
 
 const S = (n: number): Slot => BigInt(n) as Slot;
+/** An empirical latency spec from a parameter set verified against a 100-record source file (Z06-8). */
+function verifiedEmpirical(record: (i: number) => object): LatencySpec {
+  const text = Array.from({ length: 100 }, (_, i) => JSON.stringify(record(i))).join('\n');
+  const sourceSha256 = createHash('sha256').update(text, 'utf8').digest('hex');
+  const set = { ...(JSON.parse(simParamSetJson(PRIOR_2026_10)) as object), latency: { kind: 'empirical', source: 'evidence/latency.ndjson', n: 100, sourceSha256 } };
+  const r = parseSimParamSet(set, (f) => { if (f !== 'evidence/latency.ndjson') throw new Error('missing'); return text; });
+  assert.ok(r.ok, r.ok ? '' : r.error.problem);
+  return r.ok ? r.value.latency : PRIOR_2026_10.latency;
+}
 const quantile = (sorted: number[], p: number): number => sorted[Math.floor(p * (sorted.length - 1))] as number;
 
 describe('A-M10-01 latency model', () => {
@@ -27,15 +37,28 @@ describe('A-M10-01 latency model', () => {
     for (const bad of [0.5, 0.999, 10.01, Number.NaN]) assert.throws(() => m.sampleMs(createRng(1), bad), /multiplier/);
   });
 
-  it('empirical latency draws uniformly from the samples', () => {
-    const m = createLatencyModel({ kind: 'empirical', samplesMs: [100, 200, 300, 400], source: 'test', n: 4, sourceSha256: 'a'.repeat(64) });
+  it('empirical latency draws uniformly from the samples of a verified set', () => {
+    // 100 distinct records whose latencies are 100, 200, 300 and 400 ms, 25 each.
+    const m = createLatencyModel(verifiedEmpirical((i) => ({ id: i, latencyMs: 100 * (1 + (i % 4)) })));
     const rng = createRng(5), counts = new Map<number, number>();
     for (let i = 0; i < 40_000; i++) { const v = m.sampleMs(rng, 1); counts.set(v, (counts.get(v) ?? 0) + 1); }
     assert.deepEqual([...counts.keys()].sort((a, b) => a - b), [100, 200, 300, 400]);
     for (const c of counts.values()) assert.ok(Math.abs(c - 10_000) < 400, String(c));
-    assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: [], source: 'x', n: 0, sourceSha256: 'a'.repeat(64) }), /E_SIM_PARAMS/);
-    // Ruling Z06-2: a zero-ms sample is not a latency.
-    assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: [0, 5], source: 'x', n: 2, sourceSha256: 'a'.repeat(64) }), /E_SIM_PARAMS/);
+  });
+
+  it('ruling Z06-9: an empirical spec built in code cannot skip the gate (verified source, ≥ 100 samples, all > 0)', () => {
+    const sha = 'a'.repeat(64);
+    const hundred = Array.from({ length: 100 }, (_, i) => 900 + i);
+    assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: hundred, source: 'x', n: 100, sourceSha256: sha }), /verified parameter set/);
+    assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: [0, 5], source: 'x', n: 2, sourceSha256: sha }), /E_SIM_PARAMS/);
+    // A verified spec whose samples were edited afterwards is refused too.
+    const v = verifiedEmpirical((i) => ({ id: i, latencyMs: 900 + i }));
+    assert.doesNotThrow(() => createLatencyModel(v));
+    if (v.kind === 'empirical') {
+      v.samplesMs.length = 10;
+      assert.throws(() => createLatencyModel(v), /at least 100 samples/);
+      assert.throws(() => createLatencyModel({ ...v }), /verified parameter set/);
+    }
   });
 
   it('the same seed gives the same draws (reproducible)', () => {

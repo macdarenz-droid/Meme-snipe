@@ -1,5 +1,6 @@
 // A-M10-01 logic 2-4 and edge cases: the prior parameter set, its file, validation (E_SIM_PARAMS) and model versions.
 import { strict as assert } from 'node:assert';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'vitest';
 import { canonicalJson, type Config } from '@bot/types';
@@ -10,11 +11,23 @@ import { loadActiveSimParams, m10Settings } from '../../src/m10/settings.ts';
 import { CONFIG_FIELDS } from '../../src/m25/registry.ts';
 
 const DIR = new URL('../../sim-params/', import.meta.url);
-const SHA = 'ab'.repeat(32);
-const HUNDRED = Array.from({ length: 100 }, (_, i) => 900 + i);
 const read = (f: string): string => readFileSync(new URL(f, DIR), 'utf8');
+// Evidence files in memory (Z06-8): NDJSON, hashed for real; `mem` serves them and falls back to sim-params/.
+const files = new Map<string, string>();
+const mem = (f: string): string => files.get(f) ?? read(f);
+const sha256 = (t: string): string => createHash('sha256').update(t, 'utf8').digest('hex');
+let fileNo = 0;
+/** An evidence file of `lines` records of which `distinct` differ (the rest are copies), declared with n. */
+function evFile(n: number, o: { distinct?: number; lines?: number; record?: (i: number) => object } = {}): { source: string; n: number; sourceSha256: string } {
+  const distinct = o.distinct ?? n, lines = o.lines ?? Math.max(n, distinct), rec = o.record ?? ((i: number) => ({ id: i, latencyMs: 900 + i }));
+  const text = Array.from({ length: lines }, (_, i) => JSON.stringify(rec(i % distinct))).join('\n') + '\n';
+  const source = `evidence/f${fileNo++}.ndjson`;
+  files.set(source, text);
+  return { source, n, sourceSha256: sha256(text) };
+}
+const lat = (n: number, o: Parameters<typeof evFile>[1] = {}) => ({ kind: 'empirical', ...evFile(n, o) });
 const json = (): Record<string, unknown> => JSON.parse(simParamSetJson(PRIOR_2026_10)) as Record<string, unknown>;
-const problem = (v: unknown): string => { const r = parseSimParamSet(v); assert.equal(r.ok, false); return r.ok ? '' : `${r.error.code} ${r.error.problem}`; };
+const problem = (v: unknown): string => { const r = parseSimParamSet(v, mem); assert.equal(r.ok, false); return r.ok ? '' : `${r.error.code} ${r.error.problem}`; };
 
 describe('A-M10-01 parameter sets', () => {
   it('sim-params/prior-2026-10.json is the canonical JSON of the ARCH priors and loads back unchanged', () => {
@@ -61,7 +74,7 @@ describe('A-M10-01 parameter sets', () => {
     assert.match(problem({ ...json(), fExp: '0.1' }), /fExp/);
     assert.match(problem({ ...json(), failureClassMix: { unknown: 0.5, slippage: 0.4999 } }), /sum to 1/);
     assert.match(problem({ ...json(), failureClassMix: { nope: 1 } }), /unknown class/);
-    assert.equal(parseSimParamSet({ ...json(), failureClassMix: { unknown: 0.5, slippage: 0.5 + 5e-10 }, evidence: { failure: { source: 's', n: 100, sourceSha256: SHA } } }).ok, true);
+    assert.equal(parseSimParamSet({ ...json(), failureClassMix: { unknown: 0.5, slippage: 0.5 + 5e-10 }, evidence: { failure: evFile(100) } }, mem).ok, true);
   });
 
   it("refuses SPEC-A's slotMsAssumed (A10: slot time comes only from the slot-to-time function) and any unknown field", () => {
@@ -72,10 +85,12 @@ describe('A-M10-01 parameter sets', () => {
 
   it('validates the latency block and the cost block', () => {
     assert.match(problem({ ...json(), latency: { kind: 'lognormal_prior', medianMs: 5_000, p95Ms: 1_500 } }), /medianMs < p95Ms/);
-    assert.match(problem({ ...json(), latency: { kind: 'empirical', samplesMs: [1, 2], source: 'x', n: 3, sourceSha256: SHA } }), /n must equal/);
-    assert.match(problem({ ...json(), latency: { kind: 'empirical', samplesMs: [], source: 'x', n: 0, sourceSha256: SHA } }), /samplesMs/);
+    assert.match(problem({ ...json(), latency: { ...lat(100), samplesMs: [900] } }), /unknown field "samplesMs"/);
+    assert.match(problem({ ...json(), latency: lat(99) }), /n >= 100/);
     assert.match(problem({ ...json(), latency: { kind: 'fixed' } }), /kind/);
-    assert.equal(parseSimParamSet({ ...json(), latency: { kind: 'empirical', samplesMs: HUNDRED, source: 'M18 landing log', n: 100, sourceSha256: SHA } }).ok, true);
+    const r = parseSimParamSet({ ...json(), latency: lat(100) }, mem);
+    assert.ok(r.ok && r.value.latency.kind === 'empirical');
+    if (r.ok && r.value.latency.kind === 'empirical') assert.deepEqual(r.value.latency.samplesMs, Array.from({ length: 100 }, (_, i) => 900 + i));
     assert.match(problem({ ...json(), cost: { ...(json().cost as object), cuLimit: 1_400_001 } }), /cuLimit/);
     assert.match(problem({ ...json(), cost: { ...(json().cost as object), jitoTipLamports: 1000 } }), /jitoTipLamports/);
     assert.match(problem({ ...json(), name: 'Prior' }), /name/);
@@ -114,7 +129,7 @@ describe('A-M10-01 observability and settings', () => {
 });
 
 describe('ruling Z06-3: nothing more optimistic than prior-2026-10 without evidence', () => {
-  const ev = (n: number) => ({ source: 'M18 attempts 2026-10', n, sourceSha256: SHA });
+  const ev = (n: number) => evFile(n, { record: (i) => ({ attempt: i }) });
   it('POLICY minimums come from SPEC-A: 100 (A-M10-05 sim.calibration.min_samples), 50 for the gap (A-M10-04 sim.gap.min_samples)', () => {
     assert.equal(CALIBRATION_MIN_SAMPLES, 100);
     assert.equal(GAP_MIN_SAMPLES, 50);
@@ -124,7 +139,8 @@ describe('ruling Z06-3: nothing more optimistic than prior-2026-10 without evide
     const cost = Object.fromEntries(Object.entries(json().cost as Record<string, unknown>).map(([k]) => [k, k === 'cuLimit' ? 1 : '0']));
     const optimistic = { ...json(), fFailEntry: 0, fFailExit: 0, fExp: 0, pSwEntry: 0, pSwExit: 0, gapThroughStopP99Bps: 0, cost };
     assert.match(problem({ ...optimistic, latency: { kind: 'lognormal_prior', medianMs: 1, p95Ms: 2 } }), /faster than prior-2026-10/);
-    assert.match(problem({ ...optimistic, latency: { kind: 'empirical', samplesMs: [0], source: 'x', n: 1, sourceSha256: SHA } }), /> 0/);
+    assert.match(problem({ ...optimistic, latency: { ...lat(100), samplesMs: [0] } }), /unknown field "samplesMs"/);
+    assert.match(problem({ ...optimistic, latency: lat(100, { record: (i) => ({ id: i, latencyMs: 0 }) }) }), /latencyMs, finite and > 0/);
     assert.match(problem(optimistic), /fFailEntry is more optimistic than prior-2026-10 without failure evidence/);
   });
 
@@ -143,11 +159,11 @@ describe('ruling Z06-3: nothing more optimistic than prior-2026-10 without evide
   });
 
   it('accepts optimistic values that carry valid evidence, and more pessimistic values without any', () => {
-    assert.equal(parseSimParamSet({ ...json(), fFailEntry: 0.1, fExp: 0.01, failureClassMix: { slippage: 0.5, unknown: 0.5 }, evidence: { failure: ev(100) } }).ok, true);
-    assert.equal(parseSimParamSet({ ...json(), pSwEntry: 0.02, evidence: { sandwich: ev(100) } }).ok, true);
-    assert.equal(parseSimParamSet({ ...json(), gapThroughStopP99Bps: 900, gapSamples: 50, evidence: { gap: ev(50) } }).ok, true);
-    assert.equal(parseSimParamSet({ ...json(), cost: { ...(json().cost as object), senderTipLamports: '1000' }, evidence: { cost: ev(100) } }).ok, true);
-    assert.equal(parseSimParamSet({ ...json(), fFailEntry: 0.5, pSwExit: 0.3, gapThroughStopP99Bps: 4_000, latency: { kind: 'lognormal_prior', medianMs: 3_000, p95Ms: 9_000 } }).ok, true);
+    assert.equal(parseSimParamSet({ ...json(), fFailEntry: 0.1, fExp: 0.01, failureClassMix: { slippage: 0.5, unknown: 0.5 }, evidence: { failure: ev(100) } }, mem).ok, true);
+    assert.equal(parseSimParamSet({ ...json(), pSwEntry: 0.02, evidence: { sandwich: ev(100) } }, mem).ok, true);
+    assert.equal(parseSimParamSet({ ...json(), gapThroughStopP99Bps: 900, gapSamples: 50, evidence: { gap: ev(50) } }, mem).ok, true);
+    assert.equal(parseSimParamSet({ ...json(), cost: { ...(json().cost as object), senderTipLamports: '1000' }, evidence: { cost: ev(100) } }, mem).ok, true);
+    assert.equal(parseSimParamSet({ ...json(), fFailEntry: 0.5, pSwExit: 0.3, gapThroughStopP99Bps: 4_000, latency: { kind: 'lognormal_prior', medianMs: 3_000, p95Ms: 9_000 } }, mem).ok, true);
   });
 
   it('refuses evidence below the POLICY minimum, without a hash or with an unknown key; a measured gap needs 50 gap samples', () => {
@@ -157,7 +173,45 @@ describe('ruling Z06-3: nothing more optimistic than prior-2026-10 without evide
     assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: { ...ev(100), sourceSha256: 'xyz' } } }), /sha256/);
     assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: { ...ev(100), source: '' } } }), /source is required/);
     assert.match(problem({ ...json(), evidence: { luck: ev(100) } }), /unknown key "luck"/);
-    assert.match(problem({ ...json(), latency: { kind: 'empirical', samplesMs: HUNDRED.slice(0, 99), source: 'x', n: 99, sourceSha256: SHA } }), /at least 100 samples/);
-    assert.match(problem({ ...json(), latency: { kind: 'empirical', samplesMs: HUNDRED, source: 'x', n: 100, sourceSha256: 'no' } }), /sourceSha256/);
+    assert.match(problem({ ...json(), latency: lat(99) }), /n >= 100/);
+    assert.match(problem({ ...json(), latency: { ...lat(100), sourceSha256: 'no' } }), /sourceSha256/);
+  });
+});
+
+describe('ruling Z06-8: evidence is read from its source file, never taken on trust', () => {
+  it('an all-zero (fake) hash is refused for group evidence and for empirical latency', () => {
+    assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: { ...evFile(100), sourceSha256: '0'.repeat(64) } } }), /sha256 of the source file does not match/);
+    assert.match(problem({ ...json(), latency: { ...lat(100), sourceSha256: '0'.repeat(64) } }), /sha256 of the source file does not match/);
+  });
+
+  it('a file padded with copies does not count: 100 lines of 10 distinct records is 10, not 100', () => {
+    assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: evFile(100, { distinct: 10, lines: 100, record: (i) => ({ check: i }) }) } }), /10 distinct records, fewer than n = 100/);
+    assert.match(problem({ ...json(), latency: lat(100, { distinct: 10, lines: 100 }) }), /10 distinct records, fewer than n = 100/);
+    // Records that differ only in key order or spacing are the same record.
+    const text = Array.from({ length: 100 }, (_, i) => (i % 2 ? `{"b":1, "a":${i >> 1}}` : `{"a":${i >> 1},"b":1}`)).join('\n');
+    files.set('evidence/reordered.ndjson', text);
+    assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: { source: 'evidence/reordered.ndjson', n: 100, sourceSha256: sha256(text) } } }), /50 distinct records/);
+  });
+
+  it('refuses a missing file, a path outside sim-params/ and a file that is not NDJSON objects', () => {
+    assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: { source: 'evidence/none.ndjson', n: 100, sourceSha256: '0'.repeat(64) } } }), /source file missing/);
+    assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: { source: '../prior-2026-10.json', n: 100, sourceSha256: '0'.repeat(64) } } }), /file path under sim-params/);
+    files.set('evidence/bad.ndjson', '1\n2\n');
+    assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: { source: 'evidence/bad.ndjson', n: 100, sourceSha256: sha256('1\n2\n') } } }), /JSON object/);
+  });
+
+  it('evidence named but not needed is still verified', () => {
+    assert.match(problem({ ...json(), evidence: { cost: { ...evFile(100), sourceSha256: 'f'.repeat(64) } } }), /does not match/);
+  });
+
+  it('the file form of an empirical set carries no samples; the version pins them through sourceSha256', () => {
+    const r = parseSimParamSet({ ...json(), latency: lat(100) }, mem);
+    assert.ok(r.ok);
+    if (r.ok) {
+      assert.doesNotMatch(simParamSetJson(r.value), /samplesMs/);
+      const other = parseSimParamSet({ ...json(), latency: lat(100, { record: (i) => ({ id: i, latencyMs: 901 + i }) }) }, mem);
+      assert.ok(other.ok);
+      if (other.ok) assert.notEqual(modelVersions(r.value).fillModelVersion, modelVersions(other.value).fillModelVersion);
+    }
   });
 });

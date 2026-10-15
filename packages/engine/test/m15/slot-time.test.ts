@@ -164,12 +164,19 @@ describe('slot-time inverse and bases', () => {
   it('property: timeToSlot gives the first slot at or after the time, inside, before and after the anchors', () => {
     for (let seed = 0; seed < 300; seed++) {
       const basis = randomBasis(seed), rng = createRng(10_000 + seed);
-      const ref = basis.kind === 'live' ? basis.anchor : (basis.anchors[0] as SlotTimeAnchor);
+      // Live: anywhere around the anchor; history: within the 60 s extrapolation limit (Z06-10) on either side.
+      const lo = basis.kind === 'live' ? basis.anchor.atMs - 600_000 : (basis.anchors[0] as SlotTimeAnchor).atMs - basis.maxGapMs;
+      const hi = basis.kind === 'live' ? basis.anchor.atMs + 2_400_000 : (basis.anchors.at(-1) as SlotTimeAnchor).atMs + basis.maxGapMs;
       for (let k = 0; k < 40; k++) {
-        const ms = ref.atMs + (rng.nextFloat() - 0.2) * 3_000_000;
+        const ms = lo + rng.nextFloat() * (hi - lo);
         const s = timeToSlot(ms, basis);
         assert.ok(slotToTimeMs(s, basis) >= ms, `seed ${seed}`);
-        if (s > 0n) assert.ok(slotToTimeMs((s - 1n) as Slot, basis) < ms, `seed ${seed}`);
+        if (s > 0n) {
+          // The slot before may lie beyond the 60 s extrapolation limit (Z06-10); then it is refused, not dated.
+          let before: number | null = null;
+          try { before = slotToTimeMs((s - 1n) as Slot, basis); } catch (e) { assert.match(String(e), /outside the anchors/); }
+          if (before !== null) assert.ok(before < ms, `seed ${seed}`);
+        }
       }
     }
   });
@@ -191,10 +198,11 @@ describe('slot-time inverse and bases', () => {
     for (let seed = 0; seed < 100; seed++) {
       const basis = randomBasis(seed);
       if (basis.kind !== 'history') continue;
-      const first = (basis.anchors[0] as SlotTimeAnchor).slot;
+      const first = (basis.anchors[0] as SlotTimeAnchor).slot, last = (basis.anchors.at(-1) as SlotTimeAnchor).slot;
       let prev = -Infinity;
-      for (let d = -2_000n; d < 30_000n; d += 37n) {
-        const t = slotToTimeMs((first + d) as Slot, basis);
+      // 100 slots on either side stay within the 60 s extrapolation limit (these bases run at most 450 ms a slot).
+      for (let x = first - 100n; x <= last + 100n; x += 7n) {
+        const t = slotToTimeMs(x as Slot, basis);
         assert.ok(t >= prev);
         prev = t;
       }
@@ -208,6 +216,21 @@ describe('slot-time inverse and bases', () => {
     assert.equal(timeToSlot(999_000, b), S(96));
     assert.equal(timeToSlot(1_000_000, b), S(100));               // slots 100-102 share that second (the flat pair)
     assert.equal(timeToSlot(1_000_001, b), S(103));
+  });
+
+  it('ruling Z06-10: a history basis extrapolates at most 60 s beyond its first or last anchor, both ways', () => {
+    const b = historySlotTimeBasis([blockTimeAnchor(S(1_000), 1_000), blockTimeAnchor(S(1_200), 1_050)]);   // 250 ms a slot
+    assert.equal(slotToTimeMs(S(760), b), 940_000);                    // exactly 60 s before the first anchor
+    assert.equal(slotToTimeMs(S(1_440), b), 1_110_000);                // exactly 60 s after the last
+    assert.throws(() => slotToTimeMs(S(759), b), /E_SLOT_BASIS: slot 759 is more than 60000 ms outside the anchors/);
+    assert.throws(() => slotToTimeMs(S(1_441), b), /more than 60000 ms outside/);
+    assert.equal(timeToSlot(940_000, b), S(760));
+    assert.equal(timeToSlot(1_110_000, b), S(1_440));
+    assert.throws(() => timeToSlot(939_999, b), /E_SLOT_BASIS: time 939999 is more than 60000 ms outside the anchors/);
+    assert.throws(() => timeToSlot(1_110_001, b), /more than 60000 ms outside/);
+    // A tightened basis tightens the limit too.
+    const t = historySlotTimeBasis([blockTimeAnchor(S(1_000), 1_000), blockTimeAnchor(S(1_080), 1_020)], { maxAnchorGapMs: 30_000 });
+    assert.throws(() => slotToTimeMs(S(1_201), t), /more than 30000 ms outside/);
   });
 
   it('refuses a basis that is not a sound clock (E_SLOT_BASIS)', () => {

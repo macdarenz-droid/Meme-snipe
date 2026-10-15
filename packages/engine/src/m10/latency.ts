@@ -10,7 +10,7 @@ import type { Rng, Slot } from '@bot/types';
 import { slotToTimeMs, timeToSlot, type SlotTimeBasis } from '../m15/slot-time.ts';
 import { normalQuantile } from '../m13/stats/special.ts';
 import { nextBelow } from './rng.ts';
-import type { LatencySpec } from './params.ts';
+import { CALIBRATION_MIN_SAMPLES, isVerifiedEmpiricalLatency, type LatencySpec } from './params.ts';
 
 export interface LatencyModel { sampleMs(rng: Rng, multiplier: number): number }
 
@@ -42,9 +42,12 @@ export function createLatencyModel(spec: LatencySpec): LatencyModel {
       },
     };
   }
+  // Z06-9: only samples a parameter set read and verified from their source file (loadSimParamSet), at least
+  // CALIBRATION_MIN_SAMPLES of them, all > 0; a spec built in code cannot skip that gate.
   const samples = [...spec.samplesMs];
-  if (samples.length === 0 || samples.length !== spec.n || !samples.every((x) => Number.isFinite(x) && x > 0)) {
-    throw new RangeError('E_SIM_PARAMS: empirical latency needs n finite samples > 0');
+  if (!isVerifiedEmpiricalLatency(spec)) throw new RangeError('E_SIM_PARAMS: empirical latency must come from a verified parameter set');
+  if (samples.length < CALIBRATION_MIN_SAMPLES || samples.length < spec.n || !samples.every((x) => Number.isFinite(x) && x > 0)) {
+    throw new RangeError(`E_SIM_PARAMS: empirical latency needs at least ${CALIBRATION_MIN_SAMPLES} samples > 0`);
   }
   return {
     sampleMs(rng, multiplier) {

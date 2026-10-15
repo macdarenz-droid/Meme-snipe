@@ -15,7 +15,7 @@ import type { Slot, UnixMs } from '@bot/types';
 export interface SlotTimeAnchor { readonly slot: Slot; readonly atMs: number }
 export type SlotTimeBasis =
   | { readonly kind: 'live'; readonly anchor: SlotTimeAnchor; readonly slotMs: number }
-  | { readonly kind: 'history'; readonly anchors: readonly SlotTimeAnchor[]; readonly firstRate: number; readonly lastRate: number };
+  | { readonly kind: 'history'; readonly anchors: readonly SlotTimeAnchor[]; readonly firstRate: number; readonly lastRate: number; readonly maxGapMs: number };
 
 /** Slot durations a basis may hold, in ms (the range of `m15.slot_ms_initial`; a value outside it is not a slot time). */
 export const SLOT_MS_MIN = 100;
@@ -78,7 +78,7 @@ export function historySlotTimeBasis(anchors: readonly SlotTimeAnchor[], o: { ma
     if (span > 0) rates.push(span / n);
   }
   if (rates.length === 0) throw new RangeError('E_SLOT_BASIS: every anchor has the same time');
-  return Object.freeze({ kind: 'history', anchors: Object.freeze(sorted), firstRate: rates[0] as number, lastRate: rates[rates.length - 1] as number });
+  return Object.freeze({ kind: 'history', anchors: Object.freeze(sorted), firstRate: rates[0] as number, lastRate: rates[rates.length - 1] as number, maxGapMs: maxGap });
 }
 
 /** A block-time anchor: `getBlockTime(slot)` is whole Unix seconds [A-37], so it carries up to 1 s of error. */
@@ -108,11 +108,21 @@ export function slotDelta(a: Slot, b: Slot): number {
 
 /** The time of slot `s` in Unix ms (fractional; round where an integer `UnixMs` is stored). */
 export function slotToTimeMs(s: Slot, basis: SlotTimeBasis): number {
+  return timeOf(s, basis, true);
+}
+
+/** `checked`: refuse a history slot more than `maxGapMs` outside the anchors (Z06-10). `timeToSlot` checks the time instead. */
+function timeOf(s: Slot, basis: SlotTimeBasis, checked: boolean): number {
   if (basis.kind === 'live') return basis.anchor.atMs + slotDelta(basis.anchor.slot, s) * basis.slotMs;
   const as = basis.anchors;
   const first = as[0] as SlotTimeAnchor, last = as[as.length - 1] as SlotTimeAnchor;
-  if (s < first.slot) return first.atMs + slotDelta(first.slot, s) * basis.firstRate;
-  if (s > last.slot) return last.atMs + slotDelta(last.slot, s) * basis.lastRate;
+  // Z06-10: outside the anchors, extrapolate no further than the maximum anchor gap.
+  const out = (t: number, edge: SlotTimeAnchor): number => {
+    if (checked && Math.abs(t - edge.atMs) > basis.maxGapMs) throw new RangeError(`E_SLOT_BASIS: slot ${s} is more than ${basis.maxGapMs} ms outside the anchors`);
+    return t;
+  };
+  if (s < first.slot) return out(first.atMs + slotDelta(first.slot, s) * basis.firstRate, first);
+  if (s > last.slot) return out(last.atMs + slotDelta(last.slot, s) * basis.lastRate, last);
   const i = segment(as, s);
   const a = as[i] as SlotTimeAnchor, b = as[i + 1] as SlotTimeAnchor;
   return a.atMs + (slotDelta(a.slot, s) * (b.atMs - a.atMs)) / slotDelta(a.slot, b.slot);
@@ -141,6 +151,9 @@ export function timeToSlot(ms: number, basis: SlotTimeBasis): Slot {
   } else {
     const as = basis.anchors;
     const first = as[0] as SlotTimeAnchor, last = as[as.length - 1] as SlotTimeAnchor;
+    if (ms < first.atMs - basis.maxGapMs || ms > last.atMs + basis.maxGapMs) {
+      throw new RangeError(`E_SLOT_BASIS: time ${ms} is more than ${basis.maxGapMs} ms outside the anchors`);
+    }
     if (ms < first.atMs) guess = first.slot + BigInt(Math.ceil((ms - first.atMs) / basis.firstRate));
     else if (ms > last.atMs) guess = last.slot + BigInt(Math.ceil((ms - last.atMs) / basis.lastRate));
     else {
@@ -157,7 +170,7 @@ export function timeToSlot(ms: number, basis: SlotTimeBasis): Slot {
   }
   if (guess < 0n) guess = 0n;
   // Floating-point rounding can leave the guess one slot off either way: settle it on the forward function itself.
-  while (guess > 0n && slotToTimeMs((guess - 1n) as Slot, basis) >= ms) guess--;
-  while (slotToTimeMs(guess as Slot, basis) < ms) guess++;
+  while (guess > 0n && timeOf((guess - 1n) as Slot, basis, false) >= ms) guess--;
+  while (timeOf(guess as Slot, basis, false) < ms) guess++;
   return guess as Slot;
 }

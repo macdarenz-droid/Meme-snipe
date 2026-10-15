@@ -94,12 +94,53 @@ function u64(v: unknown): bigint | null {
   return typeof v === 'string' && U64_RE.test(v) && BigInt(v) <= U64_MAX ? BigInt(v) : null;
 }
 
-/** The JSON form of a set (bigints as decimal strings, VM convention 2): what the file holds, canonicalised. */
+/**
+ * The JSON form of a set (bigints as decimal strings, VM convention 2): what the file holds, canonicalised. Empirical
+ * latency is written without `samplesMs`: the samples are read from its source file, which `sourceSha256` pins (Z06-8).
+ */
 export function simParamSetJson(set: SimParamSet): string {
-  return canonicalJson({ ...set, cost: { ...set.cost }, evidence: { ...set.evidence } });
+  const latency = set.latency.kind === 'empirical'
+    ? { kind: 'empirical', source: set.latency.source, n: set.latency.n, sourceSha256: set.latency.sourceSha256 }
+    : set.latency;
+  return canonicalJson({ ...set, latency, cost: { ...set.cost }, evidence: { ...set.evidence } });
 }
 
-function parseLatency(v: unknown): LatencySpec | string {
+/** Reads a file next to the parameter sets (`sim-params/`); throws when it is missing. */
+export type SimParamsReader = (fileName: string) => string;
+const SOURCE_RE = /^[a-z0-9][a-z0-9._-]{0,127}(\/[a-z0-9][a-z0-9._-]{0,127}){0,3}$/;
+/** Empirical specs whose samples came from a verified source file (Z06-9: the latency model accepts no other). */
+const verifiedLatency = new WeakSet<object>();
+export function isVerifiedEmpiricalLatency(spec: LatencySpec): boolean {
+  return spec.kind === 'empirical' && verifiedLatency.has(spec);
+}
+
+/**
+ * Ruling Z06-8: an evidence source is a file read through `read` (a path under `sim-params/`, no `..`), NDJSON with one
+ * JSON object per line. It is accepted only when sha256 of its bytes (UTF-8) equals `sourceSha256` and it holds at
+ * least `n` distinct records (records compared by canonical JSON, so padding with copies does not count). Returns the
+ * distinct records in file order, or the problem.
+ */
+function readEvidence(where: string, e: { source: string; n: number; sourceSha256: string }, read: SimParamsReader): Array<Record<string, unknown>> | string {
+  if (!SOURCE_RE.test(e.source) || e.source.split('/').some((part) => part === '.' || part === '..')) return `${where}: source must be a file path under sim-params/`;
+  let text: string;
+  try { text = read(e.source); } catch { return `${where}: source file missing`; }
+  if (createHash('sha256').update(text, 'utf8').digest('hex') !== e.sourceSha256) return `${where}: sha256 of the source file does not match sourceSha256`;
+  const seen = new Set<string>(), records: Array<Record<string, unknown>> = [];
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    let r: unknown;
+    try { r = JSON.parse(line); } catch { return `${where}: source is not NDJSON`; }
+    if (!isObj(r)) return `${where}: every source line must be a JSON object`;
+    const key = canonicalJson(r);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    records.push(r);
+  }
+  if (records.length < e.n) return `${where}: the source holds ${records.length} distinct records, fewer than n = ${e.n}`;
+  return records;
+}
+
+function parseLatency(v: unknown, read: SimParamsReader): LatencySpec | string {
   if (!isObj(v)) return 'latency: not an object';
   if (v.kind === 'lognormal_prior') {
     const p = onlyKeys(v, ['kind', 'medianMs', 'p95Ms'], 'latency');
@@ -111,21 +152,29 @@ function parseLatency(v: unknown): LatencySpec | string {
     return { kind: 'lognormal_prior', medianMs: v.medianMs as number, p95Ms: v.p95Ms as number };
   }
   if (v.kind === 'empirical') {
-    const p = onlyKeys(v, ['kind', 'samplesMs', 'source', 'n', 'sourceSha256'], 'latency');
+    // Z06-8: the samples are never stated inline; they are the `latencyMs` of the source file's distinct records.
+    const p = onlyKeys(v, ['kind', 'source', 'n', 'sourceSha256'], 'latency');
     if (p !== null) return p;
-    const s = v.samplesMs;
-    if (!Array.isArray(s) || s.length === 0 || !s.every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0)) return 'latency: samplesMs must be finite ms > 0';
-    if (v.n !== s.length) return 'latency: n must equal the number of samples';
-    if (s.length < CALIBRATION_MIN_SAMPLES) return `latency: empirical latency needs at least ${CALIBRATION_MIN_SAMPLES} samples`;
+    if (!Number.isSafeInteger(v.n) || (v.n as number) < CALIBRATION_MIN_SAMPLES) return `latency: empirical latency needs n >= ${CALIBRATION_MIN_SAMPLES}`;
     if (typeof v.source !== 'string' || v.source.length === 0) return 'latency: source is required';
     if (typeof v.sourceSha256 !== 'string' || !SHA256_RE.test(v.sourceSha256)) return 'latency: sourceSha256 must be a sha256 hex digest';
-    return { kind: 'empirical', samplesMs: [...s] as number[], source: v.source, n: s.length, sourceSha256: v.sourceSha256 };
+    const e = { source: v.source, n: v.n as number, sourceSha256: v.sourceSha256 };
+    const records = readEvidence('latency', e, read);
+    if (typeof records === 'string') return records;
+    const samplesMs = records.map((r) => r.latencyMs);
+    if (!samplesMs.every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0)) return 'latency: every source record needs latencyMs, finite and > 0';
+    const spec: LatencySpec = { kind: 'empirical', samplesMs: samplesMs as number[], source: e.source, n: e.n, sourceSha256: e.sourceSha256 };
+    verifiedLatency.add(spec);
+    return spec;
   }
   return 'latency: kind must be lognormal_prior or empirical';
 }
 
-/** Validates a parsed parameter file (edge cases: `E_SIM_PARAMS` on anything missing, unknown or out of range). */
-export function parseSimParamSet(v: unknown): Result<SimParamSet, SimParamsError> {
+/**
+ * Validates a parsed parameter file (edge cases: `E_SIM_PARAMS` on anything missing, unknown or out of range) and reads
+ * every evidence source it names through `read` (Z06-8), so no set with unverified evidence is ever returned.
+ */
+export function parseSimParamSet(v: unknown, read: SimParamsReader): Result<SimParamSet, SimParamsError> {
   const fail = (problem: string): Result<SimParamSet, SimParamsError> => ({ ok: false, error: { code: 'E_SIM_PARAMS', problem } });
   if (!isObj(v)) return fail('not an object');
   const top = onlyKeys(v, TOP_KEYS, 'set');
@@ -133,7 +182,7 @@ export function parseSimParamSet(v: unknown): Result<SimParamSet, SimParamsError
   if (typeof v.name !== 'string' || !NAME_RE.test(v.name)) return fail('name must be lower-case letters, digits and dashes');
   if (!Number.isSafeInteger(v.createdAtMs) || (v.createdAtMs as number) < 0) return fail('createdAtMs must be Unix ms');
   if (typeof v.provenance !== 'string' || v.provenance.length === 0) return fail('provenance is required');
-  const latency = parseLatency(v.latency);
+  const latency = parseLatency(v.latency, read);
   if (typeof latency === 'string') return fail(latency);
   for (const k of ['fFailEntry', 'fFailExit', 'fExp', 'pSwEntry', 'pSwExit'] as const) if (!prob(v[k])) return fail(`${k} must be in [0, 1)`);
   const mix = v.failureClassMix;
@@ -170,7 +219,10 @@ export function parseSimParamSet(v: unknown): Result<SimParamSet, SimParamsError
     if (typeof e.source !== 'string' || e.source.length === 0) return fail(`evidence.${k}: source is required`);
     if (!Number.isSafeInteger(e.n) || (e.n as number) < min) return fail(`evidence.${k}: n must be an integer >= ${min}`);
     if (typeof e.sourceSha256 !== 'string' || !SHA256_RE.test(e.sourceSha256)) return fail(`evidence.${k}: sourceSha256 must be a sha256 hex digest`);
-    evidence[k as EvidenceKey] = { source: e.source, n: e.n as number, sourceSha256: e.sourceSha256 };
+    const entry = { source: e.source, n: e.n as number, sourceSha256: e.sourceSha256 };
+    const records = readEvidence(`evidence.${k}`, entry, read);
+    if (typeof records === 'string') return fail(records);
+    evidence[k as EvidenceKey] = entry;
   }
   // Ruling Z06-3: any value more optimistic than prior-2026-10 needs evidence for its group.
   const P = PRIOR_2026_10;
@@ -212,7 +264,7 @@ export function parseSimParamSet(v: unknown): Result<SimParamSet, SimParamsError
  * Loads `sim-params/<name>.json` through `read` (the caller's file reader for that folder). The file's own name must
  * match. Any problem, including a read error, is `E_SIM_PARAMS`: simulation modes refuse to start on it.
  */
-export function loadSimParamSet(name: string, read: (fileName: string) => string): Result<SimParamSet, SimParamsError> {
+export function loadSimParamSet(name: string, read: SimParamsReader): Result<SimParamSet, SimParamsError> {
   if (!NAME_RE.test(name)) return { ok: false, error: { code: 'E_SIM_PARAMS', problem: 'invalid set name' } };
   let parsed: unknown;
   try {
@@ -220,7 +272,7 @@ export function loadSimParamSet(name: string, read: (fileName: string) => string
   } catch {
     return { ok: false, error: { code: 'E_SIM_PARAMS', problem: 'file missing or not JSON' } };
   }
-  const r = parseSimParamSet(parsed);
+  const r = parseSimParamSet(parsed, read);
   if (r.ok && r.value.name !== name) return { ok: false, error: { code: 'E_SIM_PARAMS', problem: 'file name and set name differ' } };
   return r;
 }
