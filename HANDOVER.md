@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 11:25 PM: owner "Done" on `RPC_CHAINSTACK_URL`.** This uses the free Developer-plan Solana Mainnet global node "Node 15-10-2026 23:20" (the owner's screenshot showed it Running). The owner was told not to upgrade (the plan screen offered $49+/mo). Card M0-EXIT, builder `session_01SbKdxFjQtA4gbUQc81bJ35` (Sonnet, Auto), adds:
+  - a workflow_dispatch-only provider read check that prints PASS/FAIL, slot and latency only;
+  - docs/reviews/M0-EXIT.md with evidence for every M0 exit clause.
+  After it merges, the supervisor dispatches the check once on the default branch to close "two free providers answer reads".
 - **15 Oct 11:2x PM: owner "Done" on the Shyft secret `RPC_SHYFT_URL`.** It cannot be verified from here (secrets are not listable); the M0-exit read check will confirm it. Chainstack steps sent (console.chainstack.com; secret `RPC_CHAINSTACK_URL`).
 - **15 Oct 11:17 PM: Z01-COV.**
   - Spec gate: per-file 100% branch coverage on pure-function files (SPEC-B DoD #8, ARCH 16.1, SPEC-A 318/640). There is no package-wide threshold. 52 tests added.
