@@ -43,8 +43,8 @@ export function createLatencyModel(spec: LatencySpec): LatencyModel {
     };
   }
   const samples = [...spec.samplesMs];
-  if (samples.length === 0 || samples.length !== spec.n || !samples.every((x) => Number.isFinite(x) && x >= 0)) {
-    throw new RangeError('E_SIM_PARAMS: empirical latency needs n finite samples >= 0');
+  if (samples.length === 0 || samples.length !== spec.n || !samples.every((x) => Number.isFinite(x) && x > 0)) {
+    throw new RangeError('E_SIM_PARAMS: empirical latency needs n finite samples > 0');
   }
   return {
     sampleMs(rng, multiplier) {
@@ -54,8 +54,10 @@ export function createLatencyModel(spec: LatencySpec): LatencyModel {
   };
 }
 
-/** The first slot at or after `latencyMs` past slot `from`, dated on `basis` (the B1 fix: no fixed slot time). */
+/** The first slot at or after `latencyMs` past slot `from`, and never before `from`, dated on `basis` (the B1 fix: no fixed slot time). */
 export function slotAfterLatency(from: Slot, latencyMs: number, basis: SlotTimeBasis): Slot {
   if (!Number.isFinite(latencyMs) || latencyMs < 0) throw new RangeError('latency must be finite ms >= 0');
-  return timeToSlot(slotToTimeMs(from, basis) + latencyMs, basis);
+  // Never before the decision slot (ruling Z06-2): slots sharing one block-time second would otherwise map back.
+  const landing = timeToSlot(slotToTimeMs(from, basis) + latencyMs, basis);
+  return landing < from ? from : landing;
 }

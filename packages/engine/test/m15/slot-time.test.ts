@@ -141,6 +141,19 @@ describe('slot-time inverse and bases', () => {
     }
   });
 
+  it('ruling Z06-6: at a slot\'s exact time, timeToSlot returns that slot even when the first guess overshoots', () => {
+    // Slot 1002's time on this basis divides back to just over 2 slots, so the first guess is 1003; only the
+    // `>=` step-back (slot-time.ts, the settle loop) returns 1002.
+    const b = liveSlotTimeBasis({ slot: S(1_000), atMs: 1_790_000_000_000 }, 267.66);
+    const ms = slotToTimeMs(S(1_002), b);
+    assert.ok(Math.ceil((ms - 1_790_000_000_000) / 267.66) === 3);
+    assert.equal(timeToSlot(ms, b), S(1_002));
+    // At an exact anchor time in a history basis too.
+    const h = historySlotTimeBasis([blockTimeAnchor(S(100), 1_000), blockTimeAnchor(S(4_100), 2_000)]);
+    assert.equal(timeToSlot(2_000_000, h), S(4_100));
+    assert.equal(timeToSlot(1_000_000, h), S(100));
+  });
+
   it('slot time never falls as slots rise (history bases)', () => {
     for (let seed = 0; seed < 100; seed++) {
       const basis = randomBasis(seed);

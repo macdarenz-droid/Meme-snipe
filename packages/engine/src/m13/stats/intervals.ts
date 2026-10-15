@@ -25,6 +25,7 @@ import { normalQuantile, studentTQuantile } from './special.ts';
 export const BOOTSTRAP_RESAMPLES = 10_000;
 export const CI_LEVEL = 0.95;
 const TWO_POW_32 = 4_294_967_296;
+const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface Interval { low: number; high: number }
 export interface BootstrapInterval extends Interval { meanBlockUsed: number }
@@ -118,9 +119,9 @@ export function stationaryBootstrapMeanCi(x: readonly number[], o: { resamples: 
 /** The day-cluster t-interval of the mean (A14). `days[i]` is the calendar day of `x[i]` (UTC, e.g. "2026-10-15"). */
 export function dayClusterMeanCi(x: readonly number[], days: readonly string[], level: 0.95 = CI_LEVEL): ClusterInterval | null {
   checkFinite(x);
-  if (!Array.isArray(days) || days.length !== x.length || !days.every((d) => typeof d === 'string' && d.length > 0)) {
-    throw new RangeError('E_INPUT: one day key per observation');
-  }
+  if (!Array.isArray(days) || days.length !== x.length) throw new RangeError('E_INPUT: one day key per observation');
+  // Ruling Z06-4: one exact form, so '2026-10-15' and '2026-10-15 ' can never split one day into two clusters.
+  if (!days.every((d) => typeof d === 'string' && DAY_KEY_RE.test(d))) throw new RangeError('E_INPUT: day keys must be YYYY-MM-DD');
   if (level !== CI_LEVEL) throw new RangeError('E_INPUT: level is 0.95');
   const v = sampleVariance(x);
   if (v === null) return null;

@@ -9,7 +9,12 @@ import { canonicalJson, type Cu, type FailureClass, type Lamports, type MicroLam
 
 export type LatencySpec =
   | { kind: 'lognormal_prior'; medianMs: number; p95Ms: number }
-  | { kind: 'empirical'; samplesMs: number[]; source: string; n: number };
+  | { kind: 'empirical'; samplesMs: number[]; source: string; n: number; sourceSha256: string };
+
+/** Where a value more optimistic than the prior came from (ruling Z06-3): a named source, its sample count and its hash. */
+export interface Evidence { source: string; n: number; sourceSha256: string }
+/** failure: fFailEntry, fFailExit, fExp, failureClassMix; sandwich: pSwEntry, pSwExit; gap: gapThroughStopP99Bps; cost: any cost. */
+export type EvidenceKey = 'failure' | 'sandwich' | 'gap' | 'cost';
 
 export interface SimCost {
   cuLimit: Cu; leanCuPriceMicroLamports: MicroLamportsPerCu; senderTipLamports: Lamports; jitoTipLamports: Lamports;
@@ -24,6 +29,7 @@ export interface SimParamSet {
   pSwEntry: number; pSwExit: number;
   gapThroughStopP99Bps: number; gapSamples: number;
   cost: SimCost;
+  evidence: Partial<Record<EvidenceKey, Evidence>>;
 }
 
 export interface ModelVersions { fillModelVersion: string; costModelVersion: string }
@@ -43,7 +49,14 @@ const MIX_TOLERANCE = 1e-9;
 const COST_KEYS = ['cuLimit', 'leanCuPriceMicroLamports', 'senderTipLamports', 'jitoTipLamports', 'premiumTipLamports',
   'premiumCuPriceMicroLamports', 'janitorPriorityLamports'] as const;
 const TOP_KEYS = ['name', 'createdAtMs', 'provenance', 'latency', 'fFailEntry', 'fFailExit', 'fExp', 'failureClassMix',
-  'pSwEntry', 'pSwExit', 'gapThroughStopP99Bps', 'gapSamples', 'cost'] as const;
+  'pSwEntry', 'pSwExit', 'gapThroughStopP99Bps', 'gapSamples', 'cost', 'evidence'] as const;
+const EVIDENCE_KEYS: readonly EvidenceKey[] = ['failure', 'sandwich', 'gap', 'cost'];
+const SHA256_RE = /^[0-9a-f]{64}$/;
+
+/** POLICY (SPEC-A A-M10-05 `sim.calibration.min_samples`): samples behind a measured failure, sandwich, latency or cost value. */
+export const CALIBRATION_MIN_SAMPLES = 100;
+/** POLICY (SPEC-A A-M10-04 `sim.gap.min_samples`, never below 50): stop exits behind a measured gap-through-stop p99. */
+export const GAP_MIN_SAMPLES = 50;
 
 /**
  * `prior-2026-10`, the ARCH priors (logic 2): latency lognormal with median 1,500 ms and p95 5,000 ms (A-04); entry and
@@ -59,6 +72,7 @@ export const PRIOR_2026_10: SimParamSet = Object.freeze({
   failureClassMix: { unknown: 1 },
   pSwEntry: 0.1, pSwExit: 0.1,
   gapThroughStopP99Bps: 2_000, gapSamples: 0,
+  evidence: {},
   cost: {
     cuLimit: 200_000 as Cu, leanCuPriceMicroLamports: 25_000n as MicroLamportsPerCu, senderTipLamports: 5_000n as Lamports,
     jitoTipLamports: 1_000n as Lamports, premiumTipLamports: 1_000_000n as Lamports, premiumCuPriceMicroLamports: 1_000_000n as MicroLamportsPerCu,
@@ -82,7 +96,7 @@ function u64(v: unknown): bigint | null {
 
 /** The JSON form of a set (bigints as decimal strings, VM convention 2): what the file holds, canonicalised. */
 export function simParamSetJson(set: SimParamSet): string {
-  return canonicalJson({ ...set, cost: { ...set.cost } });
+  return canonicalJson({ ...set, cost: { ...set.cost }, evidence: { ...set.evidence } });
 }
 
 function parseLatency(v: unknown): LatencySpec | string {
@@ -91,16 +105,21 @@ function parseLatency(v: unknown): LatencySpec | string {
     const p = onlyKeys(v, ['kind', 'medianMs', 'p95Ms'], 'latency');
     if (p !== null) return p;
     if (!posMs(v.medianMs) || !posMs(v.p95Ms) || (v.p95Ms as number) <= (v.medianMs as number)) return 'latency: need 0 < medianMs < p95Ms';
+    // A prior is never faster than the ARCH prior (ruling Z06-3): measured latency comes as `empirical` with its source.
+    const prior = PRIOR_2026_10.latency as { medianMs: number; p95Ms: number };
+    if ((v.medianMs as number) < prior.medianMs || (v.p95Ms as number) < prior.p95Ms) return 'latency: a lognormal prior faster than prior-2026-10 needs measured (empirical) latency';
     return { kind: 'lognormal_prior', medianMs: v.medianMs as number, p95Ms: v.p95Ms as number };
   }
   if (v.kind === 'empirical') {
-    const p = onlyKeys(v, ['kind', 'samplesMs', 'source', 'n'], 'latency');
+    const p = onlyKeys(v, ['kind', 'samplesMs', 'source', 'n', 'sourceSha256'], 'latency');
     if (p !== null) return p;
     const s = v.samplesMs;
-    if (!Array.isArray(s) || s.length === 0 || !s.every((x) => typeof x === 'number' && Number.isFinite(x) && x >= 0)) return 'latency: samplesMs must be finite ms >= 0';
+    if (!Array.isArray(s) || s.length === 0 || !s.every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0)) return 'latency: samplesMs must be finite ms > 0';
     if (v.n !== s.length) return 'latency: n must equal the number of samples';
+    if (s.length < CALIBRATION_MIN_SAMPLES) return `latency: empirical latency needs at least ${CALIBRATION_MIN_SAMPLES} samples`;
     if (typeof v.source !== 'string' || v.source.length === 0) return 'latency: source is required';
-    return { kind: 'empirical', samplesMs: [...s] as number[], source: v.source, n: s.length };
+    if (typeof v.sourceSha256 !== 'string' || !SHA256_RE.test(v.sourceSha256)) return 'latency: sourceSha256 must be a sha256 hex digest';
+    return { kind: 'empirical', samplesMs: [...s] as number[], source: v.source, n: s.length, sourceSha256: v.sourceSha256 };
   }
   return 'latency: kind must be lognormal_prior or empirical';
 }
@@ -139,9 +158,41 @@ export function parseSimParamSet(v: unknown): Result<SimParamSet, SimParamsError
     if (b === null) return fail(`cost.${k} must be a u64 decimal string`);
     big[k] = b;
   }
+  const ev = v.evidence;
+  if (!isObj(ev)) return fail('evidence: not an object');
+  const evidence: Partial<Record<EvidenceKey, Evidence>> = {};
+  for (const [k, e] of Object.entries(ev)) {
+    if (!(EVIDENCE_KEYS as readonly string[]).includes(k)) return fail(`evidence: unknown key ${JSON.stringify(k).slice(0, 80)}`);
+    if (!isObj(e)) return fail(`evidence.${k}: not an object`);
+    const ek = onlyKeys(e, ['source', 'n', 'sourceSha256'], `evidence.${k}`);
+    if (ek !== null) return fail(ek);
+    const min = k === 'gap' ? GAP_MIN_SAMPLES : CALIBRATION_MIN_SAMPLES;
+    if (typeof e.source !== 'string' || e.source.length === 0) return fail(`evidence.${k}: source is required`);
+    if (!Number.isSafeInteger(e.n) || (e.n as number) < min) return fail(`evidence.${k}: n must be an integer >= ${min}`);
+    if (typeof e.sourceSha256 !== 'string' || !SHA256_RE.test(e.sourceSha256)) return fail(`evidence.${k}: sourceSha256 must be a sha256 hex digest`);
+    evidence[k as EvidenceKey] = { source: e.source, n: e.n as number, sourceSha256: e.sourceSha256 };
+  }
+  // Ruling Z06-3: any value more optimistic than prior-2026-10 needs evidence for its group.
+  const P = PRIOR_2026_10;
+  const need = (key: EvidenceKey, field: string): Result<SimParamSet, SimParamsError> | null =>
+    evidence[key] === undefined ? fail(`${field} is more optimistic than prior-2026-10 without ${key} evidence (source, n, sourceSha256)`) : null;
+  const checks: Array<[boolean, EvidenceKey, string]> = [
+    [(v.fFailEntry as number) < P.fFailEntry, 'failure', 'fFailEntry'], [(v.fFailExit as number) < P.fFailExit, 'failure', 'fFailExit'],
+    [(v.fExp as number) < P.fExp, 'failure', 'fExp'],
+    [canonicalJson(mix) !== canonicalJson(P.failureClassMix), 'failure', 'failureClassMix'],
+    [(v.pSwEntry as number) < P.pSwEntry, 'sandwich', 'pSwEntry'], [(v.pSwExit as number) < P.pSwExit, 'sandwich', 'pSwExit'],
+    [(v.gapThroughStopP99Bps as number) < P.gapThroughStopP99Bps, 'gap', 'gapThroughStopP99Bps'],
+    [(c.cuLimit as number) < P.cost.cuLimit, 'cost', 'cost.cuLimit'],
+    ...COST_KEYS.slice(1).map((k) => [(big[k] as bigint) < (P.cost[k] as bigint), 'cost', `cost.${k}`] as [boolean, EvidenceKey, string]),
+  ];
+  for (const [optimistic, key, field] of checks) if (optimistic) { const r = need(key, field); if (r !== null) return r; }
+  if ((v.gapThroughStopP99Bps as number) < P.gapThroughStopP99Bps && (v.gapSamples as number) < GAP_MIN_SAMPLES) {
+    return fail(`gapSamples must be at least ${GAP_MIN_SAMPLES} for a measured gapThroughStopP99Bps`);
+  }
   return {
     ok: true,
     value: {
+      evidence,
       name: v.name, createdAtMs: v.createdAtMs as UnixMs, provenance: v.provenance, latency,
       fFailEntry: v.fFailEntry as number, fFailExit: v.fFailExit as number, fExp: v.fExp as number,
       failureClassMix: { ...(mix as Partial<Record<FailureClass, number>>) },

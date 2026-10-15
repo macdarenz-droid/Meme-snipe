@@ -10,7 +10,8 @@ import { normalQuantile } from './special.ts';
 export * from './descriptive.ts';
 export * from './intervals.ts';
 export * from './pbo.ts';
-export * from './sharpe.ts';
+// `dsrFromVariance` (the paper's raw DSR, without ruling Z06-1's floor) stays internal: worked-example tests only (Z06-5).
+export { daysToYears, dsr, EULER_GAMMA, expectedMaxSharpe, loSharpeSe, maxTrialsForWindow, minBtlYears, minTrl, psr } from './sharpe.ts';
 export { normalCdf, normalQuantile, studentTCdf, studentTQuantile } from './special.ts';
 
 /** The SPEC-A `Stats` interface, plus A14's day-cluster and gate intervals. */

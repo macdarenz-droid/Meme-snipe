@@ -5,11 +5,17 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import { createRng } from '../../src/m10/rng.ts';
 import {
-  cscvPbo, dayClusterMeanCi, daysToYears, dsr, dsrFromVariance, expectedMaxSharpe, gateMeanCi, kurtosisNonExcess, loSharpeSe,
+  cscvPbo, dayClusterMeanCi, daysToYears, dsr, expectedMaxSharpe, gateMeanCi, kurtosisNonExcess, loSharpeSe,
   maxTrialsForWindow, mean, minBtlYears, minTrl, nonInferiorityLowerBound, normalQuantile, policyMeanBlock, psr, rankStability, skew,
   stationaryBootstrapMeanCi, stationaryBootstrapRuns, stats, studentizedTsBootstrapSharpeDiff, tStatMean, wilson,
 } from '../../src/m13/stats/index.ts';
+import * as statsIndex from '../../src/m13/stats/index.ts';
+import * as engineIndex from '../../src/index.ts';
+import { dsrFromVariance } from '../../src/m13/stats/sharpe.ts';
 
+// Z06-6: the non-inferiority bound for the fixed inputs below, recorded from this implementation at 65de5be8 (a regression
+// pin, not an independent reference).
+const PINNED_NI = -0.01555045854524426;
 const close = (a: number, b: number, tol: number, what = ''): void => assert.ok(Math.abs(a - b) <= tol, `${what} ${a} vs ${b}`);
 const normals = (seed: number, n: number, mu = 0, sd = 1): number[] => {
   const r = createRng(seed);
@@ -185,7 +191,7 @@ describe('intervals', () => {
   });
 
   it('day-cluster t-interval, hand-computed: x = 1..6 on three days', () => {
-    const c = dayClusterMeanCi([1, 2, 3, 4, 5, 6], ['a', 'a', 'b', 'b', 'c', 'c']);
+    const c = dayClusterMeanCi([1, 2, 3, 4, 5, 6], ['2026-08-01', '2026-08-01', '2026-08-02', '2026-08-02', '2026-08-03', '2026-08-03']);
     assert.ok(c !== null);
     if (c !== null) {
       close(c.estimate, 3.5, 1e-15);
@@ -194,13 +200,20 @@ describe('intervals', () => {
       close(c.high, 3.5 + 4.302653 * Math.sqrt(4 / 3), 1e-5);
       close(c.deff, (4 / 3) / (3.5 / 6), 1e-12);
     }
-    assert.equal(dayClusterMeanCi([1, 2, 3], ['a', 'a', 'a']), null);   // one day
+    assert.equal(dayClusterMeanCi([1, 2, 3], ['2026-08-01', '2026-08-01', '2026-08-01']), null);   // one day
     assert.throws(() => dayClusterMeanCi([1, 2], ['a']), /one day key/);
+  });
+
+  it('ruling Z06-4: day keys must be YYYY-MM-DD, so a stray space cannot split one day into two clusters', () => {
+    const x = [1, 2, 3, 4];
+    assert.throws(() => dayClusterMeanCi(x, ['2026-10-15', '2026-10-15 ', '2026-10-16', '2026-10-16']), /YYYY-MM-DD/);
+    for (const bad of ['d1', '2026-10-5', ' 2026-10-15', '2026/10/15', '']) assert.throws(() => dayClusterMeanCi(x, [bad, bad, '2026-10-16', '2026-10-16']), /YYYY-MM-DD/);
+    assert.throws(() => gateMeanCi(x, ['2026-10-15', '2026-10-15 ', '2026-10-16', '2026-10-16'], { rng: createRng(1) }), /YYYY-MM-DD/);
   });
 
   it('the gate interval is the one with the lower lower bound, and reports DEFF', () => {
     const r = createRng(8), x: number[] = [], days: string[] = [];
-    for (let d = 0; d < 20; d++) { const e = normals(r.nextU32(), 1)[0] as number; for (let i = 0; i < 6; i++) { x.push(e + (normals(r.nextU32(), 1)[0] as number)); days.push(`d${d}`); } }
+    for (let d = 0; d < 20; d++) { const e = normals(r.nextU32(), 1)[0] as number; for (let i = 0; i < 6; i++) { x.push(e + (normals(r.nextU32(), 1)[0] as number)); days.push(`2026-08-${String(d + 1).padStart(2, '0')}`); } }
     const g = gateMeanCi(x, days, { rng: createRng(9) });
     assert.ok(g !== null);
     if (g !== null) {
@@ -209,7 +222,7 @@ describe('intervals', () => {
       assert.equal(g.deff, g.cluster.deff);
       assert.ok(g.deff > 1);
     }
-    assert.equal(gateMeanCi([1, 2, 3], ['a', 'a', 'a'], { rng: createRng(1) }), null);
+    assert.equal(gateMeanCi([1, 2, 3], ['2026-08-01', '2026-08-01', '2026-08-01'], { rng: createRng(1) }), null);
   });
 
   it('non-inferiority lower bound: near the true difference, reproducible, null for constant series', () => {
@@ -217,7 +230,15 @@ describe('intervals', () => {
     const lb = nonInferiorityLowerBound(live, paper, { level: 0.95, rng: createRng(3) });
     assert.ok(lb !== null && lb < mean(live) - mean(paper) && lb > mean(live) - mean(paper) - 0.1, String(lb));
     assert.equal(lb, nonInferiorityLowerBound(live, paper, { level: 0.95, rng: createRng(3) }));
+    // Ruling Z06-6: pinned value, so a change to the bound's arithmetic (quantile side, pairing, block rule) is caught.
+    assert.equal(lb, PINNED_NI);
     assert.equal(nonInferiorityLowerBound(Array(10).fill(0), paper, { level: 0.95, rng: createRng(3) }), null);
+  });
+
+  it('ruling Z06-5: dsrFromVariance (no floor) is not exported from the stats or engine index', () => {
+    assert.equal('dsrFromVariance' in statsIndex, false);
+    assert.equal('dsrFromVariance' in engineIndex, false);
+    assert.equal(typeof statsIndex.dsr, 'function');
   });
 
   it('studentized Sharpe-difference interval: excludes 0 for a clearly better series, contains 0 for equal ones', () => {

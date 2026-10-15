@@ -28,12 +28,14 @@ describe('A-M10-01 latency model', () => {
   });
 
   it('empirical latency draws uniformly from the samples', () => {
-    const m = createLatencyModel({ kind: 'empirical', samplesMs: [100, 200, 300, 400], source: 'test', n: 4 });
+    const m = createLatencyModel({ kind: 'empirical', samplesMs: [100, 200, 300, 400], source: 'test', n: 4, sourceSha256: 'a'.repeat(64) });
     const rng = createRng(5), counts = new Map<number, number>();
     for (let i = 0; i < 40_000; i++) { const v = m.sampleMs(rng, 1); counts.set(v, (counts.get(v) ?? 0) + 1); }
     assert.deepEqual([...counts.keys()].sort((a, b) => a - b), [100, 200, 300, 400]);
     for (const c of counts.values()) assert.ok(Math.abs(c - 10_000) < 400, String(c));
-    assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: [], source: 'x', n: 0 }), /E_SIM_PARAMS/);
+    assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: [], source: 'x', n: 0, sourceSha256: 'a'.repeat(64) }), /E_SIM_PARAMS/);
+    // Ruling Z06-2: a zero-ms sample is not a latency.
+    assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: [0, 5], source: 'x', n: 2, sourceSha256: 'a'.repeat(64) }), /E_SIM_PARAMS/);
   });
 
   it('the same seed gives the same draws (reproducible)', () => {
@@ -59,5 +61,16 @@ describe('B1 on the latency path: ms become slots at the measured slot time', ()
     const s = slotAfterLatency(S(10), 1_500, sept);
     assert.ok(slotToTimeMs(s, sept) - slotToTimeMs(S(10), sept) >= 1_500);
     assert.throws(() => slotAfterLatency(S(1), -1, july), /latency/);
+  });
+});
+
+describe('ruling Z06-2: a landing is never before the decision slot', () => {
+  it('slots sharing one block-time second: slotAfterLatency(104, 0) is not slot 100', () => {
+    // The red team's repro: slots 100-105 share 1,000,000 ms, so the first slot at that time is 100.
+    const b = historySlotTimeBasis([{ slot: S(100), atMs: 1_000_000 }, { slot: S(105), atMs: 1_000_000 }, { slot: S(200), atMs: 1_040_000 }]);
+    const landing = slotAfterLatency(S(104), 0, b);
+    assert.ok(landing >= 104n, String(landing));
+    assert.equal(landing, S(104));
+    assert.equal(slotAfterLatency(S(104), 1, b), S(106));
   });
 });
