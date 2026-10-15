@@ -8,7 +8,7 @@ import { describe, it } from 'vitest';
 import type { Slot } from '@bot/types';
 import { createRng } from '../../src/m10/rng.ts';
 import {
-  blockTimeAnchor, historySlotTimeBasis, liveSlotTimeBasis, slotDelta, slotSpanMs, slotToTimeMs, slotToUnixMs, timeToSlot, type SlotTimeAnchor, type SlotTimeBasis,
+  blockTimeAnchor, historySlotTimeBasis, liveSlotTimeBasis, MAX_ANCHOR_GAP_MS, slotDelta, slotSpanMs, slotToTimeMs, slotToUnixMs, timeToSlot, type SlotTimeAnchor, type SlotTimeBasis,
 } from '../../src/m15/slot-time.ts';
 
 const S = (n: number | bigint): Slot => BigInt(n) as Slot;
@@ -40,11 +40,10 @@ describe('B1: dating uses the measured slot time, never 400 ms', () => {
   });
 });
 
-describe('A10 acceptance: slots convert within ±1 s of getBlockTime anchors on two dates with different slot lengths', () => {
+describe('B1 on recorded daily anchors: each day has its own slot length (2026-07-23 ≈ 420 ms, 2026-09-06 ≈ 316 ms)', () => {
   // Recorded daily anchors from 2026-07-22 to 2026-09-07 (research/launch-probe): slot time fell from about 420 ms to
-  // about 316 ms over those weeks.
+  // about 316 ms over those weeks. Too far apart for a basis (ruling Z06-7), so these tests use the anchors directly.
   const daily = anchorsOf('daily_2026_07_22_to_09_07');
-  const basis = historySlotTimeBasis(daily);
   const dayRate = (i: number): number => ((daily[i + 1] as SlotTimeAnchor).atMs - (daily[i] as SlotTimeAnchor).atMs) / slotDelta((daily[i] as SlotTimeAnchor).slot, (daily[i + 1] as SlotTimeAnchor).slot);
   const july = 1, september = daily.length - 2;                       // 2026-07-23 and 2026-09-06 (UTC)
 
@@ -58,44 +57,77 @@ describe('A10 acceptance: slots convert within ±1 s of getBlockTime anchors on 
   });
 
   for (const [label, i] of [['2026-07-23', july], ['2026-09-06', september]] as const) {
-    it(`${label}: the day's start and end slots convert within ±1 s of their block times; the old 400 ms rule misses by minutes`, () => {
+    it(`${label}: the old 400 ms rule dates the day's end slot minutes away from its block time`, () => {
       const start = daily[i] as SlotTimeAnchor, end = daily[i + 1] as SlotTimeAnchor;
-      const check = (dated: number, anchor: SlotTimeAnchor): void => assert.ok(Math.abs(dated - anchor.atMs) <= 1_000, `${dated - anchor.atMs} ms`);
-      check(slotToTimeMs(start.slot, basis), start);
-      check(slotToTimeMs(end.slot, basis), end);
-      check(slotToUnixMs(end.slot, basis), end);
-      // A slot inside the day is dated at that day's own slot length.
-      const mid = start.slot + (end.slot - start.slot) / 2n;
-      assert.ok(Math.abs(slotSpanMs(start.slot, mid, basis) / slotDelta(start.slot, mid) - dayRate(i)) < 1e-6);
-      assert.throws(() => check(oldDate(start, end.slot), end));
+      const check = (dated: number): void => assert.ok(Math.abs(dated - end.atMs) <= 1_000, `${dated - end.atMs} ms`);
+      check(start.atMs + slotDelta(start.slot, end.slot) * dayRate(i));   // the day's own slot length
+      assert.throws(() => check(oldDate(start, end.slot)));
       assert.ok(Math.abs(oldDate(start, end.slot) - end.atMs) > 60_000);
     });
   }
 
-  it('every recorded anchor (48 days and both dense October sets) converts within ±1 s on a basis built from its set', () => {
-    for (const key of ['daily_2026_07_22_to_09_07', 'dense_2026_10_01', 'dense_2026_10_06']) {
-      const set = anchorsOf(key), b = historySlotTimeBasis(set);
-      for (const a of set) assert.ok(Math.abs(slotToTimeMs(a.slot, b) - a.atMs) <= 1_000, key);
+  it('ruling Z06-7: a basis from daily anchors is refused, and the 60 s maximum can be tightened but never widened', () => {
+    assert.throws(() => historySlotTimeBasis(daily), /E_SLOT_BASIS: anchors \d+ ms apart, more than 60000 ms/);
+    assert.throws(() => historySlotTimeBasis(daily, { maxAnchorGapMs: 86_400_000 }), /maximum anchor gap/);
+    assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(0), 0), blockTimeAnchor(S(150), 61)]), /more than 60000/);
+    assert.equal(historySlotTimeBasis([blockTimeAnchor(S(0), 0), blockTimeAnchor(S(150), 60)]).kind, 'history');
+    assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(0), 0), blockTimeAnchor(S(150), 40)], { maxAnchorGapMs: 30_000 }), /more than 30000/);
+    assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(0), 0), blockTimeAnchor(S(10), 3)], { maxAnchorGapMs: 0 }), /maximum anchor gap/);
+  });
+});
+
+/** Runs of a recorded set whose neighbours are at most 60 s apart; in each, anchors kept greedily at most 60 s apart. */
+function keptAndHeld(set: readonly SlotTimeAnchor[]): { bases: SlotTimeBasis[]; held: Array<{ a: SlotTimeAnchor; b: SlotTimeBasis }>; kept: number } {
+  const runs: SlotTimeAnchor[][] = [];
+  for (const a of set) {
+    const run = runs.at(-1), last = run?.at(-1);
+    if (run !== undefined && last !== undefined && a.atMs - last.atMs <= MAX_ANCHOR_GAP_MS) run.push(a); else runs.push([a]);
+  }
+  const bases: SlotTimeBasis[] = [], held: Array<{ a: SlotTimeAnchor; b: SlotTimeBasis }> = [];
+  let kept = 0;
+  for (const run of runs) {
+    if (run.length < 3) continue;
+    // Keep the first anchor, then the farthest anchor within 60 s of the last kept one; the ones skipped are held out.
+    const keep: SlotTimeAnchor[] = [run[0] as SlotTimeAnchor], skipped: SlotTimeAnchor[] = [];
+    let i = 0;
+    while (i < run.length - 1) {
+      let j = i + 1;
+      while (j + 1 < run.length && (run[j + 1] as SlotTimeAnchor).atMs - (run[i] as SlotTimeAnchor).atMs <= MAX_ANCHOR_GAP_MS) j++;
+      for (let k = i + 1; k < j; k++) skipped.push(run[k] as SlotTimeAnchor);
+      keep.push(run[j] as SlotTimeAnchor);
+      i = j;
     }
+    if (keep.length < 2 || new Set(keep.map((a) => a.atMs)).size < 2) continue;
+    const b = historySlotTimeBasis(keep);
+    bases.push(b);
+    kept += keep.length;
+    for (const a of skipped) held.push({ a, b });
+  }
+  return { bases, held, kept };
+}
+
+describe('A10 acceptance (ruling Z06-7): with anchors at most 60 s apart, slots convert within ±1 s at the anchors and ±2 s between them, on two dates', () => {
+  // Recorded October sets (no live call): 2026-10-01/02 (mean 267.6 ms a slot) and 2026-10-06/07 (269.4 ms). A10's ±1 s
+  // holds at the anchors (whole-second block times); between anchors at most 60 s apart the tolerance is ±2 s.
+  const mean = (set: readonly SlotTimeAnchor[]): number => ((set.at(-1) as SlotTimeAnchor).atMs - (set[0] as SlotTimeAnchor).atMs) / slotDelta((set[0] as SlotTimeAnchor).slot, (set.at(-1) as SlotTimeAnchor).slot);
+
+  it('the two dates have different mean slot lengths', () => {
+    const a = mean(anchorsOf('dense_2026_10_01')), b = mean(anchorsOf('dense_2026_10_06'));
+    assert.ok(a > 265 && a < 272 && b > 265 && b < 272 && Math.abs(a - b) > 1, `${a} ${b}`);
   });
 
-  // Measured on the recorded October sets (finding for the supervisor, PR body): slot time drifts within a day, so a
-  // slot between anchors is dated only as well as the anchors are dense. Per-day anchors are off by tens of seconds at
-  // mid-day; anchors one minute apart give about ±2 s on held-out anchors, the floor of a whole-second block time.
-  it('held-out anchors: per-day spacing misses by > 30 s mid-day; one-minute spacing stays within ±2 s', () => {
-    for (const key of ['dense_2026_10_01']) {
-      const set = anchorsOf(key);
-      const ends = historySlotTimeBasis([set[0] as SlotTimeAnchor, set[set.length - 1] as SlotTimeAnchor]);
-      const worstEnds = Math.max(...set.map((a) => Math.abs(slotToTimeMs(a.slot, ends) - a.atMs)));
-      assert.ok(worstEnds > 30_000, String(worstEnds));
-      const grid = new Map<number, SlotTimeAnchor>();
-      for (const a of set) if (!grid.has(Math.floor(a.atMs / 60_000))) grid.set(Math.floor(a.atMs / 60_000), a);
-      const kept = new Set(grid.values()), b = historySlotTimeBasis([...kept]);
-      const held = set.filter((a) => !kept.has(a));
-      assert.ok(held.length > 300);
-      for (const a of held) assert.ok(Math.abs(slotToTimeMs(a.slot, b) - a.atMs) <= 2_000, `${a.slot}`);
-    }
-  });
+  for (const [key, minHeld] of [['dense_2026_10_01', 200], ['dense_2026_10_06', 1]] as const) {
+    it(`${key}: every kept anchor within ±1 s, every held-out anchor between them within ±2 s`, () => {
+      const { bases, held, kept } = keptAndHeld(anchorsOf(key));
+      assert.ok(bases.length > 0 && kept >= 2);
+      assert.ok(held.length >= minHeld, `${held.length} held out`);
+      for (const b of bases) for (const a of (b as { anchors: readonly SlotTimeAnchor[] }).anchors) assert.ok(Math.abs(slotToTimeMs(a.slot, b) - a.atMs) <= 1_000);
+      for (const { a, b } of held) {
+        assert.ok(Math.abs(slotToTimeMs(a.slot, b) - a.atMs) <= 2_000, `${a.slot}: ${slotToTimeMs(a.slot, b) - a.atMs} ms`);
+        assert.ok(Math.abs(slotToUnixMs(a.slot, b) - a.atMs) <= 2_000);
+      }
+    });
+  }
 });
 
 describe('A10: the 12-, 20- and 8-slot thresholds rechecked at 400, 267 and 200 ms per slot', () => {
@@ -121,10 +153,11 @@ describe('slot-time inverse and bases', () => {
     let s = 400_000_000, t = 1_790_000_000;
     for (let i = 0, k = 2 + (rng.nextU32() % 20); i < k; i++) {
       anchors.push(blockTimeAnchor(S(s), t));
-      const n = 1 + (rng.nextU32() % 5_000);
+      const n = 1 + (rng.nextU32() % 130);                             // at most 58.5 s apart (ruling Z06-7)
       s += n;
       t += Math.floor((n * (200 + rng.nextFloat() * 250)) / 1_000);   // whole seconds, sometimes flat
     }
+    anchors.push(blockTimeAnchor(S(s), t), blockTimeAnchor(S(s + 130), t + 40));   // ends with a sloped pair (130 slots in 40 s)
     return historySlotTimeBasis(anchors);
   };
 
@@ -149,8 +182,8 @@ describe('slot-time inverse and bases', () => {
     assert.ok(Math.ceil((ms - 1_790_000_000_000) / 267.66) === 3);
     assert.equal(timeToSlot(ms, b), S(1_002));
     // At an exact anchor time in a history basis too.
-    const h = historySlotTimeBasis([blockTimeAnchor(S(100), 1_000), blockTimeAnchor(S(4_100), 2_000)]);
-    assert.equal(timeToSlot(2_000_000, h), S(4_100));
+    const h = historySlotTimeBasis([blockTimeAnchor(S(100), 1_000), blockTimeAnchor(S(300), 1_060)]);
+    assert.equal(timeToSlot(1_060_000, h), S(300));
     assert.equal(timeToSlot(1_000_000, h), S(100));
   });
 
@@ -169,9 +202,9 @@ describe('slot-time inverse and bases', () => {
   });
 
   it('outside the anchors, history extrapolates at the nearest pair with a positive rate (a flat end pair is skipped)', () => {
-    const b = historySlotTimeBasis([blockTimeAnchor(S(100), 1_000), blockTimeAnchor(S(102), 1_000), blockTimeAnchor(S(4_102), 2_000), blockTimeAnchor(S(4_104), 2_000)]);
+    const b = historySlotTimeBasis([blockTimeAnchor(S(100), 1_000), blockTimeAnchor(S(102), 1_000), blockTimeAnchor(S(302), 1_050), blockTimeAnchor(S(304), 1_050)]);
     assert.equal(slotToTimeMs(S(0), b), 1_000_000 - 100 * 250);
-    assert.equal(slotToTimeMs(S(8_104), b), 2_000_000 + 4_000 * 250);
+    assert.equal(slotToTimeMs(S(504), b), 1_050_000 + 200 * 250);
     assert.equal(timeToSlot(999_000, b), S(96));
     assert.equal(timeToSlot(1_000_000, b), S(100));               // slots 100-102 share that second (the flat pair)
     assert.equal(timeToSlot(1_000_001, b), S(103));
@@ -181,7 +214,7 @@ describe('slot-time inverse and bases', () => {
     assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(1), 1)]), /E_SLOT_BASIS/);
     assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(1), 1), blockTimeAnchor(S(1), 2)]), /one slot/);
     assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(1), 5), blockTimeAnchor(S(10), 4)]), /falls/);
-    assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(0), 0), blockTimeAnchor(S(10), 100)]), /slot time outside/);
+    assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(0), 0), blockTimeAnchor(S(10), 59)]), /slot time outside/);
     assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(0), 0), blockTimeAnchor(S(100_000), 1)]), /slot time outside/);
     assert.throws(() => historySlotTimeBasis([blockTimeAnchor(S(0), 7), blockTimeAnchor(S(2), 7)]), /same time/);
     assert.throws(() => liveSlotTimeBasis({ slot: S(1), atMs: 0 }, 99), /E_SLOT_BASIS/);

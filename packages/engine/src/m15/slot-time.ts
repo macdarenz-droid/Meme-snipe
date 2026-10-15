@@ -5,7 +5,7 @@
 // `timeToSlot`, on one of two bases:
 // - live: the latest primary height reading of the slot clock (its slot and receive time) and the measured slot
 //   duration from performance samples (`SlotClock.slotDurationMsEstimate()`, `m15.slot_ms_initial` before the first);
-// - history: block-time anchors (`getBlockTime`, whole seconds [A-37]; per UTC day at least), interpolated linearly
+// - history: block-time anchors (`getBlockTime`, whole seconds [A-37]; at most 60 s apart, ruling Z06-7), interpolated linearly
 //   between neighbouring anchors and extrapolated outside them at the rate of the nearest pair.
 // A named upper bound for a timing guard, where a larger slot time is the stricter choice, is not a slot time and is
 // not built here (MIGRATION A10 acceptance; Zeroed `worker/src/run/config.ts:81-84`).
@@ -42,15 +42,25 @@ export function liveSlotTimeBasis(anchor: SlotTimeAnchor, slotMs: number): SlotT
 
 /** Block-time resolution: `getBlockTime` is whole seconds [A-37], so an anchor is up to 1 s early. */
 export const BLOCK_TIME_RESOLUTION_MS = 1_000;
+/**
+ * Ruling Z06-7 (docs/DECISIONS.md, "Z06"): neighbouring history anchors are at most 60 s apart. Slot time drifts within
+ * a day, so per-day anchors date mid-day slots tens of seconds off; with anchors at most 60 s apart a slot between them
+ * is dated within ±2 s (the floor of a whole-second block time; A10's ±1 s holds only at the anchors).
+ */
+export const MAX_ANCHOR_GAP_MS = 60_000;
 
 /**
- * A history basis from at least two anchors (any order). Slots must be distinct, times must not fall as slots rise,
+ * A history basis from at least two anchors (any order), neighbours at most `maxAnchorGapMs` apart (default and ceiling
+ * MAX_ANCHOR_GAP_MS). Slots must be distinct, times must not fall as slots rise,
  * and the time between neighbours must fit their slot count at SLOT_MS_MIN..SLOT_MS_MAX per slot, give or take the
  * 1 s block-time resolution (anchors that disagree more are not the same chain's clock). Outside the anchors, slots
  * are dated at the rate of the nearest pair whose times differ (`firstRate`, `lastRate`), so at least one pair must.
  * Anything else throws `E_SLOT_BASIS`: history without a sound clock is not dated at all.
  */
-export function historySlotTimeBasis(anchors: readonly SlotTimeAnchor[]): SlotTimeBasis {
+export function historySlotTimeBasis(anchors: readonly SlotTimeAnchor[], o: { maxAnchorGapMs?: number } = {}): SlotTimeBasis {
+  // A caller may only tighten the gap (a smaller maximum), never widen it.
+  const maxGap = o.maxAnchorGapMs ?? MAX_ANCHOR_GAP_MS;
+  if (!Number.isFinite(maxGap) || maxGap <= 0 || maxGap > MAX_ANCHOR_GAP_MS) throw new RangeError(`E_SLOT_BASIS: the maximum anchor gap must be in (0, ${MAX_ANCHOR_GAP_MS}] ms`);
   if (anchors.length < 2) throw new RangeError('E_SLOT_BASIS: a history basis needs at least two anchors');
   for (const a of anchors) checkAnchor(a);
   const sorted = [...anchors].sort((x, y) => (x.slot < y.slot ? -1 : x.slot > y.slot ? 1 : 0)).map((a) => Object.freeze({ ...a }));
@@ -60,6 +70,7 @@ export function historySlotTimeBasis(anchors: readonly SlotTimeAnchor[]): SlotTi
     if (a.slot === b.slot) throw new RangeError('E_SLOT_BASIS: two anchors on one slot');
     if (b.slot - a.slot > MAX_SLOT_GAP) throw new RangeError('E_SLOT_BASIS: anchors too far apart');
     if (b.atMs < a.atMs) throw new RangeError('E_SLOT_BASIS: anchor time falls as slots rise');
+    if (b.atMs - a.atMs > maxGap) throw new RangeError(`E_SLOT_BASIS: anchors ${b.atMs - a.atMs} ms apart, more than ${maxGap} ms`);
     const n = slotDelta(a.slot, b.slot), span = b.atMs - a.atMs;
     if (span < n * SLOT_MS_MIN - BLOCK_TIME_RESOLUTION_MS || span > n * SLOT_MS_MAX + BLOCK_TIME_RESOLUTION_MS) {
       throw new RangeError(`E_SLOT_BASIS: anchors imply a slot time outside ${SLOT_MS_MIN}..${SLOT_MS_MAX} ms`);

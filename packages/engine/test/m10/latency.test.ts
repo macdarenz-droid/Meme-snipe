@@ -54,8 +54,8 @@ describe('B1 on the latency path: ms become slots at the measured slot time', ()
   });
 
   it('in history the landing slot follows the day-specific anchors (420 ms vs 316 ms slots)', () => {
-    const july = historySlotTimeBasis([{ slot: S(0), atMs: 0 }, { slot: S(1_000), atMs: 420_000 }]);
-    const sept = historySlotTimeBasis([{ slot: S(0), atMs: 0 }, { slot: S(1_000), atMs: 316_000 }]);
+    const july = historySlotTimeBasis([{ slot: S(0), atMs: 0 }, { slot: S(100), atMs: 42_000 }]);
+    const sept = historySlotTimeBasis([{ slot: S(0), atMs: 0 }, { slot: S(100), atMs: 31_600 }]);
     assert.equal(slotAfterLatency(S(10), 1_500, july), S(14));          // 1,500 / 420 = 3.6 slots
     assert.equal(slotAfterLatency(S(10), 1_500, sept), S(15));          // 1,500 / 316 = 4.7 slots
     const s = slotAfterLatency(S(10), 1_500, sept);
