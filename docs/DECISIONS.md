@@ -3946,3 +3946,18 @@ Builder notes (for review):
 - **Z08-20 · MINOR.** The PumpPortal reconnect backfill starts from `backfill.verifiedSlot()` (A-M03-02's chain-verified slot); a notice's slot never moves it.
 - **Z08-21 · MINOR.** A service Retry-After above 3,600 s stops that service with a critical alert (`retry_after_too_long`) until `resumeService`; up to 3,600 s is waited out. The RPC gateway already stops on a Retry-After above its own cap (`retry_after_too_long`, C03).
 - **Z08-22 · MINOR.** `createProviderMonitor` takes the meter and records every answer (ok, error, timeout), so the ledger's four counts are real.
+
+### Z08 round 2 (#327 red team at 0f7a4450: 1 BLOCKER, 1 MAJOR, 1 MINOR; supervisor rulings Z08-23 to Z08-25; each probe is a test in `test/m07/z08-round2.test.ts` that fails on 0f7a4450 and passes after)
+
+- **Z08-23 · BLOCKER, a large hour is read frame by frame.** Recovery and md-pull decoded a whole segment into one string, and V8 strings stop at about 512 MiB. So an intact hour that decodes to more (576 MB in the probe) was cut at start (blocking start for 23 s), and md-pull never signed it, so the disk filled. Both now read through `m07/frames.ts`, which is pure and on the purelist at 100%. It walks the gzip members one at a time: each member's end is the first later `frameStarts` offset at which it decodes, so its own CRC-32 and length decide. It splits the decoded bytes into lines in chunks of at most 1 MiB. A member that fails to decode, or is not UTF-8, stops the walk, and recovery cuts only there. md-pull counts lines while streaming and signs only when every member is good and every line is JSON ending in a newline. Tests:
+  - a real 587 MB (decoded) segment is kept whole and signed, marked `[timing]` so it runs only in `check`;
+  - chunk sizes 1, 2, 3, 7, 64 and 1 MiB give the same lines across members and multi-byte characters;
+  - a false magic in a member's trailer is not taken for an end;
+  - a torn or non-UTF-8 member is cut and none of its lines are counted.
+- **Z08-24 · MAJOR, a failed rotate is recovered.** A rotate that failed (for example, ENOSPC on the manifest rename) left the file closed or open with no manifest, and resume never recovered it. The rotate catch now closes the fd if it is still open (never twice) and adds the path to `broken`. resume() then cuts it, writes its manifest with a `crash` gap, and md-pull can sign it.
+- **Z08-25 · MINOR, one alert per write-failure episode.** A persistent EIO raised a critical alert at every 60 s disk check (about 120 an hour). Now:
+  - An episode starts at the first failed write: one critical `M07.write_failed` and one critical `M07.recording_halted`.
+  - Resumes back off: the first comes 60 s after the failure, then the wait doubles up to 1 h. An earlier `resume()` returns false, and the disk manager logs `M07.disk_ok_resume` only when a resume really happened.
+  - Each later failure in the episode logs the warning `M07.recording_halted_again`.
+  - The next write that succeeds ends the episode, so a later failure alerts again.
+  - Test: an hour of EIO with checks every 60 s gives exactly the two critical alerts, with resumes at 60, 180, 420, 900 and 1,860 s; the wait stays at 1 h; a good write starts a fresh episode.

@@ -239,7 +239,7 @@ describe('A-M07-02 segment writer', () => {
     append(q, now.t, 3, 'coverage');
     assert.equal(w.pump(), 1);                                            // only coverage was written
     failFsync = false;
-    now.t += 5_000;
+    now.t += 60_000;                                                      // resumes wait 60 s after a failed write (Z08-25)
     w.resume();
     w.resume();                                                           // a second resume is a no-op
     append(q, now.t, 4);
@@ -270,11 +270,14 @@ describe('A-M07-02 segment writer', () => {
     full = true;
     assert.deepEqual(w.rotate(), []);                                     // the manifest could not be written
     assert.ok(lines.some((l) => l.code === 'M07.write_failed' && l.fields.op === 'rotate' && l.fields.code === 'ENOSPC'));
+    now.t += 60_000;
     w.resume();
     now.t = H0 + 3_600_000;                                              // a new hour needs a new folder: also full
     append(q, now.t, 2, 'coverage');
     w.pump();
-    assert.ok(lines.some((l) => l.code === 'M07.write_failed' && l.fields.op === 'open'));
+    // Same failed-write episode (no write went through in between): no second critical alert (ruling Z08-25).
+    assert.equal(lines.filter((l) => l.code === 'M07.write_failed').length, 1);
+    assert.ok(lines.some((l) => l.code === 'M07.recording_halted_again' && l.level === 'warning'));
     const failures = lines.filter((l) => l.code === 'M07.write_failed').length;
     for (let i = 0; i < 5; i += 1) append(q, now.t + i, 3 + i, 'coverage');
     w.pump();

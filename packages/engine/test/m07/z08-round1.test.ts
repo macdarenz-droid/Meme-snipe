@@ -86,6 +86,7 @@ describe('Z08-14 a failed flush never leaves a torn frame, a miscount or a signe
     tear = true;
     w.flush();
     assert.ok(w.isHalted());
+    now.t += 60_000;                                                    // Z08-25: resumes back off
     w.resume();
     append(q, now.t + 20, 3);
     w.pump();
@@ -94,7 +95,7 @@ describe('Z08-14 a failed flush never leaves a torn frame, a miscount or a signe
     assert.ok(m !== undefined, JSON.stringify(lines));
     assert.equal(m.records, 2);                                           // records 1 and 3; 2 was lost
     assert.equal(decoded(dir, m.path), 2);                                // the whole file decodes: no torn frame inside
-    assert.deepEqual(m.gaps, [{ fromMs: now.t + 10, toMs: now.t + 11, reason: 'halted' }]);
+    assert.deepEqual(m.gaps, [{ fromMs: H0 + 1_010, toMs: H0 + 1_011, reason: 'halted' }]);
   });
 
   it('a write that cannot be cut back closes the part without a manifest; resume recovers it and the stream goes on in a new part', () => {
@@ -119,6 +120,7 @@ describe('Z08-14 a failed flush never leaves a torn frame, a miscount or a signe
     w.pump();
     w.flush();
     failing = false;
+    now.t += 60_000;                                                    // Z08-25: resumes back off
     w.resume();
     const part0 = JSON.parse(fs.readFileSync(join(dir, '2026-10-15/10/decision.manifest.json'), 'utf8')) as { records: number; gaps: Array<{ reason: string }> };
     assert.deepEqual([part0.records, decoded(dir, '2026-10-15/10/decision.ndjson.gz'), part0.gaps.map((g) => g.reason)], [1, 1, ['crash']]);
@@ -128,7 +130,7 @@ describe('Z08-14 a failed flush never leaves a torn frame, a miscount or a signe
     const [m1] = w.rotate();
     assert.equal(m1?.path, '2026-10-15/10/decision.p1.ndjson.gz');
     assert.equal(m1?.records, 1);
-    assert.ok(m1?.gaps.some((g) => g.reason === 'halted' && g.fromMs === now.t + 5));
+    assert.ok(m1?.gaps.some((g) => g.reason === 'halted' && g.fromMs === H0 + 1_005));
   });
 
   it('md-pull decodes before it signs: a file whose sha256 matches its manifest but does not decode to its record count gets no receipt', () => {
@@ -176,6 +178,7 @@ describe('Z08-15 and Z08-16 the disk manager', () => {
     eio = false;
     const disk = new DiskManager({ dataDir: dir, receiptsDir: join(dir, 'receipts'), publicKey: pub, policy: DEFAULT_DISK_POLICY,
       usage: () => ({ totalBytes: 55e9, freeBytes: 40e9 }), writer: w, nowMs: () => ms(now.t), log: noLog });
+    now.t += 60_000;
     disk.check();
     assert.equal(w.isHalted(), false);
     append(q, now.t + 1, 2);

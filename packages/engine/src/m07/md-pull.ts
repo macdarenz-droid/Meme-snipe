@@ -13,7 +13,7 @@ import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import type { UnixMs } from '@bot/types';
 import { isDayName, isHourName, isManifest, manifestNameOf, parseSegmentName } from './manifest.ts';
-import { compressorFor } from './segments.ts';
+import { scanGzipFrames } from './frames.ts';
 import { receiptText, signReceipt, type PullReceipt } from './receipt-sig.ts';
 import { receiptFileName } from './receipts.ts';
 
@@ -31,27 +31,23 @@ export interface PullResult { days: string[]; verified: PullReceipt[]; mismatche
 
 const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
 
-/** Lines the file decodes to, or -1 when it does not decode completely (or the codec cannot be read here). */
-export function decodedLines(bytes: Uint8Array, codec: 'gzip' | 'zstd'): number {
-  const comp = compressorFor(codec);
-  if (comp === null) return -1;
-  if (bytes.length === 0) return 0;
-  let text: string;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(comp.decompress(bytes));
-  } catch {
-    return -1;
-  }
-  if (!text.endsWith('\n')) return -1;
-  const lines = text.slice(0, -1).split('\n');
-  for (const l of lines) {
+/**
+ * Lines the file decodes to, or -1 when it does not decode completely, a line is not JSON, the last line has no newline
+ * or the codec cannot be read here. Read member by member with bounded text chunks (ruling Z08-23), so an hour of any
+ * size is checked without one huge string.
+ */
+export function decodedLines(bytes: Uint8Array, codec: 'gzip' | 'zstd', chunkBytes?: number): number {
+  if (codec !== 'gzip') return -1;
+  let bad = false;
+  const scan = scanGzipFrames(bytes, (l) => {
+    if (bad) return;
     try {
       JSON.parse(l);
     } catch {
-      return -1;
+      bad = true;
     }
-  }
-  return lines.length;
+  }, chunkBytes);
+  return bad || !scan.complete || scan.unterminated ? -1 : scan.lines;
 }
 
 export function runPull(o: {

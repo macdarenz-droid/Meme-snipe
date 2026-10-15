@@ -42,7 +42,8 @@ export interface DiskDeps {
   policy: DiskPolicy;
   /** Total and free bytes of the filesystem holding `dataDir` (production: `fs.statfsSync`). */
   usage: () => DiskUsage;
-  writer: { halt(reason: string): void; resume(): void; isHalted(): boolean; haltReason(): string | null; openPaths(): string[] };
+  /** `resume` returns false while a failed-write episode is still backing off (ruling Z08-25). */
+  writer: { halt(reason: string): void; resume(): boolean | void; isHalted(): boolean; haltReason(): string | null; openPaths(): string[] };
   nowMs: () => UnixMs;
   log: (level: DiskLevel, code: string, fields: Record<string, string | number>) => void;
   fs?: Pick<typeof nodeFs, 'readdirSync' | 'readFileSync' | 'existsSync' | 'statSync' | 'unlinkSync' | 'rmdirSync'>;
@@ -182,8 +183,8 @@ export class DiskManager {
     } else if (this.deps.writer.isHalted()) {
       // Ruling Z08-15: once every limit is met, a halt resumes, whether this check or a failed write made it. A write that
       // fails again halts again (one critical alert per episode).
-      this.deps.log('info', 'M07.disk_ok_resume', { reason: this.deps.writer.haltReason() ?? 'unknown' });
-      this.deps.writer.resume();
+      const reason = this.deps.writer.haltReason() ?? 'unknown';
+      if (this.deps.writer.resume() !== false) this.deps.log('info', 'M07.disk_ok_resume', { reason });
     }
     return {
       usedPct: usedPct(), freeBytes, recorderBytes, receipted: left.filter(pulled).length, unreceipted: left.filter((s) => !pulled(s)).length,

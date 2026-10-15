@@ -19,12 +19,13 @@ import { createHash } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import * as zlib from 'node:zlib';
+import { scanGzipFrames } from './frames.ts';
 import type { UnixMs } from '@bot/types';
 import type { EncodedRecord, Gap } from '../recorder/queue.ts';
 import { recordLine } from '../recorder/queue.ts';
 import { STREAM_NAMES, type StreamName } from '../recorder/streams.ts';
 import {
-  addRecord, buildManifest, emptyStats, frameStarts, hourOf, isDayName, isHourName, isManifest, manifestNameOf, parseSegmentName, segmentPaths, statsOfLine,
+  addRecord, buildManifest, emptyStats, hourOf, isDayName, isHourName, isManifest, manifestNameOf, parseSegmentName, segmentPaths, statsOfLine,
   type Codec, type ManifestGap, type SegmentManifest, type SegmentStats,
 } from './manifest.ts';
 
@@ -32,6 +33,9 @@ export const DIR_MODE = 0o750;
 export const FILE_MODE = 0o640;
 /** Streams that keep recording while the writer is halted (A-M07-03 logic 2). */
 export const KEEP_WHEN_HALTED: ReadonlySet<StreamName> = new Set<StreamName>(['universe_manifest', 'coverage']);
+/** Ruling Z08-25: resumes after a failed write wait 60 s, then twice as long each time, at most 1 h. */
+export const RESUME_BACKOFF_MIN_MS = 60_000;
+export const RESUME_BACKOFF_MAX_MS = 3_600_000;
 /** Records taken from the queue in one pump. */
 export const TAKE_MAX = 5_000;
 
@@ -140,6 +144,8 @@ export class SegmentWriter {
   private hour: ReturnType<typeof hourOf> | null = null;
   /** Segments closed without a manifest after a write that could not be cut back (recovered on resume). */
   private readonly broken: string[] = [];
+  /** A failed-write episode: alerted once; resumes back off 60 s → 1 h; ends at the next successful write (Z08-25). */
+  private episode: { halts: number; backoffMs: number; resumeAtMs: number } | null = null;
   private lastRotated: string;
   private halted: { since: UnixMs; reason: string } | null = null;
   private readonly haltGaps = new Map<StreamName, ManifestGap>();
@@ -205,21 +211,14 @@ export class SegmentWriter {
     const abs = join(dataDir, rel);
     const buf = fs.readFileSync(abs);
     // A codec this Node cannot read keeps every byte (nothing is ever cut or deleted unread); its manifest counts 0 records.
-    let keep = comp === null ? buf.length : 0;
-    let text = '';
-    if (comp !== null) {
-      for (const cut of [buf.length, ...frameStarts(buf, codec).reverse()]) {
-        try {
-          text = new TextDecoder().decode(comp.decompress(buf.subarray(0, cut)));
-          keep = cut;
-          break;
-        } catch { /* a cut inside a frame: try an earlier one */ }
-      }
-    }
-    // A decoded frame always ends with a whole line; anything else is cut too.
-    const lines = text === '' ? [] : text.split('\n').filter((l) => l !== '');
+    // Ruling Z08-23: gzip is read member by member (frames.ts), never as one string; the file is cut only at the first
+    // member that fails its own check, so every intact frame is kept whatever the hour's size.
     const stats = emptyStats();
-    for (const line of lines) addRecord(stats, statsOfLine(line));
+    let keep = buf.length;
+    if (comp !== null) {
+      const scan = scanGzipFrames(buf, (line) => { if (line !== '') addRecord(stats, statsOfLine(line)); });
+      keep = scan.goodEnd;
+    }
     const fd = fs.openSync(abs, 'r+');
     try {
       fs.ftruncateSync(fd, keep);
@@ -264,12 +263,20 @@ export class SegmentWriter {
   halt(reason: string): void {
     if (this.halted !== null) return;
     this.halted = { since: this.deps.nowMs(), reason };
-    this.deps.log('critical', 'M07.recording_halted', { reason });
+    // Ruling Z08-25: one critical alert per failed-write episode, however many resumes fail again.
+    if (this.episode === null || this.episode.halts === 0) this.deps.log('critical', 'M07.recording_halted', { reason });
+    else this.deps.log('warning', 'M07.recording_halted_again', { reason, failures: this.episode.halts + 1 });
+    if (this.episode !== null) this.episode.halts += 1;
   }
 
-  resume(): void {
-    if (this.halted === null) return;
+  /**
+   * Ends a halt. After a failed write, resumes are spaced out (ruling Z08-25): the first after 60 s, then doubling up to
+   * 1 h, until a write succeeds; an earlier call does nothing. Returns true when the writer resumed.
+   */
+  resume(): boolean {
+    if (this.halted === null) return false;
     const now = this.deps.nowMs();
+    if (this.episode !== null && now < this.episode.resumeAtMs) return false;
     for (const rel of this.broken.splice(0)) {
       const seg = parseSegmentName(rel.slice(14)) as { stream: string; codec: Codec };
       try {
@@ -283,6 +290,7 @@ export class SegmentWriter {
     this.haltGaps.clear();
     this.halted = null;
     this.deps.log('info', 'M07.recording_resumed', {});
+    return true;
   }
 
   /** Drains the queue into the current hour's segments. Returns the number of records written to buffers. */
@@ -369,8 +377,15 @@ export class SegmentWriter {
 
   private failed(op: string, e: unknown): void {
     const code = typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : 'unknown';
-    // Once per halt episode: a full disk would otherwise log on every record of the streams still kept.
-    if (this.halted === null) this.deps.log('critical', 'M07.write_failed', { op, code });
+    const now = this.deps.nowMs();
+    if (this.episode === null) {
+      this.deps.log('critical', 'M07.write_failed', { op, code });
+      this.episode = { halts: 0, backoffMs: RESUME_BACKOFF_MIN_MS, resumeAtMs: now + RESUME_BACKOFF_MIN_MS };
+    } else if (this.halted === null) {
+      // A resume that failed again: wait twice as long before the next one (at most 1 h).
+      this.episode.backoffMs = Math.min(RESUME_BACKOFF_MAX_MS, this.episode.backoffMs * 2);
+      this.episode.resumeAtMs = now + this.episode.backoffMs;
+    }
     this.halt(`write_failed:${code}`);
   }
 
@@ -385,6 +400,7 @@ export class SegmentWriter {
         this.fs.writeSync(seg.fd, frame);
         this.fs.fsyncSync(seg.fd);
         seg.bytes += frame.length;
+        if (this.halted === null) this.episode = null;                    // a write went through: the episode is over
         for (const x of pending) addRecord(seg.stats, x.rec);
       } catch (e) {
         // Ruling Z08-14: the frame may be half written. Cut the file back to its last good frame, so nothing is ever
@@ -416,9 +432,11 @@ export class SegmentWriter {
     const out: SegmentManifest[] = [];
     const hourUtc = (this.hour ?? hourOf(this.deps.nowMs())).hourUtc;
     for (const seg of this.open.values()) {
+      let closed = false;
       try {
         this.fs.fsyncSync(seg.fd);
         this.fs.closeSync(seg.fd);
+        closed = true;
         const bytes = this.fs.readFileSync(seg.abs);
         if (bytes.length !== seg.bytes) throw Object.assign(new Error('segment size differs from the bytes written'), { code: 'E_SIZE' });
         const m = buildManifest({ path: seg.rel, stream: seg.stream, codec: this.deps.codec, hourUtc, bytes: bytes.length, sha256: sha256(bytes), stats: seg.stats, gaps: seg.gaps });
@@ -429,7 +447,11 @@ export class SegmentWriter {
         this.deps.onManifest?.(m);
         out.push(m);
       } catch (e) {
-        this.failed('rotate', e);                                         // no manifest: the next start recovers it
+        // Ruling Z08-24: no manifest was written. The file is closed and recovered (cut, `crash` gap) on resume or at the
+        // next start.
+        if (!closed) try { this.fs.closeSync(seg.fd); } catch { /* failing */ }   // never close a number twice
+        this.broken.push(seg.rel);
+        this.failed('rotate', e);
       }
     }
     this.open.clear();
