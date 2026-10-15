@@ -904,11 +904,19 @@ import re, sys, datetime
 dec, conf, wf, tree = sys.argv[1:5]
 lines = open(dec).read().splitlines()
 rows = [l for l in lines if re.match(r"\| \d{4}-\d{2}-\d{2} \| B10-PULL id=", l)]
-ids = {re.match(r"\| \S+ \| B10-PULL id=(\S+) ", l).group(1) for l in rows}
-# OF-FIX (OFX-3): older pins stay as history, each retired by a later pinned row
-ret = [re.match(r"\| \S+ \| B10-PULL-RETIRED id=(\S+) by=(\S+) ", l) for l in lines if "| B10-PULL-RETIRED " in l]
+dated = {}
+for l in rows:
+    m = re.match(r"\| (\S+) \| B10-PULL id=(\S+) ", l)
+    assert dated.setdefault(m.group(2), m.group(1)) == m.group(1), "id %s pinned under two dates" % m.group(2)
+ids = set(dated)
+# OF-FIX (OFX-3, OFX-7): older pins stay as history, each retired by a pinned row dated on
+# or after it; any other RETIRED row is an error (the guard then pins nothing)
+ret = [re.match(r"\| \S+ \| B10-PULL-RETIRED id=(\S+) by=(\S+) ", l) for l in lines if re.match(r"\| [^|]* \| B10-PULL-RETIRED", l)]
 assert all(ret), "RETIRED row fields"
-gone = {m.group(1) for m in ret if m.group(2) in ids and m.group(1) != m.group(2)}
+for m in ret:
+    o, n = m.group(1), m.group(2)
+    assert o != n and o in ids and n in ids and dated[n] >= dated[o], "RETIRED id=%s by=%s: not retired by a pinned, later row" % (o, n)
+gone = {m.group(1) for m in ret}
 rows = [l for l in rows if re.match(r"\| \S+ \| B10-PULL id=(\S+) ", l).group(1) not in gone]
 assert len(rows) == 1, "%d pinned B10-PULL rows" % len(rows)
 r = rows[0]

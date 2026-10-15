@@ -37,7 +37,7 @@ The root cause is shown from the code and an anchor already in the repo, without
 
 - `scanner/plan.go` holds `epochBracket`, `pickEpochs` and the new `planUnits`.
   - The anchor nearest the window start (B2, B4, or the October slot) bounds the epochs at 0.20–0.50 s per slot, with ±120 s of slack because B2 and B4 are known only to the minute.
-  - A bisect on epoch first-block times finds the last epoch whose first block is at or before t0.
+  - A bisect on epoch first-block times finds the last epoch whose first block is before t0 (OFX-8).
   - A walk then adds epochs while the next one starts before t1.
   - Each probe is `OpenEpoch` (cid, HEAD, 64 B header) plus one 4 MiB first-block read. The selected epochs also get one 4 MiB last-block read, as before.
   - It fails when:
@@ -49,9 +49,31 @@ The root cause is shown from the code and an anchor already in the repo, without
 - The scanner writes `plan.txt`, containing "N units planned (epochs …)" with a count and epoch numbers only, and refuses to run on 0 units.
 - `scan-day.sh` copies that plan line to the summary. On scanner exit 0 the day fails with exit 1 at the scan step if the plan line is missing, if N = 0, or if there are 0 finished units. It is then never reported as "scanned".
 - `archiveBase` is now a `var` that starts as `defaultArchiveBase`. No flag, environment variable or non-test file assigns it or takes its address; `TestArchiveBaseIsATestOnlySeam` parses every non-test file to check this.
-- The B10-PULL rows are append-only, and `ag_pinned_id` required exactly one. So an older pin is now retired by a `B10-PULL-RETIRED id=<old> by=<new>` row whose `<new>` is itself a pinned row.
-  - A retirement by an unknown id, or two pins retiring each other, leaves nothing pinned, which fails closed.
+- The B10-PULL rows are append-only, and `ag_pinned_id` required exactly one. So an older pin is now retired by a `B10-PULL-RETIRED id=<old> by=<new>` row.
+  - Both `<old>` and `<new>` must be B10-PULL rows, and `<new>` must be dated on or after `<old>` (OFX-7).
+  - Anything else leaves nothing pinned, which fails closed: an unknown successor, an unknown retired id, an older pin retiring a newer one, a RETIRED row that cannot be read, one id pinned under two dates, or two pins retiring each other.
+  - A chain (a by b, b by c) keeps the newest.
   - The test-ci OF-7 row check applies the same rule.
+- An epoch is kept when its first block is strictly before the window start (OFX-8). Block times are whole seconds, so the epoch before one whose first block is exactly at t0 can end with blocks of that same second.
+- `firstBlockFrom` stops with an error after walking 64 MiB without a block node (OFX-9). That epoch then fails, instead of the file being read to its end.
+- test-ci refuses any workflow or CI script that sets or names `archiveBase` at build time, for example `-X main.archiveBase` in any spelling (OFX-10).
+
+## Review and red team rulings (15 Oct, at cf2a667c): OFX-7 to OFX-10
+
+The review and the red team passed the PR, with two MINORs and two notes. All four were fixed, each with a test that fails before and passes after.
+
+- **OFX-7.** At cf2a667c, a RETIRED row with an unknown successor was ignored, so the retired pin stayed pinned. An older pin could also retire a newer one and re-pin `b10pull-of-1`.
+  - Rule: any RETIRED row whose `by=` is not a pinned row, or is dated before the retired row, leaves nothing pinned.
+  - test-ci cases: by-unknown, older-retires-newer, retires-unknown, malformed, two-dates and chain.
+  - Before the fix, by-unknown, older-retires-newer and two-dates failed.
+- **OFX-8.** The bisect and the start check use `t < t0`, and `covers()` matches.
+  - `TestPickEpochsSameSecondBoundary` sets t0 to the first block of epochs 1005, 1006 and 1010.
+  - Before the fix it picked 1005 to 1005 for the first block of 1005; it now picks 1004.
+- **OFX-9.** The walk to the next block node is capped at 64 MiB.
+  - `TestFirstBlockFromCapsTheWalk` uses a 96 MiB fake CAR with no block node.
+  - Before the fix it returned `no block after offset` after reading to the end of the file; it now returns the cap error after about 64 MiB.
+- **OFX-10.** test-ci adds a check that refuses `-X …archiveBase` (or any mention of `archiveBase`) in `.github` and `research/historical/ci`. Fixtures in workflows and scripts are refused; a plain `-ldflags "-s -w"` is not.
+- The scanner tree changed, so the `b10pull-of-2` row was re-pinned: scannerRev `730154f67f27fe688d1ca28f11a9e714182a674e-go1.24.7`, pinnedAt 2026-10-15T22:15:21Z.
 
 ## Ruling OFX-6 (15 Oct), on the open point
 
