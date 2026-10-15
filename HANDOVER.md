@@ -144,6 +144,7 @@
     - Root cause (Z02 base code): on a clock step back, `rotate()` opens a second append stream on a day whose first stream is still flushing, so the two writes can land in either order.
     - Comment 6204465043 on #327; its one re-run of the failed job is queued.
   - New fix card LOG-ORDER (ruling LOG-1): builder `session_01BfyLKa4mpPN4WMmaJK3m4v` (the Z08 builder, idle until #327 merges), branch `claude/log-order` from `fa741fb4`. Lines must reach the file in write order. The test must fail every time on the old code. Review and red team follow.
+  - 10:38 AM: LOG-ORDER #329 open, head `73058b5f` (logfile.ts, a new m27 test, DECISIONS "LOG-ORDER"). The builder reports 4 new tests that fail on `fa741fb4` (plus only the test seam) and pass on the head; full `pnpm check` still running. Review: `session_01Eo8pMLZFtqf7VtkTnqyVoZ`. Red team: `session_01Et9a7HZLsEkdhHRWQQamJ1` (both the idle Z08 reviewers).
   - OF-FIX #328 head `3b311c92` (OFX-11..13 done). I read the one-line `zeroed-files.txt` diff and added `deps-reviewed:b808f5a10217a0f11f93e1f750b6a56d`. Re-check of the delta goes to `session_01RChWiiJc1Gz9XYnCmdC1wm`. CI on `65b0309a` is stale (the builder disclosed it was pushed before tests finished).
 - **16 Oct 8:52 AM: Z08 #327 and OF-FIX #328 in review.**
   - Z08 #327 (builder `session_01BfyLKa4mpPN4WMmaJK3m4v`; reviewer `session_01Eo8pMLZFtqf7VtkTnqyVoZ` has not reported yet; red team `session_01Et9a7HZLsEkdhHRWQQamJ1`). PR ready since `dd4034f2`.
