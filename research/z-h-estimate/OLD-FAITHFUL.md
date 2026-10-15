@@ -200,7 +200,9 @@ refused (OF-3 ruling 30, replacing OF-2 ruling 63's deny-list); a `logs` part af
 with a `logs` path part whatever variable comes before it (OF-2 ruling 70).
 
 **Arm checklist (the arming change, OF-2 rounds 3–4).** The supervisor puts each item to the owner, with a
-recommendation, before `ARCHIVE_ARM` is set:
+recommendation, before `ARCHIVE_ARM` is set. Standing rule from the arm on: no one dispatches `data-scan.yml` or
+`archive-check.yml` on any ref but the default branch, and no one re-runs an old run of either; a run that breaks it
+stops the chain through the guard (OF-ARM).
 1. `research/historical/ci/unguarded-refs.sh` (read only): the branches and tags whose `data-scan.yml` or
    `archive-check.yml` can read the archive without `archive-guard.sh` (today the tag `preview`, 13cdf32; `deploy`
    moves forward with each deploy). No agent deletes or moves a branch or tag: each one goes to the owner (ruling 37).
