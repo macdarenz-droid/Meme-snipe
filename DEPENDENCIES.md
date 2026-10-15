@@ -39,6 +39,11 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | Package | Purpose | Licence | Reviewer |
 |---|---|---|---|
 | `@axe-core/playwright` | Automated accessibility checks in the dashboard's Playwright tests (UI-T01) (dev only) | MPL-2.0 | supervisor (Z05 brief, 2026-10-08) |
+| `@babel/helper-string-parser` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
+| `@babel/helper-validator-identifier` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
+| `@babel/parser` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
+| `@babel/types` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
+| `@bcoe/v8-coverage` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
 | `@cacheable/memory` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@cacheable/utils` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `@eslint-community/eslint-utils` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -199,6 +204,9 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `@typescript/typescript-sunos-x64` | Transitive (dev only), required by `typescript` | Apache-2.0 | supervisor (in the integration branch before Z01) |
 | `@typescript/typescript-win32-arm64` | Transitive (dev only), required by `typescript` | Apache-2.0 | supervisor (in the integration branch before Z01) |
 | `@typescript/typescript-win32-x64` | Transitive (dev only), required by `typescript` | Apache-2.0 | supervisor (in the integration branch before Z01) |
+| `@vitest/coverage-v8` | Coverage report and gate for `pnpm test` (B-M30-01; dev only) | MIT | supervisor (Z01-COV, reads the diff) |
+| `@vitest/istanbul-lib-coverage` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
+| `@vitest/istanbul-lib-report` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
 | `@vitest/mocker` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `@vitest/spy` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `acorn` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -206,6 +214,7 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `ajv` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `aria-hidden` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | MIT | supervisor (Z05 brief, 2026-10-08) |
 | `assertion-error` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `ast-v8-to-istanbul` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
 | `axe-core` | Transitive (dev only), required by `@axe-core/playwright` | MPL-2.0 | supervisor (Z05 brief, 2026-10-08) |
 | `balanced-match` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `brace-expansion` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
@@ -253,6 +262,7 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `is-extglob` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `is-glob` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `isexe` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | ISC | supervisor (in the integration branch before Z01) |
+| `js-tokens` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
 | `json-schema-traverse` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `json-stable-stringify-without-jsonify` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `keyv` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
@@ -272,6 +282,7 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `locate-path` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `lucide-react` | Icons for the dashboard (UI-T04, DS Iconography) | ISC | supervisor (Z05 brief, 2026-10-08) |
 | `magic-string` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `magicast` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
 | `minimatch` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | BlueOak-1.0.0 | supervisor (in the integration branch before Z01) |
 | `ms` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (in the integration branch before Z01) |
 | `nanoid` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
@@ -306,6 +317,7 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `tinybench` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `tinyexec` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `tinyglobby` | Transitive (dev only), required by `@typescript-eslint/parser`, `vitest` | MIT | supervisor (in the integration branch before Z01) |
+| `tinyrainbow` | Transitive (dev only), required by `@vitest/coverage-v8` | MIT | supervisor (Z01-COV, reads the diff) |
 | `ts-api-utils` | Transitive (dev only), required by `@typescript-eslint/parser` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `tslib` | Transitive, required by `@radix-ui/react-context-menu`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-popover` | 0BSD | supervisor (Z05 brief, 2026-10-08) |
 | `type-check` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
