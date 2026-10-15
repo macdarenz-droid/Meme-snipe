@@ -24,13 +24,13 @@ import type {
 } from './types.ts';
 
 /**
- * `E_CLOCK` (ruling Z07-9): exit grade only. The one provider that answered is past the slot clock's ceiling and no
- * second provider confirmed it; its read is returned UNSTORED in `snapshot`, so the exit path decides and an exit is
- * never blocked by a clock fault alone.
+ * `E_CLOCK` (rulings Z07-9, Z07-13): a read past the slot clock's ceiling, from a clock fault (two providers agree) or
+ * one unconfirmed provider. Exit grade: the read comes back UNSTORED in `snapshot`, so the exit path decides and an
+ * exit is never blocked by a clock fault alone. Entry grade: `snapshot` is null; entries are refused for the episode.
  */
 export type FreshReadError<P extends PoolStateLike = PoolStateLike> =
   | { code: 'E_STALE' | 'E_RPC'; detail: string }
-  | { code: 'E_CLOCK'; detail: string; snapshot: PoolSnapshot<P> };
+  | { code: 'E_CLOCK'; detail: string; snapshot: PoolSnapshot<P> | null };
 
 export interface PoolTracker<P extends PoolStateLike> {
   /** False when the class is at its cap (`pool_tracker.max_*`): the watch is refused and nothing changes. */
@@ -44,7 +44,7 @@ export interface PoolTracker<P extends PoolStateLike> {
   /** Display only (VM-07 `quote_age_ms`): lag × M15's measured slot time (bug B1). */
   lagMs(s: PoolSnapshot<P>): number;
   freshRead(poolId: Pubkey, maxLagSlots: number): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>>;
-  /** True while a clock fault is confirmed (ruling Z07-9; tests and health). */
+  /** True while a clock fault is confirmed (rulings Z07-9, Z07-13; tests and health). */
   clockFault(): boolean;
   /** Pools watched and ready (read once, mint known). */
   ready(): Pubkey[];
@@ -72,6 +72,8 @@ export const BOOT_RETRY_MS = 10_000;
 export const PEER_WINDOW_MS = 5_000;
 /** POLICY (ruling Z07-9): at most one verification read of a past-ceiling poll read this often. */
 export const VERIFY_SPACING_MS = 2_000;
+/** Ruling Z07-13.3: a clock fault ends after this many consecutive under-ceiling reads from at least 2 providers. */
+export const FAULT_END_READS = 3;
 
 export interface TrackerDeps<P extends PoolStateLike> {
   model: PoolModelPort<P>; reader: AccountsReader; scheduler: SchedulerPort; chain: ChainStatePort; clock: Clock;
@@ -112,71 +114,6 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   const capacity = (cls: PoolClass): number => Math.ceil(settings.historyMs / intervalOf(settings, cls));
   /** The highest slot a provider may claim now: the slot clock's estimate plus `max_provider_lag_slots`. */
   const ceiling = (): Slot => (deps.chain.expectedSlot(deps.clock.nowMs()) + BigInt(settings.maxProviderLagSlots)) as Slot;
-  /**
-   * Lag against the highest slot seen; a highest slot past the ceiling came from a provider ahead of the clock or a
-   * bogus one, so the slot clock's estimate stands in for it (MAJOR-1).
-   */
-  const lagOf = (slot: Slot): number => {
-    const top = deps.chain.highestSeenSlot();
-    const d = (top <= trusted() ? top : fault !== null ? fault.agreedSlot : deps.chain.expectedSlot(deps.clock.nowMs())) - slot;
-    return d > 0n ? Number(d) : 0;
-  };
-
-  // ---- Ruling Z07-9: a slot clock that trails the tip. Each provider's newest read slot is kept for PEER_WINDOW_MS;
-  // when a second provider agrees (within max_provider_lag_slots) with a read past the ceiling, the clock is wrong: the
-  // read is accepted, one critical `m04.clock_fault` (E_CLOCK) is raised for the episode, and no provider is blamed.
-  // During the fault the ceiling follows the agreed slot at the measured slot time; a read back under the clock's own
-  // ceiling ends it. A lone provider past both the clock and the other providers is refused and counted against it. ----
-  const recentByProvider = new Map<string, { slot: Slot; atMs: number }>();
-  let fault: { agreedSlot: Slot; atMs: number } | null = null;
-  let verifying = false;
-  let lastVerifyMs = -Infinity;
-  /** The highest slot accepted now: the clock's ceiling, or the fault's agreed slot moved on at the measured slot time. */
-  const trusted = (): Slot => {
-    const c = ceiling();
-    if (fault === null) return c;
-    const elapsed = BigInt(Math.ceil((deps.clock.nowMs() - fault.atMs) / deps.chain.slotDurationMsEstimate()));
-    const f = fault.agreedSlot + BigInt(settings.maxProviderLagSlots) + elapsed;
-    return (f > c ? f : c) as Slot;
-  };
-  type SlotVerdict = 'ok' | 'lone' | 'unverified';
-  function judgeSlot(provider: string, slot: Slot, poolId: Pubkey): SlotVerdict {
-    const now = deps.clock.nowMs();
-    const c = ceiling();
-    const peers = [...recentByProvider].filter(([p, r]) => p !== provider && now - r.atMs <= PEER_WINDOW_MS).map(([, r]) => r.slot);
-    recentByProvider.set(provider, { slot, atMs: now });
-    if (slot <= c) {
-      if (fault !== null || alerted) {
-        fault = null;
-        alerted = false;
-        deps.log.event('info', 'm04.clock_recovered', { provider });
-      }
-      return 'ok';
-    }
-    if (slot <= trusted()) {
-      if (fault !== null && slot > fault.agreedSlot) fault = { agreedSlot: slot, atMs: now };
-      return 'ok';
-    }
-    const lag = BigInt(settings.maxProviderLagSlots);
-    const agree = peers.find((q) => q > c && (q > slot ? q - slot : slot - q) <= lag);
-    if (agree !== undefined) {
-      fault = { agreedSlot: (agree > slot ? agree : slot) as Slot, atMs: now };
-      clockAlert(provider, slot, c);
-      return 'ok';
-    }
-    if (peers.some((q) => q <= c)) {
-      deps.metrics?.counter('snapshot_future_slot_total', { provider });
-      deps.log.event('error', 'm04.read_ahead_of_clock', { pool: poolId, provider, slots_ahead: slot - c });
-      return 'lone';
-    }
-    return 'unverified';
-  }
-  let alerted = false;
-  function clockAlert(provider: string, slot: Slot, c: Slot): void {
-    if (alerted) return;                                          // one alert per episode; a read under the ceiling ends it
-    alerted = true;
-    deps.log.event('critical', 'm04.clock_fault', { error_code: 'E_CLOCK', provider, slot, ceiling: c });
-  }
 
   function restartSource(): void {
     const set = [...pools.values()].filter((e) => e.ring !== null).map((e) => {
@@ -267,17 +204,91 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     };
   }
 
+  // ---- Ruling Z07-13 (replaces Z07-9's store branch). Nothing past the ceiling is ever stored. Each provider's newest
+  // read is kept for PEER_WINDOW_MS. A read past the ceiling that another provider agrees with (within
+  // max_provider_lag_slots) is a clock fault: one critical `m04.clock_fault` (E_CLOCK) per episode, no provider blamed;
+  // for the whole episode entries are refused with E_CLOCK and exits get the agreed read unstored with E_CLOCK. A lone
+  // provider past the clock and the other providers is refused and blamed. The episode ends after 3 consecutive
+  // under-ceiling reads from at least 2 different providers (MINOR-R6). ----
+  const recentByProvider = new Map<string, { slot: Slot; atMs: number; under: boolean }>();
+  let fault: { sinceMs: number } | null = null;
+  let alerted = false;
+  /** The under-ceiling reads since the last past-ceiling one, during a fault. */
+  let underStreak: string[] = [];
+  let verifying = false;
+  let lastVerifyMs = -Infinity;
+
   /**
-   * The future-slot rule, the monotonic rule, then the ring and the outputs. A read claiming a slot past the slot
-   * clock's ceiling is refused and counted against its provider, so one bogus slot can never freeze `latest()` and
-   * turn every honest read into an out-of-order one (MAJOR-1). `exit` reads are not discarded for lag.
+   * MINOR-R6: lag against max(the clock's estimate, the newest under-ceiling slot any provider gave within
+   * PEER_WINDOW_MS). A slot past the ceiling has infinite lag (defence in depth: it is never fresh).
    */
-  function store(e: Entry<P>, s: PoolSnapshot<P>, exit: boolean): 'stored' | 'refused' | 'older' | 'ahead' | 'unverified' {
+  const lagOf = (slot: Slot): number => {
+    const now = deps.clock.nowMs();
+    const c = ceiling();
+    if (slot > c) return Number.POSITIVE_INFINITY;
+    let ref = deps.chain.expectedSlot(now) as bigint;
+    for (const r of recentByProvider.values()) if (r.under && now - r.atMs <= PEER_WINDOW_MS && r.slot > ref) ref = r.slot;
+    const d = ref - slot;
+    return d > 0n ? Number(d) : 0;
+  };
+
+  type SlotVerdict = 'ok' | 'lone' | 'unverified' | 'clock';
+  function judgeSlot(provider: string, slot: Slot, poolId: Pubkey): SlotVerdict {
+    const now = deps.clock.nowMs();
+    const c = ceiling();
+    const peers = [...recentByProvider].filter(([p, r]) => p !== provider && now - r.atMs <= PEER_WINDOW_MS).map(([, r]) => r.slot);
+    recentByProvider.set(provider, { slot, atMs: now, under: slot <= c });
+    if (slot <= c) {
+      // An unconfirmed exit alert (no fault) ends with the first read back under the ceiling.
+      if (fault === null) alerted = false;
+      else {
+        underStreak.push(provider);
+        if (underStreak.length >= FAULT_END_READS && new Set(underStreak).size >= 2) {
+          fault = null;
+          alerted = false;
+          underStreak = [];
+          deps.log.event('info', 'm04.clock_recovered', { provider });
+        }
+      }
+      return 'ok';
+    }
+    underStreak = [];
+    const lag = BigInt(settings.maxProviderLagSlots);
+    if (peers.some((q) => q > c && (q > slot ? q - slot : slot - q) <= lag)) {
+      fault ??= { sinceMs: now };
+      clockAlert(provider, slot, c);
+      return 'clock';
+    }
+    if (peers.some((q) => q <= c)) {
+      deps.metrics?.counter('snapshot_future_slot_total', { provider });
+      deps.log.event('error', 'm04.read_ahead_of_clock', { pool: poolId, provider, slots_ahead: slot - c });
+      return 'lone';
+    }
+    return fault !== null ? 'clock' : 'unverified';
+  }
+  function clockAlert(provider: string, slot: Slot, c: Slot): void {
+    if (alerted) return;                                          // one alert per episode
+    alerted = true;
+    deps.log.event('critical', 'm04.clock_fault', { error_code: 'E_CLOCK', provider, slot, ceiling: c });
+  }
+
+  /** The stored latest, unless it sits above the current ceiling (defence in depth; nothing above is ever stored). */
+  const trustedLatest = (ring: SnapshotRing<P>): PoolSnapshot<P> | null => {
+    const last = ring.latest();
+    return last !== null && last.providerSlot <= ceiling() ? last : null;
+  };
+
+  /**
+   * The slot rules (Z07-13), the monotonic rule, then the ring and the outputs. Nothing past the ceiling is stored, so
+   * one bogus slot, or one bogus agreement, can never freeze `latest()` (MAJOR-1, MAJOR-R5). `exit` reads are not
+   * discarded for lag.
+   */
+  function store(e: Entry<P>, s: PoolSnapshot<P>, exit: boolean): 'stored' | 'refused' | 'older' | 'ahead' | 'unverified' | 'clock' {
     const ring = e.ring as SnapshotRing<P>;
     const verdict = judgeSlot(s.providerLabel, s.providerSlot, s.pool.poolId);
     if (verdict === 'lone') return 'ahead';
-    if (verdict === 'unverified') return 'unverified';
-    const last = ring.latest();
+    if (verdict !== 'ok') return verdict;
+    const last = trustedLatest(ring);
     if (last !== null && s.providerSlot < last.providerSlot) {
       deps.metrics?.counter('snapshot_out_of_order_total', {});
       return 'older';
@@ -297,12 +308,16 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       const e = pools.get(poolId);
       if (e === undefined || e.ring === null) continue;
       const s = snapshotOf(e, accounts, r.contextSlot, r.providerLabel, r.latencyMs);
-      if (s !== null && store(e, s, false) === 'unverified') verify(poolId, r.providerLabel);
+      if (s === null) continue;
+      const outcome = store(e, s, false);
+      // A past-ceiling read with no peer evidence is checked on the next provider; during a fault, under-ceiling
+      // reads are confirmed there too, so the episode can end on two providers (Z07-13.3).
+      if (outcome === 'unverified' || (fault !== null && outcome !== 'clock')) verify(poolId, r.providerLabel);
     }
   }
   source.onAccounts(onRecord);
 
-  /** A past-ceiling poll read with no peer evidence: one read of the pool on the next provider settles it (Z07-9). */
+  /** One read of the pool on the next provider, at most every VERIFY_SPACING_MS and never overlapping. */
   function verify(poolId: Pubkey, provider: string): void {
     const now = deps.clock.nowMs();
     if (verifying || now - lastVerifyMs < VERIFY_SPACING_MS) return;
@@ -311,10 +326,14 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     void readPool(poolId, 2, nextProvider(provider), false).finally(() => { verifying = false; });
   }
 
-  /** A read: `snap` is what the caller may use; `unverified` holds a past-ceiling read no peer has confirmed yet. */
-  type Read = { snap: PoolSnapshot<P> | null; unverified: PoolSnapshot<P> | null; provider?: string };
+  /**
+   * A read. `snap`: what a caller may use (stored, or the stored latest when the read was older; a read refused for lag
+   * comes back for the caller's own limit). `held`: a past-ceiling read, unverified or in a clock fault, never stored
+   * (exit grade only). `provider`: who answered, to re-read elsewhere.
+   */
+  type Read = { snap: PoolSnapshot<P> | null; held: PoolSnapshot<P> | null; provider?: string };
   async function readPool(poolId: Pubkey, priority: 0 | 1 | 2, provider: string | undefined, exit: boolean): Promise<Read> {
-    const none: Read = { snap: null, unverified: null };
+    const none: Read = { snap: null, held: null };
     const e = pools.get(poolId);
     if (e === undefined || e.addr === null) return none;
     const a = e.addr;
@@ -323,14 +342,11 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     if (!r.ok || now === undefined || now.ring === null) return none;
     const s = snapshotOf(now, r.value.accounts, r.value.contextSlot, r.value.providerLabel, r.value.latencyMs);
     if (s === null) return none;
-    // MINOR-3: only a stored read, or the stored latest when the read was older, is ever returned as fresh. A read
-    // refused for lag is returned for the caller's own limit (entry grade then reports E_STALE); one past the
-    // ceiling never is (Z07-9: an unconfirmed one is handed back separately, for the exit grade only).
     const outcome = store(now, s, exit);
-    if (outcome === 'older') return { snap: (now.ring as SnapshotRing<P>).latest(), unverified: null };
-    if (outcome === 'ahead') return { ...none, provider: s.providerLabel };   // a lone provider ahead: re-read elsewhere
-    if (outcome === 'unverified') return { snap: null, unverified: s };
-    return { snap: s, unverified: null };
+    if (outcome === 'older') return { snap: trustedLatest(now.ring as SnapshotRing<P>), held: null };
+    if (outcome === 'ahead') return { ...none, provider: s.providerLabel };
+    if (outcome === 'unverified' || outcome === 'clock') return { snap: null, held: s };
+    return { snap: s, held: null };
   }
 
   const nextProvider = (after: string): string | undefined => {
@@ -339,15 +355,23 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     return order.find((p, k) => p !== after && k > i) ?? order.find((p) => p !== after);
   };
 
+  /** The provider to re-read on: the one after whoever answered the first read. */
+  const after = (r: Read): string | undefined => {
+    const label = (r.snap ?? r.held)?.providerLabel ?? r.provider;
+    return label === undefined ? undefined : nextProvider(label);
+  };
+
+  const clockError = (snapshot: PoolSnapshot<P> | null, detail: string): { ok: false; error: FreshReadError<P> } => ({ ok: false, error: { code: 'E_CLOCK', detail, snapshot } });
+
   async function entryRead(poolId: Pubkey, maxLag: number): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {
     const r1 = await readPool(poolId, 1, undefined, false);
     const first = r1.snap;
     if (first !== null && lagOf(first.providerSlot) <= maxLag) return { ok: true, value: first };
-    // Entry reads never use an unverified past-ceiling read; the re-read on the next provider may confirm it.
-    const label = (first ?? r1.unverified)?.providerLabel ?? r1.provider;
-    const again = (await readPool(poolId, 1, label === undefined ? undefined : nextProvider(label), false)).snap;
-    if (again !== null && lagOf(again.providerSlot) <= maxLag) return { ok: true, value: again };
-    if (first === null && again === null) return { ok: false, error: { code: 'E_RPC', detail: 'every read failed' } };
+    // Entry reads never use a past-ceiling read; the re-read on the next provider may show a clock fault.
+    const again = await readPool(poolId, 1, after(r1), false);
+    if (fault !== null) return clockError(null, 'clock fault: entries are refused');
+    if (again.snap !== null && lagOf(again.snap.providerSlot) <= maxLag) return { ok: true, value: again.snap };
+    if (first === null && again.snap === null) return { ok: false, error: { code: 'E_RPC', detail: 'every read failed' } };
     deps.metrics?.counter('fresh_read_stale_total', {});
     return { ok: false, error: { code: 'E_STALE', detail: 're-read on the next provider is still behind' } };
   }
@@ -355,17 +379,18 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   async function exitRead(poolId: Pubkey): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {
     const r1 = await readPool(poolId, 0, undefined, true);
     const first = r1.snap;
-    const label = (first ?? r1.unverified)?.providerLabel ?? r1.provider;
-    const r2 = first !== null && lagOf(first.providerSlot) <= settings.buildLagSlots ? { snap: null, unverified: null } : await readPool(poolId, 0, label === undefined ? undefined : nextProvider(label), true);
+    const r2 = first !== null && lagOf(first.providerSlot) <= settings.buildLagSlots ? { snap: null, held: null } as Read
+      : await readPool(poolId, 0, after(r1), true);
     const second = r2.snap;
     // readPool never returns an older read than latest() (MINOR-3), so the second is the freshest when it exists.
     const best = second !== null && (first === null || second.providerSlot >= first.providerSlot) ? second : first;
     if (best === null) {
-      // Z07-9: only one provider answered, past the ceiling, unconfirmed: handed back unstored, never a block.
-      const lone = r2.unverified ?? r1.unverified;
-      if (lone !== null) {
-        clockAlert(lone.providerLabel, lone.providerSlot, ceiling());
-        return { ok: false, error: { code: 'E_CLOCK', detail: 'one provider past the slot clock, unconfirmed', snapshot: lone } };
+      // No usable read: a past-ceiling one (a clock fault's agreed read, or one unconfirmed provider) is handed back
+      // UNSTORED with E_CLOCK, so the exit path decides and an exit is never blocked by a clock fault alone.
+      const held = r2.held ?? r1.held;
+      if (held !== null) {
+        clockAlert(held.providerLabel, held.providerSlot, ceiling());
+        return clockError(held, fault !== null ? 'clock fault' : 'one provider past the slot clock, unconfirmed');
       }
       return { ok: false, error: { code: 'E_RPC', detail: 'every read failed' } };
     }
@@ -460,11 +485,13 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       if (exit) {
         slot.exit ??= exitRead(poolId).finally(() => { delete slot.exit; });
         result = await slot.exit;
+      } else if (fault !== null) {
+        // Z07-13.2: for the whole clock-fault episode entries are refused.
+        result = clockError(null, 'clock fault: entries are refused');
       } else if (slot.exit !== undefined) {
-        // Edge 3: an exit read in flight serves the entry caller, who applies its own limit.
+        // Edge 3: an exit read in flight serves the entry caller, who applies its own limit and never gets a held read.
         const r = await slot.exit;
-        // An entry caller never gets an unverified past-ceiling read (Z07-9): E_CLOCK becomes E_STALE for it.
-        result = !r.ok && r.error.code === 'E_CLOCK' ? { ok: false, error: { code: 'E_STALE', detail: 'the exit read is past the slot clock, unconfirmed' } }
+        result = !r.ok && r.error.code === 'E_CLOCK' ? clockError(null, 'the exit read is past the slot clock')
           : r.ok && lagOf(r.value.providerSlot) > maxLagSlots ? { ok: false, error: { code: 'E_STALE', detail: 'the exit read is behind the entry limit' } } : r;
       } else {
         slot.entry ??= entryRead(poolId, maxLagSlots).finally(() => { delete slot.entry; });

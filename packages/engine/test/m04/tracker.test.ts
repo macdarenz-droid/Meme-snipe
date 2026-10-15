@@ -519,8 +519,10 @@ describe('A-M04-02 freshRead, lag and staleness', () => {
     check(s.tracker.lagMs(r.value));
     const oldRule = (lagSlots: number) => lagSlots * 400;            // Zeroed SLOT_MS = 400 (MIGRATION B1)
     assert.throws(() => check(oldRule(s.tracker.lagNow(r.value))));
-    s.chain.highest = 1_000n;                                        // M15 behind the read: lag is 0, never negative
+    s.chain.highest = 1_895n;                                        // the clock behind the read (under its ceiling): lag is 0, never negative
     assert.equal(s.tracker.lagNow(r.value), 0);
+    s.chain.highest = 1_000n;                                        // the read past the clock's ceiling: never fresh (Z07-13.4)
+    assert.equal(s.tracker.lagNow(r.value), Number.POSITIVE_INFINITY);
   });
 });
 
@@ -581,7 +583,7 @@ describe('#325 red team round 1 (each test is the red team\'s probe)', () => {
     const entry = await s.tracker.freshRead('a', 8);
     assert.ok(!entry.ok && entry.error.code !== 'E_CLOCK');
     const r = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(!r.ok && r.error.code === 'E_CLOCK' && r.error.snapshot.providerSlot === 1_000_001_000n);
+    assert.ok(!r.ok && r.error.code === 'E_CLOCK' && r.error.snapshot?.providerSlot === 1_000_001_000n);
     assert.equal(s.tracker.latest('a')?.providerSlot, 1_005n);
     s.tracker.stop();
   });
@@ -669,7 +671,7 @@ describe('#325 red team round 1 (each test is the red team\'s probe)', () => {
   });
 });
 
-describe('ruling Z07-9: a slot clock that trails the tip', () => {
+describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
   /** Two providers, both honest, at the tip; the slot clock trails by 50 slots (past max_provider_lag_slots 10). */
   async function trailing() {
     const s = setup();
@@ -679,40 +681,29 @@ describe('ruling Z07-9: a slot clock that trails the tip', () => {
     s.tracker.start();
     s.chain.highest = 2_050n;
     s.chain.expected = 2_000n;
-    let n = 0;
-    s.reader.slot = (c) => 2_050n - (c.provider === 'backup' ? 1n : 0n) + BigInt(n++ % 1);
+    s.reader.slot = (c) => 2_050n - (c.provider === 'backup' ? 1n : 0n);
     s.reader.provider = (c) => c.provider ?? 'primary';
     return s;
   }
+  const alerts = (s: ReturnType<typeof setup>): number => s.log.lines.filter(([l, c, f]) => l === 'critical' && c === 'm04.clock_fault' && f.error_code === 'E_CLOCK').length;
 
-  it('MAJOR-R1: two providers that agree past the ceiling mean the clock is wrong: the read is stored, ONE critical E_CLOCK alert, no provider blamed', async () => {
+  it('Z07-13.1-2: two providers agreeing past the ceiling are a clock fault: nothing stored, ONE critical E_CLOCK, no provider blamed; entries E_CLOCK, exits get the agreed read unstored', async () => {
     const s = await trailing();
-    await s.time.advance(1_000);                                   // the primary's poll is past the ceiling: verified on the backup
-    await s.time.advance(10);
+    await s.time.advance(1_010);                                   // the primary's poll is past the ceiling: verified on the backup
     assert.equal(s.tracker.clockFault(), true);
-    assert.ok(s.outputs.snapshots.length >= 1);
     for (let i = 0; i < 5; i++) { s.chain.highest += 4n; s.reader.slot = () => s.chain.highest; await s.time.advance(1_000); }
-    assert.ok(s.outputs.snapshots.length >= 6, `${s.outputs.snapshots.length}`);
-    assert.equal(s.log.lines.filter(([l, c, f]) => l === 'critical' && c === 'm04.clock_fault' && f.error_code === 'E_CLOCK').length, 1);
+    assert.deepEqual(s.outputs.snapshots, []);
+    assert.equal(s.tracker.latest('a'), null);
+    assert.equal(alerts(s), 1);
     assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'primary' }) + s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
-    // Exits and entries work during the fault.
-    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(x.ok);
     const e = await s.tracker.freshRead('a', 8);
-    assert.ok(e.ok);
-    // M15's highest seen poisoned during the episode: lag is measured against the agreed slot.
-    const tip = s.chain.highest;
-    s.chain.highest = 9_000_000n;
-    assert.equal(s.tracker.lagNow(s.tracker.latest('a') as PoolSnapshot<FakePool>), Number(tip - (s.tracker.latest('a') as PoolSnapshot<FakePool>).providerSlot));
-    s.chain.highest = tip;
-    // The clock jumps past the agreed slot before any read: the clock's own ceiling stands.
-    s.chain.expected = tip + 100n;
-    assert.equal(s.tracker.lagNow(s.tracker.latest('a') as PoolSnapshot<FakePool>), 0);
-    // The clock catches up: a read under its own ceiling ends the episode.
-    s.chain.expected = s.chain.highest;
-    await s.time.advance(1_000);
-    assert.equal(s.tracker.clockFault(), false);
-    assert.ok(s.log.codes().includes('m04.clock_recovered'));
+    assert.ok(!e.ok && e.error.code === 'E_CLOCK' && e.error.snapshot === null);
+    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot?.providerSlot === s.chain.highest);
+    assert.equal(s.tracker.latest('a'), null);
+    assert.equal(alerts(s), 1);
+    // Defence in depth (Z07-13.4): a slot past the ceiling has infinite lag.
+    assert.equal(s.tracker.lagNow(x.error.snapshot as PoolSnapshot<FakePool>), Number.POSITIVE_INFINITY);
     s.tracker.stop();
   });
 
@@ -721,7 +712,105 @@ describe('ruling Z07-9: a slot clock that trails the tip', () => {
     s.reader.slot = (c) => (c.provider === 'backup' ? 2_052n : 2_050n);
     await s.time.advance(1_010);
     assert.equal(s.tracker.clockFault(), true);
-    assert.equal(s.tracker.latest('a')?.providerSlot, 2_052n);
+    assert.equal(s.tracker.latest('a'), null);
+    s.tracker.stop();
+  });
+
+  it('an entry read whose re-read on the next provider shows the clock fault is refused with E_CLOCK and no snapshot', async () => {
+    const s = await trailing();
+    s.tracker.stop();                                              // no polls: the entry read alone finds the fault
+    const e = await s.tracker.freshRead('a', 8);
+    assert.ok(!e.ok && e.error.code === 'E_CLOCK' && e.error.snapshot === null);
+    assert.equal(s.tracker.clockFault(), true);
+    assert.equal(s.tracker.latest('a'), null);
+    assert.equal(alerts(s), 1);
+  });
+
+  it('R5 probe: a primary and a backup verify both at 1e12, then 60 s of honest polls: latest() follows the live quote; no fresh read returns a bogus slot', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.tracker.start();
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    s.chain.expected = 1_000n;
+    s.chain.highest = 1_000_000_000_000n;                          // M15 takes the bogus slot's word
+    s.reader.slot = () => 1_000_000_000_000n;
+    await s.time.advance(1_010);
+    assert.equal(s.tracker.clockFault(), true);
+    const during = await s.tracker.freshRead('a', 8);
+    assert.ok(!during.ok && during.error.code === 'E_CLOCK' && during.error.snapshot === null);
+    let quote = 2_000n;
+    for (let t = 1; t <= 60; t++) {
+      s.chain.expected = 1_000n + BigInt(4 * t);
+      quote += 7n;
+      s.reader.accounts.set('a:q', { owner: 'tok', data: u64(quote) });
+      s.reader.slot = () => s.chain.expected as bigint;
+      await s.time.advance(1_000);
+      assert.equal(s.tracker.latest('a')?.pool.quote, quote, `t=${t}`);
+    }
+    assert.equal(s.tracker.latest('a')?.providerSlot, s.chain.expected);
+    assert.ok(s.outputs.snapshots.every(({ s: x }) => x.providerSlot < 1_000_000n));
+    assert.equal(s.tracker.clockFault(), false);
+    const fresh = await s.tracker.freshRead('a', 8);
+    assert.ok(fresh.ok && fresh.value.providerSlot === s.chain.expected && fresh.value.pool.quote === quote);
+    const exit = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(exit.ok && exit.value.providerSlot === s.chain.expected);
+    s.tracker.stop();
+  });
+
+  it('R6 probe: a trailing clock (5 slots) and a provider behind the tip by clock lag + 10: its lag is 15, measured against the newest accepted slot, and it is refused', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    add(s.reader, 'b');
+    s.tracker.watch('a', 'candidate');
+    s.tracker.watch('b', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;                                     // the tip is 2,005
+    s.chain.highest = 1_000_000_000_000n;                          // M15 poisoned: no help
+    s.reader.provider = (c) => (c.keys[0] === 'b' ? 'backup' : 'primary');
+    s.reader.slot = (c) => (c.keys[0] === 'b' ? 1_990n : 2_005n);
+    const a = await s.tracker.freshRead('a', 8);
+    assert.ok(a.ok && a.value.providerSlot === 2_005n);
+    const b = await s.tracker.freshRead('b', 12);
+    assert.ok(!b.ok && b.error.code === 'E_STALE');
+    assert.equal(s.tracker.latest('b'), null);
+    assert.deepEqual(s.outputs.lagging[0], ['backup', 15]);
+    // Past PEER_WINDOW_MS the tip read no longer counts: the clock's own estimate stands.
+    await s.time.advance(5_001);
+    assert.ok((await s.tracker.freshRead('b', 12)).ok);
+  });
+
+  it('Z07-13.3 fault end: flip-flopping reads and under-ceiling reads from one provider keep the fault; 3 in a row from 2 providers end it', async () => {
+    const s = await trailing();
+    await s.time.advance(1_010);
+    assert.equal(s.tracker.clockFault(), true);
+    // Flip-flop: every other read is back past the ceiling, so no streak of 3 forms.
+    let n = 0;
+    s.reader.slot = () => (n++ % 2 === 0 ? 2_000n : 2_050n);
+    await s.time.advance(10_000);
+    assert.equal(s.tracker.clockFault(), true);
+    assert.equal(s.tracker.latest('a')?.providerSlot ?? 2_000n, 2_000n);
+    // Under the ceiling, but every answer from one provider: not enough.
+    s.reader.slot = () => 2_000n;
+    s.reader.provider = () => 'primary';
+    await s.time.advance(10_000);
+    assert.equal(s.tracker.clockFault(), true);
+    assert.ok(!s.log.codes().includes('m04.clock_recovered'));
+    assert.ok((await s.tracker.freshRead('a', 8)).ok === false);
+    // A second provider confirms: the episode ends once, and entries work again.
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    await s.time.advance(3_000);
+    assert.equal(s.tracker.clockFault(), false);
+    assert.equal(s.log.lines.filter(([, c]) => c === 'm04.clock_recovered').length, 1);
+    assert.equal(alerts(s), 1);
+    assert.ok((await s.tracker.freshRead('a', 8)).ok);
+    // A new episode alerts again, once the backup's under-ceiling read has left the peer window (until then the
+    // primary alone is ahead and blamed).
+    s.reader.slot = () => 2_050n;
+    await s.time.advance(8_000);
+    assert.equal(s.tracker.clockFault(), true);
+    assert.equal(alerts(s), 2);
     s.tracker.stop();
   });
 
@@ -753,7 +842,7 @@ describe('ruling Z07-9: a slot clock that trails the tip', () => {
     s.reader.slot = () => 2_050n;
     s.reader.provider = () => 'only';
     const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot.providerSlot === 2_050n);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot?.providerSlot === 2_050n);
     assert.equal(s.tracker.latest('a'), null);                      // unstored
     assert.equal(s.log.lines.filter(([l, c]) => l === 'critical' && c === 'm04.clock_fault').length, 1);
     const again = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
@@ -761,7 +850,7 @@ describe('ruling Z07-9: a slot clock that trails the tip', () => {
     assert.equal(s.log.lines.filter(([, c]) => c === 'm04.clock_fault').length, 1);   // one alert per episode
     // Entry reads never use it, alone or sharing an exit read in flight.
     const e = await s.tracker.freshRead('a', 8);
-    assert.ok(!e.ok && e.error.code !== 'E_CLOCK');
+    assert.ok(!e.ok && (e.error.code !== 'E_CLOCK' || e.error.snapshot === null));
     let release = (): void => {};
     s.reader.gate = new Promise((r) => { release = r; });
     const xs = s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
@@ -770,8 +859,14 @@ describe('ruling Z07-9: a slot clock that trails the tip', () => {
     release();
     s.reader.gate = null;
     const [rx, re] = await Promise.all([xs, es]);
-    assert.ok(!rx.ok && rx.error.code === 'E_CLOCK' && !re.ok && re.error.code === 'E_STALE');
+    assert.ok(!rx.ok && rx.error.code === 'E_CLOCK' && rx.error.snapshot !== null && !re.ok && re.error.code === 'E_CLOCK' && re.error.snapshot === null);
     assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'only' }), 0);
+    // Back under the ceiling, the next unconfirmed read alerts again.
+    s.reader.slot = () => 2_000n;
+    assert.ok((await s.tracker.freshRead('a', Number.POSITIVE_INFINITY)).ok);
+    s.reader.slot = () => 2_050n;
+    assert.ok(!(await s.tracker.freshRead('a', Number.POSITIVE_INFINITY)).ok);
+    assert.equal(s.log.lines.filter(([, c]) => c === 'm04.clock_fault').length, 2);
   });
 
   it('verification reads of past-ceiling polls are spaced at least 2 s apart and never overlap', async () => {

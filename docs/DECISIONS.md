@@ -3867,3 +3867,13 @@ Builder notes (for review):
 - **Z07-10 · Z10 acceptance.** SPEC-A C-84: the production `expectedSlot` is M15's estimate, never 0 and never a highest slot seen, with the skew test on the composition root.
 - **Z07-11 · `minOut` throws.** Documented on `VenueModel.minOut`; SPEC-A C-85 asks every Z08+ caller for a catch test.
 - **Z07-12 · Tail cap.** `checkM04Settings` refuses `pool_tracker.max_tail` below `universe.tail_max_pools` (default 30).
+
+### Z07 round 3 (#325 red team round 2 at 8c5b5c2c: MAJOR-R5, MINOR-R6; supervisor ruling Z07-13, which supersedes the store branch of Z07-9)
+
+- **Z07-13.1 · Nothing past the ceiling is stored.** A read past the slot clock's ceiling is never stored, even when two or more providers agree (MAJOR-R5: two agreeing reads at 1e12 froze `latest()` for every honest read after them).
+- **Z07-13.2 · Clock fault.** Two providers agreeing (within `max_provider_lag_slots`) past the ceiling are a clock fault: one critical `m04.clock_fault` (`E_CLOCK`) per episode, no provider blamed. For the whole episode entry reads are refused with `E_CLOCK` (no snapshot); exit reads that find nothing under the ceiling get the agreed read unstored with `E_CLOCK`, so an exit is never blocked. A lone provider ahead of the clock and an under-ceiling peer stays refused and counted against it.
+- **Z07-13.3 · Fault end.** The episode ends only after 3 consecutive under-ceiling reads (`FAULT_END_READS`) from at least 2 different providers; a read past the ceiling resets the count, so flip-flopping reads never end it (MINOR-R6). During the episode under-ceiling poll reads are confirmed on the next provider (same 2 s spacing). An unconfirmed single-provider exit alert ends with the next under-ceiling read, so a later episode alerts again.
+- **Z07-13.4 · Defence in depth.** `lagOf` is +∞ for any slot above the current ceiling; `readPool` and the monotonic rule ignore a stored snapshot above it.
+- **Z07-13.5 · Lag reference (MINOR-R6).** Lag is measured against max(`expectedSlot`, the newest under-ceiling slot any provider gave within `PEER_WINDOW_MS`), no longer against M15's highest slot seen, so a trailing clock cannot hide a provider that is behind the tip by clock lag + 10.
+- **Builder fix found on the way.** An entry re-read after a lone provider ahead was sent to that same provider by label; it now goes to the provider after it in `providerOrder`.
+- **Tests** (each fails on 8c5b5c2c and passes after): the R5 probe (primary and backup verify both at 1e12, then 60 s of honest polls: `latest()` follows the live quote, no fresh read returns a bogus slot), the R6 probe, the fault-end test (flip-flop, one provider only, then two), entry `E_CLOCK` on a fault found by the re-read, and the reworked Z07-9 tests.
