@@ -41,10 +41,11 @@ export interface VenueConfigCacheEntry {
   decoded: ConfigAccount; asOfSlot: Slot; readAtMs: UnixMs; changedAtMs: UnixMs;
 }
 
-/** A config account changed (`previous` null on the first read) or failed to decode. */
+/** A config account changed (`previous` null on the first read) or failed to decode; a refresh ended (`ok` false: the read failed). */
 export type ConfigEvent =
   | { kind: 'changed'; previous: VenueConfigCacheEntry | null; entry: VenueConfigCacheEntry }
-  | { kind: 'decode_failed'; name: ConfigName; account: Pubkey; reason: string };
+  | { kind: 'decode_failed'; name: ConfigName; account: Pubkey; reason: string }
+  | { kind: 'refreshed'; ok: boolean };
 
 export interface VenueConfigSettings { refreshMs: number; maxAgeMs: number }
 export const VENUE_CONFIG_DEFAULTS: Readonly<VenueConfigSettings> = Object.freeze({ refreshMs: 60_000, maxAgeMs: 600_000 });
@@ -108,6 +109,7 @@ export function createVenueConfigCache(deps: { reader: AccountsReader; decoder: 
     if (!r.ok) {
       // Edge 3: keep the last entries; `inputs` turns stale after max_age_ms.
       deps.log.event('warning', 'm01.fee_config_refresh_failed', { code: r.error.code });
+      emit({ kind: 'refreshed', ok: false });
       return;
     }
     const now = deps.clock.nowMs();
@@ -134,6 +136,7 @@ export function createVenueConfigCache(deps: { reader: AccountsReader; decoder: 
       }
     });
     deps.log.event('info', 'm01.fee_config_refreshed', { slot: r.value.contextSlot });
+    emit({ kind: 'refreshed', ok: true });
   }
 
   /** The entry when it decoded and is younger than max_age_ms; otherwise why not. */

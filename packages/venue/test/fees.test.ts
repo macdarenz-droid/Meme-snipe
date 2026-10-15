@@ -4,53 +4,13 @@
 import { strict as assert } from 'node:assert';
 import fc from 'fast-check';
 import { describe, it } from 'vitest';
-import type { Bps, Clock, Pubkey, Slot, UnixMs } from '@bot/types';
-import { createDecoders, verifyPinnedIdls, VENDORED_IDL_DIR } from '@bot/decoders';
-import { createVenueConfigCache, createVenueModel, checkVenueConfigSettings, feeConfigView, type AccountsReader, type RawAccount } from '../src/cache.ts';
+import type { Bps } from '@bot/types';
+import { createVenueConfigCache, checkVenueConfigSettings, feeConfigView } from '../src/cache.ts';
 import { ACCOUNTS, MINTS, PROGRAMS } from '../src/constants.ts';
 import { candidateSplits, chainTierIndex, checkTiers, dearest, feeScheduleFor, marketCapAt, marketCapOf, tierIndicesAt, totalBps, type FeeInputs, type FeeTierView } from '../src/fees.ts';
 import { quoteDetail } from '../src/quote.ts';
-import { pool, poolAtMarketCap, readJson, SOL, split3 } from './helpers.ts';
-
-const idls = verifyPinnedIdls(VENDORED_IDL_DIR);
-assert.ok(idls.ok);
-const decoders = createDecoders(idls.value, { tokenPrograms: { splToken: PROGRAMS.splToken, token2022: PROGRAMS.token2022 } });
-
-type Fixture = { accounts: Array<{ pubkey: string; owner: string; data_base64: string; context_slot: number }> };
-const raw = (name: string): RawAccount & { slot: number } => {
-  const a = readJson<Fixture>(`fixtures/mainnet/config/${name}.json`).accounts[0] as Fixture['accounts'][number];
-  return { owner: a.owner, data: new Uint8Array(Buffer.from(a.data_base64, 'base64')), slot: a.context_slot };
-};
-const RAW = { curve: raw('fee_config_curve'), pumpswap: raw('fee_config_pumpswap'), global: raw('pumpswap_global_config'), pumpGlobal: raw('pump_global') };
-const ORDER = [RAW.curve, RAW.pumpswap, RAW.global, RAW.pumpGlobal];
-
-/** A reader replaying the 2026-10-06 config accounts; `fail` makes it time out, `edit` changes one account's bytes. */
-function fakeReader(): AccountsReader & { fail: boolean; accounts: Array<RawAccount | null>; reads: number } {
-  const r = {
-    fail: false, reads: 0, accounts: ORDER.map((a) => ({ owner: a.owner, data: a.data }) as RawAccount | null),
-    async read(keys: readonly Pubkey[]) {
-      r.reads++;
-      assert.deepEqual(keys, [ACCOUNTS.feeConfigCurve, ACCOUNTS.feeConfigPumpSwap, ACCOUNTS.pumpSwapGlobalConfig, ACCOUNTS.pumpGlobal]);
-      if (r.fail) return { ok: false as const, error: { code: 'E_TIMEOUT' } };
-      return { ok: true as const, value: { contextSlot: BigInt(RAW.pumpswap.slot) as Slot, accounts: r.accounts } };
-    },
-  };
-  return r;
-}
-const fakeClock = (): Clock & { t: number } => {
-  const c = { t: 1_790_000_000_000, kind: 'sim' as const, nowMs: () => c.t as UnixMs };
-  return c;
-};
-const logs: Array<{ level: string; code: string; fields: Record<string, unknown> }> = [];
-const log = { event: (level: string, code: string, fields: Readonly<Record<string, unknown>>) => { logs.push({ level, code, fields: { ...fields } }); } };
-
-async function liveCache() {
-  const reader = fakeReader();
-  const clock = fakeClock();
-  const cache = createVenueConfigCache({ reader, decoder: decoders, clock, log });
-  await cache.refresh();
-  return { reader, clock, cache, model: createVenueModel(cache) };
-}
+import { decoders, fakeClock, fakeReader, liveCache, log, logs, RAW } from './config.ts';
+import { pool, poolAtMarketCap, SOL, split3 } from './helpers.ts';
 
 const inputsOf = async (): Promise<FeeInputs> => {
   const { cache } = await liveCache();
@@ -132,6 +92,7 @@ describe('A-M01-02 acceptance', () => {
     const { reader, clock, cache, model } = await liveCache();
     const p = pool();
     assert.ok(model.feeFor(p).ok);
+    assert.ok(model.quoteExactIn(p, 'buy', SOL).ok);
     reader.fail = true;
     for (let m = 0; m < 11; m++) { clock.t += 60_000; await cache.refresh(); }
     const at600 = model.feeFor(p);
@@ -245,7 +206,7 @@ describe('A-M01-02 cache', () => {
     assert.equal(cache.entry(ACCOUNTS.pumpGlobal)?.decoded.kind, 'pump_global');
     assert.equal(cache.entry('not-a-config'), null);
     const seen: string[] = [];
-    const off = cache.onEvent((ev) => seen.push(ev.kind));
+    const off = cache.onEvent((ev) => { if (ev.kind !== 'refreshed') seen.push(ev.kind); });
     clock.t += 60_000;
     await cache.refresh();
     assert.equal(cache.entry(ACCOUNTS.feeConfigPumpSwap)?.version, 1);
@@ -267,7 +228,7 @@ describe('A-M01-02 cache', () => {
     for (const bad of [null, { owner: PROGRAMS.pumpSwap, data: RAW.pumpswap.data }, { owner: PROGRAMS.pumpFees, data: new Uint8Array(40) }]) {
       const { reader, cache, model } = await liveCache();
       const events: string[] = [];
-      cache.onEvent((ev) => events.push(ev.kind === 'decode_failed' ? `${ev.name}:${ev.reason}` : ev.kind));
+      cache.onEvent((ev) => { if (ev.kind !== 'refreshed') events.push(ev.kind === 'decode_failed' ? `${ev.name}:${ev.reason}` : ev.kind); });
       reader.accounts[1] = bad;
       await cache.refresh();
       assert.ok(cache.decodeFailed('feeConfigPumpSwap'));
