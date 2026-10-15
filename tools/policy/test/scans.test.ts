@@ -263,6 +263,26 @@ describe('workflows', () => {
     assert.deepEqual(codes(checkWorkflows(ci(good.replace('runs-on: ubuntu-24.04', 'runs-on: ubuntu-24.04\n    permissions:\n      issues: wrote')))), ['E_WORKFLOW_PERMISSIONS']);
   });
 
+  it('lets provider-reads.yml name its two provider secrets in one step env, and nothing wider (M0X-1)', () => {
+    const PR = '.github/workflows/provider-reads.yml';
+    const prText = real.find((w) => w.file === PR)?.text as string;
+    const withPr = (text: string, file: string = PR): Finding[] => checkWorkflows({ ...ci(good), workflows: [...ci(good).workflows, { file, text }] });
+    assert.deepEqual(withPr(prText), []);
+    const shyft = '          RPC_SHYFT_URL: ${{ secrets.RPC_SHYFT_URL }}\n';
+    assert.ok(prText.includes(shyft));
+    const refused = (label: string, text: string, file?: string): void => {
+      assert.ok(codes(withPr(text, file)).includes('E_WORKFLOW_SECRETS'), label);
+    };
+    refused('a third secret', prText.replace(shyft, shyft + '          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}\n'));
+    refused('a name swapped between key and secret', prText.replace(shyft, '          RPC_SHYFT_URL: ${{ secrets.RPC_CHAINSTACK_URL }}\n'));
+    refused('the same secret in a run line', prText.replace('run: node', 'run: echo ${{ secrets.RPC_SHYFT_URL }} && node'));
+    refused('a push trigger', prText.replace('workflow_dispatch:', 'workflow_dispatch:\n  push:'));
+    refused('a job-level env', prText.replace('    timeout-minutes: 5\n', `    timeout-minutes: 5\n    env:\n${shyft.replace('          ', '      ')}`));
+    refused('a second step', `${prText}      - name: Again\n        env:\n${shyft}        run: echo again\n`);
+    refused('the same file under another name', prText, '.github/workflows/other-reads.yml');
+    refused('inherit', `${prText}    secrets: inherit\n`);
+  });
+
   it('requires the event variables the drift and audit steps read (supervisor rulings 1 and 7)', () => {
     const drop = (from: string): string[] => {
       assert.ok(realCi.includes(from), from);
