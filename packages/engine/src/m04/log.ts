@@ -7,6 +7,8 @@ export const M04_LOG_CODES = {
   'm04.pool_stale': { fields: { pool: 'id', lag_slots: 'integer', age_ms: 'number' } },
   'm04.read_ahead_of_clock': { fields: { pool: 'id', provider: 'string', slots_ahead: 'bigint' } },
   'm04.watch_refused': { fields: { pool: 'id', class: 'string' } },
+  'm04.clock_fault': { fields: { error_code: 'string', provider: 'string', slot: 'bigint', ceiling: 'bigint' } },
+  'm04.clock_recovered': { fields: { provider: 'string' } },
   'm04.exit_read_lagging': { fields: { pool: 'id', lag_slots: 'integer' } },
   'm04.source_refused': { fields: { kind: 'string', error_code: 'string' } },
   'm04.subscribe_closed': { fields: { pools: 'integer' } },

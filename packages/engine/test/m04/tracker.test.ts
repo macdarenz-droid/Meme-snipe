@@ -535,6 +535,16 @@ describe('M04 settings', () => {
     }
     assert.throws(() => setup({ historyMs: 1 }));
   });
+
+  it('ruling Z07-12: max_tail below universe.tail_max_pools is refused (M05 could not keep its tails)', () => {
+    assert.ok(checkM04Settings({ ...M04_DEFAULTS, maxTail: 30 }, { tailMaxPools: 30 }).ok);
+    const low = checkM04Settings({ ...M04_DEFAULTS, maxTail: 29 }, { tailMaxPools: 30 });
+    assert.ok(!low.ok && low.error.key === 'pool_tracker.max_tail');
+    assert.ok(!checkM04Settings({ ...M04_DEFAULTS, maxTail: 40 }, { tailMaxPools: 60 }).ok);
+    assert.ok(!checkM04Settings({ ...M04_DEFAULTS, maxTail: 29 }).ok);              // the default universe: 30
+    const s = setup();
+    assert.throws(() => createPoolTracker<FakePool>({ model: fakeModel, reader: s.reader, scheduler: s.time, chain: s.chain, clock: s.time, outputs: s.outputs, log: s.log, universe: { tailMaxPools: 60 }, providerOrder: () => ['primary'] }));
+  });
 });
 
 describe('#325 red team round 1 (each test is the red team\'s probe)', () => {
@@ -565,10 +575,14 @@ describe('#325 red team round 1 (each test is the red team\'s probe)', () => {
     assert.equal(s.tracker.latest('a')?.providerSlot, 1_005n);
     assert.equal(s.tracker.lagNow(s.tracker.latest('a') as PoolSnapshot<FakePool>), 0);
     assert.deepEqual(s.outputs.staleEvents, []);
-    // A future slot on a fresh read is refused too, never returned.
-    s.reader.slot = () => 1_000_000_000n;
+    // A future slot on an entry read is never used; on the exit grade, one unconfirmed provider is handed back
+    // unstored as E_CLOCK (ruling Z07-9).
+    s.reader.slot = () => 1_000_001_000n;
+    const entry = await s.tracker.freshRead('a', 8);
+    assert.ok(!entry.ok && entry.error.code !== 'E_CLOCK');
     const r = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(!r.ok && r.error.code === 'E_RPC');
+    assert.ok(!r.ok && r.error.code === 'E_CLOCK' && r.error.snapshot.providerSlot === 1_000_001_000n);
+    assert.equal(s.tracker.latest('a')?.providerSlot, 1_005n);
     s.tracker.stop();
   });
 
@@ -652,5 +666,128 @@ describe('#325 red team round 1 (each test is the red team\'s probe)', () => {
     const second = await s.tracker.freshRead('a', 8);
     assert.ok(second.ok && second.value.providerSlot === 1_999n && second.value.pool.quote === 2_000n);
     assert.equal(s.metrics.count('snapshot_out_of_order_total'), 1);
+  });
+});
+
+describe('ruling Z07-9: a slot clock that trails the tip', () => {
+  /** Two providers, both honest, at the tip; the slot clock trails by 50 slots (past max_provider_lag_slots 10). */
+  async function trailing() {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.tracker.start();
+    s.chain.highest = 2_050n;
+    s.chain.expected = 2_000n;
+    let n = 0;
+    s.reader.slot = (c) => 2_050n - (c.provider === 'backup' ? 1n : 0n) + BigInt(n++ % 1);
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    return s;
+  }
+
+  it('MAJOR-R1: two providers that agree past the ceiling mean the clock is wrong: the read is stored, ONE critical E_CLOCK alert, no provider blamed', async () => {
+    const s = await trailing();
+    await s.time.advance(1_000);                                   // the primary's poll is past the ceiling: verified on the backup
+    await s.time.advance(10);
+    assert.equal(s.tracker.clockFault(), true);
+    assert.ok(s.outputs.snapshots.length >= 1);
+    for (let i = 0; i < 5; i++) { s.chain.highest += 4n; s.reader.slot = () => s.chain.highest; await s.time.advance(1_000); }
+    assert.ok(s.outputs.snapshots.length >= 6, `${s.outputs.snapshots.length}`);
+    assert.equal(s.log.lines.filter(([l, c, f]) => l === 'critical' && c === 'm04.clock_fault' && f.error_code === 'E_CLOCK').length, 1);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'primary' }) + s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+    // Exits and entries work during the fault.
+    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(x.ok);
+    const e = await s.tracker.freshRead('a', 8);
+    assert.ok(e.ok);
+    // M15's highest seen poisoned during the episode: lag is measured against the agreed slot.
+    const tip = s.chain.highest;
+    s.chain.highest = 9_000_000n;
+    assert.equal(s.tracker.lagNow(s.tracker.latest('a') as PoolSnapshot<FakePool>), Number(tip - (s.tracker.latest('a') as PoolSnapshot<FakePool>).providerSlot));
+    s.chain.highest = tip;
+    // The clock jumps past the agreed slot before any read: the clock's own ceiling stands.
+    s.chain.expected = tip + 100n;
+    assert.equal(s.tracker.lagNow(s.tracker.latest('a') as PoolSnapshot<FakePool>), 0);
+    // The clock catches up: a read under its own ceiling ends the episode.
+    s.chain.expected = s.chain.highest;
+    await s.time.advance(1_000);
+    assert.equal(s.tracker.clockFault(), false);
+    assert.ok(s.log.codes().includes('m04.clock_recovered'));
+    s.tracker.stop();
+  });
+
+  it('agreement holds whichever provider is ahead of the other', async () => {
+    const s = await trailing();
+    s.reader.slot = (c) => (c.provider === 'backup' ? 2_052n : 2_050n);
+    await s.time.advance(1_010);
+    assert.equal(s.tracker.clockFault(), true);
+    assert.equal(s.tracker.latest('a')?.providerSlot, 2_052n);
+    s.tracker.stop();
+  });
+
+  it('a lone provider ahead of both the clock and the other provider is refused and counted against it', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.highest = 2_000n;
+    s.reader.slot = (c) => (c.provider === 'backup' ? 2_500n : 2_000n);
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    assert.ok((await s.tracker.freshRead('a', 8)).ok);              // the primary at the clock
+    s.reader.slot = (c) => (c.provider === undefined ? 2_500n : 2_000n);
+    s.reader.provider = (c) => (c.provider === undefined ? 'liar' : c.provider);
+    const r = await s.tracker.freshRead('a', 8);
+    assert.ok(r.ok && r.value.providerLabel !== 'liar');
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'liar' }), 1);
+    assert.equal(s.tracker.clockFault(), false);
+    assert.ok(!s.log.codes().includes('m04.clock_fault'));
+  });
+
+  it('exit grade, one provider answers, past the ceiling: its read comes back UNSTORED as E_CLOCK with the alert; an exit is never blocked', async () => {
+    const s = setup(undefined, ['only']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.highest = 2_050n;
+    s.chain.expected = 2_000n;
+    s.reader.slot = () => 2_050n;
+    s.reader.provider = () => 'only';
+    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot.providerSlot === 2_050n);
+    assert.equal(s.tracker.latest('a'), null);                      // unstored
+    assert.equal(s.log.lines.filter(([l, c]) => l === 'critical' && c === 'm04.clock_fault').length, 1);
+    const again = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!again.ok && again.error.code === 'E_CLOCK');
+    assert.equal(s.log.lines.filter(([, c]) => c === 'm04.clock_fault').length, 1);   // one alert per episode
+    // Entry reads never use it, alone or sharing an exit read in flight.
+    const e = await s.tracker.freshRead('a', 8);
+    assert.ok(!e.ok && e.error.code !== 'E_CLOCK');
+    let release = (): void => {};
+    s.reader.gate = new Promise((r) => { release = r; });
+    const xs = s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    const es = s.tracker.freshRead('a', 8);
+    await Promise.resolve();
+    release();
+    s.reader.gate = null;
+    const [rx, re] = await Promise.all([xs, es]);
+    assert.ok(!rx.ok && rx.error.code === 'E_CLOCK' && !re.ok && re.error.code === 'E_STALE');
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'only' }), 0);
+  });
+
+  it('verification reads of past-ceiling polls are spaced at least 2 s apart and never overlap', async () => {
+    const s = setup(undefined, ['only']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'position');
+    await s.tracker.settled();
+    s.chain.highest = 2_050n;
+    s.chain.expected = 2_000n;
+    s.reader.slot = () => 2_050n;
+    s.reader.provider = () => 'only';
+    s.reader.calls = [];
+    await s.time.advance(5_000);                                    // 10 position polls, all unverified
+    const verifies = s.reader.calls.filter((c) => c.priority === 2).length;
+    assert.ok(verifies >= 2 && verifies <= 3, `${verifies}`);
+    assert.equal(s.tracker.clockFault(), false);
+    s.tracker.stop();
   });
 });

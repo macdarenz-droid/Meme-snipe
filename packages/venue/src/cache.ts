@@ -202,6 +202,11 @@ export interface VenueModel {
   marketCapLamports(p: CpPoolState): Lamports;
   feeFor(p: CpPoolState): Result<FeeSchedule, FeeForError>;
   quoteExactIn(p: CpPoolState, side: 'buy' | 'sell', amountIn: bigint, rule?: TierRule): Result<Quote, QuoteError>;
+  /**
+   * floor(amountOut × (10,000 − s) / 10,000). THROWS `{ code: 'E_INVALID_SLIPPAGE' }` for `s` outside 0..10,000 and
+   * `{ code: 'E_ZERO_OUTPUT' }` when the result is 0 (a minimum of 0 would let any fill pass; #325 red team MAJOR-2,
+   * ruling Z07-11). Every caller (decision, builder, exits: Z08+) catches both and has a test that does (SPEC-A C-85).
+   */
   minOut(q: Quote, slippageBps: Bps): bigint;
   isAllowedVenue(programId: Pubkey): CpPoolState['venue'] | null;
 }

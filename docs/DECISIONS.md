@@ -3860,3 +3860,10 @@ Builder notes (for review):
 - **MINOR-1** Hard watch caps per class: `pool_tracker.max_candidates` 30 (= `max_accounts_per_call ÷ 3`, M05's `max_watched`), `max_tail` 30, `max_positions` 10. `watch()` returns false past a cap (`watch_refused_total{class}`; critical for positions). At the caps the rings hold about 44 MB, about 2% of the 2 GB host.
 - **MINOR-2** `freshRead` refuses an unknown or not-yet-read pool before any in-flight state, and the in-flight entry is deleted once nothing is pending on it.
 - **MINOR-3** A read that `store()` rejected as older is never returned: the stored latest is. A read past the clock ceiling is never returned.
+
+### Z07 round 2 (#325 red team round 1 at 1ef8dc23: 1 MAJOR, 3 MINOR; supervisor rulings Z07-9 to Z07-12)
+
+- **Z07-9 · A slot clock that trails the tip (MAJOR-R1).** Each provider's newest read slot counts as evidence for 5 s (`PEER_WINDOW_MS`, POLICY). Two providers that agree within `max_provider_lag_slots` past the ceiling mean the clock is wrong: the read is stored, one critical `m04.clock_fault` (`E_CLOCK`) is raised per episode, no provider is blamed, and during the episode the accepted ceiling follows the agreed slot at the measured slot time; a read back under the clock's own ceiling ends it (`m04.clock_recovered`). A lone provider ahead of the clock and the other providers is refused and counted against it. A past-ceiling poll read with no peer evidence triggers one verification read on the next provider, at most every 2 s (`VERIFY_SPACING_MS`, POLICY). Exit grade: one unconfirmed provider past the ceiling comes back unstored as `E_CLOCK` (with the snapshot) and the alert; entry reads never use it (an entry caller sharing that exit read gets `E_STALE`).
+- **Z07-10 · Z10 acceptance.** SPEC-A C-84: the production `expectedSlot` is M15's estimate, never 0 and never a highest slot seen, with the skew test on the composition root.
+- **Z07-11 · `minOut` throws.** Documented on `VenueModel.minOut`; SPEC-A C-85 asks every Z08+ caller for a catch test.
+- **Z07-12 · Tail cap.** `checkM04Settings` refuses `pool_tracker.max_tail` below `universe.tail_max_pools` (default 30).

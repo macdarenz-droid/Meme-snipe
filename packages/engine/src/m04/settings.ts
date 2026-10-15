@@ -67,7 +67,11 @@ const RANGES: ReadonlyArray<[keyof M04Settings, string, number, number]> = [
  * The config tables' ranges; the position interval must be below the candidate interval. The account cap's floor is 3
  * (one pool's accounts; SPEC-A says 1, which could never fit a pool). Integers only.
  */
-export function checkM04Settings(s: M04Settings): Result<M04Settings, { code: 'E_CONFIG'; key: string }> {
+/** The M05 settings M04's caps must hold (A-M05-02 config: `universe.tail_max_pools`, default 30, 0-60). */
+export interface UniverseLimits { tailMaxPools: number }
+export const UNIVERSE_DEFAULTS: Readonly<UniverseLimits> = Object.freeze({ tailMaxPools: 30 });
+
+export function checkM04Settings(s: M04Settings, universe: UniverseLimits = UNIVERSE_DEFAULTS): Result<M04Settings, { code: 'E_CONFIG'; key: string }> {
   for (const [field, key, lo, hi] of RANGES) {
     const v = s[field] as number;
     if (!Number.isInteger(v) || v < lo || v > hi) return { ok: false, error: { code: 'E_CONFIG', key } };
@@ -75,6 +79,8 @@ export function checkM04Settings(s: M04Settings): Result<M04Settings, { code: 'E
   if (s.positionIntervalMs >= s.candidateIntervalMs) return { ok: false, error: { code: 'E_CONFIG', key: 'pool_tracker.position_interval_ms' } };
   // M05's max_watched: the candidates fit one call per candidate interval (A-M05-02).
   if (s.maxCandidates * 3 > s.maxAccountsPerCall) return { ok: false, error: { code: 'E_CONFIG', key: 'pool_tracker.max_candidates' } };
+  // Ruling Z07-12: M04 must hold every tail pool M05 may keep, or M05's tails would be refused.
+  if (s.maxTail < universe.tailMaxPools) return { ok: false, error: { code: 'E_CONFIG', key: 'pool_tracker.max_tail' } };
   if (typeof s.subscribeEnabled !== 'boolean') return { ok: false, error: { code: 'E_CONFIG', key: 'pool_tracker.subscribe.enabled' } };
   return { ok: true, value: s };
 }
