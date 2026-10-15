@@ -547,6 +547,18 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
 
   async function exitRead(poolId: Pubkey): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {
     const r1 = await readPool(poolId, 0, undefined, true);
+    const disagreeing = suspect();
+    if (disagreeing !== null) {
+      // Ruling Z07-30: during a disagreement the exit prices on the highest-slot plausible read, unstored and flagged
+      // E_CLOCK, never on a lagging under-ceiling read. The source ahead is read too when it is a provider we use.
+      const r2 = await readPool(poolId, 0, deps.providerOrder().includes(disagreeing) ? disagreeing : after(r1), true);
+      const reads = [r1.snap, r1.held, r2.snap, r2.held].filter((x): x is PoolSnapshot<P> => x !== null && !implausible(x.providerSlot));
+      const top = reads.reduce<PoolSnapshot<P> | null>((m, x) => (m === null || x.providerSlot > m.providerSlot ? x : m), null);
+      if (top !== null && top.providerSlot > ceiling()) {
+        if (deps.providerOrder().length < 2) clockAlert(top.providerLabel, top.providerSlot, ceiling());   // Z07-24
+        return clockError(top, 'clock disagreement: the highest plausible read, unstored');
+      }
+    }
     const first = r1.snap;
     const r2 = first !== null && lagOf(first.providerSlot) <= settings.buildLagSlots ? { snap: null, held: null } as Read
       : await readPool(poolId, 0, after(r1), true);

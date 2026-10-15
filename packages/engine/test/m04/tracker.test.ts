@@ -1005,9 +1005,10 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
     assert.ok(s.outputs.snapshots.every(({ s: x }) => x.providerSlot <= 2_045n));
     assert.equal(s.tracker.clockFault(), false);
-    // Exits are unchanged: the primary's read comes back (the exit path decides on its lag).
+    // Z07-30: the exit prices on the backup's tip read (unstored, E_CLOCK), not on the primary's read 20 slots old.
     const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(x.ok && x.value.providerLabel === 'primary');
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot?.providerLabel === 'backup' && x.error.snapshot.providerSlot === 2_050n);
+    assert.ok(s.outputs.snapshots.every(({ s: y }) => y.providerSlot <= 2_045n));
     s.tracker.stop();
   });
 
@@ -1063,6 +1064,10 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     const e = await t.tracker.freshRead('a', 8);
     assert.ok(!e.ok && e.error.code === 'E_CLOCK' && e.error.snapshot === null);
     assert.equal(t.log.lines.filter(([l, c]) => l === 'critical' && c === 'm04.clock_fault').length, 1);
+    // An implausible read (1e12) is never the "highest plausible" one (Z07-30), but the exit still gets it, unstored.
+    t.reader.slot = () => 1_000_000_000_000n;
+    const x = await t.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot?.providerSlot === 1_000_000_000_000n && /unconfirmed/.test(x.error.detail));
   });
 
   it('MAJOR-R6c variant (Z07-29): the clock at the primary\'s slot: entries stay refused, one alert, the backup is not excluded', async () => {
