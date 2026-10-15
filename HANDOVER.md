@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 10:38 PM: #320 Z06 merged at `cf508be1`** (ls-remote HEAD). CI green on `fd2595f9`; the historical-data re-run passed in 10.7 min.
+  - Archived: Z06 builder, reviewer and red team. Card cost about $35 (builder $27.85, reviewer $4.06, red team $2.84). Unsubscribed from #320; the safety-net check-in has fired.
+  - **M0 cards are all merged.** M0 exit (INTEGRATION M0) still needs "two free providers answer reads". That needs the owner step from MIGRATION:789: free Shyft and Chainstack accounts, with their RPC URLs as repository secrets `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` (the names in engine m14/defaults.ts:37).
+  - The key handoff (ops/README "Key handoff") does not carry these two yet. Extending it is an M1 build item (Z10).
+  - M1 (Z07, Z08) waits for the M0 exit. The "history days counted for B-10" clause is to be verified at the M0-exit check.
+  - Next, without the owner: card Z01-COV, builder `session_01SRxG4joFj6d7wHJNVSx5yA` (Sonnet, Auto). Step 1 only measures; the supervisor rules before any tests are written.
 - **15 Oct 10:18 PM: #320 CI on `fd2595f9`.** check and dashboard are green.
   - historical-data was cancelled at its 15-min timeout, at 11:00:21 UTC, during post-job cleanup. All its tests had passed (test-ci 285/0).
   - On base `90bac78d` the same job took about 12 min. #320 touches nothing under research/historical, so this is runner variance near the limit, not this PR.
