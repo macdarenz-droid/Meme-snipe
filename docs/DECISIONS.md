@@ -3852,3 +3852,11 @@ Builder notes (for review):
   - A source that refuses to start (the subscription stub, disabled by default, and refused while its transport is unverified) is replaced by polling, logged `m04.source_refused` (critical). A subscription that closes falls back to polling at once and never reconnects; red team C's reconnect storm is tested on the seam and on `reconnectingMutant` (ruling Z07-3).
   - `PoolSource.onAccounts` records carry each account's owner (the SPEC-A shape had data only), because owner changes close a pool (logic 7).
   - Every snapshot becomes an M07 `pool_snapshot*` record by class (`snapshotRecord`); the wiring to the recorder, M05 and the bus is cards Z08–Z10. The 48 h soak with coverage ≥ 95% (A-M04-01 definition of done) is Z10's.
+
+### Z07 round 1 (#325 red team: 2 MAJOR, 3 MINOR; fixed with a test from each probe that fails before and passes after)
+
+- **MAJOR-1** One future context slot froze `latest()`. M04 now bounds every read by the slot clock's estimate (`ChainStatePort.expectedSlot`: `timeToSlot(now, slotTimeBasis())`, the primary's reading and the measured slot time, Z06) plus `max_provider_lag_slots`. A read past it is refused, counted in `snapshot_future_slot_total{provider}` and logged `m04.read_ahead_of_clock` (error); a highest-seen slot past it is replaced by the estimate when lag is measured. Staleness also fires on wall-clock age: newest snapshot older than `pool_tracker.stale_age_ms` (5 s) plus the class interval.
+- **MAJOR-2** A quote of nothing is `E_ZERO_OUTPUT` on buy and sell, and `minOut` throws `E_ZERO_OUTPUT` instead of returning 0 (this replaces A-M01-03 edge 3's "returned with amountOut 0").
+- **MINOR-1** Hard watch caps per class: `pool_tracker.max_candidates` 30 (= `max_accounts_per_call ÷ 3`, M05's `max_watched`), `max_tail` 30, `max_positions` 10. `watch()` returns false past a cap (`watch_refused_total{class}`; critical for positions). At the caps the rings hold about 44 MB, about 2% of the 2 GB host.
+- **MINOR-2** `freshRead` refuses an unknown or not-yet-read pool before any in-flight state, and the in-flight entry is deleted once nothing is pending on it.
+- **MINOR-3** A read that `store()` rejected as older is never returned: the stored latest is. A read past the clock ceiling is never returned.

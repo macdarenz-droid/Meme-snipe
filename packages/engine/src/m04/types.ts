@@ -46,8 +46,13 @@ export interface AccountsReader {
   read(keys: readonly Pubkey[], o: { priority: 0 | 1 | 2 | 3 | 4; provider?: string }): Promise<Result<ReadResult, { code: string; message: string }>>;
 }
 
-/** M15 (B-M15-01): the highest slot seen from any provider, and the measured slot time (bug B1). */
-export interface ChainStatePort { highestSeenSlot(): Slot; slotDurationMsEstimate(): number }
+/**
+ * M15 (B-M15-01): the highest slot seen from any provider, the measured slot time (bug B1), and the slot clock's
+ * estimate of the slot at a time (`timeToSlot(nowMs, slotTimeBasis())`, from the primary provider's reading and the
+ * measured slot time, Z06). The estimate bounds what a provider may claim: one provider's future slot cannot poison it,
+ * whereas the highest slot seen takes every provider's word (#325 red team, MAJOR-1).
+ */
+export interface ChainStatePort { highestSeenSlot(): Slot; slotDurationMsEstimate(): number; expectedSlot(nowMs: number): Slot }
 
 /** Timers on the monotonic clock (M14 `Scheduler`). */
 export interface SchedulerPort { nowMs(): number; set(fn: () => void, ms: number): () => void }
@@ -69,7 +74,7 @@ export interface TrackerOutputs<P extends PoolStateLike> {
 
 export interface TrackerLog { event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void }
 export interface TrackerMetrics {
-  counter(name: 'poll_skipped_total' | 'partial_read_total' | 'snapshot_out_of_order_total' | 'fresh_read_stale_total', labels: Readonly<Record<string, string>>): void;
+  counter(name: 'poll_skipped_total' | 'partial_read_total' | 'snapshot_out_of_order_total' | 'fresh_read_stale_total' | 'snapshot_future_slot_total' | 'watch_refused_total', labels: Readonly<Record<string, string>>): void;
   observe(name: 'observation_lag_slots' | 'poll_batch_latency_ms' | 'fresh_read_latency_ms' | 'exit_read_lag_slots', labels: Readonly<Record<string, string>>, value: number): void;
   gauge(name: 'pool_snapshot_age_ms' | 'pool_source_kind', labels: Readonly<Record<string, string>>, value: number): void;
 }

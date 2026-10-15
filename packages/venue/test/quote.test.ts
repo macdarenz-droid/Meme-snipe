@@ -56,10 +56,15 @@ describe('A-M01-03 acceptance', () => {
     assert.equal(code(done), 'E_CURVE_COMPLETE');
   });
 
-  it('AC3: minOut(q, s) ≤ q.amountOut for every s in 0..10,000; an invalid s throws E_INVALID_SLIPPAGE', () => {
+  it('AC3: minOut(q, s) ≤ q.amountOut for every s in 0..10,000 (a minimum of 0 throws E_ZERO_OUTPUT); an invalid s throws E_INVALID_SLIPPAGE', () => {
     fc.assert(fc.property(fc.bigInt({ min: 0n, max: 2n ** 64n }), fc.integer({ min: 0, max: 10_000 }), (out, s) => {
+      const want = (out * BigInt(10_000 - s)) / 10_000n;
+      if (want === 0n) {
+        assert.throws(() => minOut({ amountOut: out } as Quote, s as Bps), (e: unknown) => (e as { code: string }).code === 'E_ZERO_OUTPUT');
+        return true;
+      }
       const m = minOut({ amountOut: out } as Quote, s as Bps);
-      return m <= out && m === (out * BigInt(10_000 - s)) / 10_000n;
+      return m <= out && m === want;
     }), { numRuns: 10_000, seed: 7_031 });
     for (const s of [-1, 10_001, 1.5, Number.NaN]) assert.throws(() => minOut({ amountOut: 1n } as Quote, s as Bps), (e: unknown) => (e as { code: string }).code === 'E_INVALID_SLIPPAGE');
   });
@@ -143,7 +148,12 @@ describe('A-M01-03 properties (ARCH 16.2; 10,000 cases each, fixed seeds)', () =
   it('minOut ≤ amountOut on real quotes', () => {
     fc.assert(fc.property(pools, spend, fc.integer({ min: 0, max: 10_000 }), (p, x, s) => {
       const q = quoteExactIn(p, 'buy', x, INPUTS);
-      return !q.ok || minOut(q.value, s as Bps) <= q.value.amountOut;
+      if (!q.ok) return true;
+      try {
+        return minOut(q.value, s as Bps) <= q.value.amountOut;
+      } catch (e) {
+        return (e as { code: string }).code === 'E_ZERO_OUTPUT';
+      }
     }), { numRuns: 10_000, seed: 7_035 });
   });
 });
@@ -161,16 +171,22 @@ describe('A-M01-03 branches', () => {
     assert.ok(quoteExactIn(freshCurve(), 'buy', SOL, INPUTS).ok);
   });
 
-  it('edge 3: a buy that gets no tokens is returned with amountOut 0 and impact 10,000 bps', () => {
-    const q = ok(quoteExactIn(pool({ baseReserve: 1n }), 'buy', 1_000_000n, INPUTS));
-    assert.equal(q.amountOut, 0n);
-    assert.equal(q.priceImpactBps, 10_000);
+  it('#325 red team MAJOR-2 (its probe): a quote of nothing is E_ZERO_OUTPUT on buy and on sell, never ok with a minimum out of 0', () => {
+    // Before the fix both returned ok with amountOut 0, and minOut(q, s) = 0 let any fill pass.
+    assert.equal(code(quoteExactIn(pool({ baseReserve: 1n }), 'buy', 1_000_000n, INPUTS)), 'E_ZERO_OUTPUT');
+    const p = pool({ quoteReserveReal: 1_000_000_000_000n, quoteReserveVirtual: 0n, baseReserve: 1_000_000_000_000n });
+    assert.equal(code(legWithSplit(p, 'sell', 1n, split3(1, 1, 1))), 'E_ZERO_OUTPUT');
+    assert.equal(code(quoteExactIn(p, 'sell', 1n, INPUTS)), 'E_ZERO_OUTPUT');
+    // A real quote with slippage 10,000, or a dust output that slippage rounds to 0: minOut refuses.
+    const q = ok(quoteExactIn(pool(), 'buy', SOL, INPUTS));
+    assert.throws(() => minOut(q, 10_000 as Bps), (e: unknown) => (e as { code: string }).code === 'E_ZERO_OUTPUT');
+    assert.throws(() => minOut({ ...q, amountOut: 1n }, 1 as Bps), (e: unknown) => (e as { code: string }).code === 'E_ZERO_OUTPUT');
+    assert.equal(minOut({ ...q, amountOut: 1n }, 0 as Bps), 1n);
   });
 
-  it('fees that exceed a dust sell output are E_FEES_EXCEED_OUTPUT; a zero gross sell is amountOut 0', () => {
+  it('fees that exceed a dust sell output are E_FEES_EXCEED_OUTPUT', () => {
     const p = pool({ quoteReserveReal: 1_000_000_000_000n, quoteReserveVirtual: 0n, baseReserve: 1_000_000_000_000n });
     assert.equal(code(legWithSplit(p, 'sell', 2n, split3(1, 1, 1))), 'E_FEES_EXCEED_OUTPUT');
-    assert.equal(ok(legWithSplit(p, 'sell', 1n, split3(1, 1, 1))).amountOut, 0n);
   });
 
   it('curve: complete, null or zero real tokens are E_CURVE_COMPLETE; a sell above the real SOL is refused; a capped completing buy pays less', () => {

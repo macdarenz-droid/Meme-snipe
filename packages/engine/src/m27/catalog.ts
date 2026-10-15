@@ -205,6 +205,8 @@ export const METRICS = {
   poll_skipped_total: counter('class'),                         // A-M04-01
   partial_read_total: counter(),
   snapshot_out_of_order_total: counter(),
+  snapshot_future_slot_total: counter('provider'),             // #325 red team MAJOR-1
+  watch_refused_total: counter('class'),                        // #325 red team MINOR-1
   fresh_read_latency_ms: histogram(BUCKETS.latencyMs, 'grade'), // A-M04-02
   fresh_read_stale_total: counter(),
   exit_read_lag_slots: histogram(BUCKETS.slots),

@@ -18,6 +18,19 @@ export interface M04Settings {
   staleCheckMs: number;
   /** Per-read timeout passed to M14. */
   readTimeoutMs: number;
+  /**
+   * A pool is also stale when its newest snapshot is older than this plus its class interval (wall clock; #325 red
+   * team MAJOR-1: staleness cannot rest on slots alone).
+   */
+  staleAgeMs: number;
+  /**
+   * Hard caps on watched pools per class (#325 red team MINOR-1): rings are preallocated, so M04 refuses a watch past
+   * them. Candidates: M05's `max_watched` = `max_accounts_per_call ÷ 3` (A-M05-02); tail: 30 (MIGRATION A-M05-02);
+   * positions: 10 (POLICY, above any position count the risk limits allow in Phase 0-2).
+   */
+  maxCandidates: number;
+  maxTail: number;
+  maxPositions: number;
 }
 
 export const M04_DEFAULTS: Readonly<M04Settings> = Object.freeze({
@@ -28,6 +41,7 @@ export const M04_DEFAULTS: Readonly<M04Settings> = Object.freeze({
   supplyRefreshMs: 60_000, maxProviderLagSlots: 10, historyMs: 7_200_000,
   staleLagSlots: 12, buildLagSlots: 8, exitLagAlertSlots: 40,
   subscribeEnabled: false, staleCheckMs: 500, readTimeoutMs: 2_000,
+  staleAgeMs: 5_000, maxCandidates: 30, maxTail: 30, maxPositions: 10,
 });
 
 const RANGES: ReadonlyArray<[keyof M04Settings, string, number, number]> = [
@@ -43,6 +57,10 @@ const RANGES: ReadonlyArray<[keyof M04Settings, string, number, number]> = [
   ['exitLagAlertSlots', 'pool_tracker.exit_lag_alert_slots', 12, 400],
   ['staleCheckMs', 'pool_tracker.stale_check_ms', 100, 5_000],
   ['readTimeoutMs', 'pool_tracker.read_timeout_ms', 100, 30_000],
+  ['staleAgeMs', 'pool_tracker.stale_age_ms', 1_000, 60_000],
+  ['maxCandidates', 'pool_tracker.max_candidates', 1, 33],
+  ['maxTail', 'pool_tracker.max_tail', 0, 100],
+  ['maxPositions', 'pool_tracker.max_positions', 1, 20],
 ];
 
 /**
@@ -55,6 +73,8 @@ export function checkM04Settings(s: M04Settings): Result<M04Settings, { code: 'E
     if (!Number.isInteger(v) || v < lo || v > hi) return { ok: false, error: { code: 'E_CONFIG', key } };
   }
   if (s.positionIntervalMs >= s.candidateIntervalMs) return { ok: false, error: { code: 'E_CONFIG', key: 'pool_tracker.position_interval_ms' } };
+  // M05's max_watched: the candidates fit one call per candidate interval (A-M05-02).
+  if (s.maxCandidates * 3 > s.maxAccountsPerCall) return { ok: false, error: { code: 'E_CONFIG', key: 'pool_tracker.max_candidates' } };
   if (typeof s.subscribeEnabled !== 'boolean') return { ok: false, error: { code: 'E_CONFIG', key: 'pool_tracker.subscribe.enabled' } };
   return { ok: true, value: s };
 }
@@ -62,5 +82,8 @@ export function checkM04Settings(s: M04Settings): Result<M04Settings, { code: 'E
 /** The interval of a priority class. */
 export const intervalOf = (s: M04Settings, cls: 'position' | 'candidate' | 'tail'): number =>
   cls === 'position' ? s.positionIntervalMs : cls === 'candidate' ? s.candidateIntervalMs : s.tailIntervalMs;
+/** The watch cap of a class. */
+export const capOf = (s: M04Settings, cls: 'position' | 'candidate' | 'tail'): number =>
+  cls === 'position' ? s.maxPositions : cls === 'candidate' ? s.maxCandidates : s.maxTail;
 /** M14 priority of a class's polls (logic 2, C-07): positions P1, candidates P2, tail P4. */
 export const priorityOf = (cls: 'position' | 'candidate' | 'tail'): 1 | 2 | 4 => (cls === 'position' ? 1 : cls === 'candidate' ? 2 : 4);

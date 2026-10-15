@@ -400,11 +400,16 @@ describe('A-M04-02 freshRead, lag and staleness', () => {
     const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
     assert.ok(x.ok && s.tracker.lagNow(x.value) === 20);
     assert.ok(!s.log.codes().includes('m04.exit_read_lagging'));
+    s.chain.highest += 100n;                                       // the cluster moves on; both answers are newer than latest()
     lags(s, { primary: 41, backup: 45 });
     const far = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
     assert.ok(far.ok && far.value.providerLabel === 'primary');           // the freshest of the two attempts
     assert.ok(s.log.codes().includes('m04.exit_read_lagging'));
     assert.deepEqual(s.reader.calls.slice(-2).map((c) => c.priority), [0, 0]);
+    s.chain.highest += 100n;
+    lags(s, { primary: 45, backup: 41 });
+    const better = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(better.ok && better.value.providerLabel === 'backup');
   });
 
   it('property: freshRead(_, Infinity) never returns E_STALE over a provider lag sweep of 0-60 slots (fixed seed)', async () => {
@@ -441,8 +446,9 @@ describe('A-M04-02 freshRead, lag and staleness', () => {
     assert.ok(r.ok);
     assert.equal(s.tracker.latest('a')?.providerSlot, 1_997n);
     lags(s, { primary: 30, only: 30 });
+    // #325 red team MINOR-3: a read older than latest() is never returned as fresh; the stored latest is.
     const old = await s.tracker.freshRead('a', 8);
-    assert.ok(!old.ok);
+    assert.ok(old.ok && old.value.providerSlot === 1_997n && old.value === s.tracker.latest('a'));
     assert.equal(s.tracker.latest('a')?.providerSlot, 1_997n);
   });
 
@@ -461,6 +467,7 @@ describe('A-M04-02 freshRead, lag and staleness', () => {
     assert.ok(ra.ok && rb.ok && ra.value === rb.value);
     assert.equal(s.reader.calls.length - before, 1);
     // An exit read 10 slots behind is in flight: an entry caller with an 8-slot limit gets E_STALE from it.
+    s.chain.highest += 100n;
     lags(s, { primary: 10, backup: 10 });
     s.reader.gate = new Promise((r) => { release = r; });
     const x = s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
@@ -472,6 +479,7 @@ describe('A-M04-02 freshRead, lag and staleness', () => {
     const [rx, ry, rz] = await Promise.all([x, y, z]);
     assert.ok(rx.ok && !ry.ok && ry.error.code === 'E_STALE' && rz.ok);
     // A shared entry read behind a second caller's tighter limit.
+    s.chain.highest += 100n;
     lags(s, { primary: 6, backup: 6 });
     s.reader.gate = new Promise((r) => { release = r; });
     const p = s.tracker.freshRead('a', 8);
@@ -521,9 +529,128 @@ describe('M04 settings', () => {
     assert.ok(checkM04Settings(M04_DEFAULTS).ok);
     for (const bad of [{ candidateIntervalMs: 499 }, { positionIntervalMs: 1_001 }, { tailIntervalMs: 4_999 }, { maxAccountsPerCall: 101 }, { maxAccountsPerCall: 2 },
       { supplyRefreshMs: 9_999 }, { maxProviderLagSlots: 51 }, { historyMs: 599_999 }, { staleLagSlots: 3 }, { buildLagSlots: 21 }, { exitLagAlertSlots: 11 },
-      { positionIntervalMs: 1_000, candidateIntervalMs: 1_000 }, { subscribeEnabled: 'yes' as unknown as boolean }, { staleCheckMs: 99 }, { readTimeoutMs: 1.5 }]) {
+      { positionIntervalMs: 1_000, candidateIntervalMs: 1_000 }, { subscribeEnabled: 'yes' as unknown as boolean }, { staleCheckMs: 99 }, { readTimeoutMs: 1.5 },
+      { staleAgeMs: 999 }, { maxCandidates: 34 }, { maxCandidates: 30, maxAccountsPerCall: 60 }, { maxTail: 101 }, { maxPositions: 0 }]) {
       assert.ok(!checkM04Settings({ ...M04_DEFAULTS, ...bad }).ok, JSON.stringify(bad));
     }
     assert.throws(() => setup({ historyMs: 1 }));
+  });
+});
+
+describe('#325 red team round 1 (each test is the red team\'s probe)', () => {
+  it('MAJOR-1: one future context slot (a bogus provider, M15 poisoned by it) is refused and counted against its provider; honest reads keep being stored', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.tracker.start();
+    await s.time.advance(1_000);
+    assert.equal(s.outputs.snapshots.length, 1);
+    s.chain.expected = 1_000n;                                     // the slot clock's estimate stays honest
+    s.reader.slot = () => 1_000_000_000n;
+    s.reader.provider = () => 'bogus';
+    s.chain.highest = 1_000_000_000n;                              // M15's highest seen takes the bogus provider's word
+    await s.time.advance(1_000);
+    assert.equal(s.outputs.snapshots.length, 1);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'bogus' }), 1);
+    assert.ok(s.log.lines.some(([l, c, f]) => l === 'error' && c === 'm04.read_ahead_of_clock' && f.provider === 'bogus'));
+    // Honest reads at the clock's slot: stored, with their lag measured against the clock, not the poisoned highest.
+    s.reader.provider = () => 'primary';
+    for (let t = 1; t <= 5; t++) {
+      s.chain.expected = 1_000n + BigInt(t);
+      s.reader.slot = () => s.chain.expected as bigint;
+      await s.time.advance(1_000);
+    }
+    assert.equal(s.outputs.snapshots.length, 6);
+    assert.equal(s.tracker.latest('a')?.providerSlot, 1_005n);
+    assert.equal(s.tracker.lagNow(s.tracker.latest('a') as PoolSnapshot<FakePool>), 0);
+    assert.deepEqual(s.outputs.staleEvents, []);
+    // A future slot on a fresh read is refused too, never returned.
+    s.reader.slot = () => 1_000_000_000n;
+    const r = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!r.ok && r.error.code === 'E_RPC');
+    s.tracker.stop();
+  });
+
+  it('MAJOR-1: staleness also fires on wall-clock age, when no slot moves at all (the slot clock and M15 stuck)', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.tracker.start();
+    await s.time.advance(1_000);
+    s.reader.fail = true;
+    await s.time.advance(5_500);                                    // 5.5 s < 5 s + the 1 s candidate interval
+    assert.deepEqual(s.outputs.staleEvents, []);
+    await s.time.advance(1_000);
+    assert.deepEqual(s.outputs.staleEvents, [{ poolId: 'a', lagSlots: 0 }]);
+    assert.ok(s.log.lines.some(([, c, f]) => c === 'm04.pool_stale' && (f.age_ms as number) > 6_000));
+    s.reader.fail = false;
+    await s.time.advance(1_000);
+    assert.deepEqual(s.outputs.freshEvents, ['a']);
+    s.tracker.stop();
+  });
+
+  it('MINOR-1: 500 watches are capped per class (30 candidates, 30 tail, 10 positions); at the caps the rings fit a small slice of the 2 GB host', async () => {
+    const s = setup();
+    const model64 = { ...fakeModel, recordBytes: 64 };            // the PumpSwap record size
+    const tracker = createPoolTracker<FakePool>({ model: model64, reader: s.reader, scheduler: s.time, chain: s.chain, clock: s.time, outputs: s.outputs, log: s.log, metrics: s.metrics, providerOrder: () => ['primary'] });
+    const accepted = { candidate: 0, tail: 0, position: 0 };
+    for (let i = 0; i < 500; i++) {
+      add(s.reader, `p${i}`);
+      const cls = (['candidate', 'tail', 'position'] as const)[i % 3] as 'candidate' | 'tail' | 'position';
+      if (tracker.watch(`p${i}`, cls)) accepted[cls]++;
+    }
+    assert.deepEqual(accepted, { candidate: 30, tail: 30, position: 10 });
+    assert.equal(tracker.ringBytes(), 0);                          // nothing allocated before a pool's first read
+    assert.ok(s.metrics.count('watch_refused_total', { class: 'candidate' }) > 0);
+    assert.ok(s.log.lines.some(([l, c]) => l === 'critical' && c === 'm04.watch_refused'));
+    await tracker.settled();
+    // A move into a full class is refused too; the same class is a no-op.
+    assert.equal(tracker.watch('p0', 'position'), false);
+    assert.equal(tracker.watch('p0', 'candidate'), true);
+    const bytes = tracker.ringBytes();
+    const stride = 64 + 52;
+    assert.equal(bytes, stride * (30 * 7_200 + 30 * 720 + 10 * 14_400));
+    assert.ok(bytes <= 64 * 2 ** 20, `${bytes} bytes`);              // ≈ 44 MB: about 2% of 2 GB (Z10 alerts at 75%)
+    tracker.stop();
+  });
+
+  it('MINOR-2: freshRead on an unwatched or dropped pool leaves no in-flight entry; settled reads leave none either', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    for (let i = 0; i < 50; i++) assert.ok(!(await s.tracker.freshRead(`ghost${i}`, 8)).ok);
+    assert.equal(s.tracker.inflightCount(), 0);
+    assert.ok((await s.tracker.freshRead('a', 8)).ok);
+    assert.ok((await s.tracker.freshRead('a', Number.POSITIVE_INFINITY)).ok);
+    assert.equal(s.tracker.inflightCount(), 0);
+    let release = (): void => {};
+    s.reader.gate = new Promise((r) => { release = r; });
+    const pending = s.tracker.freshRead('a', 8);
+    await Promise.resolve();
+    assert.equal(s.tracker.inflightCount(), 1);
+    s.tracker.unwatch('a');
+    release();
+    s.reader.gate = null;
+    assert.ok(!(await pending).ok);
+    assert.equal(s.tracker.inflightCount(), 0);
+  });
+
+  it('MINOR-3: a read that store() rejected as older is never returned as fresh: the caller gets the stored latest', async () => {
+    const s = setup();
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.highest = 2_000n;
+    s.reader.slot = () => 1_999n;
+    const first = await s.tracker.freshRead('a', 8);
+    assert.ok(first.ok);
+    s.reader.slot = () => 1_995n;
+    s.reader.accounts.set('a:q', { owner: 'tok', data: u64(9_999n) });
+    const second = await s.tracker.freshRead('a', 8);
+    assert.ok(second.ok && second.value.providerSlot === 1_999n && second.value.pool.quote === 2_000n);
+    assert.equal(s.metrics.count('snapshot_out_of_order_total'), 1);
   });
 });

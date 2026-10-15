@@ -16,7 +16,7 @@
 import { createHash } from 'node:crypto';
 import type { Clock, Pubkey, Result, Slot, UnixMs } from '@bot/types';
 import { SnapshotRing } from './ring.ts';
-import { checkM04Settings, intervalOf, M04_DEFAULTS, type M04Settings } from './settings.ts';
+import { capOf, checkM04Settings, intervalOf, M04_DEFAULTS, type M04Settings } from './settings.ts';
 import { createPollSource, type PoolSource, type SourceRecord } from './source.ts';
 import type {
   AccountsReader, ChainStatePort, MintInfo, PoolAddresses, PoolClass, PoolModelPort, PoolSnapshot, PoolStateLike, RawAccount, SchedulerPort,
@@ -26,7 +26,8 @@ import type {
 export type FreshReadError = { code: 'E_STALE' | 'E_RPC'; detail: string };
 
 export interface PoolTracker<P extends PoolStateLike> {
-  watch(poolId: Pubkey, priority: PoolClass): void;
+  /** False when the class is at its cap (`pool_tracker.max_*`): the watch is refused and nothing changes. */
+  watch(poolId: Pubkey, priority: PoolClass): boolean;
   unwatch(poolId: Pubkey): void;
   latest(poolId: Pubkey): PoolSnapshot<P> | null;
   history(poolId: Pubkey, fromMs: UnixMs, toMs: UnixMs): ReadonlyArray<PoolSnapshot<P>>;
@@ -38,6 +39,10 @@ export interface PoolTracker<P extends PoolStateLike> {
   freshRead(poolId: Pubkey, maxLagSlots: number): Promise<Result<PoolSnapshot<P>, FreshReadError>>;
   /** Pools watched and ready (read once, mint known). */
   ready(): Pubkey[];
+  /** In-flight `freshRead` entries (tests: MINOR-2). */
+  inflightCount(): number;
+  /** Bytes held by every ring (tests: MINOR-1). */
+  ringBytes(): number;
   /** Starts the staleness monitor and the supply refresh; stops everything. */
   start(): void;
   stop(): void;
@@ -90,8 +95,17 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   let mintsBusy = false;
 
   const capacity = (cls: PoolClass): number => Math.ceil(settings.historyMs / intervalOf(settings, cls));
+  /** The highest slot a provider may claim now: the slot clock's estimate plus `max_provider_lag_slots`. */
+  const ceiling = (): Slot => (deps.chain.expectedSlot(deps.clock.nowMs()) + BigInt(settings.maxProviderLagSlots)) as Slot;
+  /**
+   * Lag against the highest slot seen; a highest slot past the ceiling came from a provider ahead of the clock or a
+   * bogus one, so the slot clock's estimate stands in for it (MAJOR-1).
+   */
   const lagOf = (slot: Slot): number => {
-    const d = deps.chain.highestSeenSlot() - slot;
+    const now = deps.clock.nowMs();
+    const expected = deps.chain.expectedSlot(now);
+    const top = deps.chain.highestSeenSlot();
+    const d = (top <= expected + BigInt(settings.maxProviderLagSlots) ? top : expected) - slot;
     return d > 0n ? Number(d) : 0;
   };
 
@@ -184,22 +198,32 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     };
   }
 
-  /** The monotonic rule, then the ring and the outputs. `exit` reads are not discarded for lag. */
-  function store(e: Entry<P>, s: PoolSnapshot<P>, exit: boolean): boolean {
+  /**
+   * The future-slot rule, the monotonic rule, then the ring and the outputs. A read claiming a slot past the slot
+   * clock's ceiling is refused and counted against its provider, so one bogus slot can never freeze `latest()` and
+   * turn every honest read into an out-of-order one (MAJOR-1). `exit` reads are not discarded for lag.
+   */
+  function store(e: Entry<P>, s: PoolSnapshot<P>, exit: boolean): 'stored' | 'refused' | 'older' {
     const ring = e.ring as SnapshotRing<P>;
+    const c = ceiling();
+    if (s.providerSlot > c) {
+      deps.metrics?.counter('snapshot_future_slot_total', { provider: s.providerLabel });
+      deps.log.event('error', 'm04.read_ahead_of_clock', { pool: s.pool.poolId, provider: s.providerLabel, slots_ahead: Number(s.providerSlot - c) });
+      return 'refused';
+    }
     const last = ring.latest();
     if (last !== null && s.providerSlot < last.providerSlot) {
       deps.metrics?.counter('snapshot_out_of_order_total', {});
-      return false;
+      return 'older';
     }
     if (!exit && s.observationLagSlots > settings.maxProviderLagSlots) {
       deps.outputs.providerLagging(s.providerLabel, s.observationLagSlots);
-      return false;
+      return 'refused';
     }
     ring.push(s);
     deps.metrics?.observe('observation_lag_slots', { pool: s.pool.poolId, provider: s.providerLabel }, s.observationLagSlots);
     deps.outputs.snapshot(s, e.cls);
-    return true;
+    return 'stored';
   }
 
   function onRecord(r: SourceRecord): void {
@@ -220,7 +244,13 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     const now = pools.get(poolId);
     if (!r.ok || now === undefined || now.ring === null) return null;
     const s = snapshotOf(now, r.value.accounts, r.value.contextSlot, r.value.providerLabel, r.value.latencyMs);
-    if (s !== null) store(now, s, exit);
+    if (s === null) return null;
+    // MINOR-3: only a stored read, or the stored latest when the read was older, is ever returned as fresh. A read
+    // refused for lag is returned for the caller's own limit (entry grade then reports E_STALE); one past the ceiling
+    // never is.
+    const outcome = store(now, s, exit);
+    if (outcome === 'older') return (now.ring as SnapshotRing<P>).latest();
+    if (outcome === 'refused' && s.providerSlot > ceiling()) return null;
     return s;
   }
 
@@ -243,8 +273,9 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   async function exitRead(poolId: Pubkey): Promise<Result<PoolSnapshot<P>, FreshReadError>> {
     const first = await readPool(poolId, 0, undefined, true);
     const second = first !== null && lagOf(first.providerSlot) <= settings.buildLagSlots ? null : await readPool(poolId, 0, first === null ? undefined : nextProvider(first.providerLabel), true);
-    const best = [first, second].filter((s): s is PoolSnapshot<P> => s !== null).sort((x, y) => (y.providerSlot > x.providerSlot ? 1 : y.providerSlot < x.providerSlot ? -1 : 0))[0];
-    if (best === undefined) return { ok: false, error: { code: 'E_RPC', detail: 'every read failed' } };
+    // readPool never returns an older read than latest() (MINOR-3), so the second is the freshest when it exists.
+    const best = second !== null && (first === null || second.providerSlot >= first.providerSlot) ? second : first;
+    if (best === null) return { ok: false, error: { code: 'E_RPC', detail: 'every read failed' } };
     const lag = lagOf(best.providerSlot);
     deps.metrics?.observe('exit_read_lag_slots', {}, lag);
     if (lag > settings.exitLagAlertSlots) deps.log.event('warn', 'm04.exit_read_lagging', { pool: poolId, lag_slots: lag });
@@ -259,10 +290,11 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       if (last === null) continue;
       deps.metrics?.gauge('pool_snapshot_age_ms', { pool: poolId }, now - last.pool.observedAtMs);
       const lag = lagOf(last.providerSlot);
-      if (lag > settings.staleLagSlots) {
+      const ageMs = now - last.pool.observedAtMs;
+      if (lag > settings.staleLagSlots || ageMs > settings.staleAgeMs + intervalOf(settings, e.cls)) {
         if (e.staleSinceMs !== null) continue;
         e.staleSinceMs = now;
-        deps.log.event('warn', 'm04.pool_stale', { pool: poolId, lag_slots: lag });
+        deps.log.event('warn', 'm04.pool_stale', { pool: poolId, lag_slots: lag, age_ms: ageMs });
         deps.outputs.stale({ poolId, lagSlots: lag, sinceMs: now });
       } else if (e.staleSinceMs !== null) {
         e.staleSinceMs = null;
@@ -300,16 +332,23 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   return {
     watch(poolId, priority) {
       const e = pools.get(poolId);
+      if (e?.cls === priority) return true;
+      // MINOR-1: rings are preallocated, so each class has a hard cap; a watch past it is refused.
+      if ([...pools.values()].filter((x) => x.cls === priority).length >= capOf(settings, priority)) {
+        deps.metrics?.counter('watch_refused_total', { class: priority });
+        deps.log.event(priority === 'position' ? 'critical' : 'warn', 'm04.watch_refused', { pool: poolId, class: priority });
+        return false;
+      }
       if (e !== undefined) {
-        if (e.cls === priority) return;
         e.cls = priority;
         e.ring?.resize(capacity(priority));
         restartSource();
-        return;
+        return true;
       }
       const entry: Entry<P> = { cls: priority, addr: null, canonical: null, mint: null, ring: null, staleSinceMs: null, boot: null, bootRetryAtMs: 0 };
       pools.set(poolId, entry);
       entry.boot = bootstrap(poolId);
+      return true;
     },
     unwatch: drop,
     latest: (poolId) => pools.get(poolId)?.ring?.latest() ?? null,
@@ -318,6 +357,8 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     lagNow: (s) => lagOf(s.providerSlot),
     lagMs: (s) => lagOf(s.providerSlot) * deps.chain.slotDurationMsEstimate(),
     async freshRead(poolId, maxLagSlots) {
+      // MINOR-2: an unknown or not yet ready pool is refused before any in-flight state exists.
+      if (pools.get(poolId)?.addr == null) return { ok: false, error: { code: 'E_RPC', detail: 'pool not watched or not read yet' } };
       const started = deps.scheduler.nowMs();
       const exit = maxLagSlots === Number.POSITIVE_INFINITY;
       const slot = inflight.get(poolId) ?? {};
@@ -335,10 +376,14 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
         const r = await slot.entry;
         result = r.ok && lagOf(r.value.providerSlot) > maxLagSlots ? { ok: false, error: { code: 'E_STALE', detail: 'the shared read is behind this limit' } } : r;
       }
+      // MINOR-2: the in-flight entry goes once nothing is pending on it.
+      if (slot.exit === undefined && slot.entry === undefined && inflight.get(poolId) === slot) inflight.delete(poolId);
       deps.metrics?.observe('fresh_read_latency_ms', { grade: exit ? 'exit' : 'entry' }, deps.scheduler.nowMs() - started);
       return result;
     },
     ready: () => [...pools.values()].filter((e) => e.ring !== null).map((e) => (e.addr as PoolAddresses).poolId),
+    inflightCount: () => inflight.size,
+    ringBytes: () => [...pools.values()].reduce((n, e) => n + (e.ring?.bytes ?? 0), 0),
     start() {
       every(settings.staleCheckMs, monitor);
       every(settings.supplyRefreshMs, () => { void refreshMints(); });

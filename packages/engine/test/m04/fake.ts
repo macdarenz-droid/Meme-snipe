@@ -74,7 +74,10 @@ export class ScriptedReader implements AccountsReader {
 export class FakeChain implements ChainStatePort {
   highest = 1_000n;
   slotMs = 250;
+  /** The slot clock's estimate; null: follow `highest` (an honest cluster). */
+  expected: bigint | null = null;
   highestSeenSlot(): Slot { return this.highest as Slot; }
+  expectedSlot(): Slot { return (this.expected ?? this.highest) as Slot; }
   slotDurationMsEstimate(): number { return this.slotMs; }
 }
 

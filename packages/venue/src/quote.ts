@@ -19,7 +19,7 @@ import type { CpPoolState } from './pool.ts';
 
 export type QuoteError =
   | { code: 'E_FEE_UNKNOWN' | 'E_CONFIG_STALE' | 'E_NEGATIVE_EFFECTIVE' | 'E_ZERO_RESERVE' | 'E_ZERO_INPUT' | 'E_CURVE_COMPLETE'
-      | 'E_VENUE_NOT_SPECIFIED' | 'E_OVERFLOW' | 'E_DECIMALS_UNKNOWN' | 'E_FEES_EXCEED_OUTPUT'; detail: string }
+      | 'E_VENUE_NOT_SPECIFIED' | 'E_OVERFLOW' | 'E_DECIMALS_UNKNOWN' | 'E_FEES_EXCEED_OUTPUT' | 'E_ZERO_OUTPUT'; detail: string }
   | { code: 'E_EXCEEDS_REAL_VAULT'; detail: string; maxSellableBase: BaseUnits };
 
 export type TierRule = 'conservative' | 'chain';
@@ -77,6 +77,8 @@ function buyLeg(p: CpPoolState, Q: bigint, B: bigint, spend: bigint, split: FeeS
   const input = q - 1n;
   if (input <= 0n) return err('E_ZERO_INPUT', 'the spend leaves nothing after fees');
   const out = mul(B, input) / (Q + input);
+  // #325 red team MAJOR-2: a quote of nothing is refused, never returned with a minimum out of 0 that any fill passes.
+  if (out === 0n) return err('E_ZERO_OUTPUT', 'the spend buys no tokens');
   const real = p.realBaseReserve;
   if (p.venue === 'pump_curve' && real !== null && out > real) {
     // Logic 7 (research only): the buy that completes the curve gets the real tokens left, at the exact-tokens price
@@ -129,6 +131,7 @@ function sellLeg(p: CpPoolState, Q: bigint, B: bigint, t: bigint, split: FeeSpli
   const creatorFee = feeOf(gross, split.creatorBps);
   const out = gross - lpFee - protocolFee - creatorFee;
   if (out < 0n) return err('E_FEES_EXCEED_OUTPUT', 'the fees exceed the sell output');
+  if (out === 0n) return err('E_ZERO_OUTPUT', 'the sell gives nothing');
   return {
     ok: true,
     value: { side: 'sell', split, amountIn: t, amountOut: out, netQuote: gross, lpFee, protocolFee, creatorFee, afterQuote: Q - gross + lpRetained(p, lpFee), afterBase: B + t },
@@ -158,7 +161,6 @@ export function spotSolPerToken(Q: bigint, B: bigint, decimals: number): Decimal
 /** Price impact against the pre-trade spot (logic 6), rounded up; fees excluded. */
 function impactBps(leg: Leg, Q: bigint, B: bigint): Bps {
   if (leg.side === 'buy') {
-    if (leg.amountOut === 0n) return 10_000;
     const den = leg.amountOut * Q;
     return Number(ceilDiv((leg.netQuote * B - den) * BPS, den));
   }
@@ -215,10 +217,15 @@ export function quoteExactIn(p: CpPoolState, side: 'buy' | 'sell', amountIn: big
   return d.ok ? { ok: true, value: d.value.quote } : d;
 }
 
-/** Logic 8: floor(amountOut × (10,000 − s) / 10,000); `s` must be an integer 0..10,000. */
+/**
+ * Logic 8: floor(amountOut × (10,000 − s) / 10,000); `s` must be an integer 0..10,000. A minimum of 0 would let any
+ * fill pass, so it throws `E_ZERO_OUTPUT` (#325 red team MAJOR-2; slippage 10,000 or a dust quote).
+ */
 export function minOut(q: Quote, slippageBps: Bps): bigint {
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 10_000) throw { code: 'E_INVALID_SLIPPAGE' };
-  return (q.amountOut * (BPS - BigInt(slippageBps))) / BPS;
+  const m = (q.amountOut * (BPS - BigInt(slippageBps))) / BPS;
+  if (m === 0n) throw { code: 'E_ZERO_OUTPUT' };
+  return m;
 }
 
 /** Logic 1: real + virtual; throws `E_NEGATIVE_EFFECTIVE` when negative. */
