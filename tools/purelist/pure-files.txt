@@ -42,3 +42,5 @@ packages/engine/src/m14/usage.ts  # M14 credit maths: costs, caps, allocation, p
 packages/engine/src/m14/meter.ts  # M14 credit meter over a ledger port: block reservation, projection cache (A-M14-05, card Z08)
 packages/engine/src/m14/health.ts  # M14 provider health and the degraded-mode state machine (A-M14-05, card Z08)
 packages/engine/src/m07/manifest.ts  # M07 segment names, manifests, gap merging and frame starts (A-M07-02, card Z08)
+packages/engine/src/m07/coverage.ts  # M07 daily coverage arithmetic with the Z04 integration rulings (A-M07-03, card Z08)
+packages/engine/src/m07/receipt-sig.ts  # M07 PullReceipt format, Ed25519 sign and verify (A-M07-03, card Z08)

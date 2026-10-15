@@ -51,6 +51,8 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
       'm27.ring_budget_bytes', 'm27.rollup_max_bytes', 'm27.series_cap',
       // Z03 (A-M14-01/02): read-path plumbing; backtest and replay make no RPC call, and the live read path's limits are
       // the owner's data-source rule, not a strategy parameter.
+      'recorder.codec_preference', 'recorder.data_dir', 'recorder.disk_check_ms', 'recorder.disk_stop_pct', 'recorder.disk_warn_pct', 'recorder.flush_ms',
+      'recorder.max_bytes', 'recorder.min_free_bytes', 'recorder.research_pubkey', 'recorder.retention_days',
       'rpc.allocation_file', 'rpc.burn.alert_bps', 'rpc.chainstack.rolling_31d_ru_cap',
       'rpc.default_timeout_ms.p0', 'rpc.default_timeout_ms.p1', 'rpc.default_timeout_ms.p2', 'rpc.default_timeout_ms.p3', 'rpc.default_timeout_ms.p4',
       'rpc.degraded.enter_after_ms', 'rpc.degraded.exit_after_ms', 'rpc.health.down_after_ms', 'rpc.helius.rolling_31d_credit_cap',
