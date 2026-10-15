@@ -269,6 +269,10 @@ describe('A-M07-02 segment writer', () => {
     append(q, now.t, 2, 'coverage');
     w.pump();
     assert.ok(lines.some((l) => l.code === 'M07.write_failed' && l.fields.op === 'open'));
+    const failures = lines.filter((l) => l.code === 'M07.write_failed').length;
+    for (let i = 0; i < 5; i += 1) append(q, now.t + i, 3 + i, 'coverage');
+    w.pump();
+    assert.equal(lines.filter((l) => l.code === 'M07.write_failed').length, failures);   // once per halt, no flood
     full = false;
     const r = SegmentWriter.recover({ dataDir: dir, nowMs: (now.t + 1) as UnixMs, log: () => undefined });
     assert.equal(r.recovered.find((m) => m.stream === 'decision')?.records, 1);

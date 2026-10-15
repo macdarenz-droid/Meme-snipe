@@ -264,13 +264,14 @@ export class SegmentWriter {
       const batch = this.deps.queue.take(TAKE_MAX, h.hourUtc);
       for (const r of batch) {
         if (this.halted !== null && !KEEP_WHEN_HALTED.has(r.stream)) {
-          const g = this.haltGaps.get(r.stream);
-          if (g === undefined) this.haltGaps.set(r.stream, { fromMs: Math.min(r.recvMs, this.halted.since) as UnixMs, toMs: r.recvMs, reason: 'halted' });
-          else g.toMs = Math.max(g.toMs, r.recvMs) as UnixMs;
+          this.haltGap(r.stream, r.recvMs);
           continue;
         }
         const seg = this.segment(r.stream);
-        if (seg === null) continue;
+        if (seg === null) {
+          this.haltGap(r.stream, r.recvMs);                               // a kept stream whose segment cannot be opened
+          continue;
+        }
         const line = recordLine(r);
         seg.lines.push(line);
         addRecord(seg.stats, statsOfLine(line));
@@ -283,6 +284,13 @@ export class SegmentWriter {
     }
     if (this.halted === null) for (const s of [...this.pendingGaps.keys()]) this.segment(s);
     return n;
+  }
+
+  private haltGap(stream: StreamName, recvMs: UnixMs): void {
+    const since = this.halted?.since ?? recvMs;
+    const g = this.haltGaps.get(stream);
+    if (g === undefined) this.haltGaps.set(stream, { fromMs: Math.min(recvMs, since) as UnixMs, toMs: recvMs, reason: 'halted' });
+    else g.toMs = Math.max(g.toMs, recvMs) as UnixMs;
   }
 
   /** The open segment of `stream` in the current hour (made on first use). Null when the write fails (halts). */
@@ -319,7 +327,8 @@ export class SegmentWriter {
 
   private failed(op: string, e: unknown): void {
     const code = typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : 'unknown';
-    this.deps.log('critical', 'M07.write_failed', { op, code });
+    // Once per halt episode: a full disk would otherwise log on every record of the streams still kept.
+    if (this.halted === null) this.deps.log('critical', 'M07.write_failed', { op, code });
     this.halt(`write_failed:${code}`);
   }
 

@@ -4,7 +4,7 @@ import { strict as assert } from 'node:assert';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
 import type { UnixMs } from '@bot/types';
-import { monthlyCapOn, openUsageLedger } from '../../src/m14/ledger.ts';
+import { monthlyCapOn, openUsageLedger } from '../../src/m24/usage-ledger.ts';
 import {
   createServiceClients, EXIT_WORK_EXPIRY_MS, redactUrl, SERVICE_LIMITS, type HttpFetch, type ServiceConfig, type ServiceDeps,
 } from '../../src/m14/services.ts';
@@ -227,14 +227,23 @@ describe('A-M14-03 keys and requests', () => {
 
   it('a keyed Sender URL is logged with no key in any line (redactUrl)', () => {
     const log = new RecordingLog();
-    const url = 'https://sender.helius-rpc.com/fast?api-key=SENDER-SECRET-123&swqos_only=true';
-    log.event('info', 'm14.example', { url: redactUrl(url) });
-    log.event('info', 'm14.example', { url: redactUrl('https://user:pw-SECRET@x.example.test/?myKey=SENDER-SECRET-123', ['myKey']) });
+    // A fake key in Helius Sender's query parameter [VF-14], built with URLSearchParams.
+    const keyed = new URL('https://sender.helius-rpc.com/fast');
+    keyed.searchParams.set('api-key', 'SENDER-SECRET-123');
+    keyed.searchParams.set('swqos_only', 'true');
+    const custom = new URL('https://x.example.test/');
+    custom.username = 'user';
+    custom.password = 'pw-SECRET';
+    custom.searchParams.set('myKey', 'SENDER-SECRET-123');
+    log.event('info', 'm14.example', { url: redactUrl(keyed.toString()) });
+    log.event('info', 'm14.example', { url: redactUrl(custom.toString(), ['myKey']) });
     log.event('info', 'm14.example', { url: redactUrl('not a url SENDER-SECRET-123') });
     const text = JSON.stringify(log.events);
     assert.ok(!text.includes('SECRET'), text);
-    assert.equal(redactUrl(url), 'https://sender.helius-rpc.com/fast?api-key=[redacted]&swqos_only=true');
+    const out = new URL(redactUrl(keyed.toString()));
+    assert.deepEqual([out.searchParams.get('api-key'), out.searchParams.get('swqos_only')], ['[redacted]', 'true']);
   });
+
 
   it('paths stay below the base URL; endpoints are checked; unknown services and sends are refused', async () => {
     const { svc, seen } = setup();

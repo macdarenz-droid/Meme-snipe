@@ -4,16 +4,22 @@
 // of the real pool is Z10's on-server acceptance (SPEC-A C-90).
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
-import { base58 } from '@bot/decoders';
+import { base58, decodePubkey } from '@bot/decoders';
 import type { Pubkey, Slot, UnixMs } from '@bot/types';
 import { derivePda, MINTS, PROGRAMS, REFERENCE, REFERENCE_PDAS } from '@bot/venue/constants';
 import {
-  createSolUsdReader, decodeTokenAccount, decodeWhirlpool, MIN_DEPTH_USD_E6, priceOf, pubkeyBytes, usdE6PerSol, WHIRLPOOL_DISCRIMINATOR, WHIRLPOOL_LEN,
-  type RawAccount, type RefPriceRecord, type ReferenceReader,
+  createSolUsdReader, decodeTokenAccount, decodeWhirlpool, MIN_DEPTH_USD_E6, priceOf, usdE6PerSol, WHIRLPOOL_DISCRIMINATOR, WHIRLPOOL_LEN,
+  type RawAccount, type ReferenceIds, type RefPriceRecord, type ReferenceReader,
 } from '../../src/m07/sol-usd.ts';
 import { PROTECTED_STREAMS, STREAM_NAMES } from '../../src/recorder/streams.ts';
 import { RecorderQueue } from '../../src/recorder/queue.ts';
 
+const pubkeyBytes = (p: Pubkey): Uint8Array => decodePubkey(p);
+/** What the composition root passes (Z10): the reviewed constants and the decoders' base58 encoder. */
+const IDS: ReferenceIds = {
+  whirlpoolProgram: PROGRAMS.orcaWhirlpools, whirlpoolsConfig: REFERENCE.orcaWhirlpoolsConfig, pool: REFERENCE.solUsdcWhirlpool,
+  wsol: MINTS.wsol, usdc: MINTS.usdc, splToken: PROGRAMS.splToken, encodeKey: (b) => base58.encode(b) as Pubkey,
+};
 // Synthetic vault addresses (any 32 bytes).
 const VAULT_A = base58.encode(new Uint8Array(32).fill(7)) as Pubkey;
 const VAULT_B = base58.encode(new Uint8Array(32).fill(9)) as Pubkey;
@@ -73,21 +79,21 @@ describe('card Z08 SOL/USD reference price (synthetic fixtures)', () => {
   });
 
   it('decodes the pinned layout; prices sqrt_price exactly ($150.000000 a SOL)', () => {
-    const w = decodeWhirlpool(syntheticPool());
+    const w = decodeWhirlpool(syntheticPool(), IDS);
     assert.ok(w !== null);
     assert.deepEqual([w.config, w.tickSpacing, w.mintA, w.vaultA, w.mintB, w.vaultB], [REFERENCE.orcaWhirlpoolsConfig, 4, MINTS.wsol, VAULT_A, MINTS.usdc, VAULT_B]);
     const p = usdE6PerSol(w.sqrtPriceX64);
     assert.ok(p >= 149_999_999n && p <= 150_000_000n, String(p));
     assert.equal(usdE6PerSol(1n << 64n), 1_000_000_000n);                 // sqrt 1.0: 1 micro-USDC per lamport = $1,000 a SOL
-    assert.equal(decodeWhirlpool(syntheticPool({ disc: false })), null);
-    assert.equal(decodeWhirlpool(syntheticPool({ len: WHIRLPOOL_LEN - 1 })), null);
-    assert.equal(decodeTokenAccount(new Uint8Array(164)), null);
-    assert.equal(decodeTokenAccount(syntheticToken(MINTS.usdc, 7n))?.amount, 7n);
+    assert.equal(decodeWhirlpool(syntheticPool({ disc: false }), IDS), null);
+    assert.equal(decodeWhirlpool(syntheticPool({ len: WHIRLPOOL_LEN - 1 }), IDS), null);
+    assert.equal(decodeTokenAccount(new Uint8Array(164), IDS), null);
+    assert.equal(decodeTokenAccount(syntheticToken(MINTS.usdc, 7n), IDS)?.amount, 7n);
   });
 
   it('every check refuses with its reason (owner, layout, config, mints, vaults, price, vault accounts, depth)', () => {
     const v = { a: VAULT_A, b: VAULT_B };
-    const run = (o: Parameters<typeof accounts>[0]) => { const [p, a, b] = accounts(o); return priceOf(p ?? null, a ?? null, b ?? null, v, MIN_DEPTH_USD_E6); };
+    const run = (o: Parameters<typeof accounts>[0]) => { const [p, a, b] = accounts(o); return priceOf(IDS, p ?? null, a ?? null, b ?? null, v, MIN_DEPTH_USD_E6); };
     const reason = (o: Parameters<typeof accounts>[0]) => { const r = run(o); return r.ok ? 'ok' : r.reason; };
     assert.equal(reason({}), 'ok');
     assert.equal(reason({ pool: null }), 'pool_missing');
@@ -118,7 +124,7 @@ describe('card Z08 SOL/USD reference price (synthetic fixtures)', () => {
     const reader: ReferenceReader = { read: async (keys, o) => { reads.push({ keys, priority: o.priority }); return script(keys); } };
     const out: RefPriceRecord[] = [];
     const q = new RecorderQueue();
-    const r = createSolUsdReader({ reader, nowMs: () => t as UnixMs, append: (x) => { out.push(x); assert.equal(q.append(x), 'queued'); } });
+    const r = createSolUsdReader({ ids: IDS, reader, nowMs: () => t as UnixMs, append: (x) => { out.push(x); assert.equal(q.append(x), 'queued'); } });
     await r.tick(t as UnixMs);
     assert.equal(out.length, 1);
     assert.equal(out[0]?.payload.kind, 'price');
@@ -159,20 +165,20 @@ describe('card Z08 SOL/USD reference price (synthetic fixtures)', () => {
     assert.equal(reads[before]?.keys.length, 1);                          // learnt again
     // A pool that cannot be decoded at the learning read, or is missing, or the read fails there.
     for (const [acc, why] of [[null, 'pool_missing'], [{ owner: PROGRAMS.orcaWhirlpools, data: new Uint8Array(10) }, 'pool_layout'], [{ owner: PROGRAMS.splToken, data: syntheticPool() }, 'pool_layout']] as const) {
-      const fresh = createSolUsdReader({ reader: { read: async () => ({ ok: true, value: { contextSlot: 1n as Slot, accounts: [acc] } }) }, nowMs: () => t as UnixMs, append: (x) => out.push(x) });
+      const fresh = createSolUsdReader({ ids: IDS, reader: { read: async () => ({ ok: true, value: { contextSlot: 1n as Slot, accounts: [acc] } }) }, nowMs: () => t as UnixMs, append: (x) => out.push(x) });
       await fresh.tick(t as UnixMs);
       assert.equal((out.at(-1)?.payload as { reason: string }).reason, why);
     }
-    const failing = createSolUsdReader({ reader: { read: async () => ({ ok: false, error: { code: 'E_TIMEOUT' } }) }, nowMs: () => t as UnixMs, append: (x) => out.push(x) });
+    const failing = createSolUsdReader({ ids: IDS, reader: { read: async () => ({ ok: false, error: { code: 'E_TIMEOUT' } }) }, nowMs: () => t as UnixMs, append: (x) => out.push(x) });
     await failing.tick(t as UnixMs);
     assert.equal((out.at(-1)?.payload as { reason: string }).reason, 'read:E_TIMEOUT');
-    const throwing = createSolUsdReader({ reader: { read: async () => { throw new Error('bug'); } }, nowMs: () => t as UnixMs, append: (x) => out.push(x) });
+    const throwing = createSolUsdReader({ ids: IDS, reader: { read: async () => { throw new Error('bug'); } }, nowMs: () => t as UnixMs, append: (x) => out.push(x) });
     await throwing.tick(t as UnixMs);
     assert.equal((out.at(-1)?.payload as { reason: string }).reason, 'internal_error');
     // One read at a time: a tick while a read is in flight does nothing.
     const waiting: Array<() => void> = [];
     let slowReads = 0;
-    const slow = createSolUsdReader({
+    const slow = createSolUsdReader({ ids: IDS,
       reader: { read: async (keys) => { slowReads += 1; await new Promise<void>((res) => { waiting.push(res); }); return script(keys); } },
       nowMs: () => t as UnixMs, append: (x) => out.push(x),
     });

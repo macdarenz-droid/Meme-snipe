@@ -10,7 +10,7 @@ import { createRpcGateway, DEFAULT_TIMEOUT_MS, type GatewayDeps } from '../../sr
 import {
   ALL_DOWN_AFTER_MS, createHealthTracker, createModeMachine, createProviderMonitor, percentile, type ModeChange,
 } from '../../src/m14/health.ts';
-import { openUsageLedger, type UsageLedgerPort } from '../../src/m14/ledger.ts';
+import { openUsageLedger, type UsageLedgerPort } from '../../src/m24/usage-ledger.ts';
 import { createUsageMeter, PROJECTION_CACHE_MS, type MeterDeps } from '../../src/m14/meter.ts';
 import type { ProviderRegistry } from '../../src/m14/providers.ts';
 import type { CallOptions, CallValue, ProviderConfig, ResolvedProvider, RpcError } from '../../src/m14/types.ts';

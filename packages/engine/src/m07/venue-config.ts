@@ -5,12 +5,20 @@
 // `venue_config` stream, a snapshot of every cached entry at start (after the first successful refresh) and every
 // 10 minutes, and a record for every change and every decode failure the cache reports. Payloads are public chain data
 // (decoded fields, the raw data's hash, version and slot); bigints are written as decimal strings by the recorder.
-import type { Slot, UnixMs } from '@bot/types';
-import type { ConfigEvent, ConfigName, VenueConfigCache, VenueConfigCacheEntry } from '@bot/venue';
-import { ACCOUNTS } from '@bot/venue';
+import type { Pubkey, Slot, UnixMs } from '@bot/types';
+
+/** The parts of @bot/venue's `VenueConfigCacheEntry` recorded here (structural: the engine does not depend on @bot/venue). */
+export interface ConfigEntry {
+  venue: string; name: string; account: Pubkey; version: number; configHash: string; decoded: unknown; asOfSlot: Slot; readAtMs: UnixMs; changedAtMs: UnixMs;
+}
+export type ConfigCacheEvent =
+  | { kind: 'changed'; previous: ConfigEntry | null; entry: ConfigEntry }
+  | { kind: 'decode_failed'; name: string; account: Pubkey; reason: string }
+  | { kind: 'refreshed'; ok: boolean };
+/** @bot/venue's `VenueConfigCache` satisfies this. */
+export interface ConfigCacheLike { entry(account: Pubkey): ConfigEntry | null; onEvent(listener: (e: ConfigCacheEvent) => void): () => void }
 
 export const SNAPSHOT_EVERY_MS = 600_000;
-const NAMES: readonly ConfigName[] = ['feeConfigCurve', 'feeConfigPumpSwap', 'pumpSwapGlobalConfig', 'pumpGlobal'];
 
 export interface VenueConfigRecord { stream: 'venue_config'; recvMs: UnixMs; slot: Slot | null; commitment: 'confirmed'; source: 'm01'; payload: unknown }
 
@@ -26,7 +34,7 @@ function plain(v: unknown): unknown {
   return v;
 }
 
-const entryPayload = (kind: 'snapshot' | 'changed', e: VenueConfigCacheEntry, previousHash: string | null): unknown => ({
+const entryPayload = (kind: 'snapshot' | 'changed', e: ConfigEntry, previousHash: string | null): unknown => ({
   kind, name: e.name, account: e.account, venue: e.venue, version: e.version, configHash: e.configHash, previousHash,
   asOfSlot: e.asOfSlot, readAtMs: e.readAtMs, changedAtMs: e.changedAtMs, decoded: plain(e.decoded),
 });
@@ -37,20 +45,24 @@ export interface VenueConfigRecorder {
   stop(): void;
 }
 
-export function recordVenueConfig(o: { cache: VenueConfigCache; append: (r: VenueConfigRecord) => void; nowMs: () => UnixMs; everyMs?: number }): VenueConfigRecorder {
+/**
+ * `accounts`: the cache's config accounts (`ACCOUNTS.feeConfigCurve`, `feeConfigPumpSwap`, `pumpSwapGlobalConfig`,
+ * `pumpGlobal` from @bot/venue/constants), passed in by the composition root.
+ */
+export function recordVenueConfig(o: { cache: ConfigCacheLike; accounts: readonly Pubkey[]; append: (r: VenueConfigRecord) => void; nowMs: () => UnixMs; everyMs?: number }): VenueConfigRecorder {
   const every = o.everyMs ?? SNAPSHOT_EVERY_MS;
   let lastSnapshot: number | null = null;
   const write = (payload: unknown, slot: Slot | null): void => {
     o.append({ stream: 'venue_config', recvMs: o.nowMs(), slot, commitment: 'confirmed', source: 'm01', payload });
   };
   const snapshot = (now: number): boolean => {
-    const entries = NAMES.map((n) => o.cache.entry(ACCOUNTS[n])).filter((e): e is VenueConfigCacheEntry => e !== null);
+    const entries = o.accounts.map((a) => o.cache.entry(a)).filter((e): e is ConfigEntry => e !== null);
     if (entries.length === 0) return false;                                // nothing read yet: the first refresh writes it
     for (const e of entries) write(entryPayload('snapshot', e, null), e.asOfSlot);
     lastSnapshot = now;
     return true;
   };
-  const off = o.cache.onEvent((ev: ConfigEvent) => {
+  const off = o.cache.onEvent((ev: ConfigCacheEvent) => {
     if (ev.kind === 'changed') write(entryPayload('changed', ev.entry, ev.previous?.configHash ?? null), ev.entry.asOfSlot);
     else if (ev.kind === 'decode_failed') write({ kind: 'decode_failed', name: ev.name, account: ev.account, reason: ev.reason }, null);
     else if (ev.ok && lastSnapshot === null) snapshot(o.nowMs());          // the start snapshot, after the first good refresh

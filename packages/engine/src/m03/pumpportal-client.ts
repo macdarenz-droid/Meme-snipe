@@ -54,7 +54,9 @@ export function createPumpPortalClient(deps: PumpPortalDeps): PumpPortalClient {
   const problem = checkPumpPortalConfig(deps.config);
   if (problem !== null) throw new RangeError(problem);
   const cfg = deps.config;
-  const url = deps.apiKey === null || deps.apiKey === '' ? PUMPPORTAL_URL : `${PUMPPORTAL_URL}?api-key=${encodeURIComponent(deps.apiKey)}`;
+  const endpoint = new URL(PUMPPORTAL_URL);
+  if (deps.apiKey !== null && deps.apiKey !== '') endpoint.searchParams.set('api-key', deps.apiKey);   // DA-01's parameter name
+  const url = endpoint.toString();
   const dedupe = new NoticeDedupe();
   let socket: SocketPort | null = null;
   let open = 0;

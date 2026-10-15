@@ -1,5 +1,5 @@
-// The provider usage ledger (SPEC-A A-M14-05 logic 2, card Z08): one SQLite file per host,
-// `/var/lib/zeroed-usage/rpc-usage.db` (ENGINE_PATHS.rpcUsageDb), shared by the engine and the sentinel. Each send is
+// M14's provider usage ledger (SPEC-A A-M14-05 logic 2, card Z08), kept under m24 because M24 owns every node:sqlite
+// use (policy E_SQLITE_OUTSIDE_M24). One SQLite file per host, `/var/lib/zeroed-usage/rpc-usage.db` (ENGINE_PATHS.rpcUsageDb), shared by the engine and the sentinel. Each send is
 // reserved here before it goes out, in an exclusive transaction that checks the account's rolling 31-day sum and the
 // consumer's own sum against their caps; the reservation is written before the request, so every request sent counts
 // whatever its result. Mode 0660 is set explicitly on the database and its -wal/-shm files because the engine's unit
@@ -11,7 +11,7 @@
 import { chmodSync, existsSync } from 'node:fs';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import type { UnixMs } from '@bot/types';
-import { DAY_MS, monthKeyUtc, monthStartUtc, ROLLING_WINDOW_MS, type LedgerCounts, type Outcome } from './usage.ts';
+import { DAY_MS, monthKeyUtc, monthStartUtc, ROLLING_WINDOW_MS, type LedgerCounts, type Outcome } from '../m14/usage.ts';
 
 /**
  * A monthly call cap on the ledger (A-M14-03: CoinGecko's 2,000 calls a month): one unit per call, counted from the start

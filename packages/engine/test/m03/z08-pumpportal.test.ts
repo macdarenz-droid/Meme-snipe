@@ -97,7 +97,8 @@ describe('A-M03-01 PumpPortal client (fake socket, synthetic fixture)', () => {
     const t = client({ apiKey: 'PP-SECRET-KEY' });
     t.c.start();
     const s = t.server.last();
-    assert.equal(s.url, 'wss://pumpportal.fun/api/data?api-key=PP-SECRET-KEY');
+    const u = new URL(s.url);
+    assert.deepEqual([u.origin + u.pathname, u.searchParams.get('api-key')], ['wss://pumpportal.fun/api/data', 'PP-SECRET-KEY']);
     s.h.onOpen();
     assert.deepEqual(s.sent, ['{"method":"subscribeNewToken"}']);
     await t.time.advance(100);                                            // 10 a second

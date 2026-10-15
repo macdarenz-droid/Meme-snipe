@@ -9,7 +9,7 @@
 // and a failed write never spends the cap (round 4 item 7). The projection (`projectedOver80`) reads the ledger at
 // most once a minute per provider; when the ledger cannot be read the provider counts as projected over (fail closed).
 import type { UnixMs } from '@bot/types';
-import type { UsageLedgerPort } from './ledger.ts';
+import type { UsageLedgerPort } from '../m24/usage-ledger.ts';
 import type { LogPort } from './types.ts';
 import {
   monthKeyUtc, projectedOver, projectMonthEnd, unitsFor, type AccountCap, type LedgerCounts, type Metering, type Outcome,

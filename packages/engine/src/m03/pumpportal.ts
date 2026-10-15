@@ -9,8 +9,11 @@
 //   `{"method":"subscribeNewToken"}` and `{"method":"subscribeMigration"}` (free); `subscribeTokenTrade` and
 //   `subscribeAccountTrade` are paid (0.01 SOL per 10,000 events). Whether the two free subscriptions need a key is NOT
 //   stated (every example passes one): the key is sent when the secret store has one, never logged. The page shows NO
-//   notice message and names no fields: the notice shape below is UNVERIFIED (open point for whoever enables the
-//   client: capture a sample first and replace the synthetic fixture).
+//   notice message and names no fields. Zeroed's own measurement (docs/research/data.md §3.1, 2026-10-03) lists the
+//   fields of a live create event: signature, mint, traderPublicKey, txType, initialBuy, solAmount, bondingCurveKey,
+//   vTokensInBondingCurve, vSolInBondingCurve, marketCapSol, name, symbol, uri, is_mayhem_mode, pool; Zeroed's client
+//   read `txType === 'create'` for creates. The migration notice's `txType` value (`migrate` here) and its `slot` field
+//   are UNVERIFIED: whoever enables the client captures a sample first and replaces the synthetic fixture.
 // - https://pumpportal.fun/FAQ: one connection; at most 200 subscription messages a second; at most 5,000 addresses in
 //   one message; repeated violations bring temporary bans that "expire every hour". How a ban is signalled is NOT stated
 //   (no close code or message), so the spec's fallback holds: 3 refused connections within 60 s (closed by the server

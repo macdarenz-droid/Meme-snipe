@@ -1,6 +1,6 @@
 // SOL/USD once a minute from a deep on-chain SOL/USDC pool (card Z08, supervisor 2026-10-07; rulings Z08-7 and Z08-8).
 // The pool is the Orca Whirlpool wSOL/USDC with tick spacing 4 (`REFERENCE.solUsdcWhirlpool`, @bot/venue/constants,
-// with its sources). Profit is counted in SOL (CLAUDE.md "Profit is counted in SOL"): this price is a secondary display
+// with its sources; the addresses are injected as `ReferenceIds`). Profit is counted in SOL (CLAUDE.md "Profit is counted in SOL"): this price is a secondary display
 // and a research input only, never a gain, a loss or a limit.
 //
 // Layout (orca-so/whirlpools programs/whirlpool/src/state/whirlpool.rs at cc683ec92acb5e7606caa3d8e514d9383e9c7c11,
@@ -17,9 +17,16 @@
 // Protection (ruling Z08-7): every read checks the pool's owner program, discriminator, config, mints and vaults, the
 // vaults' owner program, mint and authority (the pool), and a depth floor of $1M on each side
 // (`ref_price.min_depth_usd_e6`); any failure writes an `unavailable` record for that minute, never a stale price.
-import { base58, decodePubkey } from '@bot/decoders';
 import type { Pubkey, Slot, UnixMs } from '@bot/types';
-import { MINTS, PROGRAMS, REFERENCE } from '@bot/venue/constants';
+
+/**
+ * The addresses the checks compare with, passed in by the composition root from `@bot/venue/constants` (`REFERENCE`,
+ * `MINTS`, `PROGRAMS`: the one reviewed file of addresses), and the base58 encoder of `@bot/decoders`.
+ */
+export interface ReferenceIds {
+  whirlpoolProgram: Pubkey; whirlpoolsConfig: Pubkey; pool: Pubkey; wsol: Pubkey; usdc: Pubkey; splToken: Pubkey;
+  encodeKey: (bytes: Uint8Array) => Pubkey;
+}
 
 export const WHIRLPOOL_DISCRIMINATOR = Uint8Array.from([0x3f, 0x95, 0xd1, 0x0c, 0xe1, 0x80, 0x63, 0x09]);
 export const WHIRLPOOL_LEN = 653;
@@ -35,11 +42,11 @@ const u64At = (d: Uint8Array, at: number): bigint => {
   return v;
 };
 const u128At = (d: Uint8Array, at: number): bigint => (u64At(d, at + 8) << 64n) | u64At(d, at);
-const keyAt = (d: Uint8Array, at: number): Pubkey => base58.encode(d.subarray(at, at + 32)) as Pubkey;
 
 export interface Whirlpool { config: Pubkey; tickSpacing: number; sqrtPriceX64: bigint; mintA: Pubkey; vaultA: Pubkey; mintB: Pubkey; vaultB: Pubkey }
 
-export function decodeWhirlpool(data: Uint8Array): Whirlpool | null {
+export function decodeWhirlpool(data: Uint8Array, ids: Pick<ReferenceIds, 'encodeKey'>): Whirlpool | null {
+  const keyAt = (d: Uint8Array, at: number): Pubkey => ids.encodeKey(d.subarray(at, at + 32));
   if (data.length < WHIRLPOOL_LEN) return null;
   for (let i = 0; i < 8; i += 1) if (data[i] !== WHIRLPOOL_DISCRIMINATOR[i]) return null;
   return {
@@ -49,7 +56,8 @@ export function decodeWhirlpool(data: Uint8Array): Whirlpool | null {
 }
 
 export interface TokenAccount { mint: Pubkey; authority: Pubkey; amount: bigint }
-export function decodeTokenAccount(data: Uint8Array): TokenAccount | null {
+export function decodeTokenAccount(data: Uint8Array, ids: Pick<ReferenceIds, 'encodeKey'>): TokenAccount | null {
+  const keyAt = (d: Uint8Array, at: number): Pubkey => ids.encodeKey(d.subarray(at, at + 32));
   if (data.length < TOKEN_ACCOUNT_LEN) return null;
   return { mint: keyAt(data, 0), authority: keyAt(data, 32), amount: u64At(data, 64) };
 }
@@ -63,19 +71,19 @@ export type PriceCheck =
   | { ok: false; reason: string };
 
 /** Checks one read of [pool, vaultA, vaultB] and prices it (pure). */
-export function priceOf(pool: RawAccount | null, vaultA: RawAccount | null, vaultB: RawAccount | null, expectVaults: { a: Pubkey; b: Pubkey }, minDepthUsdE6: bigint): PriceCheck {
+export function priceOf(ids: ReferenceIds, pool: RawAccount | null, vaultA: RawAccount | null, vaultB: RawAccount | null, expectVaults: { a: Pubkey; b: Pubkey }, minDepthUsdE6: bigint): PriceCheck {
   if (pool === null) return { ok: false, reason: 'pool_missing' };
-  if (pool.owner !== PROGRAMS.orcaWhirlpools) return { ok: false, reason: 'pool_owner' };
-  const w = decodeWhirlpool(pool.data);
+  if (pool.owner !== ids.whirlpoolProgram) return { ok: false, reason: 'pool_owner' };
+  const w = decodeWhirlpool(pool.data, ids);
   if (w === null) return { ok: false, reason: 'pool_layout' };
-  if (w.config !== REFERENCE.orcaWhirlpoolsConfig || w.tickSpacing !== 4) return { ok: false, reason: 'pool_config' };
-  if (w.mintA !== MINTS.wsol || w.mintB !== MINTS.usdc) return { ok: false, reason: 'pool_mints' };
+  if (w.config !== ids.whirlpoolsConfig || w.tickSpacing !== 4) return { ok: false, reason: 'pool_config' };
+  if (w.mintA !== ids.wsol || w.mintB !== ids.usdc) return { ok: false, reason: 'pool_mints' };
   if (w.vaultA !== expectVaults.a || w.vaultB !== expectVaults.b) return { ok: false, reason: 'vaults_changed' };
   if (w.sqrtPriceX64 === 0n) return { ok: false, reason: 'zero_price' };
-  const va = vaultA === null || vaultA.owner !== PROGRAMS.splToken ? null : decodeTokenAccount(vaultA.data);
-  const vb = vaultB === null || vaultB.owner !== PROGRAMS.splToken ? null : decodeTokenAccount(vaultB.data);
+  const va = vaultA === null || vaultA.owner !== ids.splToken ? null : decodeTokenAccount(vaultA.data, ids);
+  const vb = vaultB === null || vaultB.owner !== ids.splToken ? null : decodeTokenAccount(vaultB.data, ids);
   if (va === null || vb === null) return { ok: false, reason: 'vault_account' };
-  if (va.mint !== MINTS.wsol || vb.mint !== MINTS.usdc || va.authority !== REFERENCE.solUsdcWhirlpool || vb.authority !== REFERENCE.solUsdcWhirlpool) {
+  if (va.mint !== ids.wsol || vb.mint !== ids.usdc || va.authority !== ids.pool || vb.authority !== ids.pool) {
     return { ok: false, reason: 'vault_mismatch' };
   }
   const price = usdE6PerSol(w.sqrtPriceX64);
@@ -100,9 +108,9 @@ export interface ReferenceReader {
  * [pool, vaultA, vaultB] in one getMultipleAccounts.
  */
 export function createSolUsdReader(o: {
-  reader: ReferenceReader; append: (r: RefPriceRecord) => void; nowMs: () => UnixMs; minDepthUsdE6?: bigint; everyMs?: number;
+  ids: ReferenceIds; reader: ReferenceReader; append: (r: RefPriceRecord) => void; nowMs: () => UnixMs; minDepthUsdE6?: bigint; everyMs?: number;
 }): { tick(nowMs: UnixMs): Promise<void> } {
-  const pool = REFERENCE.solUsdcWhirlpool;
+  const pool = o.ids.pool;
   const every = o.everyMs ?? READ_EVERY_MS;
   const floor = o.minDepthUsdE6 ?? MIN_DEPTH_USD_E6;
   let vaults: { a: Pubkey; b: Pubkey } | null = null;
@@ -117,7 +125,7 @@ export function createSolUsdReader(o: {
       const r = await o.reader.read([pool], { priority: 3 });
       if (!r.ok) return unavailable(`read:${r.error.code}`);
       const acc = r.value.accounts[0] ?? null;
-      const w = acc === null || acc.owner !== PROGRAMS.orcaWhirlpools ? null : decodeWhirlpool(acc.data);
+      const w = acc === null || acc.owner !== o.ids.whirlpoolProgram ? null : decodeWhirlpool(acc.data, o.ids);
       if (w === null) return unavailable(acc === null ? 'pool_missing' : 'pool_layout', r.value.contextSlot);
       vaults = { a: w.vaultA, b: w.vaultB };
     }
@@ -125,7 +133,7 @@ export function createSolUsdReader(o: {
     const r = await o.reader.read([pool, v.a, v.b], { priority: 3 });
     if (!r.ok) return unavailable(`read:${r.error.code}`);
     const [p, a, b] = [r.value.accounts[0] ?? null, r.value.accounts[1] ?? null, r.value.accounts[2] ?? null];
-    const c = priceOf(p, a, b, v, floor);
+    const c = priceOf(o.ids, p, a, b, v, floor);
     if (!c.ok) {
       if (c.reason === 'vaults_changed') vaults = null;                  // learnt again next minute
       return unavailable(c.reason, r.value.contextSlot);
@@ -150,6 +158,3 @@ export function createSolUsdReader(o: {
     },
   };
 }
-
-/** Test and fixture helper: the 32 bytes of a pubkey. */
-export const pubkeyBytes = (p: Pubkey): Uint8Array => decodePubkey(p);
