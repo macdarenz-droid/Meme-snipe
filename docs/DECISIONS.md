@@ -3917,3 +3917,13 @@ Builder notes (for review):
 - **Z07-37 · R16, who holds `flooredReverts`.** The caller holds it per position exit: it survives retries and new `freshRead`s, resets only when the position closes or the disagreement ends, and is persisted across a restart. Documented on `PartnerFreshness` and in SPEC-A C-88; Z08's acceptance carries "a dump with a stale partner exits on the 3rd attempt".
 - **Z07-38 · R15, the slot gap.** `E_CLOCK` carries `slotGap` (`snapshot.providerSlot − underCeiling.providerSlot`, null with no partner); the caller passes it to `decideClockExit`, which logs it as `slot_gap` in `m04.exit_clock_prices`. Logged only; no behaviour changes. One test (the 60 s fault: gap 49, carried and logged) fails before and passes after.
 - **Tests:** the R6b, R7, R8 and Z07-26 tests each fail on 780a54a5 and pass after; the Z07-25 rate test fails on c6a7f6a7 (300 reads) and passes after. MAJOR-1 now also counts the verification reads M15's poisoned slot triggers (2 refused reads, 8 snapshots, one `m04.clock_suspect`).
+
+### LOG-ORDER (Z02 follow-up; supervisor ruling LOG-1)
+
+- **LOG-1 · a clock step back never reorders a day's log lines.** Run 38817404562 read the 10-07 log back as "again, first" (`test/m24/review-round2.test.ts:176`). Rotating back to 10-07 opened a second append stream on the plain file while the first stream was still flushing. The two streams' writes ran on the thread pool in either order, and `ending` only stopped compression; it did not order the writes. Now, in `m27/logfile.ts`:
+  - A stream opened for a day that still has an earlier stream flushing is corked until every earlier stream of that day has ended.
+  - A corked stream that is rotated away, or closed, is ended only after those earlier streams, because `end()` would uncork it at once.
+  - Corked bytes still count toward the shed and lost bounds (`writableLength`).
+  - Unchanged: the synchronous open with its error path, compression (rulings 8 and 17), and `close()`.
+
+  The test seam is `createStream`, an injected stream whose flush the test holds (`test/m27/log-order.test.ts`). Its 4 tests fail 5 out of 5 times on fa741fb4 with only the seam added.
