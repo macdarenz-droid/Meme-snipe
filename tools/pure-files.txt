@@ -1,0 +1,12 @@
+# Files held to 100% branch coverage, one glob or path per line: `<glob>  # <reason>`.
+# Rule (SPEC-B Common DoD #8, ARCH 16.1, SPEC-A 318 and 640; supervisor ruling Z01-COV-1): pure functions (quote maths, fee
+# tiers, minOut, cost model, statistics, state transitions) and every decoder. A file that only computes from its inputs
+# belongs here; a file with I/O or side effects does not. `vitest.config.ts` reads this list for `pnpm test:coverage`,
+# which fails when any listed file has a branch no test reaches. The list is a guarded file: a change needs the review label.
+packages/decoders/src/**/*.ts  # all decoders: account, event and instruction decoding and the byte codec (SPEC-A 640)
+packages/venue/src/**/*.ts  # venue constants and fee tiers (ARCH 16.1)
+packages/engine/src/m13/stats/**/*.ts  # statistics: intervals, Sharpe and DSR, PBO, special functions (ARCH 16.1)
+packages/engine/src/m10/rng.ts  # the seeded random generator: a pure state transition (A-M10-01 logic 1)
+packages/engine/src/m10/latency.ts  # latency model maths: lognormal parameters and slot-after-latency (A-M10-01 logic 5)
+packages/engine/src/m10/params.ts  # cost-model and fill-model parameter checks and versions: pure validation (A-M10-01 logic 2-4)
+packages/engine/src/m15/slot-time.ts  # slot-to-time and time-to-slot maths (B-M15-01, C-61)
