@@ -8,7 +8,7 @@ import { gzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
 import type { UnixMs } from '@bot/types';
 import { DEFAULT_DISK_POLICY, DiskManager } from '../../src/m07/disk.ts';
-import { LINE_CHUNK_BYTES, scanGzipFrames } from '../../src/m07/frames.ts';
+import { FRAME_CAPS, scanGzipFrames } from '../../src/m07/frames.ts';
 import { decodedLines, runPull, type PullTransport } from '../../src/m07/md-pull.ts';
 import { ed25519Key } from '../../src/m07/receipt-sig.ts';
 import { SegmentWriter, type WriterFs } from '../../src/m07/segments.ts';
@@ -62,20 +62,19 @@ describe('Z08-23 a segment is read frame by frame, never as one string', () => {
     assert.deepEqual(pull(dir), { verified: [rel], mismatched: [] });
   });
 
-  it('the streaming path: lines are split in bounded chunks across frames and multi-byte characters, with the same result at any chunk size', () => {
+  it('the streaming path: each frame is read on its own and split line by line, across frames and multi-byte characters (round 3: caps replace chunks)', () => {
     const text1 = `${line(0, 'héllo €')}${line(1, '日本語')}`;
     const text2 = line(2, '😀'.repeat(5));
     const buf = Buffer.concat([gzipSync(Buffer.from(text1)), gzipSync(Buffer.from(text2))]);
     const want = [...text1.split('\n').slice(0, 2), text2.slice(0, -1)];
-    for (const chunk of [1, 2, 3, 7, 64, LINE_CHUNK_BYTES]) {
+    const longest = Math.max(...want.map((l) => Buffer.byteLength(l)));
+    for (const caps of [FRAME_CAPS, { memberBytes: Buffer.byteLength(text1), lineBytes: longest }]) {
       const got: string[] = [];
-      const scan = scanGzipFrames(buf, (l) => got.push(l), chunk);
-      assert.deepEqual(got, want, `chunk ${chunk}`);
-      assert.deepEqual(scan, { goodEnd: buf.length, frames: 2, lines: 3, complete: true, unterminated: false });
-      assert.equal(decodedLines(buf, 'gzip', chunk), 3);
+      const scan = scanGzipFrames(buf, (l) => got.push(l), caps);
+      assert.deepEqual(got, want, JSON.stringify(caps));
+      assert.deepEqual(scan, { goodEnd: buf.length, frames: 2, lines: 3, complete: true, unterminated: false, stop: null });
+      assert.equal(decodedLines(buf, 'gzip', caps), 3);
     }
-    assert.throws(() => scanGzipFrames(buf, noLog, 0), RangeError);
-    assert.throws(() => scanGzipFrames(buf, noLog, 1.5), RangeError);
   });
 
   it('a false gzip magic inside a frame is not taken for a frame end; a torn or non-UTF-8 frame stops the scan before it', () => {
@@ -86,16 +85,16 @@ describe('Z08-23 a segment is read frame by frame, never as one string', () => {
     assert.deepEqual([...f1.subarray(f1.length - 4, f1.length - 1)], [0x1f, 0x8b, 0x08]);
     const f2 = gzipSync(Buffer.from('{"b":2}\n'));
     const whole = Buffer.concat([f1, f2]);
-    assert.deepEqual(scanGzipFrames(whole, noLog), { goodEnd: whole.length, frames: 2, lines: 2, complete: true, unterminated: false });
+    assert.deepEqual(scanGzipFrames(whole, noLog), { goodEnd: whole.length, frames: 2, lines: 2, complete: true, unterminated: false, stop: null });
     const torn = Buffer.concat([f1, f2.subarray(0, f2.length - 3)]);
-    assert.deepEqual(scanGzipFrames(torn, noLog), { goodEnd: f1.length, frames: 1, lines: 1, complete: false, unterminated: false });
+    assert.deepEqual(scanGzipFrames(torn, noLog), { goodEnd: f1.length, frames: 1, lines: 1, complete: false, unterminated: false, stop: 'torn' });
     const latin1 = gzipSync(Buffer.from([0x7b, 0x7d, 0xe9, 0x0a]));     // valid gzip, not UTF-8
     const got: string[] = [];
-    assert.deepEqual(scanGzipFrames(Buffer.concat([f2, latin1]), (l) => got.push(l), 1), { goodEnd: f2.length, frames: 1, lines: 1, complete: false, unterminated: false });
+    assert.deepEqual(scanGzipFrames(Buffer.concat([f2, latin1]), (l) => got.push(l)), { goodEnd: f2.length, frames: 1, lines: 1, complete: false, unterminated: false, stop: 'not_utf8' });
     assert.deepEqual(got, ['{"b":2}']);                                  // nothing of the bad frame is handed on
     assert.equal(decodedLines(Buffer.concat([f2, latin1]), 'gzip'), -1);
-    assert.deepEqual(scanGzipFrames(gzipSync(Buffer.from('x')), noLog), { goodEnd: 21, frames: 1, lines: 1, complete: true, unterminated: true });
-    assert.deepEqual(scanGzipFrames(Buffer.alloc(0), noLog), { goodEnd: 0, frames: 0, lines: 0, complete: true, unterminated: false });
+    assert.deepEqual(scanGzipFrames(gzipSync(Buffer.from('x')), noLog), { goodEnd: 21, frames: 1, lines: 1, complete: true, unterminated: true, stop: null });
+    assert.deepEqual(scanGzipFrames(Buffer.alloc(0), noLog), { goodEnd: 0, frames: 0, lines: 0, complete: true, unterminated: false, stop: null });
   });
 
   it('recovery keeps every intact frame, counts its records, and cuts only the torn one', () => {

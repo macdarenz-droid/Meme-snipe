@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import * as zlib from 'node:zlib';
-import { scanGzipFrames } from './frames.ts';
+import { FRAME_TARGET_BYTES, scanGzipFrames } from './frames.ts';
 import type { UnixMs } from '@bot/types';
 import type { EncodedRecord, Gap } from '../recorder/queue.ts';
 import { recordLine } from '../recorder/queue.ts';
@@ -58,6 +58,28 @@ export interface Compressor { compress(b: Uint8Array): Uint8Array; decompress(b:
 export function compressorFor(codec: Codec): Compressor | null {
   if (codec === 'gzip') return { compress: (b) => zlib.gzipSync(b), decompress: (b) => zlib.gunzipSync(b) };
   return null;
+}
+
+/**
+ * One flush's lines as gzip members of at most `target` decoded bytes each (ruling Z08-28: the readers treat a member over
+ * 64 MiB as corrupt, so the writer stays at a quarter of that). Usually one member; a line is never split.
+ */
+export function frameOf(comp: Compressor, lines: readonly string[], target = FRAME_TARGET_BYTES): Uint8Array {
+  const members: Uint8Array[] = [];
+  let group: string[] = [];
+  let bytes = 0;
+  for (const line of lines) {
+    const n = Buffer.byteLength(line, 'utf8') + 1;
+    if (group.length > 0 && bytes + n > target) {
+      members.push(comp.compress(Buffer.from(`${group.join('\n')}\n`, 'utf8')));
+      group = [];
+      bytes = 0;
+    }
+    group.push(line);
+    bytes += n;
+  }
+  if (group.length > 0) members.push(comp.compress(Buffer.from(`${group.join('\n')}\n`, 'utf8')));
+  return members.length === 1 ? members[0] as Uint8Array : Buffer.concat(members);
 }
 
 /** The codec the writer uses for a configured preference: gzip, logging once when zstd was asked for. */
@@ -215,9 +237,11 @@ export class SegmentWriter {
     // member that fails its own check, so every intact frame is kept whatever the hour's size.
     const stats = emptyStats();
     let keep = buf.length;
+    let stop: string | null = null;
     if (comp !== null) {
       const scan = scanGzipFrames(buf, (line) => { if (line !== '') addRecord(stats, statsOfLine(line)); });
       keep = scan.goodEnd;
+      stop = scan.stop;
     }
     const fd = fs.openSync(abs, 'r+');
     try {
@@ -235,7 +259,7 @@ export class SegmentWriter {
     });
     writeAtomic(fs, join(dataDir, rel.slice(0, 13), manifestNameOf(rel.slice(14)) as string), join(dataDir, rel.slice(0, 13)), `${JSON.stringify(m)}\n`);
     appendIndex(fs, dataDir, m);
-    log('warning', 'M07.crash_recovered', { stream, path: rel, records: stats.records, cut_bytes: buf.length - keep });
+    log('warning', 'M07.crash_recovered', { stream, path: rel, records: stats.records, cut_bytes: buf.length - keep, cut_reason: stop ?? 'none' });
     return m;
   }
 
@@ -395,7 +419,7 @@ export class SegmentWriter {
       if (seg.lines.length === 0 || seg.broken) continue;
       const pending = seg.lines;
       seg.lines = [];
-      const frame = this.comp.compress(Buffer.from(`${pending.map((x) => x.line).join('\n')}\n`, 'utf8'));
+      const frame = frameOf(this.comp, pending.map((x) => x.line));
       try {
         this.fs.writeSync(seg.fd, frame);
         this.fs.fsyncSync(seg.fd);

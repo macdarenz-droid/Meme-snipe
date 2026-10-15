@@ -1,13 +1,26 @@
-// Frame-by-frame reading of a segment (ruling Z08-23). A segment is a sequence of complete gzip members, one per flush.
-// Crash recovery and md-pull walk it one member at a time: each member is decoded on its own (gzip's own CRC-32 and
-// length check it), and its lines are split from the decoded bytes in bounded chunks, so no whole segment is ever held
-// in one string (V8 strings stop at about 512 MiB, and an hour of a busy stream can decode to more). The walk stops at
-// the first member that does not decode: only there may recovery cut. Pure: bytes in, lines out.
-import { gunzipSync } from 'node:zlib';
-import { frameStarts } from './manifest.ts';
+// Frame-by-frame reading of a segment (rulings Z08-23, Z08-26 to Z08-28). A segment is a sequence of complete gzip
+// members, one or more per flush. Crash recovery and md-pull walk it one member at a time, parsing each member's exact
+// bounds: the 10-byte header (no optional fields: the writer sets none), the raw deflate data, and the 8-byte footer whose
+// CRC-32 and length must match what was decoded. So a member ends exactly where the next starts or where the file ends;
+// a torn header, trailing bytes or a bad footer stop the walk there, and only there may recovery cut. No whole segment
+// is ever held as one string (V8 strings stop at about 512 MiB): a member decodes to at most `memberBytes` (64 MiB) and
+// a line to at most `lineBytes` (4 MiB); a member over either cap counts as corrupt, so a hostile or damaged file cannot
+// exhaust the host's memory. The writer never writes a member or a line near those caps (segments.ts, queue.ts).
+// Pure: bytes in, lines out.
+import { crc32, inflateRawSync } from 'node:zlib';
 
-/** Decoded bytes turned into text at most this many at a time (1 MiB). */
-export const LINE_CHUNK_BYTES = 1_048_576;
+/** Decoded bytes a member may hold (64 MiB); the writer's members stay at most a quarter of it (FRAME_TARGET_BYTES). */
+export const MEMBER_MAX_BYTES = 67_108_864;
+/** Bytes a line may hold (4 MiB); a record is at most `recorder.record_max_bytes` (at most 1 MiB) plus its envelope. */
+export const LINE_MAX_BYTES = 4_194_304;
+/** The writer splits a flush into members of at most this many decoded bytes (16 MiB) whenever a flush holds more. */
+export const FRAME_TARGET_BYTES = 16_777_216;
+
+export interface FrameCaps { memberBytes: number; lineBytes: number }
+export const FRAME_CAPS: FrameCaps = { memberBytes: MEMBER_MAX_BYTES, lineBytes: LINE_MAX_BYTES };
+
+/** Why the walk stopped before the end of the file. */
+export type FrameStop = 'torn' | 'bad_header' | 'bad_footer' | 'member_too_large' | 'line_too_long' | 'not_utf8';
 
 export interface FrameScan {
   /** Bytes from the start that hold complete, valid members (the cut point; the file length when all are good). */
@@ -20,63 +33,69 @@ export interface FrameScan {
   complete: boolean;
   /** A member's last line did not end with a newline (not something the writer produces). */
   unterminated: boolean;
+  /** Why the walk stopped early, or null when it read the whole file. */
+  stop: FrameStop | null;
 }
 
-/**
- * Walks the gzip members of `buf` in order. For each member start it tries the next possible member starts (gzip magic
- * bytes, `frameStarts`) as its end, in increasing order, and takes the first that decodes: a magic sequence inside
- * compressed data never decodes as an end (the member's trailer and CRC fail), so each step reads exactly one member.
- * `onLine` gets each line (without its newline); `chunkBytes` bounds the text made at once.
- */
-export function scanGzipFrames(buf: Uint8Array, onLine: (line: string) => void, chunkBytes = LINE_CHUNK_BYTES): FrameScan {
-  if (!Number.isInteger(chunkBytes) || chunkBytes < 1) throw new RangeError('chunkBytes must be a positive integer');
-  const ends = [...frameStarts(buf, 'gzip'), buf.length];
-  const out: FrameScan = { goodEnd: 0, frames: 0, lines: 0, complete: buf.length === 0, unterminated: false };
+const HEADER = 10;
+const FOOTER = 8;
+
+/** Walks the gzip members of `buf` in order; `onLine` gets each line (without its newline) of each valid member. */
+export function scanGzipFrames(buf: Uint8Array, onLine: (line: string) => void, caps: FrameCaps = FRAME_CAPS): FrameScan {
+  const out: FrameScan = { goodEnd: 0, frames: 0, lines: 0, complete: false, unterminated: false, stop: null };
   let pos = 0;
-  let next = 0;
   while (pos < buf.length) {
-    while (next < ends.length && (ends[next] as number) <= pos) next += 1;
-    let decoded: Buffer | null = null;
-    let end = pos;
-    for (let i = next; i < ends.length; i += 1) {
-      try {
-        decoded = gunzipSync(buf.subarray(pos, ends[i]));
-        end = ends[i] as number;
-        break;
-      } catch { /* not this member's end */ }
-    }
-    // A member that is not valid UTF-8 counts as failing too; its lines are handed on only once the whole member is good.
-    const lines = decoded === null ? null : splitLines(decoded, chunkBytes);
-    if (lines === null) return out;                                       // the member at `pos` fails its own check
+    const m = readMember(buf, pos, caps);
+    if (typeof m === 'string') { out.stop = m; return out; }
     out.frames += 1;
-    out.goodEnd = end;
-    pos = end;
-    out.unterminated = lines.unterminated;
-    out.lines += lines.lines.length;
-    for (const l of lines.lines) onLine(l);
+    out.goodEnd = m.end;
+    pos = m.end;
+    out.unterminated = m.unterminated;
+    out.lines += m.lines.length;
+    for (const l of m.lines) onLine(l);
   }
   out.complete = true;
   return out;
 }
 
-/**
- * One member's lines, converting at most `chunkBytes` to text at a time, or null when the bytes are not valid UTF-8.
- * `unterminated` is true when the last line has no newline.
- */
-function splitLines(bytes: Uint8Array, chunkBytes: number): { lines: string[]; unterminated: boolean } | null {
+function readMember(buf: Uint8Array, pos: number, caps: FrameCaps): { end: number; lines: string[]; unterminated: boolean } | FrameStop {
+  if (buf.length - pos < HEADER) return 'torn';
+  // Magic 1f 8b, method 8 (deflate), flags 0: the writer (zlib's gzip) never sets a name, comment, extra field or header CRC.
+  if (buf[pos] !== 0x1f || buf[pos + 1] !== 0x8b || buf[pos + 2] !== 8 || buf[pos + 3] !== 0) return 'bad_header';
+  let decoded: Buffer;
+  let used: number;
+  try {
+    const r = inflateRawSync(buf.subarray(pos + HEADER), { info: true, maxOutputLength: caps.memberBytes }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+    decoded = r.buffer;
+    used = r.engine.bytesWritten;                                         // deflate bytes consumed; what follows is not read
+  } catch (e) {
+    return (e as { code?: unknown }).code === 'ERR_BUFFER_TOO_LARGE' ? 'member_too_large' : 'torn';
+  }
+  const foot = pos + HEADER + used;
+  if (buf.length - foot < FOOTER) return 'torn';
+  const view = Buffer.from(buf.buffer, buf.byteOffset + foot, FOOTER);
+  if (view.readUInt32LE(0) !== crc32(decoded) || view.readUInt32LE(4) !== decoded.length % 4_294_967_296) return 'bad_footer';
+  const lines = splitLines(decoded, caps.lineBytes);
+  if (typeof lines === 'string') return lines;
+  return { end: foot + FOOTER, ...lines };
+}
+
+/** A member's lines, split on the newline byte (never inside a UTF-8 sequence) and decoded one line at a time. */
+function splitLines(bytes: Buffer, lineBytes: number): { lines: string[]; unterminated: boolean } | FrameStop {
   const td = new TextDecoder('utf-8', { fatal: true });
   const lines: string[] = [];
-  let carry = '';
-  try {
-    for (let at = 0; at < bytes.length; at += chunkBytes) {
-      const parts = (carry + td.decode(bytes.subarray(at, at + chunkBytes), { stream: true })).split('\n');
-      carry = parts.pop() as string;
-      for (const p of parts) lines.push(p);
+  let at = 0;
+  while (at < bytes.length) {
+    const nl = bytes.indexOf(0x0a, at);
+    const end = nl === -1 ? bytes.length : nl;
+    if (end - at > lineBytes) return 'line_too_long';
+    try {
+      lines.push(td.decode(bytes.subarray(at, end)));
+    } catch {
+      return 'not_utf8';
     }
-    carry += td.decode();
-  } catch {
-    return null;
+    if (nl === -1) return { lines, unterminated: true };
+    at = nl + 1;
   }
-  if (carry !== '') lines.push(carry);
-  return { lines, unterminated: carry !== '' };
+  return { lines, unterminated: false };
 }

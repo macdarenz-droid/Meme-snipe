@@ -13,7 +13,7 @@ import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import type { UnixMs } from '@bot/types';
 import { isDayName, isHourName, isManifest, manifestNameOf, parseSegmentName } from './manifest.ts';
-import { scanGzipFrames } from './frames.ts';
+import { FRAME_CAPS, scanGzipFrames, type FrameCaps } from './frames.ts';
 import { receiptText, signReceipt, type PullReceipt } from './receipt-sig.ts';
 import { receiptFileName } from './receipts.ts';
 
@@ -33,10 +33,11 @@ const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest(
 
 /**
  * Lines the file decodes to, or -1 when it does not decode completely, a line is not JSON, the last line has no newline
- * or the codec cannot be read here. Read member by member with bounded text chunks (ruling Z08-23), so an hour of any
- * size is checked without one huge string.
+ * or the codec cannot be read here. Read member by member (rulings Z08-23, Z08-26 to Z08-28): an hour of any size is
+ * checked without one huge string, any byte outside a valid member (trailing bytes, a torn header) or a member or line
+ * over its cap makes it incomplete, so no receipt is signed.
  */
-export function decodedLines(bytes: Uint8Array, codec: 'gzip' | 'zstd', chunkBytes?: number): number {
+export function decodedLines(bytes: Uint8Array, codec: 'gzip' | 'zstd', caps: FrameCaps = FRAME_CAPS): number {
   if (codec !== 'gzip') return -1;
   let bad = false;
   const scan = scanGzipFrames(bytes, (l) => {
@@ -46,7 +47,7 @@ export function decodedLines(bytes: Uint8Array, codec: 'gzip' | 'zstd', chunkByt
     } catch {
       bad = true;
     }
-  }, chunkBytes);
+  }, caps);
   return bad || !scan.complete || scan.unterminated ? -1 : scan.lines;
 }
 

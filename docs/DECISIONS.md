@@ -3961,3 +3961,19 @@ Builder notes (for review):
   - Each later failure in the episode logs the warning `M07.recording_halted_again`.
   - The next write that succeeds ends the episode, so a later failure alerts again.
   - Test: an hour of EIO with checks every 60 s gives exactly the two critical alerts, with resumes at 60, 180, 420, 900 and 1,860 s; the wait stays at 1 h; a good write starts a fresh episode.
+
+### Z08 round 3 (#327 red team at c6f29374: PASS, 3 MINOR; supervisor rulings Z08-26 to Z08-28; each probe is a test in `test/m07/z08-round3.test.ts` that fails on c6f29374 and passes after)
+
+- **Z08-26 · MINOR, a torn header cuts only itself.** `frames.ts` now parses each gzip member's exact bounds instead of trying candidate ends. A good last frame followed by 1, 2 or 5 bytes of a header (fewer than the 10 a header needs) is kept, and only the torn bytes are cut. Before, the whole good frame was cut (goodEnd 0).
+- **Z08-27 · MINOR, nothing may trail a frame.** Each member is parsed as:
+  - the 10-byte header: magic, deflate and flags 0, since the writer sets no optional fields;
+  - the raw deflate data, measured by the bytes zlib consumed;
+  - the 8-byte footer, whose CRC-32 and ISIZE must match the decoded bytes.
+
+  The next member starts exactly there, or the file ends there. Trailing zero bytes (which gunzip ignored before), text or a stray footer make the file incomplete: md-pull signs nothing, and recovery cuts them and keeps the frames. Probes: zero bytes, text, a second footer, a flipped CRC or ISIZE, a set FNAME flag, and cut-short deflate data or footer.
+- **Z08-28 · MINOR, bounded decoding.** A member decodes with `maxOutputLength` 64 MiB, so a 100 KB frame that would decode to 100 MiB stops at the cap in milliseconds. A line may hold at most 4 MiB. Lines are split on the newline byte and decoded one at a time.
+  - A member over either cap is corrupt: recovery cuts there, its `crash` gap covers the rest, `M07.crash_recovered` names the `cut_reason`, and the writer goes on.
+  - So that good data is never cut, the writer's flush is split into members of at most 16 MiB decoded (`frameOf`; a line is never split).
+  - `recorder.record_max_bytes` is capped at 1 MiB (`RECORD_MAX_BYTES_CAP`, `E_CONFIG` above it), so a recorded line always stays well under 4 MiB.
+  - The cap was not in SPEC-A; the default (64 KiB) is unchanged.
+  - Tests cover both caps at their default and injected values, writer splitting, and the config refusal.
