@@ -47,7 +47,7 @@ describe('watched pools (ruling 1)', () => {
   });
 
   // 500,000 appends; measured 4.3 s locally. The 60 s budget leaves room for a busy CI runner.
-  it('a churn of 100,000 pools stays within the cap, the per-tick work and a time budget', { timeout: 60_000 }, async () => {
+  it('a churn of 100,000 pools stays within the cap, the per-tick work and a time budget [timing]', { timeout: 60_000 }, async () => {
     const q = new RecorderQueue();
     const cap = DEFAULT_CONFIG.maxWatchedPools;
     let maxWatched = 0;
@@ -82,7 +82,7 @@ describe('watched pools (ruling 1)', () => {
 
 describe('tick work (ruling 2)', () => {
   // Measured 8 ms locally; the old code took 6 s. The 2 s budget is the timeout.
-  it('a +3 day pause over 1,000 pools writes one record per pool within a time budget', { timeout: 2_000 }, async () => {
+  it('a +3 day pause over 1,000 pools writes one record per pool within a time budget [timing]', { timeout: 2_000 }, async () => {
     const q = new RecorderQueue({ config: { maxWatchedPools: 1_000, idleUnwatchMinutes: 1_440 } });
     for (let i = 0; i < 1_000; i++) q.watch(`p${i}`, 'normal', ms(T0));
     // The feed comes back 3 days later (ruling 25: a tick never writes past the newest received minute + 1).

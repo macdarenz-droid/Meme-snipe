@@ -69,7 +69,7 @@ describe('A-M02-01 base58 on long input (review C03 R2)', () => {
     fc.assert(fc.property(fc.uint8Array({ minLength: 100, maxLength: 3_000 }), (b) => assert.deepEqual(base58.decode(base58.encode(b)), b)), { numRuns: 20 });
   });
 
-  it('decodes 10 KiB of instruction data 40 times within the time budget (the O(n²) loop took about 5 s)', { timeout: 2_000 }, async () => {
+  it('decodes 10 KiB of instruction data 40 times within the time budget (the O(n²) loop took about 5 s) [timing]', { timeout: 2_000 }, async () => {
     const long = ALPHABET.repeat(242).slice(0, 13_985);                       // about 10 KiB, the CPI data limit
     let last: Uint8Array = new Uint8Array(0);
     for (let i = 0; i < 40; i++) last = base58.decode(long);
