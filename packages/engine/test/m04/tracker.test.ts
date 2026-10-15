@@ -824,8 +824,9 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     const r = await s.tracker.freshRead('a', 12);
     assert.ok(!r.ok && r.error.code === 'E_STALE');
     assert.deepEqual(s.outputs.lagging[0], ['primary', 20]);
-    // M15 past the ceiling (source unknown): one warning, verification reads on another provider, entries wait (Z07-27);
-    // no critical alert. Three unconfirming verifications exclude M15's source and entries resume.
+    // M15 past the ceiling (source unknown): one warning, verification reads on another provider, entries wait (Z07-27).
+    // 40 slots past is plausible (Z07-29): never excluded on the word of the readers under the ceiling; entries stay
+    // refused and one critical m04.clock_disagreement follows the 10 s window. No clock fault (nothing confirms it).
     s.tracker.start();
     s.chain.highest = 2_050n;
     s.reader.slot = () => 2_005n;
@@ -837,9 +838,11 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     assert.ok(!s.log.codes().includes('m04.clock_fault'));
     const waiting = await s.tracker.freshRead('a', 8);
     assert.ok(!waiting.ok && waiting.error.code === 'E_CLOCK');
-    await s.time.advance(10_000);
-    assert.ok((await s.tracker.freshRead('a', 8)).ok);              // an honest read at the clock is usable again
-    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: M15_UNKNOWN_SOURCE }), 1);
+    await s.time.advance(30_000);
+    const still = await s.tracker.freshRead('a', 8);
+    assert.ok(!still.ok && still.error.code === 'E_CLOCK');
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: M15_UNKNOWN_SOURCE }), 0);
+    assert.equal(s.log.lines.filter(([l, c]) => l === 'critical' && c === 'm04.clock_disagreement').length, 1);
     s.tracker.stop();
   });
 
@@ -982,18 +985,30 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     return s;
   }
 
-  it('MAJOR-R6c probe (Z07-27): clock 15 behind, primary 20 behind, backup at the tip: the entry gets E_CLOCK, not a read 20 slots old, and the backup is not blamed by the lagging primary', async () => {
+  /** Polls for `ms`, trying an entry every second: true when every entry was refused with E_CLOCK. */
+  async function refusedFor(s: ReturnType<typeof setup>, ms: number): Promise<boolean> {
+    let refused = true;
+    for (let t = 0; t < ms; t += 1_000) {
+      const r = await s.tracker.freshRead('a', 12);
+      refused &&= !r.ok && r.error.code === 'E_CLOCK' && r.error.snapshot === null;
+      await s.time.advance(1_000);
+    }
+    return refused;
+  }
+  const disagreements = (s: ReturnType<typeof setup>): number => s.log.lines.filter(([l, c]) => l === 'critical' && c === 'm04.clock_disagreement').length;
+
+  it('MAJOR-R6c probe (Z07-27, Z07-29): clock 15 behind, primary 20 behind, backup at the tip: entries stay refused for 60 s, ONE critical clock_disagreement, and the backup is never blamed or excluded', async () => {
     const s = await r6c(2_035n);
-    const e = await s.tracker.freshRead('a', 12);
-    assert.ok(!e.ok && e.error.code === 'E_CLOCK' && e.error.snapshot === null);
+    s.tracker.start();
+    assert.ok(await refusedFor(s, 60_000));
+    assert.equal(disagreements(s), 1);
     assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
-    // The backup's own past-ceiling read (a verification read) has no independent witness: M15 took the backup's word
-    // and the primary is under the ceiling. It stays evidence, is never stored, and entries keep waiting.
-    await s.time.advance(2_000);
-    const again = await s.tracker.freshRead('a', 12);
-    assert.ok(!again.ok && again.error.code === 'E_CLOCK');
     assert.ok(s.outputs.snapshots.every(({ s: x }) => x.providerSlot <= 2_045n));
-    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+    assert.equal(s.tracker.clockFault(), false);
+    // Exits are unchanged: the primary's read comes back (the exit path decides on its lag).
+    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(x.ok && x.value.providerLabel === 'primary');
+    s.tracker.stop();
   });
 
   it('Z07-27: M15\'s highest back under the ceiling resolves its evidence: entries resume with no one blamed', async () => {
@@ -1050,11 +1065,60 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     assert.equal(t.log.lines.filter(([l, c]) => l === 'critical' && c === 'm04.clock_fault').length, 1);
   });
 
-  it('MAJOR-R6c variant (Z07-27): the clock at the primary\'s slot: entries also get E_CLOCK while the backup\'s evidence is unresolved', async () => {
+  it('MAJOR-R6c variant (Z07-29): the clock at the primary\'s slot: entries stay refused, one alert, the backup is not excluded', async () => {
     const s = await r6c(2_030n);
-    const e = await s.tracker.freshRead('a', 12);
-    assert.ok(!e.ok && e.error.code === 'E_CLOCK');
+    s.tracker.start();
+    assert.ok(await refusedFor(s, 30_000));
+    assert.equal(disagreements(s), 1);
     assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+    s.tracker.stop();
+  });
+
+  it('Z07-29: a bogus provider 20 slots past the ceiling is plausible: the same fail-closed outcome (a documented denial of service: entries wait until the owner acts), never blamed', async () => {
+    const s = setup(undefined, ['primary', 'liar']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.chain.highest = 2_000n;
+    s.chain.highestBy = 'primary';
+    s.tracker.start();
+    s.reader.slot = (c) => (c.provider === 'liar' ? 2_030n : 2_000n);
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    await s.time.advance(1_000);
+    // One poll answered by the liar, 20 slots past the ceiling (2,010): evidence that then holds entries.
+    s.reader.provider = (c) => c.provider ?? 'liar';
+    s.reader.slot = (c) => (c.provider === 'primary' ? 2_000n : 2_030n);
+    await s.time.advance(1_000);
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    s.reader.slot = (c) => (c.provider === 'liar' ? 2_030n : 2_000n);
+    assert.ok(await refusedFor(s, 30_000));
+    assert.equal(disagreements(s), 1);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'liar' }), 0);
+    // It ends only by convergence: here the clock reaches the liar's slot (it never answers again) and entries resume.
+    s.chain.expected = 2_025n;                                     // ceiling 2,035 ≥ 2,030
+    s.chain.highest = 2_025n;
+    s.reader.slot = () => 2_025n;
+    await s.time.advance(1_000);
+    assert.ok((await s.tracker.freshRead('a', 12)).ok);
+    s.tracker.stop();
+  });
+
+  it('Z07-29: convergence ends the disagreement: the clock catches up with the backup and the primary reaches it; entries resume, no one blamed, and a new disagreement alerts again', async () => {
+    const s = await r6c(2_035n);
+    s.tracker.start();
+    assert.ok(await refusedFor(s, 15_000));
+    assert.equal(disagreements(s), 1);
+    s.chain.expected = 2_050n;                                     // ceiling 2,060: the backup's 2,050 is within it
+    s.reader.slot = () => 2_050n;                                  // and the primary is back at the tip
+    await s.time.advance(2_000);
+    assert.ok((await s.tracker.freshRead('a', 12)).ok);
+    assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
+    s.chain.highest = 2_100n;                                      // the backup runs ahead again
+    s.reader.slot = (c) => (c.provider === 'backup' ? 2_100n : 2_050n);
+    assert.ok(await refusedFor(s, 15_000));
+    assert.equal(disagreements(s), 2);
+    s.tracker.stop();
   });
 
   it('Z07-27(c): a bogus M15 highest at 1e12 from a bogus source: entries wait a bounded time, then resume; only that source is blamed', async () => {

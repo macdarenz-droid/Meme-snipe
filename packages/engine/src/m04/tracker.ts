@@ -93,6 +93,14 @@ export const FAULT_END_READS = 3;
  * reads on other providers that do not confirm it; entries are refused until then.
  */
 export const EXCLUDE_AFTER_STRIKES = 3;
+/**
+ * Ruling Z07-29: a past-ceiling source is implausible only when it is ahead of max(the ceiling, the last agreed slot
+ * moved on at the measured slot time) by more than this (about 60 s of slots). Only an implausible source can be
+ * blamed and excluded (Z07-27(c)); a plausible one is never excluded on the word of a peer under the ceiling.
+ */
+export const PLAUSIBLE_MARGIN_SLOTS = 150n;
+/** Ruling Z07-29: a disagreement with a plausible source raises one critical alert after this long. */
+export const DISAGREEMENT_ALERT_MS = 10_000;
 /** The evidence source for M15's highest slot when M15 does not say which provider set it. */
 export const M15_UNKNOWN_SOURCE = 'm15';
 /** Ruling Z07-23: the lag logged and published for a slot past the ceiling (whose lag is +∞ inside M04). */
@@ -271,6 +279,21 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   // later past-ceiling reads are refused and blamed, and entries resume. A provider that agrees past the ceiling with
   // another independent one is never excluded. Honest reads are never refused beyond that bounded window. ----
   const evidence = new Map<string, { slot: Slot; strikes: number }>();
+  /** The newest slot two providers agreed on under the ceiling (within max_provider_lag_slots), and when (Z07-29). */
+  let agreed: { slot: Slot; atMs: number } | null = null;
+  /** When the current suspect episode began, and whether its disagreement alert was raised (Z07-29). */
+  let suspectSinceMs: number | null = null;
+  let disagreementAlerted = false;
+
+  /** Z07-29(1): ahead of max(ceiling, the last agreed slot moved on by wall time) by more than PLAUSIBLE_MARGIN_SLOTS. */
+  const implausible = (slot: Slot): boolean => {
+    let limit = ceiling() as bigint;
+    if (agreed !== null) {
+      const moved = agreed.slot + BigInt(Math.ceil((deps.clock.nowMs() - agreed.atMs) / deps.chain.slotDurationMsEstimate()));
+      if (moved > limit) limit = moved;
+    }
+    return slot > limit + PLAUSIBLE_MARGIN_SLOTS;
+  };
   const excluded = new Set<string>();
   let m15Source: string | null = null;
 
@@ -294,6 +317,13 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     const lag = BigInt(settings.maxProviderLagSlots);
     const peers = [...recentByProvider].filter(([p, r]) => p !== provider && now - r.atMs <= PEER_WINDOW_MS);
     recentByProvider.set(provider, { slot, atMs: now, under: slot <= c });
+    // Z07-29: two providers within max lag of each other, both under the ceiling, anchor the plausibility margin (an
+    // agreement past the ceiling, even a confirmed one, could be two bogus answers: MAJOR-R5).
+    for (const [, r] of peers) {
+      if (slot > c || r.slot > c || (r.slot > slot ? r.slot - slot : slot - r.slot) > lag) continue;
+      const top = (r.slot > slot ? r.slot : slot) as Slot;
+      if (agreed === null || top > agreed.slot) agreed = { slot: top, atMs: now };
+    }
     if (slot <= c) {
       evidence.delete(provider);                                  // its own reads are back under the ceiling
       // An unconfirmed exit alert (no fault) ends with the first read back under the ceiling.
@@ -344,19 +374,37 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       evidence.delete(m15Source);
       m15Source = null;
     }
-    if (seen > c && !excluded.has(src) && !evidence.has(src)) {
-      evidence.set(src, { slot: seen, strikes: 0 });
+    if (seen > c && !excluded.has(src)) {
+      const ev = evidence.get(src);
+      if (ev === undefined) deps.log.event('warn', 'm04.clock_suspect', { source: src, slot: seen, ceiling: c });
+      evidence.set(src, { slot: seen, strikes: ev?.strikes ?? 0 });
       m15Source = src;
-      deps.log.event('warn', 'm04.clock_suspect', { source: src, slot: seen, ceiling: c });
     }
+    // Z07-29: evidence the clock has caught up with is resolved (the sources converge under the ceiling).
+    for (const [k, ev] of evidence) if (ev.slot <= c) evidence.delete(k);
     const [oldest] = evidence.keys();
-    return oldest ?? null;
+    if (oldest === undefined) {
+      suspectSinceMs = null;
+      disagreementAlerted = false;
+      return null;
+    }
+    // Z07-29(2): a plausible source that no one confirms or refutes keeps entries refused; after the window, one
+    // critical alert so the owner can act (for example by rotating a provider).
+    const now = deps.clock.nowMs();
+    suspectSinceMs ??= now;
+    if (!disagreementAlerted && now - suspectSinceMs >= DISAGREEMENT_ALERT_MS) {
+      disagreementAlerted = true;
+      const ev = evidence.get(oldest) as { slot: Slot };
+      deps.log.event('critical', 'm04.clock_disagreement', { error_code: 'E_CLOCK', source: oldest, slot: ev.slot, ceiling: c });
+    }
+    return oldest;
   }
 
   /** A verification read that another provider answered without confirming `source`: one strike. */
   function strike(source: string, answeredBy: string | undefined, poolId: Pubkey): void {
     const ev = evidence.get(source);
-    if (ev === undefined || answeredBy === undefined || answeredBy === source || fault !== null) return;
+    // Z07-29(2): only an implausible source is struck; a plausible one is never excluded on a lower peer's word.
+    if (ev === undefined || answeredBy === undefined || answeredBy === source || fault !== null || !implausible(ev.slot)) return;
     ev.strikes++;
     if (ev.strikes < EXCLUDE_AFTER_STRIKES) return;
     evidence.delete(source);
