@@ -3883,3 +3883,8 @@ Builder notes (for review):
 - **Z07-17 · Monotonic property, conservative rule and v < 0 (reported for ruling).** Chain-rule quotes and every buy stay monotonic, also with a negative virtual reserve. Conservative **sells are not**: a bigger sell can cross into a dearer tier and return less; seed 7,036 finds 55 of 2,489 (2.2%), worst 65 bps. The test pins those counts and a recorded counterexample; the tier rule is unchanged until the supervisor rules.
 - **Z07-18 · Real count.** The conservative-vs-chain golden test asserts `differ === 0`: no recorded swap crosses a tier.
 - **Z07-19 · Quarantine set.** Never pruned on unwatch (a re-watched pool stays quarantined; cleared only by review); gauge `pools_quarantined`; at 10,000 entries (`QUARANTINE_ALERT_ENTRIES`, POLICY) one critical `m01.quarantine_set_large`, and nothing is evicted.
+
+### Z07 round 4 (supervisor rulings Z07-20 and Z07-21 on round 3's two findings)
+
+- **Z07-20 · Orientation check band.** The check exists to detect inversion; the mint-based guard is primary. A swap now fails only past a factor of 10 from the modelled price (\|log10(swap / model)\| > 1, `ORIENTATION_BAND_FACTOR`); one failure still quarantines. `venue.orientation.tolerance_bps` is retired. Measured: the 262-swap earlier-slot run has 0 false quarantines (171 pass, widest move 1,524 bps); an inverted pool fails all 280 evaluable swaps outside the raw-price blind band about [0.316, 3.16] (12 swaps inside it, covered by the mint guard). SPEC-A C-86.
+- **Z07-21 · Conservative sells are not monotonic.** The tier rule stays; documented on `VenueModel.quoteExactIn`; size searches use the chain rule and evaluate the chosen size conservatively. The counterexample test stays pinned. SPEC-A C-87.

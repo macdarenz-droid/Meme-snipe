@@ -201,6 +201,12 @@ export interface VenueModel {
   effectiveQuote(p: CpPoolState): Lamports;
   marketCapLamports(p: CpPoolState): Lamports;
   feeFor(p: CpPoolState): Result<FeeSchedule, FeeForError>;
+  /**
+   * NOT monotonic in `amountIn` for conservative sells (ruling Z07-21, SPEC-A C-87): a bigger sell can cross into a
+   * dearer tier and return less (2.2% of random cases, worst 65 bps; the chain rule and every buy are monotonic). A
+   * search over size (max sellable, partial exit, sizing) searches with `rule: 'chain'` and evaluates only the chosen
+   * size with `'conservative'`.
+   */
   quoteExactIn(p: CpPoolState, side: 'buy' | 'sell', amountIn: bigint, rule?: TierRule): Result<Quote, QuoteError>;
   /**
    * floor(amountOut × (10,000 − s) / 10,000). THROWS `{ code: 'E_INVALID_SLIPPAGE' }` for `s` outside 0..10,000 and

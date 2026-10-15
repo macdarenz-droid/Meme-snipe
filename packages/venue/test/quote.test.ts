@@ -159,8 +159,8 @@ describe('A-M01-03 properties (ARCH 16.2; 10,000 cases each, fixed seeds)', () =
       const ql = quoteExactIn(p, side, lo, INPUTS, rule);
       const qh = quoteExactIn(p, side, hi, INPUTS, rule);
       const monotonic = !ql.ok || !qh.ok || qh.value.amountOut >= ql.value.amountOut;
-      // FINDING for the supervisor's ruling (not loosened here): a bigger conservative sell can cross into a dearer
-      // tier and return less. Counted and measured; every other case must hold.
+      // Ruling Z07-21: a bigger conservative sell can cross into a dearer tier and return less; the tier rule stays,
+      // and size searches use the chain rule (SPEC-A C-87). Counted and pinned; every other case must hold.
       if (side === 'sell' && rule === 'conservative') {
         sells++;
         if (!monotonic && ql.ok && qh.ok) {
@@ -173,11 +173,11 @@ describe('A-M01-03 properties (ARCH 16.2; 10,000 cases each, fixed seeds)', () =
       return monotonic;
     }), { numRuns: 10_000, seed: 7_036 });
     assert.ok(negative >= 1_000, `${negative} negative-virtual pools`);
-    // Seed 7,036: 55 of 2,489 conservative sells drop, by at most 65 bps (reported for ruling).
+    // Seed 7,036: 55 of 2,489 conservative sells drop, by at most 65 bps (ruling Z07-21).
     assert.deepEqual([sells, drops, worstBps], [2_489, 55, 65]);
   });
 
-  it('Z07-17 finding (pending ruling): a recorded case where a bigger conservative sell returns less', () => {
+  it('ruling Z07-21: a recorded case where a bigger conservative sell returns less (the chain rule stays monotonic)', () => {
     const p = pool({ baseReserve: 1_000_000n, quoteReserveReal: 46_762_422n, quoteReserveVirtual: 0n, isCanonical: true });
     const lo = ok(quoteExactIn(p, 'sell', 461_778_925n, INPUTS, 'conservative')).amountOut;
     const hi = ok(quoteExactIn(p, 'sell', 603_001_783n, INPUTS, 'conservative')).amountOut;

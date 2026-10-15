@@ -111,37 +111,44 @@ const snapshotOf = (v: PoolVector, slotsBefore = 1n): CpPoolState => pool({
 /** Swaps of more than 0.001 SOL: always evaluable. */
 const BIG = G.filter((v) => n(v.kind === 'buy' ? v.event.quote_amount_in : v.event.quote_amount_out) > 1_000_000n);
 const inverted = (p: CpPoolState): CpPoolState => ({ ...p, baseReserve: (p.quoteReserveReal + p.quoteReserveVirtual) as BaseUnits, quoteReserveReal: p.baseReserve as bigint as Lamports, quoteReserveVirtual: 0n });
-const settings = { toleranceBps: 100, maxSlotGap: 2 };
+const settings = { maxSlotGap: 2 };
 
 describe('A-M01-04 spot-vs-swap check', () => {
-  it('AC4: every recorded swap (353) passes on the snapshot one slot earlier within 100 bps (dust under 10,000 lamports is not evaluable), and fails on inverted reserves', () => {
-    let worst = 0, passed = 0, dust = 0;
+  /** The raw price ratio (lamports per raw base unit) is in the band where inversion cannot show by price (Z07-20). */
+  const blind = (p: CpPoolState): boolean => {
+    const Q = p.quoteReserveReal + p.quoteReserveVirtual;
+    return Q * 1_000n >= p.baseReserve * 316n && Q * 100n <= p.baseReserve * 316n;
+  };
+
+  it('AC4 (ruling Z07-20): every recorded swap (353) passes on the snapshot one slot earlier (dust under 10,000 lamports is not evaluable); an inverted pool fails on every evaluable swap outside the raw-price blind band', () => {
+    let worst = 0, passed = 0, dust = 0, invertedFail = 0, blindSwaps = 0;
     for (const v of G) {
       const r = checkOrientation(snapshotOf(v), eventOf(v), settings);
       const label = `${v.ixName} ${v.signature.slice(0, 12)} ${r.reason}`;
       if (r.status === 'not_evaluable') {
         assert.equal(r.reason, 'swap too small to compare', label);
         dust++;
-      } else {
-        assert.equal(r.status, 'pass', label);
-        worst = Math.max(worst, r.observedBps as number);
-        passed++;
+        continue;
       }
-      assert.notEqual(checkOrientation(inverted(snapshotOf(v)), eventOf(v), settings).status, 'pass', v.signature);
+      assert.equal(r.status, 'pass', label);
+      worst = Math.max(worst, r.observedBps as number);
+      passed++;
+      // Raw ratios within about [0.316, 3.16]: the inverse price is within a factor 10, so price cannot tell; the
+      // mint guard (`normalisePool`) is what catches an inversion there.
+      if (blind(snapshotOf(v))) { blindSwaps++; continue; }
+      assert.equal(checkOrientation(inverted(snapshotOf(v)), eventOf(v), settings).status, 'fail', v.signature);
+      invertedFail++;
     }
-    assert.ok(worst <= 100 && passed >= 250, `${passed} passed, worst ${worst} bps, ${dust} dust`);
-    // Every non-dust swap fails on inverted reserves.
-    const invertedFails = G.filter((v) => checkOrientation(snapshotOf(v), eventOf(v), settings).status === 'pass')
-      .every((v) => checkOrientation(inverted(snapshotOf(v)), eventOf(v), settings).status === 'fail');
-    assert.ok(invertedFails);
+    assert.deepEqual([passed, dust, invertedFail, blindSwaps], [292, 61, 280, 12]);
+    assert.ok(worst <= 100, `worst ${worst} bps`);
   });
 
-  it('ruling Z07-15: AC4 on a snapshot from the same pool\'s previous event in an earlier slot, over every CORE-2 pool that has one (33 pools, 262 swaps): the false-fail rate at 100 bps, reported for ruling', () => {
+  it('rulings Z07-15 and Z07-20: AC4 on a snapshot from the same pool\'s previous event in an earlier slot, over every CORE-2 pool that has one (33 pools, 262 swaps): no false quarantine with the factor-10 band', () => {
     // The snapshot is the previous event's own pre-swap reserves at its slot, so the trades in between (that event's
-    // swap and any unrecorded ones) are inside the check. Tolerance stays 100 bps; the supervisor rules on the rate.
+    // swap and any unrecorded ones) are inside the check. At the old 1% this failed 58 of 171 (33.9%, 105 to 1,524 bps).
     const counts = { pass: 0, fail: 0, not_evaluable: 0 };
     const pools = new Set<string>();
-    const failBps: number[] = [];
+    let worst = 0;
     for (const v of G) {
       const prev = G.filter((u) => u.pool.address === v.pool.address && u.slot < v.slot).sort((x, y) => x.slot - y.slot).at(-1);
       if (prev === undefined) continue;
@@ -152,12 +159,12 @@ describe('A-M01-04 spot-vs-swap check', () => {
       });
       const r = checkOrientation(snap, eventOf(v), settings);
       counts[r.status]++;
-      if (r.status === 'fail') failBps.push(r.observedBps ?? -1);
+      if (r.status === 'pass') worst = Math.max(worst, r.observedBps as number);
     }
     assert.equal(pools.size, 33);
-    // 58 of 171 evaluable swaps (33.9%) fail at 100 bps (from 105 to 1,524 bps); 91 are past the 2-slot gap or dust.
-    assert.deepEqual(counts, { pass: 113, fail: 58, not_evaluable: 91 });
-    assert.deepEqual([Math.min(...failBps), Math.max(...failBps)], [105, 1_524]);
+    // 171 evaluable swaps all pass; 91 are past the 2-slot gap or dust.
+    assert.deepEqual(counts, { pass: 171, fail: 0, not_evaluable: 91 });
+    assert.equal(worst, 1_524);                                    // the widest real move: 15%, far inside a factor of 10
   });
 
   it('ruling Z07-19: the quarantine set is never pruned; a gauge follows it; at 10,000 pools one critical alert and nothing is evicted', async () => {
@@ -220,10 +227,10 @@ describe('A-M01-04 spot-vs-swap check', () => {
 
   it('settings: the A-M01-04 config ranges are enforced and a bad setting refuses to build the guard', () => {
     assert.ok(checkGuardSettings(GUARD_DEFAULTS).ok);
-    for (const bad of [{ checkIntervalMs: 59_999 }, { sampleSignatures: 21 }, { maxSlotGap: 11 }, { toleranceBps: 9 }]) {
+    for (const bad of [{ checkIntervalMs: 59_999 }, { sampleSignatures: 21 }, { maxSlotGap: 11 }]) {
       assert.ok(!checkGuardSettings({ ...GUARD_DEFAULTS, ...bad }).ok, JSON.stringify(bad));
     }
-    assert.throws(() => createOrientationGuard({ clock: { kind: 'sim', nowMs: () => 0 as UnixMs }, log: { event: () => {} }, publish: () => {}, settings: { ...GUARD_DEFAULTS, toleranceBps: 501 } }));
+    assert.throws(() => createOrientationGuard({ clock: { kind: 'sim', nowMs: () => 0 as UnixMs }, log: { event: () => {} }, publish: () => {}, settings: { ...GUARD_DEFAULTS, maxSlotGap: 11 } }));
   });
 });
 

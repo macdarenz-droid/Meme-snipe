@@ -1,6 +1,6 @@
 // A-M01-04 pool orientation (pure parts). `normalisePool` turns a decoded pool and its two vaults into a `CpPoolState`
 // whose quote is wSOL and whose base is the token; `checkOrientation` compares one decoded PumpSwap swap with our model
-// on the snapshot before it (ARCH M01 failure table, 1% tolerance).
+// on the snapshot before it (ARCH M01 failure table; ruling Z07-20: a factor-10 band, not 1%).
 // VERIFY results (card Z07):
 // - Vault owner: the pinned pump_amm.json (pump-public-docs 8cda1fa) declares `pool_base_token_account` and
 //   `pool_quote_token_account` as associated token accounts of the pool, seeds [pool, token_program, mint] under the
@@ -95,7 +95,17 @@ export function normalisePool(venue: VenueId, decodedPool: Account, vaults: { ba
 
 export type SwapEvent = Extract<DecodedEvent, { kind: 'pumpswap_buy' | 'pumpswap_sell' }>;
 export interface OrientationResult { status: 'pass' | 'fail' | 'not_evaluable'; observedBps: number | null; reason: string }
-export interface OrientationSettings { toleranceBps: number; maxSlotGap: number }
+/** Ruling Z07-20: `venue.orientation.tolerance_bps` is retired; the band is fixed (`ORIENTATION_BAND_FACTOR`). */
+export interface OrientationSettings { maxSlotGap: number }
+
+/**
+ * Ruling Z07-20 (SPEC-A C-86): the check exists to detect INVERSION, which the mint-based guard (`normalisePool`) is
+ * the primary defence against. A swap fails only when its price is more than a factor of 10 from the model's
+ * (|log10(swap / model)| > 1). At 1% it failed 58 of 171 real CORE-2 swaps on earlier-slot snapshots, and a
+ * quarantine never clears. An inverted pool whose raw price ratio is within about [0.316, 3.16] (the inverse is then
+ * within a factor 10 of the price) cannot be told apart by price; the mint guard covers it.
+ */
+export const ORIENTATION_BAND_FACTOR = 10n;
 
 const BPS = 10_000n;
 /**
@@ -104,6 +114,8 @@ const BPS = 10_000n;
  * alone. The test reads the event's amount, never the model's, so an inverted model cannot hide behind it.
  */
 export const MIN_EVALUABLE_LAMPORTS = 10_000n;
+/** True when `event` is more than `ORIENTATION_BAND_FACTOR` times `model`, or less than its tenth. */
+const outsideBand = (event: bigint, model: bigint): boolean => event * ORIENTATION_BAND_FACTOR < model || event > model * ORIENTATION_BAND_FACTOR;
 const absBps = (event: bigint, model: bigint): number => {
   const d = event > model ? event - model : model - event;
   return Number((d * BPS + model - 1n) / model);                  // ceil: never under-report a deviation
@@ -112,8 +124,8 @@ const absBps = (event: bigint, model: bigint): number => {
 /**
  * Logic 5 (modelled-price method, see the header): one swap against our snapshot `p` from before it. A sell's gross
  * quote out is floor(Q·t / (B + t)); a buy of exactly b tokens costs ceil(Q·b / (B − b)) before fees. `observedBps` is
- * |event / model − 1| in bps, rounded up; `fail` when it is above the tolerance, or when the model cannot fill the
- * event's base amount at all (an inverted pool).
+ * |event / model − 1| in bps, rounded up, for the record; `fail` when the event is more than a factor of 10 from the
+ * model either way (Z07-20), or when the model cannot fill the event's base amount at all (an inverted pool).
  */
 export function checkOrientation(p: CpPoolState, e: SwapEvent, s: OrientationSettings): OrientationResult {
   if (e.pool !== p.poolId) return { status: 'not_evaluable', observedBps: null, reason: 'another pool' };
@@ -123,18 +135,21 @@ export function checkOrientation(p: CpPoolState, e: SwapEvent, s: OrientationSet
   if (Q <= 0n || B <= 0n || e.baseAmount <= 0n) return { status: 'not_evaluable', observedBps: null, reason: 'empty pool or zero swap' };
   if (e.quoteAmount < MIN_EVALUABLE_LAMPORTS) return { status: 'not_evaluable', observedBps: null, reason: 'swap too small to compare' };
   let observed: number;
+  let outside: boolean;
   if (e.kind === 'pumpswap_sell') {
     const model = (Q * e.baseAmount) / (B + e.baseAmount);
     if (model === 0n) return { status: 'fail', observedBps: null, reason: 'the model gives nothing for the base amount' };
     observed = absBps(e.quoteAmount, model);
+    outside = outsideBand(e.quoteAmount, model);
   } else {
     if (e.baseAmount >= B) return { status: 'fail', observedBps: null, reason: 'the model cannot fill the base amount' };
     const model = (Q * e.baseAmount + B - e.baseAmount - 1n) / (B - e.baseAmount);
     const total = BigInt(e.lpFeeBps + e.protocolFeeBps + e.coinCreatorFeeBps);
     const asSpend = (e.quoteAmount * BPS) / (BPS + total);           // quote_amount_in as a spend limit, fees taken out
     observed = Math.min(absBps(e.quoteAmount, model), absBps(asSpend, model));
+    outside = outsideBand(e.quoteAmount, model) && outsideBand(asSpend, model);
   }
-  return observed > s.toleranceBps
-    ? { status: 'fail', observedBps: observed, reason: `swap price ${observed} bps from the model` }
-    : { status: 'pass', observedBps: observed, reason: 'within tolerance' };
+  return outside
+    ? { status: 'fail', observedBps: observed, reason: `swap price ${observed} bps from the model, past a factor of 10` }
+    : { status: 'pass', observedBps: observed, reason: 'within a factor of 10' };
 }

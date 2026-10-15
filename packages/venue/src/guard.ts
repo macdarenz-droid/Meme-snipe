@@ -19,16 +19,15 @@ export interface GuardMetrics {
 }
 
 export interface GuardSettings extends OrientationSettings { checkIntervalMs: number; sampleSignatures: number }
-export const GUARD_DEFAULTS: Readonly<GuardSettings> = Object.freeze({ checkIntervalMs: 600_000, sampleSignatures: 5, maxSlotGap: 2, toleranceBps: 100 });
+export const GUARD_DEFAULTS: Readonly<GuardSettings> = Object.freeze({ checkIntervalMs: 600_000, sampleSignatures: 5, maxSlotGap: 2 });
 
-/** The config table of A-M01-04: interval 60 s..1 h, 1..20 signatures, 0..10 slots, 10..500 bps; integers. */
+/** The config table of A-M01-04: interval 60 s..1 h, 1..20 signatures, 0..10 slots; integers (tolerance_bps retired, Z07-20). */
 export function checkGuardSettings(s: GuardSettings): Result<GuardSettings, { code: 'E_CONFIG'; key: string }> {
   const bad = (key: string) => ({ ok: false as const, error: { code: 'E_CONFIG' as const, key } });
   const inRange = (v: number, lo: number, hi: number) => Number.isInteger(v) && v >= lo && v <= hi;
   if (!inRange(s.checkIntervalMs, 60_000, 3_600_000)) return bad('venue.orientation.check_interval_ms');
   if (!inRange(s.sampleSignatures, 1, 20)) return bad('venue.orientation.sample_signatures');
   if (!inRange(s.maxSlotGap, 0, 10)) return bad('venue.orientation.max_slot_gap');
-  if (!inRange(s.toleranceBps, 10, 500)) return bad('venue.orientation.tolerance_bps');
   return { ok: true, value: s };
 }
 
