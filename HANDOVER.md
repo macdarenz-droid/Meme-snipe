@@ -138,6 +138,18 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 1:40 AM: M0 exit met.** #322 merged at `ade4e835` (ls-remote).
+  - Label `deps-reviewed:eab20de77fc696e37ab60bd00dcf730d` added after the reviewer's PASS at `5a2ca0ce`. Labelled run 38745952625: check and dashboard green. historical-data was green on the same commit in run 38745510831 (12.5 min); the labelled run's copy hit its 15-min timeout mid-suite (second time today, after #320).
+  - Provider reads, run 38753062451 at `ade4e835`: shyft PASS slot 457273520, 375 ms; chainstack PASS slot 457273521, 97 ms; URLs masked. `docs/reviews/M0-EXIT.md` row 5 is met (this branch), so all 7 M0 clauses are met.
+  - Next: M1, one card at a time. First card Z07 Venue and pool, after #324 merges.
+  - Tracked MINOR (reviewer probe at `5a2ca0ce`): the secret-step policy still accepts `shell:` or `working-directory:` on the secret step, an earlier step that rewrites the script, a checkout `ref:`, or a third-party `uses:`. Each needs a reviewed workflow PR with a drift label. Later fix: pin `provider-reads.yml` by sha256 in config, or allow only `name`, `env` and `run` on that step and exactly its 3 steps.
+  - historical-data timeout: ruling Z01-COV-7 (15 to 30 min) goes into #324.
+- **16 Oct about 1:00 AM: Deploy live at `d36dd320`** (Deploy run 38747171050; tag moved 13:58 UTC, after the owner's console check showed 455739ae and clean update runs).
+  - The owner's `zeroed-status` at 1:00 AM: Release d36dd3208603, worker the stand-in, Backups "run zeroed-backup-code once for the off-server copy".
+  - The owner ran `zeroed-backup-code`. Its words showed in a screenshot in the owner chat; the owner chose to keep them (about 1:05 AM: "No need. I dont care"). They are never written to the repo or HANDOVER.
+  - First Telegram copy due 17:20 UTC (4:20 AM). Probation check `trig_01F4ZNcpGwz8HVuEeHSkq6Fg` at 16:10 UTC (3:10 AM).
+- **16 Oct 1:02 AM: #324 Z01-COV** delta at `16ef7909`: review + red team PASS (`session_01Kt6PbV8kUfghxfvWwWWAjG`), local hash `deps-reviewed:3f682f11a33c94b6ac8221e5cedd9619` (changes when the base moves). The builder merges the base and adds Z01-COV-7; then ready, label, CI, merge.
+- **16 Oct 12:52 AM: OF-ARM #321** head `ee5be327` (finisher `session_0168HNmszjFeWWhbGLCFmdsz`: base merge and the DECISIONS answers; test-ci 286/0). Fresh review + red team `session_01Sujfyj9uvojFZLBV43oGnW` (Opus, Auto).
 - **16 Oct 12:45 AM: M0-EXIT #322**, head `36b990e3`. Review + red team PASS (`session_01JKoFG8dQPukfGLVZw7SK91`).
   - Rulings:
     - M0X-1: WORKFLOW_SECRET_REFS pins exactly RPC_SHYFT_URL and RPC_CHAINSTACK_URL, step-env only, workflow_dispatch, in provider-reads.yml.
