@@ -228,6 +228,11 @@ describe('slot-time inverse and bases', () => {
     assert.equal(timeToSlot(1_110_000, b), S(1_440));
     assert.throws(() => timeToSlot(939_999, b), /E_SLOT_BASIS: time 939999 is more than 60000 ms outside the anchors/);
     assert.throws(() => timeToSlot(1_110_001, b), /more than 60000 ms outside/);
+    // Reviewer round 2: 30 s past the last anchor is dated; 1 h past is refused (slot and time alike).
+    assert.equal(slotToTimeMs(S(1_320), b), 1_080_000);                // 120 slots × 250 ms = 30 s
+    assert.equal(timeToSlot(1_080_000, b), S(1_320));
+    assert.throws(() => slotToTimeMs(S(1_200 + 14_400), b), /outside the anchors/);   // 14,400 slots × 250 ms = 1 h
+    assert.throws(() => timeToSlot(1_050_000 + 3_600_000, b), /outside the anchors/);
     // A tightened basis tightens the limit too.
     const t = historySlotTimeBasis([blockTimeAnchor(S(1_000), 1_000), blockTimeAnchor(S(1_080), 1_020)], { maxAnchorGapMs: 30_000 });
     assert.throws(() => slotToTimeMs(S(1_201), t), /more than 30000 ms outside/);
