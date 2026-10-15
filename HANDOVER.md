@@ -138,6 +138,19 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 9:45 PM: #320 approved for CI.** Reviewer and red team both PASS at `fd2595f9` (ls-remote). Rounds 2–4 added rulings Z06-8..16:
+  - evidence files verified by sha256 and record count, with samples taken only from the file;
+  - code-built latency specs refused;
+  - extrapolation bounded by maxGap;
+  - record schemas with recomputed statistics;
+  - sig-only dedupe with a 64-byte base58 check;
+  - the Wilson 95% upper bound for failure and sandwich rates;
+  - the verified spec frozen;
+  - the reader contract documented.
+  - Marked ready at 9:45 PM. No policy files changed, so no deps-reviewed label. Subscribed to #320 for CI; it merges when green on a head that contains `90bac78d`.
+  - Tracked:
+    - the production sim-params reader must resolve realpath inside sim-params/ (the card that adds the reader);
+    - side-tagged failure records, so fFailEntry and fFailExit are checked separately (when such records exist).
 - **15 Oct 9:21 PM: #320 round 1.**
   - Red team FAIL at `65de5be8`, 2 MAJOR and 3 MINOR. These became rulings Z06-2..6:
     - no fill before the decision slot;
