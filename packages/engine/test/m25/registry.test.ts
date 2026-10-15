@@ -44,6 +44,11 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
 
   it('CA-24: the keys that do not affect returns are listed here for review', () => {
     assert.deepEqual(CONFIG_FIELDS.filter((f) => !f.affectsReturns).map((f) => f.key), [
+      // Z08 (A-M03-01, A-M03-04, A-M07-02/03, A-M14-03/05): discovery sources, recorder storage and provider accounting;
+      // recording plumbing, not a strategy parameter.
+      'discovery.dexscreener.enabled', 'discovery.dexscreener.max_calls_per_day', 'discovery.dexscreener.pumpswap_dex_ids',
+      'discovery.pumpportal.backoff_max_ms', 'discovery.pumpportal.enabled', 'discovery.pumpportal.max_sub_msgs_per_s',
+      'discovery.pumpportal.paid_methods', 'discovery.pumpportal.silence_alert_ms',
       // Z06 (B-M15-01 "Config": all affectsReturns false): the live slot clock's polling; simulation dates slots from
       // history anchors, never from these.
       'm15.height_poll_ms', 'm15.height_timeout_ms', 'm15.max_future_slot_jump', 'm15.slot_ms_initial',

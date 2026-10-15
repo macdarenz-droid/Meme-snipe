@@ -45,3 +45,4 @@ packages/engine/src/m07/manifest.ts  # M07 segment names, manifests, gap merging
 packages/engine/src/m07/coverage.ts  # M07 daily coverage arithmetic with the Z04 integration rulings (A-M07-03, card Z08)
 packages/engine/src/m07/receipt-sig.ts  # M07 PullReceipt format, Ed25519 sign and verify (A-M07-03, card Z08)
 packages/engine/src/m07/sol-usd.ts  # SOL/USD from the Orca SOL/USDC Whirlpool: layout, checks and exact price (card Z08)
+packages/engine/src/m03/pumpportal.ts  # M03 PumpPortal notice parsing, dedupe, back-off and config checks (A-M03-01, card Z08)
