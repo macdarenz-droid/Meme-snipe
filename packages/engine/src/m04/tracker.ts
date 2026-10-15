@@ -74,6 +74,9 @@ export const PEER_WINDOW_MS = 5_000;
 export const VERIFY_SPACING_MS = 2_000;
 /** Ruling Z07-13.3: a clock fault ends after this many consecutive under-ceiling reads from at least 2 providers. */
 export const FAULT_END_READS = 3;
+/** Ruling Z07-23: the lag logged and published for a slot past the ceiling (whose lag is +∞ inside M04). */
+export const LAG_SENTINEL_SLOTS = 2_147_483_647;
+const finite = (lag: number): number => (lag === Number.POSITIVE_INFINITY ? LAG_SENTINEL_SLOTS : lag);
 
 export interface TrackerDeps<P extends PoolStateLike> {
   model: PoolModelPort<P>; reader: AccountsReader; scheduler: SchedulerPort; chain: ChainStatePort; clock: Clock;
@@ -200,7 +203,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     const pool = built.value;
     return {
       pool, effectiveQuoteLamports: deps.model.effectiveQuote(pool), spotSolPerToken: deps.model.spot(pool), feeTotalBps: deps.model.feeTotalBps(pool) ?? 10_000,
-      providerLabel, providerSlot: contextSlot, readLatencyMs: latencyMs, observationLagSlots: lagOf(contextSlot), rawHash: rawHashOf(accounts),
+      providerLabel, providerSlot: contextSlot, readLatencyMs: latencyMs, observationLagSlots: finite(lagOf(contextSlot)), rawHash: rawHashOf(accounts),
     };
   }
 
@@ -219,14 +222,19 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   let lastVerifyMs = -Infinity;
 
   /**
-   * MINOR-R6: lag against max(the clock's estimate, the newest under-ceiling slot any provider gave within
-   * PEER_WINDOW_MS). A slot past the ceiling has infinite lag (defence in depth: it is never fresh).
+   * MINOR-R6 and MAJOR-R6b (Z07-22): lag against max(the clock's estimate, M15's highest slot seen when it is within
+   * the ceiling, the newest under-ceiling slot any provider gave within PEER_WINDOW_MS). M15's highest past the ceiling
+   * is evidence, not a reference (`suspect()`): capped at the ceiling it would make every honest read look
+   * max_provider_lag_slots behind after one bogus slot, and refuse every entry for good (MAJOR-1). A slot past the
+   * ceiling has infinite lag (defence in depth: it is never fresh).
    */
   const lagOf = (slot: Slot): number => {
     const now = deps.clock.nowMs();
     const c = ceiling();
     if (slot > c) return Number.POSITIVE_INFINITY;
+    const seen = deps.chain.highestSeenSlot();
     let ref = deps.chain.expectedSlot(now) as bigint;
+    if (seen <= c && seen > ref) ref = seen;
     for (const r of recentByProvider.values()) if (r.under && now - r.atMs <= PEER_WINDOW_MS && r.slot > ref) ref = r.slot;
     const d = ref - slot;
     return d > 0n ? Number(d) : 0;
@@ -288,7 +296,9 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     const verdict = judgeSlot(s.providerLabel, s.providerSlot, s.pool.poolId);
     if (verdict === 'lone') return 'ahead';
     if (verdict !== 'ok') return verdict;
-    const last = trustedLatest(ring);
+    // Z07-23: the monotonic rule holds against the stored latest whatever the ceiling does now; nothing past the
+    // ceiling is stored, so it cannot freeze `latest()`.
+    const last = ring.latest();
     if (last !== null && s.providerSlot < last.providerSlot) {
       deps.metrics?.counter('snapshot_out_of_order_total', {});
       return 'older';
@@ -312,10 +322,24 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       const outcome = store(e, s, false);
       // A past-ceiling read with no peer evidence is checked on the next provider; during a fault, under-ceiling
       // reads are confirmed there too, so the episode can end on two providers (Z07-13.3).
-      if (outcome === 'unverified' || (fault !== null && outcome !== 'clock')) verify(poolId, r.providerLabel);
+      if (outcome === 'unverified' || (fault !== null && outcome !== 'clock') || suspect()) verify(poolId, r.providerLabel);
     }
   }
   source.onAccounts(onRecord);
+
+  /**
+   * Z07-22: M15's highest slot seen past the ceiling is clock-fault evidence (or a bogus provider M15 believed): warn
+   * once per episode, and the caller verifies on the next provider. Never an alert or a refusal on its own.
+   */
+  let suspected = false;
+  function suspect(): boolean {
+    const seen = deps.chain.highestSeenSlot();
+    const c = ceiling();
+    if (fault !== null || seen <= c) { suspected = false; return false; }
+    if (!suspected) deps.log.event('warn', 'm04.clock_suspect', { highest_seen: seen, ceiling: c });
+    suspected = true;
+    return true;
+  }
 
   /** One read of the pool on the next provider, at most every VERIFY_SPACING_MS and never overlapping. */
   function verify(poolId: Pubkey, provider: string): void {
@@ -367,6 +391,11 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     const r1 = await readPool(poolId, 1, undefined, false);
     const first = r1.snap;
     if (first !== null && lagOf(first.providerSlot) <= maxLag) return { ok: true, value: first };
+    // Z07-24: one provider past the ceiling and no other to confirm it: the clock alert, and E_CLOCK.
+    if (r1.held !== null && after(r1) === undefined) {
+      clockAlert(r1.held.providerLabel, r1.held.providerSlot, ceiling());
+      return clockError(null, 'one provider past the slot clock; no other provider can confirm');
+    }
     // Entry reads never use a past-ceiling read; the re-read on the next provider may show a clock fault.
     const again = await readPool(poolId, 1, after(r1), false);
     if (fault !== null) return clockError(null, 'clock fault: entries are refused');
@@ -407,7 +436,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       const last = e.ring?.latest() ?? null;
       if (last === null) continue;
       deps.metrics?.gauge('pool_snapshot_age_ms', { pool: poolId }, now - last.pool.observedAtMs);
-      const lag = lagOf(last.providerSlot);
+      const lag = finite(lagOf(last.providerSlot));
       const ageMs = now - last.pool.observedAtMs;
       if (lag > settings.staleLagSlots || ageMs > settings.staleAgeMs + intervalOf(settings, e.cls)) {
         if (e.staleSinceMs !== null) continue;
