@@ -7,6 +7,7 @@ import { describe, it } from 'vitest';
 import type { Slot, UnixMs } from '@bot/types';
 import { SnapshotRing } from '../../src/m04/ring.ts';
 import { checkM04Settings, M04_DEFAULTS, type M04Settings } from '../../src/m04/settings.ts';
+import { worseProceeds } from '../../src/m04/exit-price.ts';
 import { createPoolTracker, BOOT_RETRY_MS, LAG_SENTINEL_SLOTS, M15_UNKNOWN_SOURCE } from '../../src/m04/tracker.ts';
 import type { PoolSnapshot } from '../../src/m04/types.ts';
 import { FakeTime } from '../m14/helpers.ts';
@@ -985,6 +986,48 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     return s;
   }
 
+  /** Each provider's quote vault (default 2,000), so their reads price differently. */
+  function quoteBy(s: ReturnType<typeof setup>, quotes: Record<string, bigint>): void {
+    const read = ScriptedReader.prototype.read.bind(s.reader);
+    s.reader.read = async (keys, o) => {
+      const label = s.reader.provider({ keys: [...keys], priority: o.priority, provider: o.provider });
+      s.reader.accounts.set('a:q', { owner: 'tok', data: u64(quotes[label] ?? 2_000n) });
+      return read(keys, o);
+    };
+  }
+  /** The exit's sell of 100 base units on each read (the fake pool is constant product), then the worse of the two. */
+  const sellOut = (p: FakePool): bigint => (p.quote * 100n) / (p.base + 100n);
+  const worseExit = (e: { snapshot: PoolSnapshot<FakePool> | null; underCeiling: PoolSnapshot<FakePool> | null }) => worseProceeds(
+    e.snapshot === null ? null : { snapshot: e.snapshot, proceedsLamports: sellOut(e.snapshot.pool) },
+    e.underCeiling === null ? null : { snapshot: e.underCeiling, proceedsLamports: sellOut(e.underCeiling.pool) },
+  );
+
+  it('MAJOR-R10 probe (Z07-31): a plausible liar 149 slots past the ceiling with a faked vault (999,999 vs the real 2,000): the exit sees both reads, and the worse proceeds are the honest 2,000', async () => {
+    const s = setup(undefined, ['primary', 'liar']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.chain.highest = 2_000n;
+    s.chain.highestBy = 'primary';
+    s.reader.slot = (c) => (s.reader.provider(c) === 'liar' ? 2_159n : 2_000n);   // ceiling 2,010 + 149
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    quoteBy(s, { liar: 999_999n });
+    s.tracker.start();
+    await s.time.advance(1_000);
+    s.reader.provider = (c) => c.provider ?? 'liar';                 // one poll answered by the liar
+    await s.time.advance(1_000);
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK');
+    assert.ok(x.error.snapshot?.providerLabel === 'liar' && x.error.snapshot.pool.quote === 999_999n);
+    assert.ok(x.error.underCeiling?.providerLabel === 'primary' && x.error.underCeiling.pool.quote === 2_000n);
+    const pick = worseExit(x.error);
+    assert.ok(pick !== null && pick.snapshot.pool.quote === 2_000n && pick.proceedsLamports === sellOut(x.error.underCeiling.pool));
+    assert.ok(s.outputs.snapshots.every(({ s: y }) => y.pool.quote === 2_000n));   // the faked vault is never stored
+    s.tracker.stop();
+  });
+
   /** Polls for `ms`, trying an entry every second: true when every entry was refused with E_CLOCK. */
   async function refusedFor(s: ReturnType<typeof setup>, ms: number): Promise<boolean> {
     let refused = true;
@@ -1005,9 +1048,17 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'backup' }), 0);
     assert.ok(s.outputs.snapshots.every(({ s: x }) => x.providerSlot <= 2_045n));
     assert.equal(s.tracker.clockFault(), false);
-    // Z07-30: the exit prices on the backup's tip read (unstored, E_CLOCK), not on the primary's read 20 slots old.
+    // Z07-31: the exit gets both reads, unstored (the backup's tip read and the primary's read 20 slots old), and
+    // prices on the worse proceeds: here the tip moved the price down, so the backup's read is the lower one.
+    quoteBy(s, { backup: 1_800n });
     const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
     assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot?.providerLabel === 'backup' && x.error.snapshot.providerSlot === 2_050n);
+    assert.ok(x.error.underCeiling?.providerLabel === 'primary' && x.error.underCeiling.providerSlot === 2_030n);
+    assert.equal(worseExit(x.error)?.snapshot.providerLabel, 'backup');
+    quoteBy(s, { primary: 1_700n });                                 // the other way round: the lagging read is worse
+    const y = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!y.ok && y.error.code === 'E_CLOCK');
+    assert.equal(worseExit(y.error)?.snapshot.providerLabel, 'primary');
     assert.ok(s.outputs.snapshots.every(({ s: y }) => y.providerSlot <= 2_045n));
     s.tracker.stop();
   });

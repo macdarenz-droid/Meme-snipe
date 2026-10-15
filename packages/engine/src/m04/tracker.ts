@@ -24,13 +24,16 @@ import type {
 } from './types.ts';
 
 /**
- * `E_CLOCK` (rulings Z07-9, Z07-13): a read past the slot clock's ceiling, from a clock fault (two providers agree) or
- * one unconfirmed provider. Exit grade: the read comes back UNSTORED in `snapshot`, so the exit path decides and an
- * exit is never blocked by a clock fault alone. Entry grade: `snapshot` is null; entries are refused for the episode.
+ * `E_CLOCK` (rulings Z07-9, Z07-13, Z07-31): a read past the slot clock's ceiling, from a clock fault (two providers
+ * agree), one unconfirmed provider, or a disagreement. Exit grade: the past-ceiling read comes back UNSTORED in
+ * `snapshot`, so the exit path decides and an exit is never blocked by a clock fault alone. During a disagreement
+ * (Z07-31) `underCeiling` also carries the newest read under the ceiling, unstored: the caller MUST price the exit on
+ * the WORSE proceeds of the two (`worseProceeds` in `exit-price.ts`; for a sell the smaller quote out, and minOut from
+ * that), since neither read can be trusted alone (SPEC-A C-88). Entry grade: both are null; entries are refused.
  */
 export type FreshReadError<P extends PoolStateLike = PoolStateLike> =
   | { code: 'E_STALE' | 'E_RPC'; detail: string }
-  | { code: 'E_CLOCK'; detail: string; snapshot: PoolSnapshot<P> | null };
+  | { code: 'E_CLOCK'; detail: string; snapshot: PoolSnapshot<P> | null; underCeiling: PoolSnapshot<P> | null };
 
 export interface PoolTracker<P extends PoolStateLike> {
   /** False when the class is at its cap (`pool_tracker.max_*`): the watch is refused and nothing changes. */
@@ -524,7 +527,8 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     return label === undefined ? undefined : nextProvider(label);
   };
 
-  const clockError = (snapshot: PoolSnapshot<P> | null, detail: string): { ok: false; error: FreshReadError<P> } => ({ ok: false, error: { code: 'E_CLOCK', detail, snapshot } });
+  const clockError = (snapshot: PoolSnapshot<P> | null, detail: string, underCeiling: PoolSnapshot<P> | null = null): { ok: false; error: FreshReadError<P> } =>
+    ({ ok: false, error: { code: 'E_CLOCK', detail, snapshot, underCeiling } });
 
   async function entryRead(poolId: Pubkey, maxLag: number): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {
     const r1 = await readPool(poolId, 1, undefined, false);
@@ -549,14 +553,16 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     const r1 = await readPool(poolId, 0, undefined, true);
     const disagreeing = suspect();
     if (disagreeing !== null) {
-      // Ruling Z07-30: during a disagreement the exit prices on the highest-slot plausible read, unstored and flagged
-      // E_CLOCK, never on a lagging under-ceiling read. The source ahead is read too when it is a provider we use.
+      // Rulings Z07-30, Z07-31: during a disagreement the exit gets BOTH the highest-slot plausible read and the newest
+      // under-ceiling one, unstored and flagged E_CLOCK; the caller prices on the worse proceeds of the two. The source
+      // ahead is read too when it is a provider we use.
       const r2 = await readPool(poolId, 0, deps.providerOrder().includes(disagreeing) ? disagreeing : after(r1), true);
       const reads = [r1.snap, r1.held, r2.snap, r2.held].filter((x): x is PoolSnapshot<P> => x !== null && !implausible(x.providerSlot));
       const top = reads.reduce<PoolSnapshot<P> | null>((m, x) => (m === null || x.providerSlot > m.providerSlot ? x : m), null);
       if (top !== null && top.providerSlot > ceiling()) {
         if (deps.providerOrder().length < 2) clockAlert(top.providerLabel, top.providerSlot, ceiling());   // Z07-24
-        return clockError(top, 'clock disagreement: the highest plausible read, unstored');
+        // `top` is one read's past-ceiling (held) copy, so at most the other read is under the ceiling.
+        return clockError(top, 'clock disagreement: price on the worse of the two reads, both unstored', r1.snap ?? r2.snap);
       }
     }
     const first = r1.snap;
