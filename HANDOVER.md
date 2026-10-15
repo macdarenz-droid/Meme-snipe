@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 12:45 AM: M0-EXIT #322**, head `36b990e3`. Review + red team PASS (`session_01JKoFG8dQPukfGLVZw7SK91`).
+  - Rulings:
+    - M0X-1: WORKFLOW_SECRET_REFS pins exactly RPC_SHYFT_URL and RPC_CHAINSTACK_URL, step-env only, workflow_dispatch, in provider-reads.yml.
+    - M0X-2: the B-10 clause is met with count 0 (source decided, OF-1..6 merged, no batch dispatched); B-10 itself is an M2 gate.
+    - M0X-3..5: pin the secret step's run line and forbid artifact and cache; node-version-file; the base line.
+  - Tracked owner hardening: move the two provider secrets to a GitHub Environment limited to the default branch (red team MINOR 2). Any branch's workflow_dispatch can read repository secrets today; this PR does not widen that.
+  - It needs the deps-reviewed label (drift hash) after the next push.
 - **16 Oct 12:19 AM: #323 merged at `d36dd320`** (ls-remote). CI green on `5c949c81`, e2e included. Builder and reviewer/red team archived; unsubscribed.
   - Next: the push e2e on `d36dd320` becomes the gate's e2e verdict. When it is green, ask the owner for "ready" again before a second Deploy, because the owner must be at the console for `zeroed-backup-code` (rule of 9 Oct).
   - Check-in `send_later` at about 12:54 AM.
