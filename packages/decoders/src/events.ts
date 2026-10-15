@@ -18,7 +18,9 @@ export const EVENT_CPI_PREFIX = 'e445a52e51cb9a1d';
  * mint the pin does not let the decoder read (one the pinned IDL does not list, or `multi_hop_swap`, see
  * `invokerQuoteMint`); it is never labelled `non_sol_quote`, which means a quote mint read and found not SOL.
  */
-export type GapReason = 'no_inner' | 'truncated' | 'unknown_disc' | 'bad_trace' | 'oversized' | 'non_sol_quote' | 'unpinned_invoker';
+export type GapReason = 'no_inner' | 'truncated' | 'unknown_disc' | 'bad_trace' | 'oversized' | 'non_sol_quote' | 'unpinned_invoker'
+  /* A-M02-04 log fallback (card Z07): no logs; a malformed log line or stack; logs that cannot be matched to the swaps */
+  | 'no_logs' | 'bad_log' | 'log_ambiguous';
 /**
  * The pool part of a pump curve buy that completes the curve (card IDL-REPIN): `base_out` tokens for `quote_in` SOL,
  * with the fees on that part (pump-public-docs 8cda1fa, docs/SYNTHETIC_MIGRATION.md "Events and state"). Only from a
@@ -41,8 +43,8 @@ export type M02Event = DecodedEvent | PumpPostCompleteBuy;
 export interface LocatedGap { signature: Signature; outerIx: number; innerIx: number; reason: GapReason; event: string | null }
 
 export interface EventHooks {
-  /** `decode_events_total{kind}` and `decode_gap_total{reason}` (M27). */
-  onEvent?(kind: M02Event['kind']): void;
+  /** `decode_events_total{kind,source}` and `decode_gap_total{reason}` (M27); `source` per A-M02-04. */
+  onEvent?(kind: M02Event['kind'], source: EventSource): void;
   onGap?(reason: GapReason): void;
   /** Every gap but `no_inner`, with its place (ruling 37); called after `onGap`. */
   onGapAt?(gap: LocatedGap): void;
@@ -55,7 +57,15 @@ export interface EventHooks {
   onLayoutExtended?(kind: M02Event['kind'], bytes: number): void;
   /** `m02.unknown_event` (the registry logs it once per discriminator per hour). */
   onUnknown?(programId: Pubkey, discriminatorHex: string, signature: Signature): void;
+  /**
+   * Internal (A-M02-04): a self-CPI event of `program` was emitted by the instruction at `outerIx` / `invokerIx`
+   * (-1 for the top-level instruction itself), so that instruction has its event.
+   */
+  onInvoker?(outerIx: number, invokerIx: number, program: Pubkey): void;
 }
+
+/** Where an event was read from (A-M02-04): the self-CPI inner instruction, or a `Program data:` log line. */
+export type EventSource = 'self_cpi' | 'log';
 
 type Ix = RawTransaction['message']['instructions'][number];
 /**
@@ -367,6 +377,7 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
       if (def === undefined) {
         gap('unknown_disc', null);
         hooks.onUnknown?.(program, disc, tx.signature);
+        hooks.onInvoker?.(group.index, at as number, program);
         out.push({ event: { kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature }, outerIx: group.index, innerIx: k, layoutExtended: false, shortLegacy: false, multiHop: underMultiHop(k) });
         continue;
       }
@@ -384,12 +395,161 @@ export function decodeEventsLocated(tx: RawTransaction, idls: readonly PinnedIdl
         continue;
       }
       if (ev === null) continue;
-      hooks.onEvent?.(ev.kind);
+      hooks.onEvent?.(ev.kind, 'self_cpi');
+      hooks.onInvoker?.(group.index, at as number, program);
       if (extra > 0) hooks.onLayoutExtended?.(ev.kind, extra);
       out.push({ event: ev, outerIx: group.index, innerIx: k, layoutExtended: extra > 0, shortLegacy, multiHop: underMultiHop(k) });
     }
   }
   return out;
+}
+
+/** Located events with each one's source (A-M02-04 `decodeTransactionEventsWithProvenance`), and the gaps with their places. */
+export interface ProvenancedEvents { events: LocatedEvent[]; sources: EventSource[]; gaps: LocatedGap[] }
+
+/** The swap instructions the log fallback watches: pump and PumpSwap instructions named `buy…` or `sell…` (routes excluded). */
+const isSwapName = (name: string): boolean => /^(buy|sell)(_|$)/.test(name);
+const LOG_TRUNCATED = 'Log truncated';
+const INVOKE = /^Program (\S+) invoke \[(\d+)\]$/;
+const LEAVE = /^Program (\S+) (success|failed\b.*)$/;
+const DATA = 'Program data: ';
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/** One program invocation in the logs, with the `Program data:` lines written while it was on top of the stack. */
+interface Frame { program: Pubkey; data: string[] }
+
+/** Logic 3: the logs as a stack of invocations; null when the stack is inconsistent or data sits outside any frame. */
+function framesOf(logs: readonly string[]): Frame[] | null {
+  const frames: Frame[] = [];
+  const stack: Frame[] = [];
+  for (const line of logs) {
+    const inv = INVOKE.exec(line);
+    if (inv !== null) {
+      if (Number(inv[2]) !== stack.length + 1) return null;
+      const f = { program: inv[1] as Pubkey, data: [] };
+      frames.push(f);
+      stack.push(f);
+      continue;
+    }
+    const leave = LEAVE.exec(line);
+    if (leave !== null) {
+      if (stack.pop()?.program !== leave[1]) return null;
+      continue;
+    }
+    if (line.startsWith(DATA)) {
+      const top = stack[stack.length - 1];
+      if (top === undefined) return null;
+      top.data.push(line.slice(DATA.length));
+    }
+  }
+  return stack.length === 0 ? frames : null;
+}
+
+/**
+ * A-M02-04: the self-CPI events (A-M02-03), plus events from `Program data:` log lines for each pump or PumpSwap swap
+ * instruction that emitted no self-CPI event, when the logs are complete. Never a guess:
+ * - logs `null` → gap `no_logs`; a `Log truncated` line → gap `truncated` [DA-05]; an inconsistent stack → `bad_log`;
+ * - a `Program data:` line counts for the program on top of the invocation stack, so another program's data is never
+ *   read as a pump event; a line that is not base64 → `bad_log`, skipped;
+ * - per program: if it emitted any self-CPI event in the transaction, only self-CPI events are used (edge 3: no
+ *   duplicates) and its swaps without one are `log_ambiguous`; otherwise its invocations that wrote data lines are
+ *   matched to its event-less swaps in execution order, and a different count is `log_ambiguous`.
+ * Only successful transactions are read. Whether pump emits events this way is UNVERIFIED in the register (A-M02-04
+ * logic 5); the recorded PumpSwap transactions write each BuyEvent/SellEvent both ways
+ * (`fixtures/mainnet/tx/pumpswap`).
+ */
+export function decodeEventsWithProvenance(tx: RawTransaction, idls: readonly PinnedIdl[], hooks: EventHooks = {}, quote: QuoteMints = {},
+  logFallback = true): ProvenancedEvents {
+  const gaps: LocatedGap[] = [];
+  const covered = new Set<string>();
+  const selfCpi = new Set<Pubkey>();
+  const located = decodeEventsLocated(tx, idls, {
+    ...hooks,
+    onGapAt: (g) => { gaps.push(g); hooks.onGapAt?.(g); },
+    onInvoker: (outer, inner, program) => { covered.add(`${outer}:${inner}`); selfCpi.add(program); },
+  }, quote);
+  const events = [...located];
+  const sources: EventSource[] = located.map(() => 'self_cpi');
+  if (!logFallback || (tx.meta.err !== null && tx.meta.err !== undefined)) return { events, sources, gaps };
+  const byProgram = new Map(idls.filter((i) => i.name !== 'pump_fees').map((i) => [i.program, i]));
+  const keys = [...tx.message.accountKeys, ...tx.message.loadedAddresses.writable, ...tx.message.loadedAddresses.readonly];
+  // The swap instructions in execution order: each top-level instruction, then its inner instructions.
+  const swaps: Array<{ outer: number; inner: number; ix: Ix; idl: PinnedIdl }> = [];
+  const swapOf = (ix: InnerIx): PinnedIdl | null => {
+    const idl = byProgram.get(keys[ix.programIdIndex] ?? '');
+    if (idl === undefined || (ix.dataLength58 !== undefined && ix.dataLength58 > MAX_EVENT_DATA_B58)) return null;
+    const d = Buffer.from(ix.dataB64, 'base64');
+    const def = d.length >= 8 ? idl.instructions.get(d.subarray(0, 8).toString('hex')) : undefined;
+    return def !== undefined && isSwapName(def.name) ? idl : null;
+  };
+  tx.message.instructions.forEach((ix, outer) => {
+    const idl = swapOf(ix);
+    if (idl !== null) swaps.push({ outer, inner: -1, ix, idl });
+    // A route's hops are not trades of their own (rulings 38, 44): no fallback below a route instruction.
+    const routes = byProgram.get(keys[ix.programIdIndex] ?? '')?.routeInstructions;
+    const d = Buffer.from(ix.dataB64, 'base64');
+    if (routes !== undefined && d.length >= 8 && routes.has(d.subarray(0, 8).toString('hex'))) return;
+    for (const group of tx.meta.innerInstructions.filter((g) => g.index === outer)) {
+      group.instructions.forEach((inner, k) => {
+        const i = swapOf(inner);
+        if (i !== null) swaps.push({ outer, inner: k, ix: inner, idl: i });
+      });
+    }
+  });
+  const missing = swaps.filter((w) => !covered.has(`${w.outer}:${w.inner}`));
+  if (missing.length === 0) return { events, sources, gaps };
+  const gap = (reason: GapReason, outerIx: number, innerIx: number, event: string | null): void => {
+    hooks.onGap?.(reason);
+    const g = { signature: tx.signature, outerIx, innerIx, reason, event };
+    gaps.push(g);
+    hooks.onGapAt?.(g);
+  };
+  const first = missing[0] as (typeof missing)[number];
+  const logs = tx.meta.logMessages;
+  if (logs === null) { gap('no_logs', first.outer, first.inner, null); return { events, sources, gaps }; }
+  if (logs.includes(LOG_TRUNCATED)) { gap('truncated', first.outer, first.inner, null); return { events, sources, gaps }; }
+  const frames = framesOf(logs);
+  if (frames === null) { gap('bad_log', first.outer, first.inner, null); return { events, sources, gaps }; }
+  for (const [program, idl] of byProgram) {
+    const mine = missing.filter((w) => w.idl === idl);
+    if (mine.length === 0) continue;
+    const written = frames.filter((f) => f.program === program && f.data.length > 0);
+    if (selfCpi.has(program) || written.length !== mine.length) {
+      for (const w of mine) gap('log_ambiguous', w.outer, w.inner, null);
+      continue;
+    }
+    mine.forEach((w, i) => {
+      for (const line of (written[i] as Frame).data) {
+        if (!BASE64.test(line)) { gap('bad_log', w.outer, w.inner, null); continue; }
+        const data = Buffer.from(line, 'base64');
+        if (data.length > MAX_EVENT_DATA_BYTES) { gap('oversized', w.outer, w.inner, null); continue; }
+        const disc = data.length >= 8 ? toHex(data.subarray(0, 8)) : '';
+        const def = idl.events.get(disc);
+        if (def === undefined) {
+          gap('unknown_disc', w.outer, w.inner, null);
+          hooks.onUnknown?.(program, disc, tx.signature);
+          events.push({ event: { kind: 'unknown_event', programId: program, discriminatorHex: disc, signature: tx.signature }, outerIx: w.outer, innerIx: w.inner, layoutExtended: false, shortLegacy: false, multiHop: false });
+          sources.push('log');
+          continue;
+        }
+        let ev: M02Event | null;
+        let read: ReturnType<typeof readEvent>;
+        try {
+          read = readEvent(idl.name, def, data.subarray(8));
+          ev = mapEvent(idl.name, def.name, read.value, tx.slot, tx.signature, () => invokerQuoteMint(w.ix, idl, keys), quote.wsolMint);
+        } catch (e) {
+          gap(gapOf(e), w.outer, w.inner, def.name);
+          continue;
+        }
+        if (ev === null) continue;
+        hooks.onEvent?.(ev.kind, 'log');
+        if (read.extra > 0) hooks.onLayoutExtended?.(ev.kind, read.extra);
+        events.push({ event: ev, outerIx: w.outer, innerIx: w.inner, layoutExtended: read.extra > 0, shortLegacy: read.shortLegacy, multiHop: false });
+        sources.push('log');
+      }
+    });
+  }
+  return { events, sources, gaps };
 }
 
 /**

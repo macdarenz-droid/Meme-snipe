@@ -191,7 +191,7 @@ export const METRICS = {
   rpc_429_total: counter('provider'),
   rpc_byte_budget_refused_total: counter('provider', 'method'), // A-M14-02 owner byte rule (C03 red team R6-1)
   decode_accounts_total: counter('kind', 'result'),             // A-M02-02
-  decode_events_total: counter('kind'),                         // A-M02-03
+  decode_events_total: counter('kind', 'source'),               // A-M02-03; `source` A-M02-04 (card Z07)
   decode_gap_total: counter('reason'),
   decode_layout_extended_total: counter('kind'),                // A-M02-03, Z03 ruling 2
 } as const;

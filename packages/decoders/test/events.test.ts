@@ -7,7 +7,8 @@ import { base58, createDecoders, decodeEvents, MAX_EVENT_DATA_BYTES, Reader, rea
 import { decoders, DEFAULT_PUBKEY, fixture, idls, programOf, WSOL } from './fixtures.ts';
 
 interface TxRecord { signature: string; slot: number; version: unknown; json: Record<string, unknown> }
-const d = decoders();
+// A-M02-03's self-CPI rules in isolation: the A-M02-04 log fallback (on by default) has its own tests (log-fallback.test.ts).
+const d = decoders({ logFallback: false });
 const PUMP = programOf('pump');
 const PSWAP = programOf('pump_amm');
 const raw = (rec: TxRecord): RawTransaction => {
@@ -375,6 +376,7 @@ describe('A-M02-03 trust rules and gaps', () => {
     let now = 0;
     const gaps: string[] = [];
     const dd = createDecoders(idls(), {
+      logFallback: false,
       unknownEventLog: { log: { event: (_l, code, f) => { logged.push(`${code} ${String(f.discriminator)}`); } }, clock: { nowMs: () => now } },
       metrics: { counter: (name, l) => ({ inc: () => { if (name === 'decode_gap_total') gaps.push(String(l.reason)); } }) },
     });
@@ -397,14 +399,14 @@ describe('A-M02-03 trust rules and gaps', () => {
     p.dataB64 = Buffer.from(p.dataB64, 'base64').subarray(0, 12).toString('base64');
     assert.equal(dd.decodeTransactionEvents(prefixOnly)[0]?.kind, 'unknown_event');
     assert.deepEqual(gaps, ['unknown_disc', 'unknown_disc', 'unknown_disc', 'truncated', 'unknown_disc']);
-    const plain = createDecoders(idls());
+    const plain = createDecoders(idls(), { logFallback: false });
     assert.equal(plain.decodeTransactionEvents(t)[0]?.kind, 'unknown_event');
   });
 
   it('a fee above 10,000 bps in an event is refused (gap), and a transaction without inner instructions is a gap', () => {
     const gaps: string[] = [];
     const events: string[] = [];
-    const dd = createDecoders(idls(), { wsolMint: WSOL, metrics: { counter: (name, l) => ({ inc: () => { if (name === 'decode_gap_total') gaps.push(String(l.reason)); else if (name === 'decode_events_total') events.push(String(l.kind)); } }) } });
+    const dd = createDecoders(idls(), { wsolMint: WSOL, logFallback: false, metrics: { counter: (name, l) => ({ inc: () => { if (name === 'decode_gap_total') gaps.push(String(l.reason)); else if (name === 'decode_events_total') events.push(String(l.kind)); } }) } });
     dd.decodeTransactionEvents(buy());
     assert.deepEqual(events, ['pumpswap_buy']);                // decode_events_total{kind}
     const t = raw(CURVE_TRADES[0] as TxRecord);

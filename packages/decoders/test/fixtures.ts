@@ -35,8 +35,9 @@ export const TOKEN_PROGRAMS = {
 /** The wSOL mint as the fixtures record it (the quote mint of a C11 pool); the decoders take it from A-M01-01 in production. */
 export const WSOL = role('mainnet/pumpswap/pools/pool_9jkXWMyt.json', 'quote_mint').pubkey;
 
-export function decoders(): Decoders {
-  return createDecoders(idls(), { tokenPrograms: TOKEN_PROGRAMS, wsolMint: WSOL });
+/** The decoder set as the engine builds it; `logFallback: false` tests the A-M02-03 self-CPI rules in isolation. */
+export function decoders(opts: { logFallback?: boolean } = {}): Decoders {
+  return createDecoders(idls(), { tokenPrograms: TOKEN_PROGRAMS, wsolMint: WSOL, ...opts });
 }
 
 export const DEFAULT_PUBKEY = '11111111111111111111111111111111';
