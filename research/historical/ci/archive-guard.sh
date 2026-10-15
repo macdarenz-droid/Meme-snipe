@@ -90,9 +90,15 @@ ag_days() {
   done
 }
 # ag_pinned_id: the id of the one pinned B10-PULL row in docs/DECISIONS.md, or nothing.
+# The rows are append-only: an older pin stays as history and is retired by a row
+# "B10-PULL-RETIRED id=<old> by=<new>" whose <new> is itself a B10-PULL row (OF-FIX,
+# OFX-3). Exactly one id must remain; anything else is unpinned (fail closed).
 ag_pinned_id() {
-  local ids
+  local ids retired
   ids=$(sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL id=\([A-Za-z0-9._:-]\{1,\}\) source=old-faithful .*/\1/p' "$ag_decisions" 2>/dev/null | LC_ALL=C sort -u)
+  retired=$(sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL-RETIRED id=\([A-Za-z0-9._:-]\{1,\}\) by=\([A-Za-z0-9._:-]\{1,\}\) .*/\1 \2/p' "$ag_decisions" 2>/dev/null |
+    while read -r o n; do [[ "$o" != "$n" ]] && grep -qxF -- "$n" <<< "$ids" && echo "$o"; done | LC_ALL=C sort -u)
+  [[ -z "$retired" ]] || ids=$(LC_ALL=C comm -23 <(echo "$ids") <(echo "$retired"))
   [[ -n "$ids" && $(wc -l <<< "$ids") == 1 ]] && echo "$ids"
 }
 # ag_pinned_rev (OF-7 red team m2): the scannerRev of the one pinned B10-PULL row, or nothing.
