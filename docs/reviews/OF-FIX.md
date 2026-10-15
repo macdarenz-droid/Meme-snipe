@@ -53,9 +53,13 @@ The root cause is shown from the code and an anchor already in the repo, without
   - A retirement by an unknown id, or two pins retiring each other, leaves nothing pinned, which fails closed.
   - The test-ci OF-7 row check applies the same rule.
 
-## Open point for the supervisor
+## Ruling OFX-6 (15 Oct), on the open point
 
-OF-2 ruling 36 keeps the scanner's plan counts out of the job log and step summary. OFX-4 asks for "N units planned" and the epoch list in the batch summary. The line that reaches the summary carries only the unit count and the epoch numbers. Neither is archive content: both follow from the day and the epoch layout. Per-unit counts (curve, amm and so on) stay private. This reading of OFX-4 over ruling 36 needs the supervisor's confirmation.
+OF-2 ruling 36 keeps the scanner's plan counts out of the job log and step summary, while OFX-4 asked for "N units planned" and the epoch list in the batch summary.
+
+Confirmed, narrowly: the run summary may show ONLY the total planned-unit count and the epoch numbers. Both are public chain facts, and both are needed to see a wrong plan within 15 s. Per-unit lists, sizes, URLs and any archive-derived data stay private, as ruling 36 says.
+
+Recorded as a dated amendment under ruling 36 in `docs/reviews/OF2.md`. `scan-day.sh` copies the plan line only when it matches `^[0-9]+ units planned \(epochs [0-9 ]*\)$`. The B10-PULL-RETIRED mechanism is accepted for review.
 
 ## Evidence
 
