@@ -6,7 +6,7 @@ import { describe, it } from 'vitest';
 import { createDecoders, verifyPinnedIdls, VENDORED_IDL_DIR, type DecodedAccount } from '@bot/decoders';
 import type { BaseUnits, Bps, Clock, DecodedEvent, Lamports, RawTransaction, Signature, Slot, UnixMs } from '@bot/types';
 import { MINTS, PROGRAMS, pumpPoolAuthorityPda } from '../src/constants.ts';
-import { checkGuardSettings, createOrientationGuard, createOrientationSampler, GUARD_DEFAULTS, type PoolQuarantined, type SwapSource } from '../src/guard.ts';
+import { checkGuardSettings, createOrientationGuard, createOrientationSampler, GUARD_DEFAULTS, QUARANTINE_ALERT_ENTRIES, type PoolQuarantined, type SwapSource } from '../src/guard.ts';
 import { checkOrientation, normalisePool, type SwapEvent } from '../src/orientation.ts';
 import type { CpPoolState } from '../src/pool.ts';
 import { pool, readJson } from './helpers.ts';
@@ -134,6 +134,52 @@ describe('A-M01-04 spot-vs-swap check', () => {
     const invertedFails = G.filter((v) => checkOrientation(snapshotOf(v), eventOf(v), settings).status === 'pass')
       .every((v) => checkOrientation(inverted(snapshotOf(v)), eventOf(v), settings).status === 'fail');
     assert.ok(invertedFails);
+  });
+
+  it('ruling Z07-15: AC4 on a snapshot from the same pool\'s previous event in an earlier slot, over every CORE-2 pool that has one (33 pools, 262 swaps): the false-fail rate at 100 bps, reported for ruling', () => {
+    // The snapshot is the previous event's own pre-swap reserves at its slot, so the trades in between (that event's
+    // swap and any unrecorded ones) are inside the check. Tolerance stays 100 bps; the supervisor rules on the rate.
+    const counts = { pass: 0, fail: 0, not_evaluable: 0 };
+    const pools = new Set<string>();
+    const failBps: number[] = [];
+    for (const v of G) {
+      const prev = G.filter((u) => u.pool.address === v.pool.address && u.slot < v.slot).sort((x, y) => x.slot - y.slot).at(-1);
+      if (prev === undefined) continue;
+      pools.add(v.pool.address);
+      const snap = pool({
+        poolId: v.pool.address, asOfSlot: BigInt(prev.slot) as Slot,
+        baseReserve: n(prev.event.pool_base_token_reserves), quoteReserveReal: n(prev.event.pool_quote_token_reserves), quoteReserveVirtual: n(prev.event.virtual_quote_reserves),
+      });
+      const r = checkOrientation(snap, eventOf(v), settings);
+      counts[r.status]++;
+      if (r.status === 'fail') failBps.push(r.observedBps ?? -1);
+    }
+    assert.equal(pools.size, 33);
+    // 58 of 171 evaluable swaps (33.9%) fail at 100 bps (from 105 to 1,524 bps); 91 are past the 2-slot gap or dust.
+    assert.deepEqual(counts, { pass: 113, fail: 58, not_evaluable: 91 });
+    assert.deepEqual([Math.min(...failBps), Math.max(...failBps)], [105, 1_524]);
+  });
+
+  it('ruling Z07-19: the quarantine set is never pruned; a gauge follows it; at 10,000 pools one critical alert and nothing is evicted', async () => {
+    const clock = { t: 0, kind: 'sim' as const, nowMs: () => clock.t as UnixMs };
+    const lines: Array<[string, string, Record<string, unknown>]> = [];
+    const gauge: number[] = [];
+    const guard = createOrientationGuard({ clock, log: { event: (l, c, f) => lines.push([l, c, { ...f }]) }, publish: () => {},
+      metrics: { orientationCheck: () => {}, poolQuarantined: () => {}, quarantinedPools: (k) => gauge.push(k) } });
+    for (let i = 0; i <= QUARANTINE_ALERT_ENTRIES; i++) guard.quarantine(`p${i}`, 'owner_changed');
+    assert.equal(gauge.at(-1), QUARANTINE_ALERT_ENTRIES + 1);
+    assert.deepEqual(lines.filter(([, c]) => c === 'm01.quarantine_set_large'), [['critical', 'm01.quarantine_set_large', { entries: 10_000, alert_entries: 10_000 }]]);
+    assert.ok(guard.quarantined('p0') && guard.quarantined(`p${QUARANTINE_ALERT_ENTRIES}`));
+    // Unwatched, then watched again: still quarantined, and never sampled.
+    const reads = { n: 0 };
+    const sampler = createOrientationSampler({ clock, guard, log: { event: () => {} }, decode: () => [], snapshotBefore: () => null,
+      source: { signatures: async () => { reads.n++; return { ok: true, value: [] }; }, transaction: async () => ({ ok: true, value: null }) } });
+    await sampler.tick(['p0']);
+    await sampler.tick([]);
+    clock.t += 3_600_000;
+    await sampler.tick(['p0']);
+    assert.equal(guard.quarantined('p0'), true);
+    assert.equal(reads.n, 0);
   });
 
   it('AC4 with the guard: inverted reserves quarantine the pool and publish once; correct reserves pass', () => {

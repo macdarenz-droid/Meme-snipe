@@ -200,6 +200,7 @@ export const METRICS = {
   quote_compute_us: histogram(BUCKETS.latencyMs, 'venue'),      // A-M01-03 (µs, on the latency buckets)
   orientation_checks_total: counter('status'),                  // A-M01-04
   pools_quarantined_total: counter('reason'),
+  pools_quarantined: gauge(),                                   // ruling Z07-19
   venue_quotable: gauge('venue'),                               // A-M01-05
   fee_mismatch_total: counter('venue'),
   poll_skipped_total: counter('class'),                         // A-M04-01

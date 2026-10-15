@@ -100,7 +100,9 @@ describe('A-M01-03 PumpSwap goldens (CORE-2, 353 events)', () => {
       assert.ok(cons.amountOut <= chain.amountOut, v.signature);
       if (cons.amountOut < chain.amountOut) differ++;
     }
-    assert.ok(differ >= 0);
+    // Ruling Z07-18: no recorded swap crosses a tier, so the two rules agree on all 353 (the crossing cases are the
+    // tier tests in fees.test.ts and quote.test.ts).
+    assert.equal(differ, 0);
   });
 
   it('A08: a quote from the tier table alone, or on the vault alone, fails vectors that the per-pool quote reproduces', () => {

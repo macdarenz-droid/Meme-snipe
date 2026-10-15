@@ -8,7 +8,7 @@ import { describe, it } from 'vitest';
 import type { Bps, Quote } from '@bot/types';
 import { MINTS, PROGRAMS } from '../src/constants.ts';
 import type { CpPoolState } from '../src/pool.ts';
-import { effectiveQuote, exitableQuoteLamports, isAllowedVenue, legWithSplit, maxSellableBase, minOut, quoteDetail, quoteExactIn, spotSolPerToken } from '../src/quote.ts';
+import { effectiveQuote, exitableQuoteLamports, isAllowedVenue, legWithSplit, maxSellableBase, minOut, quoteDetail, quoteExactIn, spotSolPerToken, U64_MAX } from '../src/quote.ts';
 import { CORE2_INPUTS, pool, SOL, split3 } from './helpers.ts';
 
 const INPUTS = CORE2_INPUTS;
@@ -145,6 +145,46 @@ describe('A-M01-03 properties (ARCH 16.2; 10,000 cases each, fixed seeds)', () =
     }), { numRuns: 10_000, seed: 7_034 });
   });
 
+  it('ruling Z07-17: monotonic too under the conservative rule, and on pools with a negative virtual reserve (v + q > 0)', () => {
+    const signed = fc.record({
+      q: fc.bigInt({ min: 10_000_000n, max: 1_000_000n * SOL }),
+      cut: fc.bigInt({ min: 1n, max: 10_000n }),
+      b: fc.bigInt({ min: 1_000_000n, max: 1_000_000_000_000_000n }),
+      canonical: fc.boolean(),
+    }).map(({ q, cut, b, canonical }) => pool({ quoteReserveReal: q, quoteReserveVirtual: -((q * cut) / 10_001n), baseReserve: b, isCanonical: canonical }));
+    let negative = 0, sells = 0, drops = 0, worstBps = 0;
+    fc.assert(fc.property(fc.oneof(pools, signed), spend, spend, fc.constantFrom<'buy' | 'sell'>('buy', 'sell'), fc.constantFrom<'chain' | 'conservative'>('chain', 'conservative'), (p, a, b, side, rule) => {
+      if (p.quoteReserveVirtual < 0n) negative++;
+      const [lo, hi] = a <= b ? [a, b] : [b, a];
+      const ql = quoteExactIn(p, side, lo, INPUTS, rule);
+      const qh = quoteExactIn(p, side, hi, INPUTS, rule);
+      const monotonic = !ql.ok || !qh.ok || qh.value.amountOut >= ql.value.amountOut;
+      // FINDING for the supervisor's ruling (not loosened here): a bigger conservative sell can cross into a dearer
+      // tier and return less. Counted and measured; every other case must hold.
+      if (side === 'sell' && rule === 'conservative') {
+        sells++;
+        if (!monotonic && ql.ok && qh.ok) {
+          drops++;
+          const bps = Number(((ql.value.amountOut - qh.value.amountOut) * 10_000n) / ql.value.amountOut);
+          if (bps > worstBps) worstBps = bps;
+        }
+        return true;
+      }
+      return monotonic;
+    }), { numRuns: 10_000, seed: 7_036 });
+    assert.ok(negative >= 1_000, `${negative} negative-virtual pools`);
+    // Seed 7,036: 55 of 2,489 conservative sells drop, by at most 65 bps (reported for ruling).
+    assert.deepEqual([sells, drops, worstBps], [2_489, 55, 65]);
+  });
+
+  it('Z07-17 finding (pending ruling): a recorded case where a bigger conservative sell returns less', () => {
+    const p = pool({ baseReserve: 1_000_000n, quoteReserveReal: 46_762_422n, quoteReserveVirtual: 0n, isCanonical: true });
+    const lo = ok(quoteExactIn(p, 'sell', 461_778_925n, INPUTS, 'conservative')).amountOut;
+    const hi = ok(quoteExactIn(p, 'sell', 603_001_783n, INPUTS, 'conservative')).amountOut;
+    assert.ok(hi < lo, `${lo} ${hi}`);
+    assert.ok(ok(quoteExactIn(p, 'sell', 603_001_783n, INPUTS, 'chain')).amountOut >= ok(quoteExactIn(p, 'sell', 461_778_925n, INPUTS, 'chain')).amountOut);
+  });
+
   it('minOut ≤ amountOut on real quotes', () => {
     fc.assert(fc.property(pools, spend, fc.integer({ min: 0, max: 10_000 }), (p, x, s) => {
       const q = quoteExactIn(p, 'buy', x, INPUTS);
@@ -205,6 +245,11 @@ describe('A-M01-03 branches', () => {
     assert.equal(code(quoteExactIn(pool({ baseDecimals: null }), 'buy', SOL, INPUTS)), 'E_DECIMALS_UNKNOWN');
     assert.equal(code(quoteExactIn(pool({ venue: 'raydium_amm_v4' }), 'buy', SOL, INPUTS)), 'E_VENUE_NOT_SPECIFIED');
     assert.equal(code(quoteExactIn(pool({ baseReserve: 2n ** 100n }), 'buy', 2n ** 40n, INPUTS)), 'E_OVERFLOW');
+    // Ruling Z07-16: an amount past u64 is refused; u64's largest is quoted.
+    assert.equal(code(legWithSplit(pool(), 'sell', U64_MAX + 1n, split3(20, 5, 5))), 'E_OVERFLOW');
+    assert.equal(code(quoteExactIn(pool(), 'buy', U64_MAX + 1n, INPUTS)), 'E_OVERFLOW');
+    assert.notEqual(code(legWithSplit(pool(), 'buy', U64_MAX, split3(20, 5, 5))), 'E_OVERFLOW');
+    assert.notEqual(code(legWithSplit(pool(), 'sell', U64_MAX, split3(20, 5, 5))), 'E_OVERFLOW');
     assert.equal(code(quoteExactIn(pool({ isCanonical: null }), 'buy', SOL, INPUTS)), 'E_FEE_UNKNOWN');
     assert.equal(code(quoteExactIn(pool({ creatorFeeBps: 50 }), 'buy', SOL, { ...INPUTS, creatorFeeConfigurable: null })), 'E_FEE_UNKNOWN');
     assert.throws(() => legWithSplit(pool(), 'buy', SOL, null as never));

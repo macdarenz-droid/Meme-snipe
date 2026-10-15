@@ -12,7 +12,11 @@ import type { CpPoolState } from './pool.ts';
 export type QuarantineReason = 'orientation' | 'negative_effective' | 'owner_changed';
 export interface PoolQuarantined { poolId: Pubkey; reason: QuarantineReason; atMs: UnixMs }
 export interface GuardLog { event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void }
-export interface GuardMetrics { orientationCheck(status: OrientationResult['status']): void; poolQuarantined(reason: QuarantineReason): void }
+export interface GuardMetrics {
+  orientationCheck(status: OrientationResult['status']): void; poolQuarantined(reason: QuarantineReason): void;
+  /** Gauge `pools_quarantined` (ruling Z07-19): entries in the quarantine set. */
+  quarantinedPools(entries: number): void;
+}
 
 export interface GuardSettings extends OrientationSettings { checkIntervalMs: number; sampleSignatures: number }
 export const GUARD_DEFAULTS: Readonly<GuardSettings> = Object.freeze({ checkIntervalMs: 600_000, sampleSignatures: 5, maxSlotGap: 2, toleranceBps: 100 });
@@ -29,6 +33,11 @@ export function checkGuardSettings(s: GuardSettings): Result<GuardSettings, { co
 }
 
 const REPUBLISH_MS = 3_600_000;
+/**
+ * POLICY (ruling Z07-19): the quarantine set holds this many pools before a critical alert. It evicts nothing: a pool
+ * leaves the set only by review, never on unwatch, so a re-watched pool stays quarantined.
+ */
+export const QUARANTINE_ALERT_ENTRIES = 10_000;
 
 export interface OrientationGuard {
   checkAgainstEvent(p: CpPoolState, e: SwapEvent): OrientationResult;
@@ -41,6 +50,7 @@ export function createOrientationGuard(deps: { clock: Clock; log: GuardLog; publ
   const settings = deps.settings ?? GUARD_DEFAULTS;
   const checked = checkGuardSettings(settings);
   if (!checked.ok) throw checked.error;
+  // Never pruned (Z07-19): cleared only by review (a later card); unwatching a pool leaves it here.
   const set = new Map<Pubkey, { reason: QuarantineReason; publishedAtMs: number }>();
 
   function quarantine(poolId: Pubkey, reason: QuarantineReason): void {
@@ -49,6 +59,10 @@ export function createOrientationGuard(deps: { clock: Clock; log: GuardLog; publ
     if (prev !== undefined && now - prev.publishedAtMs < REPUBLISH_MS) return;
     set.set(poolId, { reason, publishedAtMs: now });
     deps.metrics?.poolQuarantined(reason);
+    deps.metrics?.quarantinedPools(set.size);
+    if (prev === undefined && set.size === QUARANTINE_ALERT_ENTRIES) {
+      deps.log.event('critical', 'm01.quarantine_set_large', { entries: set.size, alert_entries: QUARANTINE_ALERT_ENTRIES });
+    }
     deps.log.event('critical', 'm01.pool_quarantined', { pool: poolId, reason });
     deps.publish({ poolId, reason, atMs: now });
   }

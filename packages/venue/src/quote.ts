@@ -138,11 +138,16 @@ function sellLeg(p: CpPoolState, Q: bigint, B: bigint, t: bigint, split: FeeSpli
   };
 }
 
+/** The largest SPL token amount (u64). */
+export const U64_MAX = 2n ** 64n - 1n;
+
 /** One side under one split, after the pool checks. */
 export function legWithSplit(p: CpPoolState, side: 'buy' | 'sell', amountIn: bigint, split: FeeSplit): LegResult {
   const r = reserves(p);
   if (!r.ok) return r;
   if (amountIn <= 0n) return err('E_ZERO_INPUT', 'amount in must be > 0');
+  // Ruling Z07-16: an SPL amount is a u64; anything larger can never be a real instruction argument.
+  if (amountIn > U64_MAX) return err('E_OVERFLOW', 'amount in exceeds 2^64 - 1');
   try {
     return side === 'buy' ? buyLeg(p, r.value.Q, r.value.B, amountIn, split) : sellLeg(p, r.value.Q, r.value.B, amountIn, split);
   } catch (e) {
