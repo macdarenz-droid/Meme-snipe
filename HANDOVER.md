@@ -138,6 +138,20 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 7:27 AM: #326 OF-DISARM merged at `fa741fb4`**, before the 20:41 UTC archive-check, so 07-22 is not re-dispatched into the same failure.
+  - It is an exact revert of the #321 merge `2e194600`, verified by the supervisor: the diff equals the reverse of `2e194600` against its first parent, and the three research files are byte-equal to `2b880bca`. `ARCHIVE_ARM=""` again.
+  - CI green on `fd0ece94` (run 38796137494). No reviewer or red team: an exact revert to a state that was itself reviewed and red-teamed, under time pressure (supervisor ruling, recorded here).
+  - Root cause (finisher report, hypothesis): the scan step exits 0 with "progress-guard: 0 finished units" and scan-day.sh:268 accepts it; planUnits (scanner main.go ~:468) estimates epochs from an Oct 2026 slot-time anchor (0.267 s/slot) ±2, which probably misses 22 Jul. No zeroed-data write. The guard counts 1 failure of 3; ARCHIVE_REARM_AT is unchanged.
+  - Next: card OF-FIX, builder `session_01JfcmEyJ1AqL4BQbyoGAZHT` (Opus, Auto), branch `claude/of-fix`. It plans first: prove the root cause without the archive, scan-day.sh fails closed on 0 units, planUnits uses measured block times, 07-22/07-23 tests, a scannerRev re-pin. Then review, red team, merge, and a new reviewed arming change.
+  - The finisher `session_0168HNmszjFeWWhbGLCFmdsz` is archived.
+- **16 Oct 6:30 AM: Z08 plan ruled (Z08-1..12).**
+  - A-M03-03 parked. A-M03-01 built with `enabled` false (owner's PumpPortal rule).
+  - Disk: the stricter rule wins; receipted retention 7 days; unreceipted data never deleted.
+  - gzip default; no new package.
+  - SOL/USD pool cited from an official Orca source, with a synthetic fixture; the live verification moves to Z10's on-server acceptance.
+  - `ref_price` stream approved.
+  - Per-provider rates pinned in tests.
+  - Private field check: Z08 does not cover the private research's recording checklist, which needs its own forward-recording decision with the owner later (no details here).
 - **16 Oct 6:22 AM: #325 Z07 merged at `57c4b266`** (ls-remote).
   - Reviewer and red team PASS after 8 rounds; rulings Z07-1..38.
   - Label `deps-reviewed:977d80e63de38ca9ffc2d16a020e40d0` (pure-files.txt additions). Labelled run 38788371819 green: check, coverage, dashboard, historical-data.
