@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { configDefaults, defineConfig } from 'vitest/config';
 
 // Light and CPU-heavy suites share the default sequence group and its two-worker pool, with separate timeout defaults.
@@ -25,8 +26,27 @@ const MEASUREMENTS = [
 const BLUEPRINT_PACKAGES = ['types', 'botctl', 'contract', 'dashboard', 'decoders', 'engine', 'exitpath', 'research', 'sentinel', 'signer', 'venue'];
 const BLUEPRINT = [...BLUEPRINT_PACKAGES.map((p) => `packages/${p}/test/**/*.test.ts`), 'tools/**/test/**/*.test.ts'];
 
+// B-M30-01 coverage gate (Z01-COV): 100% branch coverage on every file of tools/coverage/pure-files.txt, per file. It runs
+// only with `pnpm test:coverage` (`--coverage`); `pnpm test` is unchanged. Each line is `<glob>  # <reason>`; a line
+// without a reason fails here, so the list cannot grow silently.
+const PURE_FILES = readFileSync(new URL('./tools/coverage/pure-files.txt', import.meta.url), 'utf8')
+  .split('\n')
+  .filter((line) => line.trim() !== '' && !line.startsWith('#'))
+  .map((line) => {
+    const [glob, reason] = line.split('  # ');
+    if (glob === undefined || glob.trim() === '' || reason === undefined || reason.trim() === '') throw new Error(`tools/coverage/pure-files.txt: a line needs "<glob>  # <reason>": ${line}`);
+    return glob.trim();
+  });
+
 export default defineConfig({
   test: {
+    coverage: {
+      provider: 'v8',
+      include: PURE_FILES,
+      exclude: ['**/test/**', '**/node_modules/**'],
+      reporter: ['text-summary', 'json-summary'],
+      thresholds: { perFile: true, branches: 100 },
+    },
     projects: [
       {
         extends: true,
