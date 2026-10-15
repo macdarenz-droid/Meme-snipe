@@ -138,6 +138,11 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 10:18 PM: #320 CI on `fd2595f9`.** check and dashboard are green.
+  - historical-data was cancelled at its 15-min timeout, at 11:00:21 UTC, during post-job cleanup. All its tests had passed (test-ci 285/0).
+  - On base `90bac78d` the same job took about 12 min. #320 touches nothing under research/historical, so this is runner variance near the limit, not this PR.
+  - The one allowed re-run of the cancelled job was spent at 10:18 PM.
+  - If it times out again: open a supervisor `.github` change raising historical-data `timeout-minutes` 15→25. That is not a test change. It gets review and red team, then #320 merges the base.
 - **15 Oct 9:45 PM: #320 approved for CI.** Reviewer and red team both PASS at `fd2595f9` (ls-remote). Rounds 2–4 added rulings Z06-8..16:
   - evidence files verified by sha256 and record count, with samples taken only from the file;
   - code-built latency specs refused;
