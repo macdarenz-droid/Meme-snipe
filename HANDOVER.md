@@ -138,6 +138,14 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **15 Oct 11:17 PM: Z01-COV.**
+  - Spec gate: per-file 100% branch coverage on pure-function files (SPEC-B DoD #8, ARCH 16.1, SPEC-A 318/640). There is no package-wide threshold. 52 tests added.
+  - **Safety refusal:** the builder's auto-mode check refused an edit of engine src/m13/stats/special.ts ("Modify Shared Resources"). The edit would have removed unreachable defensive branches. Not retried and not re-routed; reported to the owner.
+  - Ruling Z01-COV-2:
+    - special.ts, intervals.ts, decoders/events.ts and m10/latency.ts stay off the gated list. Their 15 unreachable branches are recorded in DECISIONS until a reviewed card changes those files.
+    - Coverage runs as a separate parallel CI job (add-only), so `check` does not slow down.
+    - m24/m25 stay off the list.
+  - The owner was given the Shyft key steps (https://shyft.to/get-api-key, secret `RPC_SHYFT_URL` = `https://rpc.shyft.to/?api_key=…`); the Chainstack steps follow once Shyft is done.
 - **15 Oct 10:38 PM: #320 Z06 merged at `cf508be1`** (ls-remote HEAD). CI green on `fd2595f9`; the historical-data re-run passed in 10.7 min.
   - Archived: Z06 builder, reviewer and red team. Card cost about $35 (builder $27.85, reviewer $4.06, red team $2.84). Unsubscribed from #320; the safety-net check-in has fired.
   - **M0 cards are all merged.** M0 exit (INTEGRATION M0) still needs "two free providers answer reads". That needs the owner step from MIGRATION:789: free Shyft and Chainstack accounts, with their RPC URLs as repository secrets `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` (the names in engine m14/defaults.ts:37).
