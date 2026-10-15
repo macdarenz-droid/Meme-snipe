@@ -409,13 +409,23 @@ BCODE="$(in_c "zeroed-backup-code" | tee "$LOGS/console/backup-code.txt" | sed -
 CODES+=("$BCODE")
 in_c "! grep -rqF '$BCODE' /etc /var/lib/zeroed-host 2>/dev/null" || fail "backup code stored on the server"
 sleep 1
-# Off by default: nothing goes to Telegram until the owner approves (ops/host-config.json).
+# The timer follows the deployed ops/host-config.json: on when the release sets offsite_backup true, off otherwise.
+if [ "$(in_c "jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json")" = true ]; then
+  in_c "systemctl is-enabled zeroed-backup-offsite.timer" >/dev/null 2>&1 || fail "off-server timer not enabled although the deployed config approves it"
+else
+  in_c "! systemctl is-enabled zeroed-backup-offsite.timer" >/dev/null 2>&1 || fail "off-server timer enabled without approval"
+fi
+# Stand-in for a release without approval: switch it off in the deployed config (other keys kept) and disable the timer.
+in_c "jq '.offsite_backup = false' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json && systemctl disable --now zeroed-backup-offsite.timer" >/dev/null 2>&1 || fail "could not switch the off-server copy off"
 in_c "! systemctl is-enabled zeroed-backup-offsite.timer" >/dev/null 2>&1 || fail "off-server timer enabled without approval"
+SENT_BEFORE="$(grep -c '"method":"sendDocument"' "$STATE/telegram.jsonl" 2>/dev/null || true)"
+SENT_BEFORE="${SENT_BEFORE:-0}"
 in_c "systemctl start zeroed-backup.service && systemctl start zeroed-backup-offsite.service" || fail "off-server copy (off) errored"
-grep -q '"method":"sendDocument"' "$STATE/telegram.jsonl" && fail "a backup was sent before approval"
+SENT_AFTER="$(grep -c '"method":"sendDocument"' "$STATE/telegram.jsonl" 2>/dev/null || true)"
+[ "${SENT_AFTER:-0}" = "$SENT_BEFORE" ] || fail "a backup was sent before approval"
 in_c "zeroed-status" | grep "off-server copy off (waits for the owner's approval)" >/dev/null || fail "status does not show the copy as off"
 # Stand-in for the reviewed commit that switches it on after the owner says yes.
-in_c "printf '{\"offsite_backup\": true}\n' > /opt/zeroed/current/ops/host-config.json && systemctl start zeroed-backup-offsite.service" || fail "off-server copy failed"
+in_c "jq '.offsite_backup = true' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json && systemctl start zeroed-backup-offsite.service" || fail "off-server copy failed"
 grep -q "\"method\":\"sendDocument\",\"token_ok\":true,\"chat_id\":\"$T_CHAT\"" "$STATE/telegram.jsonl" || fail "backup not sent to the owner chat"
 printf '%s' "$BCODE" | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs" --backup >"$E2E/owner-backup.id"
 age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -t | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
