@@ -12,4 +12,5 @@ export const M01_VENUE_LOG_CODES = {
   'm01.orientation_fail': { fields: { pool: 'id', observed_bps: 'integer', slot: 'bigint' } },
   'm01.orientation_read_failed': { fields: { pool: 'id', error_code: 'string' } },
   'm01.pool_quarantined': { fields: { pool: 'id', reason: 'string' } },
+  'm01.sell_exceeds_real_vault': { fields: { pool: 'id', slot: 'bigint', max_sellable_base: 'bigint' } },
 } as const;

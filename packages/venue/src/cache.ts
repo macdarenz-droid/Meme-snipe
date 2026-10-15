@@ -89,7 +89,10 @@ export function feeConfigView(e: VenueConfigCacheEntry): FeeConfigView {
   };
 }
 
-export function createVenueConfigCache(deps: { reader: AccountsReader; decoder: ConfigDecoder; clock: Clock; log: VenueLog; settings?: VenueConfigSettings }): VenueConfigCache {
+/** A-M01-02 observability: `venue_config_age_ms{venue}` and `venue_config_version{venue}` (the venue's fee config). */
+export interface VenueConfigMetrics { configAgeMs(venue: 'pump_curve' | 'pumpswap', ms: number): void; configVersion(venue: 'pump_curve' | 'pumpswap', version: number): void }
+
+export function createVenueConfigCache(deps: { reader: AccountsReader; decoder: ConfigDecoder; clock: Clock; log: VenueLog; settings?: VenueConfigSettings; metrics?: VenueConfigMetrics }): VenueConfigCache {
   const settings = deps.settings ?? VENUE_CONFIG_DEFAULTS;
   const checked = checkVenueConfigSettings(settings);
   if (!checked.ok) throw checked.error;
@@ -104,11 +107,21 @@ export function createVenueConfigCache(deps: { reader: AccountsReader; decoder: 
     emit({ kind: 'decode_failed', name: c.name, account: c.account, reason });
   };
 
+  const gauges = (now: number): void => {
+    for (const [venue, name] of [['pump_curve', 'feeConfigCurve'], ['pumpswap', 'feeConfigPumpSwap']] as const) {
+      const e = entries.get(name);
+      if (e === undefined) continue;
+      deps.metrics?.configAgeMs(venue, now - e.readAtMs);
+      deps.metrics?.configVersion(venue, e.version);
+    }
+  };
+
   async function refresh(): Promise<void> {
     const r = await deps.reader.read(CONFIGS.map((c) => c.account));
     if (!r.ok) {
       // Edge 3: keep the last entries; `inputs` turns stale after max_age_ms.
       deps.log.event('warn', 'm01.fee_config_refresh_failed', { error_code: r.error.code });
+      gauges(deps.clock.nowMs());
       emit({ kind: 'refreshed', ok: false });
       return;
     }
@@ -136,6 +149,7 @@ export function createVenueConfigCache(deps: { reader: AccountsReader; decoder: 
       }
     });
     deps.log.event('info', 'm01.fee_config_refreshed', { slot: r.value.contextSlot });
+    gauges(now);
     emit({ kind: 'refreshed', ok: true });
   }
 
@@ -192,7 +206,19 @@ export interface VenueModel {
   isAllowedVenue(programId: Pubkey): CpPoolState['venue'] | null;
 }
 
-export function createVenueModel(cache: VenueConfigCache): VenueModel {
+/**
+ * A-M01-03 observability (optional): `quote_compute_us{venue}` from a monotonic microsecond timer (never the ambient
+ * clock, B-M19-01 logic 3), and the log line `m01.sell_exceeds_real_vault` for a refused sell.
+ */
+export interface VenueModelObservers { nowUs(): number; quoteComputeUs(venue: CpPoolState['venue'], us: number): void; log: VenueLog }
+
+export function createVenueModel(cache: VenueConfigCache, obs?: VenueModelObservers): VenueModel {
+  const observe = (p: CpPoolState, startedUs: number, r: Result<Quote, QuoteError>): Result<Quote, QuoteError> => {
+    if (obs === undefined) return r;
+    obs.quoteComputeUs(p.venue, obs.nowUs() - startedUs);
+    if (!r.ok && r.error.code === 'E_EXCEEDS_REAL_VAULT') obs.log.event('warn', 'm01.sell_exceeds_real_vault', { pool: p.poolId, slot: p.asOfSlot, max_sellable_base: r.error.maxSellableBase });
+    return r;
+  };
   return {
     effectiveQuote,
     marketCapLamports(p) {
@@ -205,12 +231,13 @@ export function createVenueModel(cache: VenueConfigCache): VenueModel {
       return i.ok ? feeScheduleFor(p, i.value) : i;
     },
     quoteExactIn(p, side, amountIn, rule = 'conservative') {
+      const started = obs?.nowUs() ?? 0;
       if (p.venue === 'pump_curve' || p.venue === 'pumpswap') {
         const i = cache.inputs(p.venue);
         if (!i.ok) return { ok: false, error: { code: i.error.code, detail: i.error.detail } };
-        return quoteExactIn(p, side, amountIn, i.value, rule);
+        return observe(p, started, quoteExactIn(p, side, amountIn, i.value, rule));
       }
-      return quoteExactIn(p, side, amountIn, { curve: null, pumpswap: null, creatorFeeConfigurable: null }, rule);
+      return observe(p, started, quoteExactIn(p, side, amountIn, { curve: null, pumpswap: null, creatorFeeConfigurable: null }, rule));
     },
     minOut,
     isAllowedVenue,

@@ -5,7 +5,7 @@ import { strict as assert } from 'node:assert';
 import fc from 'fast-check';
 import { describe, it } from 'vitest';
 import type { Bps } from '@bot/types';
-import { createVenueConfigCache, checkVenueConfigSettings, feeConfigView } from '../src/cache.ts';
+import { createVenueConfigCache, createVenueModel, checkVenueConfigSettings, feeConfigView } from '../src/cache.ts';
 import { ACCOUNTS, MINTS, PROGRAMS } from '../src/constants.ts';
 import { candidateSplits, chainTierIndex, checkTiers, dearest, feeScheduleFor, marketCapAt, marketCapOf, tierIndicesAt, totalBps, type FeeInputs, type FeeTierView } from '../src/fees.ts';
 import { quoteDetail } from '../src/quote.ts';
@@ -279,6 +279,34 @@ describe('A-M01-02 cache', () => {
       assert.ok(!checkVenueConfigSettings(s).ok, JSON.stringify(s));
     }
     assert.throws(() => createVenueConfigCache({ reader: fakeReader(), decoder: decoders, clock: fakeClock(), log, settings: { refreshMs: 1, maxAgeMs: 2 } }));
+  });
+
+  it('observability: config age and version gauges at each refresh; quote timing and the exceeds-real-vault log', async () => {
+    const gauges: string[] = [];
+    const reader = fakeReader();
+    const clock = fakeClock();
+    const cache = createVenueConfigCache({ reader, decoder: decoders, clock, log, metrics: { configAgeMs: (v, ms) => gauges.push(`age:${v}:${ms}`), configVersion: (v, n) => gauges.push(`ver:${v}:${n}`) } });
+    await cache.refresh();
+    clock.t += 5_000;
+    reader.fail = true;
+    await cache.refresh();
+    assert.deepEqual(gauges, ['age:pump_curve:0', 'ver:pump_curve:1', 'age:pumpswap:0', 'ver:pumpswap:1', 'age:pump_curve:5000', 'ver:pump_curve:1', 'age:pumpswap:5000', 'ver:pumpswap:1']);
+    reader.fail = false;
+    await cache.refresh();
+    const timings: number[] = [];
+    let us = 100;
+    const model = createVenueModel(cache, { nowUs: () => (us += 3), quoteComputeUs: (_v, t) => timings.push(t), log });
+    assert.ok(model.quoteExactIn(pool(), 'buy', SOL).ok);
+    const drained = pool({ quoteReserveReal: 270_000_000n, quoteReserveVirtual: 17_580_000_000n, baseReserve: 400_000_000_000_000n });
+    assert.ok(!model.quoteExactIn(drained, 'sell', 100_000_000_000_000n).ok);
+    assert.ok(!model.quoteExactIn(pool({ venue: 'raydium_cpmm' }), 'buy', SOL).ok);
+    assert.deepEqual(timings, [3, 3, 3]);
+    assert.ok(logs.some((l) => l.code === 'm01.sell_exceeds_real_vault' && typeof l.fields.max_sellable_base === 'bigint'));
+    // Nothing read yet: a failed refresh reports no gauge.
+    const failing = fakeReader();
+    failing.fail = true;
+    const empty = createVenueConfigCache({ reader: failing, decoder: decoders, clock: fakeClock(), log, metrics: { configAgeMs: () => assert.fail('no entry'), configVersion: () => assert.fail('no entry') } });
+    await empty.refresh();
   });
 
   it('VenueModel: marketCapLamports, effectiveQuote, and the non-pump venues', async () => {
