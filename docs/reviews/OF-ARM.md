@@ -24,3 +24,4 @@ Review log for the arming change (`research/historical/ci/archive-limits.conf`: 
 - About 11:28 PM, "A and 90": the owner pushes the arming change from the data builder's session; log retention is 90 days.
 - About 11:30 PM, "Do ur own thing and whats recommended": items 1–2 are KEEP under the standing rule (recommendation 1). Item 5 (fork-PR approval set to strictest) stays an owner step, because the agent proxy refuses the Actions settings API.
 - The arming change merges only after item 5 and the push, with a fresh review and red team.
+- About 11:38 PM: the owner set fork-PR approval to "Require approval for all external contributors" (item 5 done, seen on the owner's screenshot of Settings → Actions → General). Every owner arm-checklist step is now answered.
