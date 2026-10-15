@@ -8,7 +8,7 @@ import type { Result, Slot, UnixMs } from '@bot/types';
 import type { RequestOptions, RpcClient } from '../../src/m14/client.ts';
 import { createRpcGateway, DEFAULT_TIMEOUT_MS, type GatewayDeps } from '../../src/m14/gateway.ts';
 import {
-  ALL_DOWN_AFTER_MS, createHealthTracker, createModeMachine, createProviderMonitor, percentile, type ModeChange,
+  ALL_DOWN_AFTER_MS, createDegradedProbe, createHealthTracker, createModeMachine, createProviderMonitor, percentile, type ModeChange,
 } from '../../src/m14/health.ts';
 import { openUsageLedger, type UsageLedgerPort } from '../../src/m24/usage-ledger.ts';
 import { createUsageMeter, PROJECTION_CACHE_MS, type MeterDeps } from '../../src/m14/meter.ts';
@@ -455,5 +455,70 @@ describe('A-M14-05 health and mode (health.ts)', () => {
     m.tick((T0 + 161_000) as UnixMs);
     assert.equal(m.mode(), 'normal');
     assert.deepEqual(changes.map((c) => [c.mode, c.since - T0]), [['degraded_reads', 60_000], ['normal', 161_000]]);
+  });
+});
+
+/** Settles a gateway call on the fake clock (a paced call waits for its bucket). */
+async function settled<T>(time: FakeTime, p: Promise<T>): Promise<T> {
+  let done = false;
+  let v: T | undefined;
+  void p.then((x) => { done = true; v = x; });
+  for (let i = 0; i < 2_000 && !done; i += 1) await time.advance(50);
+  assert.ok(done, 'call did not settle');
+  return v as T;
+}
+
+describe('Z08 round 1 (#327 red team): Z08-17 and Z08-22', () => {
+  it('Z08-17: with no position (no P0/P1 traffic) degraded_reads ends once the primary is healthy: a P1 probe at most every 30 s, through the gateway', async () => {
+    const changes: ModeChange[] = [];
+    let primaryUp = false;
+    const g0 = { now: () => 0 };
+    const mon = createProviderMonitor({
+      providers: [{ label: 'shyft', role: 'read', unmeteredPrimary: true }, { label: 'chainstack', role: 'read', unmeteredPrimary: false }],
+      downAfterMs: 10_000, enterAfterMs: 60_000, exitAfterMs: 60_000, nowMs: () => (T0 + g0.now()) as UnixMs, log: new RecordingLog(), publish: (c) => changes.push(c),
+    });
+    const g = gateway({ observe: mon.observe, mode: mon.mode });
+    g0.now = () => g.time.now;
+    g.client.answer = (label) => (label === 'shyft' && !primaryUp ? { ok: false, error: { code: 'E_HTTP', message: 'http_500', httpStatus: 500 } }
+      : { ok: true, value: { value: 1, providerLabel: label, latencyMs: 0, contextSlot: null } });
+    const probe = createDegradedProbe({ gateway: g.gw, primary: 'shyft', nowMs: () => g.time.now });
+    // The primary fails for over a minute on P1 calls: degraded.
+    for (let s = 0; s <= 61; s += 1) { await settled(g.time, g.gw.call('getSlot', [], { ...P1, provider: 'shyft' })); await g.time.advance(1_000); mon.tick(); probe.tick(); }
+    assert.equal(g.gw.mode(), 'degraded_reads');
+    // From here only P2 recording traffic, which degraded mode refuses: without the probe nothing reaches the primary.
+    primaryUp = true;
+    const sent0 = g.client.sent.length;
+    let sentWhileDegraded = -1;
+    for (let s = 0; s < 150 && sentWhileDegraded < 0; s += 1) {
+      const r = await settled(g.time, g.gw.call('getMultipleAccounts', [[]], { ...P1, priority: 2 }));
+      assert.equal(r.ok, false);                                          // refused while degraded
+      await g.time.advance(1_000);
+      mon.tick();
+      probe.tick();
+      if (g.gw.mode() === 'normal') sentWhileDegraded = g.client.sent.length;
+    }
+    assert.equal(g.gw.mode(), 'normal');
+    const probes = g.client.sent.slice(sent0, sentWhileDegraded);
+    assert.ok(probes.length >= 2 && probes.length <= 4, String(probes.length));   // ~1 every 30 s for the 60 s of success, only while degraded
+    assert.ok(probes.every((p) => p === 'shyft'));
+    assert.ok((await settled(g.time, g.gw.call('getMultipleAccounts', [[]], { ...P1, priority: 2 }))).ok);   // recording resumes
+    const n = g.client.sent.length;
+    for (let s = 0; s < 120; s += 1) { await g.time.advance(1_000); probe.tick(); }
+    assert.equal(g.client.sent.length, n);                                // no probe in normal mode
+  });
+
+  it('Z08-22: every answer reaches the ledger counts (ok, error, timeout), not only the attempts', async () => {
+    const path = join(tempDir('z08-r1-22'), 'rpc-usage.db');
+    const m = meterOn(path);
+    const mon = createProviderMonitor({
+      providers: [{ label: 'shyft', role: 'read', unmeteredPrimary: true }, { label: 'chainstack', role: 'read', unmeteredPrimary: false }],
+      downAfterMs: 10_000, enterAfterMs: 60_000, exitAfterMs: 60_000, nowMs: () => T0, log: new RecordingLog(), publish: () => undefined, meter: m.meter,
+    });
+    const g = gateway({ observe: mon.observe, meter: m.meter });
+    let next: 'ok' | 'error' | 'timeout' = 'ok';
+    g.client.answer = (label) => (next === 'ok' ? { ok: true, value: { value: 1, providerLabel: label, latencyMs: 0, contextSlot: null } }
+      : next === 'timeout' ? { ok: false, error: { code: 'E_TIMEOUT', message: 'timeout' } } : { ok: false, error: { code: 'E_HTTP', message: 'http_500', httpStatus: 500 } });
+    for (next of ['ok', 'ok', 'error', 'timeout'] as const) await settled(g.time, g.gw.call('getSlot', [], { ...P1, provider: 'chainstack' }));
+    assert.deepEqual(m.meter.counts('chainstack'), { attempts: 4, ok: 2, errors: 1, timeouts: 1 });
   });
 });

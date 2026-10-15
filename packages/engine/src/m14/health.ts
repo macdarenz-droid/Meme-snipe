@@ -161,7 +161,7 @@ export function createModeMachine(o: { enterAfterMs: number; exitAfterMs: number
  */
 export interface ProviderMonitor {
   observe: {
-    answer(a: { provider: string; latencyMs: number; ok: boolean; rateLimited: boolean; contextSlot: Slot | null }): void;
+    answer(a: { provider: string; latencyMs: number; ok: boolean; rateLimited: boolean; timeout?: boolean; contextSlot: Slot | null }): void;
     callEnded(result: 'ok' | 'all_down' | 'other'): void;
   };
   mode(): GatewayMode;
@@ -174,6 +174,8 @@ export function createProviderMonitor(o: {
   providers: ReadonlyArray<{ label: string; role: ProviderRole; unmeteredPrimary: boolean }>;
   downAfterMs: number; enterAfterMs: number; exitAfterMs: number;
   nowMs: () => UnixMs; log: LogPort; publish: (c: ModeChange) => void;
+  /** Ruling Z08-22: the account ledger's four counts get every answer (ok, error, timeout). */
+  meter?: { record(provider: string, outcome: 'ok' | 'error' | 'timeout'): void };
 }): ProviderMonitor {
   const tracker = createHealthTracker(o.providers, o.downAfterMs);
   const machine = createModeMachine({ enterAfterMs: o.enterAfterMs, exitAfterMs: o.exitAfterMs, log: o.log, publish: o.publish });
@@ -184,6 +186,7 @@ export function createProviderMonitor(o: {
         const atMs = o.nowMs();
         tracker.record({ provider: a.provider, atMs, latencyMs: a.latencyMs, ok: a.ok, rateLimited: a.rateLimited, contextSlot: a.contextSlot });
         if (primaries.has(a.provider)) machine.primaryAnswer(atMs, a.ok);
+        o.meter?.record(a.provider, a.ok ? 'ok' : a.timeout === true ? 'timeout' : 'error');
       },
       callEnded(result): void { machine.callEnded(o.nowMs(), result); },
     },
@@ -191,5 +194,33 @@ export function createProviderMonitor(o: {
     overall: () => machine.overall(),
     tick(): void { machine.tick(o.nowMs()); },
     health: (highestSeenSlot, usage) => tracker.health(o.nowMs(), highestSeenSlot, usage),
+  };
+}
+
+/** Ruling Z08-17: at most one health probe of the primary every this long while degraded. */
+export const DEGRADED_PROBE_EVERY_MS = 30_000;
+
+/**
+ * Ruling Z08-17. While `degraded_reads`, every P≥2 call is refused, so with no position (no P0/P1 traffic) nothing
+ * would ever reach the primary and the mode could never end. This probe sends one P1 `getSlot` pinned to the primary at
+ * most every 30 s, through the gateway (so inside its limiter and buckets); the answer reaches the mode machine through
+ * `observe`, and 60 s of success ends the mode. It sends nothing in `normal` mode. Call `tick()` every second.
+ */
+export function createDegradedProbe(o: {
+  gateway: { call(method: string, params: unknown[], opts: { priority: 1; role: 'read'; commitment: 'confirmed'; timeoutMs: number; provider: string }): Promise<unknown>; mode(): GatewayMode };
+  primary: string; nowMs: () => number; everyMs?: number; timeoutMs?: number;
+}): { tick(): void } {
+  const every = o.everyMs ?? DEGRADED_PROBE_EVERY_MS;
+  let last = Number.NEGATIVE_INFINITY;
+  let inFlight = false;
+  return {
+    tick(): void {
+      const now = o.nowMs();
+      if (o.gateway.mode() !== 'degraded_reads' || inFlight || (now - last < every && now >= last)) return;
+      last = now;
+      inFlight = true;
+      void o.gateway.call('getSlot', [], { priority: 1, role: 'read', commitment: 'confirmed', timeoutMs: o.timeoutMs ?? 3_000, provider: o.primary })
+        .catch(() => undefined).finally(() => { inFlight = false; });
+    },
   };
 }

@@ -12,8 +12,8 @@ import { canonicalJson, type UnixMs } from '@bot/types';
 
 export interface PullReceipt { path: string; sha256: string; verifiedAtMs: UnixMs; verifier: string; signatureB64: string }
 
-/** A segment's path under the market-data folder: `YYYY-MM-DD/HH/<stream>.ndjson.gz` (or `.zst`). */
-export const SEGMENT_PATH = /^\d{4}-\d{2}-\d{2}\/([01]\d|2[0-3])\/[a-z_]+\.ndjson\.(gz|zst)$/;
+/** A segment's path under the market-data folder: `YYYY-MM-DD/HH/<stream>[.pN].ndjson.gz` (or `.zst`). */
+export const SEGMENT_PATH = /^\d{4}-\d{2}-\d{2}\/([01]\d|2[0-3])\/[a-z_]+(\.p[1-9]\d{0,3})?\.ndjson\.(gz|zst)$/;
 const VERIFIER = /^[A-Za-z0-9._-]{1,64}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const B64_SIG = /^[A-Za-z0-9+/]{86}==$/;                                   // 64 bytes

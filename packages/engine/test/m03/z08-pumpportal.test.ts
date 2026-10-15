@@ -47,7 +47,7 @@ function client(over: Partial<PumpPortalDeps> = {}) {
   const recorded: PumpPortalNotice[] = [];
   const c = createPumpPortalClient({
     config: { ...PUMPPORTAL_DEFAULTS, enabled: true }, connect: server.connect, apiKey: null, scheduler: time, nowMs: () => time.nowMs(),
-    rng: createRng(7), backfill: { backfillSince: async (s) => { backfills.push(s); return {}; }, migrationsSeenSince: () => 0 },
+    rng: createRng(7), backfill: { backfillSince: async (s) => { backfills.push(s); return {}; }, migrationsSeenSince: () => 0, verifiedSlot: () => 777n as Slot },
     publish: (n) => published.push(n), record: (n) => recorded.push(n), isPubkey, log, metrics, ...over,
   });
   return { c, time, server, log, metrics, backfills, published, recorded };
@@ -85,7 +85,7 @@ describe('A-M03-01 PumpPortal client (fake socket, synthetic fixture)', () => {
     assert.ok(new Set(waits).size > 3);                                  // jittered, not a fixed ladder
     t.server.last().h.onOpen();
     assert.equal(t.backfills.length, 10);                                // one per reconnect
-    assert.deepEqual(t.backfills.slice(0, 2), [1_000n, 1_001n]);         // from the last seen slot
+    assert.deepEqual(t.backfills.slice(0, 2), [777n, 777n]);              // from the chain-verified slot, never a notice's (Z08-20)
     assert.equal(t.metrics.count('stream_reconnects_total', { source: 'pumpportal' }), 10);
     // The same seed gives the same waits.
     const rngA = createRng(1);
@@ -106,6 +106,17 @@ describe('A-M03-01 PumpPortal client (fake socket, synthetic fixture)', () => {
     assert.ok(!JSON.stringify(t.log.events).includes('PP-SECRET-KEY'));
     t.c.start();                                                          // already running: no second socket
     assert.equal(t.server.open.length, 1);
+  });
+
+  it('Z08-20: an unverified notice with a far-future slot never moves the reconnect backfill cursor', async () => {
+    const t = client();
+    t.c.start();
+    t.server.last().h.onOpen();
+    t.server.last().h.onMessage(migration(MINT, 9_000_000_000));        // a forged slot
+    t.server.drop();
+    while (t.server.open.length === 1) await t.time.advance(10);
+    t.server.last().h.onOpen();
+    assert.deepEqual(t.backfills, [777n]);
   });
 
   it('acceptance: the same migration notice twice → one discovery.pumpportal_notice; new tokens are recorded unverified', () => {
@@ -155,7 +166,7 @@ describe('A-M03-01 PumpPortal client (fake socket, synthetic fixture)', () => {
     let seen = 0;
     const t = client({
       slots: { highestSeenSlot: () => 1_010n as Slot, slotMs: () => 400 },
-      backfill: { backfillSince: async () => ({}), migrationsSeenSince: () => seen },
+      backfill: { backfillSince: async () => ({}), migrationsSeenSince: () => seen, verifiedSlot: () => null },
     });
     t.c.start();
     const s = t.server.last();

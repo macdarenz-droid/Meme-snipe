@@ -27,6 +27,6 @@ export const M14_LOG_CODES = {
   'm14.providers_recovered': { fields: {} },
   // A-M14-03 (card Z08)
   'm14.service_paused': { fields: { service: 'name', pause_ms: 'number', http_status: 'integer' } },
-  'm14.service_stopped': { fields: { service: 'name', limited_in_window: 'integer' } },
+  'm14.service_stopped': { fields: { service: 'name', limited_in_window: 'integer', reason: 'symbol', retry_after_ms: 'number' } },
   'm14.service_resumed': { fields: { service: 'name' } },
 } as const satisfies LogCodes;

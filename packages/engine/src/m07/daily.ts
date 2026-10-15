@@ -67,12 +67,17 @@ export function dailyCoverage(o: { dataDir: string; dayUtc: string; universeMani
   return computeCoverage({ dayUtc: o.dayUtc, watched: WatchLog.readDay(o.dataDir, o.dayUtc, fs), pollCounts, gaps, records, universeManifestSha256: sha });
 }
 
-/** Runs the job for the day before `nowMs`: appends the report to `coverage` and saves it (M24). Returns it. */
+/**
+ * Runs the job for the day before `nowMs`: appends the report to `coverage` and saves it (M24). Ruling Z08-19: it runs
+ * only once the writer has closed that day's hour 23 (`closedThrough()`, the writer's `lastRotatedHourUtc`), so no
+ * record of the day is still in an open segment; before that it returns null and the caller tries again.
+ */
 export function runDailyCoverage(o: {
-  dataDir: string; nowMs: UnixMs; universeManifestSha256: string | null;
+  dataDir: string; nowMs: UnixMs; universeManifestSha256: string | null; closedThrough: () => string;
   append: (report: CoverageReport, atMs: UnixMs) => void; save: (report: CoverageReport) => void; fs?: ReadFs;
-}): DailyCoverage {
+}): DailyCoverage | null {
   const dayUtc = new Date(o.nowMs - DAY_MS).toISOString().slice(0, 10);
+  if (o.closedThrough() < `${dayUtc}T23`) return null;
   const c = dailyCoverage({ dataDir: o.dataDir, dayUtc, universeManifestSha256: o.universeManifestSha256, ...(o.fs === undefined ? {} : { fs: o.fs }) });
   o.append(c.report, o.nowMs);
   o.save(c.report);

@@ -34,22 +34,32 @@ export function hourOf(ms: UnixMs): { day: string; hour: string; hourUtc: string
   return { day, hour, hourUtc: `${day}T${hour}`, startMs: startMs as UnixMs, endMs: (startMs + 3_600_000) as UnixMs };
 }
 
-/** Relative paths of a stream's segment and manifest in an hour (`day/HH/...`). */
-export function segmentPaths(day: string, hour: string, stream: string, codec: Codec): { segment: string; manifest: string; dir: string } {
+/**
+ * Relative paths of a stream's segment and manifest in an hour (`day/HH/...`). Part 0 is `<stream>.ndjson.gz`; a
+ * restart in the same hour never reopens a file that has a manifest and writes part N ≥ 1 instead,
+ * `<stream>.pN.ndjson.gz` (ruling Z08-13). Every part has its own manifest, `<stream>[.pN].manifest.json`.
+ */
+export function segmentPaths(day: string, hour: string, stream: string, codec: Codec, part = 0): { segment: string; manifest: string; dir: string } {
   const dir = `${day}/${hour}`;
-  return { dir, segment: `${dir}/${stream}.${EXTENSION[codec]}`, manifest: `${dir}/${stream}.manifest.json` };
+  const base = part === 0 ? stream : `${stream}.p${part}`;
+  return { dir, segment: `${dir}/${base}.${EXTENSION[codec]}`, manifest: `${dir}/${base}.manifest.json` };
 }
 
-/** Parses a segment file name back into its stream and codec (null when it is not one). */
-export function parseSegmentName(name: string): { stream: string; codec: Codec } | null {
+/** Parses a segment file name back into its stream, part and codec (null when it is not one). */
+export function parseSegmentName(name: string): { stream: string; part: number; codec: Codec } | null {
   for (const codec of ['gzip', 'zstd'] as const) {
     const suffix = `.${EXTENSION[codec]}`;
-    if (name.endsWith(suffix) && name.length > suffix.length) {
-      const stream = name.slice(0, -suffix.length);
-      return /^[a-z_]+$/.test(stream) ? { stream, codec } : null;
-    }
+    if (!name.endsWith(suffix)) continue;
+    const m = /^([a-z_]+)(?:\.p([1-9]\d{0,3}))?$/.exec(name.slice(0, -suffix.length));
+    return m === null ? null : { stream: m[1] as string, part: m[2] === undefined ? 0 : Number(m[2]), codec };
   }
   return null;
+}
+
+/** The manifest file name of a segment file name (`fill.p2.ndjson.gz` → `fill.p2.manifest.json`); null when not a segment. */
+export function manifestNameOf(segmentName: string): string | null {
+  const s = parseSegmentName(segmentName);
+  return s === null ? null : `${s.part === 0 ? s.stream : `${s.stream}.p${s.part}`}.manifest.json`;
 }
 
 /** True for a `YYYY-MM-DD` folder name and an `HH` folder name. */

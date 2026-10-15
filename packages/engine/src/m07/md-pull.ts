@@ -12,7 +12,8 @@ import { createHash, type KeyObject } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import type { UnixMs } from '@bot/types';
-import { isDayName, isHourName, isManifest, parseSegmentName } from './manifest.ts';
+import { isDayName, isHourName, isManifest, manifestNameOf, parseSegmentName } from './manifest.ts';
+import { compressorFor } from './segments.ts';
 import { receiptText, signReceipt, type PullReceipt } from './receipt-sig.ts';
 import { receiptFileName } from './receipts.ts';
 
@@ -29,6 +30,29 @@ export interface PullTransport {
 export interface PullResult { days: string[]; verified: PullReceipt[]; mismatched: string[]; unmanifested: string[] }
 
 const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
+
+/** Lines the file decodes to, or -1 when it does not decode completely (or the codec cannot be read here). */
+export function decodedLines(bytes: Uint8Array, codec: 'gzip' | 'zstd'): number {
+  const comp = compressorFor(codec);
+  if (comp === null) return -1;
+  if (bytes.length === 0) return 0;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(comp.decompress(bytes));
+  } catch {
+    return -1;
+  }
+  if (!text.endsWith('\n')) return -1;
+  const lines = text.slice(0, -1).split('\n');
+  for (const l of lines) {
+    try {
+      JSON.parse(l);
+    } catch {
+      return -1;
+    }
+  }
+  return lines.length;
+}
 
 export function runPull(o: {
   transport: PullTransport; localRoot: string; since: string; privateKey: KeyObject; verifier: string; nowMs: () => UnixMs;
@@ -51,7 +75,7 @@ export function runPull(o: {
         const seg = parseSegmentName(name);
         if (seg === null) continue;
         const path = `${day}/${hour}/${name}`;
-        const mPath = join(dir, `${seg.stream}.manifest.json`);
+        const mPath = join(dir, manifestNameOf(name) as string);
         let m: unknown = null;
         try {
           m = fs.existsSync(mPath) ? JSON.parse(fs.readFileSync(mPath, 'utf8') as string) : null;
@@ -61,7 +85,9 @@ export function runPull(o: {
         if (!isManifest(m)) { out.unmanifested.push(path); continue; }        // still open on the host, or unreadable
         const bytes = fs.readFileSync(join(dir, name)) as Buffer;
         const got = sha256(bytes);
-        if (got !== m.sha256 || bytes.length !== m.bytes || m.path !== path) {
+        // Ruling Z08-14: a receipt lets the host delete its only copy, so the file must also DECODE to exactly the
+        // manifest's record count (a hash only proves the copy equals the host's file, which may itself be torn).
+        if (got !== m.sha256 || bytes.length !== m.bytes || m.path !== path || decodedLines(bytes, seg.codec) !== m.records) {
           out.mismatched.push(path);
           o.log(`MISMATCH ${path}`);
           continue;

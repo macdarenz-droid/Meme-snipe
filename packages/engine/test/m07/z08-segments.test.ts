@@ -11,7 +11,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
 import type { Slot, UnixMs } from '@bot/types';
 import {
-  addRecord, buildManifest, emptyStats, frameStarts, hourOf, isManifest, parseSegmentName, segmentPaths, statsOfLine,
+  addRecord, buildManifest, emptyStats, frameStarts, hourOf, isManifest, manifestNameOf, parseSegmentName, segmentPaths, statsOfLine,
 } from '../../src/m07/manifest.ts';
 import { compressorFor, resolveCodec, SegmentWriter, type WriterFs, type WriterLog } from '../../src/m07/segments.ts';
 import { RecorderQueue } from '../../src/recorder/queue.ts';
@@ -45,8 +45,14 @@ describe('A-M07-02 manifests (pure, manifest.ts)', () => {
     assert.deepEqual(h, { day: '2026-10-15', hour: '10', hourUtc: '2026-10-15T10', startMs: H0, endMs: H0 + 3_600_000 });
     assert.deepEqual(segmentPaths('2026-10-15', '10', 'fill', 'gzip'), { dir: '2026-10-15/10', segment: '2026-10-15/10/fill.ndjson.gz', manifest: '2026-10-15/10/fill.manifest.json' });
     assert.equal(segmentPaths('d', 'h', 's', 'zstd').segment, 'd/h/s.ndjson.zst');
-    assert.deepEqual(parseSegmentName('pool_snapshot.ndjson.gz'), { stream: 'pool_snapshot', codec: 'gzip' });
-    assert.deepEqual(parseSegmentName('fill.ndjson.zst'), { stream: 'fill', codec: 'zstd' });
+    assert.deepEqual(parseSegmentName('pool_snapshot.ndjson.gz'), { stream: 'pool_snapshot', part: 0, codec: 'gzip' });
+    assert.deepEqual(parseSegmentName('fill.ndjson.zst'), { stream: 'fill', part: 0, codec: 'zstd' });
+    assert.deepEqual(parseSegmentName('fill.p12.ndjson.gz'), { stream: 'fill', part: 12, codec: 'gzip' });
+    assert.equal(parseSegmentName('fill.p0.ndjson.gz'), null);
+    assert.equal(manifestNameOf('fill.p3.ndjson.gz'), 'fill.p3.manifest.json');
+    assert.equal(manifestNameOf('fill.ndjson.gz'), 'fill.manifest.json');
+    assert.equal(manifestNameOf('notes.txt'), null);
+    assert.equal(segmentPaths('d', 'h', 's', 'gzip', 2).manifest, 'd/h/s.p2.manifest.json');
     assert.equal(parseSegmentName('.ndjson.gz'), null);
     assert.equal(parseSegmentName('Bad-Name.ndjson.gz'), null);
     assert.equal(parseSegmentName('fill.manifest.json'), null);

@@ -1,6 +1,7 @@
 // The PumpPortal socket state machine (SPEC-A A-M03-01 logic 2-8, card Z08). Exactly one socket, never one per token
 // [DA-02]; the two free subscriptions only; reconnect after a wait of 1 s → 60 s with full jitter (seeded Rng), and one
-// `backfillSince(lastSeenSlot)` call per reconnect; 3 refused connections within 60 s → no connection for 1 h
+// `backfillSince(verifiedSlot)` call per reconnect (ruling Z08-20: the cursor moves only on chain-verified slots, never
+// on an unverified notice's); 3 refused connections within 60 s → no connection for 1 h
 // (suspected ban, warning). Notices are early warnings at `processed` (D14): recorded (M07 `pumpportal_notice`) and
 // published (`discovery.pumpportal_notice`), influencing nothing until A-M03-02 verifies them on chain.
 // Off by default (ruling Z08-2): with `enabled` false, `start()` opens nothing. The socket is a port; the production
@@ -32,7 +33,12 @@ export interface PumpPortalDeps {
   nowMs: () => UnixMs;
   rng: Rng;
   /** A-M03-02 (card Z09); a port until then. */
-  backfill: { backfillSince(fromSlot: Slot | null): Promise<unknown>; migrationsSeenSince(ms: UnixMs): number };
+  backfill: {
+    backfillSince(fromSlot: Slot | null): Promise<unknown>;
+    migrationsSeenSince(ms: UnixMs): number;
+    /** The newest slot A-M03-02 verified on chain (null: none yet); the reconnect backfill starts there. */
+    verifiedSlot(): Slot | null;
+  };
   publish: (n: PumpPortalNotice) => void;
   record: (n: PumpPortalNotice) => void;
   isPubkey: (s: string) => boolean;
@@ -66,7 +72,6 @@ export function createPumpPortalClient(deps: PumpPortalDeps): PumpPortalClient {
   let connectedOnce = false;
   let openedAt = 0;
   let messagesThisConn = 0;
-  let lastSeenSlot: Slot | null = null;
   let lastEventAtMs: UnixMs | null = null;
   let lagMs: number | null = null;
   let bannedUntil = Number.NEGATIVE_INFINITY;
@@ -98,7 +103,7 @@ export function createPumpPortalClient(deps: PumpPortalDeps): PumpPortalClient {
         if (reconnect) {
           reconnects.push(mono());
           deps.metrics.counter('stream_reconnects_total', { source: 'pumpportal' }).inc();
-          void deps.backfill.backfillSince(lastSeenSlot).catch(() => undefined);
+          void deps.backfill.backfillSince(deps.backfill.verifiedSlot()).catch(() => undefined);
         }
       },
       onMessage: (text: string) => {
@@ -112,7 +117,6 @@ export function createPumpPortalClient(deps: PumpPortalDeps): PumpPortalClient {
         }
         lastEventAtMs = now;
         if (n.slot !== null) {
-          if (lastSeenSlot === null || n.slot > lastSeenSlot) lastSeenSlot = n.slot;
           const high = deps.slots?.highestSeenSlot() ?? null;
           if (high !== null && deps.slots !== undefined) {
             const gap: bigint = high > n.slot ? high - n.slot : 0n;           // a slot count, capped before it becomes a number

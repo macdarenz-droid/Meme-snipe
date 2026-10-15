@@ -18,7 +18,7 @@ import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import type { KeyObject } from 'node:crypto';
 import type { UnixMs } from '@bot/types';
-import { isDayName, isHourName, isManifest, parseSegmentName } from './manifest.ts';
+import { hourOf, isDayName, isHourName, isManifest, manifestNameOf, parseSegmentName } from './manifest.ts';
 import { verifyReceipt } from './receipt-sig.ts';
 import { RECEIPT_CAPS, receiptFileName, sweepReceipts, type ReceiptCaps } from './receipts.ts';
 
@@ -42,7 +42,7 @@ export interface DiskDeps {
   policy: DiskPolicy;
   /** Total and free bytes of the filesystem holding `dataDir` (production: `fs.statfsSync`). */
   usage: () => DiskUsage;
-  writer: { halt(reason: string): void; resume(): void; isHalted(): boolean };
+  writer: { halt(reason: string): void; resume(): void; isHalted(): boolean; haltReason(): string | null; openPaths(): string[] };
   nowMs: () => UnixMs;
   log: (level: DiskLevel, code: string, fields: Record<string, string | number>) => void;
   fs?: Pick<typeof nodeFs, 'readdirSync' | 'readFileSync' | 'existsSync' | 'statSync' | 'unlinkSync' | 'rmdirSync'>;
@@ -65,7 +65,6 @@ export function checkPolicy(p: DiskPolicy): string | null {
 export class DiskManager {
   private readonly deps: DiskDeps;
   private readonly fs: NonNullable<DiskDeps['fs']>;
-  private haltedByMe = false;
   private unpulledAlertDay: string | null = null;
 
   constructor(deps: DiskDeps) {
@@ -89,7 +88,7 @@ export class DiskManager {
           if (seg === null) continue;
           const bytes = this.fs.statSync(join(dir, name)).size;
           totalBytes += bytes;
-          const mPath = join(dir, `${seg.stream}.manifest.json`);
+          const mPath = join(dir, manifestNameOf(name) as string);
           if (!this.fs.existsSync(mPath)) continue;
           let m: unknown;
           try {
@@ -128,10 +127,9 @@ export class DiskManager {
 
   private remove(seg: Segment): boolean {
     const root = this.deps.dataDir;
-    const stream = (parseSegmentName(seg.path.slice(14)) as { stream: string }).stream;
     try {
       this.fs.unlinkSync(join(root, seg.path));
-      this.fs.unlinkSync(join(root, seg.path.slice(0, 13), `${stream}.manifest.json`));
+      this.fs.unlinkSync(join(root, seg.path.slice(0, 13), manifestNameOf(seg.path.slice(14)) as string));
       const receipt = join(this.deps.receiptsDir, receiptFileName(seg.path));
       if (this.fs.existsSync(receipt)) this.fs.unlinkSync(receipt);
       try { this.fs.rmdirSync(join(root, seg.path.slice(0, 13))); } catch { /* not empty */ }
@@ -153,7 +151,10 @@ export class DiskManager {
     const { totalBytes: fsTotal } = this.deps.usage();
     const usedPct = (): number => (fsTotal <= 0 ? 100 : ((fsTotal - freeBytes) * 100) / fsTotal);
     const pressured = (): boolean => usedPct() > p.warnPct || recorderBytes > p.maxBytes || freeBytes < p.minFreeBytes;
-    const pulled = (s: Segment): boolean => receipts.get(s.path) === s.sha256;
+    // Ruling Z08-16: the current UTC hour and every file the writer has open are never touched, whatever a receipt says.
+    const currentHour = hourOf(now).startMs;
+    const open = new Set(this.deps.writer.openPaths());
+    const pulled = (s: Segment): boolean => s.hourStartMs < currentHour && !open.has(s.path) && receipts.get(s.path) === s.sha256;
     const deleted: string[] = [];
     const drop = (s: Segment): void => {
       if (this.remove(s)) { deleted.push(s.path); recorderBytes -= s.bytes; freeBytes += s.bytes; }
@@ -176,13 +177,12 @@ export class DiskManager {
     if (recorderBytes > p.maxBytes) reasons.push('max_bytes');
     if (freeBytes < p.minFreeBytes) reasons.push('min_free_bytes');
     if (reasons.length > 0) {
-      if (!this.deps.writer.isHalted()) {
-        this.deps.writer.halt(`disk:${reasons.join(',')}`);
-        this.haltedByMe = true;
-      }
+      if (!this.deps.writer.isHalted()) this.deps.writer.halt(`disk:${reasons.join(',')}`);
       this.deps.log('critical', 'M07.disk_full', { used_pct: Math.round(usedPct()), free_bytes: freeBytes, recorder_bytes: recorderBytes, reasons: reasons.join(',') });
-    } else if (this.haltedByMe) {
-      this.haltedByMe = false;
+    } else if (this.deps.writer.isHalted()) {
+      // Ruling Z08-15: once every limit is met, a halt resumes, whether this check or a failed write made it. A write that
+      // fails again halts again (one critical alert per episode).
+      this.deps.log('info', 'M07.disk_ok_resume', { reason: this.deps.writer.haltReason() ?? 'unknown' });
       this.deps.writer.resume();
     }
     return {

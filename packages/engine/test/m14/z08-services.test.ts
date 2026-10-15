@@ -310,3 +310,18 @@ describe('A-M14-03 keys and requests', () => {
     assert.throws(mk([{ name: 'jupiter', baseUrl: 'https://a.test', key: { secretRef: 'K', header: 'x-other' } }]), /secret header/);
   });
 });
+
+describe('Z08 round 1 (#327 red team): Z08-21', () => {
+  it('a Retry-After above 1 h stops the service with a critical alert instead of pausing it for that long; resume clears it', async () => {
+    const { svc, log } = setup({ answer: () => new Response('', { status: 429, headers: { 'retry-after': String(3_601) } }) });
+    const r = await svc.http('rugcheck', GET('/v1/x'), { priority: 3, timeoutMs: 1_000 });
+    assert.ok(!r.ok && r.error.retryAfterMs === 3_601_000);
+    assert.ok(log.events.some((e) => e.level === 'critical' && e.code === 'm14.service_stopped' && e.fields.reason === 'retry_after_too_long'));
+    const again = await svc.http('rugcheck', GET('/v1/x'), { priority: 3, timeoutMs: 1_000 });
+    assert.ok(!again.ok && again.error.message === 'service_stopped');
+    assert.equal(svc.resumeService('rugcheck'), true);
+    const ok = setup({ answer: () => new Response('', { status: 429, headers: { 'retry-after': String(3_600) } }) });
+    await ok.svc.http('rugcheck', GET('/v1/x'), { priority: 3, timeoutMs: 1_000 });
+    assert.ok(!ok.log.events.some((e) => e.code === 'm14.service_stopped'));   // exactly 1 h is still waited out
+  });
+});

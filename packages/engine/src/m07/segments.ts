@@ -24,7 +24,7 @@ import type { EncodedRecord, Gap } from '../recorder/queue.ts';
 import { recordLine } from '../recorder/queue.ts';
 import { STREAM_NAMES, type StreamName } from '../recorder/streams.ts';
 import {
-  addRecord, buildManifest, emptyStats, frameStarts, hourOf, isDayName, isHourName, isManifest, parseSegmentName, segmentPaths, statsOfLine,
+  addRecord, buildManifest, emptyStats, frameStarts, hourOf, isDayName, isHourName, isManifest, manifestNameOf, parseSegmentName, segmentPaths, statsOfLine,
   type Codec, type ManifestGap, type SegmentManifest, type SegmentStats,
 } from './manifest.ts';
 
@@ -71,8 +71,14 @@ export interface RecoveryResult {
 }
 
 interface Open {
-  stream: StreamName; rel: string; manifestRel: string; abs: string; fd: number; stats: SegmentStats;
-  lines: string[]; gaps: ManifestGap[]; bytes: number;
+  stream: StreamName; rel: string; manifestRel: string; abs: string; fd: number;
+  /** Counts of the records on disk: a record counts only once its frame is written and fsynced (ruling Z08-14). */
+  stats: SegmentStats;
+  lines: Array<{ line: string; rec: ReturnType<typeof statsOfLine> }>; gaps: ManifestGap[];
+  /** Bytes on disk after the last good frame; a failed write is cut back to this. */
+  bytes: number;
+  /** A failed write could not be cut back: no more writes, no manifest; the next start recovers the file. */
+  broken: boolean;
 }
 
 export interface SegmentWriterDeps {
@@ -132,6 +138,9 @@ export class SegmentWriter {
   private readonly comp: Compressor;
   private readonly open = new Map<StreamName, Open>();
   private hour: ReturnType<typeof hourOf> | null = null;
+  /** Segments closed without a manifest after a write that could not be cut back (recovered on resume). */
+  private readonly broken: string[] = [];
+  private lastRotated: string;
   private halted: { since: UnixMs; reason: string } | null = null;
   private readonly haltGaps = new Map<StreamName, ManifestGap>();
   /** Gaps waiting for a segment of their stream (process_down at start, halted gaps). */
@@ -145,6 +154,8 @@ export class SegmentWriter {
     if (comp === null) throw new RangeError(`recorder.codec_preference ${String(deps.codec)}: not available here; use gzip`);
     this.comp = comp;
     const now = deps.nowMs();
+    // Every hour before the start hour is closed: recovery gave each file there a manifest, and this run never writes to it.
+    this.lastRotated = hourOf((hourOf(now).startMs - 3_600_000) as UnixMs).hourUtc;
     if (recovery.lastRecordMs !== null && now > recovery.lastRecordMs) {
       for (const s of STREAM_NAMES) this.addPending(s, { fromMs: recovery.lastRecordMs, toMs: now, reason: 'process_down' });
     }
@@ -158,8 +169,7 @@ export class SegmentWriter {
     let lastRecordMs: UnixMs | null = null;
     if (!fs.existsSync(o.dataDir)) return { nextSeq, lastRecordMs, recovered };
     const days = (fs.readdirSync(o.dataDir) as string[]).filter(isDayName).sort();
-    const seen = new Set<string>();
-    // Newest day first: the newest manifest of a stream holds its highest seq.
+    // Every manifest is read; the highest lastSeq of each stream wins (parts of one hour sort part 0 first).
     for (const day of [...days].reverse()) {
       const hours = (fs.readdirSync(join(o.dataDir, day)) as string[]).filter(isHourName).sort().reverse();
       for (const hour of hours) {
@@ -167,7 +177,7 @@ export class SegmentWriter {
         for (const name of (fs.readdirSync(dir) as string[]).sort()) {
           const seg = parseSegmentName(name);
           if (seg === null) continue;
-          const manifestPath = join(dir, `${seg.stream}.manifest.json`);
+          const manifestPath = join(dir, manifestNameOf(name) as string);
           let m: SegmentManifest | null = null;
           if (fs.existsSync(manifestPath)) {
             const parsed: unknown = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -179,9 +189,10 @@ export class SegmentWriter {
           }
           if (m === null) continue;
           if (m.lastRecvMs !== null && (lastRecordMs === null || m.lastRecvMs > lastRecordMs)) lastRecordMs = m.lastRecvMs;
-          if (m.lastSeq !== null && !seen.has(seg.stream)) {
-            seen.add(seg.stream);
-            nextSeq[seg.stream as StreamName] = BigInt(m.lastSeq) + 1n;
+          if (m.lastSeq !== null) {
+            const next = BigInt(m.lastSeq) + 1n;
+            const had = nextSeq[seg.stream as StreamName];
+            if (had === undefined || next > had) nextSeq[seg.stream as StreamName] = next;
           }
         }
       }
@@ -221,9 +232,9 @@ export class SegmentWriter {
     const hourStart = Date.parse(`${hourUtc}:00:00Z`) as UnixMs;
     const m = buildManifest({
       path: rel, stream, codec, hourUtc, bytes: kept.length, sha256: sha256(kept), stats,
-      gaps: [{ fromMs: stats.lastRecvMs ?? hourStart, toMs: nowMs, reason: 'crash' }],
+      gaps: [{ fromMs: stats.lastRecvMs ?? hourStart, toMs: Math.max(nowMs, (stats.lastRecvMs ?? hourStart) + 1) as UnixMs, reason: 'crash' }],
     });
-    writeAtomic(fs, join(dataDir, rel.slice(0, 13), `${stream}.manifest.json`), join(dataDir, rel.slice(0, 13)), `${JSON.stringify(m)}\n`);
+    writeAtomic(fs, join(dataDir, rel.slice(0, 13), manifestNameOf(rel.slice(14)) as string), join(dataDir, rel.slice(0, 13)), `${JSON.stringify(m)}\n`);
     appendIndex(fs, dataDir, m);
     log('warning', 'M07.crash_recovered', { stream, path: rel, records: stats.records, cut_bytes: buf.length - keep });
     return m;
@@ -237,6 +248,18 @@ export class SegmentWriter {
 
   isHalted(): boolean { return this.halted !== null; }
 
+  /** Why the writer is halted (`disk:…` or `write_failed:…`), or null. */
+  haltReason(): string | null { return this.halted?.reason ?? null; }
+
+  /** Segments open for writing now (relative paths); A-M07-03 never touches them (ruling Z08-16). */
+  openPaths(): string[] { return [...this.open.values()].map((s) => s.rel); }
+
+  /**
+   * The last hour closed by the hour change (`YYYY-MM-DDTHH`): no record is written to it any more. An on-demand
+   * `rotate()` inside an hour does not count. At start, the hour before the start hour (ruling Z08-19).
+   */
+  lastRotatedHourUtc(): string { return this.lastRotated; }
+
   /** Stops every stream except `keep` (default universe_manifest and coverage); A-M07-03 and write failures call it. */
   halt(reason: string): void {
     if (this.halted !== null) return;
@@ -247,6 +270,15 @@ export class SegmentWriter {
   resume(): void {
     if (this.halted === null) return;
     const now = this.deps.nowMs();
+    for (const rel of this.broken.splice(0)) {
+      const seg = parseSegmentName(rel.slice(14)) as { stream: string; codec: Codec };
+      try {
+        const m = SegmentWriter.recoverOne(this.fs, this.deps.dataDir, rel, seg.stream, seg.codec, now, this.deps.log);
+        this.deps.onManifest?.(m);
+      } catch {
+        this.broken.push(rel);                                            // still failing: the next resume or start tries again
+      }
+    }
     for (const [s, g] of this.haltGaps) this.addPending(s, { ...g, toMs: Math.max(g.toMs, now) as UnixMs });
     this.haltGaps.clear();
     this.halted = null;
@@ -257,7 +289,11 @@ export class SegmentWriter {
   pump(): number {
     const now = this.deps.nowMs();
     const h = hourOf(now);
-    if (this.hour !== null && this.hour.hourUtc !== h.hourUtc) this.rotate();
+    if (this.hour !== null && this.hour.hourUtc !== h.hourUtc) {
+      const closing = this.hour.hourUtc;
+      this.rotate();
+      this.lastRotated = closing;                                         // that hour takes no more records
+    }
     this.hour = h;
     let n = 0;
     for (;;) {
@@ -269,12 +305,11 @@ export class SegmentWriter {
         }
         const seg = this.segment(r.stream);
         if (seg === null) {
-          this.haltGap(r.stream, r.recvMs);                               // a kept stream whose segment cannot be opened
+          this.haltGap(r.stream, r.recvMs);                               // a kept stream whose segment cannot take writes
           continue;
         }
         const line = recordLine(r);
-        seg.lines.push(line);
-        addRecord(seg.stats, statsOfLine(line));
+        seg.lines.push({ line, rec: statsOfLine(line) });
         n += 1;
       }
       if (batch.length < TAKE_MAX) break;
@@ -302,13 +337,20 @@ export class SegmentWriter {
     }
     const h = this.hour ?? hourOf(this.deps.nowMs());
     this.hour = h;
-    const p = segmentPaths(h.day, h.hour, stream, this.deps.codec);
     try {
+      // Ruling Z08-13: a file that already exists (a part closed with its manifest, or one an earlier run left) is never
+      // reopened; the next part number is used, created exclusively.
+      let part = 0;
+      let p = segmentPaths(h.day, h.hour, stream, this.deps.codec, part);
       mkdirs(this.fs, this.deps.dataDir, p.dir);
+      while (this.fs.existsSync(join(this.deps.dataDir, p.segment)) || this.fs.existsSync(join(this.deps.dataDir, p.manifest))) {
+        part += 1;
+        p = segmentPaths(h.day, h.hour, stream, this.deps.codec, part);
+      }
       const abs = join(this.deps.dataDir, p.segment);
-      const fd = this.fs.openSync(abs, 'a', FILE_MODE);
+      const fd = this.fs.openSync(abs, 'ax', FILE_MODE);                    // O_APPEND: after a cut-back, writes go to the new end
       this.fs.fchmodSync(fd, FILE_MODE);
-      const seg: Open = { stream, rel: p.segment, manifestRel: p.manifest, abs, fd, stats: emptyStats(), lines: [], gaps: [], bytes: 0 };
+      const seg: Open = { stream, rel: p.segment, manifestRel: p.manifest, abs, fd, stats: emptyStats(), lines: [], gaps: [], bytes: 0, broken: false };
       this.open.set(stream, seg);
       this.takePending(seg);
       return seg;
@@ -335,16 +377,34 @@ export class SegmentWriter {
   /** Appends one compressed frame per stream with buffered lines, and fsyncs (logic 2). */
   flush(): void {
     for (const seg of this.open.values()) {
-      if (seg.lines.length === 0) continue;
-      const frame = this.comp.compress(Buffer.from(`${seg.lines.join('\n')}\n`, 'utf8'));
+      if (seg.lines.length === 0 || seg.broken) continue;
+      const pending = seg.lines;
+      seg.lines = [];
+      const frame = this.comp.compress(Buffer.from(`${pending.map((x) => x.line).join('\n')}\n`, 'utf8'));
       try {
         this.fs.writeSync(seg.fd, frame);
         this.fs.fsyncSync(seg.fd);
         seg.bytes += frame.length;
-        seg.lines = [];
+        for (const x of pending) addRecord(seg.stats, x.rec);
       } catch (e) {
-        // The frame may be half written: recovery at the next start cuts it; this segment takes no more writes.
-        seg.lines = [];
+        // Ruling Z08-14: the frame may be half written. Cut the file back to its last good frame, so nothing is ever
+        // appended after a torn one; the lost records become a `halted` gap and are not counted.
+        const recv = pending.map((x) => x.rec.recvMs);
+        const lost: ManifestGap = { fromMs: Math.min(...recv) as UnixMs, toMs: (Math.max(...recv) + 1) as UnixMs, reason: 'halted' };   // +1: never empty
+        try {
+          this.fs.ftruncateSync(seg.fd, seg.bytes);
+          this.fs.fsyncSync(seg.fd);
+          seg.gaps.push(lost);
+        } catch {
+          // Cannot be cut back now: the file is closed without a manifest and recovered (cut after its last complete
+          // frame, with a crash gap) on resume or at the next start; the stream continues in a new part.
+          seg.broken = true;
+          try { this.fs.closeSync(seg.fd); } catch { /* already failing */ }
+          this.open.delete(seg.stream);
+          this.broken.push(seg.rel);
+          for (const g of seg.gaps) this.addPending(seg.stream, g);
+          this.addPending(seg.stream, lost);
+        }
         this.failed('flush', e);
       }
     }
@@ -360,6 +420,7 @@ export class SegmentWriter {
         this.fs.fsyncSync(seg.fd);
         this.fs.closeSync(seg.fd);
         const bytes = this.fs.readFileSync(seg.abs);
+        if (bytes.length !== seg.bytes) throw Object.assign(new Error('segment size differs from the bytes written'), { code: 'E_SIZE' });
         const m = buildManifest({ path: seg.rel, stream: seg.stream, codec: this.deps.codec, hourUtc, bytes: bytes.length, sha256: sha256(bytes), stats: seg.stats, gaps: seg.gaps });
         const dir = join(this.deps.dataDir, seg.rel.slice(0, 13));
         writeAtomic(this.fs, join(this.deps.dataDir, seg.manifestRel), dir, `${JSON.stringify(m)}\n`);

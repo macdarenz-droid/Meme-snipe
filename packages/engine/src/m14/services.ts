@@ -65,6 +65,8 @@ export const SERVICE_BACKOFF_BASE_MS = 1_000;
 export const SERVICE_BACKOFF_MAX_MS = 60_000;
 export const SERVICE_STOP_AFTER = 3;
 export const SERVICE_STOP_WINDOW_MS = 600_000;
+/** Ruling Z08-21: the longest Retry-After waited out (1 h); a longer one stops the service. */
+export const MAX_RETRY_AFTER_MS = 3_600_000;
 
 /** Secret header names this module adds; a caller may never pass them (case-insensitive). */
 export const SECRET_HEADERS: readonly string[] = ['x-api-key', 'x-cg-demo-api-key', 'authorization'];
@@ -206,6 +208,14 @@ export function createServiceClients(deps: ServiceDeps): ServiceClients {
   const onLimited = (st: ServiceState, retryAfterMs: number | undefined, status: number): void => {
     const now = mono();
     st.limitedAt = [...st.limitedAt.filter((t) => t > now - SERVICE_STOP_WINDOW_MS), now];
+    // Ruling Z08-21: a Retry-After above the cap is not waited out blindly: the service stops (critical) until resumed.
+    if (retryAfterMs !== undefined && retryAfterMs > MAX_RETRY_AFTER_MS) {
+      if (!st.stopped) {
+        st.stopped = true;
+        deps.log.event('critical', 'm14.service_stopped', { service: st.config.name, limited_in_window: st.limitedAt.length, reason: 'retry_after_too_long', retry_after_ms: retryAfterMs });
+      }
+      return;
+    }
     const backoff = Math.min(SERVICE_BACKOFF_MAX_MS, SERVICE_BACKOFF_BASE_MS * 2 ** (st.limitedAt.length - 1));
     const pause = Math.max(backoff, retryAfterMs ?? 0);
     for (const x of st.windows.values()) x.pausedUntil = Math.max(x.pausedUntil, now + pause);

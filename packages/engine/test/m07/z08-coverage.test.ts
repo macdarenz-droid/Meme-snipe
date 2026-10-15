@@ -210,8 +210,12 @@ function receiptFor(receipts: string, dir: string, p: string, key = privKey, sha
 }
 function manager(dir: string, receipts: string, usedPct: number, over: Partial<DiskDeps> = {}) {
   const logs: Array<{ level: string; code: string; fields: Record<string, string | number> }> = [];
-  let halted = false;
-  const writer = { halts: 0, resumes: 0, halt() { halted = true; this.halts += 1; }, resume() { halted = false; this.resumes += 1; }, isHalted: () => halted };
+  let halted: string | null = null;
+  const writer = {
+    halts: 0, resumes: 0, open: [] as string[],
+    halt(reason: string) { halted = reason; this.halts += 1; }, resume() { halted = null; this.resumes += 1; },
+    isHalted: () => halted !== null, haltReason: () => halted, openPaths(): string[] { return this.open; },
+  };
   const total = 55e9;
   const usage = { free: total * (1 - usedPct / 100) };
   const m = new DiskManager({
@@ -263,16 +267,17 @@ describe('A-M07-03 disk management (disk.ts; ruling Z08-3)', () => {
     assert.equal(writer.resumes, 1);
   });
 
-  it('the byte cap and the free floor (DISKBUDGET ruling 2) apply too, and the stricter wins; a halt the manager did not make is left alone', () => {
+  it('the byte cap and the free floor (DISKBUDGET ruling 2) apply too, and the stricter wins; any halt resumes once every limit is met (ruling Z08-15)', () => {
     const { dir, receipts } = mdDir([`${DAY}T01`]);
     const capped = manager(dir, receipts, 10, { policy: { ...DEFAULT_DISK_POLICY, maxBytes: 100 } });
     assert.deepEqual(capped.m.check().reasons, ['max_bytes']);
     const floor = manager(dir, receipts, 10, { usage: () => ({ totalBytes: 30 * GIB, freeBytes: 2 * GIB }) });   // 93% used, 2 GiB free
     assert.deepEqual(floor.m.check().reasons, ['min_free_bytes']);
     const other = manager(dir, receipts, 10);
-    other.writer.halt();
+    other.writer.halt('write_failed:EIO');
     other.m.check();
-    assert.equal(other.writer.resumes, 0);
+    assert.equal(other.writer.resumes, 1);
+    assert.ok(other.logs.some((l) => l.code === 'M07.disk_ok_resume' && l.fields.reason === 'write_failed:EIO'));
   });
 
   it('retention: a receipted segment older than 7 days goes without pressure; an unreceipted one stays with one alert a day', () => {
@@ -297,7 +302,7 @@ describe('A-M07-03 disk management (disk.ts; ruling Z08-3)', () => {
     assert.deepEqual(m.check().deleted, []);
     assert.equal(m.segments().closed.length, 1);
     assert.deepEqual(new DiskManager({ ...({} as DiskDeps), dataDir: join(dir, 'none'), receiptsDir: receipts, publicKey: pubKey, policy: DEFAULT_DISK_POLICY,
-      usage: () => ({ totalBytes: 1, freeBytes: 1 }), writer: { halt() {}, resume() {}, isHalted: () => false }, nowMs: () => ms(0), log: () => undefined }).segments(), { closed: [], totalBytes: 0 });
+      usage: () => ({ totalBytes: 1, freeBytes: 1 }), writer: { halt() {}, resume() {}, isHalted: () => false, haltReason: () => null, openPaths: () => [] }, nowMs: () => ms(0), log: () => undefined }).segments(), { closed: [], totalBytes: 0 });
     for (const bad of [{ warnPct: 96 }, { stopPct: 100 }, { maxBytes: 0 }, { minFreeBytes: -1 }, { retentionDays: 6 }, { retentionDays: 366 }]) {
       assert.notEqual(checkPolicy({ ...DEFAULT_DISK_POLICY, ...bad }), null, JSON.stringify(bad));
       assert.throws(() => manager(dir, receipts, 10, { policy: { ...DEFAULT_DISK_POLICY, ...bad } }), RangeError);
@@ -383,7 +388,8 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.equal(dayManifests(dir, DAY).length, 24);
     const appended: unknown[] = [];
     const saved: unknown[] = [];
-    const c = runDailyCoverage({ dataDir: dir, nowMs: ms(D0 + 86_400_000 + 5), universeManifestSha256: null, append: (r) => appended.push(r), save: (r) => saved.push(r) });
+    const c = runDailyCoverage({ dataDir: dir, nowMs: ms(D0 + 86_400_000 + 5), universeManifestSha256: null, closedThrough: () => '2026-10-15T23', append: (r) => appended.push(r), save: (r) => saved.push(r) });
+    assert.ok(c !== null);
     assert.equal(c.detail.missingMs, 0);
     assert.equal(c.report.lowCoverage, false);
     assert.equal(c.report.universeManifestSha256, createHash('sha256').update(fs.readFileSync(join(dir, 'watch', `${DAY}.ndjson`))).digest('hex'));

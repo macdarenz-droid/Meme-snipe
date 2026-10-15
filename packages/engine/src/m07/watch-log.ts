@@ -42,12 +42,15 @@ export class WatchLog {
     return path;
   }
 
-  private write(line: Line): void {
+  /** True when the line was written (ruling Z08-18: callers change their state only then). */
+  private write(line: Line): boolean {
     try {
       const path = this.ensureDay(new Date(line.at).toISOString().slice(0, 10), line.poolId);
       this.fs.appendFileSync(path, `${JSON.stringify(line)}\n`, { mode: FILE_MODE });
+      return true;
     } catch (e) {
       this.onError(e);
+      return false;
     }
   }
 
@@ -62,13 +65,12 @@ export class WatchLog {
 
   watch(poolId: string, c: PriorityClass, atMs: UnixMs): void {
     if (this.watched.get(poolId) === c) return;
-    this.watched.set(poolId, c);
-    this.write({ e: 'watch', poolId, c, at: atMs });
+    if (this.write({ e: 'watch', poolId, c, at: atMs })) this.watched.set(poolId, c);
   }
 
   unwatch(poolId: string, atMs: UnixMs): void {
-    if (!this.watched.delete(poolId)) return;
-    this.write({ e: 'unwatch', poolId, at: atMs });
+    if (!this.watched.has(poolId)) return;
+    if (this.write({ e: 'unwatch', poolId, at: atMs })) this.watched.delete(poolId);
   }
 
   /** The day's watch intervals (an unclosed watch runs to the end of the day). */
