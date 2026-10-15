@@ -138,6 +138,19 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 5:36 AM: Z07 #325, rounds 4–7** (head `9c2c3a94`). Rulings Z07-20..34 are in DECISIONS "Z07 round 4" to "round 7":
+  - Z07-20: the orientation check is a factor-10 inversion band on the modelled price (1% falsely quarantined 33.9% of real swaps; 0 of 171 now), and the 1% figure is a histogram plus a warn (Z07-28). C-86.
+  - Z07-21: conservative sells are not monotonic (2.2%, worst 65 bps); size searches use the chain rule (C-87).
+  - Clock and staleness:
+    - independent witnesses only;
+    - the suspect state refuses entries;
+    - only implausible sources (more than 150 slots past max(ceiling, last agreed + wall time)) can be excluded;
+    - a plausible disagreement is fail-closed for entries, with one critical clock_disagreement (the DoS by a plausible liar is documented);
+    - verify reads back off (2 s, then 30 s);
+    - the slot time is guarded and every promise is caught.
+    Rulings Z07-22..27, 29, 34; C-84 for Z10: the slot-clock anchor is on ≥2 agreeing providers, never a single one.
+  - Exits in a disagreement get both reads and price on the worse proceeds. An exit never gets a past-ceiling read without an under-ceiling partner (the stored latest as fallback, or it waits). minOut is floored at the partner × (1 − emergency slippage). Rulings Z07-31..33; C-88.
+  - Reviewer: PASS on `103641c6` (hash `deps-reviewed:977d80e63de38ca9ffc2d16a020e40d0` at that head); delta check of `9c2c3a94` pending. Red team re-attack of `9c2c3a94` pending. The label is taken from the CI hash on the final head.
 - **16 Oct 4:36 AM: Z07 #325 in review rounds** (PR ready; builder `session_01CfBfiEV78GBh9c4oUady9g`, reviewer `session_01BYRGAnGrVBjKSnuVUC7e9P`, red team `session_01JYvbbjhQjM1DEwVZztMeXU`, all Opus, Auto).
   - Draft at `c35aba16` (9 tickets, CORE-2 goldens; reviewer: maths exact to the raw unit, conservative ≤ chain on all 353).
   - Red team round 0: MAJOR future-slot freeze (tracker) and zero-output minOut; 3 MINOR (ring cap, inflight leak, stale return). Fixed at `1ef8dc23`.
