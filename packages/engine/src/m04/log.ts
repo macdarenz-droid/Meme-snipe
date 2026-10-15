@@ -5,7 +5,7 @@ export const M04_LOG_CODES = {
   'm04.first_read_failed': { fields: { pool: 'id', error_code: 'string' } },
   'm04.pool_unreadable': { fields: { pool: 'id', error_code: 'string' } },
   'm04.pool_stale': { fields: { pool: 'id', lag_slots: 'integer', age_ms: 'number' } },
-  'm04.read_ahead_of_clock': { fields: { pool: 'id', provider: 'string', slots_ahead: 'integer' } },
+  'm04.read_ahead_of_clock': { fields: { pool: 'id', provider: 'string', slots_ahead: 'bigint' } },
   'm04.watch_refused': { fields: { pool: 'id', class: 'string' } },
   'm04.exit_read_lagging': { fields: { pool: 'id', lag_slots: 'integer' } },
   'm04.source_refused': { fields: { kind: 'string', error_code: 'string' } },

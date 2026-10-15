@@ -208,7 +208,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     const c = ceiling();
     if (s.providerSlot > c) {
       deps.metrics?.counter('snapshot_future_slot_total', { provider: s.providerLabel });
-      deps.log.event('error', 'm04.read_ahead_of_clock', { pool: s.pool.poolId, provider: s.providerLabel, slots_ahead: Number(s.providerSlot - c) });
+      deps.log.event('error', 'm04.read_ahead_of_clock', { pool: s.pool.poolId, provider: s.providerLabel, slots_ahead: s.providerSlot - c });
       return 'refused';
     }
     const last = ring.latest();
