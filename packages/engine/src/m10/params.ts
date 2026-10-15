@@ -5,6 +5,7 @@
 // Addendum A10 (C-61): the set holds no slot time. SPEC-A's `slotMsAssumed` is replaced by the one slot-to-time function
 // (m15/slot-time.ts, bug B1), so a file that still names `slotMsAssumed` is refused like any unknown field.
 import { createHash } from 'node:crypto';
+import { SLOT_MS_MIN } from '../m15/slot-time.ts';
 import { canonicalJson, type Cu, type FailureClass, type Lamports, type MicroLamportsPerCu, type Result, type UnixMs } from '@bot/types';
 
 export type LatencySpec =
@@ -105,7 +106,12 @@ export function simParamSetJson(set: SimParamSet): string {
   return canonicalJson({ ...set, latency, cost: { ...set.cost }, evidence: { ...set.evidence } });
 }
 
-/** Reads a file next to the parameter sets (`sim-params/`); throws when it is missing. */
+/**
+ * Reads a file next to the parameter sets (`sim-params/`); throws when it is missing.
+ * Contract for the production reader (ruling Z06-14; none exists yet, the card that adds one implements this): it
+ * resolves the real path of `sim-params/<fileName>` and refuses unless that path is still inside `sim-params/` (no
+ * symbolic link or hard-coded path may lead out of it). `SOURCE_RE` below only checks the name's shape.
+ */
 export type SimParamsReader = (fileName: string) => string;
 const SOURCE_RE = /^[a-z0-9][a-z0-9._-]{0,127}(\/[a-z0-9][a-z0-9._-]{0,127}){0,3}$/;
 /** Empirical specs whose samples came from a verified source file (Z06-9: the latency model accepts no other). */
@@ -114,30 +120,69 @@ export function isVerifiedEmpiricalLatency(spec: LatencySpec): boolean {
   return spec.kind === 'empirical' && verifiedLatency.has(spec);
 }
 
+/** Z06-12: a measured latency is never shorter than one slot at the fastest slot time a basis accepts (SLOT_MS_MIN). */
+export const MIN_LATENCY_MS = SLOT_MS_MIN;
+const COST_FIELDS = ['cuLimit', 'leanCuPriceMicroLamports', 'senderTipLamports', 'jitoTipLamports', 'premiumTipLamports',
+  'premiumCuPriceMicroLamports', 'janitorPriorityLamports'] as const;
+type EvidenceSchema = EvidenceKey | 'latency';
+/** Z06-11: the fields each evidence record holds beside `sig` and `slot` (cost: any non-empty subset of the cost fields). */
+function recordProblem(kind: EvidenceSchema, r: Record<string, unknown>): string | null {
+  const extra = Object.keys(r).filter((k) => k !== 'sig' && k !== 'slot');
+  const exactly = (key: string, ok: (v: unknown) => boolean, what: string): string | null =>
+    extra.length === 1 && extra[0] === key && ok(r[key]) ? null : `records must be {sig, slot, ${key}} with ${key} ${what}`;
+  switch (kind) {
+    case 'failure': return exactly('ok', (v) => typeof v === 'boolean', 'a boolean');
+    case 'sandwich': return exactly('sandwiched', (v) => typeof v === 'boolean', 'a boolean');
+    case 'gap': return exactly('gapBps', (v) => Number.isSafeInteger(v) && (v as number) >= 0, 'an integer >= 0');
+    case 'latency': return exactly('latencyMs', (v) => typeof v === 'number' && Number.isFinite(v) && v >= MIN_LATENCY_MS, `finite and >= ${MIN_LATENCY_MS}`);
+    case 'cost':
+      if (extra.length === 0 || !extra.every((k) => (COST_FIELDS as readonly string[]).includes(k))) return 'records must be {sig, slot} and one or more cost fields';
+      for (const k of extra) {
+        const v = r[k];
+        if (k === 'cuLimit' ? !(Number.isSafeInteger(v) && (v as number) >= 0) : u64(v) === null) return `cost record field ${k} must be ${k === 'cuLimit' ? 'an integer' : 'a u64 decimal string'}`;
+      }
+      return null;
+  }
+}
+
 /**
- * Ruling Z06-8: an evidence source is a file read through `read` (a path under `sim-params/`, no `..`), NDJSON with one
- * JSON object per line. It is accepted only when sha256 of its bytes (UTF-8) equals `sourceSha256` and it holds at
- * least `n` distinct records (records compared by canonical JSON, so padding with copies does not count). Returns the
- * distinct records in file order, or the problem.
+ * Rulings Z06-8, Z06-11, Z06-12: an evidence source is a file read through `read` (a path under `sim-params/`, no `..`),
+ * NDJSON with one JSON object per line, each a record of its group's schema with a `sig` (string) and `slot` (integer).
+ * It is accepted only when sha256 of its bytes (UTF-8) equals `sourceSha256` and it holds at least `n` distinct records,
+ * one per `sig` + `slot` (a repeat of the same record counts once; two different records for one id are refused).
+ * Returns the distinct records in file order, or the problem.
  */
-function readEvidence(where: string, e: { source: string; n: number; sourceSha256: string }, read: SimParamsReader): Array<Record<string, unknown>> | string {
+function readEvidence(where: string, kind: EvidenceSchema, e: { source: string; n: number; sourceSha256: string }, read: SimParamsReader): Array<Record<string, unknown>> | string {
   if (!SOURCE_RE.test(e.source) || e.source.split('/').some((part) => part === '.' || part === '..')) return `${where}: source must be a file path under sim-params/`;
   let text: string;
   try { text = read(e.source); } catch { return `${where}: source file missing`; }
   if (createHash('sha256').update(text, 'utf8').digest('hex') !== e.sourceSha256) return `${where}: sha256 of the source file does not match sourceSha256`;
-  const seen = new Set<string>(), records: Array<Record<string, unknown>> = [];
+  const byId = new Map<string, string>(), records: Array<Record<string, unknown>> = [];
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue;
     let r: unknown;
     try { r = JSON.parse(line); } catch { return `${where}: source is not NDJSON`; }
     if (!isObj(r)) return `${where}: every source line must be a JSON object`;
-    const key = canonicalJson(r);
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (typeof r.sig !== 'string' || r.sig.length === 0 || r.sig.length > 128) return `${where}: every record needs a sig (a string of 1-128 characters)`;
+    if (!Number.isSafeInteger(r.slot) || (r.slot as number) < 0) return `${where}: every record needs a slot (an integer >= 0)`;
+    const problem = recordProblem(kind, r);
+    if (problem !== null) return `${where}: ${problem}`;
+    const id = `${r.sig}:${r.slot as number}`, body = canonicalJson(r), prev = byId.get(id);
+    if (prev !== undefined) {
+      if (prev !== body) return `${where}: two different records for sig ${JSON.stringify(r.sig).slice(0, 40)} at slot ${r.slot as number}`;
+      continue;
+    }
+    byId.set(id, body);
     records.push(r);
   }
   if (records.length < e.n) return `${where}: the source holds ${records.length} distinct records, fewer than n = ${e.n}`;
   return records;
+}
+
+/** Nearest-rank p99 of integers (the ⌈0.99·N⌉-th smallest). */
+function p99(xs: readonly number[]): number {
+  const sorted = [...xs].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(0.99 * sorted.length) - 1)] as number;
 }
 
 function parseLatency(v: unknown, read: SimParamsReader): LatencySpec | string {
@@ -159,11 +204,11 @@ function parseLatency(v: unknown, read: SimParamsReader): LatencySpec | string {
     if (typeof v.source !== 'string' || v.source.length === 0) return 'latency: source is required';
     if (typeof v.sourceSha256 !== 'string' || !SHA256_RE.test(v.sourceSha256)) return 'latency: sourceSha256 must be a sha256 hex digest';
     const e = { source: v.source, n: v.n as number, sourceSha256: v.sourceSha256 };
-    const records = readEvidence('latency', e, read);
+    const records = readEvidence('latency', 'latency', e, read);
     if (typeof records === 'string') return records;
-    const samplesMs = records.map((r) => r.latencyMs);
-    if (!samplesMs.every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0)) return 'latency: every source record needs latencyMs, finite and > 0';
-    const spec: LatencySpec = { kind: 'empirical', samplesMs: samplesMs as number[], source: e.source, n: e.n, sourceSha256: e.sourceSha256 };
+    // Z06-13: frozen, so nothing can change the samples after they were verified.
+    const samplesMs = Object.freeze(records.map((r) => r.latencyMs as number)) as number[];
+    const spec: LatencySpec = Object.freeze({ kind: 'empirical', samplesMs, source: e.source, n: e.n, sourceSha256: e.sourceSha256 });
     verifiedLatency.add(spec);
     return spec;
   }
@@ -210,6 +255,7 @@ export function parseSimParamSet(v: unknown, read: SimParamsReader): Result<SimP
   const ev = v.evidence;
   if (!isObj(ev)) return fail('evidence: not an object');
   const evidence: Partial<Record<EvidenceKey, Evidence>> = {};
+  const recordsOf: Partial<Record<EvidenceKey, Array<Record<string, unknown>>>> = {};
   for (const [k, e] of Object.entries(ev)) {
     if (!(EVIDENCE_KEYS as readonly string[]).includes(k)) return fail(`evidence: unknown key ${JSON.stringify(k).slice(0, 80)}`);
     if (!isObj(e)) return fail(`evidence.${k}: not an object`);
@@ -220,9 +266,10 @@ export function parseSimParamSet(v: unknown, read: SimParamsReader): Result<SimP
     if (!Number.isSafeInteger(e.n) || (e.n as number) < min) return fail(`evidence.${k}: n must be an integer >= ${min}`);
     if (typeof e.sourceSha256 !== 'string' || !SHA256_RE.test(e.sourceSha256)) return fail(`evidence.${k}: sourceSha256 must be a sha256 hex digest`);
     const entry = { source: e.source, n: e.n as number, sourceSha256: e.sourceSha256 };
-    const records = readEvidence(`evidence.${k}`, entry, read);
+    const records = readEvidence(`evidence.${k}`, k as EvidenceKey, entry, read);
     if (typeof records === 'string') return fail(records);
     evidence[k as EvidenceKey] = entry;
+    recordsOf[k as EvidenceKey] = records;
   }
   // Ruling Z06-3: any value more optimistic than prior-2026-10 needs evidence for its group.
   const P = PRIOR_2026_10;
@@ -241,6 +288,42 @@ export function parseSimParamSet(v: unknown, read: SimParamsReader): Result<SimP
   if ((v.gapThroughStopP99Bps as number) < P.gapThroughStopP99Bps && (v.gapSamples as number) < GAP_MIN_SAMPLES) {
     return fail(`gapSamples must be at least ${GAP_MIN_SAMPLES} for a measured gapThroughStopP99Bps`);
   }
+  // Ruling Z06-11: each stated value of a group with evidence is no more optimistic than the point estimate its records
+  // give. Failure records carry only `ok`, so fExp and the class mix cannot be measured from them and stay at the prior.
+  const notBelow = (field: string, stated: number | bigint, computed: number | bigint): Result<SimParamSet, SimParamsError> | null =>
+    stated < computed ? fail(`${field} ${String(stated)} is more optimistic than its evidence (${String(computed)})`) : null;
+  const checksAgainstRecords: Array<() => Result<SimParamSet, SimParamsError> | null> = [];
+  const fr = recordsOf.failure;
+  if (fr !== undefined) {
+    const rate = fr.filter((r) => r.ok === false).length / fr.length;
+    checksAgainstRecords.push(() => notBelow('fFailEntry', v.fFailEntry as number, rate), () => notBelow('fFailExit', v.fFailExit as number, rate),
+      () => ((v.fExp as number) < P.fExp ? fail('fExp cannot be measured from failure records (no expiry field); it stays at or above prior-2026-10') : null),
+      () => (canonicalJson(mix) !== canonicalJson(P.failureClassMix) ? fail('failureClassMix cannot be measured from failure records (no class field); it stays at prior-2026-10') : null));
+  }
+  const sr = recordsOf.sandwich;
+  if (sr !== undefined) {
+    const rate = sr.filter((r) => r.sandwiched === true).length / sr.length;
+    checksAgainstRecords.push(() => notBelow('pSwEntry', v.pSwEntry as number, rate), () => notBelow('pSwExit', v.pSwExit as number, rate));
+  }
+  const gr = recordsOf.gap;
+  if (gr !== undefined) {
+    checksAgainstRecords.push(() => notBelow('gapThroughStopP99Bps', v.gapThroughStopP99Bps as number, p99(gr.map((r) => r.gapBps as number))),
+      () => ((v.gapSamples as number) > gr.length ? fail(`gapSamples ${v.gapSamples as number} exceeds the ${gr.length} gap records`) : null));
+  }
+  const cr = recordsOf.cost;
+  if (cr !== undefined) {
+    for (const k of COST_FIELDS) {
+      const seen = cr.filter((r) => Object.hasOwn(r, k));
+      const stated = k === 'cuLimit' ? BigInt(c.cuLimit as number) : (big[k] as bigint);
+      if (seen.length >= CALIBRATION_MIN_SAMPLES) {
+        const sum = seen.reduce((t, r) => t + BigInt(r[k] as string | number), 0n), n = BigInt(seen.length);
+        checksAgainstRecords.push(() => notBelow(`cost.${k}`, stated, (sum + n - 1n) / n));   // the mean, rounded up
+      } else if (stated < (k === 'cuLimit' ? BigInt(P.cost.cuLimit) : (P.cost[k] as bigint))) {
+        return fail(`cost.${k} is below prior-2026-10 but only ${seen.length} cost records measure it (need ${CALIBRATION_MIN_SAMPLES})`);
+      }
+    }
+  }
+  for (const check of checksAgainstRecords) { const r = check(); if (r !== null) return r; }
   return {
     ok: true,
     value: {

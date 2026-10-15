@@ -39,7 +39,7 @@ describe('A-M10-01 latency model', () => {
 
   it('empirical latency draws uniformly from the samples of a verified set', () => {
     // 100 distinct records whose latencies are 100, 200, 300 and 400 ms, 25 each.
-    const m = createLatencyModel(verifiedEmpirical((i) => ({ id: i, latencyMs: 100 * (1 + (i % 4)) })));
+    const m = createLatencyModel(verifiedEmpirical((i) => ({ sig: `L${i}`, slot: i, latencyMs: 100 * (1 + (i % 4)) })));
     const rng = createRng(5), counts = new Map<number, number>();
     for (let i = 0; i < 40_000; i++) { const v = m.sampleMs(rng, 1); counts.set(v, (counts.get(v) ?? 0) + 1); }
     assert.deepEqual([...counts.keys()].sort((a, b) => a - b), [100, 200, 300, 400]);
@@ -52,11 +52,11 @@ describe('A-M10-01 latency model', () => {
     assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: hundred, source: 'x', n: 100, sourceSha256: sha }), /verified parameter set/);
     assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: [0, 5], source: 'x', n: 2, sourceSha256: sha }), /E_SIM_PARAMS/);
     // A verified spec whose samples were edited afterwards is refused too.
-    const v = verifiedEmpirical((i) => ({ id: i, latencyMs: 900 + i }));
+    const v = verifiedEmpirical((i) => ({ sig: `L${i}`, slot: i, latencyMs: 900 + i }));
     assert.doesNotThrow(() => createLatencyModel(v));
     if (v.kind === 'empirical') {
-      v.samplesMs.length = 10;
-      assert.throws(() => createLatencyModel(v), /at least 100 samples/);
+      assert.throws(() => { v.samplesMs.length = 10; }, TypeError);          // frozen since Z06-13
+      assert.throws(() => createLatencyModel({ ...v, samplesMs: v.samplesMs.slice(0, 10) }), /verified parameter set/);
       assert.throws(() => createLatencyModel({ ...v }), /verified parameter set/);
     }
   });
