@@ -41,3 +41,4 @@ packages/engine/src/m10/latency.ts  min=96.29  # latency model maths; 1 unreacha
 packages/engine/src/m14/usage.ts  # M14 credit maths: costs, caps, allocation, projection (A-M14-05, card Z08)
 packages/engine/src/m14/meter.ts  # M14 credit meter over a ledger port: block reservation, projection cache (A-M14-05, card Z08)
 packages/engine/src/m14/health.ts  # M14 provider health and the degraded-mode state machine (A-M14-05, card Z08)
+packages/engine/src/m07/manifest.ts  # M07 segment names, manifests, gap merging and frame starts (A-M07-02, card Z08)
