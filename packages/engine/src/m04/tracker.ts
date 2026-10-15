@@ -24,12 +24,13 @@ import type {
 } from './types.ts';
 
 /**
- * `E_CLOCK` (rulings Z07-9, Z07-13, Z07-31): a read past the slot clock's ceiling, from a clock fault (two providers
- * agree), one unconfirmed provider, or a disagreement. Exit grade: the past-ceiling read comes back UNSTORED in
- * `snapshot`, so the exit path decides and an exit is never blocked by a clock fault alone. During a disagreement
- * (Z07-31) `underCeiling` also carries the newest read under the ceiling, unstored: the caller MUST price the exit on
- * the WORSE proceeds of the two (`worseProceeds` in `exit-price.ts`; for a sell the smaller quote out, and minOut from
- * that), since neither read can be trusted alone (SPEC-A C-88). Entry grade: both are null; entries are refused.
+ * `E_CLOCK` (rulings Z07-9, Z07-13, Z07-31, Z07-32): a read past the slot clock's ceiling, from a clock fault (two
+ * providers agree), one unconfirmed provider, or a disagreement. Exit grade: the past-ceiling read comes back UNSTORED
+ * in `snapshot`, always with an under-ceiling partner in `underCeiling` (the newest read under the ceiling, else the
+ * trusted stored latest); with no partner both are null and the exit waits and retries, never pricing on a lone
+ * past-ceiling read. The caller prices on the WORSE proceeds of the two and floors minOut at the partner's quote less
+ * the configured emergency slippage (`decideClockExit` in `exit-price.ts`, SPEC-A C-88). Entry grade: both are null;
+ * entries are refused.
  */
 export type FreshReadError<P extends PoolStateLike = PoolStateLike> =
   | { code: 'E_STALE' | 'E_RPC'; detail: string }
@@ -549,6 +550,13 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     return { ok: false, error: { code: 'E_STALE', detail: 're-read on the next provider is still behind' } };
   }
 
+  /** Z07-32: a past-ceiling read goes out only with an under-ceiling partner (`under`, else the trusted stored latest). */
+  function withPartner(poolId: Pubkey, past: PoolSnapshot<P>, under: PoolSnapshot<P> | null, detail: string): { ok: false; error: FreshReadError<P> } {
+    // Called right after a read of this pool built a snapshot, so the pool is watched and its ring exists.
+    const partner = under ?? trustedLatest((pools.get(poolId) as Entry<P>).ring as SnapshotRing<P>);
+    return partner === null ? clockError(null, `${detail}; no read under the ceiling: the exit waits and retries`) : clockError(past, detail, partner);
+  }
+
   async function exitRead(poolId: Pubkey): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {
     const r1 = await readPool(poolId, 0, undefined, true);
     const disagreeing = suspect();
@@ -561,8 +569,10 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       const top = reads.reduce<PoolSnapshot<P> | null>((m, x) => (m === null || x.providerSlot > m.providerSlot ? x : m), null);
       if (top !== null && top.providerSlot > ceiling()) {
         if (deps.providerOrder().length < 2) clockAlert(top.providerLabel, top.providerSlot, ceiling());   // Z07-24
-        // `top` is one read's past-ceiling (held) copy, so at most the other read is under the ceiling.
-        return clockError(top, 'clock disagreement: price on the worse of the two reads, both unstored', r1.snap ?? r2.snap);
+        // `top` is one read's past-ceiling (held) copy, so at most the other read is under the ceiling. Z07-32: never a
+        // past-ceiling read without an under-ceiling partner; failing both, the stored latest (trusted, at or under the
+        // ceiling); failing that, no read at all, and the exit waits and retries.
+        return withPartner(poolId, top, r1.snap ?? r2.snap, 'clock disagreement: price on the worse of the two reads, both unstored');
       }
     }
     const first = r1.snap;
@@ -577,7 +587,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       const held = r2.held ?? r1.held;
       if (held !== null) {
         clockAlert(held.providerLabel, held.providerSlot, ceiling());
-        return clockError(held, fault !== null ? 'clock fault' : 'one provider past the slot clock, unconfirmed');
+        return withPartner(poolId, held, null, fault !== null ? 'clock fault' : 'one provider past the slot clock, unconfirmed');
       }
       return { ok: false, error: { code: 'E_RPC', detail: 'every read failed' } };
     }

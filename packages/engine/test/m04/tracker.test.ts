@@ -704,7 +704,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
   }
   const alerts = (s: ReturnType<typeof setup>): number => s.log.lines.filter(([l, c, f]) => l === 'critical' && c === 'm04.clock_fault' && f.error_code === 'E_CLOCK').length;
 
-  it('Z07-13.1-2: two providers agreeing past the ceiling are a clock fault: nothing stored, ONE critical E_CLOCK, no provider blamed; entries E_CLOCK, exits get the agreed read unstored', async () => {
+  it('Z07-13.1-2, Z07-32: two providers agreeing past the ceiling are a clock fault: nothing stored, ONE critical E_CLOCK, no provider blamed; entries E_CLOCK; an exit with nothing stored waits (no lone past-ceiling read)', async () => {
     const s = await trailing();
     await s.time.advance(1_010);                                   // the primary's poll is past the ceiling: verified on the backup
     assert.equal(s.tracker.clockFault(), true);
@@ -716,11 +716,11 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     const e = await s.tracker.freshRead('a', 8);
     assert.ok(!e.ok && e.error.code === 'E_CLOCK' && e.error.snapshot === null);
     const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot?.providerSlot === s.chain.highest);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot === null && x.error.underCeiling === null && /waits/.test(x.error.detail));
     assert.equal(s.tracker.latest('a'), null);
     assert.equal(alerts(s), 1);
     // Defence in depth (Z07-13.4): a slot past the ceiling has infinite lag.
-    assert.equal(s.tracker.lagNow(x.error.snapshot as PoolSnapshot<FakePool>), Number.POSITIVE_INFINITY);
+    assert.equal(s.tracker.lagNow({ providerSlot: s.chain.highest } as PoolSnapshot<FakePool>), Number.POSITIVE_INFINITY);
     s.tracker.stop();
   });
 
@@ -1028,6 +1028,53 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     s.tracker.stop();
   });
 
+  /** Makes every read answered as `label` fail (that provider is down). */
+  function down(s: ReturnType<typeof setup>, label: string): void {
+    const read = s.reader.read.bind(s.reader);
+    s.reader.read = async (keys, o) => (s.reader.provider({ keys: [...keys], priority: o.priority, provider: o.provider }) === label
+      ? { ok: false, error: { code: 'E_TIMEOUT', message: 'down' } } : read(keys, o));
+  }
+
+  it('MAJOR-R11 probe (Z07-32): a liar 149 slots past the ceiling with a faked vault, the honest primary\'s exit read failing: the exit gets the stored latest as the partner, never the liar alone, and the helper picks the honest read', async () => {
+    const s = setup(undefined, ['primary', 'liar']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.chain.highest = 2_000n;
+    s.chain.highestBy = 'primary';
+    s.reader.slot = (c) => (s.reader.provider(c) === 'liar' ? 2_159n : 2_000n);
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    quoteBy(s, { liar: 999_999n });
+    s.tracker.start();
+    await s.time.advance(1_000);                                     // an honest poll is stored
+    s.reader.provider = (c) => c.provider ?? 'liar';                 // one poll answered by the liar
+    await s.time.advance(1_000);
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    down(s, 'primary');
+    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK');
+    assert.ok(x.error.snapshot?.providerLabel === 'liar' && x.error.underCeiling?.providerLabel === 'primary' && x.error.underCeiling.pool.quote === 2_000n);
+    assert.equal(worseExit(x.error)?.snapshot.pool.quote, 2_000n);
+    s.tracker.stop();
+  });
+
+  it('Z07-32: no under-ceiling partner at all (nothing stored, the primary down): the exit gets E_CLOCK with no read and waits', async () => {
+    const s = setup(undefined, ['primary', 'liar']);
+    add(s.reader, 'a');
+    s.tracker.watch('a', 'candidate');
+    await s.tracker.settled();
+    s.chain.expected = 2_000n;
+    s.chain.highest = 2_159n;
+    s.chain.highestBy = 'liar';
+    s.reader.slot = () => 2_159n;
+    s.reader.provider = (c) => c.provider ?? 'primary';
+    down(s, 'primary');
+    const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot === null && x.error.underCeiling === null && /waits and retries/.test(x.error.detail));
+    assert.equal(s.tracker.latest('a'), null);
+  });
+
   /** Polls for `ms`, trying an entry every second: true when every entry was refused with E_CLOCK. */
   async function refusedFor(s: ReturnType<typeof setup>, ms: number): Promise<boolean> {
     let refused = true;
@@ -1102,7 +1149,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     release();
     s.reader.gate = null;
     const [rx, re] = await Promise.all([xs, es]);
-    assert.ok(!rx.ok && rx.error.code === 'E_CLOCK' && rx.error.snapshot !== null);
+    assert.ok(!rx.ok && rx.error.code === 'E_CLOCK' && rx.error.snapshot === null);       // nothing stored: it waits (Z07-32)
     assert.ok(!re.ok && re.error.code === 'E_CLOCK' && re.error.snapshot === null);
     const t = setup(undefined, ['only']);
     add(t.reader, 'a');
@@ -1118,7 +1165,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     // An implausible read (1e12) is never the "highest plausible" one (Z07-30), but the exit still gets it, unstored.
     t.reader.slot = () => 1_000_000_000_000n;
     const x = await t.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot?.providerSlot === 1_000_000_000_000n && /unconfirmed/.test(x.error.detail));
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot === null && /unconfirmed.*waits/.test(x.error.detail));
   });
 
   it('MAJOR-R6c variant (Z07-29): the clock at the primary\'s slot: entries stay refused, one alert, the backup is not excluded', async () => {
@@ -1227,7 +1274,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     assert.ok(!s.log.codes().includes('m04.clock_fault'));
   });
 
-  it('exit grade, one provider answers, past the ceiling: its read comes back UNSTORED as E_CLOCK with the alert; an exit is never blocked', async () => {
+  it('exit grade, one provider answers, past the ceiling: E_CLOCK with the alert; nothing stored, so the exit waits (Z07-32); with a stored read, the past-ceiling read comes back unstored with it as its partner', async () => {
     const s = setup(undefined, ['only']);
     add(s.reader, 'a');
     s.tracker.watch('a', 'candidate');
@@ -1237,7 +1284,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     s.reader.slot = () => 2_050n;
     s.reader.provider = () => 'only';
     const x = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
-    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot?.providerSlot === 2_050n);
+    assert.ok(!x.ok && x.error.code === 'E_CLOCK' && x.error.snapshot === null && x.error.underCeiling === null);
     assert.equal(s.tracker.latest('a'), null);                      // unstored
     assert.equal(s.log.lines.filter(([l, c]) => l === 'critical' && c === 'm04.clock_fault').length, 1);
     const again = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
@@ -1254,13 +1301,15 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     release();
     s.reader.gate = null;
     const [rx, re] = await Promise.all([xs, es]);
-    assert.ok(!rx.ok && rx.error.code === 'E_CLOCK' && rx.error.snapshot !== null && !re.ok && re.error.code === 'E_CLOCK' && re.error.snapshot === null);
+    assert.ok(!rx.ok && rx.error.code === 'E_CLOCK' && rx.error.snapshot === null && !re.ok && re.error.code === 'E_CLOCK' && re.error.snapshot === null);
     assert.equal(s.metrics.count('snapshot_future_slot_total', { provider: 'only' }), 0);
-    // Back under the ceiling, the next unconfirmed read alerts again.
+    // Back under the ceiling, the next unconfirmed read alerts again, and now has the stored read as its partner.
     s.reader.slot = () => 2_000n;
     assert.ok((await s.tracker.freshRead('a', Number.POSITIVE_INFINITY)).ok);
+    s.chain.highest = 2_000n;
     s.reader.slot = () => 2_050n;
-    assert.ok(!(await s.tracker.freshRead('a', Number.POSITIVE_INFINITY)).ok);
+    const y = await s.tracker.freshRead('a', Number.POSITIVE_INFINITY);
+    assert.ok(!y.ok && y.error.code === 'E_CLOCK' && y.error.snapshot?.providerSlot === 2_050n && y.error.underCeiling?.providerSlot === 2_000n);
     assert.equal(s.log.lines.filter(([, c]) => c === 'm04.clock_fault').length, 2);
   });
 
