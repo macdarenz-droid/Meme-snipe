@@ -7,3 +7,5 @@ export * from './orientation.ts';
 export * from './guard.ts';
 export * from './status.ts';
 export * from './log.ts';
+export * from './pool-model.ts';
+export * from './cache.ts';
