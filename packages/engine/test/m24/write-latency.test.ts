@@ -8,7 +8,7 @@ import { tempDir } from '../helpers.ts';
 import { measureWriteLatency } from './write-latency.bench.ts';
 
 describe('write latency of a 10-row transaction (CA-33 spike)', () => {
-  it('stays far below a gross-regression bound and reports its quantiles', () => {
+  it('stays far below a gross-regression bound and reports its quantiles [timing]', () => {
     const r = measureWriteLatency(join(tempDir('bench'), 'bench.db'), 500);
     console.log(JSON.stringify(r));
     assert.equal(r.transactions, 500);

@@ -104,7 +104,7 @@ describe('withTx (B-M24-01 logic 3; ARCH 7.1)', () => {
     db.close();
   });
 
-  it('refuses transaction control behind empty statements, and scans many leading comments in linear time (red team n1)', () => {
+  it('refuses transaction control behind empty statements, and scans many leading comments in linear time (red team n1) [timing]', () => {
     const { db } = setup();
     for (const sql of ['; COMMIT', ';; BEGIN', ' ;\n; /* x */ ; -- y\n rollback', ';END']) {
       assert.throws(() => db.withTx((tx) => { tx.run('INSERT INTO state (id, v) VALUES (1, ?)', 'a'); tx.run(sql); }), /transaction control/, sql);

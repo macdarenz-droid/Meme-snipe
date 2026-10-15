@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { configDefaults, defineConfig } from 'vitest/config';
+import { parsePureList } from './tools/purelist/list.ts';
 
 // Light and CPU-heavy suites share the default sequence group and its two-worker pool, with separate timeout defaults.
 // Heap and relative-time measurements run afterward, alone, so another file's allocations do not distort their limits.
@@ -25,8 +28,23 @@ const MEASUREMENTS = [
 const BLUEPRINT_PACKAGES = ['types', 'botctl', 'contract', 'dashboard', 'decoders', 'engine', 'exitpath', 'research', 'sentinel', 'signer', 'venue'];
 const BLUEPRINT = [...BLUEPRINT_PACKAGES.map((p) => `packages/${p}/test/**/*.test.ts`), 'tools/**/test/**/*.test.ts'];
 
+// B-M30-01 coverage gate (Z01-COV): 100% branch coverage per file on the files of tools/purelist/pure-files.txt, and a
+// floor (a ratchet) on the few files whose line says `min=`. It runs only with `pnpm test:coverage` (`--coverage`);
+// `pnpm test` is unchanged. tools/purelist/list.ts refuses a line without a reason and an entry that matches no file.
+const PURE = parsePureList(readFileSync(new URL('./tools/purelist/pure-files.txt', import.meta.url), 'utf8'), fileURLToPath(new URL('.', import.meta.url)));
+// One threshold group per file: vitest also applies a global threshold to files that a glob group matches, so a floor
+// below 100 cannot sit beside a global `branches: 100`. Each file is its own group, checked as a file.
+const THRESHOLDS = Object.fromEntries(PURE.map((e) => [e.path, { branches: e.min, perFile: true }]));
+
 export default defineConfig({
   test: {
+    coverage: {
+      provider: 'v8',
+      include: PURE.map((e) => e.path),
+      exclude: ['**/test/**', '**/node_modules/**'],
+      reporter: ['text-summary', 'json-summary'],
+      thresholds: THRESHOLDS,
+    },
     projects: [
       {
         extends: true,
