@@ -1211,30 +1211,30 @@ cp "$A/summary.md" "$A/summary-two.md"; ACFX=$T/fxnopin/research/historical/ci a
 # a retirement by an unknown id, or two pins retiring each other, leaves nothing pinned.
 bad=""; pinf="$T/pin-dec.md"
 pin() { printf "$1" > "$pinf"; (. "$here/archive-guard.sh"; ag_decisions=$pinf; ag_pinned_id; true); }
-pa='| 2026-10-09 | B10-PULL id=b10pull-a source=old-faithful scannerRev=r1 x | t | t |\n'
-pb='| 2026-10-15 | B10-PULL id=b10pull-b source=old-faithful scannerRev=r2 x | t | t |\n'
-[[ $(pin "$pa") == b10pull-a ]] || bad+=" one"
-[[ -z $(pin "$pa$pb") ]] || bad+=" two"
-[[ $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") == b10pull-b ]] || bad+=" retired"
+pinA='| 2026-10-09 | B10-PULL id=b10pull-a source=old-faithful scannerRev=r1 x | t | t |\n'
+pinB='| 2026-10-15 | B10-PULL id=b10pull-b source=old-faithful scannerRev=r2 x | t | t |\n'
+[[ $(pin "$pinA") == b10pull-a ]] || bad+=" one"
+[[ -z $(pin "$pinA$pinB") ]] || bad+=" two"
+[[ $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") == b10pull-b ]] || bad+=" retired"
 # OFX-7: a successor that is not a pinned row, an older pin retiring a newer one, a
 # retirement of an unknown id or a RETIRED row that cannot be read: nothing pinned
-[[ -z $(pin "$pa| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") ]] || bad+=" by-unknown"
-[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" older-retires-newer"
-[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-z by=b10pull-b x | t | t |\n") ]] || bad+=" retires-unknown"
-[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a x | t | t |\n") ]] || bad+=" malformed"
-[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL id=b10pull-a source=old-faithful scannerRev=r3 x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") ]] || bad+=" two-dates"
-pc='| 2026-10-20 | B10-PULL id=b10pull-c source=old-faithful scannerRev=r3 x | t | t |\n'
-[[ $(pin "$pa$pb$pc| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-20 | B10-PULL-RETIRED id=b10pull-b by=b10pull-c x | t | t |\n") == b10pull-c ]] || bad+=" chain"
-[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-c x | t | t |\n") ]] || bad+=" by-other"
-[[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" mutual"
+[[ -z $(pin "$pinA| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") ]] || bad+=" by-unknown"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" older-retires-newer"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-z by=b10pull-b x | t | t |\n") ]] || bad+=" retires-unknown"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a x | t | t |\n") ]] || bad+=" malformed"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL id=b10pull-a source=old-faithful scannerRev=r3 x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") ]] || bad+=" two-dates"
+pinC='| 2026-10-20 | B10-PULL id=b10pull-c source=old-faithful scannerRev=r3 x | t | t |\n'
+[[ $(pin "$pinA$pinB$pinC| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-20 | B10-PULL-RETIRED id=b10pull-b by=b10pull-c x | t | t |\n") == b10pull-c ]] || bad+=" chain"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-c x | t | t |\n") ]] || bad+=" by-other"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" mutual"
 # OFX-12: two rows of one id, even on one date (an EVIL rev first), pin nothing
-[[ -z $(pin '| 2026-10-09 | B10-PULL id=b10pull-a source=old-faithful scannerRev=EVIL x | t | t |\n'"$pa") ]] || bad+=" same-date-dup"
+[[ -z $(pin '| 2026-10-09 | B10-PULL id=b10pull-a source=old-faithful scannerRev=EVIL x | t | t |\n'"$pinA") ]] || bad+=" same-date-dup"
 # OFX-13: the pinned rev is read for the exact id ("b10pull.a" never matches "b10pullXa")
-rev() { printf "$1" > "$pinf"; (. "$here/archive-guard.sh"; ag_decisions=$pinf; ag_pinned_rev; true); }
-px='| 2026-10-09 | B10-PULL id=b10pullXa source=old-faithful scannerRev=EVIL x | t | t |\n'
-pd='| 2026-10-15 | B10-PULL id=b10pull.a source=old-faithful scannerRev=r2 x | t | t |\n'
-[[ $(rev "$px$pd| 2026-10-15 | B10-PULL-RETIRED id=b10pullXa by=b10pull.a x | t | t |\n") == r2 ]] || bad+=" rev-regex"
-[[ $(rev "$pa") == r1 ]] || bad+=" rev"
+pinrev() { printf "$1" > "$pinf"; (. "$here/archive-guard.sh"; ag_decisions=$pinf; ag_pinned_rev; true); }
+pinX='| 2026-10-09 | B10-PULL id=b10pullXa source=old-faithful scannerRev=EVIL x | t | t |\n'
+pinD='| 2026-10-15 | B10-PULL id=b10pull.a source=old-faithful scannerRev=r2 x | t | t |\n'
+[[ $(pinrev "$pinX$pinD| 2026-10-15 | B10-PULL-RETIRED id=b10pullXa by=b10pull.a x | t | t |\n") == r2 ]] || bad+=" rev-regex"
+[[ $(pinrev "$pinA") == r1 ]] || bad+=" rev"
 (. "$here/archive-guard.sh"; [[ $(ag_pinned_id) == b10pull-of-2 ]]) || bad+=" repo-pin"
 [[ -z "$bad" ]] && ok "OF-FIX: a B10-PULL pin is retired only by a RETIRED row naming a pinned successor dated on or after it; a successor that is not pinned, an older pin retiring a newer one, an unknown retired id, an unreadable RETIRED row, an id with two rows (even on one date, OFX-12) or mutual retirement leave nothing pinned (OFX-7); a chain keeps its newest; the pinned rev is read for the exact id, never as a regex (OFX-13); the repo's pin is b10pull-of-2" || no "OF-FIX pin retirement:$bad"
 # 2: back-off from run history: a block (a data-scan archive batch whose scan job failed
