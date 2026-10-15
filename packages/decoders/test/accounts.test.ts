@@ -47,6 +47,25 @@ describe('A-M02-02 PumpSwap pools', () => {
     assert.equal(extended, 0);                                   // was 11 under cb188ce: the bytes it did not describe are fields now
   });
 
+  it('card Z07 (A-M02-02 logic 3 [VF-03], A08): coin_creator, is_mayhem_mode, creator_fee_bps and can_edit_creator_fee decode', () => {
+    for (const file of POOLS) {
+      const p = as(d.decodeAccount(PSWAP, bytes(role(file, 'pool'))), 'pumpswap_pool');
+      assert.ok(p.coinCreator !== DEFAULT_PUBKEY && p.coinCreator.length >= 32, file);
+      assert.deepEqual([p.isMayhemMode, p.creatorFeeBps, p.canEditCreatorFee], [false, 0, false], file);
+    }
+    // Byte offsets in the pinned layout: is_mayhem_mode 243, creator_fee_bps (u64) 261, can_edit_creator_fee 269.
+    const data = bytes(role(POOLS[5] as string, 'pool'));
+    data[243] = 1;
+    data[261] = 50;
+    data[269] = 1;
+    const p = as(d.decodeAccount(PSWAP, data), 'pumpswap_pool');
+    assert.deepEqual([p.isMayhemMode, p.creatorFeeBps, p.canEditCreatorFee], [true, 50, true]);
+    // A creator fee above 10,000 bps is not a fee: the account is unknown.
+    data[261] = 0x11;
+    data[262] = 0x27;                                            // 0x2711 = 10,001
+    assert.equal(d.decodeAccount(PSWAP, data).kind, 'unknown');
+  });
+
   it('a negative virtual_quote_reserves (i128 high bit set) decodes as a negative bigint [DA-14]', () => {
     const data = bytes(role(POOLS[5] as string, 'pool'));
     data.fill(0xff, 245, 261);
@@ -157,6 +176,9 @@ describe('A-M02-02 configs and globals', () => {
     const gc = as(d.decodeAccount(g.owner, bytes(g)), 'pumpswap_global_config');
     assert.equal(gc.disableFlags, 0);
     assert.equal(gc.raw.boost_enabled, true);                  // [EX-V01]
+    // Card Z07 (A-M02-02 logic 3 [VF-03]): the gate on per-pool creator fees and its cap.
+    assert.equal(gc.creatorFeeConfigurable, true);
+    assert.equal(gc.maxConfigurableCreatorFeeBps, 300);
     const p = role('mainnet/config/pump_global.json', 'pump_global');
     const pg = as(d.decodeAccount(p.owner, bytes(p)), 'pump_global');
     assert.equal(typeof pg.raw.fee_basis_points, 'bigint');

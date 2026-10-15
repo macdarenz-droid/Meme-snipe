@@ -11,11 +11,14 @@ export type DecodedAccount =
   | { kind: 'pump_bonding_curve'; virtualQuote: Lamports; virtualToken: BaseUnits; realQuote: Lamports; realToken: BaseUnits;
       complete: boolean; quoteMint: null /* native SOL: a curve with another quote is unknown (Z03 m6, ruling 17) */; creator: Pubkey }
   | { kind: 'pumpswap_pool'; baseMint: Pubkey; quoteMint: Pubkey; creator: Pubkey; virtualQuoteReserves: bigint /* i128 */;
-      baseVault: Pubkey; quoteVault: Pubkey; lpMint: Pubkey; lpSupply: bigint }
+      baseVault: Pubkey; quoteVault: Pubkey; lpMint: Pubkey; lpSupply: bigint;
+      /* SPEC-A A-M02-02 logic 3 [VF-03], added by card Z07 (A08): the per-pool fee inputs, read at decision time */
+      coinCreator: Pubkey; isMayhemMode: boolean; creatorFeeBps: Bps; canEditCreatorFee: boolean }
   | { kind: 'pump_fee_config'; tiers: Array<{ thresholdLamports: Lamports; lpBps: Bps; protocolBps: Bps; creatorBps: Bps }>;
       flat: { lpBps: Bps; protocolBps: Bps; creatorBps: Bps }; raw: Record<string, unknown> }
   | { kind: 'spl_token_account'; mint: Pubkey; owner: Pubkey; amount: BaseUnits; delegate: Pubkey | null; state: 'initialized' | 'frozen' }
-  | { kind: 'pumpswap_global_config'; disableFlags: number; raw: Record<string, unknown> }
+  | { kind: 'pumpswap_global_config'; disableFlags: number; creatorFeeConfigurable: boolean; maxConfigurableCreatorFeeBps: Bps;
+      raw: Record<string, unknown> }
   | { kind: 'pump_global'; raw: Record<string, unknown> }
   | { kind: 'spl_mint'; tokenProgram: 'spl_token' | 'token_2022'; mintAuthority: Pubkey | null; supply: BaseUnits;
       decimals: number; isInitialized: boolean; freezeAuthority: Pubkey | null; extensionBytes: number }
@@ -133,9 +136,16 @@ function variant(def: IdlTypeDef, idl: PinnedIdl['name'], v: Record<string, unkn
       kind: 'pumpswap_pool', baseMint: v.base_mint as Pubkey, quoteMint: v.quote_mint as Pubkey, creator: v.creator as Pubkey,
       virtualQuoteReserves: v.virtual_quote_reserves as bigint, baseVault: v.pool_base_token_account as Pubkey,
       quoteVault: v.pool_quote_token_account as Pubkey, lpMint: v.lp_mint as Pubkey, lpSupply: v.lp_supply as bigint,
+      coinCreator: v.coin_creator as Pubkey, isMayhemMode: v.is_mayhem_mode as boolean, creatorFeeBps: bps(v.creator_fee_bps),
+      canEditCreatorFee: v.can_edit_creator_fee as boolean,
     };
   }
-  if (key === 'pump_amm.GlobalConfig') return { kind: 'pumpswap_global_config', disableFlags: v.disable_flags as number, raw: v };
+  if (key === 'pump_amm.GlobalConfig') {
+    return {
+      kind: 'pumpswap_global_config', disableFlags: v.disable_flags as number, creatorFeeConfigurable: v.creator_fee_configurable as boolean,
+      maxConfigurableCreatorFeeBps: bps(v.max_configurable_creator_fee_bps), raw: v,
+    };
+  }
   if (key === 'pump_fees.FeeConfig') {
     const tiers = (v.fee_tiers as Array<{ market_cap_lamports_threshold: bigint; fees: unknown }>).map((t) => {
       if (t.market_cap_lamports_threshold > U64_MAX) throw new DecodeError('E_BAD_VALUE', 'a tier threshold above u64');

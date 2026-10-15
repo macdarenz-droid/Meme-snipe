@@ -3818,3 +3818,21 @@ Card IDL-REPIN (`docs/reviews/Z03.md` "IDL-REPIN"; findings in `docs/reviews/VER
 - **Z01-COV-6 · Ratchet.** See Z01-COV-2: the four files outside 100% carry floors.
 - **Z01-COV-3 · CI.** The gate runs as its own job `coverage` in `.github/workflows/ci.yml` (`pnpm test --project blueprint --coverage -t '^(?!.*\[timing\])'`, the same as `pnpm test:coverage`: the workflow policy allows only the pnpm subcommands install, lint, typecheck, test and -r), in parallel with `check` (about 6 min against about 31 min), so the pinned `check` steps and `CI_REQUIRED_STEPS` are unchanged and wall time stays as it was.
 - **Z01-COV-7 · `historical-data` timeout 15 to 30 minutes.** The job timed out mid-suite twice on 15 Oct (#320, and #322's labelled run 38745952625) on commits whose own run passed in 10.7 and 12.5 minutes, and #321 adds tests. Only `timeout-minutes` of that job changed.
+
+## Z07 Venue and pool (2026-10-15, supervisor rulings Z07-1 to Z07-8 on the builder's plan)
+
+- **Z07-1 · Fee placement and rounding.** Follow VF-04 as SPEC-A A-M01-02 logic 4 states it: each fee component rounded up separately, buy fees added on top (swap input q′ − 1), sell fees taken from the gross output. The A-M01-03 logic 2 wording is superseded: clarification C-80.
+- **Z07-2 · Tier at a boundary.** Engine decisions use the dearer tier: at an exact threshold, the dearer of the two adjacent tiers; when the post-trade market cap falls in another tier, the schedule giving the smaller output. Goldens are checked with the chain's own tier rule, and a test asserts the conservative output ≤ the chain output on every golden vector.
+- **Z07-3 · Fail-first evidence when the old code already has the fix.** The evidence is a mutant that reverts the fix, which the test fails, and the real seam, which passes; the mutant is named in the test.
+- **Z07-4 · Fee-schedule versions.** No schema change in Z07. Versions stay in memory and in the log event `m01.fee_config_changed`; a version table for public data is proposed as clarification C-81, to be ruled on later.
+- **Z07-5 · Fixtures.** From recorded mainnet fixtures (`fixtures/mainnet`) and the CORE-2 goldens (imported to `fixtures/core2`, with its README). A synthetic fixture says so in its file and test name. No live capture.
+- **Z07-6 · SDK oracle.** `@pump-fun/pump-swap-sdk` is not added, vendored or run. The CORE-2 goldens (on-chain results) are the oracle. The 1.20.0 tarball (npm sha256 `c558b4fb8ca7f5cdcd7dfaa23a9b026212380ecf2ba54efe651f264745a7a9f1`) was read as a reference; each formula taken from it cites its file and line in `packages/venue/src/fees.ts` and `quote.ts`.
+- **Z07-7 · Property tests.** fast-check 4.10.2 with fixed seeds (deterministic), 10,000 cases each, each test file under about 5 s.
+- **Z07-8 · Provider.** No Shyft key and no live reads in Z07.
+
+Builder notes (for review):
+- The exact-base PumpSwap and curve buys in the goldens (the `buy` instruction) are re-quoted as exact-in at what the trader paid: never more than the program gave, and within 1 bp; below 10,000 lamports, where one lamport is worth more than 1 bp, within four lamports' worth (three dust trades of 162–5,241 lamports). The exact-in buys and all sells match to the raw unit.
+- `@bot/decoders` `pumpswap_pool` gains `coinCreator`, `isMayhemMode`, `creatorFeeBps`, `canEditCreatorFee` and `pumpswap_global_config` gains `creatorFeeConfigurable`, `maxConfigurableCreatorFeeBps`, as SPEC-A A-M02-02 logic 3 [VF-03] already requires; a `creator_fee_bps` above 10,000 decodes as `unknown` (fail closed).
+- `MINTS.usdc` [EX-10] and `DEFAULT_PUBKEY` join the constants registry; USDC-quoted canonical pools are `E_FEE_UNKNOWN` (stable tiers are not modelled). The SDK's SOL-like set also holds the zero key and the Token-2022 native mint; only wSOL pools pass orientation (A-M01-04), so any other non-USDC quote mint is priced as exotic.
+- Bug B2's quote half: `exitableQuoteLamports` is the real vault (0.27 SOL on the drained pool), with the old Zeroed `quoteReserve` (effective reserve, 17.85 SOL) rejected by the same test. The H8 depth half belongs to A-M06-04.
+- The curve's completing buy is capped at the real tokens left (A-M01-03 logic 7, research only): it is priced at the exact-tokens rule floor(t × Q / (B − t)) + 1 and pays less than the spend.

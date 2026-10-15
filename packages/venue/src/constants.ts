@@ -37,7 +37,11 @@ export const PROGRAMS = Object.freeze({
 
 export const MINTS = Object.freeze({
   wsol: 'So11111111111111111111111111111111111111112',               // [DA-V01]
+  usdc: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',              // [EX-10]: pump Global.whitelisted_quote_mints; PumpSwap prices it on stable tiers (card Z07)
 } as const satisfies Record<string, Pubkey>);
+
+/** `Pubkey::default()` (32 zero bytes): an unset `coin_creator` or creator charges no creator fee [VF-04] (card Z07). */
+export const DEFAULT_PUBKEY: Pubkey = '11111111111111111111111111111111';
 
 export const ACCOUNTS = Object.freeze({
   pumpGlobal: '4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf',           // ["global"] under pumpCurve [EX-01]
