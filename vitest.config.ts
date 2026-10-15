@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { configDefaults, defineConfig } from 'vitest/config';
+import { parsePureList } from './tools/purelist/list.ts';
 
 // Light and CPU-heavy suites share the default sequence group and its two-worker pool, with separate timeout defaults.
 // Heap and relative-time measurements run afterward, alone, so another file's allocations do not distort their limits.
@@ -26,26 +28,22 @@ const MEASUREMENTS = [
 const BLUEPRINT_PACKAGES = ['types', 'botctl', 'contract', 'dashboard', 'decoders', 'engine', 'exitpath', 'research', 'sentinel', 'signer', 'venue'];
 const BLUEPRINT = [...BLUEPRINT_PACKAGES.map((p) => `packages/${p}/test/**/*.test.ts`), 'tools/**/test/**/*.test.ts'];
 
-// B-M30-01 coverage gate (Z01-COV): 100% branch coverage on every file of tools/pure-files.txt, per file. It runs
-// only with `pnpm test:coverage` (`--coverage`); `pnpm test` is unchanged. Each line is `<glob>  # <reason>`; a line
-// without a reason fails here, so the list cannot grow silently.
-const PURE_FILES = readFileSync(new URL('./tools/pure-files.txt', import.meta.url), 'utf8')
-  .split('\n')
-  .filter((line) => line.trim() !== '' && !line.startsWith('#'))
-  .map((line) => {
-    const [glob, reason] = line.split('  # ');
-    if (glob === undefined || glob.trim() === '' || reason === undefined || reason.trim() === '') throw new Error(`tools/pure-files.txt: a line needs "<glob>  # <reason>": ${line}`);
-    return glob.trim();
-  });
+// B-M30-01 coverage gate (Z01-COV): 100% branch coverage per file on the files of tools/purelist/pure-files.txt, and a
+// floor (a ratchet) on the few files whose line says `min=`. It runs only with `pnpm test:coverage` (`--coverage`);
+// `pnpm test` is unchanged. tools/purelist/list.ts refuses a line without a reason and an entry that matches no file.
+const PURE = parsePureList(readFileSync(new URL('./tools/purelist/pure-files.txt', import.meta.url), 'utf8'), fileURLToPath(new URL('.', import.meta.url)));
+// One threshold group per file: vitest also applies a global threshold to files that a glob group matches, so a floor
+// below 100 cannot sit beside a global `branches: 100`. Each file is its own group, checked as a file.
+const THRESHOLDS = Object.fromEntries(PURE.map((e) => [e.path, { branches: e.min, perFile: true }]));
 
 export default defineConfig({
   test: {
     coverage: {
       provider: 'v8',
-      include: PURE_FILES,
+      include: PURE.map((e) => e.path),
       exclude: ['**/test/**', '**/node_modules/**'],
       reporter: ['text-summary', 'json-summary'],
-      thresholds: { perFile: true, branches: 100 },
+      thresholds: THRESHOLDS,
     },
     projects: [
       {

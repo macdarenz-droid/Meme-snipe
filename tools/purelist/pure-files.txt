@@ -1,12 +1,13 @@
-# Files held to 100% branch coverage, one path per line: `<path>  # <reason>`.
+# Files held to 100% branch coverage, one path per line: `<path>  # <reason>` (tools/purelist/list.ts checks the format;
+# a path that matches no file fails the config).
 # Rule (SPEC-B Common DoD #8, ARCH 16.1, SPEC-A 318 and 640; supervisor rulings Z01-COV-1 and Z01-COV-2): pure functions
 # (quote maths, fee tiers, minOut, cost model, statistics, state transitions) and decoders. A file that only computes from
 # its inputs belongs here; a file with I/O or side effects does not. `vitest.config.ts` reads this list for
 # `pnpm test:coverage`, which fails when any listed file has a branch no test reaches. The list is a guarded file: a
 # change needs the review label.
-# Four in-category files are NOT listed because 15 of their branches cannot be reached by any test: m13/stats/special.ts,
-# m13/stats/intervals.ts, decoders/src/events.ts and m10/latency.ts (docs/DECISIONS.md "Z01-COV"). They join this list when
-# a reviewed card that changes them for its own reasons removes those branches.
+# Four in-category files hold 15 branches that no test can reach (docs/DECISIONS.md "Z01-COV"). They are listed with a floor
+# (`min=`, their branch percentage when the ratchet was set, rounded down), so a regression in their reachable branches
+# fails the job. They move to 100 when a reviewed card that changes them for its own reasons removes those branches.
 packages/decoders/src/accounts.ts  # decoders: account decoding (SPEC-A 640)
 packages/decoders/src/codec.ts  # decoders: the byte codec (SPEC-A 640)
 packages/decoders/src/decoders.ts  # decoders: the decoder set (SPEC-A 640)
@@ -22,3 +23,7 @@ packages/engine/src/m13/stats/sharpe.ts  # statistics: PSR, DSR, MinTRL, MinBTL 
 packages/engine/src/m10/rng.ts  # the seeded random generator: a pure state transition (A-M10-01 logic 1)
 packages/engine/src/m10/params.ts  # cost-model and fill-model parameter checks and versions: pure validation (A-M10-01 logic 2-4)
 packages/engine/src/m15/slot-time.ts  # slot-to-time and time-to-slot maths (B-M15-01, C-61)
+packages/engine/src/m13/stats/special.ts  min=89.74  # statistics: special functions; 8 unreachable branches (DECISIONS Z01-COV-2)
+packages/engine/src/m13/stats/intervals.ts  min=97.95  # statistics: intervals and bootstraps; 2 unreachable branches (DECISIONS Z01-COV-2)
+packages/decoders/src/events.ts  min=98.85  # decoders: event decoding; 3 unreachable branches (DECISIONS Z01-COV-2; SPEC-A 640)
+packages/engine/src/m10/latency.ts  min=96.29  # latency model maths; 1 unreachable branch (DECISIONS Z01-COV-2)

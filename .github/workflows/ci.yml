@@ -94,7 +94,9 @@ jobs:
       - name: Install (frozen lockfile; .npmrc ignore-scripts)
         run: pnpm install --frozen-lockfile
       - name: Branch coverage of the pure-function files
-        run: pnpm test --project blueprint --coverage
+        # The timing-budget tests (name marker "[timing]") run in check only: v8 instrumentation slows them past their budgets
+        # (docs/DECISIONS.md Z01-COV-5).
+        run: pnpm test --project blueprint --coverage -t '^(?!.*\[timing\])'
 
   dashboard:
     # Dashboard browser tests (UI-T01 acceptance 4; card Z05): end-to-end with axe accessibility checks, then screenshot

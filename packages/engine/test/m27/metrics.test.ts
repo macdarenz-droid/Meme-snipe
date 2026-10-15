@@ -323,7 +323,7 @@ describe('1 s history and 1-minute rollups (B-M27-01 logic 2)', () => {
       [[Date.UTC(2026, 9, 7, 12, 0, 0), 100], [Date.UTC(2026, 9, 7, 12, 2, 0), 200]]);
   });
 
-  it('reads only the stored hours, whatever range is asked for (review m6)', () => {
+  it('reads only the stored hours, whatever range is asked for (review m6) [timing]', () => {
     const { reg, clock } = registry();
     reg.gauge('rss_bytes', {}).set(3);
     reg.tick();

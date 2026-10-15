@@ -498,7 +498,7 @@ describe('A-M02-03 untrusted traces and hostile data (review C03 R2, R9)', () =>
     assert.ok(gaps.length >= 1 && gaps.every((g) => g === 'bad_trace'), gaps.join());
   });
 
-  it('reads and decodes a transaction carrying 62 inner instructions of 10 KiB within the time budget', { timeout: 2_000 }, async () => {
+  it('reads and decodes a transaction carrying 62 inner instructions of 10 KiB within the time budget [timing]', { timeout: 2_000 }, async () => {
     const rec = CURVE_TRADES[0] as TxRecord;
     const json = JSON.parse(JSON.stringify(rec.json)) as { transaction: { message: { accountKeys: string[] } }; meta: { innerInstructions: Array<{ instructions: unknown[] }> } };
     const keys = json.transaction.message.accountKeys;
