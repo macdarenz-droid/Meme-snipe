@@ -138,6 +138,9 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 12:19 AM: #323 merged at `d36dd320`** (ls-remote). CI green on `5c949c81`, e2e included. Builder and reviewer/red team archived; unsubscribed.
+  - Next: the push e2e on `d36dd320` becomes the gate's e2e verdict. When it is green, ask the owner for "ready" again before a second Deploy, because the owner must be at the console for `zeroed-backup-code` (rule of 9 Oct).
+  - Check-in `send_later` at about 12:54 AM.
 - **16 Oct 12:14 AM: #323 E2E-OFFSITE** `5c949c81`: review + red team PASS (`session_01MrbaJAiSgAUZKrPw1XhYfz`). PR e2e green: it deployed `cf508be1` with offsite true and took the ON branch. It merges when `check` is green.
   - Its 3 MINORs are a tracked follow-up for the next ops card; none hides a failure:
     - the ops-files.test.ts:219 text check also covers the disable-on-false line (install.sh:4124);
