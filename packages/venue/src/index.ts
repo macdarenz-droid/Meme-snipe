@@ -3,3 +3,5 @@ export * from './constants.ts';
 export * from './pool.ts';
 export * from './fees.ts';
 export * from './quote.ts';
+export * from './orientation.ts';
+export * from './guard.ts';

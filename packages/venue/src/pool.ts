@@ -23,6 +23,8 @@ export interface CpPoolState {
   baseDecimals: number | null;
   /** NEW (Z07): pump curve `real_token_reserves` (a buy is capped to it); null for PumpSwap. */
   realBaseReserve: BaseUnits | null;
+  /** NEW (Z07, C-83): a PumpSwap pool whose base mint is wSOL, read with the roles swapped; its fee is not modelled. */
+  swappedMints: boolean;
 }
 
 /** The fixed supply a mayhem pool's tier uses [VF-04]. */

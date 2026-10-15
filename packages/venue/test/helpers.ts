@@ -30,7 +30,7 @@ export function pool(over: Partial<CpPoolState> = {}): CpPoolState {
     baseReserve: 200_000_000_000_000n, quoteReserveReal: 60n * SOL, quoteReserveVirtual: 17_584_326_063n,
     baseMintSupply: 1_000_000_000_000_000n, isCanonical: true, curveComplete: null,
     asOfSlot: 1_000n as Slot, commitment: 'confirmed', observedAtMs: 0 as UnixMs,
-    coinCreatorSet: true, creatorFeeBps: 0, isMayhemMode: false, baseDecimals: 6, realBaseReserve: null,
+    coinCreatorSet: true, creatorFeeBps: 0, isMayhemMode: false, baseDecimals: 6, realBaseReserve: null, swappedMints: false,
     ...over,
   };
 }

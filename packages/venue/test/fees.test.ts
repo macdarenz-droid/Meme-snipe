@@ -204,6 +204,7 @@ describe('A-M01-02 tiers', () => {
     assert.deepEqual([flat.value.lpBps, flat.value.protocolBps, flat.value.creatorBps], [25, 5, 0]);
     const unknown = (p: ReturnType<typeof pool>, i: FeeInputs = INPUTS) => { const f = feeScheduleFor(p, i); assert.ok(!f.ok && f.error.code === 'E_FEE_UNKNOWN', JSON.stringify(f)); };
     unknown(pool({ isCanonical: null }));
+    unknown(pool({ swappedMints: true, isCanonical: false }));                       // C-83
     unknown(pool({ quoteMint: MINTS.usdc }));
     unknown(pool({ venue: 'raydium_cpmm' }));
     unknown(pool(), { ...INPUTS, pumpswap: null });

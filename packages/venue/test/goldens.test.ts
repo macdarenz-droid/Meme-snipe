@@ -22,7 +22,7 @@ interface VaultDelta { signature: string; eventIndex: number; quotePre: string; 
 const G = readJson<{ curve: CurveVector[]; pumpswap: PoolVector[]; vaultDeltas: VaultDelta[] }>('fixtures/core2/golden.json');
 const n = (s: string | undefined): bigint => BigInt(s ?? 'missing');
 const TOKEN_SUPPLY = n(readJson<Str>('fixtures/core2/pump-global.json').tokenTotalSupply);
-const common = { asOfSlot: 0n as Slot, commitment: 'confirmed' as const, observedAtMs: 0 as UnixMs, baseDecimals: 6, isMayhemMode: false };
+const common = { asOfSlot: 0n as Slot, commitment: 'confirmed' as const, observedAtMs: 0 as UnixMs, baseDecimals: 6, isMayhemMode: false, swappedMints: false };
 
 /** The pre-swap pool a PumpSwap event was priced on. */
 const poolOf = (v: PoolVector): CpPoolState => ({

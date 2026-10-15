@@ -114,6 +114,7 @@ export function feeFamily(p: CpPoolState, inputs: FeeInputs): Result<FeeFamily, 
     if (p.venue !== 'pumpswap') return unknownFee(`no fee rules for ${p.venue} until A-M01-06`);
     if (inputs.pumpswap === null) return unknownFee('PumpSwap fee config not read');
     if (p.isCanonical === null) return unknownFee('canonicality unknown');
+    if (p.swappedMints) return unknownFee('fees on a pool with swapped mints are charged on the program sides, not modelled (C-83)');
     cfg = inputs.pumpswap;
     flat = cfg.flat;                                                                  // non-canonical [EX-08]
     if (p.isCanonical && p.quoteMint === MINTS.wsol) {
