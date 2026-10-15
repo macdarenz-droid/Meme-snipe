@@ -1,4 +1,4 @@
-// A-M03-04 (card Z08): the DexScreener coverage cross-check, through the real M14 service client (150 a minute) and a
+// A-M03-04 (card Z08): the DexScreener coverage cross-check, through the real M14 service client (30 a minute, ruling Z08-30) and a
 // mock fetch; no network. The vendor answers are SYNTHETIC, in the documented field names [VF-15].
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
@@ -38,7 +38,25 @@ describe('A-M03-04 DexScreener cross-check (synthetic vendor answers)', () => {
     assert.deepEqual(r.poolsOnlyInVendor, [{ mint: m2, pairAddress: key(12), dexId: 'pumpswap' }]);
     assert.deepEqual([r.checkedMints, r.otherDexPairs, r.status], [2, 1, 'ok']);   // the unasked mint's pair is ignored
     assert.equal(t.urls[0], `https://api.dexscreener.com/tokens/v1/solana/${m1},${m2}`);
-    assert.ok(t.log.events.some((e) => e.code === 'm03.coverage_cross_check' && e.fields.status === 'ok'));
+    assert.ok(t.log.events.some((e) => e.code === 'm03.coverage_cross_check' && e.fields.status === 'ok' && e.fields.other_dex_pairs === 1));
+  });
+
+  it('Z08-30: a pool we know listed under a non-PumpSwap dexId gives dex_id_mismatch and is logged with otherDexPairs', async () => {
+    const [m1, m2] = [key(1), key(2)];
+    const t = setup(() => json([pair(m1, key(11), 'pumpfun-amm'), pair(m2, key(12), 'pumpfun-amm')]));
+    const r = await t.cc.crossCheck([m1, m2], new Set([key(11)]));
+    assert.deepEqual([r.status, r.otherDexPairs, r.poolsOnlyInVendor.length], ['dex_id_mismatch', 2, 0]);
+    const e = t.log.events.find((x) => x.code === 'm03.coverage_cross_check');
+    assert.deepEqual([e?.level, e?.fields.other_dex_pairs, e?.fields.known_pools_under_other_dex, e?.fields.status], ['warn', 2, 1, 'dex_id_mismatch']);
+    // An unknown pool under another dexId is only counted.
+    const u = setup(() => json([pair(m2, key(12), 'raydium')]));
+    assert.equal((await u.cc.crossCheck([m2], new Set([key(11)]))).status, 'ok');
+    // A partial answer stays partial (the mismatch is still in the log).
+    let n = 0;
+    const p = setup(() => { n += 1; return n === 1 ? json([pair(m1, key(11), 'pumpfun-amm')]) : new Response('', { status: 429 }); });
+    const pr = await p.cc.crossCheck(Array.from({ length: 31 }, (_, i) => key(i + 1)), new Set([key(11)]));
+    assert.equal(pr.status, 'partial');
+    assert.equal(p.log.events.find((x) => x.code === 'm03.coverage_cross_check')?.fields.known_pools_under_other_dex, 1);
   });
 
   it('at most 30 mints a call; malformed vendor entries are skipped; vendor data never becomes a pool', async () => {

@@ -1,5 +1,5 @@
 // A-M14-03 (card Z08): service HTTP clients and the Jupiter exit budget. Acceptance bullets of SPEC-A A-M14-03 and the
-// rate pins of ruling Z08-10 (DexScreener ≤ 150/min) each have a named case. No network: a mock fetch answers.
+// rate pins of rulings Z08-10 and Z08-30 (DexScreener ≤ 30/min, Shyft ≤ 5 req/s, Chainstack ≤ 0.5 req/s) each have a named case. No network: a mock fetch answers.
 import { strict as assert } from 'node:assert';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
@@ -8,6 +8,8 @@ import { monthlyCapOn, openUsageLedger } from '../../src/m24/usage-ledger.ts';
 import {
   createServiceClients, EXIT_WORK_EXPIRY_MS, redactUrl, SERVICE_LIMITS, type HttpFetch, type ServiceConfig, type ServiceDeps,
 } from '../../src/m14/services.ts';
+import { DEFAULT_PROVIDERS } from '../../src/m14/defaults.ts';
+import { validateProviderConfigs } from '../../src/m14/providers.ts';
 import { tempDir } from '../helpers.ts';
 import { FakeTime, flush, RecordingLog, RecordingMetrics } from './helpers.ts';
 
@@ -127,13 +129,13 @@ describe('A-M14-03 limits (≤ 50% of documented; ruling Z08-10 pins)', () => {
     assert.throws(() => setup({ coingeckoMonthlyCap: 2_001 }), RangeError);
   });
 
-  it('pin: DexScreener pairs/tokens run at ≤ 150 per minute (151st waits), profiles at 30', async () => {
-    assert.deepEqual([SERVICE_LIMITS.dexscreener.pairs.count, SERVICE_LIMITS.dexscreener.pairs.windowMs], [150, 60_000]);
+  it('pin (Z08-30): DexScreener pairs/tokens run at ≤ 30 per minute (31st waits), profiles at 30', async () => {
+    assert.deepEqual([SERVICE_LIMITS.dexscreener.pairs.count, SERVICE_LIMITS.dexscreener.pairs.windowMs], [30, 60_000]);
     assert.deepEqual([SERVICE_LIMITS.dexscreener.profiles.count, SERVICE_LIMITS.dexscreener.profiles.windowMs], [30, 60_000]);
     const { svc, time } = setup();
-    for (let i = 0; i < 150; i += 1) assert.ok((await svc.http('dexscreener', GET('/tokens/v1/solana/x', 'pairs'), { priority: 3, timeoutMs: 120_000 })).ok);
+    for (let i = 0; i < 30; i += 1) assert.ok((await svc.http('dexscreener', GET('/tokens/v1/solana/x', 'pairs'), { priority: 3, timeoutMs: 120_000 })).ok);
     const late = await svc.http('dexscreener', GET('/tokens/v1/solana/x'), { priority: 3, timeoutMs: 1_000 });
-    assert.ok(!late.ok && late.error.message === 'window_full');          // 151st cannot start within its 1 s timeout
+    assert.ok(!late.ok && late.error.message === 'window_full');          // 31st cannot start within its 1 s timeout
     const t0 = time.now;
     assert.ok((await settle(time, svc.http('dexscreener', GET('/tokens/v1/solana/x'), { priority: 3, timeoutMs: 120_000 }))).ok);
     assert.ok(time.now - t0 >= 59_900);
@@ -141,6 +143,13 @@ describe('A-M14-03 limits (≤ 50% of documented; ruling Z08-10 pins)', () => {
     assert.equal((await svc.http('dexscreener', GET('/token-profiles/latest/v1', 'profiles'), { priority: 3, timeoutMs: 1_000 })).ok, false);
     const r = svc.remaining();
     assert.deepEqual(r.find((x) => x.bucket === 'profiles'), { service: 'dexscreener', bucket: 'profiles', left: 0 });
+  });
+
+  it('pin (Z08-10, duplicated from Z03): Shyft runs at ≤ 5 req/s and Chainstack at ≤ 0.5 req/s', () => {
+    const r = validateProviderConfigs(DEFAULT_PROVIDERS, { context: 'engine' });
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.deepEqual(r.value.map((c) => [c.label, c.limits.rps]), [['shyft', 5], ['chainstack', 0.5]]);
+    for (const c of r.value) assert.ok(c.limits.rps <= ({ shyft: 5, chainstack: 0.5 } as Record<string, number>)[c.label]!);
   });
 
   it('pin: Jupiter keyed 30 / keyless 15 per 60 s, execute 25 / 10 per second; RugCheck 7/min', async () => {

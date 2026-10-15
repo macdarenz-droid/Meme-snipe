@@ -44,7 +44,9 @@ export interface WindowLimit { count: number; windowMs: number; fact: string }
  * - Jupiter one shared bucket for Swap, Price and Tokens per organisation, 60 s sliding: keyed 1 req/s → 30 per 60 s,
  *   keyless 0.5 req/s → 15 per 60 s; `/swap/v2/execute` its own bucket, documented 50 req/s free-keyed and 20 keyless
  *   (EX-29 states requests per second) → 25 / 10 per second [EX-29, DA-29, DA-30].
- * - DexScreener 300/min for pairs, tokens and search → 150; 60/min for profiles and similar → 30 [DA-26, VF-15].
+ * - DexScreener: 30/min for pairs, tokens and search, and 30/min for profiles and similar [DA-26, VF-15]. The 300/min the
+ *   register gives /tokens is UNVERIFIED (the only limit on the official reference page is 60/min), so ruling Z08-30
+ *   holds every bucket at 30, half of the one confirmed figure, until a source confirms the /tokens limit (SPEC-A C-95).
  * - RugCheck: a header limit of 15 with an undocumented window [TH-21], read as 15/min → 7/min.
  * - CoinGecko Demo 100/min → 50/min [DA-27], plus the monthly cap.
  */
@@ -53,7 +55,7 @@ export const SERVICE_LIMITS = {
     keyed: { shared: { count: 30, windowMs: 60_000, fact: 'EX-29' }, execute: { count: 25, windowMs: 1_000, fact: 'EX-29' } },
     keyless: { shared: { count: 15, windowMs: 60_000, fact: 'EX-29' }, execute: { count: 10, windowMs: 1_000, fact: 'EX-29' } },
   },
-  dexscreener: { pairs: { count: 150, windowMs: 60_000, fact: 'DA-26' }, profiles: { count: 30, windowMs: 60_000, fact: 'DA-26' } },
+  dexscreener: { pairs: { count: 30, windowMs: 60_000, fact: 'DA-26' }, profiles: { count: 30, windowMs: 60_000, fact: 'DA-26' } },
   rugcheck: { count: 7, windowMs: 60_000, fact: 'TH-21' },
   coingecko: { count: 50, windowMs: 60_000, fact: 'DA-27' },
 } as const;

@@ -1,6 +1,6 @@
 // A-M07-02 (card Z08): segment writer, manifests and crash recovery. Acceptance bullets of SPEC-A A-M07-02, its
 // failure injections (kill during write, fsync error, disk full) and the Zeroed bug of MIGRATION's A-M07-02 row (OOM/RTC:
-// a kill mid-segment left no partial manifest and could duplicate records; fail-before run recorded in the Z08 PR).
+// a kill mid-segment left no partial manifest and could duplicate records; fail-before run on Zeroed's recorder recorded in DECISIONS Z08-29).
 import { strict as assert } from 'node:assert';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -181,7 +181,16 @@ describe('A-M07-02 segment writer', () => {
     w.flush();
     const [after] = w.rotate();
     assert.equal(after?.firstSeq, (BigInt(m.lastSeq as string) + 1n).toString());
-    const seqs = [...decoded, ...readLines(dir, '2026-10-15/10/decision.ndjson.gz').slice(decoded.length)].map((l) => JSON.parse(l).seq as string);
+    // Review on b55a3394: the restart writes a new part, never the recovered one, and the counts hold on both sides.
+    assert.equal(after?.path, '2026-10-15/10/decision.p1.ndjson.gz');
+    assert.equal(after?.records, 1);
+    const afterLines = readLines(dir, after.path);
+    assert.equal(afterLines.length, after.records);
+    assert.equal(createHash('sha256').update(fs.readFileSync(join(dir, rel))).digest('hex'), m.sha256);   // part 0 untouched
+    const index = (JSON.parse(fs.readFileSync(join(dir, '2026-10-15/index.json'), 'utf8')) as Array<{ path: string }>).map((x) => x.path).filter((x) => x.includes('/decision.'));
+    assert.deepEqual(index, [rel, after.path]);                           // one index entry per part
+    const seqs = [...decoded, ...afterLines].map((l) => JSON.parse(l).seq as string);
+    assert.equal(seqs.length, m.records + after.records);
     assert.equal(new Set(seqs).size, seqs.length);
     // The time since the newest record is a process_down gap on every stream that wrote after the restart.
     assert.deepEqual(after?.gaps, [{ fromMs: m.lastRecvMs, toMs: now.t, reason: 'process_down' }]);

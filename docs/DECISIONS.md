@@ -3977,3 +3977,31 @@ Builder notes (for review):
   - `recorder.record_max_bytes` is capped at 1 MiB (`RECORD_MAX_BYTES_CAP`, `E_CONFIG` above it), so a recorded line always stays well under 4 MiB.
   - The cap was not in SPEC-A; the default (64 KiB) is unchanged.
   - Tests cover both caps at their default and injected values, writer splitting, and the config refusal.
+
+### Z08 review (#327 reviewer at b55a3394: its BLOCKER, the same-hour reopen, is the red team's Z08-13, already fixed; supervisor rulings Z08-29 and Z08-30)
+
+- **Review asserts added to the kill test** (`test/m07/z08-segments.test.ts`, A-M07-02 Zeroed OOM/RTC case). After the kill and restart:
+  - the new run writes part `p1` and never the recovered part;
+  - `after.records` is 1 and equals p1's decoded lines;
+  - part 0's bytes still hash to its recovered manifest, so it was not reopened, and a receipt signed for it stays valid for exactly those bytes;
+  - the day index lists each part once;
+  - the seqs over both parts number `m.records + after.records`, with none repeated.
+
+  Before, the seq check read part 0 a second time, so the restarted run's records were never checked. No reopened segment can be deleted: segments are never reopened (Z08-13), and the disk manager never touches the current hour or an open file (Z08-16).
+- **Z08-29 · MAJOR, the fail-before is run on Zeroed's recorder** (MIGRATION Rules item 1; A-M07-02 is "adapt (recorder seal)"). The Z08 kill test was rerun against `packages/worker/src/run/recorder.ts` at 11104c15. Setup:
+  - a child process runs `new Recorder({ rotateBytes: 1 GiB })`, writes `delay` rows with a flush every 50, and is killed with SIGKILL while writing;
+  - the next start runs `sealLeftovers`;
+  - the script is in the PR thread.
+
+  Result on the old code:
+  - The torn last line is cut, every kept line is JSON, and no row is repeated inside the file. Passes.
+  - The manifest's counts for the boot: `units[0]` reads frames 0, raw 0 and releases 0, and `days[].rows` is `{}`, while the sealed `delays-000.jsonl.zst` decodes to 60,750 rows. `sealBoot` counts `delays` and `pre` rows but writes only frames, raw and releases, so a manifest's count disagrees with the decoded lines. **Fails.**
+  - There is no per-file record count, seq range or slot range. **Fails.**
+  - The crash gap is one boot-level line, "worker stopped without a clean stop; files sealed at the next start", with no time range. **Fails.**
+  - There is no seq, so "no record is duplicated across the restart" cannot be checked from the manifest. **Fails.**
+
+  The same test passes on the new writer. A-M14-05 stays shown from the cited code (supervisor).
+- **Z08-30 · MINOR, DexScreener reporting and budget.**
+  - `crossCheck` logs `other_dex_pairs` and `known_pools_under_other_dex`. A pool we know that comes back under a dexId not configured as PumpSwap's sets `status = 'dex_id_mismatch'`, which is a warning. A partial answer stays `partial`, with the count in the log.
+  - Budget: the register's 300/min for `/tokens` is UNVERIFIED; the only limit on the official reference page is 60/min. Under the owner's 50% rule, every DexScreener bucket runs at 30/min (`SERVICE_LIMITS.dexscreener.pairs` from 150 to 30). This is pinned in `z08-services.test.ts`, the 31st call waits, and SPEC-A C-95 and A-M14-03 note the open VERIFY. This replaces the 150/min of Z08-10.
+  - The Shyft (≤ 5 req/s) and Chainstack (≤ 0.5 req/s) pins are duplicated into `z08-services.test.ts`, as Z08-10 said; Z03 keeps its own.
