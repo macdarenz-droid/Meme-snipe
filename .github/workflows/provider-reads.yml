@@ -1,0 +1,27 @@
+name: Provider reads
+
+# Manual only (M0 exit clause "two free providers answer reads"). One getSlot and one getHealth through each of the two
+# default providers, under the m14 rate limiter. Prints PASS or FAIL, the slot and the latency per provider; never a URL,
+# key, header or body. Fails unless both pass.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reads:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Read check
+        env:
+          RPC_SHYFT_URL: ${{ secrets.RPC_SHYFT_URL }}
+          RPC_CHAINSTACK_URL: ${{ secrets.RPC_CHAINSTACK_URL }}
+        run: node --no-warnings packages/engine/scripts/provider-reads.ts
