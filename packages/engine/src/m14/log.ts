@@ -17,4 +17,12 @@ export const M14_LOG_CODES = {
       hold_ms: 'integer',
     },
   },
+  // A-M14-05 (card Z08)
+  'm14.ledger_unavailable': { fields: { provider: 'name' } },
+  'm14.ledger_recovered': { fields: { provider: 'name' } },
+  'm14.credit_cap_reached': { fields: { provider: 'name', method: 'name', units: 'integer' } },
+  'm14.burn_projection': { fields: { provider: 'name', projected: 'integer', allowance: 'integer', alert_bps: 'integer' } },
+  'm14.mode_changed': { fields: { rpc_mode: 'symbol', reason: 'symbol' } },
+  'm14.all_providers_down': { fields: {} },
+  'm14.providers_recovered': { fields: {} },
 } as const satisfies LogCodes;

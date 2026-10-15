@@ -51,8 +51,10 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
       'm27.ring_budget_bytes', 'm27.rollup_max_bytes', 'm27.series_cap',
       // Z03 (A-M14-01/02): read-path plumbing; backtest and replay make no RPC call, and the live read path's limits are
       // the owner's data-source rule, not a strategy parameter.
+      'rpc.allocation_file', 'rpc.burn.alert_bps', 'rpc.chainstack.rolling_31d_ru_cap',
       'rpc.default_timeout_ms.p0', 'rpc.default_timeout_ms.p1', 'rpc.default_timeout_ms.p2', 'rpc.default_timeout_ms.p3', 'rpc.default_timeout_ms.p4',
-      'rpc.max_response_bytes', 'rpc.p0_reserve_bps', 'rpc.providers_file', 'rpc.send_enabled',
+      'rpc.degraded.enter_after_ms', 'rpc.degraded.exit_after_ms', 'rpc.health.down_after_ms', 'rpc.helius.rolling_31d_credit_cap',
+      'rpc.max_response_bytes', 'rpc.p0_reserve_bps', 'rpc.providers_file', 'rpc.reserve_block_units', 'rpc.send_enabled',
     ]);
   });
 

@@ -213,6 +213,7 @@ export const METRICS = {
   fresh_read_stale_total: counter(),
   exit_read_lag_slots: histogram(BUCKETS.slots),
   pool_source_kind: gauge('kind'),                              // A-M04-03
+  rpc_credit_refused_total: counter('provider'),                // A-M14-05 (card Z08): refused by the account ledger before sending
 } as const;
 
 export type MetricName = keyof typeof METRICS;
