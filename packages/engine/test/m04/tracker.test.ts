@@ -1160,8 +1160,15 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     const tip = { snapshot: x.error.snapshot, proceedsLamports: sellOut(x.error.snapshot.pool) };
     const partner = { snapshot: x.error.underCeiling, proceedsLamports: sellOut(x.error.underCeiling.pool) };
     const worseMinOut = (tip.proceedsLamports * 9_900n) / 10_000n;
-    const d = decideClockExit('a', tip, partner, worseMinOut, 2_500, { partnerAgeMs: age, freshWithinMs: x.error.partnerFreshWithinMs as number, flooredReverts: 0 }, { event: () => {} });
+    const lines: Array<Record<string, unknown>> = [];
+    const d = decideClockExit('a', tip, partner, worseMinOut, 2_500,
+      { partnerAgeMs: age, freshWithinMs: x.error.partnerFreshWithinMs as number, flooredReverts: 0, slotGap: x.error.slotGap as bigint }, { event: (_l, _c, f) => { lines.push({ ...f }); } });
     assert.equal(d.floorApplied, false);
+    // Z07-38: the slot gap between the two reads is carried and logged (the backup's 2,049 − the stored 2,000), and
+    // changes nothing.
+    assert.equal(x.error.slotGap, x.error.snapshot.providerSlot - x.error.underCeiling.providerSlot);
+    assert.equal(x.error.slotGap, 49n);
+    assert.equal(lines[0]?.slot_gap, 49n);
     assert.ok(d.minOutLamports <= tip.proceedsLamports, `${d.minOutLamports} > ${tip.proceedsLamports}`);   // it lands
     s.tracker.stop();
   });

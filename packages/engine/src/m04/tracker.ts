@@ -41,6 +41,8 @@ export type FreshReadError<P extends PoolStateLike = PoolStateLike> =
      * (`stale_age_ms` + the pool's class interval); pass both to `decideClockExit`. Null with no partner.
      */
     partnerFreshWithinMs: number | null;
+    /** Ruling Z07-38: `snapshot.providerSlot − underCeiling.providerSlot`, for `decideClockExit`'s log only. Null with no partner. */
+    slotGap: bigint | null;
   };
 
 export interface PoolTracker<P extends PoolStateLike> {
@@ -561,7 +563,10 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   };
 
   const clockError = (snapshot: PoolSnapshot<P> | null, detail: string, underCeiling: PoolSnapshot<P> | null = null, partnerFreshWithinMs: number | null = null):
-    { ok: false; error: FreshReadError<P> } => ({ ok: false, error: { code: 'E_CLOCK', detail, snapshot, underCeiling, partnerFreshWithinMs } });
+    { ok: false; error: FreshReadError<P> } => ({
+      ok: false,
+      error: { code: 'E_CLOCK', detail, snapshot, underCeiling, partnerFreshWithinMs, slotGap: snapshot === null || underCeiling === null ? null : snapshot.providerSlot - underCeiling.providerSlot },
+    });
 
   async function entryRead(poolId: Pubkey, maxLag: number): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>> {
     const r1 = await readPool(poolId, 1, undefined, false);

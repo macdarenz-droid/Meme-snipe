@@ -26,8 +26,13 @@ export const HARD_SLIPPAGE_CEILING_BPS = 2_500;
 
 export interface ClockExitLog { event(level: 'warn', code: 'm04.exit_clock_prices', fields: Readonly<Record<string, unknown>>): void }
 export interface ClockExitDecision<S> { priced: ExitCandidate<S>; minOutLamports: bigint; floorApplied: boolean }
-/** Ruling Z07-35: how fresh the partner is, and how many times this exit already reverted with the floor. */
-export interface PartnerFreshness { partnerAgeMs: number; freshWithinMs: number; flooredReverts: number }
+/**
+ * Ruling Z07-35: how fresh the partner is, and how many times this exit already reverted with the floor. Ruling Z07-37:
+ * `flooredReverts` is held by the caller per position exit: it survives retries and new freshReads, resets only when the
+ * position closes or the disagreement ends, and is persisted across a restart. Ruling Z07-38: `slotGap` (the tracker's
+ * `E_CLOCK.slotGap`) is logged only.
+ */
+export interface PartnerFreshness { partnerAgeMs: number; freshWithinMs: number; flooredReverts: number; slotGap: bigint }
 /** Ruling Z07-35: after this many reverts with the floor, the exit drops it. */
 export const FLOOR_DROP_AFTER_REVERTS = 2;
 
@@ -52,7 +57,7 @@ export function decideClockExit<S>(pool: string, past: ExitCandidate<S>, under: 
   log.event('warn', 'm04.exit_clock_prices', {
     pool, past_ceiling_proceeds: past.proceedsLamports, under_ceiling_proceeds: under.proceedsLamports,
     decided_on: priced === under ? 'under_ceiling' : 'past_ceiling', min_out: minOutLamports, emergency_slippage_bps: emergencySlippageBps,
-    floor_applied: floorApplied, partner_age_ms: freshness.partnerAgeMs,
+    floor_applied: floorApplied, partner_age_ms: freshness.partnerAgeMs, slot_gap: freshness.slotGap,
   });
   return { priced, minOutLamports, floorApplied };
 }

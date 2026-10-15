@@ -23,7 +23,7 @@ describe('ruling Z07-33: decideClockExit', () => {
   const honest = { snapshot: 'honest', proceedsLamports: 2_000_000n };
   const liar = { snapshot: 'liar', proceedsLamports: 999_999_000n };
   const lowLiar = { snapshot: 'liar', proceedsLamports: 1_000n };
-  const FRESH = { partnerAgeMs: 0, freshWithinMs: 6_000, flooredReverts: 0 };
+  const FRESH = { partnerAgeMs: 0, freshWithinMs: 6_000, flooredReverts: 0, slotGap: 0n };
   const logged = () => { const lines: Array<[string, string, Record<string, unknown>]> = []; return { lines, log: { event: (l: 'warn', c: 'm04.exit_clock_prices', f: Readonly<Record<string, unknown>>) => { lines.push([l, c, { ...f }]); } } }; };
 
   it('decides on the worse proceeds and keeps the worse read\'s minOut when it is above the floor; logs both proceeds', () => {
@@ -31,7 +31,7 @@ describe('ruling Z07-33: decideClockExit', () => {
     const d = decideClockExit('pool', liar, honest, 1_990_000n, 1_500, FRESH, log);
     assert.equal(d.priced, honest);
     assert.equal(d.minOutLamports, 1_990_000n);                      // above 2,000,000 × 85% = 1,700,000
-    assert.deepEqual(lines, [['warn', 'm04.exit_clock_prices', { pool: 'pool', past_ceiling_proceeds: 999_999_000n, under_ceiling_proceeds: 2_000_000n, decided_on: 'under_ceiling', min_out: 1_990_000n, emergency_slippage_bps: 1_500, floor_applied: true, partner_age_ms: 0 }]]);
+    assert.deepEqual(lines, [['warn', 'm04.exit_clock_prices', { pool: 'pool', past_ceiling_proceeds: 999_999_000n, under_ceiling_proceeds: 2_000_000n, decided_on: 'under_ceiling', min_out: 1_990_000n, emergency_slippage_bps: 1_500, floor_applied: true, partner_age_ms: 0, slot_gap: 0n }]]);
   });
 
   it('MINOR-R12: a liar\'s low quote cannot drag minOut under the partner\'s proceeds less the emergency slippage', () => {
@@ -60,13 +60,13 @@ describe('ruling Z07-35: the floor only from a fresh partner, dropped after two 
   const lands = (minOut: bigint): boolean => minOut <= tip.proceedsLamports;
 
   it('a stale partner (older than stale_age_ms + the class interval) sets no floor: the exit lands at the true 0.6 SOL', () => {
-    const d = decideClockExit('pool', tip, partner, worseMinOut, 2_500, { partnerAgeMs: 60_000, freshWithinMs: 6_000, flooredReverts: 0 }, log);
+    const d = decideClockExit('pool', tip, partner, worseMinOut, 2_500, { partnerAgeMs: 60_000, freshWithinMs: 6_000, flooredReverts: 0, slotGap: 0n }, log);
     assert.deepEqual([d.priced, d.floorApplied, d.minOutLamports], [tip, false, worseMinOut]);
     assert.ok(lands(d.minOutLamports));
   });
 
   it('a fresh partner floors minOut (0.75 SOL, so it reverts); after two floored reverts the floor is dropped and the exit lands', () => {
-    const fresh = { partnerAgeMs: 1_000, freshWithinMs: 6_000 };
+    const fresh = { partnerAgeMs: 1_000, freshWithinMs: 6_000, slotGap: 0n };
     const first = decideClockExit('pool', tip, partner, worseMinOut, 2_500, { ...fresh, flooredReverts: 0 }, log);
     assert.deepEqual([first.floorApplied, first.minOutLamports], [true, (3n * SOL) / 4n]);
     assert.ok(!lands(first.minOutLamports));
@@ -77,6 +77,6 @@ describe('ruling Z07-35: the floor only from a fresh partner, dropped after two 
   });
 
   it('an unknown partner age (NaN) is not fresh', () => {
-    assert.equal(decideClockExit('pool', tip, partner, worseMinOut, 2_500, { partnerAgeMs: Number.NaN, freshWithinMs: 6_000, flooredReverts: 0 }, log).floorApplied, false);
+    assert.equal(decideClockExit('pool', tip, partner, worseMinOut, 2_500, { partnerAgeMs: Number.NaN, freshWithinMs: 6_000, flooredReverts: 0, slotGap: 0n }, log).floorApplied, false);
   });
 });
