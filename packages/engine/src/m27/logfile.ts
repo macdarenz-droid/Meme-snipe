@@ -176,7 +176,7 @@ export class FileLogSink implements LogSink {
     this.broken = false;
     this.dayBytes = fstatSync(fd).size;
     const stream = this.opts.createStream?.(this.path(), fd) ?? createWriteStream(this.path(), { fd });
-    stream.on('error', (e) => {
+    stream.on('error', (e: Error) => {
       if (this.stream === stream) this.fail('write', e.message);
       else this.opts.onError?.({ op: 'write', message: e.message });
     });
