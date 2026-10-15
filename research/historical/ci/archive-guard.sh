@@ -97,7 +97,8 @@ ag_days() {
 # pinned. Exactly one id must remain unretired; anything else is unpinned (fail closed).
 ag_pinned_id() {
   local rows ids retired o n od nd bad=0
-  rows=$(sed -n 's/^| \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) | B10-PULL id=\([A-Za-z0-9._:-]\{1,\}\) source=old-faithful .*/\2 \1/p' "$ag_decisions" 2>/dev/null | LC_ALL=C sort -u)
+  # every row counted raw (OFX-12): an id with two rows, even on one date, pins nothing
+  rows=$(sed -n 's/^| \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) | B10-PULL id=\([A-Za-z0-9._:-]\{1,\}\) source=old-faithful .*/\2 \1/p' "$ag_decisions" 2>/dev/null | LC_ALL=C sort)
   ids=$(cut -d' ' -f1 <<< "$rows" | LC_ALL=C uniq)
   [[ $(wc -l <<< "$rows") == $(wc -l <<< "$ids") ]] || return 0
   retired=""
@@ -119,7 +120,9 @@ ag_pinned_rev() {
   local id
   id=$(ag_pinned_id) || return 0
   [[ -n "$id" ]] || return 0
-  sed -n "s/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL id=$id source=old-faithful scannerRev=\([^ |]\{1,\}\) .*/\1/p" "$ag_decisions" 2>/dev/null | head -1
+  # the id is matched exactly, never as a regex (OFX-13: "of.1" must not match "ofX1")
+  sed -n 's/^| [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} | B10-PULL id=\([A-Za-z0-9._:-]\{1,\}\) source=old-faithful scannerRev=\([^ |]\{1,\}\) .*/\1 \2/p' "$ag_decisions" 2>/dev/null |
+    awk -v id="$id" '$1 == id { print $2; exit }'
 }
 # ag_armed: ARCHIVE_ARM is set and is the pinned B10-PULL id; ARCHIVE_REARM_AT is a
 # valid UTC time that is not in the future.

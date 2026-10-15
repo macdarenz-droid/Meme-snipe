@@ -907,7 +907,9 @@ rows = [l for l in lines if re.match(r"\| \d{4}-\d{2}-\d{2} \| B10-PULL id=", l)
 dated = {}
 for l in rows:
     m = re.match(r"\| (\S+) \| B10-PULL id=(\S+) ", l)
-    assert dated.setdefault(m.group(2), m.group(1)) == m.group(1), "id %s pinned under two dates" % m.group(2)
+    # OFX-12: one row per id, counted raw (two rows of one id on one date are refused too)
+    assert m.group(2) not in dated, "id %s has more than one B10-PULL row" % m.group(2)
+    dated[m.group(2)] = m.group(1)
 ids = set(dated)
 # OF-FIX (OFX-3, OFX-7): older pins stay as history, each retired by a pinned row dated on
 # or after it; any other RETIRED row is an error (the guard then pins nothing)
@@ -1225,8 +1227,16 @@ pc='| 2026-10-20 | B10-PULL id=b10pull-c source=old-faithful scannerRev=r3 x | t
 [[ $(pin "$pa$pb$pc| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-20 | B10-PULL-RETIRED id=b10pull-b by=b10pull-c x | t | t |\n") == b10pull-c ]] || bad+=" chain"
 [[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-c x | t | t |\n") ]] || bad+=" by-other"
 [[ -z $(pin "$pa$pb| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" mutual"
+# OFX-12: two rows of one id, even on one date (an EVIL rev first), pin nothing
+[[ -z $(pin '| 2026-10-09 | B10-PULL id=b10pull-a source=old-faithful scannerRev=EVIL x | t | t |\n'"$pa") ]] || bad+=" same-date-dup"
+# OFX-13: the pinned rev is read for the exact id ("b10pull.a" never matches "b10pullXa")
+rev() { printf "$1" > "$pinf"; (. "$here/archive-guard.sh"; ag_decisions=$pinf; ag_pinned_rev; true); }
+px='| 2026-10-09 | B10-PULL id=b10pullXa source=old-faithful scannerRev=EVIL x | t | t |\n'
+pd='| 2026-10-15 | B10-PULL id=b10pull.a source=old-faithful scannerRev=r2 x | t | t |\n'
+[[ $(rev "$px$pd| 2026-10-15 | B10-PULL-RETIRED id=b10pullXa by=b10pull.a x | t | t |\n") == r2 ]] || bad+=" rev-regex"
+[[ $(rev "$pa") == r1 ]] || bad+=" rev"
 (. "$here/archive-guard.sh"; [[ $(ag_pinned_id) == b10pull-of-2 ]]) || bad+=" repo-pin"
-[[ -z "$bad" ]] && ok "OF-FIX: a B10-PULL pin is retired only by a RETIRED row naming a pinned successor dated on or after it; a successor that is not pinned, an older pin retiring a newer one, an unknown retired id, an unreadable RETIRED row, an id pinned under two dates or mutual retirement leave nothing pinned (OFX-7); a chain keeps its newest; the repo's pin is b10pull-of-2" || no "OF-FIX pin retirement:$bad"
+[[ -z "$bad" ]] && ok "OF-FIX: a B10-PULL pin is retired only by a RETIRED row naming a pinned successor dated on or after it; a successor that is not pinned, an older pin retiring a newer one, an unknown retired id, an unreadable RETIRED row, an id with two rows (even on one date, OFX-12) or mutual retirement leave nothing pinned (OFX-7); a chain keeps its newest; the pinned rev is read for the exact id, never as a regex (OFX-13); the repo's pin is b10pull-of-2" || no "OF-FIX pin retirement:$bad"
 # 2: back-off from run history: a block (a data-scan archive batch whose scan job failed
 # and whose continue job did not chain it) 61 min ago, a non-served check 2 h ago.
 now=$(date -u +%s)

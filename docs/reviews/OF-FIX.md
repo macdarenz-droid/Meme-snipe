@@ -86,3 +86,14 @@ Recorded as a dated amendment under ruling 36 in `docs/reviews/OF2.md`. `scan-da
 ## Evidence
 
 Go tests: `cd research/historical/scanner && go test .`. test-ci: `bash research/historical/ci/test-ci.sh`. Counts are in the PR body for the exact head.
+
+## CI and re-review rulings (15 Oct, at de129d3a): OFX-11 to OFX-13
+
+- **OFX-11 (BLOCKER, E_SYMLINK).** The new link `research/historical/rpcscan/plan.go` was missing from `tools/policy/zeroed-files.txt`.
+  - It is added between `pilot.go` and `polite.go`, with supervisor approval. The link stays, because test-ci "rpcscan links" needs it.
+  - `node tools/policy/bin/check.ts` reported E_SYMLINK before the change and passes after.
+  - This is a policy file, so CI asks for the deps-reviewed label, which the supervisor adds after review.
+- **OFX-12.** `ag_pinned_id` counts B10-PULL rows raw. Any id with more than one row, even on one date, leaves nothing pinned. Before the fix, `sort -u` merged them and `ag_pinned_rev` took the first row's rev. The test-ci OF-7 row check refuses the same case.
+- **OFX-13.** `ag_pinned_rev` matches the id exactly with awk `$1 == id` instead of inside a sed regex. Before the fix, `b10pull.a` read the rev of `b10pullXa`.
+- test-ci cases same-date-dup and rev-regex fail on the old guard and pass on the new one.
+
