@@ -3780,7 +3780,7 @@ Card IDL-REPIN (`docs/reviews/Z03.md` "IDL-REPIN"; findings in `docs/reviews/VER
 - **IDL-REPIN-6 · Constants re-derived.** The seeds of the four PDAs in `@bot/venue/constants` and of the pool-authority PDA are the ones the `8cda1fa` IDLs give (`global`, `global_config`, `fee_config` with each program, `pool-authority` with the base mint under pump). A new venue test compares them with the pinned IDL files, so a later pin that changes a seed fails.
 - **IDL-REPIN-7 · DEC-1 goldens.** At the new pin no decoded DEC-1 value changes. 22 Z03-vocabulary values in `fixtures/dec1/goldens.json` do: 7 account flags, 14 events' `layoutExtended` (the 8 bytes are now `creator_fee_unclaimed`), and pump `Global`'s new `max_curve_depth` 0. The five non-SOL trades are still refused. They were applied from a full diff of decoder output against the goldens, which found no other difference.
 
-## Z06 Clock, latency and statistics (2026-10-15, supervisor rulings Z06-1 to Z06-14, PR #320)
+## Z06 Clock, latency and statistics (2026-10-15, supervisor rulings Z06-1 to Z06-16, PR #320)
 
 - **Z06-7 · History slot-time anchors at most 60 s apart.** `historySlotTimeBasis` refuses neighbouring anchors more than 60 s apart (`MAX_ANCHOR_GAP_MS`; a caller may tighten it, never widen it), and the tolerance between anchors is ±2 s. Why: `getBlockTime` has 1 s resolution and slot time drifts within a day. So A10's ±1 s holds only at the anchors. On the recorded 2026-10-01/02 set, per-day anchors date mid-day slots 40-57 s off, hourly anchors up to 8.7 s off, and anchors about a minute apart about 1.7 s off. Daily anchors are refused. History replay anchors on blocks' own `blockTime` (follow-up for B-10 and M11 in `HANDOVER.md`).
 - **Z06-1 · DSR variance floor.** `dsr()` uses V = max(sample variance of the trial Sharpe ratios, 1/(T − 1)). This is the safest reading: the floor only lowers the DSR. The paper's raw formula stays internal for the worked example (Z06-5).
@@ -3799,5 +3799,7 @@ Card IDL-REPIN (`docs/reviews/Z03.md` "IDL-REPIN"; findings in `docs/reviews/VER
   - gapSamples may not exceed the gap records.
   - Failure records carry no expiry or class field, so fExp and the class mix stay at the prior (safest reading).
 - **Z06-12 · One record per id; a latency floor.** Records are deduped on `sig` + `slot`. A repeat of the same record counts once, and two different records for one id are refused. `latencyMs` must be at least `MIN_LATENCY_MS` = SLOT_MS_MIN (100 ms).
+- **Z06-15 · One record per signature.** Records are deduped on `sig` alone: a signature lands in one slot. `sig` must be base58 decoding to exactly 64 bytes.
+- **Z06-16 · Wilson upper bound.** Stated failure and sandwich probabilities are compared with the Wilson 95% upper bound of the records' share, not the point estimate, so a lucky small sample cannot lower them.
 - **Z06-13 · Frozen samples.** A verified empirical spec and its `samplesMs` are frozen.
 - **Z06-14 · Reader contract.** The production `SimParamsReader` must resolve the real path inside `sim-params/` and refuse symbolic links leading out. It is documented on the type and tracked for the card that adds the reader.

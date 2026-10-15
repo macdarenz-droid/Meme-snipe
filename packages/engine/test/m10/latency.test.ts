@@ -5,6 +5,7 @@ import { describe, it } from 'vitest';
 import type { Slot } from '@bot/types';
 import { createLatencyModel, slotAfterLatency } from '../../src/m10/latency.ts';
 import { createRng } from '../../src/m10/rng.ts';
+import { sig } from './sig.ts';
 import { parseSimParamSet, PRIOR_2026_10, simParamSetJson, type LatencySpec } from '../../src/m10/params.ts';
 import { createHash } from 'node:crypto';
 import { historySlotTimeBasis, liveSlotTimeBasis, slotToTimeMs } from '../../src/m15/slot-time.ts';
@@ -39,7 +40,7 @@ describe('A-M10-01 latency model', () => {
 
   it('empirical latency draws uniformly from the samples of a verified set', () => {
     // 100 distinct records whose latencies are 100, 200, 300 and 400 ms, 25 each.
-    const m = createLatencyModel(verifiedEmpirical((i) => ({ sig: `L${i}`, slot: i, latencyMs: 100 * (1 + (i % 4)) })));
+    const m = createLatencyModel(verifiedEmpirical((i) => ({ sig: sig('L', i), slot: i, latencyMs: 100 * (1 + (i % 4)) })));
     const rng = createRng(5), counts = new Map<number, number>();
     for (let i = 0; i < 40_000; i++) { const v = m.sampleMs(rng, 1); counts.set(v, (counts.get(v) ?? 0) + 1); }
     assert.deepEqual([...counts.keys()].sort((a, b) => a - b), [100, 200, 300, 400]);
@@ -52,7 +53,7 @@ describe('A-M10-01 latency model', () => {
     assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: hundred, source: 'x', n: 100, sourceSha256: sha }), /verified parameter set/);
     assert.throws(() => createLatencyModel({ kind: 'empirical', samplesMs: [0, 5], source: 'x', n: 2, sourceSha256: sha }), /E_SIM_PARAMS/);
     // A verified spec whose samples were edited afterwards is refused too.
-    const v = verifiedEmpirical((i) => ({ sig: `L${i}`, slot: i, latencyMs: 900 + i }));
+    const v = verifiedEmpirical((i) => ({ sig: sig('L', i), slot: i, latencyMs: 900 + i }));
     assert.doesNotThrow(() => createLatencyModel(v));
     if (v.kind === 'empirical') {
       assert.throws(() => { v.samplesMs.length = 10; }, TypeError);          // frozen since Z06-13

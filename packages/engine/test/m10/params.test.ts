@@ -4,12 +4,14 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'vitest';
 import { canonicalJson, type Config } from '@bot/types';
-import { CALIBRATION_MIN_SAMPLES, GAP_MIN_SAMPLES, loadSimParamSet, MIN_LATENCY_MS, modelVersions, parseSimParamSet, PRIOR_2026_10, simParamSetJson, type SimParamSet } from '../../src/m10/params.ts';
+import { CALIBRATION_MIN_SAMPLES, GAP_MIN_SAMPLES, isSignatureShape, loadSimParamSet, MIN_LATENCY_MS, modelVersions, parseSimParamSet, PRIOR_2026_10, simParamSetJson, type SimParamSet } from '../../src/m10/params.ts';
 import { createLatencyModel, lognormalParams } from '../../src/m10/latency.ts';
 import { createRng } from '../../src/m10/rng.ts';
+import { sig } from './sig.ts';
 import { M10_LOG_CODES } from '../../src/m10/log.ts';
 import { loadActiveSimParams, m10Settings } from '../../src/m10/settings.ts';
 import { CONFIG_FIELDS } from '../../src/m25/registry.ts';
+import { wilson } from '../../src/m13/stats/intervals.ts';
 
 const DIR = new URL('../../sim-params/', import.meta.url);
 const read = (f: string): string => readFileSync(new URL(f, DIR), 'utf8');
@@ -20,7 +22,7 @@ const sha256 = (t: string): string => createHash('sha256').update(t, 'utf8').dig
 let fileNo = 0;
 /** An evidence file of `lines` records of which `distinct` differ (the rest are copies), declared with n. */
 function evFile(n: number, o: { distinct?: number; lines?: number; record?: (i: number) => object } = {}): { source: string; n: number; sourceSha256: string } {
-  const distinct = o.distinct ?? n, lines = o.lines ?? Math.max(n, distinct), rec = o.record ?? ((i: number) => ({ sig: `L${i}`, slot: 1_000 + i, latencyMs: 900 + i }));
+  const distinct = o.distinct ?? n, lines = o.lines ?? Math.max(n, distinct), rec = o.record ?? ((i: number) => ({ sig: sig('L', i), slot: 1_000 + i, latencyMs: 900 + i }));
   const text = Array.from({ length: lines }, (_, i) => JSON.stringify(rec(i % distinct))).join('\n') + '\n';
   const source = `evidence/f${fileNo++}.ndjson`;
   files.set(source, text);
@@ -29,10 +31,10 @@ function evFile(n: number, o: { distinct?: number; lines?: number; record?: (i: 
 const lat = (n: number, o: Parameters<typeof evFile>[1] = {}) => ({ kind: 'empirical', ...evFile(n, o) });
 /** Z06-11 record schemas; `bad` of the records fail, are sandwiched, or carry the given value. */
 const REC = {
-  failure: (bad = 0) => (i: number) => ({ sig: `F${i}`, slot: i, ok: i >= bad }),
-  sandwich: (bad = 0) => (i: number) => ({ sig: `S${i}`, slot: i, sandwiched: i < bad }),
-  gap: (step = 8) => (i: number) => ({ sig: `G${i}`, slot: i, gapBps: i * step }),
-  cost: (tip = '900') => (i: number) => ({ sig: `C${i}`, slot: i, senderTipLamports: tip }),
+  failure: (bad = 0) => (i: number) => ({ sig: sig('F', i), slot: i, ok: i >= bad }),
+  sandwich: (bad = 0) => (i: number) => ({ sig: sig('S', i), slot: i, sandwiched: i < bad }),
+  gap: (step = 8) => (i: number) => ({ sig: sig('G', i), slot: i, gapBps: i * step }),
+  cost: (tip = '900') => (i: number) => ({ sig: sig('C', i), slot: i, senderTipLamports: tip }),
 };
 const ev = (kind: keyof typeof REC, n: number, arg?: number | string) => evFile(n, { record: (REC[kind] as (a?: number | string) => (i: number) => object)(arg) });
 const json = (): Record<string, unknown> => JSON.parse(simParamSetJson(PRIOR_2026_10)) as Record<string, unknown>;
@@ -149,7 +151,7 @@ describe('ruling Z06-3: nothing more optimistic than prior-2026-10 without evide
     const optimistic = { ...json(), fFailEntry: 0, fFailExit: 0, fExp: 0, pSwEntry: 0, pSwExit: 0, gapThroughStopP99Bps: 0, cost };
     assert.match(problem({ ...optimistic, latency: { kind: 'lognormal_prior', medianMs: 1, p95Ms: 2 } }), /faster than prior-2026-10/);
     assert.match(problem({ ...optimistic, latency: { ...lat(100), samplesMs: [0] } }), /unknown field "samplesMs"/);
-    assert.match(problem({ ...optimistic, latency: lat(100, { record: (i) => ({ sig: `L${i}`, slot: i, latencyMs: 0 }) }) }), /latencyMs finite and >= 100/);
+    assert.match(problem({ ...optimistic, latency: lat(100, { record: (i) => ({ sig: sig('L', i), slot: i, latencyMs: 0 }) }) }), /latencyMs finite and >= 100/);
     assert.match(problem(optimistic), /fFailEntry is more optimistic than prior-2026-10 without failure evidence/);
   });
 
@@ -168,8 +170,9 @@ describe('ruling Z06-3: nothing more optimistic than prior-2026-10 without evide
   });
 
   it('accepts optimistic values that carry valid evidence, and more pessimistic values without any', () => {
-    assert.equal(parseSimParamSet({ ...json(), fFailEntry: 0.1, fFailExit: 0.1, evidence: { failure: ev('failure', 100, 5) } }, mem).ok, true);   // 5% measured
-    assert.equal(parseSimParamSet({ ...json(), pSwEntry: 0.02, evidence: { sandwich: ev('sandwich', 100, 1) } }, mem).ok, true);           // 1% measured
+    // Failure and sandwich rates are compared with the Wilson 95% upper bound (Z06-16): 1/100 → 0.0545, 0/100 → 0.0370.
+    assert.equal(parseSimParamSet({ ...json(), fFailEntry: 0.1, fFailExit: 0.1, evidence: { failure: ev('failure', 100, 1) } }, mem).ok, true);
+    assert.equal(parseSimParamSet({ ...json(), pSwEntry: 0.04, evidence: { sandwich: ev('sandwich', 100, 0) } }, mem).ok, true);
     assert.equal(parseSimParamSet({ ...json(), gapThroughStopP99Bps: 900, gapSamples: 50, evidence: { gap: ev('gap', 50) } }, mem).ok, true); // p99 392
     assert.equal(parseSimParamSet({ ...json(), cost: { ...(json().cost as object), senderTipLamports: '1000' }, evidence: { cost: ev('cost', 100) } }, mem).ok, true);
     assert.equal(parseSimParamSet({ ...json(), fFailEntry: 0.5, pSwExit: 0.3, gapThroughStopP99Bps: 4_000, latency: { kind: 'lognormal_prior', medianMs: 3_000, p95Ms: 9_000 } }, mem).ok, true);
@@ -197,7 +200,7 @@ describe('ruling Z06-8: evidence is read from its source file, never taken on tr
     assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: evFile(100, { distinct: 10, lines: 100, record: REC.sandwich() }) } }), /10 distinct records, fewer than n = 100/);
     assert.match(problem({ ...json(), latency: lat(100, { distinct: 10, lines: 100 }) }), /10 distinct records, fewer than n = 100/);
     // Records that differ only in key order or spacing are the same record.
-    const text = Array.from({ length: 100 }, (_, i) => (i % 2 ? `{"sandwiched":false, "slot":${i >> 1},"sig":"S${i >> 1}"}` : `{"sig":"S${i >> 1}","slot":${i >> 1},"sandwiched":false}`)).join('\n');
+    const text = Array.from({ length: 100 }, (_, i) => (i % 2 ? `{"sandwiched":false, "slot":${i >> 1},"sig":"${sig('S', i >> 1)}"}` : `{"sig":"${sig('S', i >> 1)}","slot":${i >> 1},"sandwiched":false}`)).join('\n');
     files.set('evidence/reordered.ndjson', text);
     assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: { source: 'evidence/reordered.ndjson', n: 100, sourceSha256: sha256(text) } } }), /50 distinct records/);
   });
@@ -218,7 +221,7 @@ describe('ruling Z06-8: evidence is read from its source file, never taken on tr
     assert.ok(r.ok);
     if (r.ok) {
       assert.doesNotMatch(simParamSetJson(r.value), /samplesMs/);
-      const other = parseSimParamSet({ ...json(), latency: lat(100, { record: (i) => ({ sig: `L${i}`, slot: 1_000 + i, latencyMs: 901 + i }) }) }, mem);
+      const other = parseSimParamSet({ ...json(), latency: lat(100, { record: (i) => ({ sig: sig('L', i), slot: 1_000 + i, latencyMs: 901 + i }) }) }, mem);
       assert.ok(other.ok);
       if (other.ok) assert.notEqual(modelVersions(r.value).fillModelVersion, modelVersions(other.value).fillModelVersion);
     }
@@ -234,20 +237,20 @@ describe('ruling Z06-11: evidence records follow their schema and every stated v
     assert.match(problem({ ...json(), evidence: { cost: xs(100) } }), /every record needs a sig/);
     assert.match(problem({ ...json(), latency: { kind: 'empirical', ...xs(100) } }), /every record needs a sig/);
     // With sig and slot but the wrong fields, each schema still refuses.
-    assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: evFile(100, { record: (i) => ({ sig: `F${i}`, slot: i, x: i }) }) } }), /\{sig, slot, ok\}/);
-    assert.match(problem({ ...json(), evidence: { cost: evFile(100, { record: (i) => ({ sig: `C${i}`, slot: i, tip: '1' }) }) } }), /cost fields/);
-    assert.match(problem({ ...json(), evidence: { cost: evFile(100, { record: (i) => ({ sig: `C${i}`, slot: i, jitoTipLamports: 5 }) }) } }), /u64 decimal string/);
+    assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: evFile(100, { record: (i) => ({ sig: sig('F', i), slot: i, x: i }) }) } }), /\{sig, slot, ok\}/);
+    assert.match(problem({ ...json(), evidence: { cost: evFile(100, { record: (i) => ({ sig: sig('C', i), slot: i, tip: '1' }) }) } }), /cost fields/);
+    assert.match(problem({ ...json(), evidence: { cost: evFile(100, { record: (i) => ({ sig: sig('C', i), slot: i, jitoTipLamports: 5 }) }) } }), /u64 decimal string/);
   });
 
   it('a stated value more optimistic than the records\' point estimate is refused', () => {
-    assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: ev('failure', 100, 20) } }), /fFailEntry 0.1 is more optimistic than its evidence \(0.2\)/);
-    assert.match(problem({ ...json(), fFailExit: 0.19, evidence: { failure: ev('failure', 100, 20) } }), /fFailExit 0.19 is more optimistic/);
-    assert.match(problem({ ...json(), pSwEntry: 0.02, evidence: { sandwich: ev('sandwich', 100, 5) } }), /pSwEntry 0.02 is more optimistic than its evidence \(0.05\)/);
+    assert.match(problem({ ...json(), fFailEntry: 0.1, evidence: { failure: ev('failure', 100, 20) } }), /fFailEntry 0.1 is more optimistic than its evidence/);
+    assert.match(problem({ ...json(), fFailEntry: 0.3, fFailExit: 0.19, evidence: { failure: ev('failure', 100, 20) } }), /fFailExit 0.19 is more optimistic/);
+    assert.match(problem({ ...json(), pSwEntry: 0.02, evidence: { sandwich: ev('sandwich', 100, 5) } }), /pSwEntry 0.02 is more optimistic than its evidence/);
     assert.match(problem({ ...json(), gapThroughStopP99Bps: 900, gapSamples: 50, evidence: { gap: ev('gap', 50, 20) } }), /gapThroughStopP99Bps 900 is more optimistic than its evidence \(980\)/);
     assert.match(problem({ ...json(), gapThroughStopP99Bps: 900, gapSamples: 51, evidence: { gap: ev('gap', 50) } }), /gapSamples 51 exceeds the 50 gap records/);
     assert.match(problem({ ...json(), cost: { ...(json().cost as object), senderTipLamports: '1000' }, evidence: { cost: ev('cost', 100, '1500') } }), /cost.senderTipLamports 1000 is more optimistic than its evidence \(1500\)/);
     // Evidence that contradicts even the prior's values is refused: 30% measured failures against the prior's 20%.
-    assert.match(problem({ ...json(), evidence: { failure: ev('failure', 100, 30) } }), /fFailEntry 0.2 is more optimistic than its evidence \(0.3\)/);
+    assert.match(problem({ ...json(), evidence: { failure: ev('failure', 100, 30) } }), /fFailEntry 0.2 is more optimistic than its evidence/);
     // A cost field below the prior that the records do not measure.
     assert.match(problem({ ...json(), cost: { ...(json().cost as object), jitoTipLamports: '1' }, evidence: { cost: ev('cost', 100) } }), /only 0 cost records measure it/);
   });
@@ -258,16 +261,16 @@ describe('ruling Z06-11: evidence records follow their schema and every stated v
   });
 });
 
-describe('ruling Z06-12: one record per sig and slot; no latency below the physical floor', () => {
-  it('the same record repeated counts once; two different records for one sig and slot are refused', () => {
-    assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: evFile(100, { record: () => ({ sig: 'S', slot: 1, sandwiched: false }) }) } }), /1 distinct records, fewer than n = 100/);
-    assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: evFile(100, { record: (i) => ({ sig: 'S', slot: 1, sandwiched: i % 2 === 0 }) }) } }), /two different records for sig "S" at slot 1/);
+describe('ruling Z06-12: one record per signature; no latency below the physical floor', () => {
+  it('the same record repeated counts once; two different records for one signature are refused', () => {
+    assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: evFile(100, { record: () => ({ sig: sig('S', 1), slot: 1, sandwiched: false }) }) } }), /1 distinct records, fewer than n = 100/);
+    assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: evFile(100, { record: (i) => ({ sig: sig('S', 1), slot: 1, sandwiched: i % 2 === 0 }) }) } }), /two different records for sig/);
   });
 
   it(`latencyMs below MIN_LATENCY_MS (${MIN_LATENCY_MS} ms, SLOT_MS_MIN) is refused`, () => {
     assert.equal(MIN_LATENCY_MS, 100);
-    assert.match(problem({ ...json(), latency: lat(100, { record: (i) => ({ sig: `L${i}`, slot: i, latencyMs: i === 50 ? 99 : 900 }) }) }), /latencyMs finite and >= 100/);
-    assert.equal(parseSimParamSet({ ...json(), latency: lat(100, { record: (i) => ({ sig: `L${i}`, slot: i, latencyMs: 100 }) }) }, mem).ok, true);
+    assert.match(problem({ ...json(), latency: lat(100, { record: (i) => ({ sig: sig('L', i), slot: i, latencyMs: i === 50 ? 99 : 900 }) }) }), /latencyMs finite and >= 100/);
+    assert.equal(parseSimParamSet({ ...json(), latency: lat(100, { record: (i) => ({ sig: sig('L', i), slot: i, latencyMs: 100 }) }) }, mem).ok, true);
   });
 });
 
@@ -284,5 +287,27 @@ describe('ruling Z06-13: a verified empirical spec and its samples are frozen', 
     assert.throws(() => { spec.samplesMs.length = 10; }, TypeError);
     assert.throws(() => { (spec as { n: number }).n = 1; }, TypeError);
     assert.deepEqual(draw(), before);
+  });
+});
+
+describe('ruling Z06-15: one record per transaction signature, and signatures have the 64-byte shape', () => {
+  it('one signature repeated across slots 1..100 is refused', () => {
+    assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: evFile(100, { record: (i) => ({ sig: sig('S', 7), slot: 1 + i, sandwiched: false }) }) } }), /two different records for sig/);
+  });
+
+  it('a sig that is not base58 of 64 bytes is refused', () => {
+    assert.equal(isSignatureShape(sig('S', 1)), true);
+    for (const bad of ['S1', 'x'.repeat(88), `${sig('S', 1)}0`, sig('S', 1).slice(0, 44), 42]) assert.equal(isSignatureShape(bad), false, String(bad));
+    assert.match(problem({ ...json(), pSwEntry: 0, evidence: { sandwich: evFile(100, { record: (i) => ({ sig: `S${i}`, slot: i, sandwiched: false }) }) } }), /base58 transaction signature of 64 bytes/);
+  });
+});
+
+describe('ruling Z06-16: failure and sandwich rates are compared with the Wilson 95% upper bound', () => {
+  it('a lucky low-rate sample of 100 is refused when the stated value is below the upper bound', () => {
+    // 2 failures in 100: point estimate 0.02, Wilson upper bound 0.0700. A stated 0.03 sits between them.
+    assert.ok(Math.abs(wilson(2, 100).high - 0.07) < 5e-4);
+    assert.match(problem({ ...json(), fFailEntry: 0.03, fFailExit: 0.03, evidence: { failure: ev('failure', 100, 2) } }), /fFailEntry 0.03 is more optimistic than its evidence \(0.0700/);
+    assert.match(problem({ ...json(), pSwEntry: 0.03, evidence: { sandwich: ev('sandwich', 100, 2) } }), /pSwEntry 0.03 is more optimistic than its evidence \(0.0700/);
+    assert.equal(parseSimParamSet({ ...json(), fFailEntry: 0.071, fFailExit: 0.071, evidence: { failure: ev('failure', 100, 2) } }, mem).ok, true);
   });
 });

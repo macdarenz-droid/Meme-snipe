@@ -5,6 +5,7 @@
 // Addendum A10 (C-61): the set holds no slot time. SPEC-A's `slotMsAssumed` is replaced by the one slot-to-time function
 // (m15/slot-time.ts, bug B1), so a file that still names `slotMsAssumed` is refused like any unknown field.
 import { createHash } from 'node:crypto';
+import { wilson } from '../m13/stats/intervals.ts';
 import { SLOT_MS_MIN } from '../m15/slot-time.ts';
 import { canonicalJson, type Cu, type FailureClass, type Lamports, type MicroLamportsPerCu, type Result, type UnixMs } from '@bot/types';
 
@@ -149,7 +150,7 @@ function recordProblem(kind: EvidenceSchema, r: Record<string, unknown>): string
  * Rulings Z06-8, Z06-11, Z06-12: an evidence source is a file read through `read` (a path under `sim-params/`, no `..`),
  * NDJSON with one JSON object per line, each a record of its group's schema with a `sig` (string) and `slot` (integer).
  * It is accepted only when sha256 of its bytes (UTF-8) equals `sourceSha256` and it holds at least `n` distinct records,
- * one per `sig` + `slot` (a repeat of the same record counts once; two different records for one id are refused).
+ * one per `sig` (a repeat of the same record counts once; two different records for one signature are refused, Z06-15).
  * Returns the distinct records in file order, or the problem.
  */
 function readEvidence(where: string, kind: EvidenceSchema, e: { source: string; n: number; sourceSha256: string }, read: SimParamsReader): Array<Record<string, unknown>> | string {
@@ -163,13 +164,14 @@ function readEvidence(where: string, kind: EvidenceSchema, e: { source: string; 
     let r: unknown;
     try { r = JSON.parse(line); } catch { return `${where}: source is not NDJSON`; }
     if (!isObj(r)) return `${where}: every source line must be a JSON object`;
-    if (typeof r.sig !== 'string' || r.sig.length === 0 || r.sig.length > 128) return `${where}: every record needs a sig (a string of 1-128 characters)`;
+    if (!isSignatureShape(r.sig)) return `${where}: every record needs a sig (a base58 transaction signature of 64 bytes)`;
     if (!Number.isSafeInteger(r.slot) || (r.slot as number) < 0) return `${where}: every record needs a slot (an integer >= 0)`;
     const problem = recordProblem(kind, r);
     if (problem !== null) return `${where}: ${problem}`;
-    const id = `${r.sig}:${r.slot as number}`, body = canonicalJson(r), prev = byId.get(id);
+    // Z06-15: one record per transaction signature (a signature lands in one slot only).
+    const id = r.sig as string, body = canonicalJson(r), prev = byId.get(id);
     if (prev !== undefined) {
-      if (prev !== body) return `${where}: two different records for sig ${JSON.stringify(r.sig).slice(0, 40)} at slot ${r.slot as number}`;
+      if (prev !== body) return `${where}: two different records for sig ${id.slice(0, 12)}…`;
       continue;
     }
     byId.set(id, body);
@@ -177,6 +179,25 @@ function readEvidence(where: string, kind: EvidenceSchema, e: { source: string; 
   }
   if (records.length < e.n) return `${where}: the source holds ${records.length} distinct records, fewer than n = ${e.n}`;
   return records;
+}
+
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+/** Bytes a base58 string decodes to (Bitcoin alphabet), or null when it is not base58. */
+function base58Length(s: string): number | null {
+  let n = 0n, zeros = 0;
+  for (const ch of s) {
+    const d = BASE58.indexOf(ch);
+    if (d < 0) return null;
+    if (n === 0n && d === 0) zeros++;
+    n = n * 58n + BigInt(d);
+  }
+  let bytes = 0;
+  for (; n > 0n; n >>= 8n) bytes++;
+  return zeros + bytes;
+}
+/** Z06-15: a transaction signature: base58 that decodes to exactly 64 bytes. */
+export function isSignatureShape(s: unknown): boolean {
+  return typeof s === 'string' && s.length >= 64 && s.length <= 88 && base58Length(s) === 64;
 }
 
 /** Nearest-rank p99 of integers (the ⌈0.99·N⌉-th smallest). */
@@ -288,21 +309,22 @@ export function parseSimParamSet(v: unknown, read: SimParamsReader): Result<SimP
   if ((v.gapThroughStopP99Bps as number) < P.gapThroughStopP99Bps && (v.gapSamples as number) < GAP_MIN_SAMPLES) {
     return fail(`gapSamples must be at least ${GAP_MIN_SAMPLES} for a measured gapThroughStopP99Bps`);
   }
-  // Ruling Z06-11: each stated value of a group with evidence is no more optimistic than the point estimate its records
-  // give. Failure records carry only `ok`, so fExp and the class mix cannot be measured from them and stay at the prior.
+  // Ruling Z06-11: each stated value of a group with evidence is no more optimistic than what its records give (failure
+  // and sandwich: the Wilson 95% upper bound, Z06-16; gap: nearest-rank p99; cost: rounded-up mean). Failure records carry only `ok`, so fExp and the class mix cannot be measured from them and stay at the prior.
   const notBelow = (field: string, stated: number | bigint, computed: number | bigint): Result<SimParamSet, SimParamsError> | null =>
     stated < computed ? fail(`${field} ${String(stated)} is more optimistic than its evidence (${String(computed)})`) : null;
   const checksAgainstRecords: Array<() => Result<SimParamSet, SimParamsError> | null> = [];
   const fr = recordsOf.failure;
   if (fr !== undefined) {
-    const rate = fr.filter((r) => r.ok === false).length / fr.length;
+    // Z06-16: against the Wilson 95% upper bound, so a lucky small sample cannot lower a probability.
+    const rate = wilson(fr.filter((r) => r.ok === false).length, fr.length).high;
     checksAgainstRecords.push(() => notBelow('fFailEntry', v.fFailEntry as number, rate), () => notBelow('fFailExit', v.fFailExit as number, rate),
       () => ((v.fExp as number) < P.fExp ? fail('fExp cannot be measured from failure records (no expiry field); it stays at or above prior-2026-10') : null),
       () => (canonicalJson(mix) !== canonicalJson(P.failureClassMix) ? fail('failureClassMix cannot be measured from failure records (no class field); it stays at prior-2026-10') : null));
   }
   const sr = recordsOf.sandwich;
   if (sr !== undefined) {
-    const rate = sr.filter((r) => r.sandwiched === true).length / sr.length;
+    const rate = wilson(sr.filter((r) => r.sandwiched === true).length, sr.length).high;
     checksAgainstRecords.push(() => notBelow('pSwEntry', v.pSwEntry as number, rate), () => notBelow('pSwExit', v.pSwExit as number, rate));
   }
   const gr = recordsOf.gap;
