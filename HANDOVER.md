@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 2:37 AM: hourly update posted.**
+  - #334 CI all green on `93ab4c20` (check 15:22Z). Waiting on the red team `session_014S9V9zz15ASVntNsQw9SdS` (its full test run).
+  - Z10 builder: two compressed soaks running (the RSS slope and the 60-pool run); head `5cb37e2e`.
+  - Base `da18bc5d`.
 - **17 Oct 2:20 AM: #334 review PASS at `93ab4c20`** (test-ci 290/0; lint clean; no .github change).
   - CI proof: run `38896609003`, job `116958626436` step 18 "Archive guard before the scan" succeeded. Its attest ran ag_history (the jobs API, same endpoint) and ag_annotated_end (check-run annotations for batch 1's fail group) with the scan job's own token, so both endpoints already work in CI.
   - Live values: AG_FAILS=2, foreign=0, AG_FAILED_RUNS equal to covers, ag_fresh_ok 07-22 rc 0. Both annotation sets are exactly one "exit code 2" failure.
