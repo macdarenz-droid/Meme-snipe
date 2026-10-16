@@ -76,11 +76,11 @@ describe('Z10 host contract', () => {
 });
 
 describe('Z10 guard: no key and no send path', () => {
-  /** Every source file the recorder process can load, from main.ts through relative and @bot/* imports. */
+  /** Every source file the recorder process can load, from scripts/recorder.ts through relative and @bot/* imports. */
   function importGraph(): Set<string> {
     const pkgs = resolve(SRC, '../../');
     const seen = new Set<string>();
-    const todo = [join(SRC, 'recorder-main/main.ts')];
+    const todo = [join(SRC, '../scripts/recorder.ts')];
     while (todo.length > 0) {
       const f = todo.pop() as string;
       if (seen.has(f)) continue;
@@ -130,7 +130,7 @@ describe('Z10 guard: no key and no send path', () => {
     assert.equal(s.get('RPC_CHAINSTACK_URL'), 'rpc_chainstack_url-value');
     for (const n of ['HELIUS_API_KEY', 'helius_api_key', 'ALCHEMY_API_KEY', 'JUPITER_API_KEY', 'TELEGRAM_BOT_TOKEN']) assert.equal(s.get(n), undefined, n);
     assert.deepEqual(Object.values(SECRET_FILES).sort(), ['rpc_chainstack_url', 'rpc_shyft_url']);
-    const main = readFileSync(join(SRC, 'recorder-main/main.ts'), 'utf8');
+    const main = readFileSync(join(SRC, 'recorder-main/run.ts'), 'utf8');
     assert.deepEqual([...main.matchAll(/cred\('([a-z_]+)'\)/g)].map((m) => m[1]).sort(), ['heartbeat_hmac_key', 'telegram_chat_id']);
   });
 });

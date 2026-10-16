@@ -2,7 +2,9 @@
 //
 // - `expectedSlot(now)` is the slot clock's estimate, `timeToSlot(now, basis)`, never 0 and never a highest slot seen.
 // - Its anchor never comes from one provider (Z07-29). Every `anchorEveryMs` the adapter reads the height on each read
-//   provider (`heightOn`, through M14's limiter). An anchor is taken only when at least two providers' slots,
+//   provider (`readHeight`: one `getEpochInfo` pinned to that provider, through M14's limiter). Not M15's `heightOn`:
+//   that refuses a provider whose newest context slot is over 10 slots behind, and a backup read only every few seconds
+//   always is, so it would never be read again (found in Z10). An anchor is taken only when at least two providers' slots,
 //   moved to the same time at the measured slot time, are within `maxProviderLagSlots`. It is then the lowest of the
 //   agreeing slots at that time, so one provider ahead can never push the estimate forward. Without agreement the
 //   last agreed anchor stays and is moved on at the measured slot time.
@@ -31,8 +33,12 @@ export interface AgreedChainState extends ChainStatePort {
 
 const validSlotMs = (ms: number): boolean => Number.isFinite(ms) && ms >= SLOT_MS_MIN && ms <= SLOT_MS_MAX;
 
+/** One height reading of one provider: its slot and when it was read (wall ms), or null on any failure. */
+export type ReadHeight = (provider: string) => Promise<{ slot: Slot; atMs: number } | null>;
+
 export function createAgreedChainState(o: {
-  clock: Pick<SlotClock, 'heightOn' | 'highestSeenSlot' | 'slotDurationMsEstimate' | 'providerSlotLag'>;
+  clock: Pick<SlotClock, 'highestSeenSlot' | 'slotDurationMsEstimate' | 'providerSlotLag'>;
+  readHeight: ReadHeight;
   providers: readonly string[];
   maxProviderLagSlots: number;
   /** The slot time used until M15 has measured a valid one. */
@@ -55,8 +61,8 @@ export function createAgreedChainState(o: {
   const refresh = async (): Promise<boolean> => {
     let readings: Array<{ provider: string; slot: Slot; atMs: number }>;
     try {
-      const rs = await Promise.all(o.providers.map(async (p) => ({ p, r: await o.clock.heightOn(p) })));
-      readings = rs.flatMap(({ p, r }) => (r.ok && r.value.providerLabel === p && r.value.slot > 0n ? [{ provider: p, slot: r.value.slot, atMs: r.value.atMs }] : []));
+      const rs = await Promise.all(o.providers.map(async (p) => ({ p, r: await o.readHeight(p) })));
+      readings = rs.flatMap(({ p, r }) => (r !== null && r.slot > 0n ? [{ provider: p, slot: r.slot, atMs: r.atMs }] : []));
     } catch {
       readings = [];
     }

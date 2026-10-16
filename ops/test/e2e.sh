@@ -924,7 +924,7 @@ git -C "$ROOT" archive HEAD packages fixtures/mainnet ops | docker exec -i "$C" 
 in_c "jq '.worker = \"recorder\"' '$rrel/ops/host-config.json' > /tmp/hc && mv /tmp/hc '$rrel/ops/host-config.json'"
 
 in_c ". /usr/local/lib/zeroed/logic.sh; release_links '$rrel'" || fail "the recorder release's package links"
-rentry="$rrel/packages/engine/src/recorder-main/main.ts"
+rentry="$rrel/packages/engine/scripts/recorder.ts"
 [ "$(in_c ". /usr/local/lib/zeroed/logic.sh; worker_entry '$rrel'")" = "$rentry" ] || fail "worker_entry does not run the recorder on \"worker\": \"recorder\""
 # The installer's /etc/bot (M25: root-owned, not writable by others) and the first-start marker for the database.
 in_c "stat -c '%U %a' /etc/bot /etc/bot/ceilings.json /etc/bot/config.json /etc/bot/rpc-allocation.json | sort -u | tr '\n' ' '" | has -x 'root 644 root 755 ' || fail "/etc/bot is not root-owned 0755 with 0644 files"
@@ -970,7 +970,7 @@ rinv >"$LOGS/recorder-unit.txt"
 grep -q 'Reconcile: 0 open intents, 0 open positions (recorder). OK' "$LOGS/recorder-unit.txt" || fail "the recorder's --reconcile did not write 0 open intents and positions"
 in_c "systemctl show -p ExecStartPre --value zeroed-worker" | has 'code=exited ; status=0 }' || fail "the recorder's --reconcile ExecStartPre did not exit 0"
 [ "$(in_c "cat /var/lib/zeroed/open_intents /var/lib/zeroed/open_positions | tr '\n' ' '")" = '0 0 ' ] || fail "open_intents and open_positions are not 0"
-in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has -- "--max-old-space-size=$(in_c ". /usr/local/lib/zeroed/logic.sh; echo \$RECORDER_HEAP_MB") .*/opt/zeroed/current/packages/engine/src/recorder-main/main.ts" || fail "the recorder does not run with its own heap limit"
+in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has -- "--max-old-space-size=$(in_c ". /usr/local/lib/zeroed/logic.sh; echo \$RECORDER_HEAP_MB") .*/opt/zeroed/current/packages/engine/scripts/recorder.ts" || fail "the recorder does not run with its own heap limit"
 # The database was made from the marker (used up); market data in the M07 folder, the worker's.
 in_c "test -s /var/lib/zeroed/db/bot.db && ! test -e /var/lib/zeroed/init/first-start" || fail "the recorder's database was not made from the first-start marker"
 wait_for 60 "the process_start marker on disk" "docker exec $C bash -c 'ls /var/lib/zeroed-md/*/*/process_start.ndjson.gz' | grep -q ."
@@ -985,7 +985,7 @@ in_c "systemctl stop zeroed-e2e-fake-rpc; rm -f /etc/credstore.encrypted/rpc_shy
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel'"
 wait_for 60 "the stand-in back after the recorder" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
-pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/src/recorder-main/main.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) zeroed-update deploys it from the stand-in through the gate (trial, install --update, switch, hold); it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, no provider key in any journal; back to the stand-in"
+pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/scripts/recorder.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) zeroed-update deploys it from the stand-in through the gate (trial, install --update, switch, hold); it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, no provider key in any journal; back to the stand-in"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on

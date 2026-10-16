@@ -4,7 +4,7 @@
 // watchlist, M07's queue, segment writer, disk manager and watch log, M08's bars and the SOL/USD and venue-config
 // records. Nothing here signs, builds or sends a transaction, and no strategy is enabled.
 //
-// The same function runs live (main.ts: real clock, timers, fetch and folders) and in the soak (scripts/soak.ts: a
+// The same function runs live (run.ts: real clock, timers, fetch and folders) and in the soak (scripts/soak/soak.ts: a
 // virtual clock and a fake RPC). The order at start is fixed by the Z09 obligations:
 //   1. M07 recovery first (`SegmentWriter.recover`), and the queue's `firstSeq` for every stream from its `nextSeq`
 //      (Z09-47: never from the last sealed manifest);
@@ -38,6 +38,7 @@ import { barSnapshotOf, BAR_DEFAULTS, createBarEngine, type BarEngine, type Poll
 import { createBarStore, type BarStore } from '../m08/bar-store.ts';
 import type { FetchLike, Scheduler, SecretSource } from '../m14/types.ts';
 import { m14Settings } from '../m14/settings.ts';
+import { parseEpochInfo } from '../m15/clock.ts';
 import { m15Settings } from '../m15/settings.ts';
 import { openDb, type Db } from '../m24/db.ts';
 import { prepareDatabase } from '../m24/migrate.ts';
@@ -99,7 +100,7 @@ export interface RecorderStatus {
 export interface RunningRecorder {
   status(): RecorderStatus;
   stop(): Promise<void>;
-  /** Internals for tests and the soak: never used by main.ts. */
+  /** Internals for tests and the soak: never used by run.ts. */
   readonly parts: {
     db: Db; config: ConfigService; log: Logger; metrics: MetricsRegistry; read: ReadPath; chain: AgreedChainState; queue: RecorderQueue;
     writer: SegmentWriter; disk: DiskManager; tracker: PoolTracker<CpPoolState>; universe: Universe; watchlist: Watchlist; bars: BarEngine;
@@ -208,6 +209,13 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const settings = { ...M04_DEFAULTS };
   const chain = createAgreedChainState({
     clock: rp.clock, providers: rp.labels, maxProviderLagSlots: settings.maxProviderLagSlots, initialSlotMs: m15Settings(cfg).slotMsInitial, nowMs, log,
+    // P1 pinned to each provider (P0 stays the exits'); the answer must come from that provider, and parse as M15 does.
+    readHeight: async (provider) => {
+      const r = await rp.gateway.call<unknown>('getEpochInfo', [], { priority: 1, role: 'read', commitment: 'confirmed', timeoutMs: m15Settings(cfg).heightTimeoutMs, provider });
+      if (!r.ok || r.value.providerLabel !== provider) return null;
+      const e = parseEpochInfo(r.value.value);
+      return e === null ? null : { slot: e.slot, atMs: nowMs() };
+    },
   });
 
   // ---- M01: the decoders, the fee-config cache and the PumpSwap pool model. ----
@@ -222,7 +230,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
 
   // ---- M07: recovery, then the queue with every stream's next seq, then the writer. ----
   const wlog = m07Log(log);
-  // The paths come from main.ts (ENGINE_PATHS on the host, the trial's scratch folder in worker-smoke), so the folder the
+  // The paths come from run.ts (ENGINE_PATHS on the host, the trial's scratch folder in worker-smoke), so the folder the
   // unit may write is always the one used; `recorder.data_dir` keeps its default, which is ENGINE_PATHS.mdDir.
   const dataDir = p.paths.mdDir;
   const recovery = SegmentWriter.recover({ dataDir, nowMs: nowMs(), log: wlog });

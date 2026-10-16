@@ -1575,10 +1575,10 @@ funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == t
 # else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
 # healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
 # "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
-# loudly. Z10: "recorder" runs the Blueprint's keyless M1 recorder (packages/engine/src/recorder-main/main.ts; no key,
+# loudly. Z10: "recorder" runs the Blueprint's keyless M1 recorder (packages/engine/scripts/recorder.ts; no key,
 # no signer, no send path, paper only), and is refused the same way when that file is missing.
 STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
-RECORDER_ENTRY=packages/engine/src/recorder-main/main.ts # Z10, relative to the release
+RECORDER_ENTRY=packages/engine/scripts/recorder.ts # Z10, relative to the release
 worker_entry() {
   # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
   if [ ! -e "$1" ] && [ ! -L "$1" ]; then

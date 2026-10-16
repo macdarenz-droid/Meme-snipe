@@ -4,7 +4,6 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import type { Pubkey, Slot, UnixMs } from '@bot/types';
 import { createAgreedChainState } from '../../src/recorder-main/chain.ts';
-import type { HeightReading } from '../../src/m15/clock.ts';
 import { tempDir } from '../helpers.ts';
 import { FakeChain, VirtualTime } from './fake-chain.ts';
 import { startRig, WALL_START, type Rig } from './rig.ts';
@@ -93,8 +92,8 @@ describe('Z10 C-84: the slot clock on the composition root', () => {
       await r.run(10_000);
       r.chain.provider('shyft').slotOffset = -20;                 // height and reads both 20 behind
       await r.run(120_000);
-      // M15 refuses the lagging primary's height (E_PROVIDER_LAGGING) and no two providers agree: the last agreed
-      // anchor stays and moves on at the slot time.
+      // The two heights are 20 slots apart, so they never agree: the last agreed anchor stays and moves on at the slot
+      // time.
       assert.deepEqual(r.rec.status().anchor?.providers, ['chainstack', 'shyft']);
       const est = r.rec.parts.chain.expectedSlot(r.time.nowMs());
       const tip = r.chain.tipSlot();
@@ -130,14 +129,31 @@ describe('Z10 C-84: the slot clock on the composition root', () => {
   }, 60_000);
 });
 
+describe('Z10 anchor liveness', () => {
+  it('the backup is read every minute although its context slot lags between reads (M15 heightOn would refuse it as lagging and never read it again)', async () => {
+    const r = await rigWith('z10-live', () => {});
+    try {
+      await r.run(5_000);
+      assert.ok(r.rec.status().anchored);
+      const n0 = r.chain.byMethod.get('chainstack getEpochInfo') ?? 0;
+      await r.run(5 * 60_000);
+      const n1 = r.chain.byMethod.get('chainstack getEpochInfo') ?? 0;
+      assert.ok(n1 - n0 >= 4, `chainstack heights read ${n1 - n0} times in 5 minutes`);
+      assert.ok(r.rec.parts.chain.anchor()!.atMs >= r.time.nowMs() - 61_000, 'the anchor is fresh');
+    } finally {
+      await r.rec.stop();
+    }
+  }, 60_000);
+});
+
 describe('Z10 C-84 adapter (Z07-34): slot times of 0, NaN and Infinity', () => {
-  const reading = (p: string, slot: bigint, atMs: number): { ok: true; value: HeightReading } => ({ ok: true, value: { providerLabel: p, slot: slot as Slot, blockHeight: 1n as never, commitment: 'confirmed', atMs: atMs as UnixMs } });
+  const reading = (slot: bigint, atMs: number): { slot: Slot; atMs: number } => ({ slot: slot as Slot, atMs });
   for (const bad of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
     it(`slotDurationMsEstimate ${bad}: passed through to M04 as it is; expectedSlot never throws, is never 0 and moves on at the last valid slot time`, async () => {
       let ms = 400;
       let now = 1_000_000;
       const chain = createAgreedChainState({
-        clock: { heightOn: async (p) => reading(p, 5_000n, now), highestSeenSlot: () => 5_000n as Slot, slotDurationMsEstimate: () => ms, providerSlotLag: () => 0 },
+        clock: { highestSeenSlot: () => 5_000n as Slot, slotDurationMsEstimate: () => ms, providerSlotLag: () => 0 }, readHeight: async () => reading(5_000n, now),
         providers: ['a', 'b'], maxProviderLagSlots: 10, initialSlotMs: 400, nowMs: () => now as UnixMs, log: { event: () => {} },
       });
       assert.equal(await chain.refresh(), true);
@@ -152,24 +168,28 @@ describe('Z10 C-84 adapter (Z07-34): slot times of 0, NaN and Infinity', () => {
     });
   }
 
-  it('one reading alone never anchors; a provider answering for another is not counted; highestSeenBy is null unless exactly one provider holds the highest', async () => {
+  it('one reading alone never anchors (the other provider failed or answered slot 0); highestSeenBy is null unless exactly one provider holds the highest', async () => {
     const chain = createAgreedChainState({
-      clock: {
-        heightOn: async (p) => (p === 'a' ? reading('a', 5_000n, 0) : { ok: true, value: { ...reading('a', 5_000n, 0).value } }),
-        highestSeenSlot: () => 5_000n as Slot, slotDurationMsEstimate: () => 400, providerSlotLag: () => 0,
-      },
+      clock: { highestSeenSlot: () => 5_000n as Slot, slotDurationMsEstimate: () => 400, providerSlotLag: () => 0 },
+      readHeight: async (p) => (p === 'a' ? reading(5_000n, 0) : null),
       providers: ['a', 'b'], maxProviderLagSlots: 10, initialSlotMs: 400, nowMs: () => 0 as UnixMs, log: { event: () => {} },
     });
     assert.equal(await chain.refresh(), false);
     assert.equal(chain.ready(), false);
     assert.throws(() => chain.expectedSlot(0), /no agreed slot-clock anchor/);
     assert.equal(chain.highestSeenBy(), null, 'both at lag 0: not independent');
-    assert.throws(() => createAgreedChainState({ clock: { heightOn: async () => reading('a', 1n, 0), highestSeenSlot: () => 1n as Slot, slotDurationMsEstimate: () => 400, providerSlotLag: () => 0 }, providers: ['a'], maxProviderLagSlots: 10, initialSlotMs: 400, nowMs: () => 0 as UnixMs, log: { event: () => {} } }), /two read providers/);
+    assert.throws(() => createAgreedChainState({ clock: { highestSeenSlot: () => 1n as Slot, slotDurationMsEstimate: () => 400, providerSlotLag: () => 0 }, readHeight: async () => reading(1n, 0), providers: ['a'], maxProviderLagSlots: 10, initialSlotMs: 400, nowMs: () => 0 as UnixMs, log: { event: () => {} } }), /two read providers/);
+    const zero = createAgreedChainState({
+      clock: { highestSeenSlot: () => 1n as Slot, slotDurationMsEstimate: () => 400, providerSlotLag: () => 0 }, readHeight: async () => reading(0n, 0),
+      providers: ['a', 'b'], maxProviderLagSlots: 10, initialSlotMs: 400, nowMs: () => 0 as UnixMs, log: { event: () => {} },
+    });
+    assert.equal(await zero.refresh(), false, 'slot 0 is never an anchor');
   });
 
   it('the anchor is the lowest of the agreeing readings, so a provider ahead within the lag never moves the estimate forward', async () => {
     const chain = createAgreedChainState({
-      clock: { heightOn: async (p) => reading(p, p === 'a' ? 5_000n : 5_008n, 0), highestSeenSlot: () => 5_008n as Slot, slotDurationMsEstimate: () => 400, providerSlotLag: (p) => (p === 'b' ? 0 : 8) },
+      clock: { highestSeenSlot: () => 5_008n as Slot, slotDurationMsEstimate: () => 400, providerSlotLag: (p) => (p === 'b' ? 0 : 8) },
+      readHeight: async (p) => reading(p === 'a' ? 5_000n : 5_008n, 0),
       providers: ['a', 'b'], maxProviderLagSlots: 10, initialSlotMs: 400, nowMs: () => 0 as UnixMs, log: { event: () => {} },
     });
     assert.equal(await chain.refresh(), true);
