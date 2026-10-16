@@ -3917,3 +3917,91 @@ Builder notes (for review):
 - **Z07-37 · R16, who holds `flooredReverts`.** The caller holds it per position exit: it survives retries and new `freshRead`s, resets only when the position closes or the disagreement ends, and is persisted across a restart. Documented on `PartnerFreshness` and in SPEC-A C-88; Z08's acceptance carries "a dump with a stale partner exits on the 3rd attempt".
 - **Z07-38 · R15, the slot gap.** `E_CLOCK` carries `slotGap` (`snapshot.providerSlot − underCeiling.providerSlot`, null with no partner); the caller passes it to `decideClockExit`, which logs it as `slot_gap` in `m04.exit_clock_prices`. Logged only; no behaviour changes. One test (the 60 s fault: gap 49, carried and logged) fails before and passes after.
 - **Tests:** the R6b, R7, R8 and Z07-26 tests each fail on 780a54a5 and pass after; the Z07-25 rate test fails on c6a7f6a7 (300 reads) and passes after. MAJOR-1 now also counts the verification reads M15's poisoned slot triggers (2 refused reads, 8 snapshots, one `m04.clock_suspect`).
+
+### Z08 Capture (supervisor rulings Z08-1 to Z08-12 on the builder's plan, 2026-10-15)
+
+- **Z08-1 · A-M03-03 stays parked.** SPEC-A parks it (card Z-H-OF round 2, after MR-01 was parked) and neither Phase 0 provider serves `getProgramAccounts` [VF-09, VF-10]. Not built; A03's count comes from the recorded migrations (`migrations_since_start`) once Z09's backfill runs.
+- **Z08-2 · PumpPortal built, off.** A-M03-01 is built with `discovery.pumpportal.enabled` false by default (owner, 7 Oct: "PumpPortal is not used for now"). Its fixture is synthetic and marked so; the backfill it calls on reconnect is a port until Z09; no test connects to PumpPortal. SPEC-A C-94.
+- **Z08-3 · Disk: both rules, the stricter wins.** SPEC-A's 80% / 95% and DISKBUDGET ruling 2's 8 GiB cap and 3 GiB floor apply together. `recorder.retention_days` defaults to 7 for receipted segments only, under the owner's "delete after verified upload"; unreceipted data is never deleted: halt, alert, keep it. SPEC-A C-91.
+- **Z08-4 · gzip.** gzip is the default and every manifest names its codec. Measured on the way (Node 22.22.0): `node:zlib` decodes only the first zstd frame of a multi-frame file, so zstd is not offered at all; a zstd preference falls back to gzip. SPEC-A C-89.
+- **Z08-5 · No new package.** No `@bot/canon` and no package.json change: canonical JSON comes from `@bot/types`; the Ed25519 receipt format (`m07/receipt-sig.ts`) and `md-pull` (`m07/md-pull.ts`, `scripts/md-pull.ts`) are engine-local. The operator tool's wall clock is `m07/wall-clock.ts`, added to `CLOCK_AND_RNG_MODULES` in eslint.config.mjs (the engine never imports it).
+- **Z08-6 · G7, G9, G10 as planned.** A-M14-05 builds the engine side of the account ledger and the allocation reader; the signer's file waits for M4 and the [not chosen] B-10 parts are not built (SPEC-A C-93). Coverage is per pool-minute with the watch history as the denominator (C-91). Alerts go through log levels (error and above reach the M27 alert store); no Telegram.
+- **Z08-7 · No live pool read from the builder's container.** The SOL/USDC Whirlpool is cited from Orca's documentation (config) and the program's pinned source (PDA seeds and layout), derived offline: `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE`. The builder's first guess from memory (`Czfq3x…KfiW`) was wrong after its first 20 characters; the derivation caught it. Whether this is the deepest SOL/USDC Whirlpool is UNVERIFIED (no Orca page states depth): the runtime checks and the ≥ $1M-a-side floor protect, and the one live check is Z10's on-server acceptance (SPEC-A C-90). Tests use synthetic accounts built from the pinned layout.
+- **Z08-8 · `ref_price`.** An engine-local stream of public market data, never dropped, ranked after `venue_config`.
+- **Z08-9 · The cross-check takes mints.** A-M03-04 is built on mints the caller passes; Z09 wires A-M03-02's migrations (SPEC-A C-95).
+- **Z08-10 · Rates pinned in tests.** Shyft bucket ≤ 5 req/s and Chainstack ≤ 0.5 req/s (Z03 defaults, unchanged), DexScreener ≤ 150 a minute (`z08-services.test.ts`). Z08's own reads: SOL/USD one getMultipleAccounts a minute at P3 (unmetered primary only, so never Chainstack); the venue config recording adds no read (it records the Z07 cache's own refreshes, one call a minute).
+- **Z08-11 · VERIFY from documents only.** Read 2026-10-15: pumpportal.fun/data-api/real-time and /FAQ (endpoint, the two free subscribe messages, paid methods, 200 messages a second, bans expire hourly; no notice shape, no ban signal, no statement on keys for the free streams); nodejs.org v22 crypto (Ed25519 with `algorithm` null, A-18); docs.orca.so whirlpool-parameters; orca-so/whirlpools `whirlpool.rs` at `cc683ec9`. PumpPortal was never called.
+- **Z08-12 · No catch tests owed.** Z08 calls no `minOut`, no size search, no `decideClockExit` and no exit path, so C-85, C-87 and C-88's caller tests do not apply.
+- **Fail-before runs on the old Zeroed code** (scripts and output in the Z08 pull request): the PumpPortal socket waits 5, 10, 20 … 300 s with no jitter and no backfill hook (A-M03-01); `pruneRecordings` deletes a never-uploaded recording at the cap (A-M07-03 ruling); the coverage journal turns a 1 h, 14,400-slot outage at 250 ms into 1.6 h through `SLOT_MS = 400` (B1). The A-M07-02 (one manifest per boot, no per-segment recovery) and A-M14-05 items (no worker-side Helius halt, refunds, failed saves, unreadable counters) are shown from the code cited in MIGRATION, not run.
+
+### Z08 round 1 (#327 red team at b55a3394: 2 BLOCKER, 3 MAJOR, 5 MINOR; supervisor rulings Z08-13 to Z08-22; each probe is a test in `test/m07/z08-round1.test.ts`, `test/m14/z08-usage.test.ts`, `test/m14/z08-services.test.ts` or `test/m03/z08-pumpportal.test.ts` that fails on b55a3394 and passes after)
+
+- **Z08-13 · BLOCKER, no file is reopened.** A same-hour restart reopened a segment that already had a (recovered) manifest: records were miscounted, the index listed the path twice and the crash gap was overwritten. A segment file is now created exclusively and never reopened; a restart in the same hour writes part N, `<stream>.pN.ndjson.gz` with its own `<stream>.pN.manifest.json` (receipt paths accept `.pN`). Recovery takes each stream's highest `lastSeq` over every manifest. Test: records equal decoded lines in every part, the index lists each part once, part 0 keeps its crash gap, seqs continue.
+- **Z08-14 · BLOCKER, a failed flush and a signed corrupt file.** An EIO or ENOSPC flush counted the lost records with no gap and later frames were appended after the torn one; md-pull signed a receipt on the hash alone, so the host could delete its only copy. Now a record counts only once its frame is fsynced; a failed write is cut back to the last good frame (`ftruncate` on an `O_APPEND` file) and its records become a `halted` gap; a write that cannot be cut back closes the part without a manifest, the stream goes on in a new part, and the closed part is recovered (cut, `crash` gap) on resume or at the next start. A rotate whose file size differs from the bytes written writes no manifest. md-pull decodes every file and signs only when the sha256, the size and the decoded record count all match the manifest (`decodedLines`).
+- **Z08-15 · MAJOR, a write-failure halt resumes.** The disk manager resumes any halt (disk or failed write) once every limit is met (`M07.disk_ok_resume`); a write that fails again halts again, one critical alert per episode.
+- **Z08-16 · MAJOR, the open hour is untouchable.** The disk manager never deletes a segment of the current UTC hour or any file the writer has open (`SegmentWriter.openPaths()`), whatever the receipts say.
+- **Z08-17 · MAJOR, degraded mode can end without a position.** While `degraded_reads`, `createDegradedProbe` sends one P1 `getSlot` pinned to the primary at most every 30 s through the gateway (inside its limiter); 60 s of success ends the mode and P2 recording resumes. Nothing is sent in normal mode.
+- **Z08-18 · MINOR.** The watch log changes its map only after the line is written.
+- **Z08-19 · MINOR.** `runDailyCoverage` takes `closedThrough` (the writer's `lastRotatedHourUtc`: the last hour closed by the hour change; at start, the hour before the start hour) and returns null until the day's hour 23 is closed.
+- **Z08-20 · MINOR.** The PumpPortal reconnect backfill starts from `backfill.verifiedSlot()` (A-M03-02's chain-verified slot); a notice's slot never moves it.
+- **Z08-21 · MINOR.** A service Retry-After above 3,600 s stops that service with a critical alert (`retry_after_too_long`) until `resumeService`; up to 3,600 s is waited out. The RPC gateway already stops on a Retry-After above its own cap (`retry_after_too_long`, C03).
+- **Z08-22 · MINOR.** `createProviderMonitor` takes the meter and records every answer (ok, error, timeout), so the ledger's four counts are real.
+
+### Z08 round 2 (#327 red team at 0f7a4450: 1 BLOCKER, 1 MAJOR, 1 MINOR; supervisor rulings Z08-23 to Z08-25; each probe is a test in `test/m07/z08-round2.test.ts` that fails on 0f7a4450 and passes after)
+
+- **Z08-23 · BLOCKER, a large hour is read frame by frame.** Recovery and md-pull decoded a whole segment into one string, and V8 strings stop at about 512 MiB. So an intact hour that decodes to more (576 MB in the probe) was cut at start (blocking start for 23 s), and md-pull never signed it, so the disk filled. Both now read through `m07/frames.ts`, which is pure and on the purelist at 100%. It walks the gzip members one at a time: each member's end is the first later `frameStarts` offset at which it decodes, so its own CRC-32 and length decide. It splits the decoded bytes into lines in chunks of at most 1 MiB. A member that fails to decode, or is not UTF-8, stops the walk, and recovery cuts only there. md-pull counts lines while streaming and signs only when every member is good and every line is JSON ending in a newline. Tests:
+  - a real 587 MB (decoded) segment is kept whole and signed, marked `[timing]` so it runs only in `check`;
+  - chunk sizes 1, 2, 3, 7, 64 and 1 MiB give the same lines across members and multi-byte characters;
+  - a false magic in a member's trailer is not taken for an end;
+  - a torn or non-UTF-8 member is cut and none of its lines are counted.
+- **Z08-24 · MAJOR, a failed rotate is recovered.** A rotate that failed (for example, ENOSPC on the manifest rename) left the file closed or open with no manifest, and resume never recovered it. The rotate catch now closes the fd if it is still open (never twice) and adds the path to `broken`. resume() then cuts it, writes its manifest with a `crash` gap, and md-pull can sign it.
+- **Z08-25 · MINOR, one alert per write-failure episode.** A persistent EIO raised a critical alert at every 60 s disk check (about 120 an hour). Now:
+  - An episode starts at the first failed write: one critical `M07.write_failed` and one critical `M07.recording_halted`.
+  - Resumes back off: the first comes 60 s after the failure, then the wait doubles up to 1 h. An earlier `resume()` returns false, and the disk manager logs `M07.disk_ok_resume` only when a resume really happened.
+  - Each later failure in the episode logs the warning `M07.recording_halted_again`.
+  - The next write that succeeds ends the episode, so a later failure alerts again.
+  - Test: an hour of EIO with checks every 60 s gives exactly the two critical alerts, with resumes at 60, 180, 420, 900 and 1,860 s; the wait stays at 1 h; a good write starts a fresh episode.
+
+### Z08 round 3 (#327 red team at c6f29374: PASS, 3 MINOR; supervisor rulings Z08-26 to Z08-28; each probe is a test in `test/m07/z08-round3.test.ts` that fails on c6f29374 and passes after)
+
+- **Z08-26 · MINOR, a torn header cuts only itself.** `frames.ts` now parses each gzip member's exact bounds instead of trying candidate ends. A good last frame followed by 1, 2 or 5 bytes of a header (fewer than the 10 a header needs) is kept, and only the torn bytes are cut. Before, the whole good frame was cut (goodEnd 0).
+- **Z08-27 · MINOR, nothing may trail a frame.** Each member is parsed as:
+  - the 10-byte header: magic, deflate and flags 0, since the writer sets no optional fields;
+  - the raw deflate data, measured by the bytes zlib consumed;
+  - the 8-byte footer, whose CRC-32 and ISIZE must match the decoded bytes.
+
+  The next member starts exactly there, or the file ends there. Trailing zero bytes (which gunzip ignored before), text or a stray footer make the file incomplete: md-pull signs nothing, and recovery cuts them and keeps the frames. Probes: zero bytes, text, a second footer, a flipped CRC or ISIZE, a set FNAME flag, and cut-short deflate data or footer.
+- **Z08-28 · MINOR, bounded decoding.** A member decodes with `maxOutputLength` 64 MiB, so a 100 KB frame that would decode to 100 MiB stops at the cap in milliseconds. A line may hold at most 4 MiB. Lines are split on the newline byte and decoded one at a time.
+  - A member over either cap is corrupt: recovery cuts there, its `crash` gap covers the rest, `M07.crash_recovered` names the `cut_reason`, and the writer goes on.
+  - So that good data is never cut, the writer's flush is split into members of at most 16 MiB decoded (`frameOf`; a line is never split).
+  - `recorder.record_max_bytes` is capped at 1 MiB (`RECORD_MAX_BYTES_CAP`, `E_CONFIG` above it), so a recorded line always stays well under 4 MiB.
+  - The cap was not in SPEC-A; the default (64 KiB) is unchanged.
+  - Tests cover both caps at their default and injected values, writer splitting, and the config refusal.
+
+### Z08 review (#327 reviewer at b55a3394: its BLOCKER, the same-hour reopen, is the red team's Z08-13, already fixed; supervisor rulings Z08-29 and Z08-30)
+
+- **Review asserts added to the kill test** (`test/m07/z08-segments.test.ts`, A-M07-02 Zeroed OOM/RTC case). After the kill and restart:
+  - the new run writes part `p1` and never the recovered part;
+  - `after.records` is 1 and equals p1's decoded lines;
+  - part 0's bytes still hash to its recovered manifest, so it was not reopened, and a receipt signed for it stays valid for exactly those bytes;
+  - the day index lists each part once;
+  - the seqs over both parts number `m.records + after.records`, with none repeated.
+
+  Before, the seq check read part 0 a second time, so the restarted run's records were never checked. No reopened segment can be deleted: segments are never reopened (Z08-13), and the disk manager never touches the current hour or an open file (Z08-16).
+- **Z08-29 · MAJOR, the fail-before is run on Zeroed's recorder** (MIGRATION Rules item 1; A-M07-02 is "adapt (recorder seal)"). The Z08 kill test was rerun against `packages/worker/src/run/recorder.ts` at 11104c15. Setup:
+  - a child process runs `new Recorder({ rotateBytes: 1 GiB })`, writes `delay` rows with a flush every 50, and is killed with SIGKILL while writing;
+  - the next start runs `sealLeftovers`;
+  - the script is in the PR thread.
+
+  Result on the old code:
+  - The torn last line is cut, every kept line is JSON, and no row is repeated inside the file. Passes.
+  - The manifest's counts for the boot: `units[0]` reads frames 0, raw 0 and releases 0, and `days[].rows` is `{}`, while the sealed `delays-000.jsonl.zst` decodes to 60,750 rows. `sealBoot` counts `delays` and `pre` rows but writes only frames, raw and releases, so a manifest's count disagrees with the decoded lines. **Fails.**
+  - There is no per-file record count, seq range or slot range. **Fails.**
+  - The crash gap is one boot-level line, "worker stopped without a clean stop; files sealed at the next start", with no time range. **Fails.**
+  - There is no seq, so "no record is duplicated across the restart" cannot be checked from the manifest. **Fails.**
+
+  The same test passes on the new writer. A-M14-05 stays shown from the cited code (supervisor).
+- **Z08-30 · MINOR, DexScreener reporting and budget.**
+  - `crossCheck` logs `other_dex_pairs` and `known_pools_under_other_dex`. A pool we know that comes back under a dexId not configured as PumpSwap's sets `status = 'dex_id_mismatch'`, which is a warning. A partial answer stays `partial`, with the count in the log.
+  - Budget: the register's 300/min for `/tokens` is UNVERIFIED; the only limit on the official reference page is 60/min. Under the owner's 50% rule, every DexScreener bucket runs at 30/min (`SERVICE_LIMITS.dexscreener.pairs` from 150 to 30). This is pinned in `z08-services.test.ts`, the 31st call waits, and SPEC-A C-95 and A-M14-03 note the open VERIFY. This replaces the 150/min of Z08-10.
+  - The Shyft (≤ 5 req/s) and Chainstack (≤ 0.5 req/s) pins are duplicated into `z08-services.test.ts`, as Z08-10 said; Z03 keeps its own.

@@ -44,6 +44,11 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
 
   it('CA-24: the keys that do not affect returns are listed here for review', () => {
     assert.deepEqual(CONFIG_FIELDS.filter((f) => !f.affectsReturns).map((f) => f.key), [
+      // Z08 (A-M03-01, A-M03-04, A-M07-02/03, A-M14-03/05): discovery sources, recorder storage and provider accounting;
+      // recording plumbing, not a strategy parameter.
+      'discovery.dexscreener.enabled', 'discovery.dexscreener.max_calls_per_day', 'discovery.dexscreener.pumpswap_dex_ids',
+      'discovery.pumpportal.backoff_max_ms', 'discovery.pumpportal.enabled', 'discovery.pumpportal.max_sub_msgs_per_s',
+      'discovery.pumpportal.paid_methods', 'discovery.pumpportal.silence_alert_ms',
       // Z06 (B-M15-01 "Config": all affectsReturns false): the live slot clock's polling; simulation dates slots from
       // history anchors, never from these.
       'm15.height_poll_ms', 'm15.height_timeout_ms', 'm15.max_future_slot_jump', 'm15.slot_ms_initial',
@@ -51,8 +56,14 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
       'm27.ring_budget_bytes', 'm27.rollup_max_bytes', 'm27.series_cap',
       // Z03 (A-M14-01/02): read-path plumbing; backtest and replay make no RPC call, and the live read path's limits are
       // the owner's data-source rule, not a strategy parameter.
+      'recorder.codec_preference', 'recorder.data_dir', 'recorder.disk_check_ms', 'recorder.disk_stop_pct', 'recorder.disk_warn_pct', 'recorder.flush_ms',
+      'recorder.max_bytes', 'recorder.min_free_bytes', 'recorder.research_pubkey', 'recorder.retention_days',
+      'rpc.allocation_file', 'rpc.burn.alert_bps', 'rpc.chainstack.rolling_31d_ru_cap',
       'rpc.default_timeout_ms.p0', 'rpc.default_timeout_ms.p1', 'rpc.default_timeout_ms.p2', 'rpc.default_timeout_ms.p3', 'rpc.default_timeout_ms.p4',
-      'rpc.max_response_bytes', 'rpc.p0_reserve_bps', 'rpc.providers_file', 'rpc.send_enabled',
+      'rpc.degraded.enter_after_ms', 'rpc.degraded.exit_after_ms', 'rpc.health.down_after_ms', 'rpc.helius.rolling_31d_credit_cap',
+      'rpc.max_response_bytes', 'rpc.p0_reserve_bps', 'rpc.providers_file', 'rpc.reserve_block_units', 'rpc.send_enabled',
+      'services.coingecko.base_url', 'services.coingecko.monthly_cap', 'services.dexscreener.base_url', 'services.jupiter.base_url',
+      'services.rugcheck.base_url',
     ]);
   });
 
