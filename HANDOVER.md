@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 4:24 PM: Z09 #330 round 4 at `cb70524b`.** Z09-39..42 applied; `pnpm check` 9,238/3, the known environment failures; the 11 new tests fail on `3ab6f9a4` and pass at the head.
+  - Z09-39: retirement (age_unknown, past_entry_age, past_tail, failed_retries) and a per-hour ceiling `facts_refresh_per_hour` = 300. Worst case measured: 300 a hour, and retired pools read 0.
+    - MR-01 note: an evicted pool comes back only within its tail or on rediscovery (recorded in DECISIONS).
+  - Z09-40: a process_start stream; the replay splits at markers and resets; a restart parity test.
+  - Z09-41: restoreTails / tail_restart_cut. Z09-42: early counts are rejected.
+  - Review and red team are re-checking. They will also state whether the 300 ceiling counts pools or RPC calls, against the P4 and Shyft budget.
 - **16 Oct 4:22 PM: #331 FAILED review + red team with a BLOCKER, so it is held.**
   - Batch 1 marked 07-22 as a failed day (job "scan (2026-07-22)" failed at "Trim the day to K3"; `AG_FAILED_DAYS`).
   - OF-6 ruling 3 (scan-day.sh:149) refuses a fresh whole-day read of a failed day. The next run would spend the probe and burn failures 2 and 3.
