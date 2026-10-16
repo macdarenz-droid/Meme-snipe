@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 12:28 AM: #332 review PASS at `238c27b9`** (test-ci 290/0).
+  - archive-check.sh:171-174 holds at step 1 when unarmed, before history, the probe and the dispatch. A manual data-scan fails only at the plan guard and counts nothing.
+  - A later re-arm keeps AG_FAILS=2. Failure memory lasts only as long as the run history (90 days).
+  - The re-arm PR must restore "OF-ARM armed config".
+  - The reviewer corrected its own #331 PASS: its log-read test went through the sandbox proxy, not the runner's GITHUB_TOKEN.
+  - CI on `238c27b9`: dashboard, coverage and historical-data green; check running. Waiting on the red team `session_01NfTxamumMJKcCQpxzD3d41` (running test-ci).
 - **17 Oct 12:22 AM: Z10 red team FAIL at `57d04e6a`** (2 MAJOR, 5 MINOR; the Z10-19 delta PASSES and its test can fail). Rulings Z10-24..31 sent to the builder:
   - **Z10-24 (MAJOR-1):** M27 critical codes never left the host, and the heartbeat sent lastSlot null, so a stalled recorder looked healthy. Fix: critical codes in the heartbeat (codes only), lastSlot = newest stored slot, plus critical on a 30 s stale tick and on 5 min unanchored.
   - **Z10-25 (MAJOR-2):** the node_modules allow-list could be escaped by links, and zeroed-update, which runs as root, could write outside the release. Fix: an exact check in the e2e, and host-side refusals in zeroed-update and release_links.
