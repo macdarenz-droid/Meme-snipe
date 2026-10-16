@@ -31,6 +31,14 @@ export interface M04Settings {
   maxCandidates: number;
   maxTail: number;
   maxPositions: number;
+  /**
+   * Ruling Z10-15 (amends Z07): verification reads go at P1, so they reach a metered peer (M14 refuses P2+ there). At
+   * most this many a UTC day; past it, none until the next day (the Z07 fail-closed behaviour) and one critical alert.
+   * Default 3,000: the Z07-25 back-off allows at most about 2,880 a day (one episode all day: 30 in its first minute,
+   * then 2 a minute), so about 93,000 in 31 days, 6.2% of Chainstack's 1.5M RU cap (`rpc.chainstack.rolling_31d_ru_cap`,
+   * 50% of the 3M plan [VF-10]); M14's limiter still holds every read under the owner's one read every 2 s.
+   */
+  verifyDailyCap: number;
 }
 
 export const M04_DEFAULTS: Readonly<M04Settings> = Object.freeze({
@@ -41,7 +49,7 @@ export const M04_DEFAULTS: Readonly<M04Settings> = Object.freeze({
   supplyRefreshMs: 60_000, maxProviderLagSlots: 10, historyMs: 7_200_000,
   staleLagSlots: 12, buildLagSlots: 8, exitLagAlertSlots: 40,
   subscribeEnabled: false, staleCheckMs: 500, readTimeoutMs: 2_000,
-  staleAgeMs: 5_000, maxCandidates: 30, maxTail: 30, maxPositions: 10,
+  staleAgeMs: 5_000, maxCandidates: 30, maxTail: 30, maxPositions: 10, verifyDailyCap: 3_000,
 });
 
 const RANGES: ReadonlyArray<[keyof M04Settings, string, number, number]> = [
@@ -61,6 +69,7 @@ const RANGES: ReadonlyArray<[keyof M04Settings, string, number, number]> = [
   ['maxCandidates', 'pool_tracker.max_candidates', 1, 33],
   ['maxTail', 'pool_tracker.max_tail', 0, 100],
   ['maxPositions', 'pool_tracker.max_positions', 1, 20],
+  ['verifyDailyCap', 'pool_tracker.verify_daily_cap', 0, 3_000],
 ];
 
 /**

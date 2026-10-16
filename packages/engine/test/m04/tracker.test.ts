@@ -835,7 +835,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     s.reader.calls = [];
     await s.time.advance(3_000);
     assert.equal(s.log.lines.filter(([l, c]) => l === 'warn' && c === 'm04.clock_suspect').length, 1);
-    assert.ok(s.reader.calls.some((c) => c.priority === 2 && c.provider !== undefined));
+    assert.ok(s.reader.calls.some((c) => c.priority === 1 && c.provider !== undefined));       // ruling Z10-15: verification at P1
     assert.ok(!s.log.codes().includes('m04.clock_fault'));
     const waiting = await s.tracker.freshRead('a', 8);
     assert.ok(!waiting.ok && waiting.error.code === 'E_CLOCK');
@@ -895,7 +895,7 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
     s.reader.calls = [];
     const at: number[] = [];
     const read = s.reader.read.bind(s.reader);
-    s.reader.read = (keys, o) => { if (o.priority === 2 && o.provider !== undefined) at.push(s.time.nowMs()); return read(keys, o); };   // verification reads name their provider
+    s.reader.read = (keys, o) => { if (o.priority === 1 && o.provider !== undefined) at.push(s.time.nowMs()); return read(keys, o); };   // verification reads (P1, ruling Z10-15) name their provider
     await s.time.advance(600_000);
     assert.equal(s.tracker.clockFault(), true);
     const firstMinute = at.filter((t) => t < at[0]! + 60_000).length;
@@ -1437,15 +1437,16 @@ describe('rulings Z07-9 and Z07-13: a slot clock that trails the tip', () => {
   it('verification reads of past-ceiling polls are spaced at least 2 s apart and never overlap', async () => {
     const s = setup(undefined, ['only']);
     add(s.reader, 'a');
-    s.tracker.watch('a', 'position');
+    // A candidate pool (polls at P2), so the P1 calls are the verification reads alone (ruling Z10-15: they moved to P1).
+    s.tracker.watch('a', 'candidate');
     await s.tracker.settled();
     s.chain.highest = 2_050n;
     s.chain.expected = 2_000n;
     s.reader.slot = () => 2_050n;
     s.reader.provider = () => 'only';
     s.reader.calls = [];
-    await s.time.advance(5_000);                                    // 10 position polls, all unverified
-    const verifies = s.reader.calls.filter((c) => c.priority === 2).length;
+    await s.time.advance(5_000);                                    // 5 candidate polls, all unverified
+    const verifies = s.reader.calls.filter((c) => c.priority === 1).length;
     assert.ok(verifies >= 2 && verifies <= 3, `${verifies}`);
     assert.equal(s.tracker.clockFault(), false);
     s.tracker.stop();

@@ -4,6 +4,9 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import { tempDir } from '../helpers.ts';
 import { FakeChain, VirtualTime } from './fake-chain.ts';
+import { createDailyJob } from '../../src/recorder-main/daily.ts';
+import { kvEvictionLog } from '../../src/recorder-main/evictions.ts';
+import type { UnixMs } from '@bot/types';
 import { startRig } from './rig.ts';
 
 describe('Z10 daily jobs', () => {
@@ -29,4 +32,39 @@ describe('Z10 daily jobs', () => {
       await r.rec.stop();
     }
   }, 120_000);
+
+  it('finding Z10-F5: the recorder takes a manifest of 100 kB (the soak\'s second day was 100,566 bytes; fails before: E_TOO_LARGE at 64 KiB)', async () => {
+    const time = new VirtualTime(Date.UTC(2026, 9, 6, 17, 30, 0));
+    const r = await startRig(tempDir('z10-big'), { time, chain: new FakeChain(time, { seed: 9 }) });
+    try {
+      await r.run(2_000);
+      const payload = { dayUtc: '2026-10-06', eligible: Array.from({ length: 240 }, (_, i) => ({ poolId: `p${i}`.padEnd(44, 'x'), reason: 'r'.repeat(300) })) };
+      assert.ok(JSON.stringify(payload).length > 80_000);
+      assert.equal(r.rec.parts.queue.append({ stream: 'universe_manifest', recvMs: time.nowMs() as UnixMs, slot: null, commitment: null, source: 'm05', payload }), 'queued');
+    } finally {
+      await r.rec.stop();
+    }
+  }, 60_000);
+
+  it('finding Z10-F5: a manifest M07 refuses is never marked saved: no universe_manifest row, no coverage report, ONE critical line', async () => {
+    const time = new VirtualTime(Date.UTC(2026, 9, 6, 23, 40, 0));
+    const r = await startRig(tempDir('z10-refused'), { time, chain: new FakeChain(time, { seed: 9 }) });
+    try {
+      await r.run(2_000);
+      const db = r.rec.parts.db;
+      const lines: Array<[string, string]> = [];
+      const job = createDailyJob({
+        db, dataDir: r.paths.mdDir, evictions: kvEvictionLog(db, () => time.nowMs() as UnixMs), limits: [], limitSetId: 'x', prefilterOnly: true,
+        migrationCoverage: () => ({ chainMigrations: 0, seenByPumpPortal: 0, gapBps: 0 }), closedThrough: () => '2026-10-06T23',
+        append: () => ({ rejected: 'E_TOO_LARGE' }), nowMs: () => time.nowMs() as UnixMs, log: { event: (level, code) => { lines.push([level, code]); } },
+      });
+      for (let i = 0; i < 3; i++) job.tick(Date.UTC(2026, 9, 7, 0, 1, i) as UnixMs);
+      const rd = db.reader();
+      assert.equal(rd.all('SELECT 1 FROM "universe_manifest"').length, 0);
+      assert.equal(rd.all('SELECT 1 FROM "coverage_report"').length, 0);
+      assert.deepEqual(lines.filter(([, c]) => c === 'recorder.manifest_not_recorded'), [['critical', 'recorder.manifest_not_recorded']]);
+    } finally {
+      await r.rec.stop();
+    }
+  }, 60_000);
 });

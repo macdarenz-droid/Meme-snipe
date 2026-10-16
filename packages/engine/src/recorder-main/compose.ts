@@ -49,7 +49,7 @@ import { configValue } from '../m25/registry.ts';
 import { createLogger, type Logger, type LogSink } from '../m27/log.ts';
 import { MetricsRegistry } from '../m27/metrics.ts';
 import { m27Settings } from '../m27/settings.ts';
-import { RecorderQueue, type EncodedRecord } from '../recorder/queue.ts';
+import { RECORD_MAX_BYTES_CAP, RecorderQueue, type EncodedRecord } from '../recorder/queue.ts';
 import { createAgreedChainState, ANCHOR_EVERY_MS, type AgreedChainState } from './chain.ts';
 import { m07Log, RECORDER_LOG_TABLE } from './log-codes.ts';
 import { createReadPath, type ReadPath } from './rpc.ts';
@@ -234,7 +234,9 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   // unit may write is always the one used; `recorder.data_dir` keeps its default, which is ENGINE_PATHS.mdDir.
   const dataDir = p.paths.mdDir;
   const recovery = SegmentWriter.recover({ dataDir, nowMs: nowMs(), log: wlog });
-  const queue = new RecorderQueue({ firstSeq: recovery.nextSeq, log: wlog, config: { pollCloseGraceMs: configValue(cfg, 'bars.close_grace_ms') } });
+  // Finding Z10-F5: a day's universe manifest is about 420 bytes per eligible pool (the soak's second day: 239 pools,
+  // 100,566 bytes), past the 64 KiB default, so the record cap is M07's largest (1 MiB, ruling Z08-28: about 2,500 pools).
+  const queue = new RecorderQueue({ firstSeq: recovery.nextSeq, log: wlog, config: { pollCloseGraceMs: configValue(cfg, 'bars.close_grace_ms'), recordMaxBytes: RECORD_MAX_BYTES_CAP } });
   // The stored 1-minute bars (M08 `bar_1m`). The 15 s base bars feed only features and strategies, none of which runs in
   // the recorder; replays rebuild them from the recording (A-M08-01, Z09-32).
   const bars = createBarEngine({ ...BAR_DEFAULTS, durationMs: 60_000, closeGraceMs: configValue(cfg, 'bars.close_grace_ms'), incompleteMissingBps: configValue(cfg, 'bars.incomplete_missing_bps') }, log);
@@ -325,15 +327,22 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   });
 
   // ---- M04: the tracker, its outputs to M07, M05, M08 and M14. ----
-  // Z10-F2: with polls only (no entry or exit reads), M04 raises no critical alert while its reads sit past the clock's
-  // ceiling: it logs `m04.clock_suspect` (warn) and stores nothing. The recorder watches for that: an episode starts at
-  // M04's first clock event and ends when a snapshot is stored again; past CLOCK_ALERT_MS it raises ONE critical
-  // `recorder.clock_suspect`, and while it lasts the anchor is re-read every ANCHOR_RETRY_MS.
-  let clockTrouble: { sinceMs: number; alerted: boolean } | null = null;
+  // Z10-F2 (ruling Z10-16): with polls only (no entry or exit reads), a provider whose reads sit past the clock's ceiling
+  // gets a warn `m04.clock_suspect` from M04, and none of its reads is stored. The recorder watches for that: an episode
+  // starts at M04's first clock event and ends when a snapshot from the suspect provider is stored again (the backup's
+  // verification reads, P1 since ruling Z10-15, do not end it: the primary's polls are still refused); past
+  // CLOCK_ALERT_MS it raises ONE critical `recorder.clock_suspect`, and while it lasts the anchor is re-read every
+  // ANCHOR_RETRY_MS. When M04 raises its own critical clock alert (a confirmed `m04.clock_fault`, or a disagreement past
+  // its own time), that is the episode's one alert and any stored snapshot ends it.
+  const M04_CLOCK_CODES: ReadonlySet<string> = new Set(['m04.clock_suspect', 'm04.clock_fault', 'm04.clock_disagreement']);
+  let clockTrouble: { sinceMs: number; alerted: boolean; source: string | null } | null = null;
   const trackerLog = {
     event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void {
       log.event(level, code, fields);
-      if ((code === 'm04.clock_suspect' || code === 'm04.clock_fault' || code === 'm04.clock_disagreement') && clockTrouble === null) clockTrouble = { sinceMs: p.scheduler.nowMs(), alerted: false };
+      if (!M04_CLOCK_CODES.has(code)) return;
+      const source = typeof fields.source === 'string' ? fields.source : null;
+      if (clockTrouble === null) clockTrouble = { sinceMs: p.scheduler.nowMs(), alerted: false, source };
+      if (level === 'critical') { clockTrouble.alerted = true; clockTrouble.source = null; }
     },
   };
   // A failed poll batch counts as a failed poll for each watched pool in it (A-M07-01 `failedPolls`; M04 only logs it).
@@ -365,7 +374,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     },
     outputs: {
       snapshot(s, cls) {
-        clockTrouble = null;                                            // a stored snapshot ends a clock episode
+        if (clockTrouble !== null && (clockTrouble.source === null || clockTrouble.source === s.providerLabel)) clockTrouble = null;
         link.outputs.snapshot(s, cls);
         facts.set(s.pool.poolId, factOf(s));
         bars.onSnapshot(barSnapshotOf(s), cls === 'tail' ? settings.tailIntervalMs : settings.candidateIntervalMs);
@@ -448,7 +457,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   // ---- 00:00 UTC: the universe manifest, then the coverage report (daily.ts). ----
   const daily = createDailyJob({
     db, dataDir, evictions, limits: LIMIT_SETS[limitSetId], limitSetId, prefilterOnly: !configValue(cfg, 'universe.screening_required'),
-    migrationCoverage: () => backfill.coverage(86_400_000), closedThrough: () => writer.lastRotatedHourUtc(), append: (r) => { queue.append(r); }, nowMs, log,
+    migrationCoverage: () => backfill.coverage(86_400_000), closedThrough: () => writer.lastRotatedHourUtc(), append: (r) => queue.append(r), nowMs, log,
   });
 
   // ---- The 1 s loop. ----

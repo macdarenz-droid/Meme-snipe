@@ -94,7 +94,8 @@ export const VERIFY_SPACING_MS = 2_000;
 /**
  * POLICY (ruling Z07-25): verification reads back off. For the first `VERIFY_FAST_MS` of an episode they are at most
  * one every `VERIFY_SPACING_MS`, then at most one every `VERIFY_SLOW_SPACING_MS` (a 10-minute fault costs about 48
- * P2 reads, not 300; Chainstack's owner rate is one read every 2 s, ARCH 11.2). An episode starts at the first request
+ * reads, not 300; Chainstack's owner rate is one read every 2 s, ARCH 11.2). Ruling Z10-15: at P1, at most
+ * `pool_tracker.verify_daily_cap` a UTC day. An episode starts at the first request
  * after `VERIFY_SLOW_SPACING_MS` with none. The reads go through M14, whose limiter holds each provider to 50% of its
  * documented limit.
  */
@@ -272,6 +273,9 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   let lastVerifyMs = -Infinity;
   let verifySinceMs = -Infinity;
   let lastVerifyAskMs = -Infinity;
+  /** Ruling Z10-15: verification reads this UTC day (`pool_tracker.verify_daily_cap`). */
+  let verifyDay = -1;
+  let verifiesToday = 0;
 
   /**
    * MINOR-R6 and MAJOR-R6b (Z07-22): lag against max(the clock's estimate, M15's highest slot seen when it is within
@@ -519,9 +523,22 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     lastVerifyAskMs = now;
     const spacing = now - verifySinceMs < VERIFY_FAST_MS ? VERIFY_SPACING_MS : VERIFY_SLOW_SPACING_MS;
     if (verifying || now - lastVerifyMs < spacing) return;
+    const day = Math.floor(now / 86_400_000);
+    if (day !== verifyDay) { verifyDay = day; verifiesToday = 0; }
+    if (verifiesToday >= settings.verifyDailyCap) {
+      // Past the cap: no verification until the next UTC day, so past-ceiling reads stay unverified and unstored, and
+      // entries stay refused (the Z07 fail-closed behaviour). One critical line a day.
+      if (verifiesToday === settings.verifyDailyCap) {
+        verifiesToday++;
+        deps.log.event('critical', 'm04.verify_cap_reached', { cap: settings.verifyDailyCap, day: new Date(day * 86_400_000).toISOString().slice(0, 10) });
+      }
+      return;
+    }
+    verifiesToday++;
     verifying = true;
     lastVerifyMs = now;
-    void readPool(poolId, 2, nextProvider(provider), false)
+    // Ruling Z10-15: P1, so a metered peer (the backup) can confirm or refute (M14 refuses P2+ there).
+    void readPool(poolId, 1, nextProvider(provider), false)
       .then((r) => { if (source !== null) strike(source, r.by, poolId); })
       .catch(caught('verify'))
       .finally(() => { verifying = false; });

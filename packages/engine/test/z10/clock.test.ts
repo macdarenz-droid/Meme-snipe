@@ -20,12 +20,8 @@ async function rigWith(label: string, set: (c: FakeChain) => void): Promise<Rig>
 }
 
 describe('Z10 C-84: the slot clock on the composition root', () => {
-  // FINDING Z10-F1 (put to the supervisor): M04's verification reads go at P2 to the next provider (tracker.ts:523), and
-  // M14 refuses P2+ on a metered provider (gateway.ts:762). With Shyft and Chainstack, the only other provider is the
-  // metered backup, so a past-ceiling read is never confirmed or refuted by a peer: it stays unverified. The tests below
-  // assert what the composed recorder does today; the safety properties hold (nothing past the ceiling is stored,
-  // entries are refused, ONE critical clock alert per episode), but the alert is `m04.clock_disagreement`, not
-  // `m04.clock_fault`, and a lone provider is never blamed or counted.
+  // Ruling Z10-15 (finding Z10-F1): M04's verification reads go at P1, so the metered backup (M14 refuses P2+ there)
+  // confirms or refutes a past-ceiling read; at most `pool_tracker.verify_daily_cap` a UTC day.
   const clockAlerts = (r: Rig): number => crit(r, 'm04.clock_fault') + crit(r, 'm04.clock_disagreement') + crit(r, 'recorder.clock_suspect');
 
   it('verification reads at P2 never reach the metered backup; P1 does (Z10-F1)', async () => {
@@ -38,6 +34,27 @@ describe('Z10 C-84: the slot clock on the composition root', () => {
       assert.equal((await p1).ok, true);
       const x = await p2;
       assert.ok(!x.ok && x.error.code === 'E_ALL_PROVIDERS_DOWN');
+    } finally {
+      await r.rec.stop();
+    }
+  }, 60_000);
+
+  it('Z10-15: a primary lying far past the clock is excluded after strikes, the backup refuting it at P1; the backup is never blamed (fails before: verification at P2 never reached the backup)', async () => {
+    // Shyft's reads run 300 slots ahead (past the ceiling + PLAUSIBLE_MARGIN_SLOTS); its height reading agrees at the tip.
+    const r = await rigWith('z10-liar', (c) => { c.provider('shyft').slotOffset = 300; c.provider('shyft').heightOffset = -300; });
+    try {
+      await r.run(5_000);
+      assert.ok(r.rec.status().anchored);
+      assert.ok(r.rec.parts.tracker.watch(POOL(r), 'candidate'));
+      await r.run(60_000);
+      const blamed = r.lines.filter((l) => l.includes('"code":"m04.read_ahead_of_clock"'));
+      assert.ok(blamed.length >= 1, 'the liar is blamed');
+      assert.ok(blamed.every((l) => l.includes('"provider":"shyft"')), 'only the liar');
+      const verifies = r.chain.byMethod.get('chainstack getMultipleAccounts') ?? 0;
+      assert.ok(verifies >= 3, `the backup verified (${verifies} reads)`);
+      const latest = r.rec.parts.tracker.latest(POOL(r));
+      assert.ok(latest === null || latest.providerSlot <= ceiling(r), 'nothing past the ceiling stored');
+      assert.equal(crit(r, 'm04.verify_cap_reached'), 0);
     } finally {
       await r.rec.stop();
     }

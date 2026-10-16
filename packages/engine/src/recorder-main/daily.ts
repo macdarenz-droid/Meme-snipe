@@ -12,7 +12,7 @@ import { buildUniverseManifest, eventsFromRows } from '../m05/manifest.ts';
 import { limitSetHash, type UniverseLimits } from '../m05/universe.ts';
 import { runDailyCoverage } from '../m07/daily.ts';
 import type { CandidateState, CoverageReport, Pubkey, UnixMs } from '@bot/types';
-import type { AppendInput } from '../recorder/queue.ts';
+import type { AppendInput, AppendResult } from '../recorder/queue.ts';
 import type { EvictionLog } from './evictions.ts';
 
 const DAY_MS = 86_400_000;
@@ -28,8 +28,8 @@ export interface DailyJob {
 export function createDailyJob(o: {
   db: Db; dataDir: string; evictions: EvictionLog; limits: readonly UniverseLimits[]; limitSetId: string; prefilterOnly: boolean;
   migrationCoverage: () => { chainMigrations: number; seenByPumpPortal: number; gapBps: number };
-  closedThrough: () => string; append: (r: AppendInput) => void; nowMs: () => UnixMs;
-  log: { event(level: 'info' | 'warn' | 'error', code: string, fields: Readonly<Record<string, unknown>>): void };
+  closedThrough: () => string; append: (r: AppendInput) => AppendResult | void; nowMs: () => UnixMs;
+  log: { event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void };
 }): DailyJob {
   const repos = createRepos();
   const firstStart = ((): number => {
@@ -54,7 +54,13 @@ export function createDailyJob(o: {
       migrationCoverage: o.migrationCoverage(), limitSet: { id: o.limitSetId, paramHash: limitSetHash(o.limits) },
       enumerationCoverage: 'migrations_since_start', generatedAtMs: now, late: now > dayStart + DAY_MS + LATE_AFTER_MS, prefilterOnly: o.prefilterOnly,
     });
-    o.append({ stream: 'universe_manifest', recvMs: now as UnixMs, slot: null, commitment: null, source: 'm05', payload: m });
+    // Finding Z10-F5: a manifest M07 refuses (too large, or the queue full) is never marked as saved: no M24 row points at
+    // a record that does not exist, the day gets no coverage report (it needs the manifest), and ONE critical line says so.
+    const appended = o.append({ stream: 'universe_manifest', recvMs: now as UnixMs, slot: null, commitment: null, source: 'm05', payload: m });
+    if (appended === 'dropped' || (typeof appended === 'object' && appended !== null)) {
+      o.log.event('critical', 'recorder.manifest_not_recorded', { day, eligible: m.a24.eligibleCount, error_code: appended === 'dropped' ? 'E_QUEUE_FULL' : appended.rejected });
+      return null;
+    }
     o.db.withTx((tx) => { repos.universe_manifest.insert(tx, { dayUtc: day, sha256: m.sha256, path: `md:universe_manifest/${day}`, createdAt: now as UnixMs }); });
     o.log.event('info', 'recorder.universe_manifest', { day, sha256: m.sha256, eligible: m.a24.eligibleCount, late: m.late });
     return m.sha256;
