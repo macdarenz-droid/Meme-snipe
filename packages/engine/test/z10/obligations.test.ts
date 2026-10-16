@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
 import type { Pubkey } from '@bot/types';
+import { REFERENCE } from '@bot/venue/constants';
 import { DUE_SQL } from '../../src/m05/store.ts';
 import { tempDir } from '../helpers.ts';
 import { FakeChain, VirtualTime } from './fake-chain.ts';
@@ -143,4 +144,24 @@ describe('Z10 ruling Z09-23: the candidate.cooldown_until index', () => {
       await r.rec.stop();
     }
   });
+});
+
+describe('Z10 C-90: the SOL/USD live check is wired', () => {
+  it('the first SOL/USD read that reaches the pool is kept once (here the fake chain has no Whirlpool: fail, critical, shown on status); a provider error is not a check', async () => {
+    const time = new VirtualTime(WALL_START);
+    const chain = new FakeChain(time, { seed: 2 });
+    chain.failKeys.add(REFERENCE.solUsdcWhirlpool);                // the reads fail before reaching the pool
+    const r = await startRig(tempDir('z10-solusd'), { time, chain });
+    try {
+      await r.run(130_000);
+      assert.equal(r.rec.status().solUsdCheck, 'pending', 'a provider error is not a check');
+      chain.failKeys.clear();
+      await r.run(130_000);
+      assert.equal(r.rec.status().solUsdCheck, 'fail: pool_missing');
+      assert.equal(r.lines.filter((l) => l.includes('"code":"recorder.sol_usd_check"')).length, 1);
+      assert.ok(r.lines.some((l) => l.includes('"code":"recorder.sol_usd_check"') && l.includes('"level":"critical"')));
+    } finally {
+      await r.rec.stop();
+    }
+  }, 120_000);
 });

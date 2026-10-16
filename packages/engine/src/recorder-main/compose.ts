@@ -31,7 +31,7 @@ import { DEFAULT_DISK_POLICY, DiskManager } from '../m07/disk.ts';
 import { linkTrackerToRecorder } from '../m07/m04-link.ts';
 import type { Codec } from '../m07/manifest.ts';
 import { SegmentWriter } from '../m07/segments.ts';
-import { createSolUsdReader } from '../m07/sol-usd.ts';
+import { createSolUsdReader, type RefPriceRecord } from '../m07/sol-usd.ts';
 import { recordVenueConfig, type VenueConfigRecorder } from '../m07/venue-config.ts';
 import { WatchLog } from '../m07/watch-log.ts';
 import { barSnapshotOf, BAR_DEFAULTS, createBarEngine, type BarEngine, type PollCountsIn } from '../m08/bars.ts';
@@ -92,6 +92,8 @@ export type StartRefusal = { code: 'E_START_REFUSED'; reason: string; message: s
 export interface RecorderStatus {
   releaseId: string; startedAtMs: UnixMs; anchored: boolean; anchor: { slot: string; providers: readonly string[] } | null;
   mode: string; providers: readonly string[]; watched: number; halted: string | null; queueDepth: number; lastTickMs: UnixMs | null;
+  /** C-90: 'pending' until the first SOL/USD read, then 'pass' or 'fail: <reason>'. */
+  solUsdCheck: string;
 }
 
 export interface RunningRecorder {
@@ -109,6 +111,8 @@ export interface RunningRecorder {
 const WATCHLIST_EVERY_MS = 10_000;
 const FLUSH_BAR_STORE_MS = 60_000;
 const METRICS_EVERY_MS = 10_000;
+/** C-90: the kept first SOL/USD read on the server. */
+export const SOL_USD_CHECK_KEY = 'recorder.sol_usd_first_check';
 /** A clock episode (Z10-F2) becomes one critical alert after this long (M04's DISAGREEMENT_ALERT_MS). */
 export const CLOCK_ALERT_MS = 10_000;
 /** The anchor is re-read this often before the first agreement and during a clock episode. */
@@ -404,10 +408,27 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   });
 
   // ---- M07 reference records: SOL/USD each minute (C-90) and the venue configs every 10 min. ----
+  // C-90: the first SOL/USD read on the server is the live check. Its record (price, mints, vault balances, or why it
+  // was unavailable) is kept once in M24 `kv_state` under SOL_USD_CHECK_KEY and shown on /health; every later read is
+  // checked the same way by the reader and writes `unavailable`, never a stale price, until a reviewed pool change.
+  const kvRepo = createRepos().kv_state;
+  const solUsdCheck = (): { result: string; atMs: number } | null => {
+    const r = kvRepo.get(db.reader(), { key: SOL_USD_CHECK_KEY });
+    return r === null ? null : JSON.parse(String(r.valueJson)) as { result: string; atMs: number };
+  };
+  const keepFirstSolUsd = (r: RefPriceRecord): void => {
+    // A read that never reached the pool (a provider error) is not a check of the pool: the next minute tries again.
+    if (r.payload.kind === 'unavailable' && (r.payload.reason.startsWith('read:') || r.payload.reason === 'internal_error')) return;
+    if (solUsdCheck() !== null) return;
+    const result = r.payload.kind === 'price' ? 'pass' : `fail: ${r.payload.reason}`;
+    const t = nowMs();
+    db.withTx((tx) => { kvRepo.upsert(tx, { key: SOL_USD_CHECK_KEY, valueJson: JSON.stringify({ result, atMs: r.recvMs, slot: r.slot?.toString() ?? null, payload: r.payload }), createdAt: t, updatedAt: t }); });
+    log.event(r.payload.kind === 'price' ? 'info' : 'critical', 'recorder.sol_usd_check', { result });
+  };
   const solUsd = createSolUsdReader({ ids: {
       whirlpoolProgram: PROGRAMS.orcaWhirlpools, whirlpoolsConfig: REFERENCE.orcaWhirlpoolsConfig, pool: REFERENCE.solUsdcWhirlpool,
       wsol: MINTS.wsol, usdc: MINTS.usdc, splToken: PROGRAMS.splToken, encodeKey: (b) => base58.encode(b) as Pubkey,
-    }, reader: { read: (keys, o) => reader.read(keys, o) }, append: (r) => { queue.append(r); }, nowMs });
+    }, reader: { read: (keys, o) => reader.read(keys, o) }, append: (r) => { queue.append(r); void guard('sol_usd_check', () => keepFirstSolUsd(r)); }, nowMs });
   const venueRecorder = recordVenueConfig({
     cache: venue, accounts: [ACCOUNTS.feeConfigCurve, ACCOUNTS.feeConfigPumpSwap, ACCOUNTS.pumpSwapGlobalConfig, ACCOUNTS.pumpGlobal],
     append: (r) => { queue.append(r); }, nowMs,
@@ -507,7 +528,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         releaseId: p.releaseId, startedAtMs, anchored: chain.ready(),
         anchor: chain.anchor() === null ? null : { slot: (chain.anchor() as { slot: Slot }).slot.toString(), providers: (chain.anchor() as { providers: readonly string[] }).providers },
         mode: rp.monitor.mode(), providers: rp.labels, watched: (tracker as PoolTracker<CpPoolState>).ready().length, halted: writer.haltReason(),
-        queueDepth: queue.stats().queueDepth, lastTickMs,
+        queueDepth: queue.stats().queueDepth, lastTickMs, solUsdCheck: solUsdCheck()?.result ?? 'pending',
       }),
       async stop(): Promise<void> {
         if (stopped) return;

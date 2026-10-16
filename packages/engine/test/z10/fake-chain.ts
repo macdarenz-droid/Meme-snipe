@@ -141,6 +141,8 @@ export class FakeChain {
   /** Pool ids served as aliases of a fixture pool (same account bytes; SYNTHETIC). */
   readonly aliases = new Map<string, string>();
   migrationsVisible = 0;
+  /** A getMultipleAccounts that names any of these keys answers an RPC error (a read that never reaches the account). */
+  readonly failKeys = new Set<string>();
   private readonly rand: () => number;
   private lastEvolveSec = -1;
 
@@ -212,6 +214,7 @@ export class FakeChain {
       case 'getMultipleAccounts': {
         this.evolve();
         const keys = params[0] as string[];
+        if (keys.some((k) => this.failKeys.has(k))) return { error: { code: -32603, message: 'Internal error' } };
         return { result: { ...ctx, value: keys.map((k) => { const a = this.account(k); return a === null ? null : { owner: a.owner, data: [Buffer.from(a.data).toString('base64'), 'base64'], lamports: 2_000_000, executable: false, rentEpoch: 0, space: a.data.length }; }) } };
       }
       case 'getSignaturesForAddress': {

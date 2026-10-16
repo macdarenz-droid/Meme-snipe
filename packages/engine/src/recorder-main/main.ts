@@ -76,7 +76,7 @@ const body = (): HealthBody => {
   const s = rec?.status();
   return {
     mode: 'paper', git_sha: releaseId, boot, seq, recorder: true, signing_key: false, recording: rec !== null, refused: refusal,
-    anchored: s?.anchored ?? false, rpc_mode: s?.mode ?? null, watched: s?.watched ?? 0, halted: s?.halted ?? null, paused,
+    anchored: s?.anchored ?? false, sol_usd_check: s?.solUsdCheck ?? null, rpc_mode: s?.mode ?? null, watched: s?.watched ?? 0, halted: s?.halted ?? null, paused,
     critical: [...critical.values()], evidence: [],
   };
 };
