@@ -1,11 +1,14 @@
 // PATHS-FIX (DISK-BUDGET.md §2.9, ruling 6): every place the engine writes sits inside what zeroed-worker.service may
 // write under ProtectSystem=strict: its StateDirectory or one of its ReadWritePaths. Read from the unit file itself.
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'vitest';
+import type { UnixMs } from '@bot/types';
 import { M24_CONFIG } from '../src/m24/config.ts';
+import { openDb } from '../src/m24/db.ts';
 import { M27_CONFIG } from '../src/m27/config.ts';
 import { ENGINE_PATHS, MD_DIR, SPOOL_DIR, STATE_DIR, USAGE_DIR, writerLockPath } from '../src/paths.ts';
 
@@ -49,5 +52,20 @@ describe('engine write paths (PATHS-FIX)', () => {
     }
     // zeroed-backup copies every *.db / *.sqlite under the state folder; the pre-migration copy must not match.
     assert.doesNotMatch(ENGINE_PATHS.preMigrationBackup, /\.(db|sqlite)$/);
+  });
+
+  it('Z10: the host paths let the first-start marker create the database (openDb refuses a marker inside the database folder)', () => {
+    // The host paths moved under a temporary root, so openDb runs its real checks on them.
+    const root = mkdtempSync(join(tmpdir(), 'paths-'));
+    const at = (p: string): string => join(root, p);
+    mkdirSync(dirname(at(ENGINE_PATHS.db)), { recursive: true });
+    mkdirSync(dirname(at(ENGINE_PATHS.initMarker)), { recursive: true });
+    writeFileSync(at(ENGINE_PATHS.initMarker), '');
+    const clock = { kind: 'sim' as const, nowMs: () => 1_791_307_800_000 as UnixMs };
+    const db = openDb({ path: at(ENGINE_PATHS.db), clock, initMarker: at(ENGINE_PATHS.initMarker) });
+    db.close();
+    assert.equal(existsSync(at(ENGINE_PATHS.initMarker)), false, 'the marker is used up');
+    assert.throws(() => openDb({ path: at(`${ENGINE_PATHS.db}.lost`), clock, initMarker: at(ENGINE_PATHS.initMarker) }), /E_DATABASE_MISSING|does not exist/);
+    rmSync(root, { recursive: true, force: true });
   });
 });

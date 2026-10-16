@@ -281,11 +281,11 @@ describe('worker start and API address', () => {
     writeFileSync(MAIN, '');
     refused(/host-config\.json is missing or cannot be read/); // main.ts but no host-config
     cfg({ offsite_backup: false });
-    refused(/"worker" is \(missing\), not "release" or "stub"/);
+    refused(/"worker" is \(missing\), not "release", "recorder" or "stub"/);
     cfg({ worker: 'stub' });
     expect(entry()).toBe(STUB);
     cfg({ worker: 'Release' });
-    refused(/"worker" is Release, not "release" or "stub"/);
+    refused(/"worker" is Release, not "release", "recorder" or "stub"/);
     cfg({ worker: 7 });
     refused(/"worker" is \(not a string\)/);
     cfg(['release']);
@@ -294,6 +294,15 @@ describe('worker start and API address', () => {
     expect(entry()).toBe(MAIN);
     rmSync(MAIN);
     refused(/main\.ts is missing/); // asked for, but the release has no worker
+    // Z10: "recorder" runs the keyless M1 recorder's entry, and is refused the same way when the release lacks it.
+    const RECORDER = join(rel, 'packages/engine/src/recorder-main/resolve.mjs');
+    cfg({ worker: 'recorder' });
+    refused(/"recorder" but .*recorder-main\/resolve\.mjs is missing/);
+    mkdirSync(join(rel, 'packages/engine/src/recorder-main'), { recursive: true });
+    writeFileSync(RECORDER, '');
+    expect(entry()).toBe(RECORDER);
+    cfg({ worker: 'Recorder' });
+    refused(/"worker" is Recorder, not "release", "recorder" or "stub"/);
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
     refused(/cannot be read/);
     // worker-start and worker-smoke take it under `set -e`: a refusal stops them, never runs anything.

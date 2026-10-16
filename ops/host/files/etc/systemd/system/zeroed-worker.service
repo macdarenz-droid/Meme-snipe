@@ -34,6 +34,11 @@ LoadCredentialEncrypted=telegram_bot_token:/etc/credstore.encrypted/telegram_bot
 LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
 # Optional: present once Deploy delivered the watchdog (ImportCredential does not fail when it is missing).
 ImportCredential=heartbeat_hmac_key
+# Z10: the keyless recorder's two read providers (Shyft primary, Chainstack backup), optional the same way: present
+# once a Deploy with RPC_SHYFT_URL and RPC_CHAINSTACK_URL handed them over. The recorder reads only these two and the
+# heartbeat key and paired chat id; never the other keys above.
+ImportCredential=rpc_shyft_url
+ImportCredential=rpc_chainstack_url
 StateDirectory=zeroed
 StateDirectoryMode=0700
 # PATHS-FIX: one StateDirectoryMode per unit, so the market-data folder (2750, group zeroed-pull) and the import spool

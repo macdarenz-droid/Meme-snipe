@@ -10,6 +10,7 @@ TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop 
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
 SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
+RECORDER_HEAP_MB=256 # Z10: the keyless recorder's V8 heap limit, from its 48 h soak (docs/DECISIONS.md, Z10)
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
@@ -113,8 +114,10 @@ funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == t
 # else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
 # healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
 # "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
-# loudly.
+# loudly. Z10: "recorder" runs the Blueprint's keyless M1 recorder (packages/engine/src/recorder-main/resolve.mjs; no
+# key, no signer, no send path, paper only), and is refused the same way when that file is missing.
 STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
+RECORDER_ENTRY=packages/engine/src/recorder-main/resolve.mjs # Z10, relative to the release
 worker_entry() {
   # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
   if [ ! -e "$1" ] && [ ! -L "$1" ]; then
@@ -135,9 +138,17 @@ worker_entry() {
         return 1
       fi
       ;;
+    recorder)
+      if [ -f "$1/$RECORDER_ENTRY" ]; then
+        printf '%s\n' "$1/$RECORDER_ENTRY"
+      else
+        echo "refused: host-config says \"worker\": \"recorder\" but $1/$RECORDER_ENTRY is missing" >&2
+        return 1
+      fi
+      ;;
     stub) printf '%s\n' "$STUB_ENTRY" ;;
     *)
-      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
+      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\", \"recorder\" or \"stub\"" >&2
       return 1
       ;;
   esac

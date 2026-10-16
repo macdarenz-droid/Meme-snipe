@@ -13,7 +13,7 @@
 //   ZEROED_GIT_SHA        the release id; else the folder name of /opt/zeroed/current.
 // Exit codes: 0 stopped by a signal; 1 a start refused (the update gate then holds or rolls back); 2 a refused setting.
 import { existsSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { UnixMs } from '@bot/types';
 import { ENGINE_PATHS, STATE_DIR } from '../paths.ts';
 import type { FetchLike } from '../m14/types.ts';
@@ -55,6 +55,9 @@ const paths: RecorderPaths = scratch !== null ? scratchPaths(join(scratch, 'reco
   usageDb: ENGINE_PATHS.rpcUsageDb, mdDir: ENGINE_PATHS.mdDir, receiptsDir: ENGINE_PATHS.receiptsDir, ceilings: '/etc/bot/ceilings.json', config: '/etc/bot/config.json',
 };
 if (scratch !== null) for (const d of ['premigrate', 'init', 'log', 'usage', 'md/receipts']) mkdirSync(join(scratch, 'recorder', d), { recursive: true });
+// The database's own folder (paths.ts: never the marker's), the pre-migration backup's and the log folder, inside the
+// unit's 0700 state folder; the folders outside it are the installer's.
+for (const d of [dirname(paths.db), dirname(paths.preMigrationBackup), paths.logDir]) mkdirSync(d, { recursive: true, mode: 0o700 });
 
 const credDir = env.CREDENTIALS_DIRECTORY;
 const cred = (name: string): string | null => {

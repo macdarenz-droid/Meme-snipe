@@ -91,7 +91,8 @@ keys_stored || exit 0
 # 1. Stored keys.
 names=(helius_api_key alchemy_api_key jupiter_api_key telegram_bot_token)
 paired && names+=(telegram_chat_id)
-for n in heartbeat_hmac_key telegram_webhook_secret; do [ ! -e "$CRED_DIR/$n" ] && [ ! -e "$STATE_DIR/cred_sha/$n" ] || names+=("$n"); done
+# Optional credentials are checked once stored (Z10: the recorder's two read providers too).
+for n in heartbeat_hmac_key telegram_webhook_secret rpc_shyft_url rpc_chainstack_url; do [ ! -e "$CRED_DIR/$n" ] && [ ! -e "$STATE_DIR/cred_sha/$n" ] || names+=("$n"); done
 bad=()
 for n in "${names[@]}"; do
   why=""
