@@ -1960,18 +1960,17 @@ rc=0; cont CHAIN=0 SOURCE=archive GD_RUNS_FAIL=1 || rc=$?; [[ $rc == 1 && ! -e "
 gdreset
 [[ -z "$bad" ]] && ok "OF-2: the continue job allows one resumable restart a day for the archive, counted per day from run history (a second exit 75 of 07-22 fails it whatever inputs.chain says; another day's restart does not count; an unreadable history stops); Helius chains are unchanged" || no "OF-2 continue:$bad"
 bad=""
-# The repository's values: 30 days; 31 with the 07-22 lead-in; OF-REARM: armed on b10pull-of-2 at K2, re-arm time kept.
+# The repository's values: 30 days; 31 with the 07-22 lead-in; OF-HOLD: disarmed (ARCHIVE_ARM empty)
+# while OF-FRESH-FIX is built, with retention, re-arm time and pin kept for the re-arm.
 ( . "$here/archive-limits.conf"; . "$here/archive-guard.sh"
   days=$(ag_days) && [[ $(wc -l <<< "$days") == 31 && $(head -1 <<< "$days") == 2026-07-22 && $(tail -1 <<< "$days") == 2026-08-21 ]] &&
-  ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && "$ARCHIVE_ARM" == b10pull-of-2 && "$ARCHIVE_RETENTION" == K2 ]] &&
-  [[ "$ARCHIVE_REARM_AT" == 2026-10-07T22:30:00Z ]] && ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-2 ]] ) &&
-  ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only); OF-REARM: ARCHIVE_ARM is the pinned B10-PULL id b10pull-of-2, ARCHIVE_RETENTION K2, ARCHIVE_REARM_AT kept at 2026-10-07T22:30:00Z" || no "OF-2 repository values"
-# OF-ARM (restored by OF-REARM): the armed repository config passes the local checks for the
-# two measurement days (at K2) and still refuses 07-24 until K3 is recorded.
+  ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && -z "$ARCHIVE_ARM" && "$ARCHIVE_RETENTION" == K2 ]] &&
+  [[ "$ARCHIVE_REARM_AT" == 2026-10-07T22:30:00Z ]] && ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-2 ]] && ! ag_armed >/dev/null 2>&1 ) &&
+  ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only); OF-HOLD: ARCHIVE_ARM empty (unarmed), ARCHIVE_RETENTION K2, ARCHIVE_REARM_AT kept at 2026-10-07T22:30:00Z, pin b10pull-of-2" || no "OF-2 repository values"
+# OF-HOLD: the disarmed repository config refuses every day before any request.
 bad=""
-for d in 2026-07-22 2026-07-23; do rc=0; out=$(cd "$here" && bash ./archive-guard.sh local "$d" 2>/dev/null) || rc=$?; [[ $rc == 0 && "$(tail -1 <<< "$out")" == K2 ]] || bad+=" [$d: $rc $out]"; done
-rc=0; out=$(cd "$here" && bash ./archive-guard.sh local 2026-07-24 2>&1) || rc=$?; [[ $rc == 2 ]] && grep -q "2026-07-24 has no retention value" <<< "$out" || bad+=" [07-24: $rc]"
-[[ -z "$bad" ]] && ok "OF-ARM: archive-guard.sh local passes 2026-07-22 and 2026-07-23 at K2 with the armed repository config and refuses 2026-07-24 (no retention value at K2)" || no "OF-ARM armed config:$bad"
+for d in 2026-07-22 2026-07-23; do rc=0; out=$(cd "$here" && bash ./archive-guard.sh local "$d" 2>&1) || rc=$?; [[ $rc == 2 ]] && grep -q "the archive chain is not armed (ARCHIVE_ARM is empty" <<< "$out" || bad+=" [$d: $rc $out]"; done
+[[ -z "$bad" ]] && ok "OF-HOLD: archive-guard.sh local refuses 2026-07-22 and 2026-07-23 with the disarmed repository config (ARCHIVE_ARM empty)" || no "OF-HOLD disarmed config:$bad"
 bad=""
 
 # ---- OF-3: K3 reads take the pinned migration list; the K2 release keeps the rescan hashes and the per-unit log; the trim ----
