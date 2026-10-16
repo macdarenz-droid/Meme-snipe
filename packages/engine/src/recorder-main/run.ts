@@ -21,7 +21,7 @@ import type { FetchLike } from '../m14/types.ts';
 import { FileLogSink } from '../m27/logfile.ts';
 import { recorderTimers, recorderWallClock } from './clock.ts';
 import { createRecorder, type RecorderPaths, type RunningRecorder } from './compose.ts';
-import { cgroupMemory, heartbeatBody, memoryWatch, parseLoopback, reconcile, sendHeartbeat, startHealthServers, type HealthBody } from './health.ts';
+import { cgroupMemory, heartbeatBody, heartbeatHealth, memoryWatch, parseLoopback, reconcile, sendHeartbeat, startHealthServers, type HealthBody } from './health.ts';
 import { credentialSecrets } from './rpc.ts';
 
 /** The whole process: refused settings exit 2, a refused start exits 1, a signal stops it (exit 0). */
@@ -83,7 +83,7 @@ export async function runRecorderProcess(): Promise<void> {
     return {
       mode: 'paper', git_sha: releaseId, boot, seq, recorder: true, signing_key: false, recording: rec !== null, refused: refusal,
       anchored: s?.anchored ?? false, sol_usd_check: s?.solUsdCheck ?? null, rpc_mode: s?.mode ?? null, watched: s?.watched ?? 0, halted: s?.halted ?? null, paused,
-      critical: [...critical.values()], evidence: [],
+      critical: [...critical.values()], critical_codes: codes, evidence: [],
     };
   };
   const servers = await startHealthServers(api === null ? [health] : [health, api], body);
@@ -121,12 +121,16 @@ export async function runRecorderProcess(): Promise<void> {
   const watchdog = env.WATCHDOG_URL ?? '';
   const hbKey = cred('heartbeat_hmac_key');
   const ownerChat = cred('telegram_chat_id');
+  const hbHealth = heartbeatHealth(recorderWallClock.nowMs());
+  let codes: string[] = [];
   const beat = async (): Promise<void> => {
     seq += 1;
-    const s = rec?.status();
+    const s = rec?.status() ?? null;
     if (s?.halted != null) critical.set('halted', `Recording halted: ${s.halted.slice(0, 80)}.`); else critical.delete('halted');
+    codes = hbHealth.codes({ nowMs: recorderWallClock.nowMs(), status: s, memoryHigh: critical.has('memory') });
     if (watchdog === '' || hbKey === null) return;
-    const text = heartbeatBody({ seq, boot, gitSha: releaseId, lastSlot: null, critical: [...critical.values()], ownerChat, uptimeS: Math.floor((recorderTimers.nowMs() - startedAt) / 1000) }, recorderWallClock.nowMs() as UnixMs, paused);
+    const lastSlot = s?.newestStoredSlot == null ? null : BigInt(s.newestStoredSlot);
+    const text = heartbeatBody({ seq, boot, gitSha: releaseId, lastSlot, critical: codes, ownerChat, uptimeS: Math.floor((recorderTimers.nowMs() - startedAt) / 1000) }, recorderWallClock.nowMs() as UnixMs, paused);
     const r = await sendHeartbeat({ url: watchdog, key: hbKey, body: text, nowMs: recorderWallClock.nowMs(), fetch });
     if (r.paused !== undefined) paused = r.paused;                    // echoed back so the state and the message agree
   };

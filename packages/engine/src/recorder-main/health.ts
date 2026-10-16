@@ -3,8 +3,11 @@
 //   ZEROED_API_ADDR (published to the owner's tailnet), loopback only. Public state only: no URL, key or path.
 // - `--reconcile`: `open_intents` and `open_positions` are 0 (the recorder never trades). A count another worker left
 //   that is not 0 is never overwritten: the reconcile refuses (exit 1), so the host keeps its hold.
-// - The HMAC-signed heartbeat to the watchdog, as the stand-in sends it (packages/ops/src/watchdog/logic.ts), with the
-//   recorder's critical alerts in `critical` and its newest stored slot as `last_processed_slot`.
+// - The HMAC-signed heartbeat to the watchdog, as the stand-in sends it (packages/ops/src/watchdog/logic.ts). Ruling
+//   Z10-24: `critical` carries codes only (no coin, amount or address, D27(c)), deduplicated: every M27 critical code
+//   raised in the last 15 minutes, plus `recorder.recording_halted`, `recorder.memory_high`, `recorder.loop_stale`
+//   (no 1 s loop tick for 30 s) and `recorder.unanchored` (no two-provider anchor for 5 minutes, from the start or
+//   since it was lost); `last_processed_slot` is the newest slot M04 stored, so the watchdog's slot_lag works.
 // - The 75% memory alert: the unit's anonymous memory (cgroup `memory.stat` anon, not page cache) against its
 //   `memory.max`, read every 10 s; one critical line per episode, cleared below 70%.
 import { createHmac } from 'node:crypto';
@@ -88,6 +91,34 @@ export async function sendHeartbeat(o: { url: string; key: string; body: string;
   } catch {
     return { ok: false };
   }
+}
+
+/** Ruling Z10-24 (new values; no SPEC or ARCH threshold exists): the loop's 1 s tick older than this is critical. */
+export const LOOP_STALE_MS = 30_000;
+/** Ruling Z10-24: no two-provider anchor for this long (from the start, or since it was lost) is critical. */
+export const UNANCHORED_ALERT_MS = 300_000;
+const CODE = /^[a-z0-9_]+(\.[a-z0-9_]+)+$/;
+
+/**
+ * The heartbeat's `critical` codes (ruling Z10-24), from the recorder's status on each beat. Codes only, deduplicated
+ * and sorted; anything that is not a lowercase dotted code is dropped (no free text can reach the watchdog).
+ */
+export function heartbeatHealth(startedAtMs: number): {
+  codes(o: { nowMs: number; status: { anchored: boolean; lastTickMs: number | null; halted: string | null; criticalCodes: readonly string[] } | null; memoryHigh: boolean }): string[];
+} {
+  let unanchoredSince: number | null = startedAtMs;
+  return {
+    codes({ nowMs, status, memoryHigh }): string[] {
+      const out = new Set<string>(status?.criticalCodes ?? []);
+      if (status === null || !status.anchored) unanchoredSince ??= nowMs; else unanchoredSince = null;
+      if (unanchoredSince !== null && nowMs - unanchoredSince >= UNANCHORED_ALERT_MS) out.add('recorder.unanchored');
+      const lastTick = status?.lastTickMs ?? startedAtMs;
+      if (nowMs - lastTick >= LOOP_STALE_MS) out.add('recorder.loop_stale');
+      if (status?.halted != null) out.add('recorder.recording_halted');
+      if (memoryHigh) out.add('recorder.memory_high');
+      return [...out].filter((c) => CODE.test(c)).sort();
+    },
+  };
 }
 
 export const MEMORY_ALERT_BPS = 7_500;

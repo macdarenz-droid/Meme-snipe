@@ -95,6 +95,10 @@ export interface RecorderStatus {
   mode: string; providers: readonly string[]; watched: number; halted: string | null; queueDepth: number; lastTickMs: UnixMs | null;
   /** C-90: 'pending' until the first SOL/USD read, then 'pass' or 'fail: <reason>'. */
   solUsdCheck: string;
+  /** Ruling Z10-24: the newest slot of any stored snapshot (u64 as text), or null before the first. */
+  newestStoredSlot: string | null;
+  /** Ruling Z10-24: codes of the critical lines raised in the last CRITICAL_ACTIVE_MS, sorted (codes only). */
+  criticalCodes: string[];
 }
 
 export interface RunningRecorder {
@@ -115,6 +119,11 @@ const FLUSH_BAR_STORE_MS = 60_000;
 const METRICS_EVERY_MS = 10_000;
 /** C-90: the kept first SOL/USD read on the server. */
 export const SOL_USD_CHECK_KEY = 'recorder.sol_usd_first_check';
+/**
+ * Ruling Z10-24 (a new value: no SPEC or ARCH threshold exists): a critical line keeps the heartbeat critical for this
+ * long after it was last raised. 15 minutes: at least three of the watchdog's 300 s repeats (`REPEAT_CRITICAL_S`).
+ */
+export const CRITICAL_ACTIVE_MS = 900_000;
 /** A clock episode (Z10-F2) becomes one critical alert after this long (M04's DISAGREEMENT_ALERT_MS). */
 export const CLOCK_ALERT_MS = 10_000;
 /** The anchor is re-read this often before the first agreement and during a clock episode. */
@@ -172,7 +181,16 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const newId = p.newId ?? ((): string => ulid(nowMs()));
 
   // ---- M24, M25, M27: the database, the active config, the logger and metrics. ----
-  const bootLog = createLogger({ clock, codes: RECORDER_LOG_TABLE, sink: p.logSink, runId: p.releaseId, mode: 'paper' });
+  // Ruling Z10-24: every critical line's code, with when it was last raised, for the heartbeat (codes only, D27(c)).
+  const criticalAt = new Map<string, number>();
+  const rawLog = createLogger({ clock, codes: RECORDER_LOG_TABLE, sink: p.logSink, runId: p.releaseId, mode: 'paper' });
+  const bootLog: typeof rawLog = {
+    ...rawLog,
+    event(level, code, fields): void {
+      if (level === 'critical') criticalAt.set(code, clock.nowMs());
+      rawLog.event(level, code, fields);
+    },
+  };
   let db: Db;
   try {
     db = openDb({ path: p.paths.db, clock, log: bootLog, ...(p.createDb ? { create: true } : { initMarker: p.paths.initMarker }) });
@@ -336,6 +354,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   // its own time), that is the episode's one alert and any stored snapshot ends it.
   const M04_CLOCK_CODES: ReadonlySet<string> = new Set(['m04.clock_suspect', 'm04.clock_fault', 'm04.clock_disagreement']);
   let clockTrouble: { sinceMs: number; alerted: boolean; source: string | null } | null = null;
+  /** Ruling Z10-24: the newest slot M04 stored (any pool), the heartbeat's `last_processed_slot`. */
+  let newestStoredSlot: Slot | null = null;
   const trackerLog = {
     event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void {
       log.event(level, code, fields);
@@ -374,6 +394,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     },
     outputs: {
       snapshot(s, cls) {
+        if (newestStoredSlot === null || s.providerSlot > newestStoredSlot) newestStoredSlot = s.providerSlot;
         if (clockTrouble !== null && (clockTrouble.source === null || clockTrouble.source === s.providerLabel)) clockTrouble = null;
         link.outputs.snapshot(s, cls);
         facts.set(s.pool.poolId, factOf(s));
@@ -563,6 +584,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         anchor: chain.anchor() === null ? null : { slot: (chain.anchor() as { slot: Slot }).slot.toString(), providers: (chain.anchor() as { providers: readonly string[] }).providers },
         mode: rp.monitor.mode(), providers: rp.labels, watched: (tracker as PoolTracker<CpPoolState>).ready().length, halted: writer.haltReason(),
         queueDepth: queue.stats().queueDepth, lastTickMs, solUsdCheck: solUsdCheck()?.result ?? 'pending',
+        newestStoredSlot: newestStoredSlot === null ? null : newestStoredSlot.toString(),
+        criticalCodes: [...criticalAt].filter(([, at]) => nowMs() - at <= CRITICAL_ACTIVE_MS).map(([c]) => c).sort(),
       }),
       async stop(): Promise<void> {
         if (stopped) return;
