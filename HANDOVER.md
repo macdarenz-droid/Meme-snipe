@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 1:24 PM: Z09 #330 red team round 1 FAILED** (`session_01E2i4Mw915Ea8td4gUtq5AM`): 0 BLOCKER, 8 MAJOR, about 11 MINOR. Repros are in PR comment 6206608979.
+  - Rulings Z09-12..27 went to the builder:
+    - Z09-12..19 (the MAJORs): backfill hint and notice slot; rejected retry per the SPEC table; blacklist persistence; evicted only via prefilter; live depth; manifest tail; bar parity proven by a live/replay test.
+    - Z09-20..27 (the MINORs taken): restart idempotence; a declared log on cursor stalls; tail join; bounded maps; unpriceable pools counted; true eligible intervals; typed parameter errors; a typed adapter and an eviction record.
+  - Tracked, no change: the phase0-input r0 note.
+  - The reviewer (`session_01Tkud9G4i96s2eFWamxoyTN`) has not reported yet.
 - **16 Oct 1:09 PM: OF-REARM refused by the builder's safety check, so it waits for the owner.**
   - The builder `session_01JfcmEyJ1AqL4BQbyoGAZHT` had its one edit (`archive-limits.conf` ARCHIVE_ARM) refused by its auto-mode classifier ("Modify Shared Resources"). Nothing was pushed, and the refusal is not re-routed.
   - As with #321 (option A, line "OF-ARM push"), the owner is asked to instruct the builder directly in its session. Push notification sent.
