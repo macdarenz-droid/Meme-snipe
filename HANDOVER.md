@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 1:36 PM: #329 LOG-ORDER merged at `cd2fe0a0`** (the new base, ls-remote). CI was green on `719a57de` (run 38838788155).
+  - Archived: the Z08 builder `session_01BfyLKa4mpPN4WMmaJK3m4v`, the Z08 reviewer `session_01Eo8pMLZFtqf7VtkTnqyVoZ` and the Z08 red team `session_01Et9a7HZLsEkdhHRWQQamJ1`. Their PRs (#327, #329) are merged, with no follow-ups.
+  - Z09 #330 reviewer round 1 FAILED. Its 3 MAJORs equal RT-1/2/5. New rulings Z09-28..31 went to the builder:
+    - Z09-28: only the strict row is omitted on bad slippage.
+    - Z09-29: the markdown shows every row's parts.
+    - Z09-30: the SYNTHETIC marker goes inside the fixture file.
+    - Z09-31: R0 day or snapshots missing gives a typed error.
+    - Z09-21 amended: a null tx gets capped attempts, then a critical flag; it is never skipped.
+  - The builder merges `cd2fe0a0`.
 - **16 Oct 1:24 PM: Z09 #330 red team round 1 FAILED** (`session_01E2i4Mw915Ea8td4gUtq5AM`): 0 BLOCKER, 8 MAJOR, about 11 MINOR. Repros are in PR comment 6206608979.
   - Rulings Z09-12..27 went to the builder:
     - Z09-12..19 (the MAJORs): backfill hint and notice slot; rejected retry per the SPEC table; blacklist persistence; evicted only via prefilter; live depth; manifest tail; bar parity proven by a live/replay test.
