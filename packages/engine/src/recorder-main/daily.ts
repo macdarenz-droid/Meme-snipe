@@ -8,7 +8,7 @@
 // (Z10 plan Q10: a new external endpoint on the host waits for the supervisor's ruling).
 import type { Db } from '../m24/db.ts';
 import { createRepos } from '../m24/repos.ts';
-import { buildUniverseManifest, eventsFromRows } from '../m05/manifest.ts';
+import { buildUniverseManifest, eventsInOrder } from '../m05/manifest.ts';
 import { limitSetHash, type UniverseLimits } from '../m05/universe.ts';
 import { runDailyCoverage } from '../m07/daily.ts';
 import type { CandidateState, CoverageReport, Pubkey, UnixMs } from '@bot/types';
@@ -16,6 +16,8 @@ import type { AppendInput, AppendResult } from '../recorder/queue.ts';
 import type { EvictionLog } from './evictions.ts';
 
 const DAY_MS = 86_400_000;
+/** Ruling Z10-53: candidate events read per page when a manifest is built. */
+const PAGE_ROWS = 2_000;
 const FIRST_START_KEY = 'recorder.first_start_ms';
 /** A manifest built more than this after its day ended is `late`. */
 export const LATE_AFTER_MS = 600_000;
@@ -53,13 +55,26 @@ export function createDailyJob(o: {
   let recordedCount = 0;
   let missingMemo: { minute: number; recorded: number; missing: boolean } | null = null;
 
+  /**
+   * Ruling Z10-53: the candidate events before `endMs`, in time order, read PAGE_ROWS at a time along the `at` index
+   * (rowid breaks ties, which is insertion order), so a year of events is never one array in memory.
+   */
+  function* candidateEvents(endMs: number): Generator<{ poolId: Pubkey; mint: Pubkey; fromState: CandidateState | null; toState: CandidateState; reason: string; at: number }> {
+    let at = 0, rowid = 0;
+    for (;;) {
+      const page = o.db.reader().all('SELECT rowid AS "rid", "pool_id", "mint", "from_state", "to_state", "reason", "at" FROM "candidate_event" INDEXED BY "candidate_event_at" WHERE "at" < ? AND ("at" > ? OR ("at" = ? AND rowid > ?)) ORDER BY "at", rowid LIMIT ?', endMs, at, at, rowid, PAGE_ROWS);
+      for (const r of page) yield { poolId: String(r.pool_id) as Pubkey, mint: String(r.mint) as Pubkey, fromState: (r.from_state ?? null) as CandidateState | null, toState: String(r.to_state) as CandidateState, reason: String(r.reason), at: Number(r.at) };
+      if (page.length < PAGE_ROWS) return;
+      const end = page[page.length - 1] as Record<string, unknown>;
+      at = Number(end.at); rowid = Number(end.rid);
+    }
+  }
+
   const manifest = (day: string, dayStart: number, now: number): string | null => {
     const row = o.db.reader().get('SELECT "sha256" FROM "universe_manifest" WHERE "day_utc" = ?', day) as { sha256: string } | undefined;
     if (row !== undefined) return row.sha256;
-    const rows = (o.db.reader().all('SELECT "pool_id", "mint", "from_state", "to_state", "reason", "at" FROM "candidate_event" WHERE "at" < ? ORDER BY "at"', dayStart + DAY_MS) as Array<Record<string, unknown>>)
-      .map((r) => ({ poolId: String(r.pool_id) as Pubkey, mint: String(r.mint) as Pubkey, fromState: (r.from_state ?? null) as CandidateState | null, toState: String(r.to_state) as CandidateState, reason: String(r.reason), at: Number(r.at) }));
     const m = buildUniverseManifest({
-      dayUtc: day, events: eventsFromRows(rows), watchlistEvictions: o.evictions.between(0, dayStart + DAY_MS),
+      dayUtc: day, events: eventsInOrder(candidateEvents(dayStart + DAY_MS)), watchlistEvictions: o.evictions.between(0, dayStart + DAY_MS),
       crossCheck: { poolsOnlyInVendor: 0, otherDexPairs: 0, knownPoolsUnderOtherDex: 0, status: 'unavailable' },
       migrationCoverage: o.migrationCoverage(), limitSet: { id: o.limitSetId, paramHash: limitSetHash(o.limits) },
       enumerationCoverage: 'migrations_since_start', generatedAtMs: now, late: now > dayStart + DAY_MS + LATE_AFTER_MS, prefilterOnly: o.prefilterOnly,

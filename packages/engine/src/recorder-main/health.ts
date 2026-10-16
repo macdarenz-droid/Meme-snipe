@@ -71,12 +71,14 @@ export function signHeartbeat(key: string, tSec: number, body: string): string {
 }
 
 export function heartbeatBody(s: HeartbeatState, nowMs: number, paused: boolean): string {
+  // Ruling Z10-52: every active code, never the first few: a cut list drops the codes after it, and the watchdog's
+  // one-alert-per-code keys would clear and re-raise as the set shifts. The codes are the recorder's own names (CODE).
   // The slot is a u64: written into the JSON text as a number, never through a JS number.
   return JSON.stringify({
     seq: s.seq, ts: nowMs, boot: s.boot, git_sha: s.gitSha, policy_version: 'recorder', stub: false,
     last_processed_slot: s.lastSlot === null ? null : `__slot:${s.lastSlot}__`, feed_ages_ms: {}, open_position: null,
     unresolved_intents: { count: 0, oldest_age_s: null }, signer: 'not-used', lease_epoch: null, sol_reserve: null,
-    paused, owner_chat_id: s.ownerChat, critical: s.critical.slice(0, 10), uptime_s: s.uptimeS,
+    paused, owner_chat_id: s.ownerChat, critical: s.critical, uptime_s: s.uptimeS,
   }).replace(/"__slot:(\d+)__"/, '$1');
 }
 

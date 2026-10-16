@@ -98,6 +98,19 @@ describe('Z10-24, Z10-41, Z10-44 heartbeat health', () => {
     }
   }, 120_000);
 
+  it('Z10-52: twelve or more active codes are all sent, the same list on every beat (fails before: the first 10 only)', () => {
+    const h = heartbeatHealth(0);
+    const active = ['m04.verify_cap_reached', 'm07.unpulled_segments', 'm14.provider_stopped', 'recorder.clock_suspect', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'm07.recording_halted', 'm07.write_failed', 'm04.watch_refused', 'recorder.facts_read_failed', 'm05.retry_failed', 'm01.fee_config_refresh_failed'];
+    const bodies = [0, 1, 2].map((k) => {
+      const codes = h.codes({ monoMs: 600_000 + k * 1_000, status: { lastTickMonoMs: 600_000 + k * 1_000, halted: 'write_failed:EIO', criticalCodes: [], activeCodes: k === 1 ? [...active].reverse() : active }, memoryHigh: true });
+      return (JSON.parse(heartbeatBody({ seq: k, boot: 'b', gitSha: 'g', lastSlot: null, critical: codes, ownerChat: null, uptimeS: 1 }, 1_000 + k, false)) as { critical: string[] }).critical;
+    });
+    assert.equal(bodies[0]?.length, 14);
+    assert.deepEqual(bodies[0], [...active, 'recorder.memory_high', 'recorder.recording_halted'].sort());
+    assert.deepEqual(bodies[1], bodies[0]);
+    assert.deepEqual(bodies[2], bodies[0]);
+  });
+
   it('(c) last_processed_slot is the newest stored snapshot slot (fails before: always null)', async () => {
     const time = new VirtualTime(WALL_START);
     const chain = new FakeChain(time, { seed: 25 });

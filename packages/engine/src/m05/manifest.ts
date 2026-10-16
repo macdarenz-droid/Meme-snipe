@@ -53,7 +53,8 @@ export function dayBounds(dayUtc: string): { startMs: number; endMs: number } {
 export interface ManifestInput {
   dayUtc: string;
   /** Every candidate transition up to the day's end, in time order (earlier days set the state carried in). */
-  events: readonly ManifestEvent[];
+  /** In time order; read once, so a stream of rows (Ruling Z10-53) works as well as an array. */
+  events: Iterable<ManifestEvent>;
   /** Watchlist evictions that are not transitions (tail capacity) and the tail end of each eviction (A-M05-02). */
   watchlistEvictions?: ReadonlyArray<{ poolId: Pubkey; atMs: number; reason: string; tailUntilMs: number | null }>;
   crossCheck: ManifestCrossCheck;
@@ -83,9 +84,6 @@ const TAIL_CUTS: ReadonlySet<string> = new Set(['tail_capacity', 'tail_degraded'
 export function buildUniverseManifest(i: ManifestInput): UniverseManifestFile {
   const { startMs, endMs } = dayBounds(i.dayUtc);
   const venueOf = i.venueOf ?? (() => 'pumpswap');
-  for (let k = 1; k < i.events.length; k++) {
-    if ((i.events[k] as ManifestEvent).atMs < (i.events[k - 1] as ManifestEvent).atMs) throw { code: 'E_ORDER', message: 'manifest events must be in time order' };
-  }
   // Tail cuts by pool, in time order (Z09-22: joined by pool and its eviction, never by an exact millisecond).
   const cuts = new Map<Pubkey, number[]>();
   for (const e of i.watchlistEvictions ?? []) if (TAIL_CUTS.has(e.reason)) cuts.set(e.poolId, [...(cuts.get(e.poolId) ?? []), e.atMs].sort((a, b) => a - b));
@@ -112,8 +110,11 @@ export function buildUniverseManifest(i: ManifestInput): UniverseManifestFile {
     const cur = state.get(p);
     if (cur?.in === true) touch(p, cur.sinceMs, cur.untilMs === null ? t : Math.min(t, cur.untilMs), cur.mint, cur.reason);
   };
+  let prevAt = -Infinity;
   for (const e of i.events) {
-    if (e.atMs >= endMs) break;
+    if (e.atMs < prevAt) throw { code: 'E_ORDER', message: 'manifest events must be in time order' };
+    prevAt = e.atMs;
+    if (e.atMs >= endMs) continue;                                                   // checked for order, not counted
     const cur = state.get(e.poolId);
     const ev = e.to === 'evicted' ? parseEvictionReason(e.reason) : null;
     const eligibleEviction = ev !== null && !NOT_ELIGIBLE_EVICTIONS.has(ev.reason);
@@ -215,4 +216,37 @@ export function eventsFromRows(rows: ReadonlyArray<{ poolId: Pubkey; mint: Pubke
     }
   }
   return out.sort((a, b) => a.atMs - b.atMs);                                       // stable: each pool keeps its chain order
+}
+
+/**
+ * Ruling Z10-53: the same chain order as `eventsFromRows`, for rows that arrive in time order (one millisecond's rows
+ * together), one millisecond at a time. Only the rows of the current millisecond and each pool's last state are held,
+ * never the whole table.
+ */
+export function* eventsInOrder(rows: Iterable<{ poolId: Pubkey; mint: Pubkey; fromState: CandidateState | null; toState: CandidateState; reason: string; at: number }>): Generator<ManifestEvent> {
+  const last = new Map<Pubkey, CandidateState>();
+  let group: ManifestEvent[] = [];
+  function* flush(): Generator<ManifestEvent> {
+    const byPool = new Map<Pubkey, ManifestEvent[]>();
+    for (const e of group) { const l = byPool.get(e.poolId); if (l === undefined) byPool.set(e.poolId, [e]); else l.push(e); }
+    for (const [pool, list] of byPool) {
+      let state: CandidateState | null = last.get(pool) ?? null;
+      while (list.length > 0) {
+        const at = list.findIndex((e) => e.from === state);
+        const [e] = list.splice(at === -1 ? 0 : at, 1) as [ManifestEvent];
+        yield e;
+        state = e.to;
+      }
+      last.set(pool, state as CandidateState);
+    }
+    group = [];
+  }
+  for (const r of rows) {
+    if (group.length > 0 && (group[0] as ManifestEvent).atMs !== r.at) {
+      if (r.at < (group[0] as ManifestEvent).atMs) throw { code: 'E_ORDER', message: 'manifest rows must be in time order' };
+      yield* flush();
+    }
+    group.push({ poolId: r.poolId, mint: r.mint, from: r.fromState, to: r.toState, reason: r.reason, atMs: r.at });
+  }
+  yield* flush();
 }
