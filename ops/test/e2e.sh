@@ -226,6 +226,11 @@ pass "wrong code: the server downloaded the bundle, could not open it, stored no
 start=$(date +%s)
 # A fresh server gets the watchdog in its very first Deploy run (the Cloudflare secrets already exist).
 T_CF="TESTcloudflare$(rnd 16)"
+# Z10-3: the recorder's read-provider URLs ride the rotation's handoff (publish.sh base64, zeroed-pair decodes and stores).
+T_PSHYFT="TESTPSHYFT$(rnd 16)"
+T_PCHAIN="TESTPCHAIN$(rnd 16)"
+T_RPC_SHYFT="https://rpc.shyft.e2e/?api_key=$T_PSHYFT"
+T_RPC_CHAIN="https://chainstack.e2e/$T_PCHAIN"
 printf '%s' "$T_CF" >"$STATE/cf-token"
 CF_ENV=(CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4")
 publish 1001 publish-right.log "$CODE1" "${CF_ENV[@]}" || { cat "$LOGS/publish-right.log"; fail "publish (right code)"; }
@@ -313,7 +318,7 @@ CODES+=("$CODE2")
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5'")"
 rm -f "$STATE/cf-subdomain" # the account lost its subdomain: Deploy registers a new one
 n_hook="$(grep -c '"method":"setWebhook"' "$STATE/telegram.jsonl")"
-publish 1002 publish-rotate.log "$CODE2" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
+publish 1002 publish-rotate.log "$CODE2" RPC_SHYFT_URL="$T_RPC_SHYFT" RPC_CHAINSTACK_URL="$T_RPC_CHAIN" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
 # Deploy returns once the server has downloaded the bundle; the server then stores the keys, restarts the worker
 # (reconcile first), tells the owner and sets the webhook. Wait for those ends, not for Deploy's return.
 wait_for 120 "the server finished the rotation" "grep -q 'keys replaced (issue 1002)' '$STATE/telegram.jsonl' && [ \$(grep -c '\"method\":\"setWebhook\",\"token_ok\":true' '$STATE/telegram.jsonl') -gt $n_hook ] && [ \$(docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5') -gt $r0 ]"
@@ -328,6 +333,14 @@ for pair in "helius_api_key:$T_HELIUS" "alchemy_api_key:$T_ALCHEMY" "jupiter_api
   got="$(in_c "systemd-creds decrypt --name=${pair%%:*} /etc/credstore.encrypted/${pair%%:*} - | sha256sum | cut -c1-64")"
   [ "$want" = "$got" ] || fail "rotation: ${pair%%:*} not replaced"
 done
+# Z10-3: the two URLs stored as their own credentials (0600 root, like every key), exactly as Deploy had them; never in
+# the publish log in any form (the secret scan below covers every log, journal and the container disk for the keys).
+for pair in "rpc_shyft_url:$T_RPC_SHYFT" "rpc_chainstack_url:$T_RPC_CHAIN"; do
+  [ "$(in_c "stat -c '%a %U' /etc/credstore.encrypted/${pair%%:*}")" = "600 root" ] || fail "rotation: ${pair%%:*} is not 0600 root"
+  [ "$(printf '%s' "${pair#*:}" | sha256sum | cut -c1-64)" = "$(in_c "systemd-creds decrypt --name=${pair%%:*} /etc/credstore.encrypted/${pair%%:*} - | sha256sum | cut -c1-64")" ] || fail "rotation: ${pair%%:*} not stored as sent"
+  grep -qF -e "${pair#*:}" -e "$(printf '%s' "${pair#*:}" | base64 -w0)" "$LOGS/publish-rotate.log" && fail "rotation: ${pair%%:*} in the publish log"
+done
+in_c "systemctl show -p Environment --value zeroed-worker zeroed-check zeroed-update zeroed-pair 2>/dev/null; cat /etc/zeroed/worker.env" | grep -qF -e "$T_PSHYFT" -e "$T_PCHAIN" && fail "rotation: a provider URL in a unit's environment"
 grep -q "\"token_ok\":true,\"chat_id\":\"$T_CHAT\",\"text\":\"Zeroed server: keys replaced (issue 1002). Worker restarted." "$STATE/telegram.jsonl" || fail "rotation not confirmed to the owner with the new token"
 [ "$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5'")" -gt "$r0" ] || fail "worker did not reconcile after rotation"
 CODE3="$(in_c "zeroed-new-deploy-code" | sed -n 's/^Deploy code:  \([a-z -]*\)$/\1/p')"
@@ -937,7 +950,9 @@ in_c "test -e /var/lib/zeroed-host/bot_db_marker_issued && test -e /var/lib/zero
 # 1. The trial (no credentials there): it loads with no node_modules and answers health in paper mode, not recording.
 in_c "/usr/local/lib/zeroed/worker-smoke '$rrel'" >"$LOGS/smoke-recorder.txt" 2>&1 || { cat "$LOGS/smoke-recorder.txt"; fail "worker-smoke refused the recorder release"; }
 in_c "! systemctl list-units --all --plain --no-legend 'zeroed-worker-smoke*' | grep -q ." || fail "the recorder trial left a unit behind"
-# 2. Under the unit with no read-provider credentials: refused loudly, never a recorder that cannot record.
+# 2. Under the unit with no read-provider credentials: refused loudly, never a recorder that cannot record. (The
+# rotation in section 4 stored TEST URLs that point nowhere; this step needs none.)
+in_c "rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url"
 rinv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
 wrestart "ln -sfn '$rrel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the recorder refused without read providers" "docker exec $C bash -c 'journalctl -o cat --no-pager -u zeroed-worker --since=-60s' | grep -q 'no read provider credentials'"
@@ -984,13 +999,44 @@ wait_for 60 "the process_start marker on disk" "docker exec $C bash -c 'ls /var/
 in_c "ss -xp 2>/dev/null | grep 'pid=\$(systemctl show -p MainPID --value zeroed-worker),' | grep -q signer.sock" && fail "the recorder holds a socket to the signer"
 in_c "journalctl --no-pager -o cat" | grep -qF -e "$T_SHYFT_KEY" -e "$T_CHAINSTACK_KEY" && fail "a TEST provider key is in the journal"
 in_c "systemctl show -p MemoryCurrent -p MemoryPeak -p MemoryMax zeroed-worker" >"$LOGS/recorder-memory.txt" || true
+# Ruling Z10-12 VERIFY: the unit's cgroup (v2) has memory.stat's anon field, so the 75% alert reads anonymous memory
+# (health.ts cgroupMemory, source "anon"; memory.current minus file is only the fallback).
+in_c "cat /sys/fs/cgroup\$(systemctl show -p ControlGroup --value zeroed-worker)/memory.stat" >"$LOGS/recorder-memory-stat.txt" || fail "the recorder's cgroup memory.stat is unreadable"
+grep -qE '^anon [0-9]+$' "$LOGS/recorder-memory-stat.txt" || fail "the recorder's cgroup has no anon field (the alert would use its fallback)"
+# 5. Ruling Z10-5: the M07 cycle seal → pull → receipt → delete on this host. Two sealed TEST days (10 and 9 days
+# ago, past recorder.retention_days 7) are written by M07's own writer while the recorder is stopped. The operator's
+# md-pull (here run in the container as the operator would, with a TEST research key and a TEST pull key) reaches the
+# chrooted sftp-only pull account through a temporary sshd on loopback, pulls from the newer day on, verifies every
+# hash and uploads signed receipts. The recorder (research public key in /etc/bot) then deletes only the receipted
+# old day; the unreceipted one and the live day stay. SSH on the host stays as it was (the sshd here is this test's).
+D_OLD="$(date -u -d '10 days ago' +%F)"; D_PULL="$(date -u -d '9 days ago' +%F)"
+in_c "openssl genpkey -algorithm ed25519 -out /root/e2e-research.pem 2>/dev/null && openssl pkey -in /root/e2e-research.pem -pubout -out /etc/bot/research-ed25519.pub.pem && chmod 0644 /etc/bot/research-ed25519.pub.pem" || fail "TEST research key"
+in_c "systemctl stop zeroed-worker && runuser -u zeroed-worker -- /usr/local/bin/node --no-warnings '/opt/zeroed/current/packages/engine/test/z10/e2e-old-days.ts' /var/lib/zeroed-md '$D_OLD' '$D_PULL'" >"$LOGS/md-old-days.txt" 2>&1 || { cat "$LOGS/md-old-days.txt"; fail "the TEST days were not sealed"; }
+wrestart
+wait_for 120 "the recorder recording again after the TEST days" "docker exec $C curl -fsS -m 2 http://127.0.0.1:8787/health | jq -e '.recording == true and .anchored == true' >/dev/null"
+in_c "test -d /var/lib/zeroed-md/$D_OLD && test -d /var/lib/zeroed-md/$D_PULL" || fail "the recorder's recovery removed a sealed TEST day"
+in_c "ssh-keygen -A >/dev/null && ssh-keygen -q -t ed25519 -N '' -f /root/.ssh/e2e-pull <<<y >/dev/null 2>&1; install -d -m 0755 -o root -g root /etc/zeroed/pull-keys && install -m 0644 -o root -g root /root/.ssh/e2e-pull.pub /etc/zeroed/pull-keys/zeroed-pull" || fail "TEST pull key"
+in_c "printf 'Host e2e-pull\n  HostName 127.0.0.1\n  Port 2222\n  IdentityFile /root/.ssh/e2e-pull\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile /root/.ssh/e2e-known\n' > /root/.ssh/config && chmod 0600 /root/.ssh/config"
+in_c "/usr/sbin/sshd -p 2222 -o ListenAddress=127.0.0.1 -o PidFile=/run/e2e-sshd.pid" || fail "the TEST sshd did not start"
+in_c "cd /opt/zeroed/current/packages/engine && /usr/local/bin/node --no-warnings scripts/md-pull.ts --host e2e-pull --since '$D_PULL' --out /root/e2e-pulled --key /root/e2e-research.pem --verifier e2e" >"$LOGS/md-pull.txt" 2>&1 || { cat "$LOGS/md-pull.txt"; fail "md-pull over the pull account"; }
+in_c "kill \$(cat /run/e2e-sshd.pid)" || true
+in_c "ls /var/lib/zeroed-md/receipts" | grep -q . || { cat "$LOGS/md-pull.txt"; fail "md-pull uploaded no receipt"; }
+[ "$(in_c "stat -c '%G %a' /var/lib/zeroed-md/receipts/* | sort -u")" = "zeroed-pull 640" ] || fail "receipts did not land as 0640, group zeroed-pull"
+in_c "test -e /root/e2e-pulled/$D_PULL && ! test -e /root/e2e-pulled/$D_OLD" || fail "md-pull did not pull exactly from --since on"
+# The recorder's disk check runs every 60 s: the receipted old day goes, the unreceipted one and today stay.
+wait_for 180 "the receipted old day deleted" "docker exec $C bash -c '! ls /var/lib/zeroed-md/$D_PULL/*/*.ndjson.gz' 2>/dev/null"
+in_c "ls /var/lib/zeroed-md/$D_OLD/*/*.ndjson.gz" >/dev/null 2>&1 || fail "an unreceipted segment was deleted"
+in_c "ls /var/lib/zeroed-md/\$(date -u +%F)/*/*.ndjson.gz" >/dev/null 2>&1 || fail "today's recording was deleted"
+in_c "test -e /root/e2e-pulled/$D_PULL" || fail "md-pull's copy was deleted"
+wait_for 90 "the alert for the unreceipted old day" "docker exec $C bash -c 'grep -rqs m07.unpulled_segments /var/lib/zeroed/log'"
+in_c "rm -rf /root/e2e-research.pem /root/e2e-pulled /root/.ssh/e2e-pull /root/.ssh/e2e-pull.pub /root/.ssh/config /root/.ssh/e2e-known /etc/zeroed/pull-keys/zeroed-pull /etc/bot/research-ed25519.pub.pem /var/lib/zeroed-md/$D_OLD /var/lib/zeroed-md/$D_PULL"
 # Back to the stand-in: no read providers, no TEST certificate, no fake chain.
 in_c "systemctl stop zeroed-e2e-fake-rpc; rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; sed -i '/shyft.fake/d' /etc/hosts"
 # The host's records as they were before this section: deployed and tagged at the signed release, no probation.
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel'"
 wait_for 60 "the stand-in back after the recorder" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
-pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/scripts/recorder.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) zeroed-update deploys it from the stand-in through the gate (trial, install --update, switch, hold); it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, no provider key in any journal; back to the stand-in"
+pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/scripts/recorder.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) zeroed-update deploys it from the stand-in through the gate (trial, install --update, switch, hold); it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, its cgroup's anon field read for the 75% alert, no provider key in any journal; M07's cycle (Z10-5): sealed days, md-pull over the chrooted sftp account with signed receipts (0640, group zeroed-pull), only the receipted day past retention deleted, the unreceipted one kept with an alert; back to the stand-in"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on
@@ -1187,7 +1233,7 @@ docker logs "$C" >"$LOGS/container-console.txt" 2>&1
 in_c "tar -c --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run/credentials --exclude=/opt/node-v22.23.3 --exclude=/usr --exclude=/opt/zeroed/repo --exclude=/opt/zeroed/releases / 2>/dev/null" >"$E2E/container-fs.tar" || true
 mkdir -p "$E2E/fs" && tar -xf "$E2E/container-fs.tar" -C "$E2E/fs" 2>/dev/null || true
 node -e 'for (const l of require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) console.log(JSON.parse(l).text)' "$STATE/telegram.jsonl" >"$LOGS/telegram-texts.txt"
-KEYS=("${VALUES_A[@]}" "$T_SHYFT_KEY" "$T_CHAINSTACK_KEY" "$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM" "$T_CHAT" "$T_CHAT2" "$T_OTHER" "$T_CF" "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY")" "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")")
+KEYS=("${VALUES_A[@]}" "$T_SHYFT_KEY" "$T_CHAINSTACK_KEY" "$T_PSHYFT" "$T_PCHAIN" "$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM" "$T_CHAT" "$T_CHAT2" "$T_OTHER" "$T_CF" "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY")" "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")")
 scan_hits() { # values-array-name paths... : prints each value found (by hash) and then the number found
   local hits=0 v
   local -n vals="$1"

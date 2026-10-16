@@ -43,7 +43,11 @@ rpc_set=0
 for n in "${RPC_NAMES[@]}"; do [ -z "${!n:-}" ] || rpc_set=$((rpc_set + 1)); done
 case "$rpc_set" in
   0) ;;
-  2) for n in "${RPC_NAMES[@]}"; do [[ "${!n}" =~ ^https://[^[:space:]]{1,500}$ ]] || die "$n must be one https:// URL."; done ;;
+  2)
+    for n in "${RPC_NAMES[@]}"; do [[ "${!n}" =~ ^https://[^[:space:]]{1,500}$ ]] || die "$n must be one https:// URL."; done
+    # GitHub masks the secrets themselves, not their base64; mask those first (a workflow command is never shown).
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then for n in "${RPC_NAMES[@]}"; do echo "::add-mask::$(printf '%s' "${!n}" | base64 -w0)"; done; fi
+    ;;
   *) die "Set both RPC_SHYFT_URL and RPC_CHAINSTACK_URL, or neither." ;;
 esac
 

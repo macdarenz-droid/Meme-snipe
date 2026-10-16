@@ -7,6 +7,7 @@
 // bits (not reduced-checked), x² = (y² − 1) / (d·y² + 1) mod p, and the point decompresses exactly when that ratio is a
 // square mod p (Euler's criterion). VERIFY against the dalek source was not done from this container; the cross-check
 // test (test/pda.test.ts) compares with @solana/kit 8.3.0 on 10,000 random seed sets and on every PDA in constants.ts.
+// Not constant-time, and it need not be (ruling Z10-4): seeds, program ids and addresses are all public data.
 import { createHash } from 'node:crypto';
 import { base58, decodePubkey } from '@bot/decoders';
 import type { Pubkey } from '@bot/types';

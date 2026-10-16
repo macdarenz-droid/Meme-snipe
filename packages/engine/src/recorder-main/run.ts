@@ -114,7 +114,7 @@ export async function runRecorderProcess(): Promise<void> {
   // The 75% memory alert (health.ts) and the heartbeat.
   const mem = memoryWatch({
     read: () => cgroupMemory(),
-    alert: (r) => { critical.set('memory', `Recorder memory at ${r.pct}% of its limit.`); rec?.parts.log.event('critical', 'recorder.memory_high', { rss_bytes: r.anonBytes, limit_bytes: r.limitBytes, pct: r.pct }); },
+    alert: (r) => { critical.set('memory', `Recorder memory at ${r.pct}% of its limit.`); rec?.parts.log.event('critical', 'recorder.memory_high', { memory_bytes: r.anonBytes, limit_bytes: r.limitBytes, pct: r.pct, source: r.source }); },
     cleared: () => { critical.delete('memory'); },
   });
   const memTimer = setInterval(() => { mem.check(); }, 10_000);

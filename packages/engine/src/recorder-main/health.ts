@@ -93,7 +93,11 @@ export async function sendHeartbeat(o: { url: string; key: string; body: string;
 export const MEMORY_ALERT_BPS = 7_500;
 export const MEMORY_CLEAR_BPS = 7_000;
 
-export interface MemoryReading { anonBytes: number; limitBytes: number | null }
+/**
+ * `source` (ruling Z10-12): `anon` is memory.stat's `anon` (verified on the e2e host); `current_minus_file`, the
+ * fallback when that field is missing, is memory.current minus memory.stat's `file` (page cache is never counted).
+ */
+export interface MemoryReading { anonBytes: number; limitBytes: number | null; source: 'anon' | 'current_minus_file' }
 
 /** The unit's cgroup (v2) from /proc/self/cgroup: anonymous memory and memory.max (null when unlimited or unreadable). */
 export function cgroupMemory(root = '/sys/fs/cgroup', self = '/proc/self/cgroup'): MemoryReading | null {
@@ -102,23 +106,28 @@ export function cgroupMemory(root = '/sys/fs/cgroup', self = '/proc/self/cgroup'
     if (line === undefined) return null;
     const dir = join(root, line.slice(3).trim());
     const max = readFileSync(join(dir, 'memory.max'), 'utf8').trim();
-    const anon = /^anon (\d+)$/m.exec(readFileSync(join(dir, 'memory.stat'), 'utf8'));
-    if (anon === null) return null;
-    return { anonBytes: Number(anon[1]), limitBytes: max === 'max' ? null : Number(max) };
+    const limitBytes = max === 'max' ? null : Number(max);
+    const stat = readFileSync(join(dir, 'memory.stat'), 'utf8');
+    const anon = /^anon (\d+)$/m.exec(stat);
+    if (anon !== null) return { anonBytes: Number(anon[1]), limitBytes, source: 'anon' };
+    const file = /^file (\d+)$/m.exec(stat);
+    const current = Number(readFileSync(join(dir, 'memory.current'), 'utf8').trim());
+    if (file === null || !Number.isSafeInteger(current)) return null;
+    return { anonBytes: Math.max(0, current - Number(file[1])), limitBytes, source: 'current_minus_file' };
   } catch {
     return null;
   }
 }
 
 /** One alert per episode: raised at ≥ 75% of the limit, cleared below 70%. */
-export function memoryWatch(o: { read: () => MemoryReading | null; alert: (r: { anonBytes: number; limitBytes: number; pct: number }) => void; cleared: () => void }): { check(): boolean } {
+export function memoryWatch(o: { read: () => MemoryReading | null; alert: (r: { anonBytes: number; limitBytes: number; pct: number; source: MemoryReading['source'] }) => void; cleared: () => void }): { check(): boolean } {
   let high = false;
   return {
     check(): boolean {
       const r = o.read();
       if (r === null || r.limitBytes === null || !(r.limitBytes > 0)) return high;
       const bps = Math.floor((r.anonBytes * 10_000) / r.limitBytes);
-      if (!high && bps >= MEMORY_ALERT_BPS) { high = true; o.alert({ anonBytes: r.anonBytes, limitBytes: r.limitBytes, pct: Math.floor(bps / 100) }); }
+      if (!high && bps >= MEMORY_ALERT_BPS) { high = true; o.alert({ anonBytes: r.anonBytes, limitBytes: r.limitBytes, pct: Math.floor(bps / 100), source: r.source }); }
       else if (high && bps < MEMORY_CLEAR_BPS) { high = false; o.cleared(); }
       return high;
     },

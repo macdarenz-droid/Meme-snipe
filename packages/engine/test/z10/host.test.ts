@@ -50,7 +50,7 @@ describe('Z10 host contract', () => {
     let reading: { anonBytes: number; limitBytes: number | null } | null = { anonBytes: 700, limitBytes: 1_000 };
     const alerts: number[] = [];
     let cleared = 0;
-    const w = memoryWatch({ read: () => reading, alert: (r) => alerts.push(r.pct), cleared: () => { cleared++; } });
+    const w = memoryWatch({ read: () => (reading === null ? null : { ...reading, source: 'anon' as const }), alert: (r) => alerts.push(r.pct), cleared: () => { cleared++; } });
     assert.equal(w.check(), false);
     reading = { anonBytes: 749, limitBytes: 1_000 }; assert.equal(w.check(), false);
     reading = { anonBytes: 750, limitBytes: 1_000 }; assert.equal(w.check(), true);
@@ -68,10 +68,17 @@ describe('Z10 host contract', () => {
     writeFileSync(join(root, 'self'), '0::/system.slice/zeroed-worker.service\n');
     writeFileSync(join(root, 'system.slice/zeroed-worker.service/memory.max'), '1073741824\n');
     writeFileSync(join(root, 'system.slice/zeroed-worker.service/memory.stat'), 'anon 314572800\nfile 900000000\n');
-    assert.deepEqual(cgroupMemory(root, join(root, 'self')), { anonBytes: 314_572_800, limitBytes: 1_073_741_824 });
+    assert.deepEqual(cgroupMemory(root, join(root, 'self')), { anonBytes: 314_572_800, limitBytes: 1_073_741_824, source: 'anon' });
     writeFileSync(join(root, 'system.slice/zeroed-worker.service/memory.max'), 'max\n');
-    assert.deepEqual(cgroupMemory(root, join(root, 'self')), { anonBytes: 314_572_800, limitBytes: null });
+    assert.deepEqual(cgroupMemory(root, join(root, 'self')), { anonBytes: 314_572_800, limitBytes: null, source: 'anon' });
     assert.equal(cgroupMemory(join(root, 'none'), join(root, 'missing')), null);
+    // Ruling Z10-12: no `anon` field: memory.current minus the page cache (`file`), and the reading says which.
+    writeFileSync(join(root, 'system.slice/zeroed-worker.service/memory.max'), '1073741824\n');
+    writeFileSync(join(root, 'system.slice/zeroed-worker.service/memory.stat'), 'file 200000000\nkernel 1000\n');
+    writeFileSync(join(root, 'system.slice/zeroed-worker.service/memory.current'), '600000000\n');
+    assert.deepEqual(cgroupMemory(root, join(root, 'self')), { anonBytes: 400_000_000, limitBytes: 1_073_741_824, source: 'current_minus_file' });
+    writeFileSync(join(root, 'system.slice/zeroed-worker.service/memory.stat'), 'kernel 1000\n');
+    assert.equal(cgroupMemory(root, join(root, 'self')), null, 'neither field: no reading (no alert on a guess)');
   });
 });
 
