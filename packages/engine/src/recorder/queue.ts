@@ -108,11 +108,14 @@ export interface PollCounts {
   partial?: true;
 }
 
+/** Streams whose first seq the start marker carries: a replay splits their records by process with it (Z09-40, Z09-48). */
+export const MARKED_STREAMS = ['poll_counts', 'pool_snapshot_position', 'pool_snapshot', 'pool_snapshot_tail'] as const;
 /**
- * The `process_start` marker (ruling Z09-40): written once when the worker starts. `pollCountsFirstSeq` is the seq the
- * new process's first `poll_counts` record gets, so a replay knows which records each process wrote.
+ * The `process_start` marker (ruling Z09-40): written once when the worker starts, before any other record. `firstSeq`
+ * is the seq each marked stream's first record of the new process gets (decimal strings), so a replay knows which
+ * records each process wrote whatever their recvMs (Z09-48).
  */
-export interface ProcessStart { releaseId: string; startedAtMs: UnixMs; pollCountsFirstSeq: string }
+export interface ProcessStart { releaseId: string; startedAtMs: UnixMs; firstSeq: Record<(typeof MARKED_STREAMS)[number], string> }
 
 export interface RecorderQueueConfig {
   /** `recorder.queue_max`: records, default 50,000, 1,000-500,000. */
@@ -195,7 +198,7 @@ export const CLOCK_STEP_MINUTES = 2;
 /** A pool is never idle at the cap sooner than this after its last poll (ruling 17). */
 export const IDLE_MIN_MS = 60_000;
 
-export type RejectCode = 'E_STREAM' | 'E_ENVELOPE' | 'E_PAYLOAD' | 'E_TOO_LARGE' | 'E_POOL_CAP';
+export type RejectCode = 'E_STREAM' | 'E_ENVELOPE' | 'E_PAYLOAD' | 'E_TOO_LARGE' | 'E_POOL_CAP' | 'E_NOT_STARTED';
 export type AppendResult = 'queued' | 'unchanged' | 'dropped' | { rejected: RejectCode };
 export type LogLevel = 'warning' | 'error' | 'critical';
 export type LogFn = (level: LogLevel, code: string, fields: Record<string, string | number>) => void;
@@ -349,8 +352,10 @@ export class RecorderQueue {
    * forward time on tick() or unwatch() cannot stop new pools' per-bar counts (ruling 25).
    */
   private maxRecvMinute: number | null = null;
-  /** True while the queue appends its own poll_counts, which must not move maxRecvMinute. */
+  /** True while the queue appends its own records (poll_counts, the start marker), which must not move maxRecvMinute. */
   private emitting = false;
+  /** Set by markProcessStart (Z09-49): until then every append is refused. */
+  private started = false;
   /** The minute of the latest tick's own time, uncapped: the writer's clock (ruling 27). Null before the first tick. */
   private lastTickRawMinute: number | null = null;
   /**
@@ -414,7 +419,7 @@ export class RecorderQueue {
       recordsTotal: perStream(() => ({ written: 0, notWritten: 0 })),
       droppedTotal: perStream(() => 0),
       gapSecondsTotal: perStream(() => 0),
-      rejectedTotal: { E_STREAM: 0, E_ENVELOPE: 0, E_PAYLOAD: 0, E_TOO_LARGE: 0, E_POOL_CAP: 0 },
+      rejectedTotal: { E_STREAM: 0, E_ENVELOPE: 0, E_PAYLOAD: 0, E_TOO_LARGE: 0, E_POOL_CAP: 0, E_NOT_STARTED: 0 },
       redactedTotal: 0,
       latePolls: 0,
       skewedPolls: 0,
@@ -442,6 +447,8 @@ export class RecorderQueue {
   append(e: AppendInput): AppendResult {
     const stream = e.stream;
     if (!isStreamName(stream)) return this.reject('unknown', 'E_STREAM', 'unknown stream');
+    // Z09-49: nothing is recorded before this process's `process_start` marker, so a replay can split by process.
+    if (!this.started && stream !== 'process_start') return this.reject(stream, 'E_NOT_STARTED', 'markProcessStart not called');
     if (typeof e.recvMs !== 'number' || !Number.isFinite(e.recvMs)
       || !(e.slot === null || (typeof e.slot === 'bigint' && e.slot >= 0n))
       || !(e.commitment === null || COMMITMENTS.has(e.commitment))
@@ -524,6 +531,7 @@ export class RecorderQueue {
    * pool is new, not a position pool, and no watched pool is idle (counted as E_POOL_CAP).
    */
   notePollFailed(poolId: string, priorityClass: string, recvMs: UnixMs, position: boolean): boolean {
+    if (!this.started) { this.reject('poll_counts', 'E_NOT_STARTED', 'markProcessStart not called'); return false; }
     const clock = this.classify(recvMs);
     const w = this.admit(poolId, priorityClass, clock.effMs, position);
     if (w === null) {
@@ -1035,8 +1043,19 @@ export class RecorderQueue {
    * the bar engine cold at it, as the restarted worker's engine does.
    */
   markProcessStart(releaseId: string, nowMs: UnixMs): AppendResult {
-    const payload: ProcessStart = { releaseId, startedAtMs: nowMs, pollCountsFirstSeq: this.nextSeq.poll_counts.toString() };
-    return this.append({ stream: 'process_start', recvMs: nowMs, slot: null, commitment: null, source: 'M07', payload });
+    if (this.started) throw new RecorderError('E_CONFIG', 'markProcessStart is called once per process');
+    const firstSeq = Object.fromEntries(MARKED_STREAMS.map((st) => [st, this.nextSeq[st].toString()])) as ProcessStart['firstSeq'];
+    const payload: ProcessStart = { releaseId, startedAtMs: nowMs, firstSeq };
+    // The queue's own record: it does not move the producer clock (rulings 27 and 31).
+    this.emitting = true;
+    let out: AppendResult;
+    try {
+      out = this.append({ stream: 'process_start', recvMs: nowMs, slot: null, commitment: null, source: 'M07', payload });
+    } finally {
+      this.emitting = false;
+    }
+    if (out === 'queued') this.started = true;
+    return out;
   }
 
   private record(poolId: string, w: WatchedPool, bar: number, b: Bucket | undefined): PollCounts {

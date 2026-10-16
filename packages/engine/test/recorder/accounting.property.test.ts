@@ -8,8 +8,9 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import fc from 'fast-check';
 import type { UnixMs } from '@bot/types';
-import { POLL_BAR_MS, RecorderQueue, type EncodedRecord, type Gap } from '../../src/index.ts';
+import { POLL_BAR_MS, type EncodedRecord, type Gap } from '../../src/index.ts';
 import { SEG, T0, payloadOf, snap } from './helpers.ts';
+import { startedQueue } from './helpers.ts';
 
 const ms = (n: number): UnixMs => n as UnixMs;
 const params = { seed: 20261008, numRuns: 300 };
@@ -29,7 +30,7 @@ const op = fc.oneof(
 describe('poll accounting across clock steps and unwatches (rulings 25, 26 and 30)', () => {
   it('polls counted equal polls appended, no (pool, bar) twice, and every differing pool-bar is explained', () => {
     fc.assert(fc.property(fc.array(op, { minLength: 1, maxLength: 300 }), (ops) => {
-      const q = new RecorderQueue({ config: { maxWatchedPools: 3 } });
+      const q = startedQueue({ config: { maxWatchedPools: 3 } });
       const out: EncodedRecord[] = [];
       const gaps: Gap[] = [];
       // Polls stamped per (pool, bar), from the accepted ones.

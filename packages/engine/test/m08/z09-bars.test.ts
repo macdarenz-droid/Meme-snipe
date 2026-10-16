@@ -10,6 +10,7 @@ import { BAR_DEFAULTS, barSnapshotOf, checkBarConfig, createBarEngine, parseSpot
 import { RecorderQueue } from '../../src/index.ts';
 import { replayBars, type ReplayEvent } from '../../src/m08/replay.ts';
 import { createRng, nextBelow } from '../../src/m10/rng.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const T0 = Date.UTC(2026, 9, 16, 0, 0, 0);
 const BAR = 15_000;
@@ -53,7 +54,7 @@ const countsIn = (payloadJson: string, recvMs: number): PollCountsIn => {
  * closeDue with its time, and the RECORDING: the changed snapshots and the poll_counts records with their recvMs.
  */
 function live(polls: readonly Poll[], endMs: number): { out: Array<[number, Bar[]]>; recorded: Ev[] } {
-  const q = new RecorderQueue();
+  const q = startedQueue();
   const e = createBarEngine();
   const out: Array<[number, Bar[]]> = [];
   const recorded: Ev[] = [];
@@ -101,6 +102,11 @@ function replay(recorded: readonly Ev[], endMs: number, readAhead = false): Arra
   return out;
 }
 const events = (r: Array<[number, Bar[]]>): Bar[] => r.flatMap(([, b]) => b);
+/** The bars of a replay that must not be refused. */
+const replayed = (r: ReturnType<typeof replayBars>): Bar[] => {
+  if (!r.ok) assert.fail(`replay refused: ${r.error.code} at ${r.error.atMs} on ${r.error.stream}`);
+  return events(r.value);
+};
 
 describe('A-M08-01 acceptance (SYNTHETIC hour, through the real M07 queue)', () => {
   it('Z09-32 parity: live (every poll) and replay (the recording) emit identical bar.closed events, times and snapshots included', () => {
@@ -323,23 +329,33 @@ export type { BarEngine };
 
 describe('Z09-40 (RT-10): bars agree across a worker restart; Z09-42: early counts are refused', () => {
   /**
-   * LIVE across a restart: process 1 runs to `crashMs` (its last tick), with an unwatch 3 s before (a partial bar
-   * stamped after the crash); process 2 starts at `restartMs` with a new queue (poll_counts seq continued, as M07's
-   * recovery does), a `process_start` marker and a cold engine. Returns both engines' bars and the recording.
+   * LIVE across a restart: process 1 starts with its marker and runs to `crashMs` (its last tick), with an unwatch 3 s
+   * before (a partial bar stamped after the crash); process 2 starts at `restartMs` with a new queue (seqs continued,
+   * as M07's recovery does), its marker and a cold engine. Returns both engines' bars and the recording, each record
+   * with its stream seq.
    */
-  function liveRestart(polls: readonly Poll[], crashMs: number, restartMs: number, endMs: number): { out: Bar[]; recorded: ReplayEvent[] } {
+  function liveRestart(polls: readonly Poll[], crashMs: number, restartMs: number, endMs: number, reuseSeq = false): { out: Bar[]; recorded: ReplayEvent[] } {
     const out: Bar[] = [];
     const recorded: ReplayEvent[] = [];
     let q = new RecorderQueue();
+    q.markProcessStart('release-1', T0 as UnixMs);
     let e = createBarEngine();
+    // Appended snapshots in order; one the encoder finds unchanged at take is never written (and gets no seq).
+    const pending: Array<{ at: number; s: BarSnapshot; hash: string }> = [];
     const take = (): void => {
       for (const r of q.take(Number.MAX_SAFE_INTEGER, 'seg')) {
-        if (r.stream === 'poll_counts') {
+        if (r.stream === 'pool_snapshot') {
+          const hash = (JSON.parse(r.payloadJson) as { rawHash: string }).rawHash;
+          while ((pending[0] as { hash: string }).hash !== hash) pending.shift();
+          const p = pending.shift() as { at: number; s: BarSnapshot };
+          recorded.push({ kind: 'snapshot', atMs: p.at, s: p.s, expectedIntervalMs: 1_000, stream: 'pool_snapshot', seq: r.seq });
+        } else if (r.stream === 'poll_counts') {
           const c = countsIn(r.payloadJson, r.recvMs);
           e.onPollCounts(c);
           recorded.push({ kind: 'poll_counts', atMs: r.recvMs, seq: r.seq, partial: (JSON.parse(r.payloadJson) as { partial?: true }).partial === true, c });
         } else if (r.stream === 'process_start') {
-          recorded.push({ kind: 'process_start', atMs: r.recvMs, pollCountsFirstSeq: BigInt((JSON.parse(r.payloadJson) as { pollCountsFirstSeq: string }).pollCountsFirstSeq) });
+          const first = (JSON.parse(r.payloadJson) as { firstSeq: Record<string, string> }).firstSeq;
+          recorded.push({ kind: 'process_start', atMs: r.recvMs, firstSeq: Object.fromEntries(Object.entries(first).map(([k, v]) => [k, BigInt(v)])) });
         }
       }
     };
@@ -347,7 +363,9 @@ describe('Z09-40 (RT-10): bars agree across a worker restart; Z09-42: early coun
     for (let t = T0; t <= endMs; t += 1_000) {
       if (t > crashMs && t < restartMs) continue;                                 // down
       if (t >= restartMs && t - 1_000 < restartMs) {
-        q = new RecorderQueue({ firstSeq: { poll_counts: q.peekNextSeq('poll_counts') } });
+        // reuseSeq: the new process restarts its seqs a little below the last written ones (the Z10 bug Z09-47 guards).
+        const cont = (st: 'poll_counts' | 'pool_snapshot'): bigint => (reuseSeq ? q.peekNextSeq(st) - 3n : q.peekNextSeq(st));
+        q = new RecorderQueue({ firstSeq: { poll_counts: cont('poll_counts'), pool_snapshot: cont('pool_snapshot') } });
         e = createBarEngine();
         q.markProcessStart('release-2', t as UnixMs);
         take();
@@ -359,7 +377,7 @@ describe('Z09-40 (RT-10): bars agree across a worker restart; Z09-42: early coun
         e.onSnapshot(p.s, 1_000);
         const r = q.append({ stream: 'pool_snapshot', recvMs: p.at as UnixMs, slot: null, commitment: 'confirmed', source: 'test',
           payload: { poolId: 'pool-a', rawHash: `h${p.state}`, priorityClass: 'normal', fields: { state: `${p.state}` } } });
-        if (r === 'queued') recorded.push({ kind: 'snapshot', atMs: p.at, s: p.s, expectedIntervalMs: 1_000 });
+        if (r === 'queued') pending.push({ at: p.at, s: p.s, hash: `h${p.state}` });
       }
       if (t === crashMs - 3_000) q.unwatch('pool-a', t as UnixMs);                  // a partial bar, stamped after the crash
       q.tick(t as UnixMs);
@@ -376,13 +394,12 @@ describe('Z09-40 (RT-10): bars agree across a worker restart; Z09-42: early coun
       // the stopped process never reached: the replay must not close it either (the close frontier).
       const crashMs = T0 + 1_870_000, restartMs = T0 + 1_880_000, end = T0 + 3_605_000;
       const l = liveRestart(h, crashMs, restartMs, end);
-      const r = replayBars(createBarEngine(), l.recorded, { fromMs: T0, endMs: end, stepMs: 1_000 });
-      assert.deepEqual(r.flatMap(([, b]) => b), l.out, `seed ${seed}`);
+      assert.deepEqual(replayed(replayBars(createBarEngine(), l.recorded, { fromMs: T0, endMs: end, stepMs: 1_000 })), l.out, `seed ${seed}`);
       assert.ok(l.out.length > 200);
       assert.ok(l.recorded.some((x) => x.kind === 'poll_counts' && x.partial), 'the unwatch wrote a partial bar');
       // Without the marker (a continuous replay) the first bars after the restart differ: the red team's RT-10.
       const noMarker = replayBars(createBarEngine(), l.recorded.filter((x) => x.kind !== 'process_start'), { fromMs: T0, endMs: end, stepMs: 1_000 });
-      assert.notDeepEqual(noMarker.flatMap(([, b]) => b), l.out);
+      assert.notDeepEqual(replayed(noMarker), l.out);
     }
   });
 
@@ -393,19 +410,50 @@ describe('Z09-40 (RT-10): bars agree across a worker restart; Z09-42: early coun
       { kind: 'poll_counts', atMs: T0 + CLOSE, seq: 0n, partial: false, c: counts(T0, 1) },
       // Process 1 unwatched the pool in bar B, then stopped: a partial count stamped with B's close, after the restart.
       { kind: 'poll_counts', atMs: B + CLOSE, seq: 1n, partial: true, c: counts(B, 15) },
-      { kind: 'process_start', atMs: B + 5_000, pollCountsFirstSeq: 2n },
+      { kind: 'process_start', atMs: B + 5_000, firstSeq: { poll_counts: 2n } },
       { kind: 'snapshot', atMs: B + 6_000, s: snap(B + 6_000, 101n), expectedIntervalMs: 1_000 },
     ];
-    const bars = replayBars(createBarEngine(), evs, { fromMs: T0, endMs: T0 + 120_000, stepMs: 1_000 }).flatMap(([, b]) => b);
+    const bars = replayed(replayBars(createBarEngine(), evs, { fromMs: T0, endMs: T0 + 120_000, stepMs: 1_000 }));
     // Bar 0 closed before the stop; bar B is the restarted engine's, counted from its own changes only (1), not 15.
     assert.deepEqual(bars.map((b) => [b.startMs - T0, b.snapshots]), [[0, 1], [30_000, 1]]);
+  });
+
+  it('Z09-47: a restart that reuses seqs (first seq from the last sealed manifest) is refused, not guessed at', () => {
+    const h = hour(5);
+    const l = liveRestart(h, T0 + 1_870_000, T0 + 1_880_000, T0 + 3_605_000, true);
+    const r = replayBars(createBarEngine(), l.recorded, { fromMs: T0, endMs: T0 + 3_605_000, stepMs: 1_000 });
+    assert.ok(!r.ok && r.error.code === 'E_MARKER_SEQ');
+    // A marker whose first seq goes below an earlier marker's is refused too.
+    const back = replayBars(createBarEngine(), [
+      { kind: 'process_start', atMs: T0, firstSeq: { poll_counts: 5n } }, { kind: 'process_start', atMs: T0 + 1_000, firstSeq: { poll_counts: 4n } },
+    ], { fromMs: T0, endMs: T0 + 2_000, stepMs: 1_000 });
+    assert.deepEqual(back, { ok: false, error: { code: 'E_MARKER_SEQ', atMs: T0 + 1_000, stream: 'poll_counts' } });
+  });
+
+  it('Z09-48: snapshots are split by their seq, so a backward clock step across a restart does not misassign them', () => {
+    const B = T0 + 30_000;
+    const evs: ReplayEvent[] = [
+      { kind: 'process_start', atMs: T0, firstSeq: { pool_snapshot: 0n, poll_counts: 0n } },
+      // Process 1's clock ran 20 s ahead: its last snapshot carries B + 20 s.
+      { kind: 'snapshot', atMs: B + 20_000, s: snap(B + 20_000, 500n), expectedIntervalMs: 1_000, stream: 'pool_snapshot', seq: 0n },
+      // Process 2 starts on a corrected clock at B + 10 s.
+      { kind: 'process_start', atMs: B + 10_000, firstSeq: { pool_snapshot: 1n, poll_counts: 0n } },
+      { kind: 'snapshot', atMs: B + 12_000, s: snap(B + 12_000, 100n), expectedIntervalMs: 1_000, stream: 'pool_snapshot', seq: 1n },
+    ];
+    const bars = replayed(replayBars(createBarEngine(), evs, { fromMs: T0, endMs: T0 + 120_000, stepMs: 1_000 }));
+    // Bar B is the restarted engine's alone: it opens and closes at process 2's state; process 1's later-stamped
+    // snapshot belongs to process 1 and is dropped with it.
+    assert.deepEqual(bars.map((b) => [b.startMs - T0, b.open, b.close, b.high]), [[30_000, spot(100n), spot(100n), spot(100n)]]);
+    // Split by recvMs instead (no seq), the same input lets process 1's snapshot into process 2's bar.
+    const bySeqLost = evs.map((e) => (e.kind === 'snapshot' ? { kind: e.kind, atMs: e.atMs, s: e.s, expectedIntervalMs: e.expectedIntervalMs } : e));
+    assert.notDeepEqual(replayed(replayBars(createBarEngine(), bySeqLost, { fromMs: T0, endMs: T0 + 120_000, stepMs: 1_000 })), bars);
   });
 
   it('Z09-40: with no marker a replay starts cold at its first record, as before; reset() forgets every pool', () => {
     const h = hour(7);
     const l = live(h, T0 + 3_605_000);
-    const evs: ReplayEvent[] = l.recorded.map((x) => ('s' in x ? { kind: 'snapshot' as const, atMs: x.at, s: x.s, expectedIntervalMs: 1_000 } : { kind: 'poll_counts' as const, atMs: x.at, seq: 0n, partial: false, c: x.c }));
-    assert.deepEqual(replayBars(createBarEngine(), evs, { fromMs: T0, endMs: T0 + 3_605_000, stepMs: 1_000 }).flatMap(([, b]) => b), events(l.out));
+    const evs: ReplayEvent[] = l.recorded.map((x) => ('s' in x ? { kind: 'snapshot' as const, atMs: x.at, s: x.s, expectedIntervalMs: 1_000 } : { kind: 'poll_counts' as const, atMs: x.at, seq: BigInt(x.at), partial: false, c: x.c }));
+    assert.deepEqual(replayed(replayBars(createBarEngine(), evs, { fromMs: T0, endMs: T0 + 3_605_000, stepMs: 1_000 })), events(l.out));
     const e = createBarEngine();
     e.onSnapshot(snap(T0 + 1_000, 100n), 1_000);
     e.reset();

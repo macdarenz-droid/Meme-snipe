@@ -16,6 +16,7 @@ import {
 import { compressorFor, resolveCodec, SegmentWriter, type WriterFs, type WriterLog } from '../../src/m07/segments.ts';
 import { RecorderQueue } from '../../src/recorder/queue.ts';
 import { tempDir, waitFor } from '../helpers.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const H0 = Date.UTC(2026, 9, 15, 10, 0, 0);
 type LogLine = { level: string; code: string; fields: Record<string, string | number> };
@@ -34,7 +35,7 @@ const manifestOf = (dir: string, rel: string): unknown => JSON.parse(fs.readFile
 function writer(dir: string, now: { t: number }, over: { fs?: WriterFs } = {}) {
   const l = logger();
   const recovery = SegmentWriter.recover({ dataDir: dir, nowMs: now.t as UnixMs, log: l.log, ...(over.fs === undefined ? {} : { fs: over.fs }) });
-  const q = new RecorderQueue({ firstSeq: recovery.nextSeq });
+  const q = startedQueue({ firstSeq: recovery.nextSeq });
   const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => now.t as UnixMs, log: l.log, ...(over.fs === undefined ? {} : { fs: over.fs }) }, recovery);
   return { q, w, recovery, ...l };
 }
@@ -148,6 +149,7 @@ describe('A-M07-02 segment writer', () => {
       const log = () => {};
       const rec = SegmentWriter.recover({ dataDir: dir, nowMs: now(), log });
       const q = new RecorderQueue({ firstSeq: rec.nextSeq });
+      q.markProcessStart('child', now());
       const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: now, log }, rec);
       let i = 0;
       setInterval(() => {
@@ -167,8 +169,10 @@ describe('A-M07-02 segment writer', () => {
     assert.equal(fs.existsSync(join(dir, '2026-10-15/10/decision.manifest.json')), false);
     const now = { t: H0 + 600_000 };
     const { q, w, recovery, lines } = writer(dir, now);
-    const m = recovery.recovered[0];
-    assert.ok(m !== undefined && recovery.recovered.length === 1);
+    // The child's open segments: its decisions and its process_start marker (Z09-49).
+    assert.deepEqual(recovery.recovered.map((x) => x.stream).sort(), ['decision', 'process_start']);
+    const m = recovery.recovered.find((x) => x.stream === 'decision');
+    assert.ok(m !== undefined);
     assert.equal(m.bytes, full.length);                                   // cut after the last complete frame
     const decoded = readLines(dir, rel);
     assert.equal(decoded.length, m.records);

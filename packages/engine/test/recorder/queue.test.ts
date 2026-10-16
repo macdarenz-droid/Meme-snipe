@@ -7,13 +7,14 @@ import {
   type EncodedSnapshot, type LogLevel, type PoolSnapshotPayload,
 } from '../../src/index.ts';
 import { SEG, T0, payloadOf, rec, snap } from './helpers.ts';
+import { startedQueue } from './helpers.ts';
 
 const ms = (n: number): UnixMs => n as UnixMs;
 
 describe('append validation (logic 1, logic 5, edge case 1)', () => {
   it('rejects unknown streams, bad envelope fields, unserialisable and oversized payloads, and counts them', () => {
     const logs: Array<[LogLevel, string]> = [];
-    const q = new RecorderQueue({ log: (l, c) => logs.push([l, c]) });
+    const q = startedQueue({ log: (l, c) => logs.push([l, c]) });
     assert.deepEqual(q.append({ ...rec('decision', T0), stream: 'nope' }), { rejected: 'E_STREAM' });
     assert.deepEqual(q.append({ ...rec('decision', T0), recvMs: ms(Number.NaN) }), { rejected: 'E_ENVELOPE' });
     assert.deepEqual(q.append({ ...rec('decision', T0), slot: -1n as never }), { rejected: 'E_ENVELOPE' });
@@ -28,14 +29,14 @@ describe('append validation (logic 1, logic 5, edge case 1)', () => {
     // Just under the cap is accepted: {"s":"..."} is 8 bytes of framing.
     assert.equal(q.append(rec('decision', T0, { s: 'y'.repeat(DEFAULT_CONFIG.recordMaxBytes - 8) })), 'queued');
     const st = q.stats();
-    assert.deepEqual(st.rejectedTotal, { E_STREAM: 1, E_ENVELOPE: 3, E_PAYLOAD: 4, E_TOO_LARGE: 1, E_POOL_CAP: 0 });
+    assert.deepEqual(st.rejectedTotal, { E_STREAM: 1, E_ENVELOPE: 3, E_PAYLOAD: 4, E_TOO_LARGE: 1, E_POOL_CAP: 0, E_NOT_STARTED: 0 });
     assert.equal(st.queueDepth, 1);
     // One log line per stream and code, not one per bad record.
     assert.equal(logs.filter(([, c]) => c === 'M07.rejected').length, 5);
   });
 
   it('writes bigints as decimal strings and keeps the payload as it was when appended', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     const payload = { amount: 18_446_744_073_709_551_615n, list: [1, 2] };
     q.append({ stream: 'fill', recvMs: ms(T0), slot: 7n as never, commitment: 'finalized', source: 'M19', payload });
     payload.list.push(3);
@@ -48,19 +49,19 @@ describe('append validation (logic 1, logic 5, edge case 1)', () => {
   });
 
   it('checks its config against the ticket range', () => {
-    assert.throws(() => new RecorderQueue({ config: { queueMax: 999 } }), RecorderError);
-    assert.throws(() => new RecorderQueue({ config: { queueMax: 500_001 } }), RecorderError);
-    assert.throws(() => new RecorderQueue({ config: { queueMax: 1_500.5 } }), RecorderError);
-    assert.throws(() => new RecorderQueue({ config: { queueMaxBytes: 1_000 } }), RecorderError);
-    assert.throws(() => new RecorderQueue({ firstSeq: { fill: -1n } }), RecorderError);
-    assert.ok(new RecorderQueue({ config: { queueMax: 1_000 } }));
-    assert.ok(new RecorderQueue({ config: { queueMax: 500_000 } }));
+    assert.throws(() => startedQueue({ config: { queueMax: 999 } }), RecorderError);
+    assert.throws(() => startedQueue({ config: { queueMax: 500_001 } }), RecorderError);
+    assert.throws(() => startedQueue({ config: { queueMax: 1_500.5 } }), RecorderError);
+    assert.throws(() => startedQueue({ config: { queueMaxBytes: 1_000 } }), RecorderError);
+    assert.throws(() => startedQueue({ firstSeq: { fill: -1n } }), RecorderError);
+    assert.ok(startedQueue({ config: { queueMax: 1_000 } }));
+    assert.ok(startedQueue({ config: { queueMax: 500_000 } }));
   });
 });
 
 describe('redaction (security notes)', () => {
   it('replaces key-shaped URL strings in the source and anywhere in the payload', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append({ stream: 'discovery', recvMs: ms(T0), slot: null, commitment: null, source: 'https://rpc.example/?api-key=abc', payload: { url: 'wss://x.example/ws?token=s3cret', nested: [{ 'https://y/?a=1&key=zz': 1 }], ok: 'https://z.example/?page=2' } });
     const [r] = q.take(1, SEG);
     assert.equal(r!.source, '[redacted]');
@@ -72,7 +73,7 @@ describe('redaction (security notes)', () => {
   });
 
   it('refuses a payload that already has a "[redacted:" key, or whose redaction would merge two keys (ruling 13)', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     assert.deepEqual(q.append(rec('discovery', T0, { '[redacted:1]': 1, u: 'https://a.example/?key=1' })), { rejected: 'E_PAYLOAD' });
     assert.deepEqual(q.append(rec('discovery', T0, { m: { '[redacted:9]': 1 } })), { rejected: 'E_PAYLOAD' });
     // A value that looks like the marker is a value, not a key: accepted.
@@ -81,7 +82,7 @@ describe('redaction (security notes)', () => {
   });
 
   it('two redacted keys of one object stay two keys', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append(rec('discovery', T0, { m: { 'https://a.example/?key=1': 1, 'https://b.example/?token=2': 2 } }));
     const [r] = q.take(1, SEG);
     assert.deepEqual(JSON.parse(r!.payloadJson), { m: { '[redacted:1]': 1, '[redacted:2]': 2 } });
@@ -90,7 +91,7 @@ describe('redaction (security notes)', () => {
 
 describe('seq (logic 1)', () => {
   it('is per stream, dense over written records, and continues from the last manifest after a restart', () => {
-    const q = new RecorderQueue({ firstSeq: { decision: 41n } });
+    const q = startedQueue({ firstSeq: { decision: 41n } });
     q.append(rec('decision', T0));
     q.append(rec('signal', T0 + 1));
     q.append(rec('decision', T0 + 2));
@@ -99,7 +100,7 @@ describe('seq (logic 1)', () => {
   });
 
   it('keeps append order across streams, and a clock step back changes recvMs only', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append(rec('decision', T0 + 5_000));
     q.append(rec('order_event', T0 + 1_000));
     q.append(rec('decision', T0));
@@ -110,7 +111,7 @@ describe('seq (logic 1)', () => {
 
 describe('change-only snapshots (logic 2, edge case 3)', () => {
   it('starts a new keyframe for each pool when the segment changes, and after a restart', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append(snap('a', 1, T0));
     q.append(snap('a', 2, T0 + 10_000));
     assert.deepEqual(q.take(10, 'seg-10').map((r) => payloadOf(r).kind), ['keyframe', 'delta']);
@@ -118,14 +119,14 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
     q.append(snap('a', 4, T0 + 30_000));
     assert.deepEqual(q.take(10, 'seg-11').map((r) => payloadOf(r).kind), ['keyframe', 'delta']);
     // A new process (restart): the first change of each pool is a keyframe.
-    const r = new RecorderQueue();
+    const r = startedQueue();
     r.append(snap('a', 4, T0 + 3_601_000));
     r.append(snap('a', 5, T0 + 3_602_000));
     assert.deepEqual(r.take(10, 'seg-11').map((x) => payloadOf(x).kind), ['keyframe', 'delta']);
   });
 
   it('a record from 10:59:59.9 taken into the 11:00 segment is a keyframe (the segment decides, not recvMs)', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append(snap('a', 1, T0 + 3_599_000));
     assert.deepEqual(q.take(10, 'seg-10').map((r) => payloadOf(r).kind), ['keyframe']);
     q.append(snap('a', 2, T0 + 3_599_900));
@@ -135,7 +136,7 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
   });
 
   it('a rotate inside one batch: records queued together, taken into two segments, each segment starts with keyframes', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     for (let i = 0; i < 6; i++) {
       q.append(snap('a', i, T0 + i * 1_000));
       q.append(snap('b', i, T0 + i * 1_000 + 1));
@@ -153,7 +154,7 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
   });
 
   it('a stream or priority class change with the same rawHash is a change', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     assert.equal(q.append(snap('a', 1, T0, 'pool_snapshot', 'normal')), 'queued');
     assert.equal(q.append(snap('a', 1, T0 + 1, 'pool_snapshot', 'normal')), 'unchanged');
     assert.equal(q.append(snap('a', 1, T0 + 2, 'pool_snapshot', 'tail')), 'queued');
@@ -165,7 +166,7 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
   });
 
   it('changedPolls counts a change of rawHash only, not of stream or class (ruling 15)', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append(snap('a', 1, T0, 'pool_snapshot', 'normal'));
     q.append(snap('a', 1, T0 + 1_000, 'pool_snapshot', 'tail'));
     q.append(snap('a', 1, T0 + 2_000, 'pool_snapshot_tail', 'tail'));
@@ -188,14 +189,14 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
   });
 
   it('refuses a snapshot with a top-level key outside the four', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     const p = { ...(snap('a', 1, T0).payload as object), extra: 1 };
     assert.deepEqual(q.append(rec('pool_snapshot', T0, p)), { rejected: 'E_PAYLOAD' });
     assert.equal(q.stats().rejectedTotal.E_PAYLOAD, 1);
   });
 
   it('keeps a separate chain per stream, so each stream decodes alone', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append(snap('a', 1, T0, 'pool_snapshot'));
     q.append(snap('a', 2, T0 + 1, 'pool_snapshot_position', 'position'));
     q.append(snap('a', 3, T0 + 2, 'pool_snapshot'));
@@ -207,7 +208,7 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
   });
 
   it('a delta holds only changed fields, removals and a changed priority class', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     const base = { poolId: 'a', priorityClass: 'normal' };
     q.append(rec('pool_snapshot', T0, { ...base, rawHash: 'h1', fields: { x: '1', y: '2', z: '3' } }));
     q.append(rec('pool_snapshot', T0 + 1, { ...base, priorityClass: 'tail', rawHash: 'h2', fields: { x: '1', y: '5', w: '9' } }));
@@ -216,7 +217,7 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
   });
 
   it('a snapshot dropped in the queue does not hide the same state polled again, nor break the chain', () => {
-    const q = new RecorderQueue({ config: { queueMax: 1_000 } });
+    const q = startedQueue({ config: { queueMax: 1_000 } });
     q.append(snap('a', 1, T0, 'pool_snapshot_tail'));
     q.take(10, SEG);
     q.append(snap('a', 2, T0 + 1, 'pool_snapshot_tail'));
@@ -242,7 +243,7 @@ describe('poll counts (logic 3; per 15-second bar since ruling Z09-32)', () => {
   const close = (bar: number): number => T0 + (bar + 1) * BAR + 1_500;
 
   it('writes one record per watched pool per bar at its close, with zero bars, failed polls and late polls', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.watch('quiet', 'normal', ms(T0));
     q.append(snap('busy', 1, T0 + 1_000));
     q.append(snap('busy', 1, T0 + 2_000));
@@ -271,7 +272,7 @@ describe('poll counts (logic 3; per 15-second bar since ruling Z09-32)', () => {
   });
 
   it('unwatch writes up to the bar of its time (the last one partial, stamped with its close) and forgets the pool', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append(snap('a', 1, T0 + 1_000));
     q.unwatch('a', ms(T0 + 30_000));
     q.tick(ms(T0 + 600_000));
@@ -282,7 +283,7 @@ describe('poll counts (logic 3; per 15-second bar since ruling Z09-32)', () => {
   });
 
   it('a silent feed (an outage) longer than pollCatchUpMaxMinutes resumes as one skippedBars record per pool', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     q.append(snap('a', 1, T0 + 5_000));
     q.append(snap('a', 2, T0 + 125_000));
     // The writer ticks every minute; the feed is silent from minute 3 to minute 30.
@@ -314,7 +315,7 @@ describe('poll counts (logic 3; per 15-second bar since ruling Z09-32)', () => {
 describe('backpressure (logic 4, failure modes)', () => {
   it('drops the lowest-priority stream first, newest first, and opens one gap per overload with one warning', () => {
     const logs: Array<[LogLevel, string, Record<string, string | number>]> = [];
-    const q = new RecorderQueue({ config: { queueMax: 1_000 }, log: (l, c, f) => logs.push([l, c, f]) });
+    const q = startedQueue({ config: { queueMax: 1_000 }, log: (l, c, f) => logs.push([l, c, f]) });
     for (let i = 0; i < 1_000; i++) q.append(rec(i < 500 ? 'discovery' : 'screen', T0 + i));
     // Full. A signal pushes out the newest discovery; another discovery is itself dropped (discovery is lowest).
     assert.equal(q.append(rec('signal', T0 + 2_000)), 'queued');
@@ -332,7 +333,7 @@ describe('backpressure (logic 4, failure modes)', () => {
   });
 
   it('closes a gap when the stream is accepted again, and counts gap seconds', () => {
-    const q = new RecorderQueue({ config: { queueMax: 1_000, gapMergeMs: 0 } });
+    const q = startedQueue({ config: { queueMax: 1_000, gapMergeMs: 0 } });
     for (let i = 0; i < 1_000; i++) q.append(rec('decision', T0 + i));
     q.append(rec('discovery', T0 + 10_000));
     q.append(rec('discovery', T0 + 13_000));
@@ -346,7 +347,7 @@ describe('backpressure (logic 4, failure modes)', () => {
 
   it('never drops a never-dropped record: it refuses one loudly when nothing else is left to drop', () => {
     const logs: string[] = [];
-    const q = new RecorderQueue({ config: { queueMax: 1_000 }, log: (l, c) => logs.push(`${l}:${c}`) });
+    const q = startedQueue({ config: { queueMax: 1_000 }, log: (l, c) => logs.push(`${l}:${c}`) });
     for (let i = 0; i < 999; i++) q.append(rec(i % 2 === 0 ? 'order_event' : 'fill', T0 + i));
     q.append(rec('pool_snapshot_tail', T0 + 999, { poolId: 'p', rawHash: 'h', priorityClass: 'tail', fields: {} }));
     // The tail snapshot makes way for a fill.
@@ -361,7 +362,7 @@ describe('backpressure (logic 4, failure modes)', () => {
 
   it('bounds the bytes held as well as the count', () => {
     const queueMaxBytes = 4 * 1_048_576;
-    const q = new RecorderQueue({ config: { queueMaxBytes } });
+    const q = startedQueue({ config: { queueMaxBytes } });
     const big = 'b'.repeat(60_000);
     for (let i = 0; i < 1_000; i++) q.append(rec('discovery', T0 + i, { big }));
     const st = q.stats();
@@ -371,7 +372,7 @@ describe('backpressure (logic 4, failure modes)', () => {
   });
 
   it('keeps at most GAPS_MAX_PER_STREAM closed gaps per stream by widening the oldest', () => {
-    const q = new RecorderQueue({ config: { queueMax: 1_000, gapMergeMs: 0 } });
+    const q = startedQueue({ config: { queueMax: 1_000, gapMergeMs: 0 } });
     for (let i = 0; i < 1_000; i++) q.append(rec('decision', T0));
     for (let g = 0; g < 3_000; g++) {
       q.append(rec('discovery', T0 + g * 10));
@@ -382,5 +383,21 @@ describe('backpressure (logic 4, failure modes)', () => {
     const gaps = q.drainGaps().discovery ?? [];
     assert.ok(gaps.length <= 1_025, `${gaps.length} gaps`);
     assert.equal(gaps[0]!.fromMs, T0);
+  });
+});
+
+describe('Z09-49: nothing is recorded before the process_start marker', () => {
+  it('appends and failed polls are refused until markProcessStart; the marker carries each marked stream\'s first seq; once only', () => {
+    const q = new RecorderQueue({ firstSeq: { poll_counts: 7n, pool_snapshot: 3n } });
+    assert.deepEqual(q.append(rec('decision', T0)), { rejected: 'E_NOT_STARTED' });
+    assert.deepEqual(q.append(snap('a', 1, T0)), { rejected: 'E_NOT_STARTED' });
+    assert.equal(q.notePollFailed('a', 'normal', ms(T0), false), false);
+    assert.equal(q.stats().rejectedTotal.E_NOT_STARTED, 3);
+    assert.equal(q.markProcessStart('release-x', ms(T0)), 'queued');
+    assert.equal(q.stats().maxRecvMinute, null, 'the marker is the queue\'s own record: it does not move the producer clock');
+    assert.throws(() => q.markProcessStart('release-x', ms(T0 + 1)), RecorderError);
+    assert.equal(q.append(rec('decision', T0 + 1)), 'queued');
+    const [marker] = q.take(10, SEG).filter((r) => r.stream === 'process_start');
+    assert.deepEqual(JSON.parse(marker?.payloadJson as string), { firstSeq: { poll_counts: '7', pool_snapshot: '3', pool_snapshot_position: '0', pool_snapshot_tail: '0' }, releaseId: 'release-x', startedAtMs: T0 });
   });
 });

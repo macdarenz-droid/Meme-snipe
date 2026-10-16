@@ -9,10 +9,10 @@ import { M04_DEFAULTS } from '../../src/m04/settings.ts';
 import { computeCoverage } from '../../src/m07/coverage.ts';
 import { linkTrackerToRecorder } from '../../src/m07/m04-link.ts';
 import { WatchLog } from '../../src/m07/watch-log.ts';
-import { RecorderQueue } from '../../src/recorder/queue.ts';
 import { FakeChain, fakeModel, Logs, Outputs, poolAccounts, ScriptedReader, type FakePool } from '../m04/fake.ts';
 import { FakeTime } from '../m14/helpers.ts';
 import { tempDir } from '../helpers.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 describe('card Z08 M04 → M07 link', () => {
   it('ruling 1: every pool M04 stops watching (unwatch, close) is unwatched in the recorder and closed in the watch log; a refused watch is recorded nowhere', async () => {
@@ -21,7 +21,7 @@ describe('card Z08 M04 → M07 link', () => {
     const reader = new ScriptedReader();
     const chain = new FakeChain();
     reader.slot = () => chain.highest;
-    const queue = new RecorderQueue();
+    const queue = startedQueue();
     const dir = tempDir('z08-link');
     const history = new WatchLog(dir, () => undefined);
     const link = linkTrackerToRecorder<FakePool>({ recorder: queue, history, model: fakeModel, nowMs: wall });

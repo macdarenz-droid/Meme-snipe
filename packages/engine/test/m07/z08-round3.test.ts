@@ -11,8 +11,9 @@ import { scanGzipFrames } from '../../src/m07/frames.ts';
 import { decodedLines, runPull, type PullTransport } from '../../src/m07/md-pull.ts';
 import { ed25519Key } from '../../src/m07/receipt-sig.ts';
 import { compressorFor, frameOf, SegmentWriter } from '../../src/m07/segments.ts';
-import { DEFAULT_CONFIG, RecorderQueue } from '../../src/recorder/queue.ts';
+import { DEFAULT_CONFIG } from '../../src/recorder/queue.ts';
 import { tempDir } from '../helpers.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const H0 = Date.UTC(2026, 9, 15, 10, 0, 0);
 const ms = (n: number): UnixMs => n as UnixMs;
@@ -101,7 +102,7 @@ describe('Z08-28 a frame or line over its cap is corrupt: cut there, never decod
     assert.deepEqual([r.m.records, r.m.bytes, r.logs[0]?.cut_reason], [2, good.length, 'member_too_large']);
     // The writer starts and records after the cut (the crash gap is in the recovered manifest).
     const rec = SegmentWriter.recover({ dataDir: r.dir, nowMs: ms(H0), log: noLog });
-    const q = new RecorderQueue({ firstSeq: rec.nextSeq });
+    const q = startedQueue({ firstSeq: rec.nextSeq });
     const w = new SegmentWriter({ dataDir: r.dir, codec: 'gzip', queue: q, nowMs: () => ms(H0 + 5), log: noLog }, rec);
     q.append({ stream: 'decision', recvMs: ms(H0 + 5), slot: null, commitment: null, source: 't', payload: { i: 1 } });
     w.pump();
@@ -132,7 +133,7 @@ describe('Z08-28 a frame or line over its cap is corrupt: cut there, never decod
     assert.equal(gunzipSync(split).toString(), `${lines.join('\n')}\n`);
     assert.equal(scanGzipFrames(Buffer.from(frameOf(comp, lines)), noLog).frames, 1);
     assert.equal(scanGzipFrames(Buffer.from(frameOf(comp, ['x'.repeat(30)], 5)), noLog).frames, 1);   // a line is never split
-    assert.throws(() => new RecorderQueue({ config: { ...DEFAULT_CONFIG, recordMaxBytes: 1_048_577 } }), /record_max_bytes/);
-    assert.doesNotThrow(() => new RecorderQueue({ config: { ...DEFAULT_CONFIG, recordMaxBytes: 1_048_576 } }));
+    assert.throws(() => startedQueue({ config: { ...DEFAULT_CONFIG, recordMaxBytes: 1_048_577 } }), /record_max_bytes/);
+    assert.doesNotThrow(() => startedQueue({ config: { ...DEFAULT_CONFIG, recordMaxBytes: 1_048_576 } }));
   });
 });

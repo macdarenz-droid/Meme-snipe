@@ -141,7 +141,7 @@ describe('Z09-41 (RT-12): eviction tails survive a restart', () => {
       universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null },
       onEviction: (e) => o.records.push(e), log: { event: () => {} },
       // What Z10 reads back from the persisted eviction records.
-      restoreTails: () => o.records.filter((e) => e.tailUntilMs !== null).map((e) => ({ poolId: e.poolId, reason: e.reason, tailUntilMs: e.tailUntilMs as UnixMs })),
+      restoreTails: () => o.records,
     });
     return { w, classes };
   }
@@ -174,11 +174,38 @@ describe('Z09-41 (RT-12): eviction tails survive a restart', () => {
       { poolId: 'pc', atMs: T0 as UnixMs, reason: 'stale', tailUntilMs: (T0 + 7_000_000) as UnixMs },
     ];
     const r = mk({ now: () => now, records, watchOk: (id) => id !== 'pa', tailMaxPools: 1 });
-    // pa refused by M04; pb restored (the cap is 1); pc over the cap.
+    // Evicted in the same ms, so restored by pool order: pa refused by M04; pb restored (the cap is 1); pc over the cap.
     assert.deepEqual(r.w.postEvictionTail().map((t) => t.poolId), ['pb']);
     assert.deepEqual(records.slice(3).map((e) => [e.poolId, e.reason, e.atMs, e.tailUntilMs]), [['pa', 'tail_restart_cut', now, null], ['pc', 'tail_restart_cut', now, null]]);
     const d: Ev[] = records.slice(0, 1).map((e) => ({ ...e }));
     assert.deepEqual(mk({ now: () => now, records: d, mode: 'degraded_reads' }).w.postEvictionTail(), []);
     assert.equal(d.at(-1)?.reason, 'tail_restart_cut');
+  });
+});
+
+describe('Z09-50: the restore skips tails cut before the restart and keeps each tail\'s start', () => {
+  it('a tail cut (tail_capacity) before the restart stays cut; a restored tail keeps its start, so the cap ends the oldest first', () => {
+    const classes = new Map<string, string>();
+    const records = [
+      { poolId: 'old', atMs: T0 as UnixMs, reason: 'budget', tailUntilMs: (T0 + 9_000_000) as UnixMs },
+      { poolId: 'cut', atMs: (T0 + 1) as UnixMs, reason: 'budget', tailUntilMs: (T0 + 9_000_000) as UnixMs },
+      { poolId: 'cut', atMs: (T0 + 500) as UnixMs, reason: 'tail_capacity', tailUntilMs: null },
+      { poolId: 'new', atMs: (T0 + 1_000) as UnixMs, reason: 'stale', tailUntilMs: (T0 + 9_000_000) as UnixMs },
+    ];
+    let now = T0 + 2_000;
+    const evictions: Array<{ poolId: string; reason: string }> = [];
+    const w = createWatchlist({ config: { ...WATCHLIST_DEFAULTS, tailMaxPools: 2 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+      tracker: { watch: (id, c) => { classes.set(id, c); return true; }, unwatch: (id) => { classes.delete(id); } },
+      universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null }, onEviction: (e) => evictions.push(e), log: { event: () => {} },
+      restoreTails: () => records });
+    assert.deepEqual(w.postEvictionTail().map((t) => t.poolId).sort(), ['new', 'old']);
+    assert.equal(classes.has('cut'), false, 'cut before the restart: not polled again');
+    assert.equal(evictions.length, 0, 'nothing new to record');
+    // A new eviction at the cap ends the OLDEST tail (its start was kept, not reset to the restart time).
+    w.recompute([rec(9, 'eligible', 100)]);
+    now += 1;
+    w.recompute([]);
+    assert.deepEqual(w.postEvictionTail().map((t) => t.poolId).sort(), ['new', 'p9']);
+    assert.deepEqual(evictions.map((e) => [e.poolId, e.reason]), [['old', 'tail_capacity'], ['p9', 'left_slot']]);
   });
 });

@@ -11,9 +11,9 @@ import { snapshotRecord } from '../../src/m04/record.ts';
 import { M04_DEFAULTS } from '../../src/m04/settings.ts';
 import { createPoolTracker } from '../../src/m04/tracker.ts';
 import type { RawAccount } from '../../src/m04/types.ts';
-import { RecorderQueue } from '../../src/recorder/queue.ts';
 import { FakeTime } from '../m14/helpers.ts';
 import { FakeChain, Logs, Outputs, ScriptedReader } from './fake.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const idls = verifyPinnedIdls(VENDORED_IDL_DIR);
 assert.ok(idls.ok);
@@ -66,7 +66,7 @@ describe('M04 on recorded PumpSwap pools with the venue model', () => {
       assert.ok(snap.spotSolPerToken !== null);
       assert.equal(snap.effectiveQuoteLamports, snap.pool.quoteReserveReal + snap.pool.quoteReserveVirtual);
     }
-    const q = new RecorderQueue();
+    const q = startedQueue();
     for (const { s, cls } of outputs.snapshots) assert.equal(q.append(snapshotRecord(s as never, cls, venue as never)), 'queued');
     assert.equal(q.take(100, 'seg').length, 13);
     assert.equal(tracker.history(poolIds[0] as Pubkey, 0 as UnixMs, Number.MAX_SAFE_INTEGER as UnixMs).length, 1);

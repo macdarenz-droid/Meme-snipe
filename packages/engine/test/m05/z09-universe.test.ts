@@ -524,7 +524,8 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
   });
 
   it('Z09-34 (RT-9): an eligible pool that never gets a slot is not judged on 30-day-old facts', () => {
-    const t = setup({ config: { screeningRequired: false }, facts: () => ({ ...deep, observedAtMs: T0 }) });   // never polled again
+    // MR-01's set (no latest entry age), so the facts' age is what decides.
+    const t = setup({ config: { screeningRequired: false, ...MR }, facts: () => ({ ...deep, observedAtMs: T0 }) });   // never polled again
     t.u.onDiscovery(disc(1));
     assert.equal(t.u.candidate(pubkey(101))?.state, 'eligible');
     t.advance(30 * 86_400_000);
@@ -532,6 +533,11 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
     assert.equal(t.u.candidate(pubkey(101))?.state, 'prefiltered_out');
     assert.deepEqual(t.u.candidate(pubkey(101))?.reasons, ['facts_stale']);
     assert.equal(t.u.candidate(pubkey(101))?.retryAtMs, t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs);
+    // Under PM-01 the same pool is past every entry age first: retired from the queue (Z09-43), no retry.
+    const pm = setup({ config: { screeningRequired: false }, facts: () => ({ ...deep, observedAtMs: T0 }) });
+    pm.u.onDiscovery(disc(1));
+    pm.advance(30 * 86_400_000); pm.u.tick();
+    assert.deepEqual([pm.u.candidate(pubkey(101))?.state, pm.u.candidate(pubkey(101))?.reasons, pm.u.candidate(pubkey(101))?.retryAtMs], ['prefiltered_out', ['retired=past_entry_age'], null]);
     // No facts at all: the same, and a slot is never granted on stale facts.
     const n = setup({ config: { screeningRequired: false }, facts: () => null });
     n.u.onDiscovery(disc(2), { ...deep, observedAtMs: T0 });
@@ -551,15 +557,17 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
     t.u.tick();
     assert.deepEqual(reads, [[pubkey(101), pubkey(102)]], 'one batch, at most factsRefreshMax');
     t.u.tick();
-    assert.deepEqual(reads, [[pubkey(101), pubkey(102)], [pubkey(103)]], 'the third is asked on the next tick');
-    // Pool 1's read arrives; pool 2's does not.
+    assert.equal(reads.length, 1, 'one flush a minute (Z09-46): the third waits');
+    // Pool 1's read arrives; pool 2's does not. A minute on, the third is asked.
     freshFor.add(pubkey(101));
     t.advance(60_000);
     t.u.tick();
+    assert.deepEqual(reads, [[pubkey(101), pubkey(102)], [pubkey(103)]]);
     assert.equal(t.u.candidate(pubkey(101))?.state, 'eligible');
     assert.equal(t.u.candidate(pubkey(102))?.state, 'evicted', 'an evicted pool on stale facts stays put');
     assert.deepEqual(t.u.candidate(pubkey(102))?.reasons, ['facts_stale']);
     assert.equal(t.u.candidate(pubkey(102))?.retryAtMs, t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs);
+    t.advance(60_000); t.u.tick();
     assert.equal(reads.length, 2, 'no second read for the same retry');
     // Without the port, a stale retry simply fails.
     const q = setup({ config: { screeningRequired: false, ...MR }, facts: (p) => (p === pubkey(104) && q.at() === T0 ? deep : { ...deep, observedAtMs: T0 }) });
@@ -618,8 +626,9 @@ describe('Z09-39: the fresh-read budget is bounded per hour, and pools that cann
     const W = pubkey(99_999);
     const t = setup({ store, config: { screeningRequired: false, ...o.config },
       facts: (p) => (p === W ? deep : { ...deep, feeTotalBps: 500, observedAtMs: T0 }),     // never polled again; fails anyway
-      requestFacts: (ids) => { for (const id of ids) { times.push(t.at()); perPool.set(id, (perPool.get(id) ?? 0) + 1); } } });
+      requestFacts: (ids) => { calls.push(t.at()); for (const id of ids) { times.push(t.at()); perPool.set(id, (perPool.get(id) ?? 0) + 1); } } });
     const times: number[] = [];
+    const calls: number[] = [];
     const perPool = new Map<string, number>();
     for (let i = 0; i < o.n; i++) t.u.onDiscovery(disc(i, o.migratedAtMs));
     if (o.activePool === true) { t.u.onDiscovery({ ...disc(0), poolId: W, baseMint: pubkey(88_888) }); t.u.onWatched(W); }
@@ -628,13 +637,14 @@ describe('Z09-39: the fresh-read budget is bounded per hour, and pools that cann
       if (o.activePool === true) t.u.onStale(W, t.at() as UnixMs);                 // a stale event every step
       t.u.tick();
     }
-    return { t, store, times, perPool };
+    return { t, store, times, perPool, calls };
   }
 
   it('10,000 inactive pools over 24 h, a tick and an onStale every second: reads per hour never pass the ceiling', { timeout: 120_000 }, () => {
     const r = run({ n: 10_000, config: MR, migratedAtMs: T0 - 2 * 86_400_000, hours: 24, stepMs: 1_000, activePool: true });
     const worst = worstHour(r.times);
     assert.ok(worst <= UNIVERSE_DEFAULTS.factsRefreshPerHour, `worst-case reads in an hour: ${worst}`);
+    assert.ok(worstHour(r.calls) <= 60, `worst-case requestFacts calls in an hour: ${worstHour(r.calls)}`);   // Z09-46
     assert.equal(worst, 300, 'the ceiling is reached while the backlog lasts (worst case reported in DECISIONS)');
     assert.ok(Math.max(...r.perPool.values()) <= UNIVERSE_DEFAULTS.retireAfterFailedRetries);
     // From the first retries at 6 h to the end at 24 h: 300 in each rolling hour (5,430 with the batch on the last edge).
@@ -744,5 +754,75 @@ describe('Z09-43: a pool too young for PM-01 is retried at its minimum age, not 
     primary = true;
     t.advance(60_000); t.u.tick();
     assert.deepEqual(asked, [[pubkey(101)], [pubkey(101)]], 'asked again once the primary is back');
+  });
+});
+
+describe('Z09-45 (RT-14) and Z09-46: the read window survives restarts; at most one flush a minute', () => {
+  const MIN = 60_000;
+  /** The red team's rig: 200 pools of a set with no latest entry age, all due at once on stale facts. */
+  function rt14(store: CandidateStore, config: Partial<UniverseConfig> = {}, pools = 200) {
+    const asked: string[][] = [];
+    let now: number = T0;
+    let id = 0;
+    const mk = () => createUniverse({ config: { ...UNIVERSE_DEFAULTS, screeningRequired: false, ...MR, factsRefreshPerHour: 30, factsRefreshMax: 30, ...config }, store,
+      nowMs: () => now as UnixMs, newId: () => ulid(id++), wsolMint: MINTS.wsol,
+      facts: () => ({ ...deep, observedAtMs: T0 as UnixMs }), requestFacts: (ps) => asked.push([...ps]),
+      lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: () => {} } });
+    const u = mk();
+    for (let i = 0; i < pools; i++) u.onDiscovery({ ...disc(i), poolId: pubkey(10_000 + i), baseMint: pubkey(50_000 + i) }, { ...deep, feeTotalBps: 500, observedAtMs: T0 as UnixMs });
+    return { mk, asked, advance: (ms: number) => { now += ms; }, at: () => now };
+  }
+
+  it('the red team\'s repro: two restarts in the same hour still read at most the ceiling', () => {
+    const t = rt14(new MemStore());
+    t.advance(6 * 3_600_000 + 1);
+    let u = t.mk(); u.tick();
+    u = t.mk(); u.tick();                                                            // restart within the same hour
+    u = t.mk(); u.tick();
+    const n = t.asked.flat().length;
+    assert.ok(n > 0 && n <= 30, `${n} pools read in one hour across 2 restarts, ceiling 30`);
+  });
+
+  it('a crash loop (a restart every 10 s for an hour) does not multiply reads or calls', () => {
+    const t = rt14(new MemStore(), { factsRefreshPerHour: 300 }, 2_000);           // far more due pools than the ceiling
+    t.advance(6 * 3_600_000 + 1);
+    for (let k = 0; k < 360; k++) { t.mk().tick(); t.advance(10_000); }
+    assert.equal(t.asked.flat().length, 300, `${t.asked.flat().length} pools`);
+    assert.ok(t.asked.length <= 60, `${t.asked.length} requestFacts calls in an hour`);
+  });
+
+  it('a window that cannot be saved asks nothing; the M24 store keeps the window across a restart', async () => {
+    const store = new MemStore();
+    store.failWindow = true;
+    const t = rt14(store);
+    t.advance(6 * 3_600_000 + 1);
+    t.mk().tick();
+    assert.equal(t.asked.length, 0);
+    const path = join(tempDir('window'), 'w.db');
+    const db = openDb({ create: true, path, clock: fakeClock() });
+    assert.equal((await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` })).ok, true);
+    const m24 = m24CandidateStore(db, { newId: () => 'x', nowMs: () => T0 as UnixMs });
+    assert.deepEqual(m24.factsWindow.load(), []);
+    assert.deepEqual(m24.factsWindow.save([[T0, 30], [T0 + MIN, 5]]), { ok: true, value: undefined });
+    assert.deepEqual(m24CandidateStore(db, { newId: () => 'y', nowMs: () => T0 as UnixMs }).factsWindow.load(), [[T0, 30], [T0 + MIN, 5]]);
+    db.close();
+  });
+});
+
+describe('Z09-43 with the red team\'s RT-13 repro', () => {
+  it('a 400 SOL pool found at age 1 min is eligible at migration + 20 min and retired only at migration + 120 min', () => {
+    const t = setup({ config: { screeningRequired: false } });
+    const p = pubkey(101);
+    t.u.onDiscovery(disc(1, T0 - 60_000));
+    const at = new Map<string, number>();
+    for (let k = 1; k <= 130; k++) {
+      t.advance(60_000); t.u.tick();
+      const st = t.u.candidate(p)?.state as string;
+      if (!at.has(st)) at.set(st, k);
+    }
+    assert.equal(at.get('eligible'), 19, 'eligible at migration + 20 min');
+    const c = t.u.candidate(p) as CandidateRecord;
+    assert.deepEqual([c.state, c.reasons, c.retryAtMs], ['prefiltered_out', ['retired=past_entry_age'], null]);
+    assert.equal(c.sinceMs, T0 - 60_000 + 7_200_000, 'retired at migration + 120 min, not before');
   });
 });

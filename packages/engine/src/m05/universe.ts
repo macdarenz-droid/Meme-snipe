@@ -31,7 +31,8 @@
 // - A due retry whose facts are stale asks for a fresh read (`requestFacts`, M04 at P4 through M14, at most
 //   `factsRefreshMax` pools per tick and `factsRefreshPerHour` in any 60 minutes) and looks again after
 //   `FACTS_WAIT_MS`; no read by then is a failed retry. With the hour's reads used, the due scan runs at most once a
-//   minute and asks for nothing (Z09-39).
+//   minute and asks for nothing (Z09-39). The window is kept per minute in the store, so restarts never reset it
+//   (Z09-45), and asks are flushed at most once a minute: at most 60 `requestFacts` calls an hour (Z09-46).
 // - Retired from retries, with zero reads (Z09-39): a pool that can never pass again (no migration time, or older than
 //   the latest entry age of every limit set, or evicted and past its tail) and a pool after `retireAfterFailedRetries`
 //   failed retries. Its retry timer is cleared; only a new discovery event brings it back.
@@ -95,6 +96,8 @@ export interface CandidateStore {
   patch(prev: CandidateRecord, next: CandidateRecord): Result<void, { code: 'E_STATE_CHANGED' | 'E_WRITE' }>;
   /** `put` refuses with E_WRITE on a write failure and never throws (Z09-38). */
   blacklist: { get(mint: Pubkey): BlacklistEntry | null; put(e: BlacklistEntry): Result<void, { code: 'E_WRITE' }> };
+  /** The fresh-read window (Z09-45): pools asked per minute start over the last hour, kept across restarts. */
+  factsWindow: { load(): Array<[number, number]>; save(w: Array<[number, number]>): Result<void, { code: 'E_WRITE' }> };
 }
 /** `untilMs` null: permanent. */
 export interface BlacklistEntry { mint: Pubkey; untilMs: UnixMs | null; reason: string }
@@ -322,12 +325,16 @@ export function createUniverse(deps: UniverseDeps): Universe {
     if (next !== r) deps.log.event('info', 'm05.retry_failed', { pool: r.poolId, state: r.state, reason: reasons.join(';').slice(0, 200) });
   }
 
+  /** Older than the latest entry age of every limit set: no strategy can ever enter it (Z09-39). */
+  function pastEntryAge(r: CandidateRecord, now: number): boolean {
+    const maxAges = cfg.limits.map((l) => MAX_ENTRY_AGE_MS[l.strategyId] ?? null);
+    return r.migratedAtMs !== null && maxAges.every((m) => m !== null) && now - r.migratedAtMs >= Math.max(...(maxAges as number[]));
+  }
   /** Why a due retry can never pass again or has failed too often, or null (Z09-39). */
   function retireReason(r: CandidateRecord, now: number): string | null {
     if ((r.failedRetries ?? 0) >= cfg.retireAfterFailedRetries) return 'failed_retries';
     if (r.migratedAtMs === null) return 'age_unknown';
-    const maxAges = cfg.limits.map((l) => MAX_ENTRY_AGE_MS[l.strategyId] ?? null);
-    if (maxAges.every((m) => m !== null) && now - r.migratedAtMs >= Math.max(...(maxAges as number[]))) return 'past_entry_age';
+    if (pastEntryAge(r, now)) return 'past_entry_age';
     if (r.state === 'evicted') {
       const tail = r.reasons.map((x) => /;tail_until=(\d+)/.exec(x)?.[1]).find((x) => x !== undefined);
       if (tail === undefined || now > Number(tail)) return 'past_tail';
@@ -340,8 +347,13 @@ export function createUniverse(deps: UniverseDeps): Universe {
     const next = patch(r, { retryAtMs: null, reasons: [`retired=${why}`, ...r.reasons.filter((x) => x !== FACTS_REQUESTED)] });
     if (next !== r) deps.log.event('info', 'm05.retired', { pool: r.poolId, reason: why });
   }
-  /** Pools asked to be read again in the last hour (one entry each; at most factsRefreshPerHour held). */
-  const asked: number[] = [];
+  /**
+   * Pools asked to be read again, per minute start, over the last hour (Z09-45): loaded from the store, so a restart or
+   * a crash loop never resets it. At most one flush a minute (Z09-46), so at most 60 `requestFacts` calls an hour.
+   */
+  const MINUTE_MS = 60_000;
+  const window = new Map<number, number>();
+  for (const [m, n] of deps.store.factsWindow.load()) if (Number.isSafeInteger(m) && Number.isSafeInteger(n) && n > 0) window.set(m, n);
   let lastFullScanMs = -Infinity;
 
   /** From `discovered`, a due retry (`prefiltered_out`, `rejected`, `evicted`) or an expired blacklist: prefilter, then screen or Phase 0. */
@@ -375,6 +387,11 @@ export function createUniverse(deps: UniverseDeps): Universe {
       if (cur.state === 'watched' || cur.state === 'stale' || cur.state === 'eligible') {
         // Z09-17: the current facts decide; a pool below its set's limits leaves through the prefilter rules. Z09-34:
         // an eligible pool needs fresh facts to stay; a watched or stale one is re-checked only on fresh facts.
+        // Z09-43: an eligible pool no strategy can enter any more leaves the queue, retired (no retry, no read).
+        if (cur.state === 'eligible' && pastEntryAge(cur, now)) {
+          move(cur, cur, 'prefiltered_out', 'past_entry_age', { reasons: ['retired=past_entry_age'], retryAtMs: null });
+          return;
+        }
         const f = deps.facts(cur.poolId);
         if (cur.state === 'eligible' || fresh(f, now)) {
           const p = prefilter(cur, f);
@@ -504,15 +521,21 @@ export function createUniverse(deps: UniverseDeps): Universe {
         const cur = active.get(r.poolId);
         if (cur !== undefined) checkActive(cur, now);
       }
-      // Z09-39: the reads left in this hour; with none, the scan runs at most once a minute and asks for nothing.
-      while (asked.length > 0 && (asked[0] as number) <= now - HOUR_MS) asked.shift();
+      // Z09-39/45/46: the reads left in this hour (a minute's asks count until that whole minute is an hour old), and one
+      // flush a minute at most; with no room the scan runs at most once a minute and asks for nothing.
+      const minute = Math.floor(now / MINUTE_MS) * MINUTE_MS;
+      let used = 0;
+      for (const [m, n] of [...window]) {
+        if (m + MINUTE_MS <= now - HOUR_MS) window.delete(m);
+        else used += n;
+      }
       const paused = deps.readsAvailable !== undefined && !deps.readsAvailable();
-      const room = deps.requestFacts === undefined || paused ? 0 : Math.min(cfg.factsRefreshMax, cfg.factsRefreshPerHour - asked.length);
+      const room = deps.requestFacts === undefined || paused || window.has(minute) ? 0 : Math.min(cfg.factsRefreshMax, cfg.factsRefreshPerHour - used);
       if (deps.requestFacts !== undefined && room <= 0) {
         if (now - lastFullScanMs < FACTS_WAIT_MS) return;
         lastFullScanMs = now;
       }
-      const ask: Pubkey[] = [];
+      const ask: CandidateRecord[] = [];
       for (const r of deps.store.due(now, DUE_BATCH)) {
         if (r.retryAtMs === null || r.retryAtMs > now) continue;
         if (r.state === 'blacklisted') {
@@ -530,15 +553,27 @@ export function createUniverse(deps: UniverseDeps): Universe {
           continue;
         }
         if (!fresh(f, now) && deps.requestFacts !== undefined && r.reasons[0] !== FACTS_REQUESTED) {
-          if (ask.length >= room) { if (room > 0) break; continue; }                 // still due: a later tick asks
-          const next = patch(r, { retryAtMs: (now + FACTS_WAIT_MS) as UnixMs, reasons: [FACTS_REQUESTED, ...r.reasons] });
-          if (next !== r) { ask.push(r.poolId); asked.push(now); }
+          if (ask.length >= room) { if (room > 0) break; continue; }                 // still due: a later minute asks
+          ask.push(r);
           continue;
         }
         const back = r.reasons[0] === FACTS_REQUESTED ? { ...r, reasons: r.reasons.slice(1) } : r;
         evaluate(back, f);
       }
-      if (ask.length > 0) deps.requestFacts?.(ask);
+      if (ask.length === 0) return;
+      // The window is saved before anything is asked: a failed save asks nothing (fail closed on the budget).
+      window.set(minute, ask.length);
+      const saved = deps.store.factsWindow.save([...window]);
+      if (!saved.ok) {
+        deps.log.event('warn', 'm05.facts_window_not_saved', { error_code: saved.error.code, pools: ask.length });
+        return;
+      }
+      const ids: Pubkey[] = [];
+      for (const r of ask) {
+        const next = patch(r, { retryAtMs: (now + FACTS_WAIT_MS) as UnixMs, reasons: [FACTS_REQUESTED, ...r.reasons] });
+        if (next !== r) ids.push(r.poolId);
+      }
+      if (ids.length > 0) deps.requestFacts?.(ids);
     },
   };
   return api;

@@ -34,6 +34,16 @@ export class MemStore implements CandidateStore {
     if (r.ok) this.patches += 1;
     return r;
   }
+  window: Array<[number, number]> = [];
+  failWindow = false;
+  factsWindow = {
+    load: (): Array<[number, number]> => this.window.map((x) => [...x] as [number, number]),
+    save: (w: Array<[number, number]>): Result<void, { code: 'E_WRITE' }> => {
+      if (this.failWindow) return { ok: false, error: { code: 'E_WRITE' } };
+      this.window = w.map((x) => [...x] as [number, number]);
+      return { ok: true, value: undefined };
+    },
+  };
   blacklist = {
     get: (mint: Pubkey): BlacklistEntry | null => this.bl.get(mint) ?? null,
     put: (e: BlacklistEntry): Result<void, { code: 'E_WRITE' }> => {

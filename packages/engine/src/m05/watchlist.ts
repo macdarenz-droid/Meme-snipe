@@ -59,10 +59,12 @@ export interface WatchlistDeps {
   /** Recorded in the manifest (A-M05-03): evictions and tail endings. */
   onEviction(e: { poolId: Pubkey; atMs: UnixMs; reason: string; tailUntilMs: UnixMs | null }): void;
   /**
-   * At start: the tails of earlier evictions, from the persisted eviction records (their reason and `tail_until`); an
-   * ended one is ignored (Z09-41).
+   * At start: the persisted eviction records (evictions with their `tail_until`, and tail cuts with none), as
+   * `onEviction` wrote them. Each pool's latest record decides: a tail still running is restored with its original
+   * start; one that ended, or that a later record cut (`tail_capacity`, `tail_degraded`, `tail_restart_cut`), is not
+   * (Z09-41, Z09-50).
    */
-  restoreTails(): ReadonlyArray<{ poolId: Pubkey; reason: string; tailUntilMs: UnixMs }>;
+  restoreTails(): ReadonlyArray<{ poolId: Pubkey; atMs: UnixMs; reason: string; tailUntilMs: UnixMs | null }>;
   log: { event(level: 'info' | 'warn', code: string, fields: Readonly<Record<string, unknown>>): void };
 }
 
@@ -142,15 +144,21 @@ export function createWatchlist(deps: WatchlistDeps): Watchlist {
     return 'left_slot';
   }
 
-  // Z09-41: restore the tails still running, newest end first while the cap allows; the rest are cut on the record.
+  // Z09-41/50: each pool's latest record decides; the running tails are restored with their original start, the
+  // newest started first while the cap allows (the cap ends the oldest first, as startTail does); the rest are cut.
   {
     const now = deps.nowMs();
-    const due = deps.restoreTails().filter((t) => t.tailUntilMs > now).sort((a, b) => b.tailUntilMs - a.tailUntilMs || (a.poolId < b.poolId ? -1 : 1));
+    const latest = new Map<Pubkey, { atMs: number; reason: string; tailUntilMs: number | null }>();
+    for (const e of deps.restoreTails()) {
+      const cur = latest.get(e.poolId);
+      if (cur === undefined || e.atMs >= cur.atMs) latest.set(e.poolId, e);
+    }
+    const due = [...latest].filter(([, e]) => e.tailUntilMs !== null && e.tailUntilMs > now)
+      .sort((a, b) => b[1].atMs - a[1].atMs || (a[0] < b[0] ? -1 : 1));
     const cut = (poolId: Pubkey): void => deps.onEviction({ poolId, atMs: now, reason: 'tail_restart_cut', tailUntilMs: null });
-    for (const t of due) {
-      if (tail.has(t.poolId)) continue;
-      if (tail.size >= cfg.tailMaxPools || deps.mode() === 'degraded_reads' || deps.tracker.watch(t.poolId, 'tail') === false) { cut(t.poolId); continue; }
-      tail.set(t.poolId, { untilMs: t.tailUntilMs, reason: t.reason, startedMs: now });
+    for (const [poolId, e] of due) {
+      if (tail.size >= cfg.tailMaxPools || deps.mode() === 'degraded_reads' || deps.tracker.watch(poolId, 'tail') === false) { cut(poolId); continue; }
+      tail.set(poolId, { untilMs: e.tailUntilMs as UnixMs, reason: e.reason, startedMs: e.atMs });
     }
   }
 

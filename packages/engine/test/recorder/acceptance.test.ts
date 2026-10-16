@@ -2,12 +2,13 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import { canonicalJson, type UnixMs } from '@bot/types';
-import { RecorderQueue, SnapshotDecoder, PROTECTED_STREAMS, STREAM_NAMES, type EncodedSnapshot, type StreamName } from '../../src/index.ts';
+import { SnapshotDecoder, PROTECTED_STREAMS, STREAM_NAMES, type EncodedSnapshot, type StreamName } from '../../src/index.ts';
 import { SEG, T0, payloadOf, rec, snap } from './helpers.ts';
+import { startedQueue } from './helpers.ts';
 
 describe('A-M07-01 acceptance', () => {
   it('3,600 polls in an hour with 40 state changes write 40 snapshot records (1 keyframe + 39 deltas) and 240 poll_counts (one per 15-second bar, ruling Z09-32)', () => {
-    const q = new RecorderQueue();
+    const q = startedQueue();
     // One poll a second; the state changes every 90 polls, so 40 distinct states (the first poll is the first state).
     // The writer ticks once a second, as A-M07-02's loop does.
     for (let i = 0; i < 3_600; i++) {
@@ -49,7 +50,7 @@ describe('A-M07-01 acceptance', () => {
   });
 
   it('a full queue with mixed streams never drops order_event or fill, and every dropped stream has a backpressure gap', () => {
-    const q = new RecorderQueue({ config: { queueMax: 1_000 } });
+    const q = startedQueue({ config: { queueMax: 1_000 } });
     const appended = new Map<StreamName, number>();
     const written = new Map<StreamName, number>();
     const droppable = STREAM_NAMES.filter((s) => !PROTECTED_STREAMS.has(s));

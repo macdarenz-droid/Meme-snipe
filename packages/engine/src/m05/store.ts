@@ -15,6 +15,8 @@ import { ACTIVE, type BlacklistEntry, type CandidateRecord, type CandidateStore,
 export const CANDIDATE_TOPIC = 'universe.candidate_state';
 const repos = createRepos();
 const INACTIVE_WITH_TIMER = ['prefiltered_out', 'rejected', 'blacklisted', 'evicted'] as const;
+/** kv_state key of the fresh-read window (Z09-45): `[[minuteStartMs, pools], ...]` over the last hour. */
+const FACTS_WINDOW_KEY = 'm05.facts_window';
 
 interface Extra { r: string[]; m: number | null; d: string; s: number; t: number | null; f?: number }
 const extraOf = (rec: CandidateRecord): Extra => ({ r: rec.reasons, m: rec.migratedAtMs, d: rec.depthLamports.toString(), s: rec.sinceMs, t: rec.retryAtMs, ...(rec.failedRetries ? { f: rec.failedRetries } : {}) });
@@ -82,6 +84,26 @@ export function m24CandidateStore(db: Db, o: { newId(): string; nowMs(): UnixMs 
           { reasons: JSON.stringify(extraOf(next)), cooldownUntil: timerOf(next), updatedAt: o.nowMs() });
         return u.ok ? { ok: true as const, value: undefined } : u;
       }));
+    },
+    factsWindow: {
+      load(): Array<[number, number]> {
+        const row = repos.kv_state.get(db.reader(), { key: FACTS_WINDOW_KEY });
+        if (row === null) return [];
+        try {
+          const v = (typeof row.valueJson === 'string' ? JSON.parse(row.valueJson) : row.valueJson) as unknown;
+          return Array.isArray(v) ? v.filter((x): x is [number, number] => Array.isArray(x) && x.length === 2 && typeof x[0] === 'number' && typeof x[1] === 'number') : [];
+        } catch {
+          return [];
+        }
+      },
+      save(w: Array<[number, number]>) {
+        const r = write(() => db.withTx((tx) => {
+          const now = o.nowMs();
+          repos.kv_state.upsert(tx, { key: FACTS_WINDOW_KEY, valueJson: JSON.stringify(w), createdAt: now, updatedAt: now });
+          return { ok: true as const, value: undefined };
+        }));
+        return r.ok ? r : { ok: false as const, error: { code: 'E_WRITE' as const } };
+      },
     },
     blacklist: {
       get(mint: Pubkey): BlacklistEntry | null {

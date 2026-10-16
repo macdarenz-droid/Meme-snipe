@@ -16,8 +16,8 @@ import { ed25519Key, receiptText, signReceipt, verifyReceipt } from '../../src/m
 import { receiptFileName } from '../../src/m07/receipts.ts';
 import { SegmentWriter } from '../../src/m07/segments.ts';
 import { POLL_INTERVAL_MS, WatchLog } from '../../src/m07/watch-log.ts';
-import { RecorderQueue } from '../../src/recorder/queue.ts';
 import { tempDir } from '../helpers.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const DAY = '2026-10-15';
 const D0 = dayStartOf(DAY);
@@ -193,7 +193,7 @@ function mdDir(hours: string[]): { dir: string; receipts: string; paths: string[
   for (const h of hours) {
     const now = { t: Date.parse(`${h}:00:00Z`) + 1_000 };
     const rec = SegmentWriter.recover({ dataDir: dir, nowMs: ms(now.t), log: () => undefined });
-    const q = new RecorderQueue({ firstSeq: rec.nextSeq });
+    const q = startedQueue({ firstSeq: rec.nextSeq });
     const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => ms(now.t), log: () => undefined }, { ...rec, lastRecordMs: null });
     q.append({ stream: 'decision', recvMs: ms(now.t), slot: null, commitment: null, source: 't', payload: { pad: 'x'.repeat(1_000) } });
     w.pump();
@@ -370,7 +370,7 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     const wl = new WatchLog(dir, () => undefined);
     wl.watch('A', 'candidate', ms(D0));
     const rec = SegmentWriter.recover({ dataDir: dir, nowMs: ms(now.t), log: () => undefined });
-    const q = new RecorderQueue({ firstSeq: rec.nextSeq });
+    const q = startedQueue({ firstSeq: rec.nextSeq });
     const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => ms(now.t), log: () => undefined }, rec);
     const pc = (p: PollCountRecord, at: number): void => {
       q.append({ stream: 'poll_counts', recvMs: ms(at), slot: null, commitment: null, source: 'm07', payload: p });
