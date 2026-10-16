@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 7:35 AM: Z10 reviewer PASS at `484d3bcf`** (contains base `466279ff`), apart from Z10-38/46.
+  - Each new test was checked by mutation. The watchdog test kept its strength. B1-B3, M1 and m1-m5 are fixed.
+  - Label `deps-reviewed:168c7fa377be4c419bdb0b470931b68d` **added by the supervisor** after reading every guarded diff against `466279ff`:
+    - deploy.yml: the RPC_SHYFT_URL/RPC_CHAINSTACK_URL env lines;
+    - ops-e2e.yml: the E2E paths plus the recorder-soak job (contents: read, pinned actions, no secrets);
+    - DEPENDENCIES.md: the @solana/kit note (no runtime import since Z10);
+    - eslint.config.mjs: the recorder-main/clock.ts clock module.
+    The hash is unchanged since `691d4411`. Re-add it after any push that changes a guarded file.
+  - Merge waits on: Z10-38 (soak slope ≤ 0.25 MiB/h on the pushed head), Z10-46 (the CI soak at 60 pools, or the manual run pinned in the PR), the red team on the Z10-38 delta, and CI green on the final head.
 - **17 Oct 7:25 AM: Z10 head `94b6238d`** (Z10-52/53 plus prepared-once ledger statements). Red team PASS.
   - Keyset paging is correct: a 3,000-table fuzz, and the tie-break mutation is caught.
   - Z10-55 (MINOR, test only): assert each row is streamed exactly once, because a `rowid >= ?` mutation still passes.
