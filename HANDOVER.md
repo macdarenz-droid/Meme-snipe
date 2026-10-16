@@ -138,6 +138,22 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 12:12 AM: Z10 PR #333 open** at `691d4411` (ls-remote), base `58d703d9`.
+  - Builder's results:
+    - Ops e2e: all passed. Three cgroup-v2 checks were removed locally and run in CI.
+    - Compressed 48 h soak: pass. Heap 17.8→17.0 MiB; RSS peak 278 MiB; pool_stale lines 113,242→2,191; 24.3 min of wall time.
+    - Ops tests 293/293. Engine tests pass except the Node 22.23.3 pin test (env-only; it fails on the base there too).
+  - Rulings:
+    - **Z10-19 BLOCKER:** the watched class's stale check moved 12→16 slots, which breaks Z10-17 and SPEC-A:905 (M21 rejects stale_pool). Fix: watched stays at stale_lag_slots, with a lag-13 test.
+    - **Z10-20:** F5's 1 MiB record cap is accepted (no row plus one critical alert; loud over the cap).
+    - **Z10-21:** F6's node_modules allow-list must be exactly the 4 @bot links inside the release. The label is added after the diff is read.
+    - **Z10-22:** F8's 027 umask is accepted, subject to review.
+    - **Z10-23:** switch-on items, not merge blockers:
+      - no PullReceipt producer (md-pull on the operator machine);
+      - SSH to the pull account is off;
+      - no M07 uploader;
+      - days-to-cap (~51–83) unverified until measured on the server.
+  - Reviewer `session_01HqjCa4Q8uReLqKxJEncrzv` and red team `session_01FVM2Z1ZXbi9B7QwZpAgh1k` (both Opus, Auto, fresh) started on `691d4411`; they also check the Z10-19 delta.
 - **17 Oct 12:08 AM: #332 OF-HOLD open** at `238c27b9` (ls-remote), base `58d703d9`. The diff is `ARCHIVE_ARM=""` plus test-ci: the repository-values case expects unarmed, and the OF-ARM armed case is replaced by an OF-HOLD refusal case. test-ci 290/0 (builder). Reviewer `session_01RChWiiJc1Gz9XYnCmdC1wm`; red team `session_01NfTxamumMJKcCQpxzD3d41` (Sonnet, read-only). Both are asked for a verdict before 16:30Z, and the merge must happen before 17:41Z.
   - Builder's exit-2 audit: the scanner's and scan-day.sh's own exit-2 paths all come before any unit read. A Go panic also exits 2, and scan-day.sh:293 passes it through, so the pins carry the proof.
   - OF-FR-12: the fix PR restores the OF-ARM case at re-arm, keeps check 3 as a cross-check, and merges the base after #332.
