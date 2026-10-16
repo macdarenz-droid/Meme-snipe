@@ -12,7 +12,8 @@ import { MINTS } from '@bot/venue/constants';
 import { buildUniverseManifest } from '../../src/m05/manifest.ts';
 import { PRIOR_2026_10 } from '../../src/m10/params.ts';
 import { parsePhase0Args, runPhase0Report } from '../../src/m13/phase0-cli.ts';
-import { readPhase0Dataset, recordedPricing } from '../../src/m13/phase0-input.ts';
+import { pollsIn, readPhase0Dataset, recordedPricing } from '../../src/m13/phase0-input.ts';
+import { venueRecordedPricing } from '../../src/m13/venue-pricing.ts';
 import { tempDir } from '../helpers.ts';
 import { flatFees } from '../m10/pricing.ts';
 
@@ -58,6 +59,9 @@ function dataset(): { dir: string; days: string[] } {
         { recvMs: t0 + 12_000, payload: { kind: 'keyframe', poolId: 'pool-9', rawHash: 'y', priorityClass: 'candidate', fields: fields(1n, 0n) } },   // not eligible
         { recvMs: t0 + 13_000, payload: { kind: 'keyframe', poolId: 'pool-1', rawHash: 'z', priorityClass: 'candidate', fields: { ...fields(5_000n, 0n), feeTotalBps: 10_000 } } }, // fee unknown
       ]),
+      segment(dir, day, '00', 'poll_counts', [{ recvMs: t0 + 60_050, payload: { poolId: 'pool-1', minuteStartMs: t0, successfulPolls: 60, changedPolls: 3, failedPolls: 0, priorityClass: 'candidate' } },
+        { recvMs: t0 + 60_050, payload: { poolId: 'pool-9', minuteStartMs: t0, successfulPolls: 60, changedPolls: 1, failedPolls: 0, priorityClass: 'candidate' } },
+        { recvMs: t0 + 600_050, payload: { poolId: 'pool-1', minuteStartMs: t0 + 60_000, successfulPolls: 300, skippedMinutes: 5, changedPolls: 0, failedPolls: 0, priorityClass: 'candidate' } }]),
       segment(dir, day, '00', 'universe_manifest', [{ recvMs: t0 + 86_400_000, payload: k === 3 ? { ...manifest, sha256: '0'.repeat(64) } : manifest }]),
       segment(dir, day, '00', 'coverage', [{ recvMs: t0 + 86_400_000, payload: { dayUtc: day, streams: [], universeManifestSha256: manifest.sha256, lowCoverage: k === 5 } }]),
       segment(dir, day, '00', 'ref_price', [{ recvMs: t0, payload: { kind: 'unavailable', pair: 'SOL/USD', pool: 'p', reason: 'x' } }, { recvMs: t0 + 1, payload: { kind: 'price', pair: 'SOL/USD', pool: 'p', usdE6PerSol: '150000000', sqrtPriceX64: '1', solVaultLamports: '1', usdcVaultE6: '1' } }]),
@@ -135,12 +139,8 @@ describe('phase0-report operator script, end to end (SYNTHETIC dataset; ruling Z
     const [a, b] = outs.map(read) as [Map<string, string>, Map<string, string>];
     assert.deepEqual([...a.keys()], ['a48-2026-10-22.csv', 'hurdle-2026-10-22.csv', 'report-2026-10-22.md']);
     assert.deepEqual(a, b);
-    // The script's flat fee schedule is the recorded per-side total in one component (lp); bind the runner the same way.
-    const flat = (total: number) => {
-      const fees = { lpBps: total, protocolBps: 0, creatorBps: 0 };
-      return { curve: null, pumpswap: { account: 'recorded', asOfSlot: 0n, configHash: 'recorded-fee-total', tiers: [{ thresholdLamports: 0n, fees }], flat: fees, exoticFlat: fees }, creatorFeeConfigurable: false };
-    };
-    const same = recordedPricing({ quote: (p, side, amt, fees) => quoteExactIn(p as never, side, amt, fees as never), feesForTotal: flat, wsolMint: MINTS.wsol });
+    // The script binds the venue through the typed adapter; bind the in-process runner the same way.
+    const same = venueRecordedPricing();
     const files = new Map<string, string>();
     const args = parsePhase0Args(['--data', dir, '--days', days.join(','), '--out', 'o']);
     assert.ok(typeof args !== 'string');
@@ -149,5 +149,19 @@ describe('phase0-report operator script, end to end (SYNTHETIC dataset; ruling Z
     assert.ok((a.get('hurdle-2026-10-22.csv') as string).split('\n').length > 2);
     // Bad arguments exit 2.
     assert.throws(() => execFileSync(process.execPath, ['--no-warnings', script, '--days', 'x'], { stdio: 'pipe' }), (e: unknown) => (e as { status: number }).status === 2);
+  });
+});
+
+describe('Z09-25: eligible time from the intervals, weights from actual polls', () => {
+  it('pollsIn counts the polls inside the intervals only (gaps excluded), prorated by minute; the tail polls at 0.1 Hz', () => {
+    const T = Date.UTC(2026, 9, 22);
+    const watched = new Map([[T, 60], [T + 60_000, 60], [T + 120_000, 60]]);
+    assert.equal(pollsIn(watched, [[T, T + 179_999]], T, T + 180_000), 180);
+    assert.equal(pollsIn(watched, [[T, T + 59_999], [T + 120_000, T + 179_999]], T, T + 180_000), 120);   // a 1-minute gap left out
+    assert.equal(pollsIn(watched, [[T, T + 179_999]], T + 30_000, T + 90_000), 60);                        // half of two minutes
+    const tail = new Map([[T, 6], [T + 60_000, 6]]);
+    assert.equal(pollsIn(tail, [[T, T + 119_999]], T, T + 120_000), 12);
+    assert.equal(pollsIn(undefined, [[T, T + 1]], T, T + 2), 0);
+    assert.equal(pollsIn(watched, [[T + 600_000, T + 700_000]], T, T + 180_000), 0);                       // outside every interval
   });
 });

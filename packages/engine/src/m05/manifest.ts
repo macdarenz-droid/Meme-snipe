@@ -5,8 +5,9 @@
 // so a day missed while the engine was down is rebuilt from the database on restart with `late: true`.
 //
 // Eligible means any state from `eligible` on (eligible, watched, stale, signalled, in_position, cooldown), plus a pool
-// evicted for the watch budget, staleness or degraded reads (it still passed the prefilter and is "eligible again
-// later", ARCH 7.5); a pool evicted because its re-screen failed is not (DECISIONS Z09-U5). In Phase 0 eligibility is prefilter-only (`phase0_unscreened`),
+// evicted for the watch budget, staleness or degraded reads, but only until its eviction tail ends (the end is carried in
+// the eviction's own reason, `;tail_until=<ms>`, or cut by a later tail_capacity / tail_degraded record of that pool) or
+// it is re-prefiltered (ruling Z09-18); an eviction with no tail, or after a failed re-screen, ends it at once. In Phase 0 eligibility is prefilter-only (`phase0_unscreened`),
 // so `a24.eligibleCount` is an UPPER BOUND and says so (`a24.upperBound`). `canonicalityUnknownCount` is 0 by
 // construction while every candidate comes from an on-chain-verified canonical pool (A-M03-02).
 //
@@ -28,7 +29,8 @@ export interface ManifestCrossCheck {
 export interface UniverseManifestFile {
   manifestVersion: 1; dayUtc: string; generatedAtMs: UnixMs; late: boolean;
   enumerationCoverage: 'full' | 'migrations_since_start' | 'none';
-  eligible: Array<{ poolId: Pubkey; mint: Pubkey; venue: string; firstEligibleAtMs: UnixMs; lastEligibleAtMs: UnixMs; reason: string }>;
+  /** `intervals`: NEW (Z09-25), the pool's eligible intervals of the day [from, to], gaps excluded. */
+  eligible: Array<{ poolId: Pubkey; mint: Pubkey; venue: string; firstEligibleAtMs: UnixMs; lastEligibleAtMs: UnixMs; reason: string; intervals: Array<[UnixMs, UnixMs]> }>;
   evicted: Array<{ poolId: Pubkey; atMs: UnixMs; reason: string; tailUntilMs: UnixMs | null }>;
   a24: { eligibleCount: number; canonicalityUnknownCount: number; maxSimultaneous: number; upperBound: boolean };
   crossCheck: ManifestCrossCheck;
@@ -70,54 +72,87 @@ export function manifestSha256(m: Omit<UniverseManifestFile, 'sha256'>): string 
   return createHash('sha256').update(canonicalJson(m), 'utf8').digest('hex');
 }
 
+/** An eviction reason with its tail end (`budget;tail_until=<ms>`, Universe.onEvicted) split in two. */
+export function parseEvictionReason(r: string): { reason: string; tailUntilMs: number | null } {
+  const m = /^(.*);tail_until=(\d+)$/.exec(r);
+  return m === null ? { reason: r, tailUntilMs: null } : { reason: m[1] as string, tailUntilMs: Number(m[2]) };
+}
+/** Watchlist records that end a tail early (not transitions; joined to the pool's latest eviction before them). */
+const TAIL_CUTS: ReadonlySet<string> = new Set(['tail_capacity', 'tail_degraded']);
+
 export function buildUniverseManifest(i: ManifestInput): UniverseManifestFile {
   const { startMs, endMs } = dayBounds(i.dayUtc);
   const venueOf = i.venueOf ?? (() => 'pumpswap');
-  const state = new Map<Pubkey, { in: boolean; sinceMs: number; mint: Pubkey; reason: string }>();
-  const spans = new Map<Pubkey, { mint: Pubkey; first: number; last: number; reason: string }>();
-  const evicted: UniverseManifestFile['evicted'] = [];
-  const edges: Array<[number, number]> = [];
-  const tailOf = new Map<string, number | null>();
-  for (const e of i.watchlistEvictions ?? []) tailOf.set(`${e.poolId}@${e.atMs}`, e.tailUntilMs);
-
-  const touch = (p: Pubkey, from: number, to: number, mint: Pubkey, reason: string): void => {
-    const a = Math.max(from, startMs), b = Math.min(to, endMs);
-    if (b < a || a >= endMs || b < startMs) return;
-    const s = spans.get(p);
-    if (s === undefined) spans.set(p, { mint, first: a, last: b, reason });
-    else { s.last = Math.max(s.last, b); s.first = Math.min(s.first, a); s.reason = reason; }
-    edges.push([a, 1], [b, -1]);
-  };
   for (let k = 1; k < i.events.length; k++) {
     if ((i.events[k] as ManifestEvent).atMs < (i.events[k - 1] as ManifestEvent).atMs) throw { code: 'E_ORDER', message: 'manifest events must be in time order' };
   }
+  // Tail cuts by pool, in time order (Z09-22: joined by pool and its eviction, never by an exact millisecond).
+  const cuts = new Map<Pubkey, number[]>();
+  for (const e of i.watchlistEvictions ?? []) if (TAIL_CUTS.has(e.reason)) cuts.set(e.poolId, [...(cuts.get(e.poolId) ?? []), e.atMs].sort((a, b) => a - b));
+  /** When an eligible eviction at `atMs` stops counting: its tail end, cut by a later tail record before it, or at once. */
+  const tailEnd = (poolId: Pubkey, atMs: number, tailUntil: number | null): number => {
+    if (tailUntil === null) return atMs;
+    const cut = (cuts.get(poolId) ?? []).find((c) => c >= atMs && c < tailUntil);
+    return cut ?? tailUntil;
+  };
+  const state = new Map<Pubkey, { in: boolean; sinceMs: number; untilMs: number | null; mint: Pubkey; reason: string }>();
+  const spans = new Map<Pubkey, { mint: Pubkey; reason: string; intervals: Array<[number, number]> }>();
+  const evicted: UniverseManifestFile['evicted'] = [];
+  const edges: Array<[number, number]> = [];
+  const touch = (p: Pubkey, from: number, to: number, mint: Pubkey, reason: string): void => {
+    const a = Math.max(from, startMs), b = Math.min(to, endMs - 1);
+    if (b < a) return;
+    const s = spans.get(p);
+    if (s === undefined) spans.set(p, { mint, reason, intervals: [[a, b]] });
+    else { s.reason = reason; s.intervals.push([a, b]); }
+    edges.push([a, 1], [b, -1]);
+  };
+  /** Closes an open span at `t` (or earlier when an eviction's tail ended first). */
+  const close = (p: Pubkey, t: number): void => {
+    const cur = state.get(p);
+    if (cur?.in === true) touch(p, cur.sinceMs, cur.untilMs === null ? t : Math.min(t, cur.untilMs), cur.mint, cur.reason);
+  };
   for (const e of i.events) {
     if (e.atMs >= endMs) break;
     const cur = state.get(e.poolId);
-    const enter = ELIGIBLE.has(e.to) || (e.to === 'evicted' && !NOT_ELIGIBLE_EVICTIONS.has(e.reason));
-    if (cur?.in === true && !enter) touch(e.poolId, cur.sinceMs, e.atMs, cur.mint, cur.reason);
-    if (enter) {
-      const reason = e.to === 'eligible' ? e.reason : cur?.reason ?? e.reason;
-      state.set(e.poolId, { in: true, sinceMs: cur?.in === true ? cur.sinceMs : e.atMs, mint: e.mint, reason });
+    const ev = e.to === 'evicted' ? parseEvictionReason(e.reason) : null;
+    const eligibleEviction = ev !== null && !NOT_ELIGIBLE_EVICTIONS.has(ev.reason);
+    const enter = ELIGIBLE.has(e.to) || eligibleEviction;
+    const reason = e.to === 'eligible' ? e.reason : cur?.reason ?? e.reason;
+    // A move between eligible states keeps the open span; leaving, or a span bounded by an eviction, closes it.
+    if (enter && !eligibleEviction && cur?.in === true && cur.untilMs === null) { cur.reason = reason; continue; }
+    close(e.poolId, e.atMs);
+    if (eligibleEviction) {
+      // Z09-18: an evicted pool counts only until its tail ends (or is cut), never on and on.
+      const until = tailEnd(e.poolId, e.atMs, (ev as { tailUntilMs: number | null }).tailUntilMs);
+      state.set(e.poolId, { in: true, sinceMs: e.atMs, untilMs: until, mint: e.mint, reason });
     } else {
-      state.set(e.poolId, { in: false, sinceMs: e.atMs, mint: e.mint, reason: cur?.reason ?? e.reason });
+      state.set(e.poolId, { in: enter, sinceMs: e.atMs, untilMs: null, mint: e.mint, reason: enter ? reason : cur?.reason ?? e.reason });
     }
-    if (e.to === 'evicted' && e.atMs >= startMs) {
-      evicted.push({ poolId: e.poolId, atMs: e.atMs as UnixMs, reason: e.reason, tailUntilMs: (tailOf.get(`${e.poolId}@${e.atMs}`) ?? null) as UnixMs | null });
+    if (ev !== null && e.atMs >= startMs) {
+      evicted.push({ poolId: e.poolId, atMs: e.atMs as UnixMs, reason: ev.reason, tailUntilMs: (ev.tailUntilMs ?? null) as UnixMs | null });
     }
   }
-  // Still eligible at the day's end: the span runs to its last millisecond.
-  for (const [p, s] of state) if (s.in) touch(p, s.sinceMs, endMs - 1, s.mint, s.reason);
+  for (const p of state.keys()) close(p, endMs - 1);                                 // still eligible at the day's end
   for (const e of i.watchlistEvictions ?? []) {
-    if (e.reason === 'tail_capacity' && e.atMs >= startMs && e.atMs < endMs) evicted.push({ poolId: e.poolId, atMs: e.atMs as UnixMs, reason: e.reason, tailUntilMs: null });
+    if (TAIL_CUTS.has(e.reason) && e.atMs >= startMs && e.atMs < endMs) evicted.push({ poolId: e.poolId, atMs: e.atMs as UnixMs, reason: e.reason, tailUntilMs: null });
   }
   // Peak concurrency: ends before starts at the same instant (a hand-over is not two at once).
   edges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   let cur = 0, peak = 0;
   for (const [, d] of edges) { cur += d; if (cur > peak) peak = cur; }
-  const eligible = [...spans].map(([poolId, s]) => ({
-    poolId, mint: s.mint, venue: venueOf(poolId), firstEligibleAtMs: s.first as UnixMs, lastEligibleAtMs: s.last as UnixMs, reason: s.reason,
-  })).sort((a, b) => a.firstEligibleAtMs - b.firstEligibleAtMs || cmp(a.poolId, b.poolId));
+  const eligible = [...spans].map(([poolId, s]) => {
+    // Merge touching or overlapping intervals (an eviction span followed by a requeue at the same moment).
+    const iv: Array<[number, number]> = [];
+    for (const x of [...s.intervals].sort((a, b) => a[0] - b[0])) {
+      const last = iv[iv.length - 1];
+      if (last !== undefined && x[0] <= last[1]) last[1] = Math.max(last[1], x[1]); else iv.push([x[0], x[1]]);
+    }
+    return {
+      poolId, mint: s.mint, venue: venueOf(poolId), firstEligibleAtMs: (iv[0] as [number, number])[0] as UnixMs,
+      lastEligibleAtMs: Math.max(...iv.map((x) => x[1])) as UnixMs, reason: s.reason, intervals: iv.map(([a, b]) => [a as UnixMs, b as UnixMs] as [UnixMs, UnixMs]),
+    };
+  }).sort((a, b) => a.firstEligibleAtMs - b.firstEligibleAtMs || cmp(a.poolId, b.poolId));
   evicted.sort((a, b) => a.atMs - b.atMs || cmp(a.poolId, b.poolId) || cmp(a.reason, b.reason));
   const body: Omit<UniverseManifestFile, 'sha256'> = {
     manifestVersion: 1, dayUtc: i.dayUtc, generatedAtMs: i.generatedAtMs as UnixMs, late: i.late,

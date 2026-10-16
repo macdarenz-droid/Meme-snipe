@@ -4069,3 +4069,47 @@ Builder readings are marked as such. None changes a risk limit, a gate or a stra
 
   Builder's note: engine `src` named `@bot/venue` only in comments (its ports are structural); the runtime import is the script's.
 - **Z09-11** (the builder's MINOR). M27 metrics for the M03 backfill, M05, M08, M10 and M13 are Z10's obligation (health and metrics wiring); until then these modules log through declared codes only.
+
+### Z09 round 2 (red team on #330 at d5dbc12b: 8 MAJORs; supervisor rulings Z09-12 to Z09-27)
+
+Each ruling has a test that fails on f104023 and passes after. The universe, manifest and backfill tests run against changed ports, so on f104023 they fail when loading. For behaviour, the red team's RT-1 to RT-7 repros (PR comment 6206608979) fail on f104023. The round-2 tests include them, adapted where a ruling changed the expected result (RT-7).
+
+- **Z09-12 (RT-1)**: `backfillSince(fromSlot)` treats `fromSlot` as a hint only. A run completes, and `until` moves, only when paging reaches `until` (a short page) or on the first start's single page.
+- **Z09-13 (RT-2)**: a PumpPortal notice is verified from its chain transaction: fetched, decoded and matched by (mint, pool). Slot and block time are the chain's, so `verifiedSlot` never holds a notice's slot. A notice whose transaction holds no such migration is dropped (`notice_not_on_chain`). A chain sighting fills a missing migration time: it re-publishes once (`m03.migration_time_filled`), and the universe patches the candidate's `migratedAtMs`.
+- **Z09-14 (RT-3)**: A-M05-01 has no rejected → prefiltered_out edge. A retry that fails the prefilter stays in its state (`rejected`, `prefiltered_out`, `evicted`), its next retry is persisted (`CandidateStore.patch`, no transition), and it logs `m05.retry_failed` once per retry.
+- **Z09-15 (RT-4)**: the blacklist is the M24 `blacklist` table. An entry only lengthens: a permanent one is never shortened, and an expired one may be replaced. A blacklisted candidate's own expiry is re-persisted when its entry lengthens. Restart tests run on the memory store and on M24.
+- **Z09-16 (RT-5)**: `evicted` → `eligible` happens only through `evaluate()`, which runs at the evicted candidate's persisted retry and needs a prefilter pass. The watchlist offers slots to `eligible` pools only. `Universe.onWatched` re-checks the current facts and returns false on a fail; the watchlist then drops the pool.
+- **Z09-17 (RT-6)**: each tick re-checks watched, stale and eligible pools on their current facts (M04's latest).
+  - A watched or stale pool that fails goes to `rejected` (the ARCH re-screen edge, retried after 6 h).
+  - An eligible pool that fails goes to `prefiltered_out` (builder reading **Z09-U7**: a new edge eligible → prefiltered_out, which ARCH 7.5 does not name).
+  - The watchlist ranks on `depthOf` (M04's current depth) before the stored depth.
+- **Z09-18 (RT-6 manifest)**: an evicted pool counts as eligible only until its tail ends.
+  - The tail end is carried in the eviction transition's reason (`budget;tail_until=<ms>`), so a manifest rebuilt from M24 knows it.
+  - With no tail, eligibility ends at the eviction.
+  - Re-prefiltering ends it too.
+  - `phase0-input` reads the manifest's intervals, so the same rule holds there.
+- **Z09-19 (RT-7), DECISIONS Z09-B4: one rule for live and replay.** The bar engine has no mode.
+  - **Changes**: a snapshot equal to the carried state (price, effective depth, real vault) is unchanged and adds nothing. Live therefore sees the same changes as the change-only recording.
+  - **Close rule**: a bar closes when the clock is past start + 15 s + grace and its minute's `poll_counts` has been received (`receivedAtMs` is required, and a count is never used before it), or when the clock is 120 s past the minute's end (then it counts changes only).
+  - **Event time**: each bar carries `closedAtMs`, the moment the rule first held, independent of how often `closeDue` is called.
+  - **Parity test**: one SYNTHETIC hour, run as every poll (live) and as changed snapshots only (replay), each with the same `poll_counts` at their write times. Both produce identical `bar.closed` event lists, `closedAtMs` included; a seed with failed polls is included. No run emits before `closedAtMs` (leak rule).
+  - **Cost**: a bar closes about at its minute's end plus the `poll_counts` delay (≤ 75 s after its start at 1 Hz), not 16.5 s after its start, in every mode.
+  - **Z10 obligation**: feed the live engine the recorder queue's `poll_counts` records with their write time.
+  - **Bug found by the parity test and fixed**: a closed bar's changed count was dropped before the next bar of its minute took its spread.
+- **Z09-20**:
+  - The backfill keeps verified migrations, PumpPortal sightings and deferred pools in `BackfillStore` (M24: `discovery_cursor`, plus `kv_state` prefixes `m03.verified:`, `m03.pp_seen:` and `m03.deferred:`; pruned after 8 days).
+  - After a restart, publication is idempotent, and deferred pools survive the cursor moving past them (tested on M24).
+  - A `prefiltered_out` retry is persisted.
+- **Z09-21**: a run stopped by a missing transaction or by -32015 logs `m03.backfill_stalled` (reason `tx_not_visible` or `version_unsupported`); the cursor does not move.
+- **Z09-22**: a tail cut (`tail_capacity`, `tail_degraded`) is joined to the pool's latest eviction before it whose tail it falls inside, never by an exact millisecond. The test runs on a live clock with a transaction in between.
+- **Z09-23**: bounded memory.
+  - **Universe**: memory holds active candidates only (discovered, screening, eligible, watched, stale, signalled, in_position, cooldown). Inactive ones are read from the store when needed, and due retries come from `store.due` in batches of 1,000. The M24 store keeps each candidate's next timer in `cooldown_until`: the cooldown end, else the retry time. A tick is O(active + due). The `due` query scans by state, with no `cooldown_until` index; that index is a follow-up if the table grows.
+  - **Bars**: a pool with nothing pending and no event for 10 min is forgotten; stopped pools are kept.
+  - **Backfill**: holds no maps.
+  - Each part has a bounded-size test.
+- **Z09-24**: the hurdle row counts pools that pass the depth cap but cannot be priced, by reason (`unpriced`). The count appears in the markdown and the CSV.
+- **Z09-25**: `phase0-input` measures eligible time from the manifest's new per-pool `intervals` (gaps excluded). It reads the candidate, tail and position snapshot streams, and weights each state by the pool's actual successful polls from `poll_counts`, prorated by minute (0.1 Hz in the tail). A state no poll saw is left out.
+- **Z09-26**: `paramProblem` turns out-of-range parameters into `E_INVALID_PARAM`, never a RangeError: a probability that rounds to 1 at ppm (0.9999995), negative or NaN values, a cuLimit ≤ 0, or a negative cost.
+- **Z09-27**:
+  - The script's venue binding is the typed adapter `m13/venue-pricing.ts` (`toCpPoolState`, `flatFeeInputs`), with no `as never`.
+  - A degraded-mode tail clear writes a `tail_degraded` eviction record for each tail cut short.

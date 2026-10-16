@@ -214,3 +214,17 @@ describe('A-M10-03 branch cases', () => {
     assert.deepEqual([s.value[0]?.depthLamports, s.value[0]?.withinDepthCap], [0n, false]);
   });
 });
+
+describe('Z09-26: parameters out of range are typed errors', () => {
+  it('p = 0.9999995 rounds to 1 and is refused with E_INVALID_PARAM, never a RangeError; so are negative or NaN values and bad costs', () => {
+    const p = pricingOf(archPool(1_500n), flatFees(30));
+    const bad = (over: Partial<SimParamSet>): SimParamSet => ({ ...PRIOR_2026_10, ...over });
+    for (const set of [bad({ fFailEntry: 0.9999995 }), bad({ fFailExit: 0.9999995 }), bad({ fExp: -0.1 }), bad({ pSwEntry: Number.NaN }), bad({ pSwExit: 1 }),
+      bad({ cost: { ...PRIOR_2026_10.cost, cuLimit: 0 as Cu } }), bad({ cost: { ...PRIOR_2026_10.cost, senderTipLamports: -1n as never } })]) {
+      const r = costRows(p, 1n * SOL, set, SLIP);
+      assert.ok(!r.ok && r.error.code === 'E_INVALID_PARAM', JSON.stringify(r, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+      assert.throws(() => estimateRoundTripCostBps(p, 1n * SOL, 'lean', set), (e: unknown) => (e as { code: string }).code === 'E_INVALID_PARAM');
+    }
+    assert.ok(costRows(p, 1n * SOL, bad({ fFailEntry: 0.9999994 }), SLIP).ok);
+  });
+});

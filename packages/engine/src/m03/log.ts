@@ -16,4 +16,6 @@ export const M03_LOG_CODES = {
   'm03.tx_version_unsupported': { fields: {} },
   'm03.d12_switch_condition': { fields: { gap_bps: 'integer', chain_migrations: 'integer' } },
   'm03.backfill_error': { fields: { error_code: 'string' } },
+  'm03.backfill_stalled': { fields: { reason: 'string' } },
+  'm03.migration_time_filled': { fields: { pool: 'id', slot: 'bigint' } },
 } as const satisfies LogCodes;

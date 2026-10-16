@@ -23,7 +23,7 @@ const T0 = Date.UTC(2026, 9, 16, 1, 0, 0);
 const p = (x: number): string => renderSpot(BigInt(x) * 10n ** 21n);              // x / 1,000 SOL
 const bar = (i: number, o: number, h: number, l: number, c: number): Bar => ({
   poolId: POOL, startMs: (T0 + i * 60_000) as UnixMs, durationMs: 60_000, open: p(o), high: p(h), low: p(l), close: p(c),
-  depthLamportsClose: 1_000n as Lamports, depthChangeBps: 0, netQuoteFlowLamports: 0n as SignedLamports, snapshots: 60, missing: 0,
+  depthLamportsClose: 1_000n as Lamports, depthChangeBps: 0, netQuoteFlowLamports: 0n as SignedLamports, snapshots: 60, missing: 0, closedAtMs: 0 as UnixMs,
 });
 
 describe('A-M08-03 (SYNTHETIC bars)', () => {

@@ -60,6 +60,8 @@ export interface Phase0Input {
 
 export interface HurdleRow {
   sizeUsd: number; sizeLamports: string; poolsInSet: number; subset: boolean; medianPool: string | null;
+  /** Pools that passed the depth cap but could not be priced, by reason (ruling Z09-24: counted, never dropped silently). */
+  unpriced: Record<string, number>;
   gStarBpsLean: number | null; gStarBpsStrict: number | null; gStarBpsConservative: number | null;
   lean: SweepRowParts | null; strict: SweepRowParts | null; conservative: SweepRowParts | null;
   sensitivityBps: number;
@@ -126,10 +128,15 @@ function partsOf(rows: CostRows, size: bigint): { lean: SweepRowParts; strict: S
 function hurdleAt(sizeUsd: number, solUsd: number, medianStates: ReadonlyArray<{ poolId: string; state: PoolState }>, set: SimParamSet, slip: { entryBps: number; exitBps: number }): HurdleRow {
   const size = usdToLamports(sizeUsd, solUsd);
   const priced: Array<{ poolId: string; rows: CostRows }> = [];
+  const unpriced: Record<string, number> = {};
   for (const { poolId, state } of medianStates) {
     if (size * BPS > state.minDepthLamports * DEPTH_CAP_BPS) continue;              // depth cap: 0.5% of min(real, effective)
     const r = costRows(state.pricing, size, set, { slippage: slip });
-    if (!r.ok || isUnpriced(r.value)) continue;
+    if (!r.ok || isUnpriced(r.value)) {
+      const why = r.ok ? (r.value as { unpriced: string }).unpriced : r.error.code;
+      unpriced[why] = (unpriced[why] ?? 0) + 1;
+      continue;
+    }
     priced.push({ poolId, rows: r.value });
   }
   priced.sort((a, b) => a.rows.lean.gStarBps - b.rows.lean.gStarBps || cmp(a.poolId, b.poolId));
@@ -140,7 +147,7 @@ function hurdleAt(sizeUsd: number, solUsd: number, medianStates: ReadonlyArray<{
   };
   const parts = med === null ? null : partsOf(med.rows, size);
   return {
-    sizeUsd, sizeLamports: size.toString(), poolsInSet: priced.length, subset: priced.length < 10, medianPool: med?.poolId ?? null,
+    sizeUsd, sizeLamports: size.toString(), poolsInSet: priced.length, unpriced: Object.fromEntries(Object.entries(unpriced).sort((a, b) => cmp(a[0], b[0]))), subset: priced.length < 10, medianPool: med?.poolId ?? null,
     gStarBpsLean: med?.rows.lean.gStarBps ?? null, gStarBpsStrict: med?.rows.strict.gStarBps ?? null, gStarBpsConservative: med?.rows.conservative.gStarBps ?? null,
     lean: parts?.lean ?? null, strict: parts?.strict ?? null, conservative: parts?.conservative ?? null,
     sensitivityBps: sensitivityBps(size), fixedTermBps: { usd10: term(10), usd12: term(12), usd59: term(59) },
@@ -209,6 +216,7 @@ const sol = (l: bigint): string => {
   const frac = s.slice(-9).replace(/0+$/, '');
   return `${s.slice(0, -9)}${frac === '' ? '' : `.${frac}`}`;
 };
+const unpricedText = (u: Record<string, number>): string => (Object.keys(u).length === 0 ? '0' : Object.entries(u).map(([k, v]) => `${v} ${k}`).join(', '));
 const thousands = (v: number): string => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 /** `docs/phase0/report-<date>.md`: the report as a person reads it (no clock, so reproducible). */
@@ -219,10 +227,10 @@ export function renderPhase0Markdown(r: Phase0Report): string {
     `- Days: ${r.window.days.join(', ')}`, `- Good days: ${r.window.goodDays.length}`, `- Low coverage or missing: ${r.window.lowCoverageDays.join(', ') || 'none'}`, '');
   L.push('## Not run', '', '- A-24 and A-24b: parked', '- Move rule: parked', '- Kill-only check: not run (MR-01 parked, C-76)', '- PM-01: no Phase 0 check', '');
   L.push('## Hurdle by size', '', `SOL/USD of D1: ${n(r.hurdle.solUsd)} (${r.hurdle.solUsdSource}). Information only: decides nothing. Sizes in SOL, the dollar amount as a label; costs in bps of the trade.`, '',
-    '| Size | Pools | Median pool | Lean g* | Strict g* | Conservative g* | Lean fees | Lean impact | Lean fixed | 414,009 line | $10 at 10/day |',
-    '|---|---|---|---|---|---|---|---|---|---|---|');
+    '| Size | Pools | Unpriced | Median pool | Lean g* | Strict g* | Conservative g* | Lean fees | Lean impact | Lean fixed | 414,009 line | $10 at 10/day |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const h of r.hurdle.bySize) {
-    L.push(`| ${sol(BigInt(h.sizeLamports))} SOL ($${thousands(h.sizeUsd)})${h.subset ? ' (subset)' : ''} | ${h.poolsInSet} | ${h.medianPool ?? '-'} | ${n(h.gStarBpsLean)} | ${n(h.gStarBpsStrict)} | ${n(h.gStarBpsConservative)} | ${n(h.lean?.venueFeesBps ?? null)} | ${n(h.lean?.impactBps ?? null)} | ${n(h.lean?.fixedBps ?? null)} | ${h.sensitivityBps} | ${h.fixedTermBps.usd10['10']} |`);
+    L.push(`| ${sol(BigInt(h.sizeLamports))} SOL ($${thousands(h.sizeUsd)})${h.subset ? ' (subset)' : ''} | ${h.poolsInSet} | ${unpricedText(h.unpriced)} | ${h.medianPool ?? '-'} | ${n(h.gStarBpsLean)} | ${n(h.gStarBpsStrict)} | ${n(h.gStarBpsConservative)} | ${n(h.lean?.venueFeesBps ?? null)} | ${n(h.lean?.impactBps ?? null)} | ${n(h.lean?.fixedBps ?? null)} | ${h.sensitivityBps} | ${h.fixedTermBps.usd10['10']} |`);
   }
   L.push('', '## Disk (A-48)', '', '| Stream | Codec | Bytes a day | Ratio |', '|---|---|---|---|');
   for (const a of r.a48) L.push(`| ${a.stream} | ${a.codec} | ${a.bytesPerDayCompressed} | ${n(a.ratio)} |`);
@@ -234,11 +242,11 @@ export function renderPhase0Markdown(r: Phase0Report): string {
 
 /** The CSVs beside the report: one row per size and row, and one per stream. */
 export function renderPhase0Csv(r: Phase0Report): { hurdle: string; a48: string } {
-  const h = ['size_usd,size_lamports,pools_in_set,subset,median_pool,row,venue_fees_bps,impact_bps,fixed_bps,other_bps,g_star_bps,sensitivity_bps'];
+  const h = ['size_usd,size_lamports,pools_in_set,unpriced,subset,median_pool,row,venue_fees_bps,impact_bps,fixed_bps,other_bps,g_star_bps,sensitivity_bps'];
   for (const x of r.hurdle.bySize) {
     for (const row of ['lean', 'strict', 'conservative'] as const) {
       const p = x[row];
-      h.push([x.sizeUsd, x.sizeLamports, x.poolsInSet, x.subset, x.medianPool ?? '', row, n(p?.venueFeesBps ?? null), n(p?.impactBps ?? null), n(p?.fixedBps ?? null), n(p?.otherBps ?? null), n(p?.gStarBps ?? null), x.sensitivityBps].join(','));
+      h.push([x.sizeUsd, x.sizeLamports, x.poolsInSet, Object.values(x.unpriced).reduce((a, b) => a + b, 0), x.subset, x.medianPool ?? '', row, n(p?.venueFeesBps ?? null), n(p?.impactBps ?? null), n(p?.fixedBps ?? null), n(p?.otherBps ?? null), n(p?.gStarBps ?? null), x.sensitivityBps].join(','));
     }
   }
   const a = ['stream,codec,bytes_per_day_compressed,ratio', ...r.a48.map((x) => [x.stream, x.codec, x.bytesPerDayCompressed, n(x.ratio)].join(','))];

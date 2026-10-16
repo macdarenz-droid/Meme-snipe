@@ -23,7 +23,7 @@ function setup(o: { config?: Partial<WatchlistConfig>; maxHoldMs?: number } = {}
   const w = createWatchlist({
     config: { ...WATCHLIST_DEFAULTS, ...o.config }, nowMs: () => now as UnixMs, maxHoldMs: () => o.maxHoldMs ?? 7_200_000, mode: () => mode,
     tracker: { watch: (p, c) => { classes.set(p, c); }, unwatch: (p) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(p); classes.delete(p); } },
-    universe: { onWatched: (p) => granted.push(p), onEvicted: (p, r) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(`evicted ${p}`); evicted.push([p, r]); } },
+    universe: { onWatched: (p) => { granted.push(p); return true; }, onEvicted: (p, r) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(`evicted ${p}`); evicted.push([p, r]); } },
     onEviction: (e) => evictions.push(e), log: { event: () => {} },
   });
   return {
@@ -74,7 +74,7 @@ describe('A-M05-02 acceptance (SYNTHETIC candidates)', () => {
     assert.ok(t.evicted.every(([, r]) => r === 'degraded') && t.evicted.length === 5);
     assert.equal(t.w.postEvictionTail().length, 0);
     t.degrade(false);
-    t.w.recompute(c.map((x) => ({ ...x, state: 'evicted' as const })));
+    t.w.recompute(c.map((x) => ({ ...x, state: 'eligible' as const })));
     assert.equal(t.w.watchlist().length, 6);
   });
 });

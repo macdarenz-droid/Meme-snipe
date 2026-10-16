@@ -4,9 +4,11 @@
 // - `coverage`: the day's CoverageReport (`lowCoverage`); a day without one is not good;
 // - every stream's compressed bytes (the manifests) and decoded bytes (gzip segments read here; zstd counted unread);
 // - `ref_price`: the first SOL/USD price of the day;
-// - `pool_snapshot` (candidate class): change-only keyframes and deltas, rebuilt with the recorder's decoder; each state
-//   of a pool that the day's manifest lists as eligible, inside its eligible span, with its weight = the polls it
-//   stood for until the next change (at the 1 s candidate rate, at least 1).
+// - `pool_snapshot`, `pool_snapshot_tail` and `pool_snapshot_position`: change-only keyframes and deltas, rebuilt with
+//   the recorder's decoder. Each state of a pool the day's manifest lists as eligible is clipped to the pool's eligible
+//   INTERVALS (gaps excluded) and weighted by the pool's ACTUAL successful polls from `poll_counts` over that time,
+//   prorated by minute (ruling Z09-25: 1 Hz watched, 0.1 Hz in the tail; a state no poll saw has weight 0 and is left
+//   out). A state from before the day (a quiet pool's carry-over) is not read: each day is read on its own.
 // The pricing of a recorded state comes from the caller (`pricing`), which binds the venue maths (the engine does not
 // depend on @bot/venue). Reads files only; never a provider.
 import * as nodeFs from 'node:fs';
@@ -21,7 +23,8 @@ import type { PoolPricing } from '../m10/costs.ts';
 import type { Phase0Day, Phase0Input, PoolState, StreamDayBytes } from './phase0.ts';
 
 type ReadFs = Pick<typeof nodeFs, 'existsSync' | 'readFileSync'>;
-const CANDIDATE_POLL_MS = 1_000;
+const MINUTE_MS = 60_000;
+const SNAPSHOT_STREAMS = new Set(['pool_snapshot', 'pool_snapshot_tail', 'pool_snapshot_position']);
 
 export type RecordedPricing = (fields: Readonly<Record<string, unknown>>, pool: { poolId: string; mint: string }) => PoolPricing | null;
 
@@ -40,6 +43,24 @@ function linesOf(dataDir: string, m: SegmentManifest, fs: ReadFs): { lines: Line
   return { lines, decodedBytes: decoded };
 }
 
+/**
+ * The successful polls that saw a state held over [from, to), inside the eligible intervals (each [a, b] inclusive),
+ * from the minute counts, each minute's count taken in proportion to the overlap; rounded to the nearest poll.
+ */
+export function pollsIn(minutes: ReadonlyMap<number, number> | undefined, intervals: ReadonlyArray<readonly [number, number]>, from: number, to: number): number {
+  if (minutes === undefined) return 0;
+  let w = 0;
+  for (const [a, b] of intervals) {
+    const lo = Math.max(a, from), hi = Math.min(b + 1, to);
+    for (let m = Math.floor(lo / MINUTE_MS) * MINUTE_MS; m < hi; m += MINUTE_MS) {
+      const n = minutes.get(m);
+      if (n === undefined) continue;
+      w += (n * (Math.min(hi, m + MINUTE_MS) - Math.max(lo, m))) / MINUTE_MS;
+    }
+  }
+  return Math.round(w);
+}
+
 const isManifestFile = (v: unknown): v is UniverseManifestFile =>
   typeof v === 'object' && v !== null && (v as { manifestVersion?: unknown }).manifestVersion === 1 && typeof (v as { sha256?: unknown }).sha256 === 'string';
 
@@ -55,6 +76,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
     let manifest: UniverseManifestFile | null = null;
     let low = true;
     const snapLines: Line[] = [];
+    const polls = new Map<string, Map<number, number>>();               // pool → minute → successful polls
     const bytes = new Map<string, StreamDayBytes>();
     for (const m of manifests) {
       if (m.stream.startsWith('pool_snapshot') && m.firstRecvMs !== null) r0 = Math.min(r0, m.firstRecvMs);
@@ -71,13 +93,20 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
         } else if (m.stream === 'coverage') {
           const c = l.payload as Partial<CoverageReport>;
           if (c.dayUtc === dayUtc && typeof c.lowCoverage === 'boolean') low = c.lowCoverage;
+        } else if (m.stream === 'poll_counts') {
+          const c = l.payload as { poolId?: unknown; minuteStartMs?: unknown; successfulPolls?: unknown; skippedMinutes?: unknown };
+          if (typeof c.poolId === 'string' && Number.isSafeInteger(c.minuteStartMs) && Number.isSafeInteger(c.successfulPolls) && c.skippedMinutes === undefined) {
+            const pm = polls.get(c.poolId) ?? new Map<number, number>();
+            pm.set(c.minuteStartMs as number, (pm.get(c.minuteStartMs as number) ?? 0) + (c.successfulPolls as number));
+            polls.set(c.poolId, pm);
+          }
         } else if (m.stream === 'ref_price') {
           const p = l.payload as { kind?: string; usdE6PerSol?: string };
           if (p.kind === 'price' && typeof p.usdE6PerSol === 'string' && /^\d+$/.test(p.usdE6PerSol) && !solUsd.has(dayUtc)) solUsd.set(dayUtc, Number(p.usdE6PerSol) / 1e6);
         }
       }
       // Each segment decodes on its own (a keyframe opens every pool in a segment).
-      if (m.stream === 'pool_snapshot') snapLines.push(...read.lines.map((l) => ({ ...l, payload: { seg: m.path, e: l.payload } })));
+      if (SNAPSHOT_STREAMS.has(m.stream)) snapLines.push(...read.lines.map((l) => ({ ...l, payload: { seg: m.path, e: l.payload } })));
     }
     streams.push(...bytes.values());
     days.push({ dayUtc, lowCoverage: low, manifest });
@@ -92,7 +121,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
       let s;
       try { s = d.apply(e); } catch { continue; }
       const span = spans.get(s.poolId);
-      if (span === undefined || l.recvMs < span.firstEligibleAtMs || l.recvMs > span.lastEligibleAtMs) continue;
+      if (span === undefined || l.recvMs > span.lastEligibleAtMs) continue;
       states.push({ poolId: s.poolId, mint: span.mint, recvMs: l.recvMs, fields: s.fields });
     }
     states.sort((a, b) => (a.poolId < b.poolId ? -1 : a.poolId > b.poolId ? 1 : a.recvMs - b.recvMs));
@@ -100,13 +129,15 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
       const s = states[k] as (typeof states)[number];
       const next = states[k + 1];
       const span = spans.get(s.poolId) as UniverseManifestFile['eligible'][number];
-      const until = next !== undefined && next.poolId === s.poolId ? next.recvMs : span.lastEligibleAtMs;
+      const until = next !== undefined && next.poolId === s.poolId ? next.recvMs : span.lastEligibleAtMs + 1;
+      const weight = pollsIn(polls.get(s.poolId), span.intervals, s.recvMs, until);
+      if (weight === 0) continue;
       const real = typeof s.fields.quoteReserveReal === 'string' && /^\d+$/.test(s.fields.quoteReserveReal) ? BigInt(s.fields.quoteReserveReal) : null;
       const eff = typeof s.fields.effectiveQuoteLamports === 'string' && /^-?\d+$/.test(s.fields.effectiveQuoteLamports) ? BigInt(s.fields.effectiveQuoteLamports) : null;
       if (real === null || eff === null) continue;
       const pricing = o.pricing(s.fields, { poolId: s.poolId, mint: s.mint });
       if (pricing === null) continue;
-      poolStates.push({ poolId: s.poolId, dayUtc, minDepthLamports: real < eff ? real : eff, pricing, weight: Math.max(1, Math.round((until - s.recvMs) / CANDIDATE_POLL_MS)) });
+      poolStates.push({ poolId: s.poolId, dayUtc, minDepthLamports: real < eff ? real : eff, pricing, weight });
     }
   }
   const r0Ms = Number.isFinite(r0) ? r0 : 0;

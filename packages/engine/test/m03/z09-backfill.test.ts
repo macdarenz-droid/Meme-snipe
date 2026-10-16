@@ -10,7 +10,7 @@ import { createDecoders, decodeEventsWithGaps, readRpcTransaction, verifyPinnedI
 import type { Result, Slot, UnixMs } from '@bot/types';
 import { ACCOUNTS, MINTS, PROGRAMS } from '@bot/venue/constants';
 import { createPumpSwapPoolModel, createVenueConfigCache, type CpPoolState, type FeeInputs } from '@bot/venue';
-import { checkBackfillConfig, createMigrationBackfill, BACKFILL_DEFAULTS, DEFERRED_RUNS, PAGE_LIMIT, type BackfillDeps, type MigrationObserved, type PoolDiscovered } from '../../src/m03/backfill.ts';
+import { checkBackfillConfig, createMigrationBackfill, BACKFILL_DEFAULTS, DEFERRED_RUNS, memoryBackfillStore, PAGE_LIMIT, type BackfillDeps, type BackfillStore, type MigrationObserved, type PoolDiscovered } from '../../src/m03/backfill.ts';
 import { migrationDecoder } from '../../src/m03/decode-migrations.ts';
 import type { PumpPortalDeps } from '../../src/m03/pumpportal-client.ts';
 import type { RawAccount } from '../../src/m04/types.ts';
@@ -18,7 +18,11 @@ import type { CallOptions, RpcError } from '../../src/m14/types.ts';
 import { ScriptedReader } from '../m04/fake.ts';
 import { FakeTime } from '../m14/helpers.ts';
 import { sig } from '../m10/sig.ts';
-import { waitFor } from '../helpers.ts';
+import { fakeClock, tempDir, waitFor } from '../helpers.ts';
+import { join } from 'node:path';
+import { m24BackfillStore } from '../../src/m03/backfill-store.ts';
+import { openDb } from '../../src/m24/db.ts';
+import { prepareDatabase } from '../../src/m24/migrate.ts';
 
 const idls = verifyPinnedIdls(VENDORED_IDL_DIR);
 assert.ok(idls.ok);
@@ -77,9 +81,9 @@ class FakeGateway {
 
 interface Rig {
   b: ReturnType<typeof createMigrationBackfill<CpPoolState>>; gw: FakeGateway; reader: ScriptedReader; time: FakeTime;
-  recorded: MigrationObserved[]; migrations: MigrationObserved[]; pools: PoolDiscovered[]; logs: Array<[string, string, Record<string, unknown>]>; cursor: { v: string | null };
+  recorded: MigrationObserved[]; migrations: MigrationObserved[]; pools: PoolDiscovered[]; logs: Array<[string, string, Record<string, unknown>]>; store: ReturnType<typeof memoryBackfillStore>;
 }
-async function rig(o: { sigs?: SigRow[]; poolsVisible?: boolean; config?: Partial<BackfillDeps<CpPoolState>['config']> } = {}): Promise<Rig> {
+async function rig(o: { sigs?: SigRow[]; poolsVisible?: boolean; config?: Partial<BackfillDeps<CpPoolState>['config']>; store?: BackfillStore } = {}): Promise<Rig> {
   const fees = await feeInputs();
   const model = createPumpSwapPoolModel({ decoder: decoders, fees: () => fees });
   const reader = new ScriptedReader();
@@ -89,7 +93,7 @@ async function rig(o: { sigs?: SigRow[]; poolsVisible?: boolean; config?: Partia
   for (const m of MIG) gw.txs.set(m.signature, m.json);
   for (const s of gw.sigs) if (!gw.txs.has(s.signature)) gw.txs.set(s.signature, SWAP.json);
   const time = new FakeTime();
-  const cursor = { v: null as string | null };
+  const store = (o.store ?? memoryBackfillStore()) as ReturnType<typeof memoryBackfillStore>;
   const recorded: MigrationObserved[] = [], migrations: MigrationObserved[] = [], pools: PoolDiscovered[] = [];
   const logs: Rig['logs'] = [];
   let id = 0;
@@ -97,12 +101,12 @@ async function rig(o: { sigs?: SigRow[]; poolsVisible?: boolean; config?: Partia
     config: { ...BACKFILL_DEFAULTS, ...o.config }, gateway: gw, reader, model: model as never,
     decode: migrationDecoder({ readRpcTransaction, decodeEventsWithGaps: decodeEventsWithGaps as never }, idls.ok ? idls.value : [], MINTS.wsol),
     withdrawAuthority: ACCOUNTS.migrationWithdrawAuthority, wsolMint: MINTS.wsol,
-    cursor: { load: () => cursor.v, save: (c) => { cursor.v = c; } },
+    store,
     record: (m) => recorded.push(m), publishMigration: (m) => migrations.push(m), publishPool: (p) => pools.push(p),
     newId: () => `d${id++}`, nowMs: () => (MIG[2] as FxTx).blockTime * 1_000 + time.nowMs() as UnixMs, scheduler: time,
     log: { event: (l, c, f) => logs.push([l, c, (f ?? {}) as Record<string, unknown>]) },
   });
-  return { b, gw, reader, time, recorded, migrations, pools, logs, cursor };
+  return { b, gw, reader, time, recorded, migrations, pools, logs, store };
 }
 /** 150 signatures, newest first: 71 failed, the 3 migrations, 76 successful swaps. */
 function sample150(): SigRow[] {
@@ -134,7 +138,7 @@ describe('A-M03-02 acceptance (SYNTHETIC signature list, real migrations and poo
     // A second run publishes nothing again; the cursor is the newest signature.
     await r.b.backfillSince(null);
     assert.equal(r.migrations.length, 2);
-    assert.equal(JSON.parse(r.cursor.v as string).until, r.gw.sigs[0]?.signature);
+    assert.equal(JSON.parse(r.store.cursorValue as string).until, r.gw.sigs[0]?.signature);
     // The third migration's pool is not on file, so it waits (deferred; see the deferred test).
     assert.ok(!VERIFIABLE.has((MIG[2] as FxTx).pool));
   });
@@ -158,33 +162,33 @@ describe('A-M03-02 failures, cursor and the reconnect port', () => {
     const sigs: SigRow[] = Array.from({ length: 2_500 }, (_, i) => ({ signature: sig('P', i), slot: 454_000_000 - i, err: { Custom: 1 } }));
     sigs.splice(1_200, 0, { signature: (MIG[0] as FxTx).signature, slot: 453_967_868, err: null });
     const r = await rig({ sigs });
-    r.cursor.v = JSON.stringify({ until: sig('P', 2_499), pendingTop: null, before: null });
+    r.store.cursorValue = JSON.stringify({ until: sig('P', 2_499), pendingTop: null, before: null });
     r.gw.failPageAt = 2;
     const a = await r.b.backfillSince(null);
     assert.ok(!a.ok);
-    assert.equal(JSON.parse(r.cursor.v).until, sig('P', 2_499));
+    assert.equal(JSON.parse(r.store.cursorValue as string).until, sig('P', 2_499));
     assert.equal(r.migrations.length, 0);
     const b = await r.b.backfillSince(null);
     assert.ok(b.ok);
     assert.equal(r.migrations.length, 1);
     await r.b.backfillSince(null);
     assert.equal(r.migrations.length, 1);
-    assert.equal(JSON.parse(r.cursor.v).until, sig('P', 0));
+    assert.equal(JSON.parse(r.store.cursorValue as string).until, sig('P', 0));
   });
 
   it('the page cap stops a long catch-up and the next run continues from where it got to, skipping nothing', async () => {
     const sigs: SigRow[] = Array.from({ length: 3 * PAGE_LIMIT + 10 }, (_, i) => ({ signature: sig('C', i), slot: 454_000_000 - i, err: { Custom: 1 } }));
     sigs.splice(2_500, 0, { signature: (MIG[1] as FxTx).signature, slot: 453_967_481, err: null });
     const r = await rig({ sigs, config: { maxPagesPerRun: 1 } });
-    r.cursor.v = JSON.stringify({ until: sig('C', 3 * PAGE_LIMIT + 9), pendingTop: null, before: null });
+    r.store.cursorValue = JSON.stringify({ until: sig('C', 3 * PAGE_LIMIT + 9), pendingTop: null, before: null });
     await r.b.backfillSince(null);
-    let c = JSON.parse(r.cursor.v);
+    let c = JSON.parse(r.store.cursorValue as string);
     assert.deepEqual([c.until, c.pendingTop, c.before], [sig('C', 3 * PAGE_LIMIT + 9), sig('C', 0), sig('C', PAGE_LIMIT - 1)]);
     await r.b.backfillSince(null);
     await r.b.backfillSince(null);
     assert.equal(r.migrations.length, 1);
     await r.b.backfillSince(null);
-    c = JSON.parse(r.cursor.v);
+    c = JSON.parse(r.store.cursorValue as string);
     assert.deepEqual([c.until, c.pendingTop, c.before], [sig('C', 0), null, null]);
   });
 
@@ -193,7 +197,7 @@ describe('A-M03-02 failures, cursor and the reconnect port', () => {
     r.gw.failTx = { signature: (MIG[0] as FxTx).signature, error: { code: 'E_RPC', message: 'v', rpcCode: -32_015 } };
     assert.ok(!(await r.b.backfillSince(null)).ok);
     assert.ok(r.logs.some(([l, c]) => l === 'critical' && c === 'm03.tx_version_unsupported'));
-    assert.equal(r.cursor.v, null);
+    assert.equal(r.store.cursorValue, null);
     r.gw.failTx = { signature: (MIG[0] as FxTx).signature, error: { code: 'E_TIMEOUT', message: 't' } };
     assert.ok(!(await r.b.backfillSince(null)).ok);
     r.gw.failTx = null;
@@ -290,5 +294,95 @@ describe('Z08-2: the backfill is A-M03-01 reconnect port', () => {
     assert.equal(port.verifiedSlot(), null);
     assert.equal(port.migrationsSeenSince(0 as UnixMs), 0);
     assert.ok(((await port.backfillSince(null)) as { ok: boolean }).ok);
+  });
+});
+
+describe('Z09 round 2 (red team RT-1, RT-2; rulings Z09-12, Z09-13, Z09-20, Z09-21, Z09-23)', () => {
+  const backlog = (): SigRow[] => {
+    const sigs: SigRow[] = Array.from({ length: 3 * PAGE_LIMIT + 10 }, (_, i) => ({ signature: sig('C', i), slot: 454_000_000 - i, err: { Custom: 1 } }));
+    sigs.splice(2_500, 0, { signature: (MIG[1] as FxTx).signature, slot: 453_997_499, err: null });
+    return sigs;
+  };
+  it('RT-1 control: the same backlog with no reconnect call finds the migration', async () => {
+    const r = await rig({ sigs: backlog(), config: { maxPagesPerRun: 1 } });
+    r.store.cursorValue = JSON.stringify({ until: sig('C', 3 * PAGE_LIMIT + 9), pendingTop: null, before: null });
+    for (let i = 0; i < 6; i++) await r.b.backfillSince(null);
+    assert.equal(r.migrations.length, 1);
+  });
+
+  it('RT-1 / Z09-12: a reconnect backfillSince(fromSlot) during a page-cap catch-up is a hint only; nothing is skipped', async () => {
+    const r = await rig({ sigs: backlog(), config: { maxPagesPerRun: 1 } });
+    r.store.cursorValue = JSON.stringify({ until: sig('C', 3 * PAGE_LIMIT + 9), pendingTop: null, before: null });
+    await r.b.backfillSince(null);
+    await r.b.backfillSince(453_999_999n as Slot);
+    for (let i = 0; i < 5; i++) await r.b.backfillSince(null);
+    assert.equal(r.migrations.length, 1, `backlog migration lost; cursor=${r.store.cursorValue}`);
+  });
+
+  it('RT-2 / Z09-13: a notice-first pool takes its slot and block time from the chain; the notice slot never sets verifiedSlot', async () => {
+    const r = await rig({ sigs: [] });
+    const m = MIG[0] as FxTx;
+    r.b.onNotice({ mint: m.mint, pool: m.pool, signature: m.signature, slot: 1n as Slot });         // a wrong slot in the notice
+    await waitFor(() => r.pools.length === 1);
+    assert.deepEqual([r.pools[0]?.slot, r.pools[0]?.migratedAtMs, r.pools[0]?.source], [BigInt(m.slot), m.blockTime * 1_000, 'pumpportal']);
+    assert.equal(r.b.verifiedSlot(), BigInt(m.slot));
+    r.gw.sigs = [{ signature: m.signature, slot: m.slot, err: null }];
+    await r.b.backfillSince(null);
+    assert.notEqual(r.pools.at(-1)?.migratedAtMs ?? null, null);
+    assert.equal(r.pools.length, 1);                                                 // the chain sighting adds nothing more
+    // A notice naming a transaction that holds no such migration is dropped.
+    const r2 = await rig({ sigs: [] });
+    r2.b.onNotice({ mint: m.mint, pool: (MIG[1] as FxTx).pool, signature: m.signature, slot: null });
+    await waitFor(() => r2.logs.some(([, c, f]) => c === 'm03.migration_rejected' && f.reason === 'notice_not_on_chain'));
+    assert.equal(r2.pools.length, 0);
+  });
+
+  it('Z09-13: a chain sighting fills a migration time the first publication lacked, and re-publishes it once', async () => {
+    const r = await rig({ sigs: [] });
+    const m = MIG[0] as FxTx;
+    r.store.putVerified({ mint: m.mint, pool: m.pool, slot: BigInt(m.slot) as Slot, atMs: 1 as UnixMs, migratedAtMs: null });
+    r.gw.sigs = [{ signature: m.signature, slot: m.slot, err: null }];
+    await r.b.backfillSince(null);
+    assert.deepEqual(r.pools.map((p) => p.migratedAtMs), [m.blockTime * 1_000]);
+    assert.ok(r.logs.some(([, c]) => c === 'm03.migration_time_filled'));
+    r.store.cursorValue = null;
+    await r.b.backfillSince(null);
+    assert.equal(r.pools.length, 1);
+  });
+
+  it('Z09-20: after a restart on the same M24 database publication is idempotent and deferred pools survive the cursor moving past them', async () => {
+    const db = openDb({ create: true, path: join(tempDir('backfill'), 'b.db'), clock: fakeClock() });
+    assert.equal((await prepareDatabase(db, { clock: fakeClock(), backupPath: `${join(tempDir('backfill'), 'b.db')}.bak` })).ok, true);
+    const store = m24BackfillStore(db, () => (MIG[2] as FxTx).blockTime * 1_000 as UnixMs);
+    const a = await rig({ store, poolsVisible: false });
+    await a.b.backfillSince(null);                                                   // all 3 deferred; the cursor moves to the newest
+    assert.equal(a.migrations.length, 0);
+    assert.equal(store.deferred.list().length, 3);
+    const b = await rig({ store });                                                  // restart: a new instance, pools now visible
+    await b.b.backfillSince(null);
+    assert.equal(b.migrations.length, 2);                                            // the deferred pools were retried from the store
+    const c = await rig({ store });                                                  // restart again, the cursor reset: nothing twice
+    store.cursor.save(JSON.stringify({ until: null, pendingTop: null, before: null }));
+    await c.b.backfillSince(null);
+    assert.equal(c.migrations.length, 0);
+    assert.equal(c.b.coverage(7 * 86_400_000).chainMigrations, 2);
+    assert.equal(c.b.verifiedSlot(), BigInt((MIG[0] as FxTx).slot) > BigInt((MIG[1] as FxTx).slot) ? BigInt((MIG[0] as FxTx).slot) : BigInt((MIG[1] as FxTx).slot));
+    c.b.onNotice({ mint: (MIG[0] as FxTx).mint, pool: (MIG[0] as FxTx).pool, signature: null, slot: null });
+    assert.equal(store.seenByPumpPortal((MIG[0] as FxTx).mint, (MIG[0] as FxTx).pool), true);
+    store.prune(Number.MAX_SAFE_INTEGER);
+    assert.equal(store.verifiedSince(0).length, 0);
+    db.close();
+  });
+
+  it('Z09-21: a missing transaction or -32015 that stops the cursor logs m03.backfill_stalled', async () => {
+    const r = await rig();
+    r.gw.txs.set((MIG[0] as FxTx).signature, null);
+    await r.b.backfillSince(null);
+    assert.ok(r.logs.some(([, c, f]) => c === 'm03.backfill_stalled' && f.reason === 'tx_not_visible'));
+    r.gw.txs.set((MIG[0] as FxTx).signature, (MIG[0] as FxTx).json);
+    r.gw.failTx = { signature: (MIG[0] as FxTx).signature, error: { code: 'E_RPC', message: 'v', rpcCode: -32_015 } };
+    await r.b.backfillSince(null);
+    assert.ok(r.logs.some(([, c, f]) => c === 'm03.backfill_stalled' && f.reason === 'version_unsupported'));
+    assert.equal(r.store.cursorValue, null);
   });
 });

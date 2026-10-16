@@ -7,10 +7,22 @@
 // `phase0_unscreened`; that setting is valid only while no strategy is enabled in any mode (C-44), so it never feeds
 // a trade. Screening verdicts, signals and positions (Phase 1+) arrive through the handlers below (test doubles now).
 //
-// Builder readings (DECISIONS Z09-U1..U3; ARCH 7.5 is silent on these):
+// Builder readings (DECISIONS Z09-U1..U3, U7; ARCH 7.5 is silent on these):
 // - `stale` → `evicted`: A-M05-02 evicts stale pools first, so a stale pool can be evicted;
 // - a timed blacklist that expires re-runs the prefilter (to `prefiltered_out`, `screening` or `eligible`);
-// - a screening backlog drop (logic 13) goes to `rejected` (reason `backlog`), retried after 6 h like a soft reject.
+// - a screening backlog drop (logic 13) goes to `rejected` (reason `backlog`), retried after 6 h like a soft reject;
+// - U7: an `eligible` pool waiting for a slot whose current facts fail the prefilter goes to `prefiltered_out`.
+//
+// Round 2 (red team, rulings Z09-14..17, Z09-20, Z09-23):
+// - A retry that fails stays in its state (no edge in ARCH 7.5 leads elsewhere, e.g. rejected → prefiltered_out) with a
+//   new retry time PERSISTED (`CandidateStore.patch`, no transition) and one `m05.retry_failed` log per retry.
+// - The blacklist lives in its store (M24 `blacklist`); an entry only lengthens (a permanent one is never shortened).
+// - `evicted` returns to `eligible` only through the prefilter (a retry timer); only `eligible` pools are watched.
+// - Each tick re-checks watched, stale and eligible pools on their CURRENT facts (M04's latest snapshot): a watched or
+//   stale pool that fails goes to `rejected` (the ARCH re-screen edge, retried after 6 h), an eligible one (U7) to
+//   `prefiltered_out`; no facts means no check.
+// - Memory holds active candidates only (discovered, screening, eligible, watched, stale, signalled, in_position,
+//   cooldown); the store is the source of truth for the rest, and timers come from `store.due` (O(active + due)).
 import { createHash } from 'node:crypto';
 import { canonicalJson, type CandidateState, type Lamports, type Pubkey, type Result, type UnixMs } from '@bot/types';
 
@@ -24,7 +36,7 @@ export const ALLOWED: ReadonlyMap<CandidateState | null, ReadonlySet<CandidateSt
   ['prefiltered_out', new Set<CandidateState>(['screening', 'eligible', 'blacklisted'])],
   ['screening', new Set<CandidateState>(['rejected', 'eligible', 'blacklisted'])],
   ['rejected', new Set<CandidateState>(['screening', 'eligible', 'blacklisted'])],
-  ['eligible', new Set<CandidateState>(['watched', 'blacklisted'])],
+  ['eligible', new Set<CandidateState>(['watched', 'prefiltered_out', 'blacklisted'])],
   ['watched', new Set<CandidateState>(['signalled', 'stale', 'rejected', 'evicted', 'blacklisted'])],
   ['signalled', new Set<CandidateState>(['watched', 'in_position', 'blacklisted'])],
   ['in_position', new Set<CandidateState>(['cooldown', 'blacklisted'])],
@@ -48,10 +60,24 @@ export interface CandidateRecord {
 export interface Transition { candidateId: string; poolId: Pubkey; mint: Pubkey; from: CandidateState | null; to: CandidateState; reason: string; atMs: UnixMs }
 
 export interface CandidateStore {
-  load(): CandidateRecord[];
+  /** Active candidates (see ACTIVE), read once at start. */
+  active(): CandidateRecord[];
+  get(poolId: Pubkey): CandidateRecord | null;
+  /** Candidates of a mint in any state (blacklist propagation). */
+  byMint(mint: Pubkey): CandidateRecord[];
+  /** Inactive candidates whose retry time is due, oldest first, at most `limit`. */
+  due(nowMs: UnixMs, limit: number): CandidateRecord[];
   /** Persists `next` (insert when `prev` is null, else compare-and-set on `prev.version`) and the transition. */
   apply(prev: CandidateRecord | null, next: CandidateRecord, t: Transition): Result<void, { code: 'E_STATE_CHANGED' | 'E_WRITE' }>;
+  /** Persists a change that is not a transition (retry time, reasons, migration time), by compare-and-set. */
+  patch(prev: CandidateRecord, next: CandidateRecord): Result<void, { code: 'E_STATE_CHANGED' | 'E_WRITE' }>;
+  blacklist: { get(mint: Pubkey): BlacklistEntry | null; put(e: BlacklistEntry): void };
 }
+/** `untilMs` null: permanent. */
+export interface BlacklistEntry { mint: Pubkey; untilMs: UnixMs | null; reason: string }
+/** States held in memory; the rest live in the store only. */
+export const ACTIVE: ReadonlySet<CandidateState> = new Set<CandidateState>(['discovered', 'screening', 'eligible', 'watched', 'stale', 'signalled', 'in_position', 'cooldown']);
+export const DUE_BATCH = 1_000;
 
 /** What the prefilter reads: the venue, quote mint, per-side fee and effective depth of one snapshot. */
 export interface PrefilterFacts { venue: string; quoteMint: Pubkey; feeTotalBps: number; effectiveQuoteLamports: bigint }
@@ -122,12 +148,14 @@ export interface Universe {
   onDiscovery(e: { poolId: Pubkey; baseMint: Pubkey; quoteMint: Pubkey; venue: string; verifiedOnChain: boolean; migratedAtMs: UnixMs | null }, facts?: PrefilterFacts | null): void;
   blacklist(mint: Pubkey, reason: string, untilMs: UnixMs | null): void;
   candidate(poolId: Pubkey): CandidateRecord | null;
+  /** Active candidates (memory). */
   candidates(): CandidateRecord[];
   /** Phase 1+: M06 verdicts (soft reject, hard fail kinds, eligible). */
   onScreen(poolId: Pubkey, v: { verdict: 'eligible' } | { verdict: 'rejected' } | { verdict: 'hard_fail'; kind: 'authority' | 'extension' | 'honeypot' | 'lp' }): void;
-  /** A-M05-02 granted a slot or evicted the pool. */
-  onWatched(poolId: Pubkey): void;
-  onEvicted(poolId: Pubkey, reason: string): void;
+  /** A-M05-02 offers a slot: true when an eligible pool passing the prefilter on its current facts became watched. */
+  onWatched(poolId: Pubkey): boolean;
+  /** A-M05-02 evicted the pool; `tailUntilMs` (its eviction tail end) is kept in the transition's reason. */
+  onEvicted(poolId: Pubkey, reason: string, tailUntilMs?: UnixMs | null): void;
   onSignal(poolId: Pubkey): void;
   onRiskDecision(poolId: Pubkey, accepted: boolean): void;
   onPositionTerminal(poolId: Pubkey, kind: TerminalKind): void;
@@ -138,24 +166,27 @@ export interface Universe {
   onAuthorityChanged(mint: Pubkey): void;
   onUnknownLayout(poolId: Pubkey): void;
   onQuarantine(poolId: Pubkey): void;
-  /** Timers: prefilter retries, soft-reject retries, cooldowns, stale, blacklist expiry. */
+  /** Timers (stale, cooldown, current-facts re-check) over active pools, then the store's due retries. */
   tick(): void;
 }
 
 const SOL = 1_000_000_000n;
+/** The eviction reason carries the tail end (manifest, ruling Z09-18/22): `budget;tail_until=<ms>`. */
+export const tailReason = (reason: string, tailUntilMs: number | null | undefined): string => (tailUntilMs == null ? reason : `${reason};tail_until=${tailUntilMs}`);
 
 export function createUniverse(deps: UniverseDeps): Universe {
   const problem = checkUniverseConfig(deps.config);
   if (problem !== null) throw { code: 'E_CONFIG', message: problem };
   const cfg = deps.config;
-  const byPool = new Map<Pubkey, CandidateRecord>();
-  const blacklisted = new Map<Pubkey, { untilMs: UnixMs | null; reason: string }>();
+  const active = new Map<Pubkey, CandidateRecord>();
   const staleSince = new Map<Pubkey, number>();
-  for (const r of deps.store.load()) {
-    byPool.set(r.poolId, r);
-    // A blacklisted candidate keeps its expiry in `retryAtMs` (null: permanent), so the blacklist survives a restart.
-    if (r.state === 'blacklisted' && !blacklisted.has(r.mint)) blacklisted.set(r.mint, { untilMs: r.retryAtMs, reason: r.reasons[0] ?? 'restored' });
-  }
+  for (const r of deps.store.active()) if (ACTIVE.has(r.state)) active.set(r.poolId, r);
+
+  const get = (poolId: Pubkey): CandidateRecord | null => active.get(poolId) ?? deps.store.get(poolId);
+  const remember = (r: CandidateRecord): void => {
+    if (ACTIVE.has(r.state)) active.set(r.poolId, r);
+    else { active.delete(r.poolId); staleSince.delete(r.poolId); }
+  };
 
   /** Applies one transition; false (and nothing changes) when the edge is undefined or the store refuses it. */
   function move(r: CandidateRecord | null, base: Omit<CandidateRecord, 'state' | 'version' | 'sinceMs' | 'retryAtMs' | 'reasons'> & Partial<CandidateRecord>, to: CandidateState, reason: string, o: { retryAtMs?: UnixMs | null; reasons?: string[] } = {}): boolean {
@@ -176,16 +207,25 @@ export function createUniverse(deps: UniverseDeps): Universe {
       deps.log.event('warn', 'm05.transition_not_applied', { from: from ?? 'none', to, error_code: w.error.code });
       return false;
     }
-    byPool.set(next.poolId, next);
+    remember(next);
     deps.publish(t);
     deps.log.event(to === 'blacklisted' ? 'info' : 'debug', to === 'blacklisted' ? 'm05.blacklisted' : 'm05.transition', { pool: next.poolId, from: from ?? 'none', to, reason });
     return true;
   }
   const to = (r: CandidateRecord, state: CandidateState, reason: string, o: { retryAtMs?: UnixMs | null; reasons?: string[] } = {}): boolean => move(r, r, state, reason, o);
 
-  function isBlacklisted(mint: Pubkey): { reason: string } | null {
-    const b = blacklisted.get(mint);
-    if (b === undefined) return null;
+  /** A change that is not a transition, persisted (retry time, reasons, migration time). */
+  function patch(r: CandidateRecord, change: Partial<CandidateRecord>): CandidateRecord {
+    const next = { ...r, ...change, version: r.version + 1 };
+    const w = deps.store.patch(r, next);
+    if (!w.ok) { deps.log.event('warn', 'm05.patch_not_applied', { pool: r.poolId, error_code: w.error.code }); return r; }
+    if (ACTIVE.has(next.state)) active.set(next.poolId, next);
+    return next;
+  }
+
+  function isBlacklisted(mint: Pubkey): BlacklistEntry | null {
+    const b = deps.store.blacklist.get(mint);
+    if (b === null) return null;
     if (b.untilMs !== null && b.untilMs <= deps.nowMs()) return null;
     return b;
   }
@@ -207,137 +247,171 @@ export function createUniverse(deps: UniverseDeps): Universe {
       else if (ageMs < l.minAgeMs) why.push(`age<${l.minAgeMs}ms`);
       return { l, why };
     });
-    const ok = sets.find((s) => s.why.length === 0);
+    const ok = sets.find((x) => x.why.length === 0);
     if (fail.length === 0 && ok !== undefined) {
       return { pass: true, depth, reasons: [`set=${ok.l.strategyId};fee=${f.feeTotalBps}bps;depth=${depth / SOL}SOL;age>=${ok.l.minAgeMs}ms`] };
     }
-    return { pass: false, depth, reasons: [...fail, ...sets.flatMap((s) => s.why.map((w) => `${s.l.strategyId}:${w}`))] };
+    return { pass: false, depth, reasons: [...fail, ...sets.flatMap((x) => x.why.map((w) => `${x.l.strategyId}:${w}`))] };
   }
 
-  /** From `discovered`, `prefiltered_out`, `rejected` (retry) or an expired blacklist: prefilter, then screen or Phase 0. */
+  /** A retry that failed: it stays where it is with its next retry persisted, logged once (Z09-14, Z09-20). */
+  function retryLater(r: CandidateRecord, reasons: string[]): void {
+    const next = patch(r, { retryAtMs: (deps.nowMs() + cfg.prefilterRetryMs) as UnixMs, reasons });
+    if (next !== r) deps.log.event('info', 'm05.retry_failed', { pool: r.poolId, state: r.state, reason: reasons.join(';').slice(0, 200) });
+  }
+
+  /** From `discovered`, a due retry (`prefiltered_out`, `rejected`, `evicted`) or an expired blacklist: prefilter, then screen or Phase 0. */
   function evaluate(r: CandidateRecord, f: PrefilterFacts | null = deps.facts(r.poolId)): void {
     const p = prefilter(r, f);
     const now = deps.nowMs();
     if (!p.pass) {
-      if (r.state === 'prefiltered_out') {
-        byPool.set(r.poolId, { ...r, retryAtMs: (now + cfg.prefilterRetryMs) as UnixMs, reasons: p.reasons });   // stays (no transition)
-        return;
-      }
-      move(r, { ...r, depthLamports: p.depth }, 'prefiltered_out', 'prefilter', { reasons: p.reasons, retryAtMs: (now + cfg.prefilterRetryMs) as UnixMs });
+      // Only `discovered` and an expired blacklist have a prefilter-failure edge; every other state waits for its next retry.
+      if (r.state === 'discovered' || r.state === 'blacklisted') move(r, { ...r, depthLamports: p.depth }, 'prefiltered_out', 'prefilter', { reasons: p.reasons, retryAtMs: (now + cfg.prefilterRetryMs) as UnixMs });
+      else retryLater(r, p.reasons);
       return;
     }
+    if (r.state === 'evicted') { move(r, { ...r, depthLamports: p.depth }, 'eligible', 'requeued', { reasons: [...p.reasons, 'requeued'] }); return; }
     if (cfg.screeningRequired) {
-      if (r.state === 'screening') return;
       move(r, { ...r, depthLamports: p.depth }, 'screening', 'prefilter_pass', { reasons: p.reasons });
-      const backlog = [...byPool.values()].filter((c) => c.state === 'screening').sort((a, b) => a.sinceMs - b.sinceMs || a.firstSeenAtMs - b.firstSeenAtMs);
+      const backlog = [...active.values()].filter((c) => c.state === 'screening').sort((a, b) => a.sinceMs - b.sinceMs || a.firstSeenAtMs - b.firstSeenAtMs);
       for (const c of backlog.slice(0, Math.max(0, backlog.length - cfg.screenBacklogMax))) to(c, 'rejected', 'backlog', { retryAtMs: (now + SOFT_RETRY_MS) as UnixMs });
       return;
     }
     move(r, { ...r, depthLamports: p.depth }, 'eligible', 'phase0_unscreened', { reasons: [...p.reasons, 'phase0_unscreened'] });
   }
 
-  function blacklistOne(r: CandidateRecord, reason: string): void {
-    const b = blacklisted.get(r.mint);
-    if (r.state !== 'blacklisted') to(r, 'blacklisted', reason, { retryAtMs: b?.untilMs ?? null });
+  /** Blacklists one candidate; when it already is, a longer or permanent entry is persisted on it too (Z09-15). */
+  function blacklistOne(r: CandidateRecord, b: BlacklistEntry): void {
+    if (r.state !== 'blacklisted') { to(r, 'blacklisted', b.reason, { retryAtMs: b.untilMs }); return; }
+    if (r.retryAtMs !== null && (b.untilMs === null || b.untilMs > r.retryAtMs)) patch(r, { retryAtMs: b.untilMs, reasons: [b.reason] });
   }
 
   const api: Universe = {
     onDiscovery(e, facts) {
       if (!e.verifiedOnChain) return;                                                // logic 1: unverified discoveries are ignored
-      const existing = byPool.get(e.poolId);
-      if (existing !== undefined) {
+      const existing = get(e.poolId);
+      if (existing !== null) {
         if (existing.mint !== e.baseMint) return;
-        if (existing.state === 'prefiltered_out') evaluate(existing, facts ?? deps.facts(e.poolId));   // re-evaluated on the next discovery
+        // Z09-13: a later chain sighting supplies the migration time (the only age proof, C-15).
+        let r = existing;
+        if (e.migratedAtMs !== null && r.migratedAtMs !== e.migratedAtMs) r = patch(r, { migratedAtMs: e.migratedAtMs });
+        if (r.state === 'prefiltered_out') evaluate(r, facts ?? deps.facts(e.poolId));   // re-evaluated on the next discovery
         return;
       }
       if (deps.lists.isWrittenOff(e.baseMint) || deps.lists.isUnsolicited(e.baseMint)) {
-        deps.log.event('info', 'm05.not_a_candidate', { pool: e.poolId, reason: deps.lists.isWrittenOff(e.baseMint) ? 'written_off' : 'unsolicited' });
-        if (deps.lists.isWrittenOff(e.baseMint)) blacklisted.set(e.baseMint, { untilMs: null, reason: 'written_off' });
+        const off = deps.lists.isWrittenOff(e.baseMint);
+        deps.log.event('info', 'm05.not_a_candidate', { pool: e.poolId, reason: off ? 'written_off' : 'unsolicited' });
+        if (off) api.blacklist(e.baseMint, 'written_off', null);
         return;
       }
       const now = deps.nowMs();
       const base = { candidateId: deps.newId(), mint: e.baseMint, poolId: e.poolId, venue: e.venue, firstSeenAtMs: now, cooldownUntilMs: null,
         migratedAtMs: e.migratedAtMs, depthLamports: 0n as Lamports };
       if (!move(null, base, 'discovered', 'discovery')) return;
-      const r = byPool.get(e.poolId) as CandidateRecord;
+      const r = get(e.poolId) as CandidateRecord;
       const b = isBlacklisted(e.baseMint);
-      if (b !== null) { blacklistOne(r, b.reason); return; }
+      if (b !== null) { blacklistOne(r, b); return; }
       evaluate(r, facts ?? deps.facts(e.poolId));
     },
     blacklist(mint, reason, untilMs) {
-      blacklisted.set(mint, { untilMs, reason });
-      for (const r of [...byPool.values()]) if (r.mint === mint) blacklistOne(r, reason);
+      const cur = deps.store.blacklist.get(mint);
+      // An entry only lengthens: permanent stays permanent, and a shorter expiry never replaces a longer one.
+      const longer = cur === null || cur.untilMs !== null && (untilMs === null || untilMs > cur.untilMs) || (cur.untilMs !== null && cur.untilMs <= deps.nowMs());
+      const entry: BlacklistEntry = longer ? { mint, untilMs, reason } : cur;
+      if (longer) deps.store.blacklist.put(entry);
+      for (const r of deps.store.byMint(mint)) blacklistOne(active.get(r.poolId) ?? r, entry);
     },
-    candidate: (poolId) => byPool.get(poolId) ?? null,
-    candidates: () => [...byPool.values()],
+    candidate: get,
+    candidates: () => [...active.values()],
     onScreen(poolId, v) {
-      const r = byPool.get(poolId);
-      if (r === undefined || (r.state !== 'screening' && r.state !== 'watched')) return;
+      const r = get(poolId);
+      if (r === null || (r.state !== 'screening' && r.state !== 'watched')) return;
       const now = deps.nowMs();
       if (v.verdict === 'eligible') { if (r.state === 'screening') to(r, 'eligible', 'screen=eligible'); return; }
       if (v.verdict === 'rejected') { to(r, 'rejected', 'screen_soft', { retryAtMs: (now + SOFT_RETRY_MS) as UnixMs }); return; }
       api.blacklist(r.mint, `screen_${v.kind}`, v.kind === 'honeypot' ? ((now + HONEYPOT_BLACKLIST_MS) as UnixMs) : null);
     },
     onWatched(poolId) {
-      const r = byPool.get(poolId);
-      if (r !== undefined && (r.state === 'eligible' || r.state === 'evicted')) {
-        if (r.state === 'evicted' && !to(r, 'eligible', 'requeued')) return;
-        to(byPool.get(poolId) as CandidateRecord, 'watched', 'slot');
+      const r = active.get(poolId);
+      if (r === undefined || r.state !== 'eligible') return false;
+      const f = deps.facts(poolId);
+      if (f !== null) {
+        const p = prefilter(r, f);
+        if (!p.pass) { move(r, { ...r, depthLamports: p.depth }, 'prefiltered_out', 'prefilter_recheck', { reasons: p.reasons, retryAtMs: (deps.nowMs() + cfg.prefilterRetryMs) as UnixMs }); return false; }
       }
+      return to(r, 'watched', 'slot');
     },
-    onEvicted(poolId, reason) {
-      const r = byPool.get(poolId);
-      if (r !== undefined && (r.state === 'watched' || r.state === 'stale')) to(r, 'evicted', reason);
+    onEvicted(poolId, reason, tailUntilMs) {
+      const r = active.get(poolId);
+      if (r !== undefined && (r.state === 'watched' || r.state === 'stale')) to(r, 'evicted', tailReason(reason, tailUntilMs), { retryAtMs: (deps.nowMs() + cfg.prefilterRetryMs) as UnixMs });
     },
     onSignal(poolId) {
-      const r = byPool.get(poolId);
+      const r = active.get(poolId);
       if (r?.state === 'watched') to(r, 'signalled', 'proposal');
     },
     onRiskDecision(poolId, accepted) {
-      const r = byPool.get(poolId);
+      const r = active.get(poolId);
       if (r?.state === 'signalled') to(r, accepted ? 'in_position' : 'watched', accepted ? 'risk_accept' : 'risk_reject');
     },
     onPositionTerminal(poolId, kind) {
-      const r = byPool.get(poolId);
-      if (r === undefined) { deps.log.event('warn', 'm05.unknown_candidate', { pool: poolId, event: kind }); return; }   // edge case 2
+      const r = get(poolId);
+      if (r === null) { deps.log.event('warn', 'm05.unknown_candidate', { pool: poolId, event: kind }); return; }   // edge case 2
       if (r.state !== 'in_position') return;
       if (!to(r, 'cooldown', `position_${kind}`)) return;
       if (kind === 'written_off') api.blacklist(r.mint, 'written_off', null);       // CA-15
     },
     onStale(poolId, sinceMs) {
+      if (!active.has(poolId)) return;
       if (!staleSince.has(poolId)) staleSince.set(poolId, sinceMs);
       api.tick();
     },
     onFresh(poolId) {
       staleSince.delete(poolId);
-      const r = byPool.get(poolId);
+      const r = active.get(poolId);
       if (r?.state === 'stale') to(r, 'watched', 'fresh');
     },
     onAuthorityChanged(mint) { api.blacklist(mint, 'authority_changed', null); },
     onUnknownLayout(poolId) {
-      const r = byPool.get(poolId);
-      if (r !== undefined) blacklistOne(r, 'unknown_layout');
+      const r = get(poolId);
+      if (r !== null) blacklistOne(r, { mint: r.mint, untilMs: null, reason: 'unknown_layout' });
     },
     onQuarantine(poolId) {
-      const r = byPool.get(poolId);
-      if (r !== undefined) blacklistOne(r, 'pool_quarantined');
+      const r = get(poolId);
+      if (r !== null) blacklistOne(r, { mint: r.mint, untilMs: null, reason: 'pool_quarantined' });
     },
     tick() {
       const now = deps.nowMs();
-      for (const r of [...byPool.values()]) {
-        const cur = byPool.get(r.poolId) as CandidateRecord;
-        if (cur.state === 'watched') {
+      for (const r of [...active.values()]) {
+        const cur = active.get(r.poolId);
+        if (cur === undefined) continue;
+        if (cur.state === 'watched' || cur.state === 'stale' || cur.state === 'eligible') {
+          // Z09-17: the current facts decide; a pool below its set's limits leaves through the prefilter rules.
+          const f = deps.facts(cur.poolId);
+          if (f !== null) {
+            const p = prefilter(cur, f);
+            if (!p.pass) {
+              if (cur.state === 'eligible') move(cur, { ...cur, depthLamports: p.depth }, 'prefiltered_out', 'prefilter_recheck', { reasons: p.reasons, retryAtMs: (now + cfg.prefilterRetryMs) as UnixMs });
+              else to(cur, 'rejected', 'prefilter_recheck', { reasons: p.reasons, retryAtMs: (now + SOFT_RETRY_MS) as UnixMs });
+              continue;
+            }
+            if (p.depth !== cur.depthLamports) active.set(cur.poolId, { ...cur, depthLamports: p.depth });   // ranking only, not persisted
+          }
           const s = staleSince.get(cur.poolId);
-          if (s !== undefined && now - s > cfg.staleToStateMs) to(cur, 'stale', 'stale_data');
+          if (cur.state === 'watched' && s !== undefined && now - s > cfg.staleToStateMs) to(active.get(cur.poolId) as CandidateRecord, 'stale', 'stale_data');
         } else if (cur.state === 'cooldown' && cur.cooldownUntilMs !== null && cur.cooldownUntilMs <= now) {
+          const b = isBlacklisted(cur.mint);
+          if (b !== null) { blacklistOne(cur, b); continue; }
           const p = prefilter(cur, deps.facts(cur.poolId));
-          if (isBlacklisted(cur.mint) !== null) blacklistOne(cur, (isBlacklisted(cur.mint) as { reason: string }).reason);
-          else to(cur, p.pass ? 'watched' : 'evicted', p.pass ? 'cooldown_done' : 'cooldown_rescreen_failed');
-        } else if ((cur.state === 'prefiltered_out' || cur.state === 'rejected') && cur.retryAtMs !== null && cur.retryAtMs <= now) {
-          evaluate(cur);
-        } else if (cur.state === 'blacklisted' && cur.retryAtMs !== null && cur.retryAtMs <= now && isBlacklisted(cur.mint) === null) {
-          evaluate(cur);
+          to(cur, p.pass ? 'watched' : 'evicted', p.pass ? 'cooldown_done' : 'cooldown_rescreen_failed', { retryAtMs: p.pass ? null : ((now + cfg.prefilterRetryMs) as UnixMs) });
         }
+      }
+      for (const r of deps.store.due(now, DUE_BATCH)) {
+        if (r.retryAtMs === null || r.retryAtMs > now) continue;
+        if (r.state === 'blacklisted') {
+          const b = isBlacklisted(r.mint);
+          if (b !== null) { patch(r, { retryAtMs: b.untilMs }); continue; }        // a longer entry since: wait for it
+          evaluate(r);
+        } else if (r.state === 'prefiltered_out' || r.state === 'rejected' || r.state === 'evicted') evaluate(r);
       }
     },
   };

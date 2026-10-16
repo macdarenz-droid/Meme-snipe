@@ -7,7 +7,8 @@ import { describe, it } from 'vitest';
 import { canonicalJson, type Pubkey, type UnixMs } from '@bot/types';
 import { MINTS } from '@bot/venue/constants';
 import { buildUniverseManifest, dailyCrossCheck, dayBounds, eventsFromRows, manifestSha256, writeManifestOnce, type ManifestEvent, type UniverseManifestFile } from '../../src/m05/manifest.ts';
-import { createUniverse, LIMIT_SETS, limitSetHash, UNIVERSE_DEFAULTS, type CandidateStore, type Transition } from '../../src/m05/universe.ts';
+import { MemStore } from './mem-store.ts';
+import { createUniverse, LIMIT_SETS, limitSetHash, UNIVERSE_DEFAULTS, type Transition } from '../../src/m05/universe.ts';
 import { createWatchlist, WATCHLIST_DEFAULTS } from '../../src/m05/watchlist.ts';
 import { computeCoverage } from '../../src/m07/coverage.ts';
 
@@ -24,8 +25,7 @@ const LS = { id: 'pm01', paramHash: limitSetHash(LIMIT_SETS.pm01) };
 /** 12 pools discovered at different hours (Phase 0); max_watched 8, so the deepest are watched; 3 evictions. */
 function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; atMs: number; reason: string; tailUntilMs: number | null }> } {
   let now = T0 + 30 * 60_000;
-  const log: Transition[] = [];
-  const store: CandidateStore = { load: () => [], apply: (_p, _n, t) => { log.push(t); return { ok: true, value: undefined }; } };
+  const store = new MemStore();
   let id = 0;
   const depth = new Map<string, bigint>();
   const u = createUniverse({
@@ -55,7 +55,7 @@ function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; at
   w5.recompute(u.candidates());
   now = T0 + 23 * H;
   w5.recompute(u.candidates());
-  return { events: log, tail };
+  return { events: store.log, tail };
 }
 const asEvents = (ts: readonly Transition[]): ManifestEvent[] => ts.map((t) => ({ poolId: t.poolId, mint: t.mint, from: t.from, to: t.to, reason: t.reason, atMs: t.atMs }));
 
@@ -90,7 +90,7 @@ describe('A-M05-03 rules', () => {
     const live = buildUniverseManifest({ dayUtc: DAY, events: asEvents(d.events), crossCheck: CC, migrationCoverage: MC, limitSet: LS, generatedAtMs: T0 + 90_000_000, late: true, prefilterOnly: true });
     assert.deepEqual(late, live);
     assert.equal(late.late, true);
-    assert.ok(late.evicted.every((e) => e.tailUntilMs === null));                    // tail ends are not in M24
+    assert.ok(late.evicted.every((e) => e.tailUntilMs === e.atMs + 3_600_000));      // the tail end is in the eviction record (Z09-18)
     const days = new Map<string, UniverseManifestFile>();
     const sink = { has: (x: string) => days.has(x), write: (x: UniverseManifestFile) => { days.set(x.dayUtc, x); } };
     assert.deepEqual(writeManifestOnce(sink, late), { ok: true, sha256: late.sha256 });

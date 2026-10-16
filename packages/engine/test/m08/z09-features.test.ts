@@ -13,7 +13,7 @@ const BAR = 15_000;
 const price = (x: number): string => renderSpot(BigInt(Math.round(x * 1e12)) * 10n ** 12n);
 const bar = (poolId: string, startMs: number, close: number): Bar => ({
   poolId, startMs: startMs as UnixMs, durationMs: 15_000, open: price(close), high: price(close), low: price(close), close: price(close),
-  depthLamportsClose: 0n as Lamports, depthChangeBps: 0, netQuoteFlowLamports: 0n as SignedLamports, snapshots: 15, missing: 0,
+  depthLamportsClose: 0n as Lamports, depthChangeBps: 0, netQuoteFlowLamports: 0n as SignedLamports, snapshots: 15, missing: 0, closedAtMs: 0 as UnixMs,
 });
 /** Feeds `n` bars from T0 whose 15 s log returns are `ret(i)` (i = 1..n−1). */
 function series(f: FeatureEngine, poolId: string, n: number, ret: (i: number) => number, skip: (i: number) => boolean = () => false): number {

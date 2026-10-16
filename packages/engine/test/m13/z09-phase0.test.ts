@@ -154,3 +154,16 @@ describe('A-M13-01 weighted median-depth state', () => {
     assert.deepEqual(b.hurdle.bySize.map((h) => h.poolsInSet), [1, 1, 1, 1, 0]);
   });
 });
+
+describe('Z09-24: unpriceable pools are counted in the row', () => {
+  it('E_ZERO_OUTPUT and fee unknown are counted by reason in the row, the markdown and the CSV', () => {
+    const fail = (id: string, code: string): PoolState => ({ poolId: id, dayUtc: day(0), minDepthLamports: 1_000n * SOL, pricing: { effectiveQuoteLamports: 1n, realQuoteLamports: 1n, quote: () => ({ ok: false, error: { code } }) } });
+    const r = phase0Report(input({ poolStates: [...pools(1), fail('z1', 'E_ZERO_OUTPUT'), fail('z2', 'E_FEE_UNKNOWN'), fail('z3', 'E_FEE_UNKNOWN')] }));
+    assert.deepEqual(r.hurdle.bySize[0]?.unpriced, { E_FEE_UNKNOWN: 2, E_ZERO_OUTPUT: 1 });
+    assert.equal(r.hurdle.bySize[0]?.poolsInSet, 1);
+    assert.ok(renderPhase0Markdown(r).includes('| 2 E_FEE_UNKNOWN, 1 E_ZERO_OUTPUT |'));
+    assert.ok(renderPhase0Csv(r).hurdle.split('\n')[1]?.startsWith('5,33333333,1,3,'));
+    const bad = phase0Report(input({ poolStates: pools(1), slippage: { entryBps: -1, exitBps: 0, source: 't' } }));
+    assert.deepEqual(bad.hurdle.bySize[0]?.unpriced, { E_INVALID_SLIPPAGE: 1 });
+  });
+});

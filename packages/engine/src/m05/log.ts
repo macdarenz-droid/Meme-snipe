@@ -12,4 +12,6 @@ export const M05_LOG_CODES = {
   'm05.unpin_unknown': { fields: { pool: 'id' } },
   'm05.watch_refused': { fields: { pool: 'id', class: 'string' } },
   'm05.watchlist_shrunk_degraded': { fields: { pinned: 'integer', tail: 'integer' } },
+  'm05.retry_failed': { fields: { pool: 'id', state: 'string', reason: 'string' } },
+  'm05.patch_not_applied': { fields: { pool: 'id', error_code: 'string' } },
 } as const satisfies LogCodes;

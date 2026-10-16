@@ -38,8 +38,10 @@ export interface WatchlistDeps {
   /** M04. */
   /** M04: `watch` re-classes a pool already watched in place (no unwatch); false when its class cap refuses it. */
   tracker: { watch(poolId: Pubkey, cls: 'position' | 'candidate' | 'tail'): boolean | void; unwatch(poolId: Pubkey): void };
-  /** M05 state machine: a slot granted or an eviction. */
-  universe: { onWatched(poolId: Pubkey): void; onEvicted(poolId: Pubkey, reason: string): void };
+  /** M05 state machine: a slot offered (true when the pool became watched) or an eviction with its tail end. */
+  universe: { onWatched(poolId: Pubkey): boolean; onEvicted(poolId: Pubkey, reason: string, tailUntilMs?: UnixMs | null): void };
+  /** M04's latest effective depth of a pool (null: no snapshot); ranking uses it over the candidate's stored depth (Z09-17). */
+  depthOf?(poolId: Pubkey): bigint | null;
   /** Recorded in the manifest (A-M05-03): evictions and tail endings. */
   onEviction(e: { poolId: Pubkey; atMs: UnixMs; reason: string; tailUntilMs: UnixMs | null }): void;
   log: { event(level: 'info' | 'warn', code: string, fields: Readonly<Record<string, unknown>>): void };
@@ -57,10 +59,8 @@ export interface Watchlist {
 /** Candidate states that hold a slot (polled at candidate priority). */
 const HOLDS_SLOT = new Set(['watched', 'stale', 'signalled', 'in_position', 'cooldown']);
 const EVICTABLE = new Set(['watched', 'stale']);
-const QUEUED = new Set(['eligible', 'evicted']);
-
-const byDepthThenAge = (a: CandidateRecord, b: CandidateRecord): number =>
-  (a.depthLamports > b.depthLamports ? -1 : a.depthLamports < b.depthLamports ? 1 : 0) || a.firstSeenAtMs - b.firstSeenAtMs || (a.poolId < b.poolId ? -1 : 1);
+/** Only eligible pools are offered a slot; an evicted pool returns to eligible through the prefilter (Z09-16). */
+const QUEUED = new Set(['eligible']);
 
 export function createWatchlist(deps: WatchlistDeps): Watchlist {
   const problem = checkWatchlistConfig(deps.config);
@@ -70,6 +70,11 @@ export function createWatchlist(deps: WatchlistDeps): Watchlist {
   const watched = new Map<Pubkey, 'position' | 'candidate'>();
   const tail = new Map<Pubkey, { untilMs: UnixMs; reason: string; startedMs: number }>();
   let degraded = false;
+  const depth = (c: CandidateRecord): bigint => deps.depthOf?.(c.poolId) ?? c.depthLamports;
+  const byDepthThenAge = (a: CandidateRecord, b: CandidateRecord): number => {
+    const [x, y] = [depth(a), depth(b)];
+    return (x > y ? -1 : x < y ? 1 : 0) || a.firstSeenAtMs - b.firstSeenAtMs || (a.poolId < b.poolId ? -1 : 1);
+  };
 
   function setClass(poolId: Pubkey, cls: 'position' | 'candidate'): boolean {
     if (watched.get(poolId) === cls) return true;
@@ -102,8 +107,8 @@ export function createWatchlist(deps: WatchlistDeps): Watchlist {
   }
   function evict(c: CandidateRecord, reason: string): void {
     drop(c.poolId);
-    deps.universe.onEvicted(c.poolId, reason);
     const until = startTail(c.poolId, reason);
+    deps.universe.onEvicted(c.poolId, reason, until);
     deps.onEviction({ poolId: c.poolId, atMs: deps.nowMs(), reason, tailUntilMs: until });
     deps.log.event('info', 'm05.evicted', { pool: c.poolId, reason });
   }
@@ -128,7 +133,12 @@ export function createWatchlist(deps: WatchlistDeps): Watchlist {
         if (!degraded) deps.log.event('warn', 'm05.watchlist_shrunk_degraded', { pinned: pinned.size, tail: tail.size });
         degraded = true;
         for (const c of candidates) if (!pinned.has(c.poolId) && watched.has(c.poolId)) evict(c, 'degraded');
-        for (const id of [...tail.keys()]) { tail.delete(id); deps.tracker.unwatch(id); }   // P4 is suspended; the gap is recorded by M07
+        // P4 is suspended; the gap is recorded by M07, and each tail cut short is an eviction record (Z09-27).
+        for (const id of [...tail.keys()]) {
+          tail.delete(id);
+          deps.tracker.unwatch(id);
+          deps.onEviction({ poolId: id, atMs: now, reason: 'tail_degraded', tailUntilMs: null });
+        }
         return;
       }
       degraded = false;
@@ -150,7 +160,7 @@ export function createWatchlist(deps: WatchlistDeps): Watchlist {
       for (const c of candidates.filter((x) => free(x) && QUEUED.has(x.state)).sort(byDepthThenAge)) {
         if (used >= cfg.maxWatched) break;
         if (!setClass(c.poolId, 'candidate')) continue;
-        deps.universe.onWatched(c.poolId);
+        if (!deps.universe.onWatched(c.poolId)) { drop(c.poolId); continue; }       // refused (its current facts fail)
         used += 1;
       }
       // Pools that left every slot-holding state (blacklisted, rejected) stop being watched.

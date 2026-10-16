@@ -67,7 +67,22 @@ export interface CostRows { lean: CostBreakdown; strict: CostBreakdown; conserva
 /** A round trip that could not be priced: the reason, and the infinite cost every row then carries. */
 export interface Unpriced { unpriced: string; gStarBps: Bps }
 
-export type CostError = { code: 'E_INVALID_ARG' | 'E_INVALID_SLIPPAGE'; detail: string };
+export type CostError = { code: 'E_INVALID_ARG' | 'E_INVALID_SLIPPAGE' | 'E_INVALID_PARAM'; detail: string };
+
+/**
+ * Ruling Z09-26: a parameter the lamport maths cannot use is a typed error, never a RangeError. Each probability must
+ * be finite and in [0, 1) after rounding to parts per million (0.9999995 rounds to 1 and is refused: fFail / (1 − fFail)
+ * would divide by zero); cost amounts are bigints ≥ 0 and the compute limit a positive integer.
+ */
+export function paramProblem(set: SimParamSet): string | null {
+  for (const [k, v] of [['fFailEntry', set.fFailEntry], ['fFailExit', set.fFailExit], ['fExp', set.fExp], ['pSwEntry', set.pSwEntry], ['pSwExit', set.pSwExit]] as const) {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || Math.round(v * 1_000_000) >= 1_000_000) return `${k} must be in [0, 1) at parts-per-million precision`;
+  }
+  const c = set.cost;
+  if (!Number.isSafeInteger(c.cuLimit) || c.cuLimit <= 0) return 'cost.cuLimit must be a positive integer';
+  for (const [k, v] of Object.entries(c)) if (k !== 'cuLimit' && (typeof v !== 'bigint' || v < 0n)) return `cost.${k} must be a bigint >= 0`;
+  return null;
+}
 const bad = (code: CostError['code'], detail: string): { ok: false; error: CostError } => ({ ok: false, error: { code, detail } });
 
 export interface CostOptions {
@@ -159,6 +174,8 @@ function checkNotional(notional: bigint): CostError | null {
 export function estimateRoundTripCostBps(p: PoolPricing, notional: bigint, landing: 'lean' | 'premium', set: SimParamSet,
   o: Pick<CostOptions, 'includeJanitor' | 'includeRung2'> = {}, log?: CostLog): Bps {
   if (notional <= 0n) throw { code: 'E_INVALID_ARG' };
+  const bad = paramProblem(set);
+  if (bad !== null) throw { code: 'E_INVALID_PARAM', detail: bad };
   const rt = roundTrip(p, notional);
   if (!rt.ok) {
     log?.event('warn', 'm10.cost_unpriced', { reason: rt.error.code });
@@ -185,6 +202,8 @@ export function fixedCostBpsPerTrade(fixedMonthlyLamports: bigint, tradesPerDay:
 export function costRows(p: PoolPricing, notional: bigint, set: SimParamSet, o: CostOptions = {}, log?: CostLog): Result<CostRows | Unpriced, CostError> {
   const n = checkNotional(notional);
   if (n !== null) return { ok: false, error: n };
+  const problem = paramProblem(set);
+  if (problem !== null) return bad('E_INVALID_PARAM', problem);
   if (o.slippage === undefined) return bad('E_INVALID_SLIPPAGE', 'the strict and conservative rows need the strategy slippage bounds');
   if (!slippageOk(o.slippage.entryBps) || !slippageOk(o.slippage.exitBps)) return bad('E_INVALID_SLIPPAGE', 'slippage bounds must be integers 0-10,000 bps');
   if (o.rentDepositsLamports !== undefined && o.rentDepositsLamports < 0n) return bad('E_INVALID_ARG', 'rent deposits must be >= 0');
