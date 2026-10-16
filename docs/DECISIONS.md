@@ -4286,6 +4286,34 @@ Rulings Z10-32..37 (the reviewer's FAIL at 66459a37):
 - **Z10-35 (m3) · The soak's RSS slope and the 60-pool run.** Pass now also needs the least-squares slope of RssAnon over hours 24-48 at most 1 MiB an hour (24 MiB a day; the bounded rings have filled by about hour 14). The fake chain can add SYNTHETIC failed transactions on the migration authority (`SOAK_FAILED_SIGS_PER_S`; skipped by the backfill without a transaction read), so each backfill run pages past its 1,000-signature page, and `SOAK_MIGRATION_MS` raises the migration rate. Results are in the PR.
 - **Z10-36 (m4) · The stale test pinned.** With polls failing, the chain is moved to exactly 12 slots past the stored read and one monitor tick (500 ms) runs: no `pool.stale`; then to 13 and one more tick: exactly one, with lag 13. For slot times 250 ms, 0, NaN and ∞.
 - **Z10-37 · PR body.** It carries the Z10-23 spec citations and the fd bounds of Z10-31.
+- **Z10-38 · RssAnon growth at 60 pools (merge blocker).** It needs an explicit bound and a proof: the 60-pool soak's RssAnon slope over hours 24-48 at most 0.25 MiB an hour, and the soak's limit tightened to that. Findings so far:
+  - At hour 30, live malloc allocations are flat. The call-site tracker (LD_PRELOAD) measured 106.6 MB at hour 12 and 107.1 MB at hour 30.
+  - glibc arena 0 had 110.5 MB in use out of 140.6 MB taken from the system.
+  - malloc_trim(0) on the live process gave back 37 MiB of RssAnon.
+  - So the growth is freed memory that glibc keeps, not live objects.
+  - These had no effect: MALLOC_ARENA_MAX=2, a smaller SQLite cache, paging off, and the mmap and trim thresholds.
+  - Status and result are recorded under Z10-38 in the PR.
+- **Z10-39 · Only class polls count as failed polls.** Z10-34 is accepted as built. A test covers an entry freshRead whose unpinned first try fails and is not counted.
+- **Z10-40 · closedThrough and the kill -9 test.** The backward-step fix is accepted with a test that fails before. In the M07 kill -9 test, the child stops writing and says so before the kill, so a loaded machine cannot cut a frame. The checks are unchanged.
+- **Z10-41 · Critical codes last as long as their condition.**
+  - State-based codes: m14.provider_stopped, m04.verify_cap_reached, recorder.clock_suspect, m07.unpulled_segments, recorder.manifest_not_recorded and recorder.unanchored. These are on while the state holds.
+  - recorder.unanchored is a new value; SPEC and ARCH give none. It is raised after 10 minutes on the monotonic clock without two providers agreeing, and each change is recorded as a decision-stream record.
+  - The verify count is kept through a restart.
+- **Z10-42, Z10-43 · Release tree check.** `git ls-tree -r -z --full-tree` is read to the end with no early exit. Two cases are refused, and both tests fail before: a non-ASCII path link to /etc/passwd, and a bad first entry in a 50,000-entry list.
+- **Z10-44 · Loop age on the monotonic clock.** A 2 h forward wall-clock step raises no loop_stale.
+- **Z10-45 · PDA mutants.** They are written to a mkdtemp folder outside every walked tree (CI ENOENT in the eslint walker).
+- **Z10-46 · CI soak at 60 pools.** This follows Z10-38. If the 45 min job cannot fit it, the manual run's commit and numbers go in the PR.
+- **Z10-47 · Base merge.** Base 466279ff was merged at 286ec840.
+- **Z10-48 · One watchdog key per critical code.** The key is `worker_critical:<code>`, so a long-held code never hides a new one.
+- **Z10-49 · Daily catch-up.** Every missing manifest in the 7-day window is built, oldest first. A day recorded, or refused once, is not looked at again in that process.
+- **Z10-50 · Verify-count save.** A failed save logs one warning and keeps the in-memory count, which still bounds the reads.
+- **Z10-51 · /health reads no database.** The active codes and the SOL/USD check are cached once per loop tick.
+- **Z10-52 · Every active code in the heartbeat.** The 10-code cut is removed, because it dropped the recorder.* codes that sort last and made them flap. The codes are the recorder's own names (the CODE pattern). A test sends 14 codes, the same on 3 beats.
+- **Z10-53 · The daily manifest reads in pages.** daily.ts is new in this PR.
+  - candidate_event is read 2,000 rows at a time along `candidate_event_at`, in (at, rowid) order.
+  - The manifest is built from a stream: `eventsInOrder` holds one millisecond's rows and each pool's last state.
+  - A test shows the result equals the whole-table manifest, with a 2,500-row same-millisecond burst across pages. It fails before: one read of 6,134 rows.
+- **Z10-54 · No change.** The free-text critical churn affects only the old WORKER-1 worker, which is not running.
 
 Findings after the rulings (for the supervisor):
 - **F5 (MAJOR, fixed) · The universe manifest did not fit a record.** The soak's second day traced one `m07.rejected` (`E_TOO_LARGE`): that day's manifest was 100,566 bytes (239 eligible pools, about 420 bytes each) against `recorder.record_max_bytes` 65,536, yet its M24 row still pointed at `md:universe_manifest/<day>`, a record that did not exist. Fixed: a manifest M07 refuses (or drops) leaves no M24 row and no coverage report for the day and raises one critical `recorder.manifest_not_recorded`; the manifest's stream gets M07's largest record size (1 MiB, Z08-28's cap: about 2,490 eligible pools; every other stream keeps `recorder.record_max_bytes`, Z10-29). Tests: `test/z10/daily.test.ts` (both fail before). Open: a day with more eligible pools than that still fails loudly, not silently; paging the manifest would change A-M05-03's record format, so it is put to the supervisor.

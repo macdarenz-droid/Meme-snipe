@@ -81,6 +81,8 @@ export function openUsageLedger(path: string): UsageLedgerPort {
   const sumFrom = db.prepare('SELECT COALESCE(SUM(units), 0) AS s FROM usage_entry WHERE provider = ? AND at_ms >= ?');
   const insert = db.prepare('INSERT INTO usage_entry (provider, consumer, at_ms, units) VALUES (?, ?, ?, ?)');
   const prune = db.prepare('DELETE FROM usage_entry WHERE at_ms < ?');
+  const countsStmt = db.prepare('SELECT attempts, ok, errors, timeouts FROM usage_count WHERE provider = ? AND consumer = ? AND month = ?');
+  const countStmts = new Map<string, StatementSync>();
   const num = (st: StatementSync, ...args: Array<string | number>): number => Number((st.get(...args) as { s: number | bigint }).s);
 
   return {
@@ -125,12 +127,17 @@ export function openUsageLedger(path: string): UsageLedgerPort {
     },
     count(provider: string, consumer: string, atMs: UnixMs, what: 'attempt' | Outcome): void {
       const col = COLUMN[what];
-      db.prepare(`INSERT INTO usage_count (provider, consumer, month, ${col}) VALUES (?, ?, ?, 1)
-        ON CONFLICT (provider, consumer, month) DO UPDATE SET ${col} = ${col} + 1`).run(provider, consumer, monthKeyUtc(atMs));
+      // Prepared once per column, not per call: a statement per read left native statements waiting on GC (Z10-38).
+      let st = countStmts.get(col);
+      if (st === undefined) {
+        st = db.prepare(`INSERT INTO usage_count (provider, consumer, month, ${col}) VALUES (?, ?, ?, 1)
+        ON CONFLICT (provider, consumer, month) DO UPDATE SET ${col} = ${col} + 1`);
+        countStmts.set(col, st);
+      }
+      st.run(provider, consumer, monthKeyUtc(atMs));
     },
     counts(provider: string, consumer: string, monthKey: string): LedgerCounts {
-      const row = db.prepare('SELECT attempts, ok, errors, timeouts FROM usage_count WHERE provider = ? AND consumer = ? AND month = ?')
-        .get(provider, consumer, monthKey) as LedgerCounts | undefined;
+      const row = countsStmt.get(provider, consumer, monthKey) as LedgerCounts | undefined;
       return row === undefined ? { attempts: 0, ok: 0, errors: 0, timeouts: 0 }
         : { attempts: Number(row.attempts), ok: Number(row.ok), errors: Number(row.errors), timeouts: Number(row.timeouts) };
     },
