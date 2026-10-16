@@ -102,6 +102,8 @@ function replay(recorded: readonly Ev[], endMs: number, readAhead = false): Arra
   return out;
 }
 const events = (r: Array<[number, Bar[]]>): Bar[] => r.flatMap(([, b]) => b);
+/** A marker's first seqs: every marked stream (Z10 sets all four), 0 unless given. */
+const first = (over: Record<string, bigint>): Record<string, bigint> => ({ poll_counts: 0n, pool_snapshot_position: 0n, pool_snapshot: 0n, pool_snapshot_tail: 0n, ...over });
 /** The bars of a replay that must not be refused. */
 const replayed = (r: ReturnType<typeof replayBars>): Bar[] => {
   if (!r.ok) assert.fail(`replay refused: ${r.error.code} at ${r.error.atMs} on ${r.error.stream}`);
@@ -410,7 +412,7 @@ describe('Z09-40 (RT-10): bars agree across a worker restart; Z09-42: early coun
       { kind: 'poll_counts', atMs: T0 + CLOSE, seq: 0n, partial: false, c: counts(T0, 1) },
       // Process 1 unwatched the pool in bar B, then stopped: a partial count stamped with B's close, after the restart.
       { kind: 'poll_counts', atMs: B + CLOSE, seq: 1n, partial: true, c: counts(B, 15) },
-      { kind: 'process_start', atMs: B + 5_000, firstSeq: { poll_counts: 2n } },
+      { kind: 'process_start', atMs: B + 5_000, firstSeq: first({ poll_counts: 2n }) },
       { kind: 'snapshot', atMs: B + 6_000, s: snap(B + 6_000, 101n), expectedIntervalMs: 1_000 },
     ];
     const bars = replayed(replayBars(createBarEngine(), evs, { fromMs: T0, endMs: T0 + 120_000, stepMs: 1_000 }));
@@ -425,19 +427,32 @@ describe('Z09-40 (RT-10): bars agree across a worker restart; Z09-42: early coun
     assert.ok(!r.ok && r.error.code === 'E_MARKER_SEQ');
     // A marker whose first seq goes below an earlier marker's is refused too.
     const back = replayBars(createBarEngine(), [
-      { kind: 'process_start', atMs: T0, firstSeq: { poll_counts: 5n } }, { kind: 'process_start', atMs: T0 + 1_000, firstSeq: { poll_counts: 4n } },
+      { kind: 'process_start', atMs: T0, firstSeq: first({ poll_counts: 5n }) }, { kind: 'process_start', atMs: T0 + 1_000, firstSeq: first({ poll_counts: 4n }) },
     ], { fromMs: T0, endMs: T0 + 2_000, stepMs: 1_000 });
     assert.deepEqual(back, { ok: false, error: { code: 'E_MARKER_SEQ', atMs: T0 + 1_000, stream: 'poll_counts' } });
+  });
+
+  it('Z09-55: seqs are checked per stream on the fly; a marker without every marked stream is refused', () => {
+    const c = (at: number, seq: bigint): ReplayEvent => ({ kind: 'poll_counts', atMs: at, seq, partial: false, c: counts(T0, 1) });
+    const o = { fromMs: T0, endMs: T0 + 60_000, stepMs: 1_000 };
+    assert.ok(replayBars(createBarEngine(), [c(T0 + CLOSE, 1n), c(T0 + CLOSE + 1, 2n)], o).ok);
+    assert.deepEqual(replayBars(createBarEngine(), [c(T0 + CLOSE, 2n), c(T0 + CLOSE + 1, 2n)], o), { ok: false, error: { code: 'E_MARKER_SEQ', atMs: T0 + CLOSE + 1, stream: 'poll_counts' } });
+    assert.deepEqual(replayBars(createBarEngine(), [c(T0 + CLOSE, 3n), c(T0 + CLOSE + 1, 2n)], o), { ok: false, error: { code: 'E_MARKER_SEQ', atMs: T0 + CLOSE + 1, stream: 'poll_counts' } });
+    // Different streams keep their own sequence.
+    const snapAt = (seq: bigint): ReplayEvent => ({ kind: 'snapshot', atMs: T0 + 1_000, s: snap(T0 + 1_000, 100n), expectedIntervalMs: 1_000, stream: 'pool_snapshot', seq });
+    assert.ok(replayBars(createBarEngine(), [c(T0 + CLOSE, 5n), snapAt(1n)], o).ok);
+    assert.deepEqual(replayBars(createBarEngine(), [{ kind: 'process_start', atMs: T0, firstSeq: { poll_counts: 0n } }], o),
+      { ok: false, error: { code: 'E_MARKER_SEQ', atMs: T0, stream: 'pool_snapshot_position' } });
   });
 
   it('Z09-48: snapshots are split by their seq, so a backward clock step across a restart does not misassign them', () => {
     const B = T0 + 30_000;
     const evs: ReplayEvent[] = [
-      { kind: 'process_start', atMs: T0, firstSeq: { pool_snapshot: 0n, poll_counts: 0n } },
+      { kind: 'process_start', atMs: T0, firstSeq: first({}) },
       // Process 1's clock ran 20 s ahead: its last snapshot carries B + 20 s.
       { kind: 'snapshot', atMs: B + 20_000, s: snap(B + 20_000, 500n), expectedIntervalMs: 1_000, stream: 'pool_snapshot', seq: 0n },
       // Process 2 starts on a corrected clock at B + 10 s.
-      { kind: 'process_start', atMs: B + 10_000, firstSeq: { pool_snapshot: 1n, poll_counts: 0n } },
+      { kind: 'process_start', atMs: B + 10_000, firstSeq: first({ pool_snapshot: 1n }) },
       { kind: 'snapshot', atMs: B + 12_000, s: snap(B + 12_000, 100n), expectedIntervalMs: 1_000, stream: 'pool_snapshot', seq: 1n },
     ];
     const bars = replayed(replayBars(createBarEngine(), evs, { fromMs: T0, endMs: T0 + 120_000, stepMs: 1_000 }));

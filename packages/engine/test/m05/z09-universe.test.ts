@@ -44,7 +44,10 @@ function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => Fac
 }
 /** MR-01's limit set: no latest entry age, so a retry 6 h later is not retired for age (Z09-39). */
 const MR = { limitSetId: 'mr01', limits: [MR_LIMITS] } as const;
-const disc = (i: number, migratedAtMs: number | null = T0 - 2 * 86_400_000) => ({ poolId: pubkey(100 + i), baseMint: pubkey(200 + i), quoteMint: MINTS.wsol, venue: 'pumpswap', verifiedOnChain: true, migratedAtMs: migratedAtMs as UnixMs | null });
+/** A migration 2 days before T0: old enough for MR-01 (24 h); past PM-01's entry window (Z09-52). */
+const OLD = T0 - 2 * 86_400_000;
+/** By default a pool is found 30 min after its migration: inside PM-01's window (20-120 min). */
+const disc = (i: number, migratedAtMs: number | null = T0 - 1_800_000) => ({ poolId: pubkey(100 + i), baseMint: pubkey(200 + i), quoteMint: MINTS.wsol, venue: 'pumpswap', verifiedOnChain: true, migratedAtMs: migratedAtMs as UnixMs | null });
 
 describe('A-M05-01 acceptance (SYNTHETIC events)', () => {
   it('property: no undefined transition; open_failed or written_off always moves the candidate to cooldown; a written-off mint is blacklisted', () => {
@@ -149,7 +152,7 @@ describe('A-M05-01 transitions', () => {
     // Under MR-01 (no latest age) the same retry is judged again and passes.
     let g: Facts = { ...deep, feeTotalBps: 31 };
     const m = setup({ config: { screeningRequired: false, ...MR }, facts: () => g });
-    m.u.onDiscovery(disc(0));
+    m.u.onDiscovery(disc(0, OLD));
     assert.equal(m.u.candidate(pubkey(100))?.state, 'prefiltered_out');
     g = deep;
     m.advance(21_600_000); m.u.tick();
@@ -162,16 +165,16 @@ describe('A-M05-01 transitions', () => {
     n.u.onDiscovery(disc(0), { ...deep, observedAtMs: n.at() as UnixMs });
     assert.equal(n.u.candidate(pubkey(100))?.state, 'eligible');
     // Unverified discoveries and another mint on the same pool are ignored; one candidate per pool.
-    n.u.onDiscovery({ ...disc(5), verifiedOnChain: false });
+    n.u.onDiscovery({ ...disc(5, OLD), verifiedOnChain: false });
     assert.equal(n.u.candidate(pubkey(105)), null);
-    n.u.onDiscovery({ ...disc(0), baseMint: pubkey(999) });
+    n.u.onDiscovery({ ...disc(0, OLD), baseMint: pubkey(999) });
     assert.equal(n.u.candidates().length, 1);
   });
 
   it('Phase 1 path through test doubles: screening → eligible → watched → signalled → in_position → cooldown → watched', () => {
     const t = setup({ config: MR });
     const p = pubkey(100);
-    t.u.onDiscovery(disc(0));
+    t.u.onDiscovery(disc(0, OLD));
     assert.equal(t.u.candidate(p)?.state, 'screening');
     t.u.onScreen(p, { verdict: 'eligible' });
     t.u.onWatched(p);
@@ -208,9 +211,10 @@ describe('A-M05-01 transitions', () => {
 
   it('a cooldown whose re-screen fails ends evicted; honeypot is blacklisted 24 h, authority for good; expiry re-runs the prefilter', () => {
     let f: Facts | null = deep;
-    const t = setup({ facts: () => f });
+    // MR-01's set: the blacklist expires a day later, when a PM-01 pool would be past its entry window (Z09-52).
+    const t = setup({ config: MR, facts: () => f });
     const [a, b] = [pubkey(100), pubkey(101)];
-    for (const i of [0, 1]) t.u.onDiscovery(disc(i));
+    for (const i of [0, 1]) t.u.onDiscovery(disc(i, OLD));
     t.u.onScreen(a, { verdict: 'eligible' }); t.u.onWatched(a); t.u.onSignal(a); t.u.onRiskDecision(a, true); t.u.onPositionTerminal(a, 'open_failed');
     f = null;
     t.advance(1_800_000); t.u.tick();
@@ -305,7 +309,7 @@ describe('A-M05-01 over M24', () => {
     // Restart: a fresh universe on the same database.
     const again = setup({ store: m24CandidateStore(db, { newId: () => ulid(id++), nowMs: () => T0 }), config: { screeningRequired: false }, idBase: 500 });
     assert.equal(again.u.candidate(pubkey(100))?.state, 'watched');
-    assert.equal(again.u.candidate(pubkey(100))?.migratedAtMs, T0 - 2 * 86_400_000);
+    assert.equal(again.u.candidate(pubkey(100))?.migratedAtMs, T0 - 1_800_000);
     assert.equal(again.u.candidate(pubkey(100))?.depthLamports, (400n * SOL) as Lamports);
     again.advance(400 * 86_400_000); again.u.tick();
     assert.equal(again.u.candidate(pubkey(101))?.state, 'blacklisted');                // permanent, still after restart
@@ -321,7 +325,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     let f: Facts | null = deep;
     const store = new MemStore();
     const t = setup({ store, config: MR, facts: () => f });
-    t.u.onDiscovery(disc(1));
+    t.u.onDiscovery(disc(1, OLD));
     const p = pubkey(101);
     t.u.onScreen(p, { verdict: 'rejected' });
     f = { ...deep, effectiveQuoteLamports: 1n * SOL };
@@ -341,7 +345,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
   it('Z09-20: a prefiltered_out retry that fails again is persisted and survives a restart', () => {
     const store = new MemStore();
     const t = setup({ store, config: MR, facts: () => ({ ...deep, feeTotalBps: 500 }) });
-    t.u.onDiscovery(disc(1));
+    t.u.onDiscovery(disc(1, OLD));
     t.advance(21_600_000); t.u.tick();
     const due = (store.get(pubkey(101)) as CandidateRecord).retryAtMs;
     assert.equal(due, t.at() + 21_600_000);
@@ -372,7 +376,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
   it('RT-5 / Z09-16: a pool evicted after a failed cooldown re-screen is never watched again without passing the prefilter', () => {
     let f: Facts | null = deep;
     const t = setup({ config: { screeningRequired: false, ...MR }, facts: () => f });
-    t.u.onDiscovery(disc(1));
+    t.u.onDiscovery(disc(1, OLD));
     const p = pubkey(101);
     const w = createWatchlist({ restoreTails: () => [], config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
       tracker: { watch: () => true, unwatch: () => {} }, universe: t.u, onEviction: () => {}, log: { event: () => {} } });
@@ -390,7 +394,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     t.advance(21_600_000); t.u.tick();
     w.recompute(t.u.candidates());
     assert.equal(t.u.candidate(p)?.state, 'evicted', 'a retired pool waits for a new discovery');
-    t.u.onDiscovery(disc(1));                                                        // only a new discovery brings it back, through the prefilter
+    t.u.onDiscovery(disc(1, OLD));                                                        // only a new discovery brings it back, through the prefilter
     w.recompute(t.u.candidates());
     assert.equal(t.u.candidate(p)?.state, 'watched');
   });
@@ -407,7 +411,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     // The watchlist ranks on M04's current depth, not on the depth stored at the last prefilter.
     const order: string[] = [];
     const w = createWatchlist({ restoreTails: () => [], config: { ...WATCHLIST_DEFAULTS, maxWatched: 1 }, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
-      tracker: { watch: (id) => { order.push(id); return true; }, unwatch: () => {} }, universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null },
+      tracker: { watch: (id) => { order.push(id); return true; }, unwatch: () => {} }, universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null, pastEntryAge: () => false },
       depthOf: (id) => (id === 'p-shallow-then-deep' ? 900n * SOL : 10n * SOL), onEviction: () => {}, log: { event: () => {} } });
     const r = (id: string, d: bigint): CandidateRecord => ({ ...(t.u.candidate(pubkey(101)) as CandidateRecord), poolId: id, state: 'eligible', depthLamports: d });
     w.recompute([r('p-deep-then-shallow', 900n * SOL), r('p-shallow-then-deep', 1n * SOL)]);
@@ -526,7 +530,7 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
   it('Z09-34 (RT-9): an eligible pool that never gets a slot is not judged on 30-day-old facts', () => {
     // MR-01's set (no latest entry age), so the facts' age is what decides.
     const t = setup({ config: { screeningRequired: false, ...MR }, facts: () => ({ ...deep, observedAtMs: T0 }) });   // never polled again
-    t.u.onDiscovery(disc(1));
+    t.u.onDiscovery(disc(1, OLD));
     assert.equal(t.u.candidate(pubkey(101))?.state, 'eligible');
     t.advance(30 * 86_400_000);
     t.u.tick();
@@ -535,7 +539,7 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
     assert.equal(t.u.candidate(pubkey(101))?.retryAtMs, t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs);
     // Under PM-01 the same pool is past every entry age first: retired from the queue (Z09-43), no retry.
     const pm = setup({ config: { screeningRequired: false }, facts: () => ({ ...deep, observedAtMs: T0 }) });
-    pm.u.onDiscovery(disc(1));
+    pm.u.onDiscovery(disc(1, OLD));
     pm.advance(30 * 86_400_000); pm.u.tick();
     assert.deepEqual([pm.u.candidate(pubkey(101))?.state, pm.u.candidate(pubkey(101))?.reasons, pm.u.candidate(pubkey(101))?.retryAtMs], ['prefiltered_out', ['retired=past_entry_age'], null]);
     // No facts at all: the same, and a slot is never granted on stale facts.
@@ -551,7 +555,7 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
     let freshFor = new Set<string>();
     const t = setup({ config: { screeningRequired: false, factsRefreshMax: 2, ...MR }, requestFacts: (ids) => reads.push([...ids]),
       facts: (p) => (freshFor.has(p) ? deep : { ...deep, observedAtMs: T0 }) });
-    for (const i of [1, 2, 3]) { freshFor.add(pubkey(100 + i)); t.u.onDiscovery(disc(i)); t.u.onWatched(pubkey(100 + i)); t.u.onEvicted(pubkey(100 + i), 'budget', (T0 + 30 * 3_600_000) as UnixMs); }
+    for (const i of [1, 2, 3]) { freshFor.add(pubkey(100 + i)); t.u.onDiscovery(disc(i, OLD)); t.u.onWatched(pubkey(100 + i)); t.u.onEvicted(pubkey(100 + i), 'budget', (T0 + 30 * 3_600_000) as UnixMs); }
     freshFor = new Set();
     t.advance(UNIVERSE_DEFAULTS.prefilterRetryMs);
     t.u.tick();
@@ -571,7 +575,7 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
     assert.equal(reads.length, 2, 'no second read for the same retry');
     // Without the port, a stale retry simply fails.
     const q = setup({ config: { screeningRequired: false, ...MR }, facts: (p) => (p === pubkey(104) && q.at() === T0 ? deep : { ...deep, observedAtMs: T0 }) });
-    q.u.onDiscovery(disc(4)); q.u.onWatched(pubkey(104)); q.u.onEvicted(pubkey(104), 'budget', (T0 + 30 * 3_600_000) as UnixMs);
+    q.u.onDiscovery(disc(4, OLD)); q.u.onWatched(pubkey(104)); q.u.onEvicted(pubkey(104), 'budget', (T0 + 30 * 3_600_000) as UnixMs);
     q.advance(UNIVERSE_DEFAULTS.prefilterRetryMs); q.u.tick();
     assert.deepEqual([q.u.candidate(pubkey(104))?.state, q.u.candidate(pubkey(104))?.reasons], ['evicted', ['facts_stale']]);
   });
@@ -660,7 +664,7 @@ describe('Z09-39: the fresh-read budget is bounded per hour, and pools that cann
       const c = r.t.u.candidate(pubkey(100 + i)) as CandidateRecord;
       assert.deepEqual([c.state, c.retryAtMs, c.reasons[0]], ['prefiltered_out', null, 'retired=failed_retries']);
     }
-    r.t.u.onDiscovery(disc(0));
+    r.t.u.onDiscovery(disc(0, OLD));
     const back = r.t.u.candidate(pubkey(100)) as CandidateRecord;
     assert.deepEqual([back.retryAtMs, back.failedRetries], [r.t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs, 1]);   // judged again: a new retry
   });
@@ -710,14 +714,19 @@ describe('Z09-43: a pool too young for PM-01 is retried at its minimum age, not 
   it('the reviewer\'s repro: migration at T0 − 60 s, a tick every minute for 8 h, with the verification read only: it reaches eligible', () => {
     const asked: string[][] = [];
     let read = new Map<string, number>();
-    const t = setup({ config: { screeningRequired: false }, requestFacts: (ids) => { asked.push([...ids]); for (const id of ids) read.set(id, t.at()); },
+    const askedAt: number[] = [];
+    const t = setup({ config: { screeningRequired: false }, requestFacts: (ids) => { asked.push([...ids]); askedAt.push(t.at()); for (const id of ids) read.set(id, t.at()); },
       facts: (p) => ({ ...deep, observedAtMs: (read.get(p) ?? T0) as UnixMs }) });
     t.u.onDiscovery(disc(1, T0 - MIN));
     const states: string[] = [];
     for (let k = 0; k < 8 * 60; k++) { t.advance(MIN); t.u.tick(); states.push(t.u.candidate(pubkey(101))?.state as string); }
     assert.ok(states.includes('eligible'), `states: ${[...new Set(states)].join(', ')}`);
     assert.equal(states.indexOf('eligible'), 19, 'eligible at migration + 21 min: the age-due retry asks one read, judged a minute later');
-    assert.deepEqual(asked, [[pubkey(101)]]);
+    assert.deepEqual(asked[0], [pubkey(101)]);
+    // Z09-51: unwatched, it is read again whenever its facts go stale, until no strategy can enter it (+ 120 min).
+    assert.ok(asked.every((x) => x.length === 1 && x[0] === pubkey(101)));
+    assert.ok(askedAt.every((x) => x < T0 - MIN + 7_200_000), 'no read after migration + 120 min');
+    assert.ok(asked.length <= 25, `${asked.length} reads`);
     read = new Map();
   });
 
@@ -743,7 +752,7 @@ describe('Z09-43: a pool too young for PM-01 is retried at its minimum age, not 
     const asked: string[][] = [];
     const t = setup({ config: { screeningRequired: false, ...MR }, requestFacts: (ids) => asked.push([...ids]), readsAvailable: () => primary,
       facts: (p) => (p === pubkey(101) && t.at() === T0 ? deep : { ...deep, observedAtMs: T0 }) });
-    t.u.onDiscovery(disc(1)); t.u.onWatched(pubkey(101)); t.u.onEvicted(pubkey(101), 'budget', (T0 + 30 * 3_600_000) as UnixMs);
+    t.u.onDiscovery(disc(1, OLD)); t.u.onWatched(pubkey(101)); t.u.onEvicted(pubkey(101), 'budget', (T0 + 30 * 3_600_000) as UnixMs);
     t.advance(UNIVERSE_DEFAULTS.prefilterRetryMs); t.u.tick();
     assert.deepEqual(asked, [[pubkey(101)]]);
     primary = false;                                                                 // the read cannot be served
@@ -769,7 +778,7 @@ describe('Z09-45 (RT-14) and Z09-46: the read window survives restarts; at most 
       facts: () => ({ ...deep, observedAtMs: T0 as UnixMs }), requestFacts: (ps) => asked.push([...ps]),
       lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: () => {} } });
     const u = mk();
-    for (let i = 0; i < pools; i++) u.onDiscovery({ ...disc(i), poolId: pubkey(10_000 + i), baseMint: pubkey(50_000 + i) }, { ...deep, feeTotalBps: 500, observedAtMs: T0 as UnixMs });
+    for (let i = 0; i < pools; i++) u.onDiscovery({ ...disc(i, OLD), poolId: pubkey(10_000 + i), baseMint: pubkey(50_000 + i) }, { ...deep, feeTotalBps: 500, observedAtMs: T0 as UnixMs });
     return { mk, asked, advance: (ms: number) => { now += ms; }, at: () => now };
   }
 
@@ -802,9 +811,14 @@ describe('Z09-45 (RT-14) and Z09-46: the read window survives restarts; at most 
     const db = openDb({ create: true, path, clock: fakeClock() });
     assert.equal((await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` })).ok, true);
     const m24 = m24CandidateStore(db, { newId: () => 'x', nowMs: () => T0 as UnixMs });
-    assert.deepEqual(m24.factsWindow.load(), []);
+    assert.deepEqual(m24.factsWindow.load(), { ok: true, value: [] });
     assert.deepEqual(m24.factsWindow.save([[T0, 30], [T0 + MIN, 5]]), { ok: true, value: undefined });
-    assert.deepEqual(m24CandidateStore(db, { newId: () => 'y', nowMs: () => T0 as UnixMs }).factsWindow.load(), [[T0, 30], [T0 + MIN, 5]]);
+    assert.deepEqual(m24CandidateStore(db, { newId: () => 'y', nowMs: () => T0 as UnixMs }).factsWindow.load(), { ok: true, value: [[T0, 30], [T0 + MIN, 5]] });
+    // Z09-54: a corrupt row is reported, never read as empty.
+    for (const bad of ['{"not":"a list"}', '[[1,2,3]]', '[["x",1]]', '[[1,-1]]']) {
+      db.withTx((tx) => { tx.run('UPDATE "kv_state" SET "value_json" = ? WHERE "key" = ?', bad, 'm05.facts_window'); });
+      assert.deepEqual(m24.factsWindow.load(), { ok: false, error: { code: 'E_CORRUPT' } }, bad);
+    }
     db.close();
   });
 });
@@ -824,5 +838,147 @@ describe('Z09-43 with the red team\'s RT-13 repro', () => {
     const c = t.u.candidate(p) as CandidateRecord;
     assert.deepEqual([c.state, c.reasons, c.retryAtMs], ['prefiltered_out', ['retired=past_entry_age'], null]);
     assert.equal(c.sinceMs, T0 - 60_000 + 7_200_000, 'retired at migration + 120 min, not before');
+  });
+});
+
+describe('Z09-51: queued eligible pools keep fresh facts through reads instead of a 6 h retry', () => {
+  it('40 eligible PM-01 pools, 30 slots: the 10 queued stay in the queue on fresh facts until + 120 min, within the ceiling', () => {
+    const MIN = 60_000;
+    const store = new MemStore();
+    const classes = new Map<string, string>();
+    const read = new Map<string, number>();
+    const askedAt: number[] = [];
+    const depth = new Map([...Array(40).keys()].map((i) => [pubkey(100 + i), BigInt(100 + i) * SOL] as const));
+    const depthOf = (p: string): bigint => depth.get(p) ?? 0n;
+    const t = setup({ store, config: { screeningRequired: false },
+      // Watched pools are polled (current facts); a queued pool's facts are as old as its last read or its discovery.
+      facts: (p) => ({ ...deep, effectiveQuoteLamports: depthOf(p), observedAtMs: (classes.get(p) === 'candidate' ? t.at() : read.get(p) ?? T0) as UnixMs }),
+      requestFacts: (ids) => { for (const id of ids) { read.set(id, t.at()); askedAt.push(t.at()); } } });
+    const w = createWatchlist({ restoreTails: () => [], config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+      tracker: { watch: (id, c) => { classes.set(id, c); return true; }, unwatch: (id) => { classes.delete(id); } }, universe: t.u, onEviction: () => {}, log: { event: () => {} } });
+    const migration = T0 - 20 * MIN;                                                   // all 40 found at + 20 min
+    for (let i = 0; i < 40; i++) t.u.onDiscovery(disc(i, migration));
+    w.recompute(t.u.candidates());
+    const queued = [...Array(10).keys()].map((i) => pubkey(100 + i));                // the 10 shallowest
+    assert.ok(queued.every((p) => t.u.candidate(p)?.state === 'eligible' && !classes.has(p)));
+    const retiredAt = new Map<string, number>();
+    for (let k = 1; k <= 110; k++) {                                                   // to migration + 130 min
+      t.advance(MIN); t.u.tick(); w.recompute(t.u.candidates());
+      for (const p of queued) {
+        const c = t.u.candidate(p) as CandidateRecord;
+        if (c.state === 'eligible') assert.ok(t.at() - (read.get(p) ?? T0) <= UNIVERSE_DEFAULTS.factsMaxAgeMs, `${p} eligible on stale facts at +${k} min`);
+        if (c.reasons[0]?.startsWith('retired=') === true && !retiredAt.has(p)) retiredAt.set(p, t.at());
+        assert.notEqual(c.state, 'watched', 'no slot was free');
+      }
+    }
+    // Retired only for age, at migration + 120 min; never on a 6 h retry or for failed reads.
+    for (const p of queued) {
+      assert.equal(retiredAt.get(p), migration + 120 * MIN, p);
+      assert.deepEqual(t.u.candidate(p)?.reasons, ['retired=past_entry_age']);
+    }
+    assert.ok(askedAt.length > 0 && askedAt.every((x) => x < migration + 120 * MIN));
+    let worst = 0;
+    for (let i = 0, j = 0; j < askedAt.length; j++) { while ((askedAt[j] as number) - (askedAt[i] as number) >= 3_600_000) i++; worst = Math.max(worst, j - i + 1); }
+    assert.ok(worst <= UNIVERSE_DEFAULTS.factsRefreshPerHour, `${worst} reads in an hour`);
+    // The manifest counts a queued pool as eligible only while its facts were fresh: its span has gaps.
+    const m = buildUniverseManifest({ dayUtc: '2026-10-16', events: store.log.map((x) => ({ poolId: x.poolId, mint: x.mint, from: x.from, to: x.to, reason: x.reason, atMs: x.atMs })),
+      crossCheck: { poolsOnlyInVendor: 0, otherDexPairs: 0, knownPoolsUnderOtherDex: 0, status: 'ok' }, migrationCoverage: { chainMigrations: 40, seenByPumpPortal: 40, gapBps: 0 },
+      limitSet: { id: 'pm01', paramHash: 'x' }, generatedAtMs: T0 + 86_400_000, late: false, prefilterOnly: true });
+    const q0 = m.eligible.find((e) => e.poolId === queued[0]);
+    assert.ok(q0 !== undefined && q0.intervals.length > 1, JSON.stringify(q0?.intervals));
+  });
+});
+
+describe('Z09-52: a pool already past every entry age at discovery never becomes eligible', () => {
+  it('found at migration + 121 min under PM-01: prefiltered_out, retired, not in A-24; a rediscovery keeps it out', () => {
+    const store = new MemStore();
+    const t = setup({ store, config: { screeningRequired: false } });
+    t.u.onDiscovery(disc(1, T0 - 121 * 60_000));
+    const c = t.u.candidate(pubkey(101)) as CandidateRecord;
+    assert.deepEqual([c.state, c.reasons, c.retryAtMs], ['prefiltered_out', ['retired=past_entry_age'], null]);
+    assert.deepEqual(store.log.map((x) => x.to), ['discovered', 'prefiltered_out']);
+    t.u.onDiscovery(disc(1, T0 - 121 * 60_000));                                   // rediscovered: still out
+    assert.equal(t.u.candidate(pubkey(101))?.state, 'prefiltered_out');
+    const m = buildUniverseManifest({ dayUtc: '2026-10-16', events: store.log.map((x) => ({ poolId: x.poolId, mint: x.mint, from: x.from, to: x.to, reason: x.reason, atMs: x.atMs })),
+      crossCheck: { poolsOnlyInVendor: 0, otherDexPairs: 0, knownPoolsUnderOtherDex: 0, status: 'ok' }, migrationCoverage: { chainMigrations: 1, seenByPumpPortal: 1, gapBps: 0 },
+      limitSet: { id: 'pm01', paramHash: 'x' }, generatedAtMs: T0 + 86_400_000, late: false, prefilterOnly: true });
+    assert.equal(m.a24.eligibleCount, 0);
+    // Under MR-01 (no latest age) the same pool is judged on its facts as before.
+    const mr = setup({ config: { screeningRequired: false, ...MR } });
+    mr.u.onDiscovery(disc(1, OLD));
+    assert.equal(mr.u.candidate(pubkey(101))?.state, 'eligible');
+  });
+});
+
+describe('Z09-53 (RT-15): pools past the entry window make way for in-window pools', () => {
+  it('30 pools of 500 SOL aged 3.5 h hold every slot; a 200 SOL pool found 1 min after migration gets one at + 20 min, and the evicted pool\'s tail runs', () => {
+    const depth = new Map<string, bigint>();
+    const classes = new Map<string, string>();
+    const evictions: Array<{ poolId: string; reason: string; tailUntilMs: number | null }> = [];
+    const t = setup({ config: { screeningRequired: false }, requestFacts: () => {}, facts: (p) => ({ ...deep, effectiveQuoteLamports: depth.get(p) ?? 0n }) });
+    const w = createWatchlist({ config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 7_200_000, mode: () => 'normal',
+      tracker: { watch: (id, c) => { classes.set(id, c); return true; }, unwatch: (id) => { classes.delete(id); } }, universe: t.u, depthOf: (p) => depth.get(p) ?? null,
+      onEviction: (e) => evictions.push(e), restoreTails: () => [], log: { event: () => {} } });
+    for (let i = 0; i < 30; i++) { depth.set(pubkey(100 + i), 500n * SOL); t.u.onDiscovery(disc(i, T0 - 30 * 60_000)); }
+    w.recompute(t.u.candidates());
+    t.advance(3 * 3_600_000); t.u.tick(); w.recompute(t.u.candidates());
+    // No in-window pool waits: the old pools keep their slots, so recording goes on.
+    assert.equal([...classes.values()].filter((c) => c === 'candidate').length, 30);
+    assert.equal(evictions.length, 0);
+    const young = pubkey(999);
+    depth.set(young, 200n * SOL);
+    t.u.onDiscovery({ ...disc(0, t.at() - 60_000), poolId: young, baseMint: pubkey(998) });
+    let watchedAt: number | null = null;
+    for (let k = 0; k < 130 && watchedAt === null; k++) {
+      t.advance(60_000); t.u.tick(); w.recompute(t.u.candidates());
+      if (t.u.candidate(young)?.state === 'watched') watchedAt = t.at();
+    }
+    // Found at T0 + 3 h, migrated a minute before: watched at migration + 20 min.
+    assert.equal(watchedAt, T0 + 3 * 3_600_000 - 60_000 + 20 * 60_000);
+    // The shallowest-first order among equals falls on the newest of the old pools; it is evicted with its tail.
+    assert.equal(evictions.length, 1);
+    const ev = evictions[0] as { poolId: string; reason: string; tailUntilMs: number | null };
+    assert.equal(ev.reason, 'past_entry_age');
+    assert.equal(classes.get(ev.poolId), 'tail', 'the evicted pool is still recorded');
+    assert.equal(ev.tailUntilMs, (watchedAt as number) + 7_200_000 + 3_600_000);
+    assert.equal(t.u.candidate(ev.poolId)?.state, 'evicted');
+  });
+});
+
+const MIN_MS = 60_000;
+describe('Z09-54: a corrupt read window fails closed', () => {
+  it('the hour after start counts as used: nothing is asked for an hour, then reads resume', () => {
+    const store = new MemStore();
+    store.corruptWindow = true;
+    const asked: string[][] = [];
+    const logs: string[] = [];
+    let now: number = T0;
+    let id = 0;
+    const u = createUniverse({ config: { ...UNIVERSE_DEFAULTS, screeningRequired: false, ...MR }, store, nowMs: () => now as UnixMs, newId: () => ulid(id++), wsolMint: MINTS.wsol,
+      facts: () => ({ ...deep, observedAtMs: T0 as UnixMs }), requestFacts: (ps) => asked.push([...ps]),
+      lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: (_l, c) => logs.push(c) } });
+    assert.ok(logs.includes('m05.facts_window_corrupt'));
+    u.onDiscovery(disc(1, OLD), { ...deep, feeTotalBps: 500, observedAtMs: T0 as UnixMs });
+    store.corruptWindow = false;
+    now += UNIVERSE_DEFAULTS.prefilterRetryMs;                                         // due, but the start's hour is long past
+    u.tick();
+    assert.equal(asked.length, 1, 'six hours on, the hour charged at start has passed');
+    // Started on a corrupt window with a retry due at once: nothing within the hour.
+    const s2 = new MemStore();
+    let t2: number = T0;
+    const asked2: string[][] = [];
+    const u2a = createUniverse({ config: { ...UNIVERSE_DEFAULTS, screeningRequired: false, ...MR }, store: s2, nowMs: () => t2 as UnixMs, newId: () => ulid(id++), wsolMint: MINTS.wsol,
+      facts: () => ({ ...deep, observedAtMs: T0 as UnixMs }), lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: () => {} } });
+    u2a.onDiscovery(disc(2, OLD), { ...deep, feeTotalBps: 500, observedAtMs: T0 as UnixMs });
+    t2 += UNIVERSE_DEFAULTS.prefilterRetryMs;
+    s2.corruptWindow = true;
+    const u2 = createUniverse({ config: { ...UNIVERSE_DEFAULTS, screeningRequired: false, ...MR }, store: s2, nowMs: () => t2 as UnixMs, newId: () => ulid(id++), wsolMint: MINTS.wsol,
+      facts: () => ({ ...deep, observedAtMs: T0 as UnixMs }), requestFacts: (ps) => asked2.push([...ps]),
+      lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: () => {} } });
+    s2.corruptWindow = false;
+    for (let k = 0; k < 59; k++) { u2.tick(); t2 += MIN_MS; }
+    assert.equal(asked2.length, 0, 'no read within the hour charged at start');
+    t2 += 2 * MIN_MS; u2.tick();
+    assert.equal(asked2.length, 1);
   });
 });

@@ -15,6 +15,11 @@
 // from the persisted eviction records (`restoreTails`) and polling resumes; a tail it cannot restore (M04 refuses it,
 // the cap is full, or reads are degraded) is recorded as cut (`tail_restart_cut`), so the manifest ends that pool's
 // eligible span there.
+//
+// Z09-53 (red team RT-15): pools in an enabled strategy's entry window come first. A watched or stale pool past every
+// set's latest entry age (`universe.pastEntryAge`) that is not pinned is evicted with its tail (reason
+// `past_entry_age`) whenever an in-window eligible pool waits for a slot; it keeps its slot only while none waits, so
+// recording goes on when slots are free. Free slots go to in-window pools first.
 import type { Pubkey, UnixMs } from '@bot/types';
 import type { CandidateRecord } from './universe.ts';
 
@@ -53,6 +58,8 @@ export interface WatchlistDeps {
     onWatched(poolId: Pubkey): boolean; onEvicted(poolId: Pubkey, reason: string, tailUntilMs?: UnixMs | null): void;
     /** Any candidate, in any state (the store's for inactive ones): why a pool left its slot (Z09-33). */
     candidate(poolId: Pubkey): CandidateRecord | null;
+    /** No enabled strategy can enter it any more (Z09-53). */
+    pastEntryAge(poolId: Pubkey): boolean;
   };
   /** M04's latest effective depth of a pool (null: no snapshot); ranking uses it over the candidate's stored depth (Z09-17). */
   depthOf?(poolId: Pubkey): bigint | null;
@@ -62,9 +69,9 @@ export interface WatchlistDeps {
    * At start: the persisted eviction records (evictions with their `tail_until`, and tail cuts with none), as
    * `onEviction` wrote them. Each pool's latest record decides: a tail still running is restored with its original
    * start; one that ended, or that a later record cut (`tail_capacity`, `tail_degraded`, `tail_restart_cut`), is not
-   * (Z09-41, Z09-50).
+   * (Z09-41, Z09-50). `seq` is the record's persisted order: records of the same ms are ordered by it (Z09-56).
    */
-  restoreTails(): ReadonlyArray<{ poolId: Pubkey; atMs: UnixMs; reason: string; tailUntilMs: UnixMs | null }>;
+  restoreTails(): ReadonlyArray<{ poolId: Pubkey; atMs: UnixMs; seq: bigint; reason: string; tailUntilMs: UnixMs | null }>;
   log: { event(level: 'info' | 'warn', code: string, fields: Readonly<Record<string, unknown>>): void };
 }
 
@@ -148,13 +155,14 @@ export function createWatchlist(deps: WatchlistDeps): Watchlist {
   // newest started first while the cap allows (the cap ends the oldest first, as startTail does); the rest are cut.
   {
     const now = deps.nowMs();
-    const latest = new Map<Pubkey, { atMs: number; reason: string; tailUntilMs: number | null }>();
+    const latest = new Map<Pubkey, { atMs: number; seq: bigint; reason: string; tailUntilMs: number | null }>();
+    const later = (a: { atMs: number; seq: bigint }, b: { atMs: number; seq: bigint }): boolean => a.atMs > b.atMs || (a.atMs === b.atMs && a.seq > b.seq);
     for (const e of deps.restoreTails()) {
       const cur = latest.get(e.poolId);
-      if (cur === undefined || e.atMs >= cur.atMs) latest.set(e.poolId, e);
+      if (cur === undefined || later(e, cur)) latest.set(e.poolId, e);
     }
     const due = [...latest].filter(([, e]) => e.tailUntilMs !== null && e.tailUntilMs > now)
-      .sort((a, b) => b[1].atMs - a[1].atMs || (a[0] < b[0] ? -1 : 1));
+      .sort((a, b) => (later(a[1], b[1]) ? -1 : later(b[1], a[1]) ? 1 : 0));
     const cut = (poolId: Pubkey): void => deps.onEviction({ poolId, atMs: now, reason: 'tail_restart_cut', tailUntilMs: null });
     for (const [poolId, e] of due) {
       if (tail.size >= cfg.tailMaxPools || deps.mode() === 'degraded_reads' || deps.tracker.watch(poolId, 'tail') === false) { cut(poolId); continue; }
@@ -204,9 +212,22 @@ export function createWatchlist(deps: WatchlistDeps): Watchlist {
         gone.add(c.poolId);
         over -= 1;
       }
+      // Z09-53: past-window holders make way for in-window pools waiting for a slot (stale first, then the shallowest).
+      const past = (c: CandidateRecord): boolean => deps.universe.pastEntryAge(c.poolId);
+      const waiting = candidates.filter((x) => free(x) && QUEUED.has(x.state));
+      const inWindowWaiting = waiting.filter((x) => !past(x)).length;
+      let freeSlots = cfg.maxWatched - (holding.length - gone.size);
+      for (const c of evictable) {
+        if (inWindowWaiting - freeSlots <= 0) break;
+        if (gone.has(c.poolId) || !past(c)) continue;
+        evict(c.poolId, 'past_entry_age');
+        gone.add(c.poolId);
+        freeSlots += 1;
+      }
       for (const c of holding) if (!gone.has(c.poolId)) setClass(c.poolId, 'candidate');
       let used = [...watched.values()].filter((v) => v === 'candidate').length;
-      for (const c of candidates.filter((x) => free(x) && QUEUED.has(x.state)).sort(byDepthThenAge)) {
+      const inWindowFirst = (a: CandidateRecord, b: CandidateRecord): number => Number(past(a)) - Number(past(b)) || byDepthThenAge(a, b);
+      for (const c of [...waiting].sort(inWindowFirst)) {
         if (used >= cfg.maxWatched) break;
         if (!setClass(c.poolId, 'candidate')) continue;
         // Refused (its current facts fail): it never held the slot, so no tail.

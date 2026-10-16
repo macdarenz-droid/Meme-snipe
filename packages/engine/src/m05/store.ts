@@ -86,15 +86,14 @@ export function m24CandidateStore(db: Db, o: { newId(): string; nowMs(): UnixMs 
       }));
     },
     factsWindow: {
-      load(): Array<[number, number]> {
+      // Z09-54: a row that is not a list of [safe integer minute, safe integer count >= 0] is corrupt (fails closed).
+      load() {
         const row = repos.kv_state.get(db.reader(), { key: FACTS_WINDOW_KEY });
-        if (row === null) return [];
-        try {
-          const v = (typeof row.valueJson === 'string' ? JSON.parse(row.valueJson) : row.valueJson) as unknown;
-          return Array.isArray(v) ? v.filter((x): x is [number, number] => Array.isArray(x) && x.length === 2 && typeof x[0] === 'number' && typeof x[1] === 'number') : [];
-        } catch {
-          return [];
-        }
+        if (row === null) return { ok: true as const, value: [] };
+        let v: unknown;
+        try { v = typeof row.valueJson === 'string' ? JSON.parse(row.valueJson) : row.valueJson; } catch { return { ok: false as const, error: { code: 'E_CORRUPT' as const } }; }
+        const good = Array.isArray(v) && v.every((x) => Array.isArray(x) && x.length === 2 && Number.isSafeInteger(x[0]) && Number.isSafeInteger(x[1]) && (x[1] as number) >= 0);
+        return good ? { ok: true as const, value: v as Array<[number, number]> } : { ok: false as const, error: { code: 'E_CORRUPT' as const } };
       },
       save(w: Array<[number, number]>) {
         const r = write(() => db.withTx((tx) => {

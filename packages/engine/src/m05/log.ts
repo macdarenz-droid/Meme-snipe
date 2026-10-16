@@ -14,6 +14,7 @@ export const M05_LOG_CODES = {
   'm05.watchlist_shrunk_degraded': { fields: { pinned: 'integer', tail: 'integer' } },
   'm05.retry_failed': { fields: { pool: 'id', state: 'string', reason: 'string' } },
   'm05.patch_not_applied': { fields: { pool: 'id', error_code: 'string' } },
+  'm05.facts_window_corrupt': { fields: { error_code: 'string' } },
   'm05.facts_window_not_saved': { fields: { error_code: 'string', pools: 'integer' } },
   'm05.retired': { fields: { pool: 'id', reason: 'string' } },
   'm05.blacklist_not_saved': { fields: { mint: 'id', error_code: 'string' } },

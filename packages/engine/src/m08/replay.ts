@@ -11,10 +11,13 @@
 //   its non-partial `poll_counts` (the latest bar close its last tick reached), so bars the stopped process never
 //   closed are not closed in replay either. At the marker the engine is reset and starts cold, as the restarted
 //   worker's engine does.
-// - Z09-47: markers whose seqs do not separate the processes are refused (`E_MARKER_SEQ`), never guessed at: a stream
-//   seq used twice (a process that restarted its seqs below the previous process's last record, e.g. from the last
-//   sealed manifest instead of the recovered tail), or a marker's `firstSeq` below an earlier marker's. A record's time
-//   is not used for this, so a backward clock step across a restart is not refused.
+// - Z09-47/55: markers whose seqs do not separate the processes are refused (`E_MARKER_SEQ`), never guessed at. Each
+//   stream's records come in seq order (as its segments are read) and must rise strictly: a seq that does not (a
+//   process that restarted its seqs below the previous one's last record, e.g. from the last sealed manifest instead of
+//   the recovered tail) is refused, checked on the fly with one number per stream, so memory does not grow with the
+//   replay. So is a marker's `firstSeq` below an earlier marker's, or a marker without a first seq for every marked
+//   stream (Z10 sets all four from `recover().nextSeq`). A record's time is not used for this, so a backward clock
+//   step across a restart is not refused.
 // - A recording with no marker starts cold at its first record, as before.
 import type { Result, UnixMs } from '@bot/types';
 import type { Bar, BarEngine, BarSnapshot, PollCountsIn } from './bars.ts';
@@ -24,6 +27,8 @@ export type ReplayEvent =
   | { kind: 'poll_counts'; atMs: number; seq: bigint; partial: boolean; c: PollCountsIn }
   | { kind: 'process_start'; atMs: number; firstSeq: Readonly<Record<string, bigint>> };
 type Recorded = Exclude<ReplayEvent, { kind: 'process_start' }>;
+/** The streams every marker carries a first seq for (`recorder/queue.ts` MARKED_STREAMS). */
+const MARKED = ['poll_counts', 'pool_snapshot_position', 'pool_snapshot', 'pool_snapshot_tail'] as const;
 type Marker = Extract<ReplayEvent, { kind: 'process_start' }>;
 export interface ReplayError { code: 'E_MARKER_SEQ'; atMs: number; stream: string }
 
@@ -33,14 +38,19 @@ const seqOf = (e: Recorded): bigint | null => (e.kind === 'poll_counts' ? e.seq 
 export function replayBars(engine: BarEngine, events: readonly ReplayEvent[], o: { fromMs: number; endMs: number; stepMs: number }): Result<Array<[number, Bar[]]>, ReplayError> {
   const markers = events.filter((e): e is Marker => e.kind === 'process_start').sort((a, b) => a.atMs - b.atMs);
   const recorded = events.filter((e): e is Recorded => e.kind !== 'process_start');
-  // Z09-47: each stream's first seqs must not go backwards from marker to marker, and no seq is used twice.
-  const seen = new Set<string>();
+  // Z09-47/55: each stream's seqs rise strictly in input order (one number per stream); every marker names all four
+  // marked streams; first seqs never go backwards from marker to marker.
+  const last = new Map<string, bigint>();
   for (const e of recorded) {
     const st = streamOf(e), sq = seqOf(e);
     if (st === null || sq === null) continue;
-    const k = `${st}\u0000${sq}`;
-    if (seen.has(k)) return { ok: false, error: { code: 'E_MARKER_SEQ', atMs: e.atMs, stream: st } };
-    seen.add(k);
+    const prev = last.get(st);
+    if (prev !== undefined && sq <= prev) return { ok: false, error: { code: 'E_MARKER_SEQ', atMs: e.atMs, stream: st } };
+    last.set(st, sq);
+  }
+  for (const m of markers) {
+    const missing = MARKED.find((st) => m.firstSeq[st] === undefined);
+    if (missing !== undefined) return { ok: false, error: { code: 'E_MARKER_SEQ', atMs: m.atMs, stream: missing } };
   }
   for (let k = 1; k < markers.length; k++) {
     for (const [st, sq] of Object.entries((markers[k] as Marker).firstSeq)) {
@@ -64,17 +74,17 @@ export function replayBars(engine: BarEngine, events: readonly ReplayEvent[], o:
   for (let k = 0; k <= markers.length; k++) {
     const evs = (segments[k] as Recorded[]).sort((a, b) => a.atMs - b.atMs);
     const start = k === 0 ? o.fromMs : (markers[k - 1] as Marker).atMs;
-    const last = k === markers.length;
-    const end = last ? o.endMs : (markers[k] as Marker).atMs;
+    const final = k === markers.length;
+    const end = final ? o.endMs : (markers[k] as Marker).atMs;
     let frontier = Infinity;
-    if (!last) {
+    if (!final) {
       frontier = -Infinity;
       for (const e of evs) if (e.kind === 'poll_counts' && !e.partial && e.atMs > frontier) frontier = e.atMs;
     }
     const times = new Set<number>();
     for (const e of evs) if (e.atMs < end) times.add(e.atMs);
     for (let t = start; t < end; t += o.stepMs) times.add(t);
-    if (last) times.add(end);
+    if (final) times.add(end);
     let i = 0;
     const deliver = (e: Recorded): void => {
       if (e.kind === 'snapshot') engine.onSnapshot(e.s, e.expectedIntervalMs);
@@ -87,7 +97,7 @@ export function replayBars(engine: BarEngine, events: readonly ReplayEvent[], o:
     }
     // A stopped process's records stamped after its stop (a partial bar's close) reach the engine but never close a bar.
     for (; i < evs.length; i++) deliver(evs[i] as Recorded);
-    if (!last) engine.reset();
+    if (!final) engine.reset();
   }
   return { ok: true, value: out };
 }

@@ -23,7 +23,7 @@ function setup(o: { config?: Partial<WatchlistConfig>; maxHoldMs?: number } = {}
   const w = createWatchlist({
     restoreTails: () => [], config: { ...WATCHLIST_DEFAULTS, ...o.config }, nowMs: () => now as UnixMs, maxHoldMs: () => o.maxHoldMs ?? 7_200_000, mode: () => mode,
     tracker: { watch: (p, c) => { classes.set(p, c); }, unwatch: (p) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(p); classes.delete(p); } },
-    universe: { onWatched: (p) => { granted.push(p); return true; }, onEvicted: (p, r) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(`evicted ${p}`); evicted.push([p, r]); }, candidate: () => null },
+    universe: { onWatched: (p) => { granted.push(p); return true; }, onEvicted: (p, r) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(`evicted ${p}`); evicted.push([p, r]); }, candidate: () => null, pastEntryAge: () => false },
     onEviction: (e) => evictions.push(e), log: { event: () => {} },
   });
   return {
@@ -138,10 +138,10 @@ describe('Z09-41 (RT-12): eviction tails survive a restart', () => {
     const w = createWatchlist({
       config: { ...WATCHLIST_DEFAULTS, tailMaxPools: o.tailMaxPools ?? WATCHLIST_DEFAULTS.tailMaxPools }, nowMs: () => o.now() as UnixMs, maxHoldMs: () => 7_200_000, mode: () => o.mode ?? 'normal',
       tracker: { watch: (id, c) => { if (o.watchOk !== undefined && !o.watchOk(id)) return false; classes.set(id, c); return true; }, unwatch: (id) => { classes.delete(id); } },
-      universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null },
+      universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null, pastEntryAge: () => false },
       onEviction: (e) => o.records.push(e), log: { event: () => {} },
       // What Z10 reads back from the persisted eviction records.
-      restoreTails: () => o.records,
+      restoreTails: () => o.records.map((e, i) => ({ ...e, seq: BigInt(i) })),
     });
     return { w, classes };
   }
@@ -174,9 +174,15 @@ describe('Z09-41 (RT-12): eviction tails survive a restart', () => {
       { poolId: 'pc', atMs: T0 as UnixMs, reason: 'stale', tailUntilMs: (T0 + 7_000_000) as UnixMs },
     ];
     const r = mk({ now: () => now, records, watchOk: (id) => id !== 'pa', tailMaxPools: 1 });
-    // Evicted in the same ms, so restored by pool order: pa refused by M04; pb restored (the cap is 1); pc over the cap.
-    assert.deepEqual(r.w.postEvictionTail().map((t) => t.poolId), ['pb']);
-    assert.deepEqual(records.slice(3).map((e) => [e.poolId, e.reason, e.atMs, e.tailUntilMs]), [['pa', 'tail_restart_cut', now, null], ['pc', 'tail_restart_cut', now, null]]);
+    // Evicted in the same ms, so restored newest record (highest seq) first: pc restored (the cap is 1); pb and pa
+    // over the cap (pa would also be refused by M04).
+    assert.deepEqual(r.w.postEvictionTail().map((t) => t.poolId), ['pc']);
+    assert.deepEqual(records.slice(3).map((e) => [e.poolId, e.reason, e.atMs, e.tailUntilMs]), [['pb', 'tail_restart_cut', now, null], ['pa', 'tail_restart_cut', now, null]]);
+    // With room for all, the one M04 refuses is cut and the rest restored.
+    const all = records.slice(0, 3).map((e) => ({ ...e }));
+    const r3 = mk({ now: () => now, records: all, watchOk: (id) => id !== 'pa', tailMaxPools: 3 });
+    assert.deepEqual(r3.w.postEvictionTail().map((t) => t.poolId).sort(), ['pb', 'pc']);
+    assert.deepEqual(all.slice(3).map((e) => [e.poolId, e.reason]), [['pa', 'tail_restart_cut']]);
     const d: Ev[] = records.slice(0, 1).map((e) => ({ ...e }));
     assert.deepEqual(mk({ now: () => now, records: d, mode: 'degraded_reads' }).w.postEvictionTail(), []);
     assert.equal(d.at(-1)?.reason, 'tail_restart_cut');
@@ -196,8 +202,8 @@ describe('Z09-50: the restore skips tails cut before the restart and keeps each 
     const evictions: Array<{ poolId: string; reason: string }> = [];
     const w = createWatchlist({ config: { ...WATCHLIST_DEFAULTS, tailMaxPools: 2 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
       tracker: { watch: (id, c) => { classes.set(id, c); return true; }, unwatch: (id) => { classes.delete(id); } },
-      universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null }, onEviction: (e) => evictions.push(e), log: { event: () => {} },
-      restoreTails: () => records });
+      universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null, pastEntryAge: () => false }, onEviction: (e) => evictions.push(e), log: { event: () => {} },
+      restoreTails: () => records.map((e, i) => ({ ...e, seq: BigInt(i) })) });
     assert.deepEqual(w.postEvictionTail().map((t) => t.poolId).sort(), ['new', 'old']);
     assert.equal(classes.has('cut'), false, 'cut before the restart: not polled again');
     assert.equal(evictions.length, 0, 'nothing new to record');
@@ -207,5 +213,20 @@ describe('Z09-50: the restore skips tails cut before the restart and keeps each 
     w.recompute([]);
     assert.deepEqual(w.postEvictionTail().map((t) => t.poolId).sort(), ['new', 'p9']);
     assert.deepEqual(evictions.map((e) => [e.poolId, e.reason]), [['old', 'tail_capacity'], ['p9', 'left_slot']]);
+  });
+});
+
+describe('Z09-56: records of the same ms are ordered by seq', () => {
+  it('whatever the array order, the record with the higher seq decides', () => {
+    const run = (records: Array<{ poolId: string; atMs: UnixMs; seq: bigint; reason: string; tailUntilMs: UnixMs | null }>): string[] => createWatchlist({
+      config: WATCHLIST_DEFAULTS, nowMs: () => (T0 + 10) as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+      tracker: { watch: () => true, unwatch: () => {} }, universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null, pastEntryAge: () => false },
+      onEviction: () => {}, log: { event: () => {} }, restoreTails: () => records }).postEvictionTail().map((t) => t.poolId);
+    const evict = { poolId: 'p', atMs: T0 as UnixMs, seq: 1n, reason: 'budget', tailUntilMs: (T0 + 3_600_000) as UnixMs };
+    const cut = { poolId: 'p', atMs: T0 as UnixMs, seq: 2n, reason: 'tail_capacity', tailUntilMs: null };
+    assert.deepEqual(run([evict, cut]), []);
+    assert.deepEqual(run([cut, evict]), [], 'the cut (seq 2) decides in either order');
+    assert.deepEqual(run([{ ...cut, seq: 0n }, evict]), ['p']);
+    assert.deepEqual(run([evict, { ...cut, seq: 0n }]), ['p']);
   });
 });

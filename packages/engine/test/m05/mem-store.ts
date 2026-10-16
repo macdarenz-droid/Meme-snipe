@@ -36,8 +36,10 @@ export class MemStore implements CandidateStore {
   }
   window: Array<[number, number]> = [];
   failWindow = false;
+  corruptWindow = false;
   factsWindow = {
-    load: (): Array<[number, number]> => this.window.map((x) => [...x] as [number, number]),
+    load: (): Result<Array<[number, number]>, { code: 'E_CORRUPT' }> => (this.corruptWindow ? { ok: false, error: { code: 'E_CORRUPT' } }
+      : { ok: true, value: this.window.map((x) => [...x] as [number, number]) }),
     save: (w: Array<[number, number]>): Result<void, { code: 'E_WRITE' }> => {
       if (this.failWindow) return { ok: false, error: { code: 'E_WRITE' } };
       this.window = w.map((x) => [...x] as [number, number]);

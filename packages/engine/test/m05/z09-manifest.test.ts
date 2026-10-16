@@ -40,7 +40,8 @@ function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; at
   });
   for (let i = 0; i < 12; i++) {
     depth.set(pool(i), BigInt(100 + 10 * i) * SOL);
-    u.onDiscovery({ poolId: pool(i), baseMint: `mint-${i}`, quoteMint: MINTS.wsol, venue: 'pumpswap', verifiedOnChain: true, migratedAtMs: (T0 - 3 * H) as UnixMs });
+    // Each pool is found 30 min after its migration, inside PM-01's entry window (Z09-52 refuses pools past it).
+    u.onDiscovery({ poolId: pool(i), baseMint: `mint-${i}`, quoteMint: MINTS.wsol, venue: 'pumpswap', verifiedOnChain: true, migratedAtMs: (now - 30 * 60_000) as UnixMs });
     w.recompute(u.candidates());
     now += H;
   }
@@ -60,17 +61,19 @@ function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; at
 const asEvents = (ts: readonly Transition[]): ManifestEvent[] => ts.map((t) => ({ poolId: t.poolId, mint: t.mint, from: t.from, to: t.to, reason: t.reason, atMs: t.atMs }));
 
 describe('A-M05-03 acceptance (SYNTHETIC scripted day)', () => {
-  it('a scripted day: 12 pools eligible at different times and 3 evictions are listed with reasons; the SHA-256 equals the CoverageReport value', () => {
+  it('a scripted day: 12 pools eligible at different times and 7 evictions are listed with reasons; the SHA-256 equals the CoverageReport value', () => {
     const d = scriptedDay();
     const m = buildUniverseManifest({ dayUtc: DAY, events: asEvents(d.events), watchlistEvictions: d.tail, crossCheck: CC, migrationCoverage: MC, limitSet: LS, generatedAtMs: T0 + 86_400_000, late: false, prefilterOnly: true });
     assert.equal(m.eligible.length, 12);
     assert.deepEqual(m.eligible.map((e) => e.firstEligibleAtMs - T0), Array.from({ length: 12 }, (_, i) => 30 * 60_000 + i * H));
     assert.ok(m.eligible.every((e) => e.reason.startsWith('set=pm-01;fee=30bps;depth=') && e.reason.endsWith('phase0_unscreened')));
-    assert.equal(m.evicted.length, 3);
-    assert.deepEqual(m.evicted.map((e) => e.reason), ['budget', 'budget', 'stale']);
+    // Z09-53: each new in-window pool takes the slot of the oldest watched pool past PM-01's window (pools 0-3); then
+    // the budget drops to 5 (pools 4-6). The stale-first order is tested in z09-watchlist.test.ts.
+    assert.equal(m.evicted.length, 7);
+    assert.deepEqual(m.evicted.map((e) => e.reason), ['past_entry_age', 'past_entry_age', 'past_entry_age', 'past_entry_age', 'budget', 'budget', 'budget']);
     assert.ok(m.evicted.every((e) => e.tailUntilMs === e.atMs + 3_600_000));
-    assert.deepEqual(m.a24, { eligibleCount: 12, canonicalityUnknownCount: 0, maxSimultaneous: 12, upperBound: true });
-    assert.deepEqual(m.evicted.map((e) => e.poolId), [pool(0), pool(1), pool(3)]);
+    assert.deepEqual(m.a24, { eligibleCount: 12, canonicalityUnknownCount: 0, maxSimultaneous: 9, upperBound: true });
+    assert.deepEqual(m.evicted.map((e) => e.poolId), [0, 1, 2, 3, 4, 5, 6].map(pool));
     assert.deepEqual(m.limitSet, { id: 'pm01', paramHash: limitSetHash(LIMIT_SETS.pm01) });
     const { sha256, ...body } = m;
     assert.equal(sha256, manifestSha256(body));
