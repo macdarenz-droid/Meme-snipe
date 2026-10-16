@@ -461,7 +461,8 @@ ag_local() {
 # ag_attested DAY RET: the scan job's clean guard step (attest) passed DAY within the
 # last 30 min, for this run and attempt: ARCHIVE_GUARD_DIR/DAY reads "DAY RETENTION TIME
 # RUN_ID ATTEMPT FAILED", and DAY, RET, GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT all match;
-# FAILED (OF-6) is 1 when DAY had a counted scan failure since ARCHIVE_REARM_AT, else 0
+# FAILED (OF-6) is 1 when DAY had a counted scan failure since ARCHIVE_REARM_AT, 2 when
+# that failure is the one a FRESH-READ row may read past (ag_fresh_ok), else 0
 # (AG_PASS_FAILED). scan-day.sh and check-day.sh hold no token, so this is how the store,
 # history and order checks reach them.
 ag_attested() {
@@ -469,7 +470,7 @@ ag_attested() {
   [[ -n "${ARCHIVE_GUARD_DIR:-}" && -f "$f" ]] ||
     { ag_refuse "no archive guard pass for $1 (the guard step checks the store, the storage-stop marker, the history and the order)"; return 2; }
   read -r d r t id at fl < "$f"
-  [[ "$d" == "$1" && "$r" == "$2" && "$t" =~ ^[0-9]+$ && -n "${GITHUB_RUN_ID:-}" && "$id" == "${GITHUB_RUN_ID:-}" && "$at" == "${GITHUB_RUN_ATTEMPT:-}" && "$fl" =~ ^[01]$ ]] &&
+  [[ "$d" == "$1" && "$r" == "$2" && "$t" =~ ^[0-9]+$ && -n "${GITHUB_RUN_ID:-}" && "$id" == "${GITHUB_RUN_ID:-}" && "$at" == "${GITHUB_RUN_ATTEMPT:-}" && "$fl" =~ ^[012]$ ]] &&
     (( t <= $(ag_now) && $(ag_now) - t <= 1800 )) ||
     { ag_refuse "the archive guard pass for $1 is malformed, older than 30 min, or for another retention, run or attempt"; return 2; }
   AG_PASS_FAILED=$fl
@@ -495,6 +496,49 @@ ag_reread() {
     list+="$u"$'\n'
   done <<< "$(tr ',' '\n' <<< "$units")"
   printf '%s' "$list"
+}
+# ag_fresh_row DAY (OF-6 ruling 3 amendment, 2026-10-16): "ID RUN_ID" of the one pinned
+# FRESH-READ row for DAY, written only after the owner answered the spare-day question:
+#   | DATE | FRESH-READ id=ID day=DAY failedRun=RUN_ID toldAt=UTC-TIME ...
+# Refuses when DAY has no such row or more than one, when its id is used by another row,
+# when the row is malformed, or when toldAt is not a past UTC time (a placeholder fails).
+ag_fresh_row() {
+  local rows n id run told
+  rows=$(grep -E "^\| [^|]* \| FRESH-READ " "$ag_decisions" 2>/dev/null | grep -F " day=$1 " || true)
+  n=$(grep -c . <<< "$rows" || true)
+  [[ "$n" == 1 ]] || { ag_refuse "no single pinned FRESH-READ row for $1 in docs/DECISIONS.md ($n found); a failed day is not read fresh before the owner decides"; return 2; }
+  [[ "$rows" =~ ^\|\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ \|\ FRESH-READ\ id=([A-Za-z0-9._:-]+)\ day=$1\ failedRun=([0-9]+)\ toldAt=([^ |]+)( |$) ]] ||
+    { ag_refuse "the FRESH-READ row for $1 is malformed"; return 2; }
+  id=${BASH_REMATCH[1]} run=${BASH_REMATCH[2]} told=${BASH_REMATCH[3]}
+  [[ $(grep -cE "^\| [^|]* \| FRESH-READ id=$id " "$ag_decisions") == 1 ]] || { ag_refuse "the FRESH-READ id $id is used by more than one row"; return 2; }
+  told=$(ag_ts "$told") && (( told <= $(ag_now) )) || { ag_refuse "the FRESH-READ row $id has no past toldAt (UTC); the owner has not answered yet"; return 2; }
+  echo "$id $run"
+}
+# ag_fresh_ok DAY (with the token, after ag_history): the FRESH-READ row for DAY holds, its
+# failedRun is DAY's one counted scan failure since ARCHIVE_REARM_AT (so a fresh read
+# happens once: a second failure ends it), and that run read no archive unit. Its own
+# record shows that: attempt 1's job "scan (DAY)" restored no progress ("Open the progress
+# cache" skipped), its scan step succeeded (the scanner exited 0, so every planned unit
+# would have finished), its only failed step is "Trim the day to K3", and that step's log
+# reads "holds no finished units": 0 units finished, hence 0 planned and 0 read; only the
+# planner's probes went out (batch 1, data-scan run 38776359833, OF-FIX).
+ag_fresh_ok() {
+  local row id run jobs jid log
+  row=$(ag_fresh_row "$1") || return 2
+  read -r id run <<< "$row"
+  [[ "$(grep -F "$1 " <<< "${AG_FAILED_RUNS:-}" | grep -c .)" == 1 ]] && grep -qxF "$1 $run" <<< "${AG_FAILED_RUNS:-}" ||
+    { ag_refuse "FRESH-READ $id: $1's counted failures since ARCHIVE_REARM_AT are not exactly run $run"; return 2; }
+  jobs=$(ag_jobs "$run" 1) || { ag_refuse "FRESH-READ $id: the jobs of run $run cannot be read (fail closed)"; return 2; }
+  jobs=$(awk -F'\t' -v j="scan ($1)" '$1 == "job" { on = ($2 == j) } on' <<< "$jobs")
+  jid=$(awk -F'\t' 'NR == 1 && $1 == "job" && $3 == "failure" { print $4 }' <<< "$jobs")
+  [[ "$jid" =~ ^[0-9]+$ ]] && [[ "$(ag_scan_failed_steps <<< "$jobs")" == "Trim the day to K3" ]] &&
+    grep -qxF $'step\tScan (one lane, stops on 429)\tsuccess' <<< "$jobs" && grep -qxF $'step\tOpen the progress cache\tskipped' <<< "$jobs" ||
+    { ag_refuse "FRESH-READ $id: run $run is not a 0-unit failure of $1 (restored nothing, scan step passed, only the K3 trim failed)"; return 2; }
+  log=$("$ag_gh" api "repos/$ag_repo/actions/jobs/$jid/logs" 2>/dev/null) ||
+    { ag_refuse "FRESH-READ $id: the log of run $run's scan job cannot be read (fail closed)"; return 2; }
+  grep -q "holds no finished units" <<< "$log" ||
+    { ag_refuse "FRESH-READ $id: run $run's trim did not refuse for holding no finished units"; return 2; }
+  return 0
 }
 # ag_entry DAY: what scan-day.sh and check-day.sh check: ag_local plus ag_attested.
 ag_entry() {
@@ -817,7 +861,7 @@ ag_history() {
   AG_AC_RUNS=$(ag_runs archive-check.yml) || return 1
   AG_DS_RUNS=$(ag_runs data-scan.yml) || return 1
   AG_FAILS=0 AG_LAST_FAIL=0 AG_LANE_END=0 AG_LANE_RESUME="" AG_RESTARTS="" AG_FAIL_JOBS="" AG_FAIL_GROUPS="" AG_FOREIGN=0 AG_BUSY=0
-  AG_FAILED_DAYS=""
+  AG_FAILED_DAYS="" AG_FAILED_RUNS=""
   local failed_raw=""
   while IFS=$'\t' read -r id st co cr up at br sha ti; do
     [[ -n "$id" && "$st" == completed ]] || continue
@@ -905,7 +949,7 @@ ag_history() {
           events+="$kup F S $ids"$'\n'
           # OF-6: the day of a counted scan failure (its job "scan (DAY)")
           fd=$(sed -n $'s/^job\tscan (\\([0-9-]*\\))\t.*$/\\1/p' <<< "$jobs" | sed -n 1p)
-          [[ -n "$fd" ]] && failed_raw+="$kup $fd"$'\n'
+          [[ -n "$fd" ]] && failed_raw+="$kup $fd $id"$'\n'
         fi
       fi
     done
@@ -915,7 +959,10 @@ ag_history() {
     if [[ "$ev" == S ]]; then (( t > lastok )) && lastok=$t; else (( t > AG_LAST_FAIL )) && AG_LAST_FAIL=$t; fi
   done <<< "$events"
   # OF-6: the days with a counted scan failure since ARCHIVE_REARM_AT, one a line
-  AG_FAILED_DAYS=$(while read -r t fd; do [[ -n "$t" ]] && (( t >= rearm )) && echo "$fd"; done <<< "$failed_raw" | LC_ALL=C sort -u)
+  AG_FAILED_DAYS=$(while read -r t fd _; do [[ -n "$t" ]] && (( t >= rearm )) && echo "$fd"; done <<< "$failed_raw" | LC_ALL=C sort -u)
+  # OF-6 ruling 3 amendment (FRESH-READ): "DAY RUN_ID" of every counted scan failure since
+  # ARCHIVE_REARM_AT, one per run
+  AG_FAILED_RUNS=$(while read -r t fd fid; do [[ -n "$t" ]] && (( t >= rearm )) && echo "$fd $fid"; done <<< "$failed_raw" | LC_ALL=C sort -u)
   while read -r t ev kind ids; do
     [[ "$ev" == F ]] && (( t >= rearm )) && { AG_FAIL_JOBS+="$ids "; AG_FAIL_GROUPS+="$kind $ids"$'\n'; }
     [[ "$ev" == F ]] && (( t >= rearm && t > lastok )) && AG_FAILS=$(( AG_FAILS + 1 ))
@@ -1028,12 +1075,18 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       ag_full "$2" "${4:-}" > "$3/.ret-$2" || { rm -f "$3/.ret-$2"; exit 2; }
       ret=$(cat "$3/.ret-$2"); rm -f "$3/.ret-$2"
       fl=0; grep -qxF "$2" <<< "${AG_FAILED_DAYS:-}" && fl=1
+      # OF-6 ruling 3 amendment: a failed day a FRESH-READ row covers may be read fresh once
+      if [[ $fl == 1 ]] && grep -qE "^\| [^|]* \| FRESH-READ .* day=$2 " "$ag_decisions" 2>/dev/null && ag_fresh_ok "$2"; then fl=2; fi
       echo "$2 $ret $(ag_now) ${GITHUB_RUN_ID:-none} ${GITHUB_RUN_ATTEMPT:-none} $fl" > "$3/$2" && echo "archive guard: $2 may be read ($ret)" | tee -a "$ag_summary" ;;
     failed)
       [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh failed DAY" >&2; exit 2; }
       ret=$(ag_local "$2") || exit 2
       ag_attested "$2" "$ret" || exit 2
       echo "$AG_PASS_FAILED"; exit 0 ;;
+    fresh)
+      # the FRESH-READ row for DAY again, without a token (scan-day.sh): "ID RUN_ID"
+      [[ $# -eq 2 ]] || { echo "usage: archive-guard.sh fresh DAY" >&2; exit 2; }
+      ag_fresh_row "$2"; exit $? ;;
     reread)
       [[ $# -eq 3 ]] || { echo "usage: archive-guard.sh reread ID DAY" >&2; exit 2; }
       ag_reread "$2" "$3"; exit $? ;;
