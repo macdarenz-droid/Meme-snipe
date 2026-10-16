@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 7:27 PM: Z10-13..14 ruled.**
+  - The installer writes /etc/bot ceilings.json and config.json (recorder-only values).
+  - With no research Ed25519 public key, M07 deletes nothing and halts at its cap. The key pair and the md-pull location are owner/arm-time steps.
+  - Switch-on gate: the receipt producer, the research key, and the measured bytes per day and days until the cap. The supervisor rules on the switch-on plan once those numbers are in.
 - **16 Oct 7:25 PM: Z10 plan ruled (Z10-1..12).**
   - Approved changes, each labelled after the supervisor reads the diff:
     - E2E_PATHS gains the engine packages;
