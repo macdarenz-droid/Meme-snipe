@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 3:25 PM: the `d36dd320` probation passed, and the off-server backup is confirmed** (owner's Telegram screenshot, phone time 3:23 PM).
+  - 12:59 AM: "deployed d36dd3208603. Worker restarted and up." No rollback alert and no other alert after it through 3:23 PM, so the 2 h probation passed.
+  - 4:24 AM: the first off-server backup arrived, `zeroed-20261015T170052Z.tar.age` (2.3 MB, encrypted to the owner's code). OFFSITE-ON works end to end.
+  - These owner asks are closed: the `zeroed-status` screenshot and the Telegram backup question. One owner wait is left: OF-REARM (instruct `session_01JfcmEyJ1AqL4BQbyoGAZHT`).
 - **16 Oct 2:30 PM: #330 round 2 verdicts.**
   - Review PASS: all of round 1 is closed, and Z09-17's eligible→prefiltered_out edge is kept as a SPEC-A clarification of ARCH 7.5 (U7).
   - Red team FAIL, with 2 new MAJORs (PR comment 6207422577):
