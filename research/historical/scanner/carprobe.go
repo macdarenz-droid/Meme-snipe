@@ -22,6 +22,9 @@ import (
 
 const probeWindow = 4 << 20
 
+// maxBlockWalk caps the walk from a resynchronised section to the next block node.
+const maxBlockWalk = 64 << 20
+
 // errNoBlock: no block node after the offset (only subset and epoch nodes follow).
 var errNoBlock = errors.New("no block after offset")
 
@@ -133,8 +136,13 @@ func (e *Epoch) firstBlockFrom(ctx context.Context, off int64) (*blockRef, error
 			p = q
 		}
 	}
-	// walk to the next block node
+	// walk to the next block node, at most maxBlockWalk bytes (OFX-9): a CAR region with
+	// no block node fails the epoch instead of being read to the end
+	start := p
 	for {
+		if p-start > maxBlockWalk {
+			return nil, fmt.Errorf("no block node within %d MiB after offset %d", maxBlockWalk>>20, base+int64(start))
+		}
 		if p >= len(buf)-10 {
 			if err := more(0); err != nil {
 				return nil, err

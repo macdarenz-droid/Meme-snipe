@@ -239,7 +239,7 @@ while true; do
   # and the 429 log (429.log) only. OF-3 ruling 24: $out/logs is saved with the progress,
   # sealed (cache-crypt.sh), so a failed day's reasons stay private and readable.
   slog="$out/logs"; mkdir -p "$slog"
-  rm -f "$out/disk-stop"
+  rm -f "$out/disk-stop" "$out/plan.txt"
   disk_watch "$$" &
   wpid=$!
   timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
@@ -259,7 +259,17 @@ while true; do
     { echo "### 429 log ($day)"; echo '```'; cat "$out/429.log"; echo '```'; } >> "$summary"
     mv "$out/429.log" "$out/429-$(date -u +%Y%m%dT%H%M%S).log"
   fi
+  # OF-FIX (OFX-4): the plan line ("N units planned (epochs ...)": a count and epoch
+  # numbers only) goes to the summary; a run that planned nothing, or a day left with no
+  # finished unit, fails here at the scan step and is never reported as scanned (OFX-2).
+  plan=$(head -1 "$out/plan.txt" 2>/dev/null | grep -E '^[0-9]+ units planned \(epochs [0-9 ]*\)$' || true)
+  [ -z "$plan" ] || echo "plan for $day: $plan" | tee -a "$summary"
   if [ $rc -eq 0 ]; then
+    nfin=$(compgen -G "$out/units/*/*/stats.json" | wc -l)
+    if [ -z "$plan" ] || [ "${plan%% *}" -eq 0 ] || [ "$nfin" -eq 0 ]; then
+      echo "scanner exited 0 but $day has ${plan:-no plan line} and $nfin finished units: no epoch covers the day (planning fault); the day fails" | tee -a "$summary"
+      exit 1
+    fi
     if [ -n "$reread" ] && [ "$ret" = K3 ]; then
       # OF-6: the re-read K3 units carry no k2 lines; the per-unit log marks them instead
       { grep -vE " ($(paste -sd'|' "$out/reread.units"))/[^/ ]+$" "$out/units.log" | grep -v '^reread '; sed 's/^/reread /' "$out/reread-units.txt"; } > "$out/units.log.tmp"

@@ -361,6 +361,13 @@ func main() {
 		if *newestFirst {
 			sort.Slice(units, func(i, j int) bool { return units[i].from > units[j].from })
 		}
+		// OFX-4: the plan line goes to the batch summary; scan-day.sh fails a day that plans 0
+		if err := os.WriteFile(filepath.Join(*out, "plan.txt"), []byte(planLine(units)+"\n"), 0o644); err != nil {
+			log.Fatal(err)
+		}
+		if len(units) == 0 {
+			log.Fatal("refused: 0 units left to plan")
+		}
 		todo := []unitSpec{}
 		for _, u := range units {
 			if _, err := os.Stat(filepath.Join(u.dir(*out), "stats.json")); err == nil {
@@ -458,56 +465,4 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])
 		os.Exit(2)
 	}
-}
-
-// planUnits lists the units covering blocks with block time in [t0, t1).
-func planUnits(out string, t0, t1 int64) ([]unitSpec, map[uint64]*Epoch, error) {
-	// Anchors: slot 452,500,000 had block time 1,790,914,653 and slot 452,645,252 had
-	// 1,790,953,452 (0.267 s per slot in Oct 2026). The estimate only picks candidate
-	// epochs, with a two-epoch margin for slot-time drift; real block times decide.
-	est := func(t int64) int64 { return 452500000 + (t-1790914653)*145252/38799 }
-	e0 := uint64(est(t0)/432000) - 2
-	e1 := uint64(est(t1)/432000) + 2
-	epochs := map[uint64]*Epoch{}
-	var units []unitSpec
-	ctx := context.Background()
-	for e := e0; e <= e1; e++ {
-		ep, err := OpenEpoch(e, filepath.Join(out, "cache"))
-		if err != nil {
-			if errors.Is(err, errNotInArchive) {
-				log.Printf("epoch %d: not in the archive yet", e)
-				continue
-			}
-			return nil, nil, err // never plan around an epoch we merely failed to reach
-		}
-		epochs[e] = ep
-		// Block time is interpolated between the epoch's first and (near) last block;
-		// two units of margin on each side absorb slot-time drift. Units outside the
-		// window are harmless: finalize keeps rows by block time.
-		first, err := ep.firstBlockFrom(ctx, 0)
-		if err != nil {
-			return nil, nil, fmt.Errorf("epoch %d first block: %w", e, err)
-		}
-		last, err := ep.firstBlockFrom(ctx, ep.CarSize-(64<<20))
-		if err != nil {
-			return nil, nil, fmt.Errorf("epoch %d last block: %w", e, err)
-		}
-		tAt := func(s uint64) int64 {
-			if last.Slot == first.Slot {
-				return first.BlockTime
-			}
-			return first.BlockTime + int64(float64(int64(s)-int64(first.Slot))*float64(last.BlockTime-first.BlockTime)/float64(last.Slot-first.Slot))
-		}
-		margin := int64(2 * unitSlots * 400 / 1000) // two units at up to 0.4 s per slot
-		for u := epochFirstSlot(e); u <= epochLastSlot(e); u += unitSlots {
-			lastSlot := u + unitSlots - 1
-			if lastSlot > epochLastSlot(e) {
-				lastSlot = epochLastSlot(e)
-			}
-			if tAt(u)-margin < t1 && tAt(lastSlot)+margin >= t0 {
-				units = append(units, unitSpec{e, u, lastSlot})
-			}
-		}
-	}
-	return units, epochs, nil
 }

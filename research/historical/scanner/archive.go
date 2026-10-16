@@ -20,7 +20,12 @@ import (
 	"time"
 )
 
-const archiveBase = "https://files.old-faithful.net"
+const defaultArchiveBase = "https://files.old-faithful.net"
+
+// archiveBase is the archive host. Production code never assigns it (no flag, no
+// environment variable); only tests point it at a fake archive (OF-FIX, OFX-5), and
+// TestArchiveBaseIsATestOnlySeam fails if a non-test file assigns it.
+var archiveBase = defaultArchiveBase
 
 var httpClient = &http.Client{
 	Timeout: 120 * time.Second,
