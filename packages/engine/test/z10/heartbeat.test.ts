@@ -116,4 +116,21 @@ describe('Z10-24, Z10-41, Z10-44 heartbeat health', () => {
       await r.rec.stop();
     }
   }, 120_000);
+
+  it('Z10-51: status() (and so /health) reads no database: the state codes come from the last loop tick', async () => {
+    const time = new VirtualTime(WALL_START);
+    const r = await startRig(tempDir('z10-hb-nodb'), { time, chain: new FakeChain(time, { seed: 51 }) });
+    try {
+      await r.run(5_000);
+      const db = r.rec.parts.db;
+      let reads = 0;
+      const orig = db.reader.bind(db);
+      db.reader = () => { reads++; return orig(); };
+      for (let i = 0; i < 20; i++) r.rec.status();
+      assert.equal(reads, 0);
+      db.reader = orig;
+    } finally {
+      await r.rec.stop();
+    }
+  }, 60_000);
 });

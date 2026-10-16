@@ -91,4 +91,28 @@ describe('Z10 daily jobs', () => {
       await r2.rec.stop();
     }
   }, 60_000);
+
+  it('ruling Z10-49: a recorder down for all of D+1 (no 00:10 run that day) builds both D and D+1 at D+2, oldest first, and the missing-manifest condition clears (fails before: D was never built)', async () => {
+    const time = new VirtualTime(Date.UTC(2026, 9, 6, 23, 40, 0));
+    const r = await startRig(tempDir('z10-catchup'), { time, chain: new FakeChain(time, { seed: 9 }) });
+    try {
+      await r.run(2_000);
+      const db = r.rec.parts.db;
+      const days: string[] = [];
+      const job = createDailyJob({
+        db, dataDir: r.paths.mdDir, evictions: kvEvictionLog(db, () => time.nowMs() as UnixMs), limits: [], limitSetId: 'x', prefilterOnly: true,
+        migrationCoverage: () => ({ chainMigrations: 0, seenByPumpPortal: 0, gapBps: 0 }), closedThrough: () => '2026-10-07T23',
+        append: () => 'queued', nowMs: () => time.nowMs() as UnixMs, log: { event: (_l, code, f) => { if (code === 'recorder.universe_manifest') days.push(String(f.day)); } },
+      });
+      const d2 = Date.UTC(2026, 9, 8, 0, 10, 0) as UnixMs;
+      assert.equal(job.manifestMissing(d2), true, 'D (2026-10-06) and D+1 are due and missing');
+      job.tick(d2);
+      assert.deepEqual(days, ['2026-10-06', '2026-10-07'], 'oldest first');
+      assert.equal(job.manifestMissing(d2), false);
+      job.tick((d2 + 1_000) as UnixMs);
+      assert.equal(days.length, 2, 'never twice');
+    } finally {
+      await r.rec.stop();
+    }
+  }, 60_000);
 });

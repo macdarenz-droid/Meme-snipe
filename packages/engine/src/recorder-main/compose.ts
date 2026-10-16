@@ -522,6 +522,9 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   let lastAgreeMono: number | null = null;
   let unanchored = false;
   let lastDisk: ReturnType<DiskManager['check']> | null = null;
+  /** Ruling Z10-51: the state codes as of the last loop tick, so /health and status() read no database. */
+  let tickCodes: readonly string[] = [];
+  let tickSolUsd = 'pending';
   /** Ruling Z10-41: the state codes, each exactly while its condition holds. */
   const activeCodes = (): string[] => {
     const out: string[] = [];
@@ -578,6 +581,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       if (unanchoredNow) log.event('critical', 'recorder.unanchored', fields); else log.event('info', 'recorder.anchored', fields);
       queue.append({ stream: 'decision', recvMs: now, slot: null, commitment: null, source: 'recorder', payload: { kind: 'recorder_clock', anchored: !unanchoredNow, anchorAgeMs: fields.anchor_age_ms, anchorSlot: a === null ? null : fields.anchor_slot } });
     }
+    await guard('active_codes', () => { tickCodes = activeCodes(); if (tickSolUsd === 'pending') tickSolUsd = solUsdCheck()?.result ?? 'pending'; });
     rp.tick();
     const trouble = clockTrouble as { sinceMs: number; alerted: boolean } | null;
     if (trouble !== null && !trouble.alerted && mono - trouble.sinceMs >= CLOCK_ALERT_MS) {
@@ -644,10 +648,10 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         releaseId: p.releaseId, startedAtMs, anchored: chain.ready(),
         anchor: chain.anchor() === null ? null : { slot: (chain.anchor() as { slot: Slot }).slot.toString(), providers: (chain.anchor() as { providers: readonly string[] }).providers },
         mode: rp.monitor.mode(), providers: rp.labels, watched: (tracker as PoolTracker<CpPoolState>).ready().length, halted: writer.haltReason(),
-        queueDepth: queue.stats().queueDepth, lastTickMs, solUsdCheck: solUsdCheck()?.result ?? 'pending',
+        queueDepth: queue.stats().queueDepth, lastTickMs, solUsdCheck: tickSolUsd,
         newestStoredSlot: newestStoredSlot === null ? null : newestStoredSlot.toString(),
         criticalCodes: [...criticalAt].filter(([c, at]) => !STATE_CODES.has(c) && nowMs() - at <= CRITICAL_ACTIVE_MS).map(([c]) => c).sort(),
-        activeCodes: activeCodes(), lastTickMonoMs: lastTickMono, monoMs: p.scheduler.nowMs(), startedMonoMs: startedMono,
+        activeCodes: [...tickCodes], lastTickMonoMs: lastTickMono, monoMs: p.scheduler.nowMs(), startedMonoMs: startedMono,
         anchorAgeMs: Math.round(p.scheduler.nowMs() - (lastAgreeMono ?? startedMono)),
       }),
       async stop(): Promise<void> {

@@ -95,4 +95,16 @@ describe('Z10-15 verification reads: P1, capped a UTC day', () => {
     assert.ok(b.verifies() > 0);
     b.tracker.stop();
   });
+
+  it('Z10-50: a save that throws logs one warning, keeps the in-memory count (the cap still holds) and loses no poll (fails before: the throw ended the batch)', async () => {
+    const store = { load: () => null, save: () => { throw Object.assign(new Error('disk'), { code: 'SQLITE_FULL' }); } };
+    const s = await setup({ verifyDailyCap: 3 }, store);
+    await s.time.advance(60_000);
+    assert.equal(s.verifies(), 3, 'the cap still bounds the reads');
+    assert.equal(s.capLines(), 1);
+    assert.equal(s.log.lines.filter(([l, c]) => l === 'warn' && c === 'm04.verify_count_save_failed').length, 1);
+    assert.ok(s.reader.calls.filter((c) => c.priority === 2).length >= 50, 'the polls kept running');
+    assert.ok(!s.log.lines.some(([, c]) => c === 'm04.internal_error'));
+    s.tracker.stop();
+  });
 });

@@ -285,6 +285,20 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   let verifyDay = savedVerify?.day ?? -1;
   let verifiesToday = savedVerify?.count ?? 0;
   const dayNow = (): number => Math.floor(deps.clock.nowMs() / 86_400_000);
+  /**
+   * Ruling Z10-50: a save that fails logs one warning (until a save works again) and keeps the in-memory count, which
+   * still bounds the reads; it never throws into the poll batch.
+   */
+  let saveFailing = false;
+  const saveVerifyCount = (day: number): void => {
+    try {
+      deps.verifyCount?.save({ day, count: verifiesToday });
+      saveFailing = false;
+    } catch (e) {
+      if (!saveFailing) deps.log.event('warn', 'm04.verify_count_save_failed', { error_code: thrownCode(e) });
+      saveFailing = true;
+    }
+  };
 
   /**
    * MINOR-R6 and MAJOR-R6b (Z07-22): lag against max(the clock's estimate, M15's highest slot seen when it is within
@@ -539,13 +553,13 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       // entries stay refused (the Z07 fail-closed behaviour). One critical line a day.
       if (verifiesToday === settings.verifyDailyCap) {
         verifiesToday++;
-        deps.verifyCount?.save({ day, count: verifiesToday });
+        saveVerifyCount(day);
         deps.log.event('critical', 'm04.verify_cap_reached', { cap: settings.verifyDailyCap, day: new Date(day * 86_400_000).toISOString().slice(0, 10) });
       }
       return;
     }
     verifiesToday++;
-    deps.verifyCount?.save({ day, count: verifiesToday });
+    saveVerifyCount(day);
     verifying = true;
     lastVerifyMs = now;
     // Ruling Z10-15: P1, so a metered peer (the backup) can confirm or refute (M14 refuses P2+ there).

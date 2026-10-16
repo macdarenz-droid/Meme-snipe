@@ -218,7 +218,9 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   const died = deathKind(hb.last_exit);
   if (died !== null && !(num(hb.uptime_s) && hb.uptime_s >= 86_400)) out.push({ key: 'last_exit', text: `Worker's last process ended in ${died === 'oom' ? 'a memory limit' : 'a crash'} (${String(hb.last_exit).slice(0, 80)}).` });
   const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
-  if (critical.length > 0) out.push({ key: 'worker_critical', text: `Worker critical: ${critical.join('; ')}.` });
+  // Ruling Z10-48: one key per critical entry (the recorder sends codes; WORKER-1 free text), so a code held for days
+  // never hides a new one: each gets its own ALERT, repeats and CLEARED in planAlerts.
+  for (const c of [...new Set(critical.map((x) => x.slice(0, 80)))]) out.push({ key: `worker_critical:${c}`, text: `Worker critical: ${c}.` });
   return out;
 }
 

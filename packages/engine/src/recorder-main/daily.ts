@@ -48,6 +48,10 @@ export function createDailyJob(o: {
   const has = (table: 'universe_manifest' | 'coverage_report', day: string): boolean =>
     o.db.reader().get(`SELECT 1 AS x FROM "${table}" WHERE "day_utc" = ?`, day) !== undefined;
   let lastDay = '';
+  /** Ruling Z10-49: catch-up days already recorded or refused in this process. */
+  const settled = new Set<string>();
+  let recordedCount = 0;
+  let missingMemo: { minute: number; recorded: number; missing: boolean } | null = null;
 
   const manifest = (day: string, dayStart: number, now: number): string | null => {
     const row = o.db.reader().get('SELECT "sha256" FROM "universe_manifest" WHERE "day_utc" = ?', day) as { sha256: string } | undefined;
@@ -68,37 +72,61 @@ export function createDailyJob(o: {
       return null;
     }
     o.db.withTx((tx) => { repos.universe_manifest.insert(tx, { dayUtc: day, sha256: m.sha256, path: `md:universe_manifest/${day}`, createdAt: now as UnixMs }); });
+    recordedCount++;
     o.log.event('info', 'recorder.universe_manifest', { day, sha256: m.sha256, eligible: m.a24.eligibleCount, late: m.late });
     return m.sha256;
   };
 
   return {
     manifestMissing(nowMs: UnixMs): boolean {
-      for (let k = 1; k <= 7; k++) {
-        const dayStart = Math.floor(nowMs / DAY_MS) * DAY_MS - k * DAY_MS;
-        if (dayStart + DAY_MS <= firstStart) break;
-        if (nowMs < dayStart + DAY_MS + LATE_AFTER_MS) continue;
-        if (!has('universe_manifest', new Date(dayStart).toISOString().slice(0, 10))) return true;
-      }
-      return false;
+      // At most one look a minute (the loop asks every second); a manifest recorded since clears it at once.
+      const minute = Math.floor(nowMs / 60_000);
+      if (missingMemo !== null && missingMemo.minute === minute && missingMemo.recorded === recordedCount) return missingMemo.missing;
+      const missing = missingNow(nowMs);
+      missingMemo = { minute, recorded: recordedCount, missing };
+      return missing;
     },
     tick(nowMs: UnixMs): void {
-      const day = new Date(nowMs - DAY_MS).toISOString().slice(0, 10);
-      const dayStart = Date.parse(`${day}T00:00:00.000Z`);
-      if (day === lastDay || dayStart + DAY_MS <= firstStart) return;
-      const sha = manifest(day, dayStart, nowMs);
-      if (sha === null || has('coverage_report', day)) { lastDay = day; return; }
-      const done = runDailyCoverage({
-        dataDir: o.dataDir, nowMs, universeManifestSha256: sha, closedThrough: o.closedThrough,
-        append: (report: CoverageReport, atMs: UnixMs) => { o.append({ stream: 'coverage', recvMs: atMs, slot: null, commitment: null, source: 'm07', payload: report }); },
-        save: (report: CoverageReport) => {
-          o.db.withTx((tx) => { repos.coverage_report.insert(tx, { dayUtc: report.dayUtc, json: JSON.stringify(report), lowCoverage: report.lowCoverage, manifestSha256: sha, createdAt: nowMs }); });
-        },
-      });
-      if (done !== null) {
-        o.log.event('info', 'recorder.coverage_report', { day, low_coverage: done.report.lowCoverage });
-        lastDay = day;
-      }
+      tickNow(nowMs);
     },
   };
+
+  function missingNow(nowMs: UnixMs): boolean {
+    for (let k = 1; k <= 7; k++) {
+      const dayStart = Math.floor(nowMs / DAY_MS) * DAY_MS - k * DAY_MS;
+      if (dayStart + DAY_MS <= firstStart) break;
+      if (nowMs < dayStart + DAY_MS + LATE_AFTER_MS) continue;
+      if (!has('universe_manifest', new Date(dayStart).toISOString().slice(0, 10))) return true;
+    }
+    return false;
+  }
+
+  function tickNow(nowMs: UnixMs): void {
+    // Ruling Z10-49: every missing manifest of the 7-day window before yesterday, oldest first, so a recorder that was
+    // down across a day boundary never leaves a day that cannot clear. A day found recorded, or refused once in this
+    // process (its critical line already raised), is not looked at again.
+    for (let k = 7; k >= 2; k--) {
+      const ds = Math.floor(nowMs / DAY_MS) * DAY_MS - k * DAY_MS;
+      const d = new Date(ds).toISOString().slice(0, 10);
+      if (ds + DAY_MS <= firstStart || settled.has(d)) continue;
+      if (!has('universe_manifest', d)) manifest(d, ds, nowMs);
+      settled.add(d);
+    }
+    const day = new Date(nowMs - DAY_MS).toISOString().slice(0, 10);
+    const dayStart = Date.parse(`${day}T00:00:00.000Z`);
+    if (day === lastDay || dayStart + DAY_MS <= firstStart) return;
+    const sha = manifest(day, dayStart, nowMs);
+    if (sha === null || has('coverage_report', day)) { lastDay = day; return; }
+    const done = runDailyCoverage({
+      dataDir: o.dataDir, nowMs, universeManifestSha256: sha, closedThrough: o.closedThrough,
+      append: (report: CoverageReport, atMs: UnixMs) => { o.append({ stream: 'coverage', recvMs: atMs, slot: null, commitment: null, source: 'm07', payload: report }); },
+      save: (report: CoverageReport) => {
+        o.db.withTx((tx) => { repos.coverage_report.insert(tx, { dayUtc: report.dayUtc, json: JSON.stringify(report), lowCoverage: report.lowCoverage, manifestSha256: sha, createdAt: nowMs }); });
+      },
+    });
+    if (done !== null) {
+      o.log.event('info', 'recorder.coverage_report', { day, low_coverage: done.report.lowCoverage });
+      lastDay = day;
+    }
+  }
 }
