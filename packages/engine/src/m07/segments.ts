@@ -42,7 +42,7 @@ export const TAKE_MAX = 5_000;
 /** The node:fs functions the writer uses; tests inject failures through it. */
 export type WriterFs = Pick<typeof nodeFs,
   'mkdirSync' | 'openSync' | 'writeSync' | 'fsyncSync' | 'closeSync' | 'renameSync' | 'readFileSync' | 'existsSync' | 'readdirSync'
-  | 'ftruncateSync' | 'fchmodSync' | 'chmodSync' | 'unlinkSync'>;
+  | 'ftruncateSync' | 'fchmodSync' | 'chmodSync' | 'unlinkSync' | 'statSync'>;
 
 export type WriterLogLevel = 'info' | 'warning' | 'error' | 'critical';
 export type WriterLog = (level: WriterLogLevel, code: string, fields: Record<string, string | number>) => void;
@@ -135,13 +135,23 @@ function writeAtomic(fs: WriterFs, path: string, dir: string, text: string): voi
   try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); }
 }
 
+/** The setgid bit: a folder created in a setgid folder keeps its group (the host's `zeroed-pull`, PATHS-FIX). */
+export const SETGID = 0o2000;
+
+/**
+ * Creates each missing folder at DIR_MODE. Card Z10 (found by the ops e2e's md-pull run): a folder inherits the setgid
+ * bit and the group of a setgid parent (`/var/lib/zeroed-md` is 2750, group `zeroed-pull`), but chmod to 0750 cleared
+ * the bit, so hour folders and their segments got the worker's group and the pull account could read none of them.
+ * The inherited bit is now kept; nothing else is widened.
+ */
 function mkdirs(fs: WriterFs, root: string, rel: string): void {
   let at = root;
   for (const part of rel.split('/')) {
+    const parent = at;
     at = join(at, part);
     if (!fs.existsSync(at)) {
       fs.mkdirSync(at, { mode: DIR_MODE });
-      fs.chmodSync(at, DIR_MODE);
+      fs.chmodSync(at, DIR_MODE | (fs.statSync(parent).mode & SETGID));
     }
   }
 }
