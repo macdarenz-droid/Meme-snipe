@@ -138,6 +138,19 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 7:25 PM: Z10 plan ruled (Z10-1..12).**
+  - Approved changes, each labelled after the supervisor reads the diff:
+    - E2E_PATHS gains the engine packages;
+    - a separate soak job (≤ 45 min);
+    - the RPC URL handoff (same protections as the existing secrets, plus a no-leak test);
+    - venue gets an in-repo PDA derivation, cross-checked against kit, and kit moves to dev;
+    - the cooldown_until index.
+  - The uploader never deletes; only M07 deletes, on a PullReceipt. The production receipt producer must be named, and the full cycle proven in the e2e. If none exists, that is a switch-on blocker for the supervisor to rule on.
+  - Compressed-time soak accepted, with its limits; the M1 on-server 48 h run is the wall-time proof.
+  - The real-data re-run of M03-02/M08 is an M1 exit item.
+  - host-config stays "stub"; the switch is a one-line PR after the owner's three-red-team step.
+  - Owner step at switch-on: deliver the RPC URLs with a fresh deploy code and a Deploy run.
+  - Builder estimate: 2–3 working days to a PR (uncertain).
 - **16 Oct 7:18 PM: #330 Z09 merged at `58d703d9`** (the new base, ls-remote). CI was green on `bf07b3cc` (labelled run 38865250353). M1: 3 of 4 cards merged (Z07, Z08, Z09).
   - Archived: the Z09 builder `session_01NgT7ERwftV1VocEMPCqogA`, reviewer `session_01Tkud9G4i96s2eFWamxoyTN` and red team `session_01E2i4Mw915Ea8td4gUtq5AM`.
   - M1 card 4, Z10 Recorder on the server: builder `session_01SBu5hso3UgFgYVdWTfLnBb` (Opus, Auto), branch `claude/z10-recorder` from `58d703d9`. It plans first.
