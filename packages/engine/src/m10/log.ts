@@ -3,4 +3,5 @@ import type { LogCodes } from '../m27/log.ts';
 
 export const M10_LOG_CODES = {
   'm10.param_set_loaded': { fields: { name: 'name', fill_model_version: 'name', cost_model_version: 'name' } },
+  'm10.cost_unpriced': { fields: { reason: 'string' } },
 } as const satisfies LogCodes;

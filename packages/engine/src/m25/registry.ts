@@ -5,7 +5,9 @@
 // A module built later adds its field list to FIELD_LISTS, in review.
 import type { Config, ConfigFieldSchema } from '@bot/types';
 import { M03_CONFIG } from '../m03/config.ts';
+import { M05_CONFIG } from '../m05/config.ts';
 import { M07_CONFIG } from '../m07/config.ts';
+import { M08_CONFIG } from '../m08/config.ts';
 import { M10_CONFIG } from '../m10/config.ts';
 import { M14_CONFIG } from '../m14/config.ts';
 import { M15_CONFIG } from '../m15/config.ts';
@@ -13,7 +15,7 @@ import { M24_CONFIG } from '../m24/config.ts';
 import { M27_CONFIG } from '../m27/config.ts';
 import { fieldProblem, type ConfigFieldDef } from './fields.ts';
 
-const FIELD_LISTS = [M03_CONFIG, M07_CONFIG, M10_CONFIG, M14_CONFIG, M15_CONFIG, M24_CONFIG, M27_CONFIG] as const;
+const FIELD_LISTS = [M03_CONFIG, M05_CONFIG, M07_CONFIG, M08_CONFIG, M10_CONFIG, M14_CONFIG, M15_CONFIG, M24_CONFIG, M27_CONFIG] as const;
 type Field = (typeof FIELD_LISTS)[number][number];
 
 /** Every registered key. */

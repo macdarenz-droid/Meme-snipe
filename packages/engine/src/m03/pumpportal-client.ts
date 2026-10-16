@@ -133,7 +133,7 @@ export function createPumpPortalClient(deps: PumpPortalDeps): PumpPortalClient {
         if (socket !== mine) return;
         socket = null;
         open -= 1;
-        deps.log.event('warn', 'm03.pp_disconnected', { code });
+        deps.log.event('warn', 'm03.pp_disconnected', { close_code: code });
         if (stopped) return;
         const now = mono();
         if (now - openedAt >= cfg.backoffMaxMs) attempt = 0;               // a connection that held resets the back-off
@@ -152,7 +152,7 @@ export function createPumpPortalClient(deps: PumpPortalDeps): PumpPortalClient {
     try {
       mine = deps.connect(url, handlers);
     } catch {
-      deps.log.event('warn', 'm03.pp_disconnected', { code: -1 });
+      deps.log.event('warn', 'm03.pp_disconnected', { close_code: -1 });
       schedule(backoffMs(deps.rng, attempt++, cfg.backoffMaxMs));
       return;
     }

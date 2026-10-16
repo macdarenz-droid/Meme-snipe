@@ -4005,3 +4005,42 @@ Builder notes (for review):
   - `crossCheck` logs `other_dex_pairs` and `known_pools_under_other_dex`. A pool we know that comes back under a dexId not configured as PumpSwap's sets `status = 'dex_id_mismatch'`, which is a warning. A partial answer stays `partial`, with the count in the log.
   - Budget: the register's 300/min for `/tokens` is UNVERIFIED; the only limit on the official reference page is 60/min. Under the owner's 50% rule, every DexScreener bucket runs at 30/min (`SERVICE_LIMITS.dexscreener.pairs` from 150 to 30). This is pinned in `z08-services.test.ts`, the 31st call waits, and SPEC-A C-95 and A-M14-03 note the open VERIFY. This replaces the 150/min of Z08-10.
   - The Shyft (≤ 5 req/s) and Chainstack (≤ 0.5 req/s) pins are duplicated into `z08-services.test.ts`, as Z08-10 said; Z03 keeps its own.
+
+### Z09 Universe and study (builder readings on card Z09, 2026-10-16; the supervisor rules on each in review)
+
+Builder readings are marked as such. None changes a risk limit, a gate or a strategy rule.
+
+- **Z09-B1 · Bar open is the carried state** (A-M08-01). A bar opens at the last state seen before `startMs`, or at its first snapshot when there is none. The recorder writes changed snapshots only, so a replay cannot see an unchanged poll before a bar's first change. Every such poll returned the carried state, so this is the state at the bar's start in both modes. With it, live and replay OHLC, depth and flow are equal by construction. Flow is close real vault − carried real vault, the telescoped sum of logic 3.
+- **Z09-B2 · Replay snapshot counts** (A-M08-01 logic 4). A minute's `successfulPolls` are spread over its bars:
+  - each bar keeps its changed snapshots;
+  - each unchanged poll goes to the bar furthest below an even share of the minute (`spreadPolls`).
+
+  At a steady poll rate this equals live within ±1, which the acceptance test pins on a synthetic hour. Where in a minute a poll FAILED is not recorded, so with failures only the minute totals match. That is tested, and it is an open point for M07: per-bar counts would need poll timestamps in `poll_counts`. A replay bar waits for its minute's `poll_counts` until 120 s past the minute (`replayPollWaitMs`), then counts its changed snapshots only. A `skippedMinutes` record also counts changed snapshots only.
+- **Z09-B3 · One median rule** (A-M08-02). For an even count, the lower middle element is used for closes (logic 4), for the median of returns and for the MAD.
+- **Z09-C1 · Strict-row priority never below lean** (A-M10-03 logic 9). The strict row's priority is max(lean priority, entry cap). Under 25 M lamports of notional, the cap (20 bps) is below the lean priority of 5,000, and taking the cap there would make strict cheaper than lean. That would break the property lean ≤ strict ≤ conservative.
+- **Z09-C2 · Rung-2 term uses the row's priority.** The lean row uses the lean priority and the strict row its own. Table 2-A's acceptance disables the term.
+- **Z09-C3 · Conservative fixed share counts the dust close** with the unrecovered rent (both are fixed lamports). This only makes the `k`% exclusion stricter.
+- **Z09-C4 · Unpriceable round trip is infinite.** Every quote refusal, not only `E_ZERO_OUTPUT`, gives `INFINITE_COST_BPS` (1,000,000), never 0. This covers fee unknown and a sell above the real vault. C-85: tests hit `E_ZERO_OUTPUT` on the buy and on the sell, and `E_INVALID_SLIPPAGE` for missing or out-of-range strict-row slippage. Z09 adds no `minOut`, decision or exit caller, so C-88 and Z07-37's `flooredReverts` have no Z09 holder (as Z08-12).
+- **Z09-C5 · Size sweep depth.** The sweep prices on the pool at min(real, effective) quote depth with the same spot price: real vault only, base scaled. The caller builds that state. The depth cap is 0.5% of that depth.
+- **Z09-U1..U3 · Edges ARCH 7.5 does not name** (A-M05-01):
+  - `stale` → `evicted` (A-M05-02 evicts stale pools first);
+  - an expired timed blacklist re-runs the prefilter;
+  - a screening-backlog drop goes to `rejected` (reason `backlog`, retried after 6 h).
+  The edge table is `ALLOWED` in `m05/universe.ts`. A blacklist's expiry is kept in the record's `retryAtMs` (null: permanent), so it survives a restart.
+- **Z09-U4 · No schema change.** The Z09 candidate fields (migration time, depth, state start, retry time) are stored with the reasons in `candidate.reasons` JSON as `{ r, m, d, s, t }`. They are public market data and the bot's own state. A reviewer may prefer columns through an M24 migration.
+- **Z09-U5 · Manifest eligibility.** A pool counts as eligible from `eligible` on, and while evicted for budget, staleness or degraded reads: it still passed the prefilter and is "eligible again later". It does not count while evicted after a failed re-screen.
+  - NEW manifest fields: `late`, `a24.upperBound` (Phase 0 is prefilter-only), `crossCheck.otherDexPairs`, `crossCheck.knownPoolsUnderOtherDex` and `migrationCoverage` (A-M03-02's definition of done). Each is listed in `m05/manifest.ts`.
+  - A late manifest rebuilt from `candidate_event` has no tail ends (they are not in M24).
+- **Z09-U6 · Phase 0 prefilter limits.** MR-01 is parked (C-76), so the default limit set is PM-01's: 125 bps, 85 SOL, 20 min after migration. MR's set stays available. A candidate passes if it meets any configured set, and the manifest reason names the set. While D30 is parked, age is proven only by the migration's block time (C-15 (a)).
+- **Z09-M1 · Backfill cursor and first start** (A-M03-02).
+  - First start, with no cursor: only the newest page is read (`migrations_since_start`, Z08-1).
+  - When the page cap stops a catch-up, the run saves `pendingTop` and `before`. The next run continues down to `until`, so nothing is skipped.
+  - A failed page or transaction read ends the run and the cursor does not move.
+  - A pool not visible yet is retried on the next 10 runs, then dropped as `not_found`.
+  - A PumpPortal notice is retried 3 times at 2 s.
+- **Z09-R1 · Phase 0 report rows.** The strict and conservative rows shown for a size are those of the lean-median pool.
+- **Z09-R2 · Strict-row slippage** is PM-01's pre-registered 150 / 300 bps (`research/pm01/PREREG.md:69` @ 3bde178).
+- **Z09-R3 · Parked parts of A-M13-01 are not built.** A-24, A-24b, the move rule and the kill check are not built. The hurdle by size is information only (`decides: false`).
+- **Z09 defects fixed in Z08 code** (each test fails before and passes after):
+  - `M03_LOG_CODES` did not declare `other_dex_pairs` or `known_pools_under_other_dex`, so M27 wrote them as `[redacted]`. They are now declared, and `CrossCheckResult.knownPoolsUnderOtherDex` carries the count to the manifest.
+  - `m03.pp_disconnected` declared the reserved field `code`, so `mergeLogCodes(M03_LOG_CODES)` threw. The field is now `close_code`.

@@ -44,6 +44,8 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
 
   it('CA-24: the keys that do not affect returns are listed here for review', () => {
     assert.deepEqual(CONFIG_FIELDS.filter((f) => !f.affectsReturns).map((f) => f.key), [
+      // Z09 (A-M08-03 retention, A-M03-02 backfill pacing; listed sorted below): chart storage and read pacing.
+      'bars.bar_1m_retention_days', 'discovery.backfill.interval_ms', 'discovery.backfill.max_pages_per_run',
       // Z08 (A-M03-01, A-M03-04, A-M07-02/03, A-M14-03/05): discovery sources, recorder storage and provider accounting;
       // recording plumbing, not a strategy parameter.
       'discovery.dexscreener.enabled', 'discovery.dexscreener.max_calls_per_day', 'discovery.dexscreener.pumpswap_dex_ids',
@@ -64,6 +66,8 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
       'rpc.max_response_bytes', 'rpc.p0_reserve_bps', 'rpc.providers_file', 'rpc.reserve_block_units', 'rpc.send_enabled',
       'services.coingecko.base_url', 'services.coingecko.monthly_cap', 'services.dexscreener.base_url', 'services.jupiter.base_url',
       'services.rugcheck.base_url',
+      // Z09 (A-M05-01/02 "Config": affectsReturns no): Phase 0 screening switch (C-44), staleness, backlog, the tail.
+      'universe.screen_backlog_max', 'universe.screening_required', 'universe.stale_to_state_ms', 'universe.tail_extra_ms', 'universe.tail_max_pools',
     ]);
   });
 

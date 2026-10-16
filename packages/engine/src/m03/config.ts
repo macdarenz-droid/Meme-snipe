@@ -1,6 +1,7 @@
 // M03 discovery config (SPEC-A A-M03-01 and A-M03-04 "Config"; card Z08). PumpPortal is off by default (owner,
 // 2026-10-07; ruling Z08-2). `paid_methods` must stay empty: `checkPumpPortalConfig` refuses anything else at start.
 import { ALL_MODES, type ConfigFieldDef } from '../m25/fields.ts';
+import { BACKFILL_DEFAULTS } from './backfill.ts';
 import { PUMPPORTAL_DEFAULTS } from './pumpportal.ts';
 
 const base = { section: 'discovery', unit: null, displayUnit: null, min: null, max: null, step: null, enumValues: null, secret: false,
@@ -17,6 +18,10 @@ export const M03_CONFIG = [
     default: PUMPPORTAL_DEFAULTS.silenceAlertMs, label: 'PumpPortal silence', description: 'Silence while backfill sees migrations that marks the stream down.' },
   { ...base, key: 'discovery.pumpportal.paid_methods', type: 'list', default: [], label: 'PumpPortal paid methods',
     description: 'Must be empty: paid subscriptions are never sent.' },
+  { ...base, key: 'discovery.backfill.interval_ms', type: 'duration_ms', unit: 'ms', displayUnit: 'ms', min: '15000', max: '600000', step: '1',
+    default: BACKFILL_DEFAULTS.intervalMs, label: 'Migration check', description: 'How often the chain is read for new migrations.' },
+  { ...base, key: 'discovery.backfill.max_pages_per_run', type: 'int', min: '1', max: '100', step: '1', default: BACKFILL_DEFAULTS.maxPagesPerRun,
+    label: 'Migration pages a run', description: 'Pages of 1,000 signatures read in one run; the rest wait for the next.' },
   { ...base, key: 'discovery.dexscreener.enabled', type: 'bool', default: true, label: 'DexScreener check',
     description: 'Daily coverage cross-check of recorded migrations against DexScreener.' },
   { ...base, key: 'discovery.dexscreener.max_calls_per_day', type: 'int', min: '0', max: '5000', step: '1', default: 500,
