@@ -222,7 +222,9 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
 
   // ---- M07: recovery, then the queue with every stream's next seq, then the writer. ----
   const wlog = m07Log(log);
-  const dataDir = configValue(cfg, 'recorder.data_dir') === p.paths.mdDir ? p.paths.mdDir : p.paths.mdDir;
+  // The paths come from main.ts (ENGINE_PATHS on the host, the trial's scratch folder in worker-smoke), so the folder the
+  // unit may write is always the one used; `recorder.data_dir` keeps its default, which is ENGINE_PATHS.mdDir.
+  const dataDir = p.paths.mdDir;
   const recovery = SegmentWriter.recover({ dataDir, nowMs: nowMs(), log: wlog });
   const queue = new RecorderQueue({ firstSeq: recovery.nextSeq, log: wlog, config: { pollCloseGraceMs: configValue(cfg, 'bars.close_grace_ms') } });
   // The stored 1-minute bars (M08 `bar_1m`). The 15 s base bars feed only features and strategies, none of which runs in

@@ -16,7 +16,7 @@
 //   3. peak RSS <= LIMIT_RSS (75% of the unit's MemoryMax, passed in);
 //   4. no `m27.unknown_code` line, no `recorder.internal_error`, no unhandled rejection.
 // Usage: node --expose-gc --no-warnings scripts/soak/run.mjs [hours=48] [outDir] [rssLimitMiB=600]
-import { mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Pubkey, UnixMs } from '@bot/types';
@@ -63,7 +63,11 @@ const clones: Array<{ p: (typeof fixtures)[number]; atMs: number }> = [];
 const CLONE_KEEP_MS = 12 * 3_600_000;
 let nextMigration = 0;
 let migrations = 0;
-const samples: Array<{ hour: number; heapMiB: number; rssMiB: number; mdMiB: number; dbMiB: number; watched: number; queueDepth: number; wallS: number }> = [];
+const samples: Array<{ hour: number; heapMiB: number; rssMiB: number; rssAnonMiB: number; rssFileMiB: number; externalMiB: number; arrayBuffersMiB: number; mdMiB: number; dbMiB: number; watched: number; queueDepth: number; wallS: number }> = [];
+/** RssAnon and RssFile of /proc/self/status (Linux), in MiB; -1 elsewhere. */
+const procRss = (field: 'RssAnon' | 'RssFile'): number => {
+  try { return Number(new RegExp(`^${field}:\\s+(\\d+) kB$`, 'm').exec(readFileSync('/proc/self/status', 'utf8'))?.[1] ?? -1024) / 1024; } catch { return -1; }
+};
 const started = process.hrtime.bigint();
 for (let s = 0; s < HOURS * 3_600; s++) {
   if (time.elapsedMs() >= nextMigration) {
@@ -90,7 +94,8 @@ for (let s = 0; s < HOURS * 3_600; s++) {
     const m = process.memoryUsage();
     const st = rig.rec.status();
     samples.push({
-      hour: (s + 1) / 3_600, heapMiB: m.heapUsed / MIB, rssMiB: m.rss / MIB, mdMiB: du(rig.paths.mdDir) / MIB,
+      hour: (s + 1) / 3_600, heapMiB: m.heapUsed / MIB, rssMiB: m.rss / MIB, rssAnonMiB: procRss('RssAnon'), rssFileMiB: procRss('RssFile'),
+      externalMiB: m.external / MIB, arrayBuffersMiB: m.arrayBuffers / MIB, mdMiB: du(rig.paths.mdDir) / MIB,
       dbMiB: ['', '-wal', '-shm'].reduce((n, x) => { try { return n + statSync(rig.paths.db + x).size; } catch { return n; } }, 0) / MIB, watched: st.watched, queueDepth: st.queueDepth,
       wallS: Number(process.hrtime.bigint() - started) / 1e9,
     });

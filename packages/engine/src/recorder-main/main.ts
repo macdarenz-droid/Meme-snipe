@@ -100,6 +100,9 @@ if (started.ok) {
   refusal = `${started.error.reason}: ${started.error.message}`.slice(0, 200);
   say(`Recorder not recording (no credentials in this trial): ${refusal}`);
 } else {
+  // With the unit's credentials but no read provider, a Deploy with RPC_SHYFT_URL and RPC_CHAINSTACK_URL is missing:
+  // refuse loudly, so the update gate holds or rolls back instead of keeping a recorder that cannot record.
+  if (!keyed) say('Recorder start refused: no read provider credentials (rpc_shyft_url, rpc_chainstack_url); run Deploy with RPC_SHYFT_URL and RPC_CHAINSTACK_URL.');
   say(`Recorder start refused: ${started.error.reason}: ${started.error.message}`.slice(0, 300));
   for (const s of servers) s.close();
   process.exit(1);

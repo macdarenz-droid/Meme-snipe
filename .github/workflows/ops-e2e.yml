@@ -4,10 +4,10 @@ name: Ops end-to-end
 # updates, backup, restore and the watchdog with TEST values only (ops/test/e2e.sh). Reads no secrets.
 on:
   pull_request:
-    paths: ['ops/**', 'packages/ops/**', '.github/workflows/deploy.yml', '.github/workflows/ops-e2e.yml']
+    paths: ['ops/**', 'packages/ops/**', '.github/workflows/deploy.yml', '.github/workflows/ops-e2e.yml', 'packages/engine/**', 'packages/venue/**', 'packages/decoders/**', 'packages/types/**', 'fixtures/mainnet/**']
   push:
     branches: [ccr-14987baf-i6lrsl]
-    paths: ['ops/**', 'packages/ops/**', '.github/workflows/deploy.yml', '.github/workflows/ops-e2e.yml']
+    paths: ['ops/**', 'packages/ops/**', '.github/workflows/deploy.yml', '.github/workflows/ops-e2e.yml', 'packages/engine/**', 'packages/venue/**', 'packages/decoders/**', 'packages/types/**', 'fixtures/mainnet/**']
   workflow_dispatch:
 
 permissions:
@@ -47,4 +47,32 @@ jobs:
           name: ops-e2e-logs
           path: ${{ runner.temp }}/e2e/logs
           retention-days: 7
+          if-no-files-found: warn
+
+  # Z10: the keyless recorder's 48 h soak on compressed time (packages/engine/scripts/soak/soak.ts): the server's own
+  # composition root on a virtual clock and the TEST fake chain; heap bounded and flat, RSS under 75% of the unit's
+  # MemoryMax, no unknown log code, internal error or unhandled rejection. No pnpm install: it loads the release's
+  # sources the way the server does (resolve-hooks.mjs). Reads no secrets and nothing from the network.
+  recorder-soak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Soak (48 h compressed)
+        run: node --expose-gc --no-warnings packages/engine/scripts/soak/run.mjs 48 "$RUNNER_TEMP/soak" "$(bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; echo $RECORDER_RSS_LIMIT_MB')"
+      - name: Result
+        if: always()
+        run: cat "$RUNNER_TEMP/soak/soak-result.json" 2>/dev/null | head -c 20000 || true
+      - name: Soak result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: recorder-soak
+          path: ${{ runner.temp }}/soak/soak-result.json
+          retention-days: 30
           if-no-files-found: warn
