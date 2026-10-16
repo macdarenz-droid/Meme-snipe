@@ -22,11 +22,17 @@
 // is never overwritten: when the clock goes back across midnight and that day's file is written again, its new lines
 // are added to the `.gz` as another gzip member (gunzip reads every member), through a copy that replaces it in one
 // rename (ruling 17).
+//
+// Line order across a clock step back (ruling LOG-1): rotating back to a day whose earlier stream is still flushing opens
+// a second stream on the same file. The new stream is corked until every earlier stream of that day has ended, and is
+// itself ended only after that, so a day's lines reach its file in the order they were written. The write-queue bounds
+// count the bytes of every stream not yet finished (current, held and ending; ruling LOG-2), so held streams never let
+// the memory in use pass `queueBytes` and its hard bound of twice that.
 import {
   appendFileSync, copyFileSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync,
-  type WriteStream,
 } from 'node:fs';
 import { join } from 'node:path';
+import type { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 import type { Clock } from '@bot/types';
@@ -48,6 +54,8 @@ export interface FileLogSinkOptions {
    * (`log_lost_total{level}`, wired like the logger's `onLost`; red team n4).
    */
   onLost?: (level: Level) => void;
+  /** The day file's write stream over its open descriptor (default `fs.createWriteStream`; tests hold its flushes). */
+  createStream?: (path: string, fd: number) => Writable;
 }
 
 const DAY_MS = 86_400_000;
@@ -64,7 +72,13 @@ export class FileLogSink implements LogSink {
   private readonly prefix: string;
   private readonly fileRe: RegExp;
   private day = '';
-  private stream: WriteStream | null = null;
+  private stream: Writable | null = null;
+  /** Resolves once every earlier stream of the current stream's day has ended; until then it is corked (LOG-1). */
+  private gate: Promise<void> | null = null;
+  /** Per day: resolves once every stream of that day opened so far, except the current one, has ended (LOG-1). */
+  private readonly dayDone = new Map<string, Promise<void>>();
+  /** Every stream not yet finished: the current one, held ones and ending ones. The queue bounds count all of them (LOG-2). */
+  private readonly unfinished = new Set<Writable>();
   private broken = false;
   private closed = false;
   private retryAt = 0;
@@ -93,13 +107,14 @@ export class FileLogSink implements LogSink {
     // A retry time left far ahead by a clock that came back is not waited for (red team C M3 pattern).
     else if (this.broken && (now >= this.retryAt || now < this.retryAt - REOPEN_MS)) this.open();
     const rank = LEVELS.indexOf(level);
-    const queued = this.stream === null ? 0 : this.stream.writableLength;
+    let queued = 0;
+    for (const s of this.unfinished) queued += s.writableLength;
     if (rank < INFO && queued >= this.opts.queueBytes / 2) return 'shed';
     if (rank < WARN && (queued >= this.opts.queueBytes || this.dayBytes >= this.opts.maxBytesPerDay)) return 'shed';
     if (this.broken || queued >= 2 * this.opts.queueBytes) return 'lost';
     const text = `${line}\n`;
     this.dayBytes += Buffer.byteLength(text);
-    (this.stream as WriteStream).write(text, (e) => {
+    (this.stream as Writable).write(text, (e) => {
       if (e) this.opts.onLost?.(level);
     });
     return 'written';
@@ -114,24 +129,36 @@ export class FileLogSink implements LogSink {
   async close(): Promise<void> {
     this.closed = true;
     const stream = this.stream;
+    const gate = this.gate;
     this.stream = null;
+    this.gate = null;
+    if (gate !== null) await gate;                                      // earlier streams of the day first (LOG-1)
     if (stream !== null) await new Promise<void>((resolve) => stream.end(() => resolve()));
     while (this.pending.size > 0) await Promise.all([...this.pending]);
   }
 
   private rotate(day: string): void {
     const old = this.stream;
+    const oldGate = this.gate;
     const oldDay = this.day;
     this.stream = null;
+    this.gate = null;
+    let done = Promise.resolve();
+    if (old !== null) {
+      this.ending.set(oldDay, (this.ending.get(oldDay) ?? 0) + 1);
+      // LOG-1: a stream still corked behind an earlier stream of its day is ended only once that one has ended (end()
+      // would uncork it at once), so its lines never pass the earlier ones.
+      done = (oldGate ?? Promise.resolve()).then(() => new Promise<void>((resolve) => old.end(() => {
+        const left = (this.ending.get(oldDay) ?? 1) - 1;
+        if (left === 0) this.ending.delete(oldDay);
+        else this.ending.set(oldDay, left);
+        resolve();
+      })));
+      this.dayDone.set(oldDay, done);
+      void done.then(() => { if (this.dayDone.get(oldDay) === done) this.dayDone.delete(oldDay); });
+    }
     this.day = day;
     this.open();
-    if (old !== null) this.ending.set(oldDay, (this.ending.get(oldDay) ?? 0) + 1);
-    const done = old === null ? Promise.resolve() : new Promise<void>((resolve) => old.end(() => {
-      const left = (this.ending.get(oldDay) ?? 1) - 1;
-      if (left === 0) this.ending.delete(oldDay);
-      else this.ending.set(oldDay, left);
-      resolve();
-    }));
     this.track(done.then(() => this.housekeep(day)));
   }
 
@@ -141,8 +168,12 @@ export class FileLogSink implements LogSink {
    * already been replaced (the previous day's, or a broken one) is reported but leaves the current file alone.
    */
   private open(): void {
-    if (this.stream !== null) this.stream.destroy();   // a broken stream: its queued lines are already lost
+    if (this.stream !== null) {
+      this.unfinished.delete(this.stream);
+      this.stream.destroy();                           // a broken stream: its queued lines are already lost
+    }
     this.stream = null;
+    this.gate = null;
     let fd: number;
     try {
       fd = openSync(this.path(), 'a', 0o600);
@@ -152,12 +183,23 @@ export class FileLogSink implements LogSink {
     }
     this.broken = false;
     this.dayBytes = fstatSync(fd).size;
-    const stream = createWriteStream(this.path(), { fd });
-    stream.on('error', (e) => {
+    const stream = this.opts.createStream?.(this.path(), fd) ?? createWriteStream(this.path(), { fd });
+    this.unfinished.add(stream);
+    stream.once('finish', () => this.unfinished.delete(stream));
+    stream.once('close', () => this.unfinished.delete(stream));
+    stream.on('error', (e: Error) => {
       if (this.stream === stream) this.fail('write', e.message);
       else this.opts.onError?.({ op: 'write', message: e.message });
     });
+    // LOG-1: an earlier stream of this day is still flushing (the clock went back to it): hold this one's lines until it
+    // has ended. Its queued bytes still count toward the shed and lost bounds (`writableLength`).
+    const gate = this.dayDone.get(this.day) ?? null;
+    if (gate !== null) {
+      stream.cork();
+      void gate.then(() => { if (stream.writableCorked > 0 && !stream.destroyed) stream.uncork(); });
+    }
     this.stream = stream;
+    this.gate = gate;
   }
 
   private fail(op: 'open' | 'write', message: string): void {
