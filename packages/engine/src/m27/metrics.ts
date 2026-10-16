@@ -146,6 +146,8 @@ export class MetricsRegistry {
   private readonly retired = new Map<string, Series>();
   private fifo: Array<{ s: Series; chunk: number }> = [];
   private chunkCount = 0;
+  /** Ruling Z10-38: chunks dropped from the ring, reused before a new one is made. */
+  private spareChunks: Float64Array[] = [];
   private currentMinute: number | null = null;
   private currentChunk: number | null = null;
   private readonly seriesGauge: Series;
@@ -378,6 +380,7 @@ export class MetricsRegistry {
       this.retired.set(key, s);
       s.live = false;
       this.chunkCount -= s.chunks.size;
+      for (const data of s.chunks.values()) this.spareChunks.push(data);           // Z10-38: reused, not left to GC
       s.chunks.clear();
       gone.add(s);
     }
@@ -402,7 +405,7 @@ export class MetricsRegistry {
         bump(this.evictedCounter);
       }
       if ((this.chunkCount + 1) * CHUNK_BYTES > this.opts.ringBudgetBytes) return;
-      data = new Float64Array(CHUNK_SECONDS).fill(Number.NaN);
+      data = (this.spareChunks.pop() ?? new Float64Array(CHUNK_SECONDS)).fill(Number.NaN);
       s.chunks.set(chunk, data);
       this.fifo.push({ s, chunk });
       this.chunkCount += 1;
@@ -411,7 +414,11 @@ export class MetricsRegistry {
   }
 
   private drop(entry: { s: Series; chunk: number }): void {
+    const data = entry.s.chunks.get(entry.chunk);
     if (entry.s.chunks.delete(entry.chunk)) this.chunkCount -= 1;
+    // Ruling Z10-38: a dropped chunk is reused by the next one, so the ring allocates only while it grows. A chunk is
+    // made only when no spare is left, so live plus spare chunks never pass ringBudgetBytes.
+    if (data !== undefined) this.spareChunks.push(data);
   }
 
   private expire(oldestKept: number): void {

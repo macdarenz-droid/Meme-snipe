@@ -16,7 +16,7 @@
 //   class interval in slots (ruling Z10-17), and `pool.fresh`.
 import { createHash } from 'node:crypto';
 import type { Clock, Pubkey, Result, Slot, UnixMs } from '@bot/types';
-import { SnapshotRing } from './ring.ts';
+import { RingBuffers, SnapshotRing } from './ring.ts';
 import { capOf, checkM04Settings, intervalOf, M04_DEFAULTS, type M04Settings, type UniverseLimits } from './settings.ts';
 import { createPollSource, thrownCode, type PoolSource, type SourceRecord } from './source.ts';
 import type {
@@ -165,6 +165,8 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   const timers: Array<{ cancel: () => void }> = [];
   let mintsBusy = false;
 
+  /** Ruling Z10-38: ring buffers are reused; spares per size at most the sum of the watch caps. */
+  const ringBuffers = new RingBuffers(capOf(settings, 'position') + capOf(settings, 'candidate') + capOf(settings, 'tail'));
   const capacity = (cls: PoolClass): number => Math.ceil(settings.historyMs / intervalOf(settings, cls));
   /** The highest slot a provider may claim now: the slot clock's estimate plus `max_provider_lag_slots`. */
   const ceiling = (): Slot => (deps.chain.expectedSlot(deps.clock.nowMs()) + BigInt(settings.maxProviderLagSlots)) as Slot;
@@ -189,7 +191,9 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   }
 
   function drop(poolId: Pubkey): void {
+    const gone = pools.get(poolId);
     if (!pools.delete(poolId)) return;
+    gone?.ring?.release();
     inflight.delete(poolId);
     deps.outputs.unwatched(poolId);
     restartSource();
@@ -240,7 +244,8 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       deps.log.event('warn', 'm04.first_read_failed', { pool: poolId, error_code: m.ok ? 'E_MINT' : m.error.code });
       return;
     }
-    Object.assign(now, { addr: addr.value, canonical, mint, ring: new SnapshotRing(addr.value, deps.model, capacity(now.cls), providers) });
+    now.ring?.release();
+    Object.assign(now, { addr: addr.value, canonical, mint, ring: new SnapshotRing(addr.value, deps.model, capacity(now.cls), providers, ringBuffers) });
     restartSource();
   }
 
