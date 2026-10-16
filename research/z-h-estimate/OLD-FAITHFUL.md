@@ -108,7 +108,11 @@ scanner works in 4,500-slot units, written atomically, so a stopped day resumes 
 - 30 decision days are exactly B-10's minimum: there is no spare day. **A day is never read again whole** (round 3
   item 23). After a QA failure the owner is told first; then only the units QA names are read again, under the same
   batch rules. If that does not fix it, the day counts as missing, B-10 is short, and the owner is asked about a spare
-  day (a new day needs the owner's OK).
+  day (a new day needs the owner's OK). Amendment (2026-10-16, OF-REARM, pending the owner's answer): a failed day
+  whose one counted failure read no archive unit (batch 1, data-scan run 38776359833: 0 units planned, only the
+  planner's probes) may be read fresh once, and only when a pinned `FRESH-READ` row in `docs/DECISIONS.md` names
+  the day and that run with the owner's answer time, and the day's saved progress holds none of its units
+  (`archive-guard.sh` `ag_fresh_ok`, `scan-day.sh`). Any other failed day stays refused.
 - **Day order under OF-6** (round 3 item 24): day D+1 is dispatched only after day D's units are stored (as a release,
   or held in the store as a failed day's units), because D+1 takes D's forward-margin units from the store.
 - Today's queue must go: `archive-check.sh:104-108` queues 09-21 back to 07-20, then the holdout days 10-01 back to 09-22.
@@ -200,7 +204,9 @@ refused (OF-3 ruling 30, replacing OF-2 ruling 63's deny-list); a `logs` part af
 with a `logs` path part whatever variable comes before it (OF-2 ruling 70).
 
 **Arm checklist (the arming change, OF-2 rounds 3–4).** The supervisor puts each item to the owner, with a
-recommendation, before `ARCHIVE_ARM` is set:
+recommendation, before `ARCHIVE_ARM` is set. Standing rule from the arm on: no one dispatches `data-scan.yml` or
+`archive-check.yml` on any ref but the default branch, and no one re-runs an old run of either; a run that breaks it
+stops the chain through the guard (OF-ARM; restored by OF-REARM after the #326 revert).
 1. `research/historical/ci/unguarded-refs.sh` (read only): the branches and tags whose `data-scan.yml` or
    `archive-check.yml` can read the archive without `archive-guard.sh` (today the tag `preview`, 13cdf32; `deploy`
    moves forward with each deploy). No agent deletes or moves a branch or tag: each one goes to the owner (ruling 37).

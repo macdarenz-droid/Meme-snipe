@@ -327,6 +327,11 @@ case "$1 $2" in
         if [[ -f "$GD/jobs-$id-$k.json" ]]; then out "$(cat "$GD/jobs-$id-$k.json")"
         elif [[ $k == 1 && -f "$GD/jobs-$id.json" ]]; then out "$(cat "$GD/jobs-$id.json")"
         else out '{"jobs": []}'; fi ;;
+      # a job's log (FRESH-READ, OF-6 ruling 3 amendment): $GD/log-JOBID.txt, else 404
+      repos/o/r/actions/jobs/*/logs)
+        x=${path#repos/o/r/actions/jobs/}; id=${x%%/*}
+        [[ -f "$GD/log-$id.txt" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+        cat "$GD/log-$id.txt" ;;
       repos/o/r/actions/runs/*/attempts/*)
         x=${path#repos/o/r/actions/runs/}; id=${x%%/*}; k=${x##*/}
         if [[ -f "$GD/attempt-$id-$k.json" ]]; then out "$(cat "$GD/attempt-$id-$k.json")"
@@ -1961,6 +1966,13 @@ bad=""
   ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && "$ARCHIVE_ARM" == b10pull-of-2 && "$ARCHIVE_RETENTION" == K2 ]] &&
   [[ "$ARCHIVE_REARM_AT" == 2026-10-07T22:30:00Z ]] && ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-2 ]] ) &&
   ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only); OF-REARM: ARCHIVE_ARM is the pinned B10-PULL id b10pull-of-2, ARCHIVE_RETENTION K2, ARCHIVE_REARM_AT kept at 2026-10-07T22:30:00Z" || no "OF-2 repository values"
+# OF-ARM (restored by OF-REARM): the armed repository config passes the local checks for the
+# two measurement days (at K2) and still refuses 07-24 until K3 is recorded.
+bad=""
+for d in 2026-07-22 2026-07-23; do rc=0; out=$(cd "$here" && bash ./archive-guard.sh local "$d" 2>/dev/null) || rc=$?; [[ $rc == 0 && "$(tail -1 <<< "$out")" == K2 ]] || bad+=" [$d: $rc $out]"; done
+rc=0; out=$(cd "$here" && bash ./archive-guard.sh local 2026-07-24 2>&1) || rc=$?; [[ $rc == 2 ]] && grep -q "2026-07-24 has no retention value" <<< "$out" || bad+=" [07-24: $rc]"
+[[ -z "$bad" ]] && ok "OF-ARM: archive-guard.sh local passes 2026-07-22 and 2026-07-23 at K2 with the armed repository config and refuses 2026-07-24 (no retention value at K2)" || no "OF-ARM armed config:$bad"
+bad=""
 
 # ---- OF-3: K3 reads take the pinned migration list; the K2 release keeps the rescan hashes and the per-unit log; the trim ----
 gdreset; bad=""
@@ -3960,6 +3972,56 @@ o="$T/rr6w"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=1 SFX=$T/fx6/research/his
 o="$T/rr6r"; mk6 "$o" K2; rc=0; GFAILED=1 SFX=$T/fx6/research/historical/ci scan "$o" || rc=$?
 [[ $rc == 0 && $(calls) == "scan " ]] || bad+=" [resume: $rc]"
 [[ -z "$bad" ]] && ok "OF-6 re-read: the guard pass flags a day with a counted scan failure; a QA-REREAD row is used only for its day, with a past toldAt and well-formed units; scan-day then reads exactly the named units (deleted first, the rest kept) at the recorded retention (K3 with the day's list, the per-unit log marking them reread instead of k2 lines); no row, or a unit taken from the store, reads nothing; a fresh whole-day read of a failed day is refused while a resume of its progress runs" || no "OF-6 re-read:$bad"
+# ---- OF-6 ruling 3 amendment (2026-10-16): a FRESH-READ row lets a failed day that read no
+# unit be read fresh once ----
+bad=""; gdreset
+mkfx "$T/fxfr"; frdec="$T/fxfr/docs/DECISIONS.md"; cp "$frdec" "$T/frdec0"
+FXFR=$T/fxfr/research/historical/ci
+# batch 1's exact job shape (data-scan run 38776359833): nothing restored, the scan step
+# passed, only the K3 trim failed, and its log says the day holds no finished units
+frjobs() { # frjobs RUN DAY SCANSTEP OPENSTEP
+  printf '{"jobs": [{"id": %s1, "name": "plan", "conclusion": "success", "steps": [{"name": "Archive guard", "conclusion": "success"}]},
+    {"id": %s2, "name": "scan (%s)", "conclusion": "failure", "steps": [{"name": "Archive guard before the scan", "conclusion": "success"}, {"name": "Open the progress cache", "conclusion": "%s"},
+      {"name": "Scan (one lane, stops on 429)", "conclusion": "%s"}, {"name": "Trim the day to K3", "conclusion": "failure"}]},
+    {"id": %s3, "name": "continue", "conclusion": "failure", "steps": [{"name": "Dispatch the next run if a day stopped resumably", "conclusion": "failure"}]}]}\n' \
+    "$1" "$1" "$2" "${4:-skipped}" "${3:-success}" "$1" > "$GD/jobs-$1.json"
+}
+frrun() { dsrun "$1" "data-scan scan source=archive" failure "${2:-300}" "${3:-200}"; }
+frrow() { printf '| 2026-10-16 | FRESH-READ id=%s day=%s failedRun=%s toldAt=%s | t | t |\n' "$1" "$2" "$3" "${4:-2026-10-16T05:00:00Z}" >> "$frdec"; }
+frlog() { echo "refused: /w/data holds no finished units" > "$GD/log-${1}2.txt"; }
+fra() { rm -rf "$GP"; fl=; FXG=$FXFR guard attest 2026-07-22 "$GP"; read -r _ _ _ _ _ fl < "$GP/2026-07-22" 2>/dev/null; }
+frset() { gdreset; rm -f "$GD"/log-*.txt; cp "$T/frdec0" "$frdec"; }
+# allowed: the row, batch 1's shape and log
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 2 ]] || bad+=" [row+shape: ${fl:-none} $(tail -2 "$T/gout.txt" | tr '\n' ' ')]"
+# refused (the day stays failed=1): no row; a day that read a unit (scan step failed, or
+# progress restored, or a trim log without the 0-unit refusal); a row for another day or
+# another run; a duplicate row; a toldAt not yet filled in; a second counted failure
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; fra; [[ "$fl" == 1 ]] || bad+=" [no row: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22 failure; frlog 395; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [scan failed: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22 success success; frlog 395; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [progress restored: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; echo "refused: the list does not match" > "$GD/log-3952.txt"; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [other trim refusal: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [no log: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-23 395; fra; [[ "$fl" == 1 ]] || bad+=" [other day: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 999; fra; [[ "$fl" == 1 ]] || bad+=" [other run: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395; frrow fr-2 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [duplicate day: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395; frrow fr-1 2026-07-23 395; fra; [[ "$fl" == 1 ]] || bad+=" [duplicate id: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395 TOLD_AT_PLACEHOLDER; fra; [[ "$fl" == 1 ]] || bad+=" [placeholder toldAt: ${fl:-none}]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395 2099-01-01T00:00:00Z; fra; [[ "$fl" == 1 ]] || bad+=" [future toldAt: ${fl:-none}]"
+frset; { frrun 395 400 300; frrun 396 300 200; } | dsjson; frjobs 395 2026-07-22; frjobs 396 2026-07-22; frlog 395; frlog 396; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [second failure: ${fl:-none}]"
+# scan-day: failed=2 with the row reads the day fresh (and says so); without the row it refuses
+frset; frrow fr-1 2026-07-22 395
+o="$T/fr6"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=2 SFX=$FXFR scan "$o" || rc=$?
+[[ $rc == 0 && $(calls) == "scan " ]] && grep -q "fresh read of 2026-07-22 under FRESH-READ fr-1: its one counted failure (run 395) read no archive unit" "$T/summary.md" || bad+=" [scan-day fresh: $rc $(tail -2 "$T/out.txt" | tr '\n' ' ')]"
+cp "$T/frdec0" "$frdec"; o="$T/fr6n"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=2 SFX=$FXFR scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "no single pinned FRESH-READ row for 2026-07-22" "$T/out.txt" || bad+=" [scan-day without row: $rc]"
+frrow fr-1 2026-07-22 395; o="$T/fr6w"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=1 SFX=$FXFR scan "$o" || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "a whole-day re-read is refused" "$T/out.txt" || bad+=" [row but failed=1: $rc]"
+# the repository's own 07-22 row stays refused until the owner's answer time is filled in
+(. "$here/archive-guard.sh"; ag_summary=/dev/null; ag_fresh_row 2026-07-22) > "$T/frrepo.out" 2>&1 && bad+=" [repo row accepted: $(cat "$T/frrepo.out")]"
+grep -q "FRESH-READ row .* has no past toldAt\|no single pinned FRESH-READ row" "$T/frrepo.out" || bad+=" [repo row: $(cat "$T/frrepo.out")]"
+gdreset; rm -f "$GD"/log-*.txt
+[[ -z "$bad" ]] && ok "OF-6 ruling 3 amendment: a failed day is read fresh once only with the one pinned FRESH-READ row for it (past toldAt, unique id) whose failedRun is the day's only counted failure and read no unit (nothing restored, scan step passed, only the K3 trim failed, its log: holds no finished units); without the row, another day or run, a duplicate row or id, a placeholder or future toldAt, a run that read a unit or a second failure, the day stays refused; scan-day reads it fresh only with the row; the repository's 07-22 row is refused until its toldAt is filled in" || no "OF-6 fresh read:$bad"
+bad=""
 bad=""; gdreset
 
 echo "$pass passed, $fail failed"
