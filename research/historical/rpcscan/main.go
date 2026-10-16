@@ -287,7 +287,7 @@ func writeUsage(path string, h *heliusClient) {
 	}
 }
 
-// epochUnits is the scanner planner's per-epoch rule (planUnits in ../scanner/main.go),
+// epochUnits is the scanner planner's per-epoch rule (planUnits in ../scanner/plan.go),
 // kept identical so both sources cut the same units. epochUnits lists the units of epoch e whose interpolated block times reach [t0, t1).
 // Block time is interpolated between the epoch's first and (near) last block; two units
 // of margin on each side absorb slot-time drift. Units outside the window are
