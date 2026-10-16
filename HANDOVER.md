@@ -138,6 +138,19 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 10:56 AM: RT3 (security, providers) PASS on `bac1f88a`**, with 5 MINORs, all to fix before switch-on.
+  - Holding:
+    - The import graph has no net, child_process, signer or Telegram; sends are refused.
+    - URLs are masked and piped; the redaction scrubber works; heartbeat codes are regex-filtered.
+    - Shyft is configured at 5 of 10 rps; Chainstack at 2.5 of 5 rps.
+    - The verify cap survives a restart, and so does the 3-strike stop.
+    - The release path and the pull chroot hold; Node is pinned.
+  - MINORs:
+    1. The recorder shares zeroed-worker.service: it is in the zeroed-signer group, has the other API keys and the Telegram token in its credentials, and has open egress. Fix: a separate zeroed-recorder unit with least privilege (no signer group, InaccessiblePaths for the signer, only the rpc_*, heartbeat and chat_id credentials, optionally an egress allow-list).
+    2. URL length: publish.sh allows 500 but zeroed-pair accepts 512 base64 characters, so a URL over 384 characters fails the whole handoff.
+    3. deploy.yml/publish.sh: the npm wrangler step sees the RPC URLs and keys. Fix: `env -u` them.
+    4. Chainstack's 3M RU/month and the 2 RU price are unverified (limits.md); cite request-units.md.
+    5. The nftables SSH rule must be tailscale0-only when the pull SSH is switched on.
 - **17 Oct 10:53 AM: #333 Z10 MERGED at `bac1f88a`** (parents `466279ff` and `33ec86d3`; ls-remote checked; host-config still `"worker": "stub"`).
   - Merged on:
     - review PASS and red team PASS at `33ec86d3`; the red team's own soak gave 0.094 MiB/h over hours 25-48 at 60 pools;
