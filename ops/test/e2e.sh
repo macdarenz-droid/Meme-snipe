@@ -953,7 +953,7 @@ in_c "! systemctl list-units --all --plain --no-legend 'zeroed-worker-smoke*' | 
 # 2. Under the unit with no read-provider credentials: refused loudly, never a recorder that cannot record. (The
 # rotation in section 4 stored TEST URLs that point nowhere; this step needs none. They are set aside and put back at
 # the end of the section, so zeroed-check's records still match them.)
-in_c "mkdir -p /root/rpc-cred.e2e && mv /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /root/rpc-cred.e2e/"
+in_c "mkdir -p /root/rpc-cred.e2e/sha && mv /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /root/rpc-cred.e2e/ && mv /var/lib/zeroed-host/cred_sha/rpc_shyft_url /var/lib/zeroed-host/cred_sha/rpc_chainstack_url /root/rpc-cred.e2e/sha/"
 rinv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
 wrestart "ln -sfn '$rrel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the recorder refused without read providers" "docker exec $C bash -c 'journalctl -o cat --no-pager -u zeroed-worker --since=-60s' | grep -q 'no read provider credentials'"
@@ -970,6 +970,8 @@ T_SHYFT_KEY="TESTSHYFT$(rnd 16)"
 T_CHAINSTACK_KEY="TESTCHAINSTACK$(rnd 16)"
 in_c "printf '%s' 'https://shyft.fake/rpc?api_key=$T_SHYFT_KEY' | systemd-creds encrypt --with-key=host --name=rpc_shyft_url - /etc/credstore.encrypted/rpc_shyft_url"
 in_c "printf '%s' 'https://chainstack.fake/$T_CHAINSTACK_KEY' | systemd-creds encrypt --with-key=host --name=rpc_chainstack_url - /etc/credstore.encrypted/rpc_chainstack_url"
+# Recorded as a key handoff records them (common.sh record_cred), so the stored-key check does not flag this test's own write.
+in_c ". /usr/local/lib/zeroed/common.sh && record_cred rpc_shyft_url && record_cred rpc_chainstack_url" || fail "TEST read-provider credentials not recorded"
 in_c "chmod 0600 /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url && cp /etc/zeroed/worker.env /root/worker.env.e2e && echo NODE_EXTRA_CA_CERTS=/etc/zeroed/e2e-fake-rpc.pem >> /etc/zeroed/worker.env"
 # 4. Through the deploy gate, as on the server: from the stand-in, a green, GitHub-signed release whose worker is the
 # recorder (its folder is this test's recorder release). zeroed-update tries it beside the stand-in, runs its
@@ -1035,7 +1037,7 @@ in_c "test -e /root/e2e-pulled/$D_PULL" || fail "md-pull's copy was deleted"
 wait_for 90 "the alert for the unreceipted old day" "docker exec $C bash -c 'grep -rqs m07.unpulled_segments /var/lib/zeroed/log'"
 in_c "rm -rf /root/e2e-research.pem /root/e2e-pulled /root/.ssh/e2e-pull /root/.ssh/e2e-pull.pub /root/.ssh/config /root/.ssh/e2e-known /etc/zeroed/pull-keys/zeroed-pull /etc/bot/research-ed25519.pub.pem /var/lib/zeroed-md/$D_OLD /var/lib/zeroed-md/$D_PULL"
 # Back to the stand-in: the rotation's TEST read-provider credentials back as they were, no TEST certificate, no fake chain.
-in_c "systemctl stop zeroed-e2e-fake-rpc; mv -f /root/rpc-cred.e2e/rpc_shyft_url /root/rpc-cred.e2e/rpc_chainstack_url /etc/credstore.encrypted/ && rmdir /root/rpc-cred.e2e; rm -f /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; grep -v shyft.fake /etc/hosts > /tmp/hosts.e2e; cat /tmp/hosts.e2e > /etc/hosts; rm -f /tmp/hosts.e2e"
+in_c "systemctl stop zeroed-e2e-fake-rpc; mv -f /root/rpc-cred.e2e/rpc_shyft_url /root/rpc-cred.e2e/rpc_chainstack_url /etc/credstore.encrypted/ && mv -f /root/rpc-cred.e2e/sha/rpc_shyft_url /root/rpc-cred.e2e/sha/rpc_chainstack_url /var/lib/zeroed-host/cred_sha/ && rm -rf /root/rpc-cred.e2e; rm -f /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; grep -v shyft.fake /etc/hosts > /tmp/hosts.e2e; cat /tmp/hosts.e2e > /etc/hosts; rm -f /tmp/hosts.e2e"
 # The host's records as they were before this section: deployed and tagged at the signed release, no probation.
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel' && { ! test -e /root/failed_release.e2e || mv -f /root/failed_release.e2e /var/lib/zeroed-host/failed_release; }"
