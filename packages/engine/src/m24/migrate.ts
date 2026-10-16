@@ -26,12 +26,13 @@ import { isCorruptionError, type Db } from './db.ts';
 import { schemaTx } from './schema-tx.ts';
 import { tableStatements } from './ddl.ts';
 import { M0001_INITIAL } from './migrations/0001_initial.ts';
+import { M0002_CANDIDATE_COOLDOWN } from './migrations/0002_candidate_cooldown.ts';
 import { TABLES } from './schema.ts';
 
 export interface Migration { readonly version: number; readonly name: string; readonly statements: readonly string[] }
 
 /** Every migration of this build, in order. Append only. */
-export const MIGRATIONS: readonly Migration[] = [M0001_INITIAL];
+export const MIGRATIONS: readonly Migration[] = [M0001_INITIAL, M0002_CANDIDATE_COOLDOWN];
 
 export type MigrateErrorCode = 'E_MIGRATION_CHECKSUM' | 'E_SCHEMA_NEWER' | 'E_BACKUP_FAILED' | 'E_MIGRATION_FAILED' | 'E_FOREIGN_DATABASE' | 'E_DATABASE_CORRUPT';
 export interface MigrateError { code: MigrateErrorCode; message: string; version: number | null }

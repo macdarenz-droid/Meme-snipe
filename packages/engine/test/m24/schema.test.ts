@@ -88,14 +88,18 @@ describe('schema comparison', () => {
   });
 });
 
+/** The migration list in force (0001, then 0002 from card Z10): runner tests stack their test migrations on top of it. */
+const N = MIGRATIONS.length;
+const VERSIONS = MIGRATIONS.map((m) => m.version);
+
 describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
   it('from an empty database: backup first, then every migration; the schema equals the descriptors', async () => {
     const { db, path, lines, log } = fresh();
     const r = await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.start.bak`, log });
-    assert.deepEqual(r, { ok: true, value: { from: 0, to: 1, applied: [1] } });
+    assert.deepEqual(r, { ok: true, value: { from: 0, to: N, applied: VERSIONS } });
     assert.ok(existsSync(`${path}.start.bak`));
-    assert.deepEqual(lines.map((l) => JSON.parse(l).code), ['m24.migration_applied']);
-    assert.deepEqual(appliedMigrations(db).map((m) => m.version), [1]);
+    assert.deepEqual(lines.map((l) => JSON.parse(l).code), VERSIONS.map(() => 'm24.migration_applied'));
+    assert.deepEqual(appliedMigrations(db).map((m) => m.version), VERSIONS);
     db.close();
     const migrated = new DatabaseSync(path, { readOnly: true });
     const reference = new DatabaseSync(':memory:');
@@ -110,7 +114,7 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
   it('a second start applies nothing; the B-M24-01 outbox DDL has the migrated outbox columns', async () => {
     const { db, path } = fresh();
     await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` });
-    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` }), { ok: true, value: { from: 1, to: 1, applied: [] } });
+    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` }), { ok: true, value: { from: N, to: N, applied: [] } });
     const raw = new DatabaseSync(':memory:');
     raw.exec(OUTBOX_DDL);
     const cols = (d: DatabaseSync | Db, sql: string): unknown => (d instanceof DatabaseSync ? d.prepare(sql).all() : schemaFixture(d, (tx) => tx.all(sql)))
@@ -121,32 +125,33 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
   });
 
   it('from every previous version: a later migration applies on top of version 1', async () => {
-    const m2: Migration = { version: 2, name: 'add', statements: ['ALTER TABLE "kv_state" ADD COLUMN "note" TEXT', 'CREATE TABLE "later" ("x" INTEGER) STRICT'] };
+    const m2: Migration = { version: N + 1, name: 'add', statements: ['ALTER TABLE "kv_state" ADD COLUMN "note" TEXT', 'CREATE TABLE "later" ("x" INTEGER) STRICT'] };
     const { db, path } = fresh();
-    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` }), { ok: true, value: { from: 0, to: 1, applied: [1] } });
-    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak`, migrations: [M0001_INITIAL, m2] }), { ok: true, value: { from: 1, to: 2, applied: [2] } });
-    assert.deepEqual(appliedMigrations(db).map((m) => [m.version, m.sha256]), [[1, M0001_SHA256], [2, migrationSha256(m2)]]);
+    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` }), { ok: true, value: { from: 0, to: N, applied: VERSIONS } });
+    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak`, migrations: [...MIGRATIONS, m2] }), { ok: true, value: { from: N, to: N + 1, applied: [N + 1] } });
+    assert.deepEqual(appliedMigrations(db).map((m) => [m.version, m.sha256]), [...MIGRATIONS.map((m) => [m.version, migrationSha256(m)]), [N + 1, migrationSha256(m2)]]);
+    assert.equal(migrationSha256(M0001_INITIAL), M0001_SHA256);
     db.close();
     const empty = fresh();
-    assert.deepEqual(await prepareDatabase(empty.db, { clock: fakeClock(), backupPath: `${empty.path}.bak`, migrations: [M0001_INITIAL, m2] }), { ok: true, value: { from: 0, to: 2, applied: [1, 2] } });
+    assert.deepEqual(await prepareDatabase(empty.db, { clock: fakeClock(), backupPath: `${empty.path}.bak`, migrations: [...MIGRATIONS, m2] }), { ok: true, value: { from: 0, to: N + 1, applied: [...VERSIONS, N + 1] } });
     empty.db.close();
   });
 
   it('acceptance: a migration failure leaves the database at the previous version (one transaction)', async () => {
-    const bad: Migration = { version: 2, name: 'bad', statements: ['CREATE TABLE "half" ("x" INTEGER) STRICT', 'CREATE TABLE "fill" ("y" INTEGER)'] };
+    const bad: Migration = { version: N + 1, name: 'bad', statements: ['CREATE TABLE "half" ("x" INTEGER) STRICT', 'CREATE TABLE "fill" ("y" INTEGER)'] };
     const { db, path, lines, log } = fresh();
     await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` });
-    const r = await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak`, migrations: [M0001_INITIAL, bad], log });
+    const r = await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak`, migrations: [...MIGRATIONS, bad], log });
     assert.equal(r.ok, false);
-    assert.deepEqual(r.ok ? null : [r.error.code, r.error.version], ['E_MIGRATION_FAILED', 2]);
-    assert.deepEqual(appliedMigrations(db).map((m) => m.version), [1]);
+    assert.deepEqual(r.ok ? null : [r.error.code, r.error.version], ['E_MIGRATION_FAILED', N + 1]);
+    assert.deepEqual(appliedMigrations(db).map((m) => m.version), VERSIONS);
     assert.equal(schemaFixture(db, (tx) => tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name = 'half'")), undefined);
     assert.equal(JSON.parse(lines.at(-1) as string).code, 'm24.migration_failed');
     assert.equal(JSON.parse(lines.at(-1) as string).level, 'critical');
     db.close();
     const empty = fresh();
-    const r2 = await prepareDatabase(empty.db, { clock: fakeClock(), backupPath: `${empty.path}.bak`, migrations: [M0001_INITIAL, bad] });
-    assert.deepEqual(r2.ok ? null : [r2.error.code, r2.error.version], ['E_MIGRATION_FAILED', 2]);
+    const r2 = await prepareDatabase(empty.db, { clock: fakeClock(), backupPath: `${empty.path}.bak`, migrations: [...MIGRATIONS, bad] });
+    assert.deepEqual(r2.ok ? null : [r2.error.code, r2.error.version], ['E_MIGRATION_FAILED', N + 1]);
     assert.deepEqual(appliedMigrations(empty.db), []);
     assert.equal(schemaFixture(empty.db, (tx) => tx.get("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table'"))?.n, 0n);
     empty.db.close();
@@ -160,10 +165,10 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
     assert.deepEqual(r.ok ? null : [r.error.code, r.error.version], ['E_MIGRATION_CHECKSUM', 1]);
     db.withTx((tx) => {
       tx.run('UPDATE schema_migrations SET sha256 = ? WHERE version = 1', M0001_SHA256);
-      tx.run('INSERT INTO schema_migrations (version, sha256, applied_at) VALUES (2, ?, ?)', '1'.repeat(64), Date.UTC(2026, 9, 7));
+      tx.run('INSERT INTO schema_migrations (version, sha256, applied_at) VALUES (?, ?, ?)', N + 1, '1'.repeat(64), Date.UTC(2026, 9, 7));
     });
     const newer = await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` });
-    assert.deepEqual(newer.ok ? null : [newer.error.code, newer.error.version], ['E_SCHEMA_NEWER', 2]);
+    assert.deepEqual(newer.ok ? null : [newer.error.code, newer.error.version], ['E_SCHEMA_NEWER', N + 1]);
     db.close();
   });
 
@@ -173,7 +178,7 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
     await prepareDatabase(db, { clock: fakeClock(), backupPath: backup });
     assert.ok(existsSync(backup));
     rmSync(backup);
-    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: backup }), { ok: true, value: { from: 1, to: 1, applied: [] } });
+    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: backup }), { ok: true, value: { from: N, to: N, applied: [] } });
     assert.equal(existsSync(backup), false);
     db.close();
   });
@@ -186,7 +191,7 @@ describe('prepareDatabase (B-M24-02 logic 5; CL-52)', () => {
     assert.deepEqual(appliedMigrations(db), []);
     assert.equal(JSON.parse(lines[0] as string).code, 'm24.start_backup_failed');
     await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` });
-    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: nowhere }), { ok: true, value: { from: 1, to: 1, applied: [] } });
+    assert.deepEqual(await prepareDatabase(db, { clock: fakeClock(), backupPath: nowhere }), { ok: true, value: { from: N, to: N, applied: [] } });
     db.close();
   });
 });

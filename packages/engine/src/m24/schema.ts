@@ -140,7 +140,8 @@ export const TABLES = {
       cooldownUntil: opt(c.ms), firstSeenAt: c.ms, lastScreenId: opt(c.ulid), version: c.int, createdAt: c.ms, updatedAt: c.ms,
     },
     key: ['candidateId'], appendOnly: false, retention: Y1, unique: [['mint', 'poolId']],
-    indexes: [{ name: 'candidate_state', columns: ['state'] }],
+    // Migration 0002 (Z10, Z09-23): M05's `due` scan by retry time.
+    indexes: [{ name: 'candidate_state', columns: ['state'] }, { name: 'candidate_cooldown_until', columns: ['cooldownUntil'], where: '"cooldown_until" IS NOT NULL' }],
   },
   signal: {
     columns: {

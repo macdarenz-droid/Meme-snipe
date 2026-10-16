@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
 import type { Pubkey } from '@bot/types';
+import { DUE_SQL } from '../../src/m05/store.ts';
 import { tempDir } from '../helpers.ts';
 import { FakeChain, VirtualTime } from './fake-chain.ts';
 import { startRig, WALL_START, type Rig } from './rig.ts';
@@ -122,4 +123,17 @@ describe('Z10 obligations (Z09)', () => {
       await r.rec.stop();
     }
   }, 120_000);
+});
+
+describe('Z10 ruling Z09-23: the candidate.cooldown_until index', () => {
+  it('M05 due query is served by the partial index (migration 0002), not by a scan of every inactive state', async () => {
+    const r = await startRig(tempDir('z10-index'));
+    try {
+      const plan = (r.rec.parts.db.reader().all(`EXPLAIN QUERY PLAN ${DUE_SQL}`, 'prefiltered_out', 'rejected', 'blacklisted', 'evicted', 1, 1_000) as Array<{ detail: string }>)
+        .map((x) => x.detail).join(' | ');
+      assert.match(plan, /USING INDEX candidate_cooldown_until/);
+    } finally {
+      await r.rec.stop();
+    }
+  });
 });
