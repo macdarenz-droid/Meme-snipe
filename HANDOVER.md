@@ -138,6 +138,21 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 10:53 AM: #333 Z10 MERGED at `bac1f88a`** (parents `466279ff` and `33ec86d3`; ls-remote checked; host-config still `"worker": "stub"`).
+  - Merged on:
+    - review PASS and red team PASS at `33ec86d3`; the red team's own soak gave 0.094 MiB/h over hours 25-48 at 60 pools;
+    - CI green (labelled run `38978131916`, run `38977867739`; recorder-soak 21 min of the 45 min limit, so the red team's CI-time MINOR does not apply);
+    - label `feb60808`.
+  - Z10 builder, reviewer and red team archived. **M1 build cards Z07-Z10 are all merged.**
+  - **Owner's three-red-team step started** on `bac1f88a` (fresh Opus sessions, attack only, reporting by send_message):
+    - RT1 stays up: `session_012H1i4exsNC9DqPAw57QUkq`;
+    - RT2 data integrity: `session_01NBmU4pS91KbRLFHBNHq8fb`;
+    - RT3 security and providers: `session_017i994s5DxvLf4fLQxjmNGg`.
+  - Then: fix every finding (one builder, reviewed and red-teamed), then the one-line host-config switch PR. After that, the owner's switch-on steps:
+    - RPC URLs via a fresh deploy code plus a Deploy run;
+    - md-pull key pair and the PullReceipt producer;
+    - SSH for the pull account.
+  - After switch-on: the M1 exit items (an on-server 48 h run watching fds and days-to-cap; the real-data re-run of M03-02/M08).
 - **17 Oct 10:33 AM: CI all green on `33ec86d3`.** Labelled run `38978131916`: check (pnpm test), coverage, dashboard, historical-data. Run `38977867739`: e2e, recorder-soak.
   - Waiting on the red team's verdict. Its first 60-pool soak (stopped at hour 36 by its own limit) showed 0.24 MiB/h over hours 24-36, near the 0.25 limit (CI: 0.118). It is re-running the full 48 h on `33ec86d3`.
   - The merge waits for its full slope. Check-in in 30 min.
