@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 11:59 PM: OF-FR-10/11.**
+  - OF-FR-10: the caches API is blocked from sessions (proxy 403, checked), so the pins are run ids only (`covers=RUN,RUN`). There is no size pin and no caches API call in the proof.
+  - OF-FR-11: the supervisor read both scan logs in full (job `116565097210` 622/622 lines; `116958626436` 608/608). Each shows 0 finished units, no unit lines, no URL and no HTTP status.
+    - Run 1: the scan step succeeded; the trim refused "holds no finished units" with exit 2.
+    - Run 2: the scan refused at the whole-day rule with exit 2, before any read.
+  - Pins sent: `covers=38776359833,38896609003`.
+  - The hold PR (`claude/of-hold`: ARCHIVE_ARM="" plus the test-ci values case) opens once test-ci is clean.
 - **16 Oct 11:55 PM: OF-FRESH-FIX report and rulings OF-FR-7..9.**
   - Builder's report:
     - The cause is NOT proven, because `2>/dev/null` hid the status.
