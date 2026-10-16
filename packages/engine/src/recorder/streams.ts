@@ -1,7 +1,8 @@
 // M07 stream catalogue (A-M07-01, SPEC-A "Interfaces"). The order is the drop priority under backpressure: the first
 // entry is dropped last, the last first. The first five are never dropped (A-M07-01 logic 4); `ref_price` (SOL/USD
 // once a minute, card Z08, ruling Z08-8: engine-local, public market data) is never dropped either, ranked after
-// `venue_config`.
+// `venue_config`. `process_start` (ruling Z09-40: one marker per worker start, its release id and start time; the bot's
+// own data) is never dropped either: a replay starts the bar engine cold at it.
 
 export const STREAM_NAMES = [
   'order_event',
@@ -10,6 +11,7 @@ export const STREAM_NAMES = [
   'coverage',
   'venue_config',
   'ref_price',
+  'process_start',
   'pool_snapshot_position',
   'decision',
   'signal',
@@ -24,7 +26,7 @@ export const STREAM_NAMES = [
 export type StreamName = (typeof STREAM_NAMES)[number];
 
 /** Streams that are never dropped, whatever the queue holds. */
-export const PROTECTED_STREAMS: ReadonlySet<StreamName> = new Set<StreamName>(['order_event', 'fill', 'universe_manifest', 'coverage', 'venue_config', 'ref_price']);
+export const PROTECTED_STREAMS: ReadonlySet<StreamName> = new Set<StreamName>(['order_event', 'fill', 'universe_manifest', 'coverage', 'venue_config', 'ref_price', 'process_start']);
 
 /** Pool-snapshot streams: change-only, written as keyframes and deltas (A-M07-01 logic 2). M04 picks the stream by priority class. */
 export const SNAPSHOT_STREAMS: ReadonlySet<StreamName> = new Set<StreamName>(['pool_snapshot_position', 'pool_snapshot', 'pool_snapshot_tail']);

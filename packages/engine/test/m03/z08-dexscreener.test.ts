@@ -5,6 +5,7 @@ import { describe, it } from 'vitest';
 import { base58, decodePubkey } from '@bot/decoders';
 import type { Pubkey } from '@bot/types';
 import { createCrossCheck, MAX_MINTS_PER_CALL, type DexScreenerDeps } from '../../src/m03/dexscreener.ts';
+import { M03_LOG_CODES } from '../../src/m03/log.ts';
 import { createServiceClients, type HttpFetch } from '../../src/m14/services.ts';
 import { FakeTime, RecordingLog, RecordingMetrics } from '../m14/helpers.ts';
 
@@ -86,5 +87,19 @@ describe('A-M03-04 DexScreener cross-check (synthetic vendor answers)', () => {
     const off = setup(() => json([]), { enabled: false });
     assert.equal((await off.cc.crossCheck([key(1)], new Set())).status, 'unavailable');
     assert.equal(off.urls.length, 0);
+  });
+});
+
+describe('A-M03-04 log fields and the mismatch count (card Z09)', () => {
+  it('every field the cross-check logs is declared in M03_LOG_CODES (an undeclared field is written as [redacted])', async () => {
+    const [m1] = [key(1)];
+    const t = setup(() => json([pair(m1, key(11), 'raydium')]));
+    const r = await t.cc.crossCheck([m1], new Set([key(11)]));
+    const ev = t.log.events.find((e) => e.code === 'm03.coverage_cross_check');
+    assert.ok(ev !== undefined);
+    const declared = Object.keys(M03_LOG_CODES['m03.coverage_cross_check'].fields);
+    for (const f of Object.keys(ev.fields)) assert.ok(declared.includes(f), `undeclared log field ${f}`);
+    assert.equal(r.status, 'dex_id_mismatch');
+    assert.equal(r.knownPoolsUnderOtherDex, 1);
   });
 });

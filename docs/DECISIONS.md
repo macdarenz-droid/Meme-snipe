@@ -4012,6 +4012,198 @@ Builder notes (for review):
   - Budget: the register's 300/min for `/tokens` is UNVERIFIED; the only limit on the official reference page is 60/min. Under the owner's 50% rule, every DexScreener bucket runs at 30/min (`SERVICE_LIMITS.dexscreener.pairs` from 150 to 30). This is pinned in `z08-services.test.ts`, the 31st call waits, and SPEC-A C-95 and A-M14-03 note the open VERIFY. This replaces the 150/min of Z08-10.
   - The Shyft (≤ 5 req/s) and Chainstack (≤ 0.5 req/s) pins are duplicated into `z08-services.test.ts`, as Z08-10 said; Z03 keeps its own.
 
+### Z09 Universe and study (builder readings on card Z09, 2026-10-16; the supervisor rules on each in review)
+
+Builder readings are marked as such. None changes a risk limit, a gate or a strategy rule.
+
+- **Z09-B1 · Bar open is the carried state** (A-M08-01). A bar opens at the last state seen before `startMs`, or at its first snapshot when there is none. The recorder writes changed snapshots only, so a replay cannot see an unchanged poll before a bar's first change. Every such poll returned the carried state, so this is the state at the bar's start in both modes. With it, live and replay OHLC, depth and flow are equal by construction. Flow is close real vault − carried real vault, the telescoped sum of logic 3.
+- **Z09-B2 · Replay snapshot counts** (A-M08-01 logic 4). REPLACED by ruling Z09-32 (per-bar `poll_counts`, exact counts; `spreadPolls` removed). As first built, a minute's `successfulPolls` were spread over its bars:
+  - each bar keeps its changed snapshots;
+  - each unchanged poll goes to the bar furthest below an even share of the minute (`spreadPolls`).
+
+  At a steady poll rate this equals live within ±1, which the acceptance test pins on a synthetic hour. Where in a minute a poll FAILED is not recorded, so with failures only the minute totals match. That is tested, and it is an open point for M07: per-bar counts would need poll timestamps in `poll_counts`. A replay bar waits for its minute's `poll_counts` until 120 s past the minute (`replayPollWaitMs`), then counts its changed snapshots only. A `skippedMinutes` record also counts changed snapshots only.
+- **Z09-B3 · One median rule** (A-M08-02). For an even count, the lower middle element is used for closes (logic 4), for the median of returns and for the MAD.
+- **Z09-C1 · Strict-row priority never below lean** (A-M10-03 logic 9). The strict row's priority is max(lean priority, entry cap). Under 25 M lamports of notional, the cap (20 bps) is below the lean priority of 5,000, and taking the cap there would make strict cheaper than lean. That would break the property lean ≤ strict ≤ conservative.
+- **Z09-C2 · Rung-2 term uses the row's priority.** The lean row uses the lean priority and the strict row its own. Table 2-A's acceptance disables the term.
+- **Z09-C3 · Conservative fixed share counts the dust close** with the unrecovered rent (both are fixed lamports). This only makes the `k`% exclusion stricter.
+- **Z09-C4 · Unpriceable round trip is infinite.** Every quote refusal, not only `E_ZERO_OUTPUT`, gives `INFINITE_COST_BPS` (1,000,000), never 0. This covers fee unknown and a sell above the real vault. C-85: tests hit `E_ZERO_OUTPUT` on the buy and on the sell, and `E_INVALID_SLIPPAGE` for missing or out-of-range strict-row slippage. Z09 adds no `minOut`, decision or exit caller, so C-88 and Z07-37's `flooredReverts` have no Z09 holder (as Z08-12).
+- **Z09-C5 · Size sweep depth.** The sweep prices on the pool at min(real, effective) quote depth with the same spot price: real vault only, base scaled. The caller builds that state. The depth cap is 0.5% of that depth.
+- **Z09-U1..U3 · Edges ARCH 7.5 does not name** (A-M05-01):
+  - `stale` → `evicted` (A-M05-02 evicts stale pools first);
+  - an expired timed blacklist re-runs the prefilter;
+  - a screening-backlog drop goes to `rejected` (reason `backlog`, retried after 6 h).
+  The edge table is `ALLOWED` in `m05/universe.ts`. A blacklist's expiry is kept in the record's `retryAtMs` (null: permanent), so it survives a restart.
+- **Z09-U4 · No schema change.** The Z09 candidate fields (migration time, depth, state start, retry time) are stored with the reasons in `candidate.reasons` JSON as `{ r, m, d, s, t }`. They are public market data and the bot's own state. A reviewer may prefer columns through an M24 migration.
+- **Z09-U5 · Manifest eligibility.** A pool counts as eligible from `eligible` on, and while evicted for budget, staleness or degraded reads: it still passed the prefilter and is "eligible again later". It does not count while evicted after a failed re-screen.
+  - NEW manifest fields: `late`, `a24.upperBound` (Phase 0 is prefilter-only), `crossCheck.otherDexPairs`, `crossCheck.knownPoolsUnderOtherDex` and `migrationCoverage` (A-M03-02's definition of done). Each is listed in `m05/manifest.ts`.
+  - A late manifest rebuilt from `candidate_event` has no tail ends (they are not in M24).
+- **Z09-U6 · Phase 0 prefilter limits** (replaced by ruling Z09-2 below). The set is named by `universe.phase0_limit_set` (default `pm01`: 125 bps, 85 SOL, 20 min after migration); `checkUniverseConfig` refuses limits that are not the named set's. A candidate passes if it meets the set, and the manifest reason names the set. While D30 is parked, age is proven only by the migration's block time (C-15 (a)).
+- **Z09-M1 · Backfill cursor and first start** (A-M03-02).
+  - First start, with no cursor: only the newest page is read (`migrations_since_start`, Z08-1).
+  - When the page cap stops a catch-up, the run saves `pendingTop` and `before`. The next run continues down to `until`, so nothing is skipped.
+  - A failed page or transaction read ends the run and the cursor does not move.
+  - A pool not visible yet is retried on the next 10 runs, then dropped as `not_found`.
+  - A PumpPortal notice is retried 3 times at 2 s.
+- **Z09-R1 · Phase 0 report rows.** The strict and conservative rows shown for a size are those of the lean-median pool.
+- **Z09-R2 · Strict-row slippage** is PM-01's pre-registered 150 / 300 bps (`research/pm01/PREREG.md:69` @ 3bde178).
+- **Z09-R3 · Parked parts of A-M13-01 are not built.** A-24, A-24b, the move rule and the kill check are not built. The hurdle by size is information only (`decides: false`).
+- **Z09 defects fixed in Z08 code** (each test fails before and passes after):
+  - `M03_LOG_CODES` did not declare `other_dex_pairs` or `known_pools_under_other_dex`, so M27 wrote them as `[redacted]`. They are now declared, and `CrossCheckResult.knownPoolsUnderOtherDex` carries the count to the manifest.
+  - `m03.pp_disconnected` declared the reserved field `code`, so `mergeLogCodes(M03_LOG_CODES)` threw. The field is now `close_code`.
+
+### Z09 supervisor rulings on the builder's plan (Z09-1 to Z09-9, 2026-10-16)
+
+- **Z09-1** (Q1). A-M13-01 step 4 is a per-size hurdle table, for information only: no verdict and no A-24b rule. The report names each step not built and why: A-24 and A-24b are parked; step 9 is not run because MR-01 is parked (C-76).
+- **Z09-2** (Q2). The Phase 0 universe limits are `strategy.<id>.universe.*` (SPEC-A line 991: MR 30 bps / 300 SOL / 24 h; PM 125 bps / 85 SOL / 20 min).
+  - The recording set is an explicit config value, `universe.phase0_limit_set`, default `pm01`. It is never implicit.
+  - The manifest names the set and its parameter hash (`limitSet`).
+  - MR-01's set stays in config, unused while MR-01 is parked.
+- **Z09-3** (Q3). The strict row takes PM-01's PREREG bounds, entry 150 bps and exit 300 bps (research/pm01/PREREG.md:69). A missing bound gives `E_INVALID_SLIPPAGE`, and no strict row is shown.
+- **Z09-4** (Q4). No phase0 PREREG is needed, since step 9 is not built.
+- **Z09-5**. P_SOL is a required input of `sizeSweep` and `usdToLamports`, and the report prints its value and source. SPEC Table 2-A's $150 is a test value only, never a hidden default. The live SOL/USD source belongs to Z10 (C-90).
+- **Z09-6**. Amounts are computed and shown in lamports or SOL (owner: profit in SOL). The dollar size is the row label and a secondary display only.
+- **Z09-7**. Synthetic fixtures are marked SYNTHETIC in the file and in the test name. **Obligation to Z10's soak:** re-run the A-M03-02 and A-M08-01 acceptance on recorded data (the 150-signature list and the one-hour snapshot segment), replacing the synthetic fixtures.
+- **Z09-8**. The C-85 / C-88 reading is accepted: Z09 adds no `minOut`, decision or exit caller. The `E_ZERO_OUTPUT` and `E_INVALID_SLIPPAGE` tests on `costRows` stay.
+- **Z09-9**. Additions to `tools/purelist/pure-files.txt` are approved. The supervisor adds the deps-reviewed label after reading the diff.
+- Standing: no live reads. Backfill reads go only through M14's limiter at P4.
+- **Z09-10** (the builder's MAJOR on #330). `@bot/venue` and `@bot/decoders` move from devDependencies to dependencies of `@bot/engine` (`workspace:*`; the lockfile is from `pnpm install`). The `phase0-report` operator script (`packages/engine/scripts/phase0-report.ts`) is restored. An end-to-end test runs it as a child process on the synthetic dataset and checks:
+  - two runs write identical bytes;
+  - the output equals the in-process runner bound the same way.
+
+  Builder's note: engine `src` named `@bot/venue` only in comments (its ports are structural); the runtime import is the script's.
+- **Z09-11** (the builder's MINOR). M27 metrics for the M03 backfill, M05, M08, M10 and M13 are Z10's obligation (health and metrics wiring); until then these modules log through declared codes only.
+
+### Z09 round 2 (red team on #330 at d5dbc12b: 8 MAJORs; supervisor rulings Z09-12 to Z09-27)
+
+Each ruling has a test that fails on f104023 and passes after. The universe, manifest and backfill tests run against changed ports, so on f104023 they fail when loading. For behaviour, the red team's RT-1 to RT-7 repros (PR comment 6206608979) fail on f104023. The round-2 tests include them, adapted where a ruling changed the expected result (RT-7).
+
+- **Z09-12 (RT-1)**: `backfillSince(fromSlot)` treats `fromSlot` as a hint only. A run completes, and `until` moves, only when paging reaches `until` (a short page) or on the first start's single page.
+- **Z09-13 (RT-2)**: a PumpPortal notice is verified from its chain transaction: fetched, decoded and matched by (mint, pool). Slot and block time are the chain's, so `verifiedSlot` never holds a notice's slot. A notice whose transaction holds no such migration is dropped (`notice_not_on_chain`). A chain sighting fills a missing migration time: it re-publishes once (`m03.migration_time_filled`), and the universe patches the candidate's `migratedAtMs`.
+- **Z09-14 (RT-3)**: A-M05-01 has no rejected → prefiltered_out edge. A retry that fails the prefilter stays in its state (`rejected`, `prefiltered_out`, `evicted`), its next retry is persisted (`CandidateStore.patch`, no transition), and it logs `m05.retry_failed` once per retry.
+- **Z09-15 (RT-4)**: the blacklist is the M24 `blacklist` table. An entry only lengthens: a permanent one is never shortened, and an expired one may be replaced. A blacklisted candidate's own expiry is re-persisted when its entry lengthens. Restart tests run on the memory store and on M24.
+- **Z09-16 (RT-5)**: `evicted` → `eligible` happens only through `evaluate()`, which runs at the evicted candidate's persisted retry and needs a prefilter pass. The watchlist offers slots to `eligible` pools only. `Universe.onWatched` re-checks the current facts and returns false on a fail; the watchlist then drops the pool.
+- **Z09-17 (RT-6)**: each tick re-checks watched, stale and eligible pools on their current facts (M04's latest).
+  - A watched or stale pool that fails goes to `rejected` (the ARCH re-screen edge, retried after 6 h).
+  - An eligible pool that fails goes to `prefiltered_out` (builder reading **Z09-U7**: a new edge eligible → prefiltered_out, which ARCH 7.5 does not name).
+  - The watchlist ranks on `depthOf` (M04's current depth) before the stored depth.
+- **Z09-18 (RT-6 manifest)**: an evicted pool counts as eligible only until its tail ends.
+  - The tail end is carried in the eviction transition's reason (`budget;tail_until=<ms>`), so a manifest rebuilt from M24 knows it.
+  - With no tail, eligibility ends at the eviction.
+  - Re-prefiltering ends it too.
+  - `phase0-input` reads the manifest's intervals, so the same rule holds there.
+- **Z09-19 (RT-7), DECISIONS Z09-B4: one rule for live and replay.** The bar engine has no mode.
+  - **Changes**: a snapshot equal to the carried state (price, effective depth, real vault) is unchanged and adds nothing. Live therefore sees the same changes as the change-only recording.
+  - **Close rule**: a bar closes when the clock is past start + 15 s + grace and its minute's `poll_counts` has been received (`receivedAtMs` is required, and a count is never used before it), or when the clock is 120 s past the minute's end (then it counts changes only).
+  - **Event time**: each bar carries `closedAtMs`, the moment the rule first held, independent of how often `closeDue` is called.
+  - **Parity test**: one SYNTHETIC hour, run as every poll (live) and as changed snapshots only (replay), each with the same `poll_counts` at their write times. Both produce identical `bar.closed` event lists, `closedAtMs` included; a seed with failed polls is included. No run emits before `closedAtMs` (leak rule).
+  - **Cost**: a bar closes about at its minute's end plus the `poll_counts` delay (≤ 75 s after its start at 1 Hz), not 16.5 s after its start, in every mode.
+  - **Z10 obligation** (dropped by Z09-32, which replaces it): feed the live engine the recorder queue's `poll_counts` records with their write time.
+  - The close rule, the cost and the minute wait above are REPLACED by Z09-32.
+  - **Bug found by the parity test and fixed**: a closed bar's changed count was dropped before the next bar of its minute took its spread.
+- **Z09-20**:
+  - The backfill keeps verified migrations, PumpPortal sightings and deferred pools in `BackfillStore` (M24: `discovery_cursor`, plus `kv_state` prefixes `m03.verified:`, `m03.pp_seen:` and `m03.deferred:`; pruned after 8 days).
+  - After a restart, publication is idempotent, and deferred pools survive the cursor moving past them (tested on M24).
+  - A `prefiltered_out` retry is persisted.
+- **Z09-21**: a run stopped by a missing transaction or by -32015 logs `m03.backfill_stalled` (reason `tx_not_visible` or `version_unsupported`); the cursor does not move.
+- **Z09-22**: a tail cut (`tail_capacity`, `tail_degraded`) is joined to the pool's latest eviction before it whose tail it falls inside, never by an exact millisecond. The test runs on a live clock with a transaction in between.
+- **Z09-23**: bounded memory.
+  - **Universe**: memory holds active candidates only (discovered, screening, eligible, watched, stale, signalled, in_position, cooldown). Inactive ones are read from the store when needed, and due retries come from `store.due` in batches of 1,000. The M24 store keeps each candidate's next timer in `cooldown_until`: the cooldown end, else the retry time. A tick is O(active + due). The `due` query scans by state, with no `cooldown_until` index; that index is a follow-up if the table grows.
+  - **Bars**: a pool with nothing pending and no event for 10 min is forgotten; stopped pools are kept.
+  - **Backfill**: holds no maps.
+  - Each part has a bounded-size test.
+- **Z09-24**: the hurdle row counts pools that pass the depth cap but cannot be priced, by reason (`unpriced`). The count appears in the markdown and the CSV.
+- **Z09-25**: `phase0-input` measures eligible time from the manifest's new per-pool `intervals` (gaps excluded). It reads the candidate, tail and position snapshot streams, and weights each state by the pool's actual successful polls from `poll_counts`, prorated by minute (0.1 Hz in the tail; by 15 s bar since Z09-32). A state no poll saw is left out.
+- **Z09-26**: `paramProblem` turns out-of-range parameters into `E_INVALID_PARAM`, never a RangeError: a probability that rounds to 1 at ppm (0.9999995), negative or NaN values, a cuLimit ≤ 0, or a negative cost.
+- **Z09-27**:
+  - The script's venue binding is the typed adapter `m13/venue-pricing.ts` (`toCpPoolState`, `flatFeeInputs`), with no `as never`.
+  - A degraded-mode tail clear writes a `tail_degraded` eviction record for each tail cut short.
+
+### Z09 round 3 (supervisor rulings Z09-32 to Z09-38, red team RT-8 and RT-9; notes on Z09-17, Z09-23 and Z09-28)
+
+- **Z09-32, a SPEC change (A-M07-01 logic 3 and its acceptance; A-M08-01 logic 4 and its acceptance; A-M07-03 per the per-bar record; A-M11-03 logic 1).** M07 writes `poll_counts` per 15 s base bar window instead of per minute.
+  - **Record**: one per watched pool per bar, with the same fields plus `barStartMs` and `durationMs: 15000`. `minuteStartMs` stays as the bar's minute. `skippedMinutes` becomes `skippedBars`, and `lateFromMinuteStartMs` becomes `lateFromBarStartMs`.
+  - **When**: written at the bar's close, start + 15 s + grace (`pollCloseGraceMs`, default 1,500, equal to `bars.close_grace_ms`). An hour is 240 records, not 60.
+  - **Stamp**: a record written on time (no tick at or after its close passed without writing it) carries the close as its `recvMs`; that includes an unwatch's partial bar. A later one (a clock step held the flush back) carries its write time, never earlier than just after the latest tick, so it is always after the close.
+  - **Bars**: a bar closes at start + duration + grace with no wait; `closedAtMs` is always that. Per 15 s window it counts the window's `successfulPolls` when its record was received by the bar's close (`receivedAtMs` ≤ close), else the window's changed snapshots. A late record is counted in `lateCounts` and never used; a `skippedBars` record is ignored. `spreadPolls` and `pollWaitMs` are gone.
+  - **Parity**: live and replay agree exactly, `snapshots` included; SPEC's "±1" becomes exact. The parity test drives the real `RecorderQueue` through a SYNTHETIC hour, three seeds, one with failed polls. Live: every poll, then `tick(t)`, then `closeDue(t)`. Replay: the recording, every record with `recvMs ≤ t` delivered before `closeDue(t)`. Both give identical `bar.closed` lists, times and per-bar counts included.
+  - **Leak test**: delivering every count early changes nothing; a planted future count is unused before 16.5 s; a count received after its close is never used. The queue's property test checks that no per-bar record is stamped before its close.
+  - **Clock rules unchanged**: rulings 25-41 still judge time by the minute (`maxRecvMinute`, episodes, outage). Only the counting unit (buckets, flushed-up-to marks, late and moved gaps, the catch-up span of `pollCatchUpMaxMinutes` × 4 bars) is the bar.
+  - **Coverage (A-M07-03)**: still judged per pool-minute. A minute is observed when any of its bars' records has a successful poll or a late credit (`lateFromBarStartMs`), so a 0.1 Hz tail pool is not missing between its polls. Per-bar `moved` and `clock_step` gaps exclude only their bars' minutes. `phase0-input` weights states by the per-bar counts.
+  - **Migration**: none, because no recording exists yet.
+  - **Wiring (Z10)**: the worker sets M07's `pollCloseGraceMs` from `bars.close_grace_ms`. It calls M07's `tick(now)`, then M08's `closeDue(now)`, with the same `now`, and hands each written `poll_counts` record to M08 with its `recvMs`. This replaces the Z09-19 obligation.
+- **Z09-17, kept as SPEC-A clarification C-96 of ARCH 7.5: `eligible → prefiltered_out` (Z09-U7).** The round-2 review passed it. ARCH 7.5 names no edge out of `eligible` except `watched`. `evicted` is reached only from `watched` ("evicted for budget") and `cooldown`, so `eligible → evicted` with a prefilter reason would be a new edge too, and a misleading one: the pool was never watched, so it has no eviction tail. `prefiltered_out` is the state ARCH gives a pool whose prefilter fails, and it is re-evaluated on the next discovery or every 6 h. The edge is in `ALLOWED`, and the A-M05-01 property test now drives pools' facts shallow and back, and asserts that the edge occurs.
+- **Z09-33 (RT-8), no survivorship gap.** A pool never leaves a slot without a tail. When the universe moves a watched, stale or cooldown pool out of every slot-holding state, the watchlist unwatches it, starts its eviction tail and writes an eviction record. That covers a failed re-check to `rejected` (its reasons start with `prefilter_recheck`), a soft re-screen to `rejected` (`rescreen_failed`), a blacklist (`blacklisted`) and a failed cooldown re-screen to `evicted` (`cooldown_rescreen_failed`). The universe is not told again, because it already moved the pool. A pool whose slot offer is refused never held the slot, so it gets no tail. The watchlist's universe port gains `candidate(poolId)` to read why a pool left. SPEC-A C-97.
+- **Z09-34 (RT-9), facts have an age.**
+  - `PrefilterFacts.observedAtMs` is M04's snapshot time.
+  - `universe.facts_max_age_ms` (300,000; 30,000-3,600,000; affects returns) is a builder reading: five minutes of a meme pool's depth is as old as a prefilter verdict should be.
+  - Older facts never pass (`facts_stale`). An eligible pool without fresh facts goes to `prefiltered_out` with the 6 h retry, and no slot is granted on stale facts.
+  - Watched and stale pools are re-checked only on fresh facts. Their staleness is the earlier of the facts' `observedAtMs` and M04's stale event, so a restart does not reset it. A stale pool with fresh facts and no stale event is watched again.
+  - A due retry (`prefiltered_out`, `rejected`, `evicted`, an expired blacklist) on stale facts calls `requestFacts`: one P4 read through M14, at most `universe.facts_refresh_max` (30, the 90 accounts of one `getMultipleAccounts`) pools per tick, and the rest on later ticks. It then waits `FACTS_WAIT_MS` (60 s). With fresh facts it is judged on them; without, it is a failed retry with the next 6 h retry.
+  - Spend cap: one read per inactive candidate per retry (each 6 h), batched 30 pools to a call. This adds no rate beyond the retries ARCH already schedules ("No extra data spend before the bot can trade"). Without the port (Z10 wires it), a stale retry simply fails.
+  - An evicted pool on stale facts stays evicted. SPEC-A C-97.
+- **Z09-39 (round 3 review MAJOR on the Z09-34 read budget).** The fresh reads have a hard hourly ceiling, and pools that cannot pass read nothing.
+  - **Ceiling**: `universe.facts_refresh_per_hour` (300; 0-3,600). Each ask (one pool) is counted in a rolling 60 minutes held in memory, and a tick never asks past it. The reads go to M14 at P4, so they also count against M14's P4 budget. At 30 pools to a `getMultipleAccounts` call, 300 is 10 calls an hour. A restart starts a new window; that is bounded by the restart rate and recorded here.
+  - **Measured worst case**: 10,000 inactive pools over a simulated 24 h, with `tick()` and an `onStale` every second, gave at most 300 reads in any 60 minutes, from the first retries at 6 h to the end (5,430 reads in all).
+  - **Bounded work**: with the hour's reads used, the due scan runs at most once a minute and asks for nothing. `onStale` re-checks only its own pool; it no longer runs the whole tick.
+  - **Retirement**: a due `prefiltered_out`, `rejected` or `evicted` pool is retired, with its retry timer cleared, so `store.due` never returns it again and it reads nothing. That happens when it can never pass again: no migration time (`age_unknown`), past the latest entry age of every limit set (`past_entry_age`; `MAX_ENTRY_AGE_MS`, PM-01 = migration + 120 min per research/pm01/PREREG.md `pool_age`, MR-01 none), or evicted and past its tail (`past_tail`: the tail end in its eviction reason, or none). It is also retired after `universe.retire_after_failed_retries` (3; 1-20) failed retries (`failed_retries`).
+  - **Coming back**: only a new discovery event brings a retired pool back. Its failed retries are cleared, and it is judged at once.
+  - **Stored**: the failed-retry count is persisted with the candidate (`f` in the reasons JSON; no schema change).
+  - **Consequence for ARCH 7.5** ("evicted ... `eligible` again later"): an evicted pool now returns through its retry only while its tail runs past the retry time, else on a new discovery. Under PM-01 that changes nothing, because a pool evicted 6 h earlier is past migration + 120 min either way. Under MR-01 (parked) it is a loss to revisit before MR-01 returns.
+  - **Z10**: the `requestFacts` → M14 wiring, and its P4 accounting, are tested in Z10.
+- **Z09-43 (round 4 review BLOCKER): a young pool is retried at its minimum age.**
+  - **The bug**: under PM-01, a pool found less than 20 min after migration went to `prefiltered_out` with the 6 h retry, then was retired as `past_entry_age` (Z09-39), so Phase 0 watched almost nothing.
+  - **The fix**: when the only failure is age with a known migration time, in every set that fails only on age, the retry is the earliest `migratedAtMs + minAgeMs` among those sets. Otherwise it stays `prefilter_retry_ms`.
+  - **Not a failure**: an age wait is not a failed retry (no `failedRetries` count). `past_entry_age` is judged only at a retry, so never before the age-due one.
+  - **Tests**: found at migration + 1 min, a pool is eligible at migration + 20 min. The reviewer's repro (migration at T0 − 60 s, a tick a minute for 8 h, only the verification read) reaches eligible at migration + 21 min: the age-due retry asks one read and is judged a minute later. A scripted day of 24 fresh migrations gives A-24 `eligibleCount` 24.
+- **Z09-44: fresh reads pause off the primary.** The per-hour ceiling counts pools (confirmed).
+  - **Pause**: while M14 cannot serve P4 from the unmetered primary (`readsAvailable()` false; Z10 wires it to the primary's health), nothing is asked. A retry waiting for a read is not judged on stale facts: its request mark is cleared, it is asked again once the primary is back, and no failure is counted. These reads are not essential, and M14 already refuses P2+ on a metered provider (`gateway.ts`, `priority >= 2 && !unmeteredPrimary`).
+  - **Arithmetic** (from the review): 300 pools an hour is 300 / 3,600 = 0.083 req/s worst case on Shyft, even at one request per pool. At 30 pools to a `getMultipleAccounts` call it is 0.0028 req/s. Shyft is configured at 5 req/s (m14/defaults.ts), so the worst case is under 1.7% of it.
+- **Z09-43, also RT-13**: an eligible pool past the latest entry age of every limit set leaves the queue for `prefiltered_out`, retired (`retired=past_entry_age`, no retry, no read). It uses the C-96 edge. A 400 SOL pool found at age 1 min is eligible at migration + 20 min and retired at migration + 120 min. Watched pools are not touched, because they leave by the watch budget. The A-05-03 golden manifest (`test/m05/fixtures/manifest-2026-10-16.json`) was regenerated for this, and only the four queued, unwatched pools of the scripted day changed: their eligible span now ends at the first tick past migration + 120 min.
+- **Z09-45 (RT-14): the read window survives restarts.** It is kept per minute, `[[minuteStartMs, pools], ...]` over the last hour, in M24 `kv_state` under `m05.facts_window` (`CandidateStore.factsWindow`), and loaded at start. A minute's asks count until that whole minute is an hour old, which is conservative. The window is saved before anything is asked; a failed save asks nothing (`m05.facts_window_not_saved`), failing closed on the budget. Tests: the red team's two restarts in an hour stay at or under the ceiling, and a crash loop (a restart every 10 s for an hour, 2,000 due pools) reads exactly the ceiling of 300 pools.
+- **Z09-46: at most one flush a minute.** The asks of a tick are batched, and a minute that already holds a flush asks nothing, so the worst case is 60 `requestFacts` calls an hour across restarts too. The 10,000-pool day measures it. With the ceiling of 300 pools at 30 per flush it is 10 calls an hour. Shyft cost, from the Z09-44 arithmetic: at most 60 calls an hour is 0.017 req/s. Even if every pool were its own request, 300 pools an hour is 0.083 req/s, under 1.7% of the configured 5 req/s.
+- **Z09-47: replays refuse markers whose seqs do not separate processes.** `replayBars` returns `E_MARKER_SEQ` instead of guessing when a stream seq is used twice (a process restarted its seqs below the previous one's last record) or when a marker's `firstSeq` is below an earlier marker's. Record times are not used, so a backward clock step is not refused. **Z10 obligation**: the queue's `firstSeq` at start comes from the recovered tail (`SegmentWriter.recover().nextSeq`, which reads the open segments too), never from the last sealed manifest.
+- **Z09-48: snapshots are split by seq.** The marker's `firstSeq` covers `poll_counts` and the three snapshot streams. Every recorded snapshot has a stream seq, so the feeder splits snapshots at markers by seq, and a backward clock step across a restart cannot misassign them (tested). A snapshot given without a seq falls back to its recvMs; that is the recorded limit, for inputs that lost their seqs.
+- **Z09-49: the recorder refuses appends until `markProcessStart`.** Appends and failed polls get `E_NOT_STARTED` (counted). `markProcessStart` is called once per process (a second call throws `E_CONFIG`), and as the queue's own record it does not move the producer clock. The tests start their queues through `startedQueue()`, which marks and takes the marker.
+- **Z09-50: tail restores keep the record's facts.** `restoreTails()` returns the raw eviction records: evictions with `tailUntilMs`, and cuts with none. Each pool's latest record decides, so a tail cut before the restart (`tail_capacity`, `tail_degraded`, `tail_restart_cut`) stays cut. A restored tail keeps its eviction time as `startedMs`, so the cap still ends the oldest first.
+- **Z09-51 (the builder's open point, ruled): a queued pool on stale facts waits for a read, not 6 h.**
+  - **The move**: an eligible pool whose only failure is stale facts goes to `prefiltered_out` marked `queued_stale`, on the C-96 edge. Stale means none, or older than `facts_max_age_ms`, while the same facts would pass if current. Its retry is due at once, so the next flush asks for its fresh read. This happens at the tick re-check and at a slot offer.
+  - **Not eligible meanwhile**: it holds no slot, and because it is in `prefiltered_out` the manifest does not count that interval as eligible.
+  - **The read**: it counts against the hourly ceiling and the one-a-minute flush, and pauses on the metered backup (Z09-44). A read the ceiling denies waits for a later flush. A requested read that did not come is asked again, never counted as a failed retry, and `failed_retries` does not retire a `queued_stale` pool. With fresh facts that pass it returns to `eligible`; with facts that fail it is an ordinary prefilter failure. It is retired only for `past_entry_age` (or `past_tail`).
+  - **Without the read port**: the old 6 h retry applies.
+  - **Test**: 40 eligible PM-01 pools against 30 slots. The 10 queued pools are eligible only on facts at most 5 min old and leave for reads in between (the manifest shows gaps). They are retired exactly at migration + 120 min for age, within the ceiling.
+- **Z09-52 (round 5 review MINOR): a pool already past every entry age is refused at discovery.**
+  - **Rule**: when a pool's age (migration known) is past the latest entry age of every limit set when it is judged, it goes `discovered` → `prefiltered_out` retired (`retired=past_entry_age`, no retry, no read). That covers discovery, an expired blacklist and a rediscovery of a retired pool. It never enters `eligible` and never counts in A-24. Under MR-01 (no latest age) nothing changes.
+  - **Tests**: the test default discovery moves to 30 min after migration, inside PM-01's window. MR-01 tests pass their 2-day-old migration explicitly.
+  - **Golden**: the scripted day now finds each pool 30 min after its migration; it used to be 3 h, past PM-01's window, which this rule would refuse. The regenerated golden differs only in `pool-11`: it is now still eligible at the last tick (age 1 h 30 m), so its span runs to the end of the day.
+- **Z09-53 (RT-15 BLOCKER): past-window pools make way for in-window pools.** While an in-window eligible pool waits for a slot, the watchlist evicts a watched or stale pool that is past every enabled set's latest entry age (`Universe.pastEntryAge`) and not pinned. It evicts stale ones first, then the shallowest, as many as the waiting in-window pools need, with its tail and reason `past_entry_age`. Free slots go to in-window pools first. With no in-window pool waiting, past-window pools keep their slots, so recording goes on.
+  - **Tests**: the red team's repro (30 pools of 500 SOL aged 3.5 h, and a 200 SOL pool found 1 min after migration) gives the young pool a slot at migration + 20 min, and the evicted pool's tail runs. With no young pool waiting, nobody is evicted.
+  - **Golden**: the scripted day changes. Its four oldest watched pools now make way, as `past_entry_age`, for pools 8-11 when each is found, then the budget drop to 5 evicts pools 4-6. So the evictions are 7, `maxSimultaneous` is 9, and the eligible spans of pools 0-6 and 8-10 change. The stale-first order is still covered by the watchlist's own test.
+- **Z09-54: a corrupt read window fails closed.** `factsWindow.load()` returns `E_CORRUPT` for a row that is not a list of `[safe integer minute, safe integer count ≥ 0]`, or is not JSON. The universe then counts the hour from its start as fully used (`factsRefreshPerHour` charged to the start minute) and logs `m05.facts_window_corrupt`. It never fails open; the next save rewrites the row.
+- **Z09-55: replay seqs are checked on the fly.** In place of a Set of every (stream, seq), `replayBars` keeps the last seq per stream: each stream's records come in seq order (as its segments are read) and must rise strictly, else `E_MARKER_SEQ`. A marker without a first seq for every marked stream is refused too.
+  - **Measurement**: on 172,800 `poll_counts` records (30 days of 240 bars a day for 24 pools), peak extra heap fell from 40.2 MB to 18.1 MB. What remains is the per-segment list of references and the engine's counts; the check itself is O(streams).
+- **Z09-56**: `restoreTails()` records carry their persisted `seq`. Records of the same ms are ordered by it, both for "each pool's latest record decides" and for the restore order, so the result does not depend on array order.
+- **Z10 obligations (round 5)**:
+  - `firstSeq` is set for all four marked streams from `recover().nextSeq`; a marker missing one is refused (`E_MARKER_SEQ`).
+  - `markProcessStart` is called before M04 starts polling.
+  - `requestFacts` → M14 and its P4 accounting are tested there.
+- **Z09-40 (RT-10), restart parity, rule (a): both start cold.** A restarted worker's bar engine has no carried state, so the replay starts cold at the same point.
+  - **Marker**: M07 writes a `process_start` marker when the worker starts (`RecorderQueue.markProcessStart(releaseId, now)`). Its payload is `{ releaseId, startedAtMs, pollCountsFirstSeq }`, the bot's own data. It goes on a new stream `process_start`, which is never dropped and ranks after `ref_price`.
+  - **Partial records**: a `poll_counts` record written before its bar closed (an unwatch or a cap eviction mid-bar) carries `partial: true`.
+  - **Feeder**: the replay feeder `m08/replay.ts` (`replayBars`) splits the recording at the markers. A process's records are its snapshots received before the next marker and its `poll_counts` with a seq below the next marker's `pollCountsFirstSeq`, so a partial count stamped with a close after the restart stays with the process that wrote it.
+  - **Close frontier**: before a marker the engine closes nothing past the process's newest non-partial `poll_counts` recvMs. Each tick writes every watched pool's closed bars before `closeDue`, so that recvMs is the latest close the stopped process reached. Bars it never closed are not closed in replay either.
+  - **Reset**: at the marker the feeder calls `BarEngine.reset()`. The new queue starts each pool's counts at its first watch, so a partial bar of the stopped process is never counted again.
+  - **No marker**: historical replays with no marker start cold at their first record, as before.
+  - **Tests**: a recording across a mid-bar crash with a 10 s outage, two seeds, one with failed polls, replays to the same `bar.closed` events, times and counts included; without the marker it differs (the red team's RT-10). Mutations that drop the reset, the frontier or the seq split each fail a test.
+  - **Limit**: bars of a pool the queue was not counting (the cap refused it) close only up to the frontier of the pools it was counting.
+- **Z09-41 (RT-12), tails survive a restart.** At start the watchlist restores every tail still running from `restoreTails()`, newest end first while `tail_max_pools` allows, and polling resumes at the tail class. Z10 reads them back from the persisted eviction records: the eviction transitions' `tail_until`, and the watchlist's own eviction records. A tail it cannot restore is recorded as `tail_restart_cut` with `tailUntilMs: null`: M04 refused it, the cap is full, or reads are degraded. The manifest treats that cut like `tail_capacity`, ending the pool's eligible span there. Ended tails are ignored.
+- **Z09-42**: `onPollCounts` refuses a record whose `receivedAtMs` is before its window ends (`barStartMs + 15,000`). The refusal is counted in `earlyCounts` and logged as `m08.poll_counts_early` (`pool`, `early_ms`) through the engine's optional log port.
+- **Z09-35**: a backfill run that stops (a null transaction, -32015, or an RPC failure) after paging down to `until` saves `until` as the last signature it fully processed. Processing runs oldest first, so that is the one just below the stop, and the next run fetches only from the stop up. A page-capped run that stops cannot: the cursor holds one range, so it fetches again from `before`.
+- **Z09-36**: a migration is recorded to M07 when its outcome is known (published, deferred, dropped), once. A pool already deferred at the start of the run is not recorded again, and an RPC failure records nothing, because the transaction is processed again later.
+- **Z09-37**: a notice's transaction that is not visible yet logs `m03.notice_tx_not_visible` (`tries`), not `m03.backfill_stalled`. Notices never touch the backfill's stall counter.
+- **Z09-38**: `CandidateStore.blacklist.put` returns `Result<void, { code: 'E_WRITE' }>` (M24: one transaction, failures caught). The universe logs `m05.blacklist_not_saved` on a refusal or a throw and carries on: the candidate rows still carry the expiry, and no handler throws.
+- **Z09-23, carried to Z10**: an M24 index on `candidate.cooldown_until`. Z10 measures the `due` query's cost on a table of realistic size before adding it.
+- **Z09-28**: accepted by the supervisor; no change.
+
 ### LOG-ORDER (Z02 follow-up; supervisor ruling LOG-1)
 
 - **LOG-1 · a clock step back never reorders a day's log lines.** Run 38817404562 read the 10-07 log back as "again, first" (`test/m24/review-round2.test.ts:176`). Rotating back to 10-07 opened a second append stream on the plain file while the first stream was still flushing. The two streams' writes ran on the thread pool in either order, and `ending` only stopped compression; it did not order the writes. Now, in `m27/logfile.ts`:
@@ -4028,3 +4220,12 @@ Builder notes (for review):
   - a stream leaves that set on `finish`, on `close`, or when it is destroyed as broken.
 
   So the bytes in memory stay within the existing caps. Test: the flap probe, with 100 info lines and then warn and error lines. The info bytes held stay at or below `queueBytes` plus one line, and warn and error are written up to twice `queueBytes` in total, then lost. It fails on 73058b5f (9,198 info bytes held, 3 out of 3 runs) and passes after.
+- **Reviewer's report on #330 (FAIL)**: its 3 MAJORs are RT-1, RT-2 and RT-5, covered by Z09-12, Z09-13 and Z09-16. Its MAJOR 1 repro is the round-2 `RT-1 / Z09-12` test: page cap, then `backfillSince(453_999_999n)`, then 5 runs; 1 migration is expected.
+- **Z09-28**: bad or missing slippage bounds omit only the strict row of the hurdle (`strict`, `gStarBpsStrict` null). The lean and conservative rows stay; the conservative sandwich term then takes the worst-case 10,000 bps bound, which can only raise it. The report carries a caveat (per Z09-3).
+- **Z09-29**: the phase0 markdown shows the parts of every row: fees, impact, fixed, other and g*, for lean, strict and conservative.
+- **Z09-30**: `test/m05/fixtures/manifest-2026-10-16.json` holds a `SYNTHETIC` marker and the manifest's canonical JSON as a string. The test checks both.
+- **Z09-31** (replaces "r0 tracked"): `readPhase0Dataset` takes R0 from every day folder in the dataset. It throws `E_NO_SNAPSHOTS` when there is none, and `E_R0_DAY_MISSING` (with `r0Day`) when R0's day is not among `--days`. The script exits 2 with the reason. D1 is never shifted, and R0 is never 0.
+- **Z09-21 (amended)**: a `getTransaction` that stays null counts attempts per signature in the store (`m03.stall`, survives a restart).
+  - At `NULL_TX_MAX_ATTEMPTS` (10 runs) it logs `m03.backfill_tx_missing` (critical, once) and `health().critical` is true.
+  - The run keeps stopping there: never skipped, and the cursor never moves past it.
+  - The count clears when the transaction appears.

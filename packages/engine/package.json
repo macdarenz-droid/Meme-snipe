@@ -9,10 +9,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@bot/types": "workspace:*"
-  },
-  "devDependencies": {
     "@bot/decoders": "workspace:*",
+    "@bot/types": "workspace:*",
     "@bot/venue": "workspace:*"
   }
 }

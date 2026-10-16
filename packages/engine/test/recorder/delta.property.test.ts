@@ -6,8 +6,9 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import fc from 'fast-check';
 import { canonicalJson, type UnixMs } from '@bot/types';
-import { RecorderQueue, SnapshotDecoder, SNAPSHOT_STREAMS, type EncodedSnapshot, type PoolSnapshotPayload, type StreamName } from '../../src/index.ts';
+import { SnapshotDecoder, SNAPSHOT_STREAMS, type EncodedSnapshot, type PoolSnapshotPayload, type StreamName } from '../../src/index.ts';
 import { SEG, T0 } from './helpers.ts';
+import { startedQueue } from './helpers.ts';
 
 const params = { seed: 20261007, numRuns: 300 };
 
@@ -34,7 +35,7 @@ const step = fc.record({
 describe('snapshot keyframe and delta round trip', () => {
   it('every written record decodes, per stream, to exactly the state appended for it', () => {
     fc.assert(fc.property(fc.array(fields, { minLength: 8, maxLength: 8 }), fc.array(step, { minLength: 1, maxLength: 400 }), (states, steps) => {
-      const q = new RecorderQueue({ config: { queueMax: 1_000, queueMaxBytes: 1_000 * 300 + 65_536 } });
+      const q = startedQueue({ config: { queueMax: 1_000, queueMaxBytes: 1_000 * 300 + 65_536 } });
       // Each (pool, state) has one rawHash and one payload; the decoder must give that payload back.
       const truth = new Map<string, string>();
       const payloadOf = (pool: number, state: number): PoolSnapshotPayload => {

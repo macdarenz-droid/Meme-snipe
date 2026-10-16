@@ -9,8 +9,9 @@ import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import { describe, it } from 'vitest';
 import type { UnixMs } from '@bot/types';
-import { DEFAULT_CONFIG, GAPS_MAX_PER_STREAM, PROTECTED_STREAMS, RECORD_OVERHEAD_BYTES, RecorderQueue, STREAM_NAMES, type StreamName } from '../../src/index.ts';
+import { DEFAULT_CONFIG, GAPS_MAX_PER_STREAM, PROTECTED_STREAMS, RECORD_OVERHEAD_BYTES, STREAM_NAMES, type StreamName } from '../../src/index.ts';
 import { SEG, T0, rec, snap } from './helpers.ts';
+import { startedQueue } from './helpers.ts';
 
 setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
@@ -29,7 +30,7 @@ const IN_PER_ROUND = TAKE_PER_ROUND * 10;
 describe('recorder flood at 10x the writer', () => {
   it('keeps the queue, its bytes and its side structures bounded and loses no order or fill', { timeout: 300_000 }, () => {
     const logs: string[] = [];
-    const q = new RecorderQueue({ log: (level, code) => logs.push(`${level}:${code}`) });
+    const q = startedQueue({ log: (level, code) => logs.push(`${level}:${code}`) });
     // poll_counts come from tick() only.
     const droppable = STREAM_NAMES.filter((s) => !PROTECTED_STREAMS.has(s) && s !== 'poll_counts');
     const appended = new Map<StreamName, number>();

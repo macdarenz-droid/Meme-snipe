@@ -11,7 +11,7 @@ import { createVenueConfigCache } from '@bot/venue';
 import { ACCOUNTS, PROGRAMS } from '@bot/venue/constants';
 import { recordVenueConfig, SNAPSHOT_EVERY_MS, type VenueConfigRecord } from '../../src/m07/venue-config.ts';
 import { PROTECTED_STREAMS } from '../../src/recorder/streams.ts';
-import { RecorderQueue } from '../../src/recorder/queue.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 // The 2026-10-06 mainnet config accounts (fixtures/mainnet/config, card Z07), read as files.
 const idls = verifyPinnedIdls(VENDORED_IDL_DIR);
@@ -45,7 +45,7 @@ describe('card Z08 venue config recording', () => {
     const clock = fakeClock();
     const cache = createVenueConfigCache({ reader, decoder: decoders, clock, log });
     const out: VenueConfigRecord[] = [];
-    const q = new RecorderQueue();
+    const q = startedQueue();
     const rec = recordVenueConfig({ cache, accounts: CONFIG_ACCOUNTS, nowMs: () => clock.t as UnixMs, append: (r) => { out.push(r); assert.equal(q.append(r), 'queued'); } });
     rec.tick(clock.t as UnixMs);                                         // nothing cached yet: nothing written
     assert.equal(out.length, 0);

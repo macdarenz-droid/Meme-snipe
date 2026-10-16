@@ -12,9 +12,9 @@ import { M04_DEFAULTS } from '../../src/m04/settings.ts';
 import { createPollSource, createSubscribeSource, packBatches, SubscribeRefused, type PoolSource, type SourcePool, type SourceRecord, type SubscribeTransport } from '../../src/m04/source.ts';
 import { createPoolTracker } from '../../src/m04/tracker.ts';
 import type { CallOptions, CallValue, RpcError, RpcGateway } from '../../src/m14/types.ts';
-import { RecorderQueue } from '../../src/recorder/queue.ts';
 import { FakeTime } from '../m14/helpers.ts';
 import { FakeChain, fakeModel, Logs, Metrics, Outputs, poolAccounts, ScriptedReader, u64, type FakePool } from './fake.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const POOLS = ['a', 'b', 'c'];
 
@@ -58,7 +58,7 @@ function scriptedSource(time: FakeTime, script: Array<{ at: number; r: SourceRec
 }
 
 const records = (outputs: Outputs): string[] => {
-  const q = new RecorderQueue();
+  const q = startedQueue();
   for (const { s, cls } of outputs.snapshots) assert.ok(['queued', 'unchanged'].includes(q.append(snapshotRecord(s, cls, fakeModel)) as string));
   return q.take(10_000, 'seg-1').map((r) => JSON.stringify(r, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
 };

@@ -14,6 +14,7 @@ import { ed25519Key } from '../../src/m07/receipt-sig.ts';
 import { SegmentWriter, type WriterFs } from '../../src/m07/segments.ts';
 import { RecorderQueue } from '../../src/recorder/queue.ts';
 import { tempDir } from '../helpers.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const H0 = Date.UTC(2026, 9, 15, 10, 0, 0);
 const ms = (n: number): UnixMs => n as UnixMs;
@@ -23,7 +24,7 @@ const line = (seq: number, payload: string): string =>
   `{"commitment":null,"payload":{"s":${JSON.stringify(payload)}},"recvMs":${H0 - 3_600_000 + seq},"seq":"${seq}","slot":null,"source":"t","stream":"decision"}\n`;
 function start(dir: string, now: { t: number }, f?: WriterFs) {
   const rec = SegmentWriter.recover({ dataDir: dir, nowMs: ms(now.t), log: noLog, ...(f === undefined ? {} : { fs: f }) });
-  const q = new RecorderQueue({ firstSeq: rec.nextSeq });
+  const q = startedQueue({ firstSeq: rec.nextSeq });
   const lines: Array<{ level: string; code: string; at: number }> = [];
   const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => ms(now.t), log: (level, code) => lines.push({ level, code, at: now.t }), ...(f === undefined ? {} : { fs: f }) }, rec);
   return { q, w, lines };

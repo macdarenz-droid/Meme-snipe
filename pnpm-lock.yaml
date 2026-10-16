@@ -151,13 +151,12 @@ importers:
 
   packages/engine:
     dependencies:
-      '@bot/types':
-        specifier: workspace:*
-        version: link:../types
-    devDependencies:
       '@bot/decoders':
         specifier: workspace:*
         version: link:../decoders
+      '@bot/types':
+        specifier: workspace:*
+        version: link:../types
       '@bot/venue':
         specifier: workspace:*
         version: link:../venue

@@ -16,6 +16,7 @@ import { SegmentWriter, type WriterFs } from '../../src/m07/segments.ts';
 import { WatchLog } from '../../src/m07/watch-log.ts';
 import { RecorderQueue } from '../../src/recorder/queue.ts';
 import { tempDir } from '../helpers.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const H0 = Date.UTC(2026, 9, 15, 10, 0, 0);
 const ms = (n: number): UnixMs => n as UnixMs;
@@ -25,7 +26,7 @@ const append = (q: RecorderQueue, at: number, i: number, stream = 'decision'): v
 };
 function start(dir: string, now: { t: number }, f?: WriterFs) {
   const rec = SegmentWriter.recover({ dataDir: dir, nowMs: ms(now.t), log: noLog, ...(f === undefined ? {} : { fs: f }) });
-  const q = new RecorderQueue({ firstSeq: rec.nextSeq });
+  const q = startedQueue({ firstSeq: rec.nextSeq });
   const lines: Array<{ level: string; code: string }> = [];
   const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => ms(now.t), log: (level, code) => lines.push({ level, code }), ...(f === undefined ? {} : { fs: f }) }, rec);
   return { q, w, rec, lines };
@@ -243,7 +244,11 @@ describe('Z08-18 and Z08-19', () => {
     const { q, w } = start(dir, now);
     for (let m = 0; m < 1_440; m += 1) {
       now.t = D0 + m * 60_000 + 30_000;
-      q.append({ stream: 'poll_counts', recvMs: ms(now.t), slot: null, commitment: null, source: 'm07', payload: { poolId: 'A', minuteStartMs: D0 + m * 60_000, successfulPolls: 60, changedPolls: 0, failedPolls: 0, priorityClass: 'candidate' } });
+      // One poll_counts record per 15-second bar (ruling Z09-32).
+      for (let b = 0; b < 4; b++) {
+        const barStartMs = D0 + m * 60_000 + b * 15_000;
+        q.append({ stream: 'poll_counts', recvMs: ms(now.t), slot: null, commitment: null, source: 'm07', payload: { poolId: 'A', barStartMs, durationMs: 15_000, minuteStartMs: D0 + m * 60_000, successfulPolls: 15, changedPolls: 0, failedPolls: 0, priorityClass: 'candidate' } });
+      }
       w.pump();
     }
     const out: unknown[] = [];

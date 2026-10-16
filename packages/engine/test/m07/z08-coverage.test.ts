@@ -16,8 +16,8 @@ import { ed25519Key, receiptText, signReceipt, verifyReceipt } from '../../src/m
 import { receiptFileName } from '../../src/m07/receipts.ts';
 import { SegmentWriter } from '../../src/m07/segments.ts';
 import { POLL_INTERVAL_MS, WatchLog } from '../../src/m07/watch-log.ts';
-import { RecorderQueue } from '../../src/recorder/queue.ts';
 import { tempDir } from '../helpers.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const DAY = '2026-10-15';
 const D0 = dayStartOf(DAY);
@@ -28,9 +28,10 @@ const other = generateKeyPairSync('ed25519');
 
 const watch = (poolId: string, fromMin: number, toMin: number, priorityClass: WatchInterval['priorityClass'] = 'candidate'): WatchInterval =>
   ({ poolId, priorityClass, fromMs: ms(D0 + fromMin * MIN), toMs: ms(D0 + toMin * MIN), pollIntervalMs: POLL_INTERVAL_MS[priorityClass] });
-/** poll_counts for every minute of [fromMin, toMin) with 60 successful polls. */
+const BAR = 15_000;
+/** poll_counts for every 15-second bar of the minutes [fromMin, toMin) with 15 successful polls (ruling Z09-32). */
 const polls = (poolId: string, fromMin: number, toMin: number, priorityClass = 'candidate'): PollCountRecord[] =>
-  Array.from({ length: toMin - fromMin }, (_, i) => ({ poolId, minuteStartMs: ms(D0 + (fromMin + i) * MIN), successfulPolls: 60, priorityClass }));
+  Array.from({ length: (toMin - fromMin) * 4 }, (_, i) => ({ poolId, barStartMs: ms(D0 + fromMin * MIN + i * BAR), successfulPolls: 15, priorityClass }));
 const input = (over: Partial<CoverageInput>): CoverageInput =>
   ({ dayUtc: DAY, watched: [], pollCounts: [], gaps: [], records: {}, universeManifestSha256: 'a'.repeat(64), ...over });
 
@@ -63,21 +64,21 @@ describe('A-M07-03 coverage arithmetic (coverage.ts)', () => {
     assert.equal(extra.detail.watchedMs, 86_400_000);
   });
 
-  it('ruling 38: a sparse pool whose only poll of a minute arrived late (credited back by lateFromMinuteStartMs) is observed', () => {
+  it('ruling 38: a sparse pool whose only poll of a minute arrived late (credited back by lateFromBarStartMs) is observed', () => {
     const sparse: PollCountRecord[] = [];
     for (let m = 0; m < 1_440; m += 1) {
-      // Each minute's single poll is recorded in the next minute's record as a late poll.
-      sparse.push({ poolId: 'T', minuteStartMs: ms(D0 + (m + 1) * MIN), successfulPolls: 0, priorityClass: 'tail', latePolls: 1, lateFromMinuteStartMs: ms(D0 + m * MIN) });
+      // Each minute's single poll, in its last bar, is recorded in the next bar's record as a late poll.
+      sparse.push({ poolId: 'T', barStartMs: ms(D0 + (m + 1) * MIN), successfulPolls: 0, priorityClass: 'tail', latePolls: 1, lateFromBarStartMs: ms(D0 + m * MIN + 3 * BAR) });
     }
     const c = computeCoverage(input({ watched: [watch('T', 0, 1_440, 'tail')], pollCounts: sparse }));
     assert.deepEqual([c.detail.missingMs, c.report.lowCoverage], [0, false]);
     // Without the credit, every minute would be missing.
-    const noCredit = computeCoverage(input({ watched: [watch('T', 0, 1_440, 'tail')], pollCounts: sparse.map(({ latePolls: _l, lateFromMinuteStartMs: _f, ...r }) => r) }));
+    const noCredit = computeCoverage(input({ watched: [watch('T', 0, 1_440, 'tail')], pollCounts: sparse.map(({ latePolls: _l, lateFromBarStartMs: _f, ...r }) => r) }));
     assert.equal(noCredit.detail.missingBps, 10_000);
   });
 
-  it('a skippedMinutes record observes nothing minute by minute', () => {
-    const c = computeCoverage(input({ watched: [watch('A', 0, 60)], pollCounts: [{ poolId: 'A', minuteStartMs: ms(D0), successfulPolls: 3_600, priorityClass: 'candidate', skippedMinutes: 60 }] }));
+  it('a skippedBars record observes nothing bar by bar', () => {
+    const c = computeCoverage(input({ watched: [watch('A', 0, 60)], pollCounts: [{ poolId: 'A', barStartMs: ms(D0), successfulPolls: 3_600, priorityClass: 'candidate', skippedBars: 240 }] }));
     assert.equal(c.detail.missingBps, 10_000);
   });
 
@@ -126,7 +127,7 @@ describe('A-M07-03 coverage arithmetic (coverage.ts)', () => {
         { ...watch('S', 0, 1), toMs: ms(D0 + 10_000) }, { ...watch('S', 0, 1), fromMs: ms(D0 + 30_000) }, { ...watch('S', 0, 1), fromMs: ms(D0 + 40_000), toMs: ms(D0 + 50_000) }, { ...watch('S', 0, 1), fromMs: ms(D0 + 5_000), toMs: ms(D0 + 20_000) },
         watch('S', 10, 12),
       ],
-      pollCounts: [...polls('S', 0, 1), ...polls('S', 10, 12), { poolId: 'S', minuteStartMs: ms(D0), successfulPolls: 1, priorityClass: 'other' }],
+      pollCounts: [...polls('S', 0, 1), ...polls('S', 10, 12), { poolId: 'S', barStartMs: ms(D0), successfulPolls: 1, priorityClass: 'other' }],
     }));
     assert.deepEqual([split.detail.watchedMs, split.detail.missingMs], [50_000 + 2 * MIN, 0]);
     assert.throws(() => dayStartOf('2026-02-30'), RangeError);
@@ -192,7 +193,7 @@ function mdDir(hours: string[]): { dir: string; receipts: string; paths: string[
   for (const h of hours) {
     const now = { t: Date.parse(`${h}:00:00Z`) + 1_000 };
     const rec = SegmentWriter.recover({ dataDir: dir, nowMs: ms(now.t), log: () => undefined });
-    const q = new RecorderQueue({ firstSeq: rec.nextSeq });
+    const q = startedQueue({ firstSeq: rec.nextSeq });
     const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => ms(now.t), log: () => undefined }, { ...rec, lastRecordMs: null });
     q.append({ stream: 'decision', recvMs: ms(now.t), slot: null, commitment: null, source: 't', payload: { pad: 'x'.repeat(1_000) } });
     w.pump();
@@ -363,13 +364,13 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.equal(parseArgs(['host', 'h']), 'bad argument host');
   });
 
-  it('the daily job reads the day from disk: manifests, poll_counts segments (and the next day\'s first minute), the watch log; appends and saves the report', () => {
+  it('the daily job reads the day from disk: manifests, poll_counts segments (and the next day\'s first bar), the watch log; appends and saves the report', () => {
     const dir = tempDir('z08-daily');
     const now = { t: D0 + 1_000 };
     const wl = new WatchLog(dir, () => undefined);
     wl.watch('A', 'candidate', ms(D0));
     const rec = SegmentWriter.recover({ dataDir: dir, nowMs: ms(now.t), log: () => undefined });
-    const q = new RecorderQueue({ firstSeq: rec.nextSeq });
+    const q = startedQueue({ firstSeq: rec.nextSeq });
     const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => ms(now.t), log: () => undefined }, rec);
     const pc = (p: PollCountRecord, at: number): void => {
       q.append({ stream: 'poll_counts', recvMs: ms(at), slot: null, commitment: null, source: 'm07', payload: p });
@@ -378,9 +379,9 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
       now.t = D0 + (m + 1) * MIN;
       if (m === 1_439) {
         w.pump();                                                         // close 23:00 first; 23:59's poll arrives late, after midnight
-        pc({ poolId: 'A', minuteStartMs: ms(D0 + 1_440 * MIN), successfulPolls: 0, priorityClass: 'candidate', latePolls: 1, lateFromMinuteStartMs: ms(D0 + 1_439 * MIN) }, now.t);
+        pc({ poolId: 'A', barStartMs: ms(D0 + 1_440 * MIN), successfulPolls: 0, priorityClass: 'candidate', latePolls: 1, lateFromBarStartMs: ms(D0 + 1_439 * MIN + 3 * BAR) }, now.t);
       } else {
-        pc({ poolId: 'A', minuteStartMs: ms(D0 + m * MIN), successfulPolls: 60, priorityClass: 'candidate' }, now.t);
+        for (let b = 0; b < 4; b++) pc({ poolId: 'A', barStartMs: ms(D0 + m * MIN + b * BAR), successfulPolls: 15, priorityClass: 'candidate' }, now.t);
       }
       w.pump();
     }

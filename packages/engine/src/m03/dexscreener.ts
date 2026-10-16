@@ -23,6 +23,8 @@ export interface CrossCheckResult {
   poolsOnlyInVendor: Array<{ mint: Pubkey; pairAddress: Pubkey; dexId: string }>;
   /** Pairs for those mints under a dexId not configured as PumpSwap's (shown so a wrong id is visible). */
   otherDexPairs: number;
+  /** Pools we know that came back under a dexId not configured as PumpSwap's (card Z09: carried into the manifest). */
+  knownPoolsUnderOtherDex: number;
   asOfMs: UnixMs;
   /** `dex_id_mismatch`: a pool we know came back under a dexId not configured as PumpSwap's (the id is likely wrong). */
   status: 'ok' | 'partial' | 'unavailable' | 'dex_id_mismatch';
@@ -59,7 +61,7 @@ export function createCrossCheck(deps: DexScreenerDeps): {
   return {
     async crossCheck(mints, knownPools): Promise<CrossCheckResult> {
       const asOfMs = deps.nowMs();
-      const out: CrossCheckResult = { checkedMints: 0, poolsOnlyInVendor: [], otherDexPairs: 0, asOfMs, status: 'ok' };
+      const out: CrossCheckResult = { checkedMints: 0, poolsOnlyInVendor: [], otherDexPairs: 0, knownPoolsUnderOtherDex: 0, asOfMs, status: 'ok' };
       if (!deps.enabled) return { ...out, status: 'unavailable' };
       const unique = [...new Set(mints)].filter((m) => BASE58.test(m) && deps.isPubkey(m));
       const asked = new Set(unique);
@@ -86,6 +88,7 @@ export function createCrossCheck(deps: DexScreenerDeps): {
           if (!knownPools.has(p.pairAddress)) out.poolsOnlyInVendor.push(p);
         }
       }
+      out.knownPoolsUnderOtherDex = knownUnderOther;
       if (knownUnderOther > 0 && out.status === 'ok') out.status = 'dex_id_mismatch';
       deps.log?.event(out.status === 'ok' ? 'info' : 'warn', 'm03.coverage_cross_check', {
         checked_mints: out.checkedMints, pools_only_in_vendor: out.poolsOnlyInVendor.length, other_dex_pairs: out.otherDexPairs,

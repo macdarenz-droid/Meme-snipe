@@ -12,7 +12,7 @@ import {
   type RawAccount, type ReferenceIds, type RefPriceRecord, type ReferenceReader,
 } from '../../src/m07/sol-usd.ts';
 import { PROTECTED_STREAMS, STREAM_NAMES } from '../../src/recorder/streams.ts';
-import { RecorderQueue } from '../../src/recorder/queue.ts';
+import { startedQueue } from '../recorder/helpers.ts';
 
 const pubkeyBytes = (p: Pubkey): Uint8Array => decodePubkey(p);
 /** What the composition root passes (Z10): the reviewed constants and the decoders' base58 encoder. */
@@ -123,7 +123,7 @@ describe('card Z08 SOL/USD reference price (synthetic fixtures)', () => {
     });
     const reader: ReferenceReader = { read: async (keys, o) => { reads.push({ keys, priority: o.priority }); return script(keys); } };
     const out: RefPriceRecord[] = [];
-    const q = new RecorderQueue();
+    const q = startedQueue();
     const r = createSolUsdReader({ ids: IDS, reader, nowMs: () => t as UnixMs, append: (x) => { out.push(x); assert.equal(q.append(x), 'queued'); } });
     await r.tick(t as UnixMs);
     assert.equal(out.length, 1);

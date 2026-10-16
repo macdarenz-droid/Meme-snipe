@@ -1,6 +1,6 @@
 // Test helpers for the M07 recorder queue.
 import type { UnixMs } from '@bot/types';
-import type { AppendInput, EncodedRecord, PoolSnapshotPayload, StreamName } from '../../src/index.ts';
+import { RecorderQueue, type AppendInput, type EncodedRecord, type PoolSnapshotPayload, type StreamName } from '../../src/index.ts';
 
 // 2026-10-01T10:00:00Z, on an hour boundary.
 export const T0 = 1_790_848_800_000 as UnixMs;
@@ -23,3 +23,14 @@ export function payloadOf(r: EncodedRecord): Record<string, unknown> {
   return JSON.parse(r.payloadJson) as Record<string, unknown>;
 }
 export const SEG = '2026-10-01T10';
+
+/**
+ * A queue past its `process_start` marker (ruling Z09-49: appends are refused before it), with the marker already
+ * taken, so a test sees only its own records.
+ */
+export function startedQueue(opts?: ConstructorParameters<typeof RecorderQueue>[0]): RecorderQueue {
+  const q = new RecorderQueue(opts);
+  q.markProcessStart('test', 0 as UnixMs);
+  q.take(1, '__start__');
+  return q;
+}
