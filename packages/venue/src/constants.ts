@@ -40,6 +40,21 @@ export const MINTS = Object.freeze({
   usdc: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',              // [EX-10]: pump Global.whitelisted_quote_mints; PumpSwap prices it on stable tiers (card Z07)
 } as const satisfies Record<string, Pubkey>);
 
+/**
+ * The SOL/USD reference pool (card Z08, rulings Z08-7 and Z08-8): the Orca Whirlpool wSOL/USDC with tick spacing 4
+ * (0.04%). Its config is the WhirlpoolConfig `2Lecsh...` listed at https://docs.orca.so/developers/architecture/whirlpool-parameters
+ * (read 2026-10-15; the page does not label the network, this is the one the pool below exists under). The pool address is the
+ * PDA ["whirlpool", config, token_mint_a, token_mint_b, fee_tier_index_seed (tick spacing 4 as u16 LE)] under the
+ * Whirlpool program (seeds and layout: orca-so/whirlpools programs/whirlpool/src/state/whirlpool.rs at
+ * cc683ec92acb5e7606caa3d8e514d9383e9c7c11, read 2026-10-15); `REFERENCE_PDAS` re-derives it. Neither source states
+ * the pool's depth; the reader checks owner, config, mints, vaults and a depth floor on every read, and the one live
+ * check is Z10's on-server acceptance (SPEC-A C-90).
+ */
+export const REFERENCE = Object.freeze({
+  orcaWhirlpoolsConfig: '2LecshUwdy9xi7meFgHtFJQNSKk4KdTrcpvaB56dP2NQ',  // docs.orca.so whirlpool-parameters (2026-10-15)
+  solUsdcWhirlpool: 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE',     // PDA, tick spacing 4, bump 255 (REFERENCE_PDAS)
+} as const satisfies Record<string, Pubkey>);
+
 /** `Pubkey::default()` (32 zero bytes): an unset `coin_creator` or creator charges no creator fee [VF-04] (card Z07). */
 export const DEFAULT_PUBKEY: Pubkey = '11111111111111111111111111111111';
 
@@ -60,6 +75,14 @@ export const PDAS: ReadonlyArray<{ name: keyof typeof ACCOUNTS; program: Pubkey;
   { name: 'pumpSwapGlobalConfig', program: PROGRAMS.pumpSwap, seeds: () => ['global_config'], bump: 255 },
   { name: 'feeConfigCurve', program: PROGRAMS.pumpFees, seeds: () => ['fee_config', key(PROGRAMS.pumpCurve)], bump: 253 },
   { name: 'feeConfigPumpSwap', program: PROGRAMS.pumpFees, seeds: () => ['fee_config', key(PROGRAMS.pumpSwap)], bump: 255 },
+];
+
+/** The reference pool's PDA (card Z08), checked like PDAS but kept apart from the four venue PDAs. */
+export const REFERENCE_PDAS: ReadonlyArray<{ name: keyof typeof REFERENCE; program: Pubkey; seeds: () => Seed[]; bump: number }> = [
+  {
+    name: 'solUsdcWhirlpool', program: PROGRAMS.orcaWhirlpools, bump: 255,
+    seeds: () => ['whirlpool', key(REFERENCE.orcaWhirlpoolsConfig), key(MINTS.wsol), key(MINTS.usdc), Uint8Array.from([4, 0])],
+  },
 ];
 
 /** Derives a PDA with @solana/kit (on-curve check included). */
