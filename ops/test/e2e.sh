@@ -975,6 +975,9 @@ in_c "chmod 0600 /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted
 # install.sh --update, switches, and holds it through the switch check.
 wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the stand-in back before the recorder's deploy" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
+# SWITCH-1's broken-release case above left $signed2 in failed_release (never tried again). This deploy reuses that
+# signed commit for the recorder's release, so the record is set aside here and put back at the end of the section.
+in_c "mv -f /var/lib/zeroed-host/failed_release /root/failed_release.e2e 2>/dev/null || true"
 in_c "rm -rf '/opt/zeroed/releases/$signed2' && cp -a '$rrel' '/opt/zeroed/releases/$signed2'"
 echo success >"$STATE/checks/$signed2"
 git -C "$BARE" tag -f deploy "$signed2" >/dev/null && git -C "$BARE" update-server-info
@@ -1034,7 +1037,7 @@ in_c "rm -rf /root/e2e-research.pem /root/e2e-pulled /root/.ssh/e2e-pull /root/.
 in_c "systemctl stop zeroed-e2e-fake-rpc; rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; sed -i '/shyft.fake/d' /etc/hosts"
 # The host's records as they were before this section: deployed and tagged at the signed release, no probation.
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
-wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel'"
+wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel' && { ! test -e /root/failed_release.e2e || mv -f /root/failed_release.e2e /var/lib/zeroed-host/failed_release; }"
 wait_for 60 "the stand-in back after the recorder" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
 pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/scripts/recorder.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) zeroed-update deploys it from the stand-in through the gate (trial, install --update, switch, hold); it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, its cgroup's anon field read for the 75% alert, no provider key in any journal; M07's cycle (Z10-5): sealed days, md-pull over the chrooted sftp account with signed receipts (0640, group zeroed-pull), only the receipted day past retention deleted, the unreceipted one kept with an alert; back to the stand-in"
 
