@@ -2,7 +2,9 @@
 // replaces at runtime). Seeds are deterministic (a sha256 chain), so every run checks the same 10,000 cases.
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'vitest';
@@ -11,6 +13,9 @@ import { base58 } from '@bot/decoders';
 import type { Pubkey } from '@bot/types';
 import { ACCOUNTS, PDAS, PROGRAMS, REFERENCE_PDAS, derivePda } from '../src/constants.ts';
 import { findProgramAddress, isOnCurve } from '../src/pda.ts';
+
+/** The decoders package's entry (package.json `exports`), as a file URL. */
+const DECODERS = new URL('../../decoders/src/index.ts', import.meta.url).href;
 
 const chain = (label: string) => {
   let h = createHash('sha256').update(label).digest();
@@ -105,8 +110,13 @@ describe('pda.ts against @solana/kit', () => {
     // The control first: pda.ts as it is misses none.
     for (const [name, from, to] of [['control', '', ''], ...mutants] as Array<[string, string, string]>) {
       if (name !== 'control') assert.equal(src.split(from).length, 2, `${name}: the line is in pda.ts once`);
-      const file = fileURLToPath(new URL(`./.mutant-${name.replace(/ /g, '-')}.ts`, import.meta.url));
-      writeFileSync(file, name === 'control' ? src : src.replace(from, to));
+      // Ruling Z10-45: written outside every tree a test walks (a temp folder, not under node_modules, where Node would
+      // not strip types), with `@bot/decoders` pointed at its entry file; the `@bot/types` import is type-only.
+      const dir = mkdtempSync(join(tmpdir(), 'pda-mutant-'));
+      const file = join(dir, `${name.replace(/ /g, '-')}.ts`);
+      const body = name === 'control' ? src : src.replace(from, to);
+      assert.equal(body.split("from '@bot/decoders'").length, 2, 'pda.ts imports @bot/decoders once');
+      writeFileSync(file, body.replace("from '@bot/decoders'", `from ${JSON.stringify(DECODERS)}`));
       try {
         // Ruling Z10-32: each mutant runs in its own process (no dynamic import here); the check compares it with kit
         // on 2,000 fixed points, a quarter with the sign bit set and one the zero case (y = 1), and prints the misses.
@@ -129,7 +139,7 @@ describe('pda.ts against @solana/kit', () => {
         if (name === 'control') assert.equal(r.stdout, '0', 'pda.ts itself disagrees with kit');
         else assert.ok(Number(r.stdout) > 0, `${name}: the mutant was not caught`);
       } finally {
-        rmSync(file, { force: true });
+        rmSync(dir, { recursive: true, force: true });
       }
     }
   }, 60_000);
