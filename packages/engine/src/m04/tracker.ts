@@ -12,7 +12,8 @@
 //   grade (infinite) never returns `E_STALE`, takes the freshest of up to two attempts (a second one when the first
 //   failed or is more than `build_lag_slots` behind) and alerts past `exit_lag_alert_slots`.
 //   Reads of one pool coalesce; an exit read in flight serves entry callers too (edge 3), who apply their own limit.
-// - A staleness monitor every 500 ms publishes `pool.stale` once per episode past `stale_lag_slots`, and `pool.fresh`.
+// - A staleness monitor every 500 ms publishes `pool.stale` once per episode past `stale_lag_slots` plus the pool's
+//   class interval in slots (ruling Z10-17), and `pool.fresh`.
 import { createHash } from 'node:crypto';
 import type { Clock, Pubkey, Result, Slot, UnixMs } from '@bot/types';
 import { SnapshotRing } from './ring.ts';
@@ -637,6 +638,17 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     return { ok: true, value: best };
   }
 
+  /**
+   * Ruling Z10-17 (amends Z07): a pool's stale lag is `stale_lag_slots` plus its class's poll interval in slots, so a
+   * tail pool (polled every 10 s) does not turn stale and fresh at every poll. With no usable slot time (0, NaN, ±∞) the
+   * interval adds nothing: the limit is never looser than `stale_lag_slots` alone (fail closed). Entry reads are not
+   * changed: `freshRead(pool, maxLagSlots)` keeps the caller's limit.
+   */
+  function staleLimitSlots(cls: 'position' | 'candidate' | 'tail'): number {
+    const ms = deps.chain.slotDurationMsEstimate();
+    return settings.staleLagSlots + (Number.isFinite(ms) && ms > 0 ? Math.ceil(intervalOf(settings, cls) / ms) : 0);
+  }
+
   function monitor(): void {
     const now = deps.clock.nowMs();
     for (const [poolId, e] of pools) {
@@ -646,7 +658,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       deps.metrics?.gauge('pool_snapshot_age_ms', { pool: poolId }, now - last.pool.observedAtMs);
       const lag = finite(lagOf(last.providerSlot));
       const ageMs = now - last.pool.observedAtMs;
-      if (lag > settings.staleLagSlots || ageMs > settings.staleAgeMs + intervalOf(settings, e.cls)) {
+      if (lag > staleLimitSlots(e.cls) || ageMs > settings.staleAgeMs + intervalOf(settings, e.cls)) {
         if (e.staleSinceMs !== null) continue;
         e.staleSinceMs = now;
         deps.log.event('warn', 'm04.pool_stale', { pool: poolId, lag_slots: lag, age_ms: ageMs });

@@ -785,8 +785,13 @@ case "$(in_c "jq -r '.worker' '$rel/ops/host-config.json'")" in
   *) fail "this commit's host-config names neither the release's worker nor the stand-in" ;;
 esac
 in_c "jq -e '.worker == \"release\" and (.shakedown | type) == \"object\"' '$rel/ops/host-config.json'" >/dev/null || fail "this commit's host-config does not run the release's worker with shakedown settings"
-# No node_modules: the worker runs on Node 22's type stripping with no runtime dependency.
-in_c "find '$rel' -name node_modules | grep -q ." && fail "the release carries node_modules"
+# No npm code: the worker runs on Node 22's type stripping with no runtime dependency. The one node_modules is the
+# release's own name links (card Z10, logic.sh release_links): $rel/node_modules/@bot/<p>, each a symlink to
+# ../../packages/<p>, <p> one of RELEASE_LINKS. Any other node_modules folder, any file or folder inside it, or a link
+# anywhere else fails. find does not follow the links, so a package's own folder is never read as node_modules.
+in_c "cd '$rel' && find . -name node_modules ! -path ./node_modules | grep -q ." && fail "the release carries a node_modules folder other than its own links"
+foreign=$(in_c "cd '$rel' && [ ! -e node_modules ] || find node_modules -mindepth 1 ! -path node_modules/@bot | while read -r e; do p=\${e#node_modules/@bot/}; case \" types decoders venue engine \" in *\" \$p \"*) [ -L \"\$e\" ] && [ \"\$(readlink \"\$e\")\" = \"../../packages/\$p\" ] && continue ;; esac; echo \"\$e\"; done")
+[ -z "$foreign" ] || fail "the release carries node_modules beyond its own @bot links: $foreign"
 in_c "/usr/local/bin/node --version" | has -x 'v22\.[0-9]*\.[0-9]*' || fail "host node is not Node 22"
 # The release's worker takes only an https watchdog address: the one the handoff delivered (unreachable from the test
 # server, so its heartbeats fail, which it logs and survives). The trial reads the same environment file. Section 9b's
