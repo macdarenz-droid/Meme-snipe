@@ -4060,3 +4060,9 @@ Builder readings are marked as such. None changes a risk limit, a gate or a stra
 - **Z09-8**. The C-85 / C-88 reading is accepted: Z09 adds no `minOut`, decision or exit caller. The `E_ZERO_OUTPUT` and `E_INVALID_SLIPPAGE` tests on `costRows` stay.
 - **Z09-9**. Additions to `tools/purelist/pure-files.txt` are approved. The supervisor adds the deps-reviewed label after reading the diff.
 - Standing: no live reads. Backfill reads go only through M14's limiter at P4.
+- **Z09-10** (the builder's MAJOR on #330). `@bot/venue` and `@bot/decoders` move from devDependencies to dependencies of `@bot/engine` (`workspace:*`; the lockfile is from `pnpm install`). The `phase0-report` operator script (`packages/engine/scripts/phase0-report.ts`) is restored. An end-to-end test runs it as a child process on the synthetic dataset and checks:
+  - two runs write identical bytes;
+  - the output equals the in-process runner bound the same way.
+
+  Builder's note: engine `src` named `@bot/venue` only in comments (its ports are structural); the runtime import is the script's.
+- **Z09-11** (the builder's MINOR). M27 metrics for the M03 backfill, M05, M08, M10 and M13 are Z10's obligation (health and metrics wiring); until then these modules log through declared codes only.

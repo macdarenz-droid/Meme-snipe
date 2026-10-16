@@ -1,9 +1,8 @@
 // `phase0-report` (A-M13-01 "Interfaces"; card Z09): reads a pulled dataset, writes `docs/phase0/report-<D1>.md` and
 // the CSVs beside it. Flags: --data <dir> --days <YYYY-MM-DD,...> --out <dir> [--sol-usd <price>] (overrides the
 // recorded D1 price, said in the caveats). The kill check reads nothing from flags (it is not run: MR-01 parked).
-// OPEN (supervisor): the operator script that binds `recordedPricing` to @bot/venue's `quoteExactIn` needs @bot/venue
-// as a runtime dependency of the package that holds it (the policy check refuses a dev-only import); until that is
-// ruled, the runner is exercised by its test with the real venue maths.
+// The operator script `scripts/phase0-report.ts` binds `recordedPricing` to @bot/venue's `quoteExactIn` (a runtime
+// dependency of @bot/engine, ruling Z09-10).
 import { join } from 'node:path';
 import type { SimParamSet } from '../m10/params.ts';
 import { phase0Report, renderPhase0Csv, renderPhase0Markdown } from './phase0.ts';

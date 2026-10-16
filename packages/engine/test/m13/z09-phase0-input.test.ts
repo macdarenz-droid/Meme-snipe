@@ -2,7 +2,8 @@
 // gzip segments of canonical record lines), read back into the report; the recorded pricing bound to the venue maths.
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
@@ -118,5 +119,35 @@ describe('A-M13-01 phase0-report input (SYNTHETIC dataset)', () => {
     assert.equal(p.quote('buy', SOL).ok, false);                                     // decimals unknown: the venue refuses
     const q = pricing(fields(300n, 1_200n), at);
     assert.ok(q !== null && q.quote('buy', SOL).ok);
+  });
+});
+
+describe('phase0-report operator script, end to end (SYNTHETIC dataset; ruling Z09-10)', () => {
+  it('writes the same bytes on two runs, and the same bytes as the in-process runner bound the same way', () => {
+    const { dir, days } = dataset();
+    const script = new URL('../../scripts/phase0-report.ts', import.meta.url).pathname;
+    const outs = [tempDir('phase0-out'), tempDir('phase0-out')];
+    for (const out of outs) {
+      const stdout = execFileSync(process.execPath, ['--no-warnings', script, '--data', dir, '--days', days.join(','), '--out', out], { encoding: 'utf8' });
+      assert.match(stdout, /phase0-report: wrote .*report-2026-10-22\.md/);
+    }
+    const read = (d: string): Map<string, string> => new Map(readdirSync(d).sort().map((f) => [f, readFileSync(join(d, f), 'utf8')]));
+    const [a, b] = outs.map(read) as [Map<string, string>, Map<string, string>];
+    assert.deepEqual([...a.keys()], ['a48-2026-10-22.csv', 'hurdle-2026-10-22.csv', 'report-2026-10-22.md']);
+    assert.deepEqual(a, b);
+    // The script's flat fee schedule is the recorded per-side total in one component (lp); bind the runner the same way.
+    const flat = (total: number) => {
+      const fees = { lpBps: total, protocolBps: 0, creatorBps: 0 };
+      return { curve: null, pumpswap: { account: 'recorded', asOfSlot: 0n, configHash: 'recorded-fee-total', tiers: [{ thresholdLamports: 0n, fees }], flat: fees, exoticFlat: fees }, creatorFeeConfigurable: false };
+    };
+    const same = recordedPricing({ quote: (p, side, amt, fees) => quoteExactIn(p as never, side, amt, fees as never), feesForTotal: flat, wsolMint: MINTS.wsol });
+    const files = new Map<string, string>();
+    const args = parsePhase0Args(['--data', dir, '--days', days.join(','), '--out', 'o']);
+    assert.ok(typeof args !== 'string');
+    runPhase0Report(args, { pricing: same, simParams: PRIOR_2026_10, write: (p, t) => { files.set(p.slice(2), t); } });
+    assert.deepEqual(new Map([...files].sort()), a);
+    assert.ok((a.get('hurdle-2026-10-22.csv') as string).split('\n').length > 2);
+    // Bad arguments exit 2.
+    assert.throws(() => execFileSync(process.execPath, ['--no-warnings', script, '--days', 'x'], { stdio: 'pipe' }), (e: unknown) => (e as { status: number }).status === 2);
   });
 });
