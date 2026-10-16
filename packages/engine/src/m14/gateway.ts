@@ -8,7 +8,7 @@
 // monotonic clock (review C03 R5).
 // Ported from Snipe-solana card C03 (#6 @ 6ae4d62): review fixes R1, R3-R8, R10, N1-N4 and red team rounds R3-R12
 // with the supervisor's byte-budget rulings 1-4 (SPEC-A A-M14-02) included.
-import type { Clock, Result } from '@bot/types';
+import type { Clock, Result, Slot } from '@bot/types';
 import type { RequestOptions, RpcClient, TooLargeInfo } from './client.ts';
 import { methodSpec, type MethodClass } from './methods.ts';
 import { floorProblems, type ProviderRegistry } from './providers.ts';
@@ -123,6 +123,17 @@ export interface GatewayDeps {
   usage?: { projectedOver80(label: string): boolean };
   /** A-M14-05 degraded mode; `normal` without it. */
   mode?: () => GatewayMode;
+  /**
+   * A-M14-05 account ledger (card Z08, `meter.ts`): asked before every request is sent; false refuses it before it goes
+   * out (`E_RATE_LIMITED`, `credit_cap`; no stop count, failover allowed). The composition root wires it whenever a
+   * metered provider is configured; without it no ledger check runs.
+   */
+  meter?: { take(provider: string, method: string): boolean };
+  /** A-M14-05 health and mode inputs (card Z08): every sent request's answer, and every call's end. Never throws into the gateway. */
+  observe?: {
+    answer(a: { provider: string; method: string; latencyMs: number; ok: boolean; rateLimited: boolean; timeout: boolean; contextSlot: Slot | null }): void;
+    callEnded(result: 'ok' | 'all_down' | 'other'): void;
+  };
   /**
    * `rpc.send_enabled` (default false). Calls with `role = 'send'` are refused before any request (`E_RPC`,
    * `send_disabled`) until M4 wires the send path (A-M14-04, card limit "no sending code" before M4; review C03-R1-6).
@@ -603,6 +614,13 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
   }
 
   function dispatch(st: ProviderState, w: Waiter, now: number, cap: number | undefined, afterHold: boolean): void {
+    // A-M14-05: the ledger is checked before the request is sent; a refusal is not a provider answer (no stop count).
+    if (deps.meter !== undefined && !safeTake(st.label, w.method)) {
+      deps.metrics.counter('rpc_credit_refused_total', { provider: st.label }).inc();
+      w.resolve(err('E_RATE_LIMITED', 'credit_cap'));
+      pump(st);
+      return;
+    }
     st.inFlight = true;
     deps.metrics.histogram('rpc_wait_ms', { priority: `P${w.o.priority}` }).observe(now - w.enqueuedAt);
     const o: RequestOptions = { role: w.o.role, timeoutMs: w.deadline - now, ...(w.o.commitment === undefined ? {} : { commitment: w.o.commitment }) };
@@ -619,6 +637,7 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
     o.onTooLarge = (t) => { tooLarge = t; };
     const settle = (answer: Result<CallValue<unknown>, RpcError>): void => {
       st.inFlight = false;
+      observeAnswer(st.label, w.method, mono() - now, answer);
       // Z03 rulings 4 and 13: a JSON-RPC error (HTTP 200) is a rate limit only when the provider documents that exact code
       // and message as one.
       const rateLimited = !answer.ok && answer.error.code === 'E_RPC'
@@ -646,6 +665,31 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
     };
     // The client returns errors as values; a throw (a bug, or a failing bus subscriber) still frees the provider.
     deps.client.request<unknown>(st.p, w.method, w.params, o).then(settle, () => settle(err('E_HTTP', 'internal_error')));
+  }
+
+  function safeTake(provider: string, method: string): boolean {
+    try {
+      return (deps.meter as NonNullable<GatewayDeps['meter']>).take(provider, method);
+    } catch {
+      return false;                                                // fail closed
+    }
+  }
+
+  function observeAnswer(provider: string, method: string, latencyMs: number, r: Result<CallValue<unknown>, RpcError>): void {
+    if (deps.observe === undefined) return;
+    try {
+      deps.observe.answer({
+        provider, method, latencyMs, ok: r.ok, rateLimited: !r.ok && isLimited(r.error), timeout: !r.ok && r.error.code === 'E_TIMEOUT',
+        contextSlot: r.ok ? r.value.contextSlot : null,
+      });
+    } catch { /* observers never break a call */ }
+  }
+
+  function observeCall(r: Result<CallValue<unknown>, RpcError>): void {
+    if (deps.observe === undefined) return;
+    try {
+      deps.observe.callEnded(r.ok ? 'ok' : r.error.code === 'E_ALL_PROVIDERS_DOWN' ? 'all_down' : 'other');
+    } catch { /* observers never break a call */ }
   }
 
   function stop(st: ProviderState, reason: StoppedProvider['reason'], fields: Record<string, unknown>): void {
@@ -727,41 +771,47 @@ export function createRpcGateway(deps: GatewayDeps): Gateway {
     return [...ordered.filter((st) => st.pausedUntil <= now), ...ordered.filter((st) => st.pausedUntil > now)];
   }
 
+  async function callOnce<T>(method: string, params: unknown[], o: CallOptions): Promise<Result<CallValue<T>, RpcError>> {
+    if (!PRIORITIES.includes(o.priority) || !(Number.isFinite(o.timeoutMs) && o.timeoutMs > 0 && o.timeoutMs <= MAX_TIMER_MS)) return err('E_RPC', 'bad_options');
+    if (o.role === 'send' && deps.sendEnabled !== true) return err('E_RPC', 'send_disabled');
+    const spec = methodSpec(method);
+    if (spec === null) return err('E_RPC', 'unknown_method');
+    const mode = modeOf();
+    if (mode === 'degraded_reads' && o.priority >= 2) return err('E_RATE_LIMITED', 'degraded');
+    const list = candidates(method, o, mode);
+    if (!Array.isArray(list)) return { ok: false, error: list };
+    if (list.length === 0) return err('E_ALL_PROVIDERS_DOWN', 'no_eligible_provider');
+    const deadline = mono() + o.timeoutMs;
+    const mayFailover = o.provider === undefined && o.role === 'read' && o.priority <= 1;
+    let lastLabel = '';
+    let last: RpcError = { code: 'E_TIMEOUT', message: 'timeout' };
+    let tried = 0;
+    for (const [i, st] of list.entries()) {
+      const now = mono();
+      if (tried > 0) {
+        if (now >= deadline) break;
+        deps.metrics.counter('rpc_failover_total', { from: lastLabel, to: st.label }).inc();
+      }
+      // A call that may fail over gives each provider but the last half of its remaining time, so a timeout or a
+      // busy provider still leaves time for the next one (logic 4: "retry on the next eligible provider while time
+      // remains").
+      const attemptDeadline = mayFailover && i < list.length - 1 ? now + (deadline - now) / 2 : deadline;
+      const r = await enqueue(st, method, params, o, attemptDeadline, spec.methodClass);
+      if (r.ok) return r as Result<CallValue<T>, RpcError>;
+      tried += 1;
+      lastLabel = st.label;
+      last = r.error;
+      if (!mayFailover || !failoverable(r.error)) return { ok: false, error: r.error };
+    }
+    if (tried < list.length) return { ok: false, error: last };          // time ran out before every provider was tried
+    return { ok: false, error: { code: 'E_ALL_PROVIDERS_DOWN', message: `all_failed:${last.code}`, ...(last.retryAfterMs === undefined ? {} : { retryAfterMs: last.retryAfterMs }) } };
+  }
+
   return {
     async call<T>(method: string, params: unknown[], o: CallOptions): Promise<Result<CallValue<T>, RpcError>> {
-      if (!PRIORITIES.includes(o.priority) || !(Number.isFinite(o.timeoutMs) && o.timeoutMs > 0 && o.timeoutMs <= MAX_TIMER_MS)) return err('E_RPC', 'bad_options');
-      if (o.role === 'send' && deps.sendEnabled !== true) return err('E_RPC', 'send_disabled');
-      const spec = methodSpec(method);
-      if (spec === null) return err('E_RPC', 'unknown_method');
-      const mode = modeOf();
-      if (mode === 'degraded_reads' && o.priority >= 2) return err('E_RATE_LIMITED', 'degraded');
-      const list = candidates(method, o, mode);
-      if (!Array.isArray(list)) return { ok: false, error: list };
-      if (list.length === 0) return err('E_ALL_PROVIDERS_DOWN', 'no_eligible_provider');
-      const deadline = mono() + o.timeoutMs;
-      const mayFailover = o.provider === undefined && o.role === 'read' && o.priority <= 1;
-      let lastLabel = '';
-      let last: RpcError = { code: 'E_TIMEOUT', message: 'timeout' };
-      let tried = 0;
-      for (const [i, st] of list.entries()) {
-        const now = mono();
-        if (tried > 0) {
-          if (now >= deadline) break;
-          deps.metrics.counter('rpc_failover_total', { from: lastLabel, to: st.label }).inc();
-        }
-        // A call that may fail over gives each provider but the last half of its remaining time, so a timeout or a
-        // busy provider still leaves time for the next one (logic 4: "retry on the next eligible provider while time
-        // remains").
-        const attemptDeadline = mayFailover && i < list.length - 1 ? now + (deadline - now) / 2 : deadline;
-        const r = await enqueue(st, method, params, o, attemptDeadline, spec.methodClass);
-        if (r.ok) return r as Result<CallValue<T>, RpcError>;
-        tried += 1;
-        lastLabel = st.label;
-        last = r.error;
-        if (!mayFailover || !failoverable(r.error)) return { ok: false, error: r.error };
-      }
-      if (tried < list.length) return { ok: false, error: last };          // time ran out before every provider was tried
-      return { ok: false, error: { code: 'E_ALL_PROVIDERS_DOWN', message: `all_failed:${last.code}`, ...(last.retryAfterMs === undefined ? {} : { retryAfterMs: last.retryAfterMs }) } };
+      const r = await callOnce<T>(method, params, o);
+      observeCall(r as Result<CallValue<unknown>, RpcError>);
+      return r;
     },
     mode: modeOf,
     resumeProvider(label: string): boolean {

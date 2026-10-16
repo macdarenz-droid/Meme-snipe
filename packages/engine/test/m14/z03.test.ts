@@ -166,6 +166,10 @@ describe('Z03 wiring onto M25 (config)', () => {
     assert.deepEqual(s, {
       providersFile: '/etc/bot/rpc-providers.json', maxResponseBytes: 52_428_800, p0ReserveBps: 2_000,
       defaultTimeoutMs: { 0: 2_000, 1: 3_000, 2: 5_000, 3: 10_000, 4: 30_000 }, sendEnabled: false,
+      // A-M14-05 config (card Z08)
+      healthDownAfterMs: 10_000, degradedEnterAfterMs: 60_000, degradedExitAfterMs: 60_000, burnAlertBps: 8_000,
+      accountCaps: new Map([['chainstack', 1_500_000], ['helius', 5_000_000]]), reserveBlockUnits: 1_000,
+      allocationFile: '/etc/bot/rpc-allocation.json',
     });
   });
 

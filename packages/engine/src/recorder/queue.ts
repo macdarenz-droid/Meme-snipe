@@ -146,6 +146,8 @@ export const DEFAULT_CONFIG: RecorderQueueConfig = {
 
 /** Bytes counted per queued record on top of its payload and source: the envelope object and the queue slot. */
 export const RECORD_OVERHEAD_BYTES = 256;
+/** The largest `recorder.record_max_bytes` accepted (1 MiB; ruling Z08-28). */
+export const RECORD_MAX_BYTES_CAP = 1_048_576;
 /** Longest `source` accepted, in UTF-8 bytes; a longer one is refused with E_ENVELOPE. */
 export const SOURCE_MAX_BYTES = 256;
 /** Closed gaps kept per stream before the oldest two are merged (which only widens a gap, never hides one). */
@@ -343,7 +345,10 @@ export class RecorderQueue {
     if (!Number.isInteger(c.queueMax) || c.queueMax < 1_000 || c.queueMax > 500_000) {
       throw new RecorderError('E_CONFIG', 'recorder.queue_max must be an integer from 1,000 to 500,000');
     }
-    if (!Number.isInteger(c.recordMaxBytes) || c.recordMaxBytes < 1) throw new RecorderError('E_CONFIG', 'recorder.record_max_bytes must be a positive integer');
+    // Ruling Z08-28: at most 1 MiB, so a recorded line always stays under the segment readers' 4 MiB line cap (m07/frames.ts).
+    if (!Number.isInteger(c.recordMaxBytes) || c.recordMaxBytes < 1 || c.recordMaxBytes > RECORD_MAX_BYTES_CAP) {
+      throw new RecorderError('E_CONFIG', 'recorder.record_max_bytes must be a whole number from 1 to 1,048,576');
+    }
     if (!Number.isInteger(c.queueMaxBytes) || c.queueMaxBytes < c.recordMaxBytes + RECORD_OVERHEAD_BYTES) {
       throw new RecorderError('E_CONFIG', 'queueMaxBytes must hold at least one record of record_max_bytes');
     }
