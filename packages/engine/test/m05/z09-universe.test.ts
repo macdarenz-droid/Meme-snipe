@@ -11,7 +11,7 @@ import {
   type CandidateRecord, type CandidateStore, type PrefilterFacts, type Transition, type UniverseConfig, type UniverseDeps,
 } from '../../src/m05/universe.ts';
 import { CANDIDATE_TOPIC, m24CandidateStore } from '../../src/m05/store.ts';
-import { MemStore } from './mem-store.ts';
+import { HeapStore, MemStore } from './mem-store.ts';
 import { buildUniverseManifest } from '../../src/m05/manifest.ts';
 import { createWatchlist, WATCHLIST_DEFAULTS } from '../../src/m05/watchlist.ts';
 import { openDb, type Db } from '../../src/m24/db.ts';
@@ -42,6 +42,8 @@ function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => Fac
   const u = createUniverse(deps);
   return { u, store, published, logs, writtenOff, advance: (ms: number) => { now += ms; }, at: () => now };
 }
+/** MR-01's limit set: no latest entry age, so a retry 6 h later is not retired for age (Z09-39). */
+const MR = { limitSetId: 'mr01', limits: [MR_LIMITS] } as const;
 const disc = (i: number, migratedAtMs: number | null = T0 - 2 * 86_400_000) => ({ poolId: pubkey(100 + i), baseMint: pubkey(200 + i), quoteMint: MINTS.wsol, venue: 'pumpswap', verifiedOnChain: true, migratedAtMs: migratedAtMs as UnixMs | null });
 
 describe('A-M05-01 acceptance (SYNTHETIC events)', () => {
@@ -140,9 +142,19 @@ describe('A-M05-01 transitions', () => {
     f = deep;
     t.advance(21_600_000 - 1); t.u.tick();
     assert.equal(t.u.candidate(pubkey(100))?.state, 'prefiltered_out');
+    // 6 h on, PM-01 can never enter it again (pool_age ends at migration + 120 min): retired, no read (Z09-39).
     t.advance(1); t.u.tick();
-    assert.equal(t.u.candidate(pubkey(100))?.state, 'eligible');
-    assert.equal(t.u.candidate(pubkey(100))?.depthLamports, 400n * SOL);
+    assert.equal(t.u.candidate(pubkey(100))?.state, 'prefiltered_out');
+    assert.deepEqual([t.u.candidate(pubkey(100))?.retryAtMs, t.u.candidate(pubkey(100))?.reasons[0]], [null, 'retired=past_entry_age']);
+    // Under MR-01 (no latest age) the same retry is judged again and passes.
+    let g: Facts = { ...deep, feeTotalBps: 31 };
+    const m = setup({ config: { screeningRequired: false, ...MR }, facts: () => g });
+    m.u.onDiscovery(disc(0));
+    assert.equal(m.u.candidate(pubkey(100))?.state, 'prefiltered_out');
+    g = deep;
+    m.advance(21_600_000); m.u.tick();
+    assert.equal(m.u.candidate(pubkey(100))?.state, 'eligible');
+    assert.equal(m.u.candidate(pubkey(100))?.depthLamports, 400n * SOL);
     // A rediscovery of a prefiltered pool re-evaluates it at once; no facts → prefiltered_out (no_snapshot).
     const n = setup({ config: { screeningRequired: false }, facts: () => null });
     n.u.onDiscovery(disc(0));
@@ -157,7 +169,7 @@ describe('A-M05-01 transitions', () => {
   });
 
   it('Phase 1 path through test doubles: screening → eligible → watched → signalled → in_position → cooldown → watched', () => {
-    const t = setup();
+    const t = setup({ config: MR });
     const p = pubkey(100);
     t.u.onDiscovery(disc(0));
     assert.equal(t.u.candidate(p)?.state, 'screening');
@@ -180,7 +192,7 @@ describe('A-M05-01 transitions', () => {
     t.u.onFresh(p);
     assert.equal(t.u.candidate(p)?.state, 'watched');
     // Evicted; eligible again only through the prefilter at its retry (Z09-16), then watched.
-    t.u.onEvicted(p, 'budget', (t.at() + 3_600_000) as UnixMs);
+    t.u.onEvicted(p, 'budget', (t.at() + 30 * 3_600_000) as UnixMs);                // still on its tail at the retry
     assert.equal(t.u.candidate(p)?.state, 'evicted');
     assert.equal(t.u.onWatched(p), false);
     t.advance(21_600_000); t.u.tick();
@@ -308,7 +320,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
   it('RT-3 / Z09-14: a soft-rejected candidate whose retry fails the prefilter stays rejected with a new persisted retry, logged once per retry', () => {
     let f: Facts | null = deep;
     const store = new MemStore();
-    const t = setup({ store, facts: () => f });
+    const t = setup({ store, config: MR, facts: () => f });
     t.u.onDiscovery(disc(1));
     const p = pubkey(101);
     t.u.onScreen(p, { verdict: 'rejected' });
@@ -328,12 +340,13 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
 
   it('Z09-20: a prefiltered_out retry that fails again is persisted and survives a restart', () => {
     const store = new MemStore();
-    const t = setup({ store, facts: () => ({ ...deep, feeTotalBps: 500 }) });
+    const t = setup({ store, config: MR, facts: () => ({ ...deep, feeTotalBps: 500 }) });
     t.u.onDiscovery(disc(1));
     t.advance(21_600_000); t.u.tick();
     const due = (store.get(pubkey(101)) as CandidateRecord).retryAtMs;
     assert.equal(due, t.at() + 21_600_000);
-    const t2 = setup({ store, idBase: 900, facts: () => ({ ...deep, feeTotalBps: 500 }) });
+    assert.equal(store.get(pubkey(101))?.failedRetries, 1);                          // persisted (Z09-39)
+    const t2 = setup({ store, idBase: 900, config: MR, facts: () => ({ ...deep, feeTotalBps: 500 }) });
     t2.advance(t.at() - T0 + 21_600_000 - 1); t2.u.tick();
     assert.equal(t2.logs.filter((c) => c === 'm05.retry_failed').length, 0);         // not due yet after the restart
   });
@@ -358,7 +371,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
 
   it('RT-5 / Z09-16: a pool evicted after a failed cooldown re-screen is never watched again without passing the prefilter', () => {
     let f: Facts | null = deep;
-    const t = setup({ config: { screeningRequired: false }, facts: () => f });
+    const t = setup({ config: { screeningRequired: false, ...MR }, facts: () => f });
     t.u.onDiscovery(disc(1));
     const p = pubkey(101);
     const w = createWatchlist({ config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
@@ -371,9 +384,13 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     w.recompute([...t.u.candidates(), t.u.candidate(p) as CandidateRecord]);
     assert.equal(t.u.candidate(p)?.state, 'evicted');
     t.advance(21_600_000); t.u.tick();
-    assert.equal(t.u.candidate(p)?.state, 'evicted');                               // its retry still fails the prefilter
+    assert.equal(t.u.candidate(p)?.state, 'evicted');                               // its retry: past its tail, retired (Z09-39)
+    assert.equal(t.u.candidate(p)?.reasons[0], 'retired=past_tail');
     f = deep;
     t.advance(21_600_000); t.u.tick();
+    w.recompute(t.u.candidates());
+    assert.equal(t.u.candidate(p)?.state, 'evicted', 'a retired pool waits for a new discovery');
+    t.u.onDiscovery(disc(1));                                                        // only a new discovery brings it back, through the prefilter
     w.recompute(t.u.candidates());
     assert.equal(t.u.candidate(p)?.state, 'watched');
   });
@@ -526,9 +543,9 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
   it('Z09-34: a due retry on stale facts asks for one fresh read (capped per tick), then judges the fresh facts; no read is a failed retry', () => {
     const reads: string[][] = [];
     let freshFor = new Set<string>();
-    const t = setup({ config: { screeningRequired: false, factsRefreshMax: 2 }, requestFacts: (ids) => reads.push([...ids]),
+    const t = setup({ config: { screeningRequired: false, factsRefreshMax: 2, ...MR }, requestFacts: (ids) => reads.push([...ids]),
       facts: (p) => (freshFor.has(p) ? deep : { ...deep, observedAtMs: T0 }) });
-    for (const i of [1, 2, 3]) { freshFor.add(pubkey(100 + i)); t.u.onDiscovery(disc(i)); t.u.onWatched(pubkey(100 + i)); t.u.onEvicted(pubkey(100 + i), 'budget'); }
+    for (const i of [1, 2, 3]) { freshFor.add(pubkey(100 + i)); t.u.onDiscovery(disc(i)); t.u.onWatched(pubkey(100 + i)); t.u.onEvicted(pubkey(100 + i), 'budget', (T0 + 30 * 3_600_000) as UnixMs); }
     freshFor = new Set();
     t.advance(UNIVERSE_DEFAULTS.prefilterRetryMs);
     t.u.tick();
@@ -545,8 +562,8 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
     assert.equal(t.u.candidate(pubkey(102))?.retryAtMs, t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs);
     assert.equal(reads.length, 2, 'no second read for the same retry');
     // Without the port, a stale retry simply fails.
-    const q = setup({ config: { screeningRequired: false }, facts: (p) => (p === pubkey(104) && q.at() === T0 ? deep : { ...deep, observedAtMs: T0 }) });
-    q.u.onDiscovery(disc(4)); q.u.onWatched(pubkey(104)); q.u.onEvicted(pubkey(104), 'budget');
+    const q = setup({ config: { screeningRequired: false, ...MR }, facts: (p) => (p === pubkey(104) && q.at() === T0 ? deep : { ...deep, observedAtMs: T0 }) });
+    q.u.onDiscovery(disc(4)); q.u.onWatched(pubkey(104)); q.u.onEvicted(pubkey(104), 'budget', (T0 + 30 * 3_600_000) as UnixMs);
     q.advance(UNIVERSE_DEFAULTS.prefilterRetryMs); q.u.tick();
     assert.deepEqual([q.u.candidate(pubkey(104))?.state, q.u.candidate(pubkey(104))?.reasons], ['evicted', ['facts_stale']]);
   });
@@ -582,5 +599,70 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
     assert.doesNotThrow(() => u.u.onAuthorityChanged(pubkey(202)));
     assert.equal(u.u.candidate(pubkey(102))?.state, 'blacklisted');
     assert.ok(u.logs.includes('m05.blacklist_not_saved'));
+  });
+});
+
+describe('Z09-39: the fresh-read budget is bounded per hour, and pools that cannot pass read nothing', () => {
+  const H = 3_600_000;
+  /** The most reads in any 60 minutes. */
+  const worstHour = (times: readonly number[]): number => {
+    let best = 0;
+    for (let i = 0, j = 0; j < times.length; j++) {
+      while ((times[j] as number) - (times[i] as number) >= H) i++;
+      best = Math.max(best, j - i + 1);
+    }
+    return best;
+  };
+  function run(o: { n: number; config: Partial<UniverseConfig>; migratedAtMs: number; hours: number; stepMs: number; activePool?: boolean }) {
+    const store = new HeapStore();
+    const W = pubkey(99_999);
+    const t = setup({ store, config: { screeningRequired: false, ...o.config },
+      facts: (p) => (p === W ? deep : { ...deep, feeTotalBps: 500, observedAtMs: T0 }),     // never polled again; fails anyway
+      requestFacts: (ids) => { for (const id of ids) { times.push(t.at()); perPool.set(id, (perPool.get(id) ?? 0) + 1); } } });
+    const times: number[] = [];
+    const perPool = new Map<string, number>();
+    for (let i = 0; i < o.n; i++) t.u.onDiscovery(disc(i, o.migratedAtMs));
+    if (o.activePool === true) { t.u.onDiscovery({ ...disc(0), poolId: W, baseMint: pubkey(88_888) }); t.u.onWatched(W); }
+    for (let at = 0; at < o.hours * H; at += o.stepMs) {
+      t.advance(o.stepMs);
+      if (o.activePool === true) t.u.onStale(W, t.at() as UnixMs);                 // a stale event every step
+      t.u.tick();
+    }
+    return { t, store, times, perPool };
+  }
+
+  it('10,000 inactive pools over 24 h, a tick and an onStale every second: reads per hour never pass the ceiling', { timeout: 120_000 }, () => {
+    const r = run({ n: 10_000, config: MR, migratedAtMs: T0 - 2 * 86_400_000, hours: 24, stepMs: 1_000, activePool: true });
+    const worst = worstHour(r.times);
+    assert.ok(worst <= UNIVERSE_DEFAULTS.factsRefreshPerHour, `worst-case reads in an hour: ${worst}`);
+    assert.equal(worst, 300, 'the ceiling is reached while the backlog lasts (worst case reported in DECISIONS)');
+    assert.ok(Math.max(...r.perPool.values()) <= UNIVERSE_DEFAULTS.retireAfterFailedRetries);
+    // From the first retries at 6 h to the end at 24 h: 300 in each rolling hour (5,430 with the batch on the last edge).
+    assert.ok(r.times.length >= 18 * 300 && r.times.length <= 19 * 300, `${r.times.length} reads`);
+    assert.equal(r.times[0], T0 + 6 * H);
+  });
+
+  it('a pool is retired after k failed retries, then reads nothing; a new discovery brings it back', () => {
+    const r = run({ n: 50, config: MR, migratedAtMs: T0 - 2 * 86_400_000, hours: 48, stepMs: 60_000 });
+    assert.deepEqual([...new Set(r.perPool.values())], [3], 'each pool read once per retry, 3 times');
+    assert.ok(r.times.every((x) => x < T0 + 19 * H), 'nothing read after the third failed retry (18 h)');
+    for (let i = 0; i < 50; i++) {
+      const c = r.t.u.candidate(pubkey(100 + i)) as CandidateRecord;
+      assert.deepEqual([c.state, c.retryAtMs, c.reasons[0]], ['prefiltered_out', null, 'retired=failed_retries']);
+    }
+    r.t.u.onDiscovery(disc(0));
+    const back = r.t.u.candidate(pubkey(100)) as CandidateRecord;
+    assert.deepEqual([back.retryAtMs, back.failedRetries], [r.t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs, 1]);   // judged again: a new retry
+  });
+
+  it('PM-01 pools past migration + 120 min, and pools with no migration time, are retired with zero reads', () => {
+    const pm = run({ n: 1_000, config: {}, migratedAtMs: T0 - 1_800_000, hours: 24, stepMs: 60_000 });
+    assert.equal(pm.times.length, 0);
+    assert.equal(pm.t.u.candidate(pubkey(100))?.reasons[0], 'retired=past_entry_age');
+    const unknown = run({ n: 10, config: MR, migratedAtMs: null as never, hours: 12, stepMs: 60_000 });
+    assert.equal(unknown.times.length, 0);
+    assert.equal(unknown.t.u.candidate(pubkey(100))?.reasons[0], 'retired=age_unknown');
+    assert.ok(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, factsRefreshPerHour: 3_601 }) !== null);
+    assert.ok(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, retireAfterFailedRetries: 0 }) !== null);
   });
 });

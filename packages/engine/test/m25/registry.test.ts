@@ -68,7 +68,7 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
       'services.rugcheck.base_url',
       // Z09 (A-M05-01/02 "Config": affectsReturns no): Phase 0 screening switch (C-44), staleness, backlog, the tail,
       // and the per-tick cap on fresh reads for retries (Z09-34).
-      'universe.facts_refresh_max', 'universe.screen_backlog_max', 'universe.screening_required', 'universe.stale_to_state_ms', 'universe.tail_extra_ms', 'universe.tail_max_pools',
+      'universe.facts_refresh_max', 'universe.facts_refresh_per_hour', 'universe.retire_after_failed_retries', 'universe.screen_backlog_max', 'universe.screening_required', 'universe.stale_to_state_ms', 'universe.tail_extra_ms', 'universe.tail_max_pools',
     ]);
   });
 

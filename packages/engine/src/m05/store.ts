@@ -3,7 +3,7 @@
 // write failure or a stale version leaves nothing changed (edge case 3). The blacklist is the `blacklist` table.
 //
 // The `candidate` table has no columns for the Z09 fields (migration time, depth, state start, retry time); they are
-// kept with the reasons in the `reasons` JSON column as `{ r, m, d, s, t }`, so no schema migration is needed
+// kept with the reasons in the `reasons` JSON column as `{ r, m, d, s, t, f }` (`f`: failed retries, Z09-39), so no schema migration is needed
 // (DECISIONS Z09-U4). The `cooldown_until` column holds the candidate's next timer: the cooldown end in `cooldown`, else
 // its retry time (round 2, Z09-20/23), so `due` reads due retries from the database instead of holding every inactive
 // candidate in memory. Only public market data and the bot's own state are stored.
@@ -16,15 +16,15 @@ export const CANDIDATE_TOPIC = 'universe.candidate_state';
 const repos = createRepos();
 const INACTIVE_WITH_TIMER = ['prefiltered_out', 'rejected', 'blacklisted', 'evicted'] as const;
 
-interface Extra { r: string[]; m: number | null; d: string; s: number; t: number | null }
-const extraOf = (rec: CandidateRecord): Extra => ({ r: rec.reasons, m: rec.migratedAtMs, d: rec.depthLamports.toString(), s: rec.sinceMs, t: rec.retryAtMs });
+interface Extra { r: string[]; m: number | null; d: string; s: number; t: number | null; f?: number }
+const extraOf = (rec: CandidateRecord): Extra => ({ r: rec.reasons, m: rec.migratedAtMs, d: rec.depthLamports.toString(), s: rec.sinceMs, t: rec.retryAtMs, ...(rec.failedRetries ? { f: rec.failedRetries } : {}) });
 const timerOf = (rec: CandidateRecord): number | null => (rec.state === 'cooldown' ? rec.cooldownUntilMs : rec.retryAtMs);
 
 function parseExtra(v: unknown): Extra {
   const o = (typeof v === 'string' ? JSON.parse(v) : v) as Partial<Extra> | string[];
   if (Array.isArray(o)) return { r: o, m: null, d: '0', s: 0, t: null };
   return { r: Array.isArray(o.r) ? o.r.map(String) : [], m: typeof o.m === 'number' ? o.m : null, d: typeof o.d === 'string' && /^\d+$/.test(o.d) ? o.d : '0',
-    s: typeof o.s === 'number' ? o.s : 0, t: typeof o.t === 'number' ? o.t : null };
+    s: typeof o.s === 'number' ? o.s : 0, t: typeof o.t === 'number' ? o.t : null, f: typeof o.f === 'number' && Number.isInteger(o.f) && o.f > 0 ? o.f : 0 };
 }
 function recordOf(row: RowOf<'candidate'>): CandidateRecord {
   const x = parseExtra(row.reasons);
@@ -32,6 +32,7 @@ function recordOf(row: RowOf<'candidate'>): CandidateRecord {
     candidateId: row.candidateId, mint: row.mint, poolId: row.poolId, venue: row.venue, state: row.state as CandidateState,
     firstSeenAtMs: row.firstSeenAt as UnixMs, cooldownUntilMs: (row.state === 'cooldown' ? row.cooldownUntil ?? null : null) as UnixMs | null,
     reasons: x.r, version: row.version, migratedAtMs: x.m as UnixMs | null, depthLamports: BigInt(x.d) as Lamports, sinceMs: x.s as UnixMs, retryAtMs: x.t as UnixMs | null,
+    failedRetries: x.f ?? 0,
   };
 }
 
