@@ -52,6 +52,7 @@ import { RecorderQueue, type EncodedRecord } from '../recorder/queue.ts';
 import { createAgreedChainState, ANCHOR_EVERY_MS, type AgreedChainState } from './chain.ts';
 import { m07Log, RECORDER_LOG_TABLE } from './log-codes.ts';
 import { createReadPath, type ReadPath } from './rpc.ts';
+import { createDailyJob } from './daily.ts';
 import { kvEvictionLog, type EvictionLog } from './evictions.ts';
 import { ulid } from './ids.ts';
 
@@ -400,6 +401,12 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     append: (r) => { queue.append(r); }, nowMs,
   });
 
+  // ---- 00:00 UTC: the universe manifest, then the coverage report (daily.ts). ----
+  const daily = createDailyJob({
+    db, dataDir, evictions, limits: LIMIT_SETS[limitSetId], limitSetId, prefilterOnly: !configValue(cfg, 'universe.screening_required'),
+    migrationCoverage: () => backfill.coverage(86_400_000), closedThrough: () => writer.lastRotatedHourUtc(), append: (r) => { queue.append(r); }, nowMs, log,
+  });
+
   // ---- The 1 s loop. ----
   const startedAtMs = nowMs();
   let lastTickMs: UnixMs | null = null;
@@ -444,6 +451,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       void guard('sol_usd', () => solUsd.tick(now));
     }
     await guard('venue_recorder', () => venueRecorder.tick(now));
+    await guard('daily', () => daily.tick(now));
     if (mono - lastFlushMs >= flushMs) { lastFlushMs = mono; await guard('flush', () => writer.flush()); }
     if (mono - lastDiskMs >= diskMs) { lastDiskMs = mono; await guard('disk', () => disk.check()); }
     if (mono - lastBarStoreMs >= FLUSH_BAR_STORE_MS) { lastBarStoreMs = mono; await guard('bar_store', () => barStore.flush(now)); }

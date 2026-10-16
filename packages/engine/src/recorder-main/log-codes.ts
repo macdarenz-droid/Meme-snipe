@@ -49,6 +49,8 @@ export const RECORDER_LOG_CODES = {
   'recorder.bus_handler_failed': { fields: { topic: 'string' } },
   'recorder.internal_error': { fields: { where: 'string', error_code: 'string' } },
   'recorder.facts_read_failed': { fields: { error_code: 'string', pools: 'integer' } },
+  'recorder.universe_manifest': { fields: { day: 'string', sha256: 'string', eligible: 'integer', late: 'boolean' } },
+  'recorder.coverage_report': { fields: { day: 'string', low_coverage: 'boolean' } },
   'recorder.memory_high': { fields: { rss_bytes: 'integer', limit_bytes: 'integer', pct: 'integer' } },
 } as const satisfies LogCodes;
 
