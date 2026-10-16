@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 12:38 PM: hourly back-check.** Base `91af4787`.
+  - #328 `02c0e694`: labelled run 38832306193 has `check`, `historical-data` and `dashboard` green. `coverage` failed on the same base log-order race (`m24/review-round2.test.ts:176`). Comment 6206035803 on #328; its one re-run of the failed job is queued.
+  - #329 is still `73058b5f`. Its builder had been idle since 00:39 UTC, waiting on a background check whose wake-up was likely lost in a container restart; it was woken. My own 23:55 and 01:04 UTC wakeups were also lost the same way.
+  - Z09 builder: plan ruled; building.
 - **16 Oct 11:57 AM: #328 on the new base.** Head `02c0e694` is a merge commit of `91af4787`. Outside DECISIONS.md, its diff is identical to the reviewed `fa741fb4..3b311c92` (checked with `diff`); DECISIONS gains the same 3 lines. The drift hash changed, so the label is now `deps-reviewed:aca2e1c66cf0a523db18bdd466b4c079`. It merges when that run is green.
 - **16 Oct 11:42 AM: Z09 plan ruled (Z09-1..9).**
   - Per-size hurdle table for information only; no verdict.
