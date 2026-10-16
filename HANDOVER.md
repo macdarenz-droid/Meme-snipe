@@ -138,6 +138,16 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 1:40 AM: #332 OF-HOLD merged at `da18bc5d`** (the new base; ls-remote checked; ARCHIVE_ARM="" on the default branch).
+  - Merged on: review PASS and red team PASS at `238c27b9` (test-ci 290/0), CI green (run `38905347632`), head containing base `58d703d9`, no data-scan or archive-check run queued or in progress.
+  - The red team's report did not arrive by message: its tool list had no claude-code-remote send_message, so it used SendMessage. The verdict was read from its transcript with list_events. **Lesson:** when a worker goes quiet, read its result events.
+  - Red team MINORs, all for OF-FRESH-FIX (OF-FR-13 sent):
+    - a DECISIONS row for the hold and re-arm;
+    - the stale test-ci.sh:1202 comment;
+    - revert the OF-HOLD assertions and restore the OF-ARM case at re-arm.
+    - archive-guard.sh:912-913 (a refused manual dispatch counts as a lane run, never as a failure) is left as is.
+  - The 16:15Z deadline check was deleted. The #332 red team session is archived. The reviewer `session_01RChWiiJc1Gz9XYnCmdC1wm` stays for the fix PR.
+  - Z10 head `5cb37e2e` (fixes in progress).
 - **17 Oct 12:55 AM: Z10 reviewer FAIL on `66459a37`.**
   - Z10-19..23 and the Z10-24..31 delta read correctly. Security, rate limits and the 027 umask are OK.
   - Rulings Z10-32..37 sent:
