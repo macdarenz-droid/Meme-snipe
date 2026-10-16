@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 3:22 AM: Z10 reviewer re-check FAIL at `5cb37e2e`.**
+  - Verified fixed: B1, B2, M1, m3, m4. Typecheck and lint clean.
+  - CI on `5cb37e2e`: e2e, recorder-soak, dashboard and historical-data green. check is red only for the label (`deps-reviewed:168c7fa377be4c419bdb0b470931b68d`, matching the reviewer's computation). coverage is red (B3).
+  - **Z10-45 (B3 BLOCKER):** the pda.test.ts mutants are written inside packages/venue/test and race tools/eslint's typescript6 walker (ENOENT in coverage job `117025676805`). Fix: a tmpdir, with the decoders import rewritten to its file URL; no walker exclusion.
+  - **Z10-46 (m6):** the CI recorder-soak runs at 60 pools with paging, if it fits in 45 min; otherwise the manual run's commit and numbers go in the PR.
+  - **Z10-47:** merge base `466279ff` in (it merges cleanly; label unchanged).
+  - Still open: Z10-38 (RssAnon) and Z10-41..44.
 - **17 Oct 2:50 AM: Z10 red team FAIL at `5cb37e2e`** (2 MAJOR, 2 MINOR). Z10-24(c), 25, 26, 29, 31 and 34 are verified fixed. Rulings Z10-41..44 sent:
   - **Z10-41 (MAJOR-A):**
     - Problem: critical codes expired after 15 min, so the watchdog sent a false CLEARED while the fault remained (provider stopped, verify cap, clock episode, unpulled segments, manifest).
