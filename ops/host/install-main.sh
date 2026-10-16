@@ -105,6 +105,8 @@ managed() {
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
     /etc/systemd/system/srv-zeroed_pull-*.mount) return 0 ;;
     /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
+    # Z10: the keyless recorder's root-owned engine files (ceilings, config, provider allocation).
+    /etc/bot/ceilings.json | /etc/bot/config.json | /etc/bot/rpc-allocation.json) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
   return 1

@@ -295,9 +295,9 @@ describe('worker start and API address', () => {
     rmSync(MAIN);
     refused(/main\.ts is missing/); // asked for, but the release has no worker
     // Z10: "recorder" runs the keyless M1 recorder's entry, and is refused the same way when the release lacks it.
-    const RECORDER = join(rel, 'packages/engine/src/recorder-main/resolve.mjs');
+    const RECORDER = join(rel, 'packages/engine/src/recorder-main/main.ts');
     cfg({ worker: 'recorder' });
-    refused(/"recorder" but .*recorder-main\/resolve\.mjs is missing/);
+    refused(/"recorder" but .*recorder-main\/main\.ts is missing/);
     mkdirSync(join(rel, 'packages/engine/src/recorder-main'), { recursive: true });
     writeFileSync(RECORDER, '');
     expect(entry()).toBe(RECORDER);

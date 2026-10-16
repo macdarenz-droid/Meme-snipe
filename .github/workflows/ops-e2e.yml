@@ -52,7 +52,7 @@ jobs:
   # Z10: the keyless recorder's 48 h soak on compressed time (packages/engine/scripts/soak/soak.ts): the server's own
   # composition root on a virtual clock and the TEST fake chain; heap bounded and flat, RSS under 75% of the unit's
   # MemoryMax, no unknown log code, internal error or unhandled rejection. No pnpm install: it loads the release's
-  # sources the way the server does (resolve-hooks.mjs). Reads no secrets and nothing from the network.
+  # sources the way the server does (logic.sh release_links). Reads no secrets and nothing from the network.
   recorder-soak:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -64,7 +64,9 @@ jobs:
         with:
           node-version: 22
       - name: Soak (48 h compressed)
-        run: node --expose-gc --no-warnings packages/engine/scripts/soak/run.mjs 48 "$RUNNER_TEMP/soak" "$(bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; echo $RECORDER_RSS_LIMIT_MB')"
+        run: |
+          bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; release_links "$GITHUB_WORKSPACE"'
+          node --expose-gc --no-warnings packages/engine/scripts/soak/soak.ts 48 "$RUNNER_TEMP/soak" "$(bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; echo $RECORDER_RSS_LIMIT_MB')"
       - name: Result
         if: always()
         run: cat "$RUNNER_TEMP/soak/soak-result.json" 2>/dev/null | head -c 20000 || true

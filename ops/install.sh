@@ -105,6 +105,8 @@ managed() {
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
     /etc/systemd/system/srv-zeroed_pull-*.mount) return 0 ;;
     /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
+    # Z10: the keyless recorder's root-owned engine files (ceilings, config, provider allocation).
+    /etc/bot/ceilings.json | /etc/bot/config.json | /etc/bot/rpc-allocation.json) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
   return 1
@@ -252,6 +254,15 @@ Unattended-Upgrade::Origins-Pattern {
 };
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
+__ZEROED_FILE__
+install_file /etc/bot/ceilings.json 0644 <<'__ZEROED_FILE__'
+{"per_trade_notional_lamports":"1","open_positions":1,"daily_loss_lamports":"1","hot_wallet_cap_lamports":"1","slippage_bps":1,"signer_day_cap_lamports":"1","tip_cap_lamports":"1","exit_fee_cap_lamports":"1"}
+__ZEROED_FILE__
+install_file /etc/bot/config.json 0644 <<'__ZEROED_FILE__'
+{"universe.screening_required":false}
+__ZEROED_FILE__
+install_file /etc/bot/rpc-allocation.json 0644 <<'__ZEROED_FILE__'
+{"shares":{"shyft":{"engine":10000},"chainstack":{"engine":10000}},"credits":{"chainstack":{"engine":"rest"}}}
 __ZEROED_FILE__
 install_file /etc/nftables.conf 0644 <<'__ZEROED_FILE__'
 #!/usr/sbin/nft -f
@@ -678,6 +689,11 @@ LoadCredentialEncrypted=telegram_bot_token:/etc/credstore.encrypted/telegram_bot
 LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
 # Optional: present once Deploy delivered the watchdog (ImportCredential does not fail when it is missing).
 ImportCredential=heartbeat_hmac_key
+# Z10: the keyless recorder's two read providers (Shyft primary, Chainstack backup), optional the same way: present
+# once a Deploy with RPC_SHYFT_URL and RPC_CHAINSTACK_URL handed them over. The recorder reads only these two and the
+# heartbeat key and paired chat id; never the other keys above.
+ImportCredential=rpc_shyft_url
+ImportCredential=rpc_chainstack_url
 StateDirectory=zeroed
 StateDirectoryMode=0700
 # PATHS-FIX: one StateDirectoryMode per unit, so the market-data folder (2750, group zeroed-pull) and the import spool
@@ -685,6 +701,7 @@ StateDirectoryMode=0700
 # provider usage ledger's folder (2770, group zeroed-sentinel), which the sentinel writes too (ruling 21).
 ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-spool /var/lib/zeroed-usage
 UMask=0077
+# Z10: kept for the keyless recorder from its 48 h soak: RSS peak 447 MiB (56%), its 75% alert at 600 MiB (logic.sh).
 MemoryMax=800M
 # The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
 OOMScoreAdjust=-500
@@ -1434,6 +1451,11 @@ TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop 
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
 SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
+# Z10: the keyless recorder's limits, from its 48 h soak (docs/DECISIONS.md, Z10): heap peak 17.7 MiB, RSS peak 447 MiB,
+# under the unit's MemoryMax=800M (56%). The heap limit leaves 14x the measured peak; the soak fails above 75% of
+# MemoryMax (600 MiB), the line of the recorder's own memory alert.
+RECORDER_HEAP_MB=256
+RECORDER_RSS_LIMIT_MB=600
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
@@ -1526,6 +1548,22 @@ unit_sandbox() {
     grep -Ev '^(Type|User|Group|SupplementaryGroups|Environment|EnvironmentFile|ExecStart|ExecStartPre|ExecStop|Restart|RestartSec|TimeoutStopSec|LoadCredential|LoadCredentialEncrypted|ImportCredential|SetCredential|StateDirectory|StateDirectoryMode|ReadWritePaths|MemoryMax|OOMScoreAdjust)=' || true
 }
 
+# Z10: the workspace packages the recorder imports by name, linked inside each release so Node finds them with no
+# npm install: RELEASE_DIR/node_modules/@bot/<name> -> ../../packages/<name>. These four only (never the signer's or an
+# exit path's package), each its own source in the same release; there is nothing else in that node_modules.
+RELEASE_LINKS=(types decoders venue engine)
+# release_links RELEASE_DIR: makes the links (idempotent). A release without one of these packages (one from before
+# them) gets no link for it; a package folder that names another package is refused (return 1, nothing linked for it).
+release_links() {
+  local d="$1" p
+  mkdir -p "$d/node_modules/@bot"
+  for p in "${RELEASE_LINKS[@]}"; do
+    [ -e "$d/packages/$p/package.json" ] || continue
+    [ "$(jq -r '.name' "$d/packages/$p/package.json" 2>/dev/null)" = "@bot/$p" ] || { echo "refused: $d/packages/$p is not @bot/$p" >&2; return 1; }
+    ln -sfn "../../packages/$p" "$d/node_modules/@bot/$p"
+  done
+}
+
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
@@ -1537,8 +1575,10 @@ funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == t
 # else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
 # healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
 # "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
-# loudly.
+# loudly. Z10: "recorder" runs the Blueprint's keyless M1 recorder (packages/engine/src/recorder-main/main.ts; no key,
+# no signer, no send path, paper only), and is refused the same way when that file is missing.
 STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
+RECORDER_ENTRY=packages/engine/src/recorder-main/main.ts # Z10, relative to the release
 worker_entry() {
   # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
   if [ ! -e "$1" ] && [ ! -L "$1" ]; then
@@ -1559,9 +1599,17 @@ worker_entry() {
         return 1
       fi
       ;;
+    recorder)
+      if [ -f "$1/$RECORDER_ENTRY" ]; then
+        printf '%s\n' "$1/$RECORDER_ENTRY"
+      else
+        echo "refused: host-config says \"worker\": \"recorder\" but $1/$RECORDER_ENTRY is missing" >&2
+        return 1
+      fi
+      ;;
     stub) printf '%s\n' "$STUB_ENTRY" ;;
     *)
-      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
+      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\", \"recorder\" or \"stub\"" >&2
       return 1
       ;;
   esac
@@ -1613,7 +1661,8 @@ DEPLOY_CHECK_APP=github-actions
 DEPLOY_SELF_JOB=zeroed-deploy
 DEPLOY_AUDIT_JOB=zeroed-advisories
 # The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
-E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
+# Z10: the keyless recorder runs on the host, so its sources (and the fixtures its e2e chain reads) are e2e paths too.
+E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml packages/engine packages/venue packages/decoders packages/types fixtures/mainnet)
 
 # commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
 # "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every
@@ -2788,6 +2837,8 @@ install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
 set -euo pipefail
 . /usr/local/lib/zeroed/logic.sh
 dir="${1:?usage: worker-smoke RELEASE_DIR}"
+# Z10: a release extracted before zeroed-update made the recorder's package links gets them here (idempotent).
+release_links "$dir" || { echo "its workspace package links could not be made"; exit 1; }
 entry="$(worker_entry "$dir")"
 [ "$entry" != /opt/zeroed/stub/worker.mjs ] || exit 0
 
@@ -2904,6 +2955,8 @@ if [ "${#old[@]}" -gt 5 ]; then
   rm -f -- "${old[@]:5}"
 fi
 heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")
+# Z10: the keyless recorder's heap is sized from its 48 h soak (logic.sh RECORDER_HEAP_MB), under its unit's MemoryMax.
+case "$entry" in */"$RECORDER_ENTRY") heap[0]="--max-old-space-size=$RECORDER_HEAP_MB" ;; esac
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
   exec /usr/local/bin/node --no-warnings "${heap[@]}" "$entry" "$@"
@@ -3114,7 +3167,8 @@ keys_stored || exit 0
 # 1. Stored keys.
 names=(helius_api_key alchemy_api_key jupiter_api_key telegram_bot_token)
 paired && names+=(telegram_chat_id)
-for n in heartbeat_hmac_key telegram_webhook_secret; do [ ! -e "$CRED_DIR/$n" ] && [ ! -e "$STATE_DIR/cred_sha/$n" ] || names+=("$n"); done
+# Optional credentials are checked once stored (Z10: the recorder's two read providers too).
+for n in heartbeat_hmac_key telegram_webhook_secret rpc_shyft_url rpc_chainstack_url; do [ ! -e "$CRED_DIR/$n" ] && [ ! -e "$STATE_DIR/cred_sha/$n" ] || names+=("$n"); done
 bad=()
 for n in "${names[@]}"; do
   why=""
@@ -3243,7 +3297,21 @@ for k in "${API_NAMES[@]}"; do
   [ -n "${v[$k]:-}" ] || { note "Rejected the handoff: $k is missing." "rejected"; exit 0; }
 done
 
+# Z10: the keyless recorder's read providers, when Deploy had them: both or neither, base64 in the bundle, each one
+# https:// URL. Checked before anything is stored, like the keys above.
+declare -A rpc_url=()
+for k in RPC_SHYFT_URL RPC_CHAINSTACK_URL; do
+  [ -n "${v[${k}_B64]:-}" ] || continue
+  url="$(printf '%s' "${v[${k}_B64]}" | base64 -d 2>/dev/null || true)"
+  [[ "$url" =~ ^https://[^[:space:]]{1,500}$ ]] || { note "Rejected the handoff: $k is not one https:// URL." "rejected"; exit 0; }
+  rpc_url[$k]="$url"
+done
+url=""
+[ "${#rpc_url[@]}" = 0 ] || [ "${#rpc_url[@]}" = 2 ] || { note "Rejected the handoff: only one of RPC_SHYFT_URL and RPC_CHAINSTACK_URL." "rejected"; exit 0; }
+
 for k in "${API_NAMES[@]}"; do printf '%s' "${v[$k]}" | store_cred "${k,,}"; done
+for k in "${!rpc_url[@]}"; do printf '%s' "${rpc_url[$k]}" | store_cred "${k,,}"; done
+rpc_url=()
 # Watchdog (when Deploy had the Cloudflare secrets): its address and the heartbeat key.
 watchdog="${v[WATCHDOG_URL]:-}"
 if [ -n "$watchdog" ] && [[ "$watchdog" =~ ^https://[A-Za-z0-9.-]+\.workers\.dev$ ]] && [ -n "${v[HEARTBEAT_HMAC_KEY]:-}" ]; then
@@ -4065,6 +4133,8 @@ dest="/opt/zeroed/releases/$commit"
 if [ ! -d "$dest" ]; then
   mkdir -p "$dest.new"
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
+  # Z10: the recorder's workspace packages by name, inside the release (logic.sh release_links).
+  release_links "$dest.new"
   mv "$dest.new" "$dest"
 fi
 # RC-FIXES-2b (red team C R3-1): onto the host's stand-in from a worker that is not, never while a position is open (the
@@ -11946,6 +12016,15 @@ install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool
 install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage
 install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys
 mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md
+# Z10: the keyless recorder's M24 database (/var/lib/zeroed/db/bot.db) is created only once, by an explicit first-start
+# marker (m24/db.ts: a missing database file is otherwise refused, so a lost one is never silently made again). The
+# marker is issued once per host: /var/lib/zeroed-host/bot_db_marker_issued records it, and a later install never
+# issues a second one. The recorder removes the marker when it has made the database.
+if [ ! -e /var/lib/zeroed/db/bot.db ] && [ ! -e /var/lib/zeroed-host/bot_db_marker_issued ]; then
+  install -d -m 0700 -o zeroed-worker -g zeroed-worker /var/lib/zeroed /var/lib/zeroed/init
+  install -m 0600 -o zeroed-worker -g zeroed-worker /dev/null /var/lib/zeroed/init/first-start
+  date -u +%FT%TZ > /var/lib/zeroed-host/bot_db_marker_issued
+fi
 
 say "Host key"
 # The host's own age key: backups are encrypted to it (the owner's key can be added later).

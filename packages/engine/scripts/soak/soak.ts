@@ -15,7 +15,7 @@
 //   2. the least-squares slope of heap over hours 24-48 <= 0.5 MiB an hour;
 //   3. peak RSS <= LIMIT_RSS (75% of the unit's MemoryMax, passed in);
 //   4. no `m27.unknown_code` line, no `recorder.internal_error`, no unhandled rejection.
-// Usage: node --expose-gc --no-warnings scripts/soak/run.mjs [hours=48] [outDir] [rssLimitMiB=600]
+// Usage: node --expose-gc --no-warnings scripts/soak/soak.ts [hours=48] [outDir] [rssLimitMiB=600]
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

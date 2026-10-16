@@ -46,6 +46,7 @@ StateDirectoryMode=0700
 # provider usage ledger's folder (2770, group zeroed-sentinel), which the sentinel writes too (ruling 21).
 ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-spool /var/lib/zeroed-usage
 UMask=0077
+# Z10: kept for the keyless recorder from its 48 h soak: RSS peak 447 MiB (56%), its 75% alert at 600 MiB (logic.sh).
 MemoryMax=800M
 # The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
 OOMScoreAdjust=-500

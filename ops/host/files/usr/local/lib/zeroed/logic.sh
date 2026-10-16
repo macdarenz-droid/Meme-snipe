@@ -10,7 +10,11 @@ TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop 
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
 SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
-RECORDER_HEAP_MB=256 # Z10: the keyless recorder's V8 heap limit, from its 48 h soak (docs/DECISIONS.md, Z10)
+# Z10: the keyless recorder's limits, from its 48 h soak (docs/DECISIONS.md, Z10): heap peak 17.7 MiB, RSS peak 447 MiB,
+# under the unit's MemoryMax=800M (56%). The heap limit leaves 14x the measured peak; the soak fails above 75% of
+# MemoryMax (600 MiB), the line of the recorder's own memory alert.
+RECORDER_HEAP_MB=256
+RECORDER_RSS_LIMIT_MB=600
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
@@ -103,6 +107,22 @@ unit_sandbox() {
     grep -Ev '^(Type|User|Group|SupplementaryGroups|Environment|EnvironmentFile|ExecStart|ExecStartPre|ExecStop|Restart|RestartSec|TimeoutStopSec|LoadCredential|LoadCredentialEncrypted|ImportCredential|SetCredential|StateDirectory|StateDirectoryMode|ReadWritePaths|MemoryMax|OOMScoreAdjust)=' || true
 }
 
+# Z10: the workspace packages the recorder imports by name, linked inside each release so Node finds them with no
+# npm install: RELEASE_DIR/node_modules/@bot/<name> -> ../../packages/<name>. These four only (never the signer's or an
+# exit path's package), each its own source in the same release; there is nothing else in that node_modules.
+RELEASE_LINKS=(types decoders venue engine)
+# release_links RELEASE_DIR: makes the links (idempotent). A release without one of these packages (one from before
+# them) gets no link for it; a package folder that names another package is refused (return 1, nothing linked for it).
+release_links() {
+  local d="$1" p
+  mkdir -p "$d/node_modules/@bot"
+  for p in "${RELEASE_LINKS[@]}"; do
+    [ -e "$d/packages/$p/package.json" ] || continue
+    [ "$(jq -r '.name' "$d/packages/$p/package.json" 2>/dev/null)" = "@bot/$p" ] || { echo "refused: $d/packages/$p is not @bot/$p" >&2; return 1; }
+    ln -sfn "../../packages/$p" "$d/node_modules/@bot/$p"
+  done
+}
+
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
@@ -114,10 +134,10 @@ funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == t
 # else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
 # healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
 # "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
-# loudly. Z10: "recorder" runs the Blueprint's keyless M1 recorder (packages/engine/src/recorder-main/resolve.mjs; no
-# key, no signer, no send path, paper only), and is refused the same way when that file is missing.
+# loudly. Z10: "recorder" runs the Blueprint's keyless M1 recorder (packages/engine/src/recorder-main/main.ts; no key,
+# no signer, no send path, paper only), and is refused the same way when that file is missing.
 STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
-RECORDER_ENTRY=packages/engine/src/recorder-main/resolve.mjs # Z10, relative to the release
+RECORDER_ENTRY=packages/engine/src/recorder-main/main.ts # Z10, relative to the release
 worker_entry() {
   # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
   if [ ! -e "$1" ] && [ ! -L "$1" ]; then

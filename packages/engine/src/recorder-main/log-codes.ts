@@ -1,8 +1,8 @@
 // Log codes of the recorder process (card Z10): M07's own codes (the queue, the segment writer and the disk manager log
 // through plain functions with M07's level names) and the composition root's `recorder.*` codes. Every other module's
 // table is merged in `RECORDER_LOG_TABLE`, so no line the recorder writes is `m27.unknown_code` (a test checks the soak).
+import { M01_VENUE_LOG_CODES } from '@bot/venue';
 import { M01_LOG_CODES } from '@bot/venue/constants';
-import { M01_VENUE_LOG_CODES } from '../../../venue/src/log.ts';
 import { M02_QUARANTINE_LOG_CODES } from '../m02/quarantine.ts';
 import { M03_LOG_CODES } from '../m03/log.ts';
 import { M04_LOG_CODES } from '../m04/log.ts';

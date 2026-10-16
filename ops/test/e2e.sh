@@ -921,8 +921,9 @@ rrel="$orig-recorder"
 in_c "rm -rf '$rrel' && cp -a '$orig' '$rrel' && rm -rf '$rrel/packages'"
 git -C "$ROOT" archive HEAD packages fixtures/mainnet ops/host-config.json | docker exec -i "$C" tar -x -C "$rrel" || fail "this commit's recorder could not be added to the test release"
 in_c "jq '.worker = \"recorder\"' '$rrel/ops/host-config.json' > /tmp/hc && mv /tmp/hc '$rrel/ops/host-config.json'"
-in_c "find '$rrel' -name node_modules | grep -q ." && fail "the recorder release carries node_modules"
-rentry="$rrel/packages/engine/src/recorder-main/resolve.mjs"
+
+in_c ". /usr/local/lib/zeroed/logic.sh; release_links '$rrel'" || fail "the recorder release's package links"
+rentry="$rrel/packages/engine/src/recorder-main/main.ts"
 [ "$(in_c ". /usr/local/lib/zeroed/logic.sh; worker_entry '$rrel'")" = "$rentry" ] || fail "worker_entry does not run the recorder on \"worker\": \"recorder\""
 # The installer's /etc/bot (M25: root-owned, not writable by others) and the first-start marker for the database.
 in_c "stat -c '%U %a' /etc/bot /etc/bot/ceilings.json /etc/bot/config.json /etc/bot/rpc-allocation.json | sort -u | tr '\n' ' '" | has -x 'root 644 root 755 ' || fail "/etc/bot is not root-owned 0755 with 0644 files"
@@ -941,7 +942,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
   -addext "subjectAltName=DNS:shyft.fake,DNS:chainstack.fake" -keyout "$E2E/tls/key.pem" -out "$E2E/tls/cert.pem" 2>/dev/null || fail "TEST certificate"
 docker cp "$E2E/tls/cert.pem" "$C:/etc/zeroed/e2e-fake-rpc.pem" && docker cp "$E2E/tls/key.pem" "$C:/root/e2e-fake-rpc.key" || fail "TEST certificate copy"
 in_c "chmod 0644 /etc/zeroed/e2e-fake-rpc.pem && (grep -q shyft.fake /etc/hosts || echo '127.0.0.1 shyft.fake chainstack.fake' >> /etc/hosts)"
-in_c "systemd-run --quiet --unit=zeroed-e2e-fake-rpc /usr/local/bin/node --no-warnings --import '$rrel/packages/engine/src/recorder-main/resolve-hooks.mjs' '$rrel/packages/engine/test/z10/fake-rpc-server.ts' 443 /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key"
+in_c "systemd-run --quiet --unit=zeroed-e2e-fake-rpc /usr/local/bin/node --no-warnings '$rrel/packages/engine/test/z10/fake-rpc-server.ts' 443 /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key"
 wait_for 30 "the fake RPC up" "docker exec $C curl -fsS -m 2 --cacert /etc/zeroed/e2e-fake-rpc.pem -X POST -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSlot\"}' https://shyft.fake/ | grep -q result"
 T_SHYFT_KEY="TESTSHYFT$(rnd 16)"
 T_CHAINSTACK_KEY="TESTCHAINSTACK$(rnd 16)"
@@ -971,7 +972,7 @@ in_c "systemctl show -p MemoryCurrent -p MemoryPeak -p MemoryMax zeroed-worker" 
 in_c "systemctl stop zeroed-e2e-fake-rpc; rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; sed -i '/shyft.fake/d' /etc/hosts"
 wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the stand-in back after the recorder" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
-pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/src/recorder-main/resolve.mjs under the host's Node 22 with no node_modules; the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, no provider key in any journal; back to the stand-in"
+pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/src/recorder-main/main.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, no provider key in any journal; back to the stand-in"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on

@@ -2,7 +2,7 @@
 // real unit in the test server (ops/test/e2e.sh section 10b3) with read providers it can reach. The provider is the
 // request's Host (`shyft.fake`, `chainstack.fake`; the test maps both to 127.0.0.1). TEST certificate and key, made by
 // the e2e. SYNTHETIC trades over real fixture accounts; nothing is read from any network.
-//   node --no-warnings --import <release>/packages/engine/src/recorder-main/resolve-hooks.mjs fake-rpc-server.ts PORT CERT KEY
+//   node --no-warnings fake-rpc-server.ts PORT CERT KEY   (in a release with its package links, logic.sh release_links)
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import { FakeChain, VirtualTime } from './fake-chain.ts';

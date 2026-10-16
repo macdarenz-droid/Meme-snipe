@@ -380,6 +380,8 @@ dest="/opt/zeroed/releases/$commit"
 if [ ! -d "$dest" ]; then
   mkdir -p "$dest.new"
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
+  # Z10: the recorder's workspace packages by name, inside the release (logic.sh release_links).
+  release_links "$dest.new"
   mv "$dest.new" "$dest"
 fi
 # RC-FIXES-2b (red team C R3-1): onto the host's stand-in from a worker that is not, never while a position is open (the

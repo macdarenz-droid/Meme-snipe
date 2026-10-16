@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/fc02d6139a6402225390b8220de1ddbac235c5a3/ops/install.sh -o i && echo 'ab07d632fa2a6b635a49d130115333069a7a07e88a494d9f60cefe60dbcc7cfa  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/fc02d6139a6402225390b8220de1ddbac235c5a3/ops/install.sh -o i && echo '2553bbf0b844ae769b7ba64398028797fb43613a4c53b64e5288511dd2650754  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -23,7 +23,7 @@ The console screen can be left at any time (Ctrl+C); setup carries on in the bac
 
 The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
 
-SHA-256 of `install.sh`: `ab07d632fa2a6b635a49d130115333069a7a07e88a494d9f60cefe60dbcc7cfa`
+SHA-256 of `install.sh`: `2553bbf0b844ae769b7ba64398028797fb43613a4c53b64e5288511dd2650754`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -255,7 +255,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 The Blueprint's keyless M1 recorder (`packages/engine/src/recorder-main/`) runs in `zeroed-worker.service` when the release's `ops/host-config.json` says `"worker": "recorder"`. The repository keeps `"stub"` until the owner's three-red-team step; switching is its own reviewed one-line change.
 
 - **What it is:** M14 reads (Shyft first, Chainstack as backup, read roles only), the M15 slot clock anchored on two providers that agree, M04 pool polls, M03's migration backfill, M05's universe and watchlist, M07's recording into `/var/lib/zeroed-md`, M08's 1-minute bars, and the SOL/USD and venue-config records. Paper only. No key, no signer socket, no send path, no strategy.
-- **Entry:** `resolve.mjs` maps `@bot/*` to the release's own sources and refuses any other package import. A release has no `node_modules`, and none is needed: the PDA derivation is Node built-ins only (`packages/venue/src/pda.ts`).
+- **Entry:** `packages/engine/src/recorder-main/main.ts`. A release is a `git archive` with no npm package. Its four workspace packages (types, decoders, venue, engine) are linked by name inside it (`logic.sh` `release_links`, run by `zeroed-update` and `worker-smoke`), so `@bot/signer` and every npm package stay unresolvable. The PDA derivation is Node built-ins only (`packages/venue/src/pda.ts`).
 - **Credentials:** only `rpc_shyft_url` and `rpc_chainstack_url` (imported optionally by the unit), the heartbeat key and the paired chat id. Deploy hands the two URLs over when the `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` secrets are set; both or neither, base64 in the bundle. Without them the recorder refuses to start (exit 1), so the update gate holds or rolls back.
 - **Files:** the installer writes `/etc/bot/ceilings.json` (every ceiling at 1: the recorder never trades), `/etc/bot/config.json` and `/etc/bot/rpc-allocation.json`, root-owned. The database is `/var/lib/zeroed/db/bot.db`. It is created once, from the first-start marker the installer issues once per host; a lost database is never silently made again.
 - **Host contract:** `--reconcile` writes `open_intents` and `open_positions` as `0`, and refuses (exit 1) when another worker left a count that is not `0`. `/health` on 8787 and 8788 says `mode: "paper"`, `git_sha`, `recorder: true`, `signing_key: false`, `recording`, `anchored` and `sol_usd_check`. The heartbeat is the stand-in's, with `signer: "not-used"`, and the recorder's critical lines (recording halted, memory) in `critical`.

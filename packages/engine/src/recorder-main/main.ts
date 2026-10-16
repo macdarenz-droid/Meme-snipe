@@ -1,6 +1,6 @@
 // The keyless M1 recorder process (card Z10), started by the host's `worker-start` when the release's
-// ops/host-config.json says `"worker": "recorder"` (entry: resolve.mjs, which loads this file). Paper only: no key, no
-// signer, no send path, no strategy. See compose.ts for what it wires and health.ts for the host contract.
+// ops/host-config.json says `"worker": "recorder"`. The release has no npm packages: its four workspace packages are
+// linked by name inside it (logic.sh release_links). Paper only: no key, no signer, no send path, no strategy. See compose.ts for what it wires and health.ts for the host contract.
 //
 // Environment (set by worker-start or worker-smoke; never a secret):
 //   ZEROED_MODE           must be `paper`, else exit 2.
