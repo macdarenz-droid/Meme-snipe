@@ -203,20 +203,20 @@ export class FakeChain {
 
   private answer(label: string, method: string, params: unknown[]): { result?: unknown; error?: { code: number; message: string } } {
     const slot = this.slotFor(label);
-    const ctx = { context: { slot: Number(slot) } };
+    const ctx = { context: { slot } };
     switch (method) {
-      case 'getEpochInfo': return { result: { absoluteSlot: Number(slot) + this.provider(label).heightOffset, blockHeight: Number(slot) - 20_000_000, epoch: 1000, slotIndex: 1, slotsInEpoch: 432_000, transactionCount: null } };
-      case 'getSlot': return { result: Number(slot) };
+      case 'getEpochInfo': return { result: { absoluteSlot: slot + BigInt(this.provider(label).heightOffset), blockHeight: slot - 20_000_000n, epoch: 1000, slotIndex: 1, slotsInEpoch: 432_000, transactionCount: null } };
+      case 'getSlot': return { result: slot };
       case 'getHealth': return { result: 'ok' };
-      case 'getRecentPerformanceSamples': return { result: Array.from({ length: 30 }, (_, i) => ({ slot: Number(slot) - i * 150, numSlots: 150, numTransactions: 1, numNonVoteTransactions: 1, samplePeriodSecs: 60 })) };
+      case 'getRecentPerformanceSamples': return { result: Array.from({ length: 30 }, (_, i) => ({ slot: slot - BigInt(i * 150), numSlots: 150, numTransactions: 1, numNonVoteTransactions: 1, samplePeriodSecs: 60 })) };
       case 'getMultipleAccounts': {
         this.evolve();
         const keys = params[0] as string[];
         return { result: { ...ctx, value: keys.map((k) => { const a = this.account(k); return a === null ? null : { owner: a.owner, data: [Buffer.from(a.data).toString('base64'), 'base64'], lamports: 2_000_000, executable: false, rentEpoch: 0, space: a.data.length }; }) } };
       }
       case 'getSignaturesForAddress': {
-        const visible = this.migrations.slice(0, this.migrationsVisible).sort((a, b) => Number(b.slot - a.slot));
-        return { result: visible.map((m) => ({ signature: m.signature, slot: Number(m.slot), err: null, memo: null, blockTime: m.blockTime, confirmationStatus: 'confirmed' })) };
+        const visible = this.migrations.slice(0, this.migrationsVisible).sort((a, b) => (b.slot > a.slot ? 1 : b.slot < a.slot ? -1 : 0));
+        return { result: visible.map((m) => ({ signature: m.signature, slot: m.slot, err: null, memo: null, blockTime: m.blockTime, confirmationStatus: 'confirmed' })) };
       }
       case 'getTransaction': {
         const m = this.migrations.find((x) => x.signature === params[0]);
@@ -233,8 +233,13 @@ export class FakeChain {
     if (this.provider(label).down) return new Response('unavailable', { status: 503 });
     this.byMethod.set(`${label} ${req.method}`, (this.byMethod.get(`${label} ${req.method}`) ?? 0) + 1);
     const a = this.answer(label, req.method, req.params ?? []);
-    return new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, ...a }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response(jsonWithBigints({ jsonrpc: '2.0', id: req.id, ...a }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
+}
+
+/** JSON text with every bigint written as a JSON number (RPC slots are u64). */
+export function jsonWithBigints(v: unknown): string {
+  return JSON.stringify(v, (_k, x: unknown) => (typeof x === 'bigint' ? `__u64:${x}__` : x)).replace(/"__u64:(-?\d+)__"/g, '$1');
 }
 
 export const FAKE_SECRETS: Readonly<Record<string, string>> = Object.freeze({ RPC_SHYFT_URL: 'https://shyft.fake/rpc?api_key=TEST', RPC_CHAINSTACK_URL: 'https://chainstack.fake/TESTKEY' });

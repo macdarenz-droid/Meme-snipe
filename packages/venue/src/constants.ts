@@ -14,9 +14,9 @@
 //   account of `migrate` in the pinned idl/pump.json and docs/PUMP_SWAP_CREATOR_FEE_README.md, both at
 //   pump-fun/pump-public-docs commit cb188ce08b5069196eef1f3e4a0c43b70099793b. Card IDL-REPIN: these seeds and the four
 //   PDAs' seeds are unchanged at 8cda1fa30ea658b20909d8aedf002047119388d2 (test/constants.test.ts compares them).
-import { getProgramDerivedAddress, type Address } from '@solana/kit';
 import { decodePubkey } from '@bot/decoders';
 import type { Pubkey, Result } from '@bot/types';
+import { findProgramAddress } from './pda.ts';
 
 export const PROGRAMS = Object.freeze({
   pumpCurve: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',          // [EX-01]
@@ -85,10 +85,13 @@ export const REFERENCE_PDAS: ReadonlyArray<{ name: keyof typeof REFERENCE; progr
   },
 ];
 
-/** Derives a PDA with @solana/kit (on-curve check included). */
+/**
+ * Derives a PDA (on-curve check included) with Node built-ins only (pda.ts; card Z10: the host has no node_modules).
+ * Kept asynchronous, as with @solana/kit before it (C03-R1-7), so no caller changes; test/pda.test.ts checks it
+ * against @solana/kit.
+ */
 export async function derivePda(program: Pubkey, seeds: readonly Seed[]): Promise<{ address: Pubkey; bump: number }> {
-  const [address, bump] = await getProgramDerivedAddress({ programAddress: program as Address, seeds: [...seeds] });
-  return { address, bump };
+  return findProgramAddress(program, seeds);
 }
 
 export interface ConstantMismatch { code: 'E_CONSTANT_MISMATCH'; name: string; expected: Pubkey; derived: Pubkey }
