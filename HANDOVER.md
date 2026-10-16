@@ -138,6 +138,14 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 11:42 AM: Z09 plan ruled (Z09-1..9).**
+  - Per-size hurdle table for information only; no verdict.
+  - The Phase 0 recording set is an explicit config value naming a strategy set (default pm01), named in the manifest with its parameter hash.
+  - Strict row: PM-01 PREREG bounds, 150/300 bps; missing bounds give E_INVALID_SLIPPAGE.
+  - P_SOL is a required, printed input; $150 is a test value only. Amounts are in lamports/SOL, with $ as the label.
+  - SYNTHETIC fixtures are marked, and an obligation carries to Z10's soak: re-run the M03-02 and M08 acceptance on recorded data.
+  - pure-files.txt additions are OK.
+  - The builder records the rulings in DECISIONS "Z09".
 - **16 Oct 11:38 AM: #327 Z08 merged at `91af4787`** (the new base, ls-remote). M1: 2 of 4 cards merged (Z07, Z08).
   - CI was green on `babfa9a7` (run 38817404562). The `check` job's one re-run passed after the base log-order race (#329). The earlier red `check` in run 38817052669 was the pre-label E_POLICY_DRIFT.
   - #328 OF-FIX `3b311c92`: the re-check of OFX-11..13 passed (`session_01RChWiiJc1Gz9XYnCmdC1wm`), and the labelled run 38824122134 is green. It now needs a merge of `91af4787` (both PRs changed DECISIONS.md), green CI and possibly a new label, then it merges.
