@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 5:38 PM: #331 OF-REARM merged at `802f6920`** (the new base, ls-remote). The base config now reads ARCHIVE_ARM="b10pull-of-2", ARCHIVE_RETENTION="K2", REARM_AT 2026-10-07T22:30:00Z. CI was green on `0b9786e0` (run 38859335235).
+  - Next archive-check tick: 06:41 UTC (5:41 PM). It sends one 64-byte probe, then dispatches data-scan for 07-22 under FRESH-READ fr-0722.
+  - The failure count is still 1 of 3. A refused or failed 07-22 counts as failure 2.
+  - The OF builder `session_01JfcmEyJ1AqL4BQbyoGAZHT` and reviewer `session_01RChWiiJc1Gz9XYnCmdC1wm` stay parked until batch 1's result, then are archived if it passes.
 - **16 Oct 5:27 PM: #331 `0b9786e0` passed the re-check** (`session_01RChWiiJc1Gz9XYnCmdC1wm`): no BLOCKER or MAJOR.
   - Verified live and read-only: ag_history gives fails=1 and AG_FAILED_RUNS "2026-07-22 38776359833"; ag_fresh_ok 07-22 returns rc 0.
   - gh 2.89.0 follows the job-log 302; the data-scan jobs have `actions: read`.
