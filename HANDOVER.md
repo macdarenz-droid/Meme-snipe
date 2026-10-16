@@ -138,6 +138,17 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 12:22 AM: Z10 red team FAIL at `57d04e6a`** (2 MAJOR, 5 MINOR; the Z10-19 delta PASSES and its test can fail). Rulings Z10-24..31 sent to the builder:
+  - **Z10-24 (MAJOR-1):** M27 critical codes never left the host, and the heartbeat sent lastSlot null, so a stalled recorder looked healthy. Fix: critical codes in the heartbeat (codes only), lastSlot = newest stored slot, plus critical on a 30 s stale tick and on 5 min unanchored.
+  - **Z10-25 (MAJOR-2):** the node_modules allow-list could be escaped by links, and zeroed-update, which runs as root, could write outside the release. Fix: an exact check in the e2e, and host-side refusals in zeroed-update and release_links.
+  - **Z10-26..30 (MINORs):**
+    - watch-log setgid/umask;
+    - a silent release_links failure;
+    - the RSS comments;
+    - the 1 MiB cap for the manifest only;
+    - the recorder's OOMScoreAdjust must not outlive tailscaled, the sentinel or the update unit.
+  - **Z10-31:** a fake-time hour-rotation test.
+  - **On-server run checklist** (M1 exit): fd count over days (the soak has no sockets).
 - **17 Oct 12:15 AM: #333 head `57d04e6a`** (ls-remote).
   - Z10-19 fixed: only tail pools get the class-interval allowance; watched and position pools stay at stale_lag_slots. The supervisor read the diff. The new test has a watched pool stale at lag 13/14 for any slot time and a tail pool 30 behind not stale; it fails on `691d4411`.
   - DECISIONS "Z10" corrected. Z10-20 headroom: 239 pools = 100,566 B, so 1 MiB holds about 2,490 (the real daily count is unverified).
