@@ -138,6 +138,18 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 12:55 AM: Z10 reviewer FAIL on `66459a37`.**
+  - Z10-19..23 and the Z10-24..31 delta read correctly. Security, rate limits and the 027 umask are OK.
+  - Rulings Z10-32..37 sent:
+    - B1: `pda.test.ts:109` uses a dynamic import (E_IMPORT_DYNAMIC; lint fails).
+    - B2: `rotation-clock.test.ts:54` has a TS2345 (typecheck fails).
+    - M1: a failed P1 verification read marks a pool as 'position' in the queue (`compose.ts:331-345`). Fix: unpinned reads only.
+    - m3: an RssAnon slope check over hours 24-48, plus a 60-pool run.
+    - m4: pin the stale test to lag 13 exactly.
+    - Z10-37: PR body citations.
+  - CI label `deps-reviewed:168c7fa377be4c419bdb0b470931b68d` (guarded: deploy.yml, ops-e2e.yml, DEPENDENCIES.md, eslint.config.mjs); recompute it after the fix push.
+  - E2E_PATHS now covers packages/{engine,venue,decoders,types} and fixtures/mainnet, so the deploy gate needs ops e2e and recorder-soak green on the merge head.
+  - Red team's own soak on `57d04e6a`: PASS (RSS 275 MiB, heap flat). It waits for the final head.
 - **17 Oct 12:37 AM: hourly update posted.**
   - #332 CI is all green on `238c27b9` (check 13:37Z, coverage, dashboard, historical-data); the review passed. Waiting on the red team's test-ci.
   - Heads (ls-remote): Z10 `66459a37` (fixes in progress); of-fresh-fix `92f4e1ad` (no PR yet); base `58d703d9`.
