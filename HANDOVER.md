@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 6:40 AM: Z10 at `286ec840`.**
+  - Pushed: Z10-41..44 (`993ee4ef`, README pin `535f5534`), Z10-45 (`f64a259b`), Z10-47 (base `466279ff` merged in).
+  - Open: Z10-38, and Z10-46 (which waits on it).
+  - Z10-38 A/B runs (60 pools, 36 h, RssAnon slope over hours 18-36, MiB/h): baseline 1.11; MALLOC_ARENA_MAX=2 1.17; cache_size=-1024 1.25; paging off 1.08; mmap/trim thresholds 0.96. None flattens it.
+  - The growth is real malloc in the brk heap (147→177 MB in use between hours 57 and 70). V8 heap, ArrayBuffers and fds are flat. The 96 h run reached RssAnon 355 MiB at hour 76, still linear.
+  - Next: an LD_PRELOAD call-site tracker (scratch only), then an A/B on the cause.
+  - Reviewer and red team asked to re-check `286ec840`, apart from Z10-38/46.
 - **17 Oct 4:38 AM: OF chain STOPPED by an archive 429 (failure 3).**
   - What happened: archive-check run `38935572431` (16:54Z, on `466279ff`) passed every hold and sent the single 64-byte probe for 2026-07-22. The archive answered **HTTP 429**: 0 bytes, curl exit 63 (the 429 body was bigger than the max file size), cf-ray `a4b896a94df9fe67-STL`, no Retry-After.
   - The guard counted it, dispatched nothing, and saved a back-off to 19:54:57Z. With `38776359833` and `38896609003` that is failure 3, so the chain is stopped until a reviewed change re-arms it. Nothing was downloaded. Run 44's probe at 11:51Z had been served.
