@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 11:38 AM: #327 Z08 merged at `91af4787`** (the new base, ls-remote). M1: 2 of 4 cards merged (Z07, Z08).
+  - CI was green on `babfa9a7` (run 38817404562). The `check` job's one re-run passed after the base log-order race (#329). The earlier red `check` in run 38817052669 was the pre-label E_POLICY_DRIFT.
+  - #328 OF-FIX `3b311c92`: the re-check of OFX-11..13 passed (`session_01RChWiiJc1Gz9XYnCmdC1wm`), and the labelled run 38824122134 is green. It now needs a merge of `91af4787` (both PRs changed DECISIONS.md), green CI and possibly a new label, then it merges.
+  - #329 LOG-ORDER: LOG-2..3 are with the builder, plus a merge of `91af4787`.
+  - Z08's reviewer and red team stay: they are on #329.
+  - M1 card 3, Z09 Universe and study: builder `session_01NgT7ERwftV1VocEMPCqogA` (Opus, Auto), branch `claude/z09-universe` from `91af4787`. It plans first. Carried to it: C-95 (Z08-9), Z08-1, Z08-2, C-85/C-88, and A05 not run for MR-01.
+  - Rate limit: five_hour allowed, no seven_day warning.
 - **16 Oct 10:35 AM: #327 one re-run, LOG-ORDER fix, #328 labelled.**
   - Z08 #327 labelled run 38817404562 (head `babfa9a7`): coverage, dashboard and historical-data green. `check` failed one base test, `packages/engine/test/m24/review-round2.test.ts:176`: the day's log read back as `again, first`.
     - Not this PR's: #327 does not touch `m27/logfile.ts` or that test.
