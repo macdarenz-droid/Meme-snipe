@@ -138,6 +138,17 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 9:36 AM: Z10-38 CLOSED, Z10-46 done; head `db5ab392`.**
+  - Cause: peak, not live, memory. Each pool got a new M04 snapshot ring (about 0.8 MiB, about 36 an hour) and each series-hour a new M27 metric chunk. Dead buffers waited for a major GC, so the brk heap's high-water mark kept rising.
+  - Bound (`337e16ab`): ring buffer reuse (spares capped) and metric chunk reuse within ringBudgetBytes. No malloc_trim.
+  - Proof:
+    - 60-pool soak RssAnon slope over hours 24-48: 0.12 MiB/h (was 1.01), about 212 MiB flat from hour 12, RSS peak 293 MiB;
+    - default rate 0.08 MiB/h;
+    - the soak's rssFlat limit is now 0.25;
+    - CI recorder-soak runs at 60-pool settings (about 21 min of the 45 min limit) and is green, as is e2e, on `db5ab392`.
+  - pnpm test 9,340 pass (2 container-only fails).
+  - ops-e2e.yml changed (a guarded file; the supervisor read the diff: env only), so a new deps-reviewed hash is needed.
+  - Final review and red team asked on `db5ab392` (focus: reuse correctness).
 - **17 Oct 8:36 AM: Z10 head `337e16ab`.** "Z10-38: reuse M04 ring buffers and M27 metric chunks instead of a new one per pool or hour" (m04/ring.ts, tracker.ts, m27/metrics.ts, plus 2 tests). No report yet; the soak result is awaited. No guarded file changed, so the label stays valid.
 - **17 Oct 7:35 AM: Z10-38 still open.** The paged manifest did not fix it: the 60-pool soak's RssAnon slope over hours 24-48 is 1.01 MiB/h (limit 0.25). A peak-bytes-per-site tracker is running; its diff at hours 20/29 is due about 21:50Z.
 - **17 Oct 7:35 AM: Z10 reviewer PASS at `484d3bcf`** (contains base `466279ff`), apart from Z10-38/46.
