@@ -138,6 +138,11 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 6:45 AM: Z10 red team FAIL at `286ec840`** (1 MAJOR, 3 MINOR). Z10-41..44 verified fixed (é.ts and newline links refused; 3,076 paths in 0.19 s; state-based codes; a 10 min unanchored limit). Rulings sent:
+  - **Z10-48 (MAJOR-C):** all codes share one watchdog key, so a long-held code (m07.unpulled_segments from day 8, with no receipt producer) hides new alerts for up to 1 h. Fix: one key per code.
+  - **Z10-49:** catch up missing day manifests.
+  - **Z10-50:** try/catch around verifyCount.save.
+  - **Z10-51:** cache activeCodes per tick so /health makes no database reads.
 - **17 Oct 6:40 AM: Z10 at `286ec840`.**
   - Pushed: Z10-41..44 (`993ee4ef`, README pin `535f5534`), Z10-45 (`f64a259b`), Z10-47 (base `466279ff` merged in).
   - Open: Z10-38, and Z10-46 (which waits on it).
