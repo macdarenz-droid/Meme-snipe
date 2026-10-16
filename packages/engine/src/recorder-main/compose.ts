@@ -218,7 +218,9 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const dataDir = configValue(cfg, 'recorder.data_dir') === p.paths.mdDir ? p.paths.mdDir : p.paths.mdDir;
   const recovery = SegmentWriter.recover({ dataDir, nowMs: nowMs(), log: wlog });
   const queue = new RecorderQueue({ firstSeq: recovery.nextSeq, log: wlog, config: { pollCloseGraceMs: configValue(cfg, 'bars.close_grace_ms') } });
-  const bars = createBarEngine({ ...BAR_DEFAULTS, closeGraceMs: configValue(cfg, 'bars.close_grace_ms'), incompleteMissingBps: configValue(cfg, 'bars.incomplete_missing_bps') }, log);
+  // The stored 1-minute bars (M08 `bar_1m`). The 15 s base bars feed only features and strategies, none of which runs in
+  // the recorder; replays rebuild them from the recording (A-M08-01, Z09-32).
+  const bars = createBarEngine({ ...BAR_DEFAULTS, durationMs: 60_000, closeGraceMs: configValue(cfg, 'bars.close_grace_ms'), incompleteMissingBps: configValue(cfg, 'bars.incomplete_missing_bps') }, log);
   const barStore = createBarStore(db, { retentionDays: configValue(cfg, 'bars.bar_1m_retention_days'), log });
   const writer = new SegmentWriter({
     dataDir, codec: configValue(cfg, 'recorder.codec_preference') as Codec, nowMs, log: wlog,
@@ -307,8 +309,26 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       if ((code === 'm04.clock_suspect' || code === 'm04.clock_fault' || code === 'm04.clock_disagreement') && clockTrouble === null) clockTrouble = { sinceMs: p.scheduler.nowMs(), alerted: false };
     },
   };
+  // A failed poll batch counts as a failed poll for each watched pool in it (A-M07-01 `failedPolls`; M04 only logs it).
+  // A poll batch is [pool, baseVault, quoteVault] per pool at the class priority: position P1, candidate P2, tail P4.
+  const CLASS_OF: Readonly<Record<number, 'position' | 'candidate' | 'tail'>> = { 1: 'position', 2: 'candidate', 4: 'tail' };
+  const pollReader: AccountsReader = {
+    async read(keys, o) {
+      const r = await reader.read(keys, o);
+      const cls = CLASS_OF[o.priority];
+      if (!r.ok && cls !== undefined && keys.length % 3 === 0 && tracker !== null) {
+        const ready = new Set(tracker.ready());
+        const at = nowMs();
+        for (let i = 0; i < keys.length; i += 3) {
+          const id = keys[i] as Pubkey;
+          if (ready.has(id)) queue.notePollFailed(id, cls, at, cls === 'position');
+        }
+      }
+      return r;
+    },
+  };
   tracker = createPoolTracker<CpPoolState>({
-    model, reader, scheduler: p.scheduler, chain, clock, settings, log: trackerLog,
+    model, reader: pollReader, scheduler: p.scheduler, chain, clock, settings, log: trackerLog,
     providerOrder: () => rp.labels,
     // M04's metrics on the M27 registry (catalog names and labels A-M04-01..03).
     metrics: {
@@ -417,7 +437,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     // Z09-32: the queue's tick, the writer's pump (poll counts to M08), then M08's closeDue, with one `now`.
     await guard('queue_tick', () => queue.tick(now));
     await guard('pump', () => writer.pump());
-    await guard('bars', () => { barStore.add(bars.closeDue(now).filter((b) => b.durationMs === 60_000)); });
+    await guard('bars', () => { barStore.add(bars.closeDue(now)); });
     if (started) {
       await guard('universe', () => universe.tick());
       if (mono - lastWatchlistMs >= WATCHLIST_EVERY_MS) { lastWatchlistMs = mono; await guard('watchlist', () => watchlist.recompute(universe.candidates())); }

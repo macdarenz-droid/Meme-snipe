@@ -136,6 +136,8 @@ export class FakeChain {
   readonly migrations: ReturnType<typeof loadFixtureAccounts>['migrations'];
   readonly behaviour = new Map<string, ProviderBehaviour>();
   readonly calls = new Map<string, number>();
+  /** Calls by `label method`. */
+  readonly byMethod = new Map<string, number>();
   /** Pool ids served as aliases of a fixture pool (same account bytes; SYNTHETIC). */
   readonly aliases = new Map<string, string>();
   migrationsVisible = 0;
@@ -227,8 +229,9 @@ export class FakeChain {
   readonly fetch: FetchLike = async (url, init) => {
     const label = /^https:\/\/([a-z]+)\.fake\//.exec(url)?.[1] ?? 'unknown';
     this.calls.set(label, (this.calls.get(label) ?? 0) + 1);
-    if (this.provider(label).down) return new Response('unavailable', { status: 503 });
     const req = JSON.parse(init.body) as { id: unknown; method: string; params?: unknown[] };
+    if (this.provider(label).down) return new Response('unavailable', { status: 503 });
+    this.byMethod.set(`${label} ${req.method}`, (this.byMethod.get(`${label} ${req.method}`) ?? 0) + 1);
     const a = this.answer(label, req.method, req.params ?? []);
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, ...a }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
