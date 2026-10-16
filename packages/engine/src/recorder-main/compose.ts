@@ -451,6 +451,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const diskMs = configValue(cfg, 'recorder.disk_check_ms');
   let started = false;
   let anchorTries = 0;
+  let anchoring = false;
+  let venueRefreshing = false;
   const guard = async (where: string, fn: () => unknown): Promise<void> => {
     try { await fn(); } catch (e) { log.event('error', 'recorder.internal_error', { where, error_code: String((e as { code?: unknown })?.code ?? 'E_THROWN') }); }
   };
@@ -484,10 +486,14 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       trouble.alerted = true;
       log.event('critical', 'recorder.clock_suspect', { error_code: 'E_CLOCK', since_ms: Math.round(mono - trouble.sinceMs) });
     }
-    if (mono - lastAnchorMs >= (chain.ready() && trouble === null ? ANCHOR_EVERY_MS : ANCHOR_RETRY_MS)) {
+    // Reads that wait on providers run beside the loop, one at a time each, so a slow provider never delays M07's
+    // tick (a late tick would stamp poll counts after their bar's close, Z09-32).
+    if (!anchoring && mono - lastAnchorMs >= (chain.ready() && trouble === null ? ANCHOR_EVERY_MS : ANCHOR_RETRY_MS)) {
       lastAnchorMs = mono;
-      const ok = await chain.refresh();
-      if (!chain.ready() && !ok && ++anchorTries % 12 === 1) log.event('warn', 'recorder.anchor_waiting', { tries: anchorTries });
+      anchoring = true;
+      void chain.refresh().then((ok) => {
+        if (!chain.ready() && !ok && ++anchorTries % 12 === 1) log.event('warn', 'recorder.anchor_waiting', { tries: anchorTries });
+      }).finally(() => { anchoring = false; });
     }
     if (!started && chain.ready()) {
       started = true;
@@ -495,7 +501,11 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       backfill.start();
       log.event('info', 'recorder.started', { release: p.releaseId, providers: rp.labels.join(','), primary: rp.primary });
     }
-    if (mono - lastVenueMs >= 60_000) { lastVenueMs = mono; await guard('venue_config', () => venue.refresh()); }
+    if (!venueRefreshing && mono - lastVenueMs >= 60_000) {
+      lastVenueMs = mono;
+      venueRefreshing = true;
+      void guard('venue_config', () => venue.refresh()).finally(() => { venueRefreshing = false; });
+    }
     // Z09-32: the queue's tick, the writer's pump (poll counts to M08), then M08's closeDue, with one `now`.
     await guard('queue_tick', () => queue.tick(now));
     await guard('pump', () => writer.pump());
@@ -516,9 +526,13 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
 
   let cancel: (() => void) | null = null;
   let stopped = false;
-  const loop = (): void => {
+  // One tick a second on the monotonic clock: the next is due 1 s after this one started (never two at once).
+  const loop = (delayMs = 1_000): void => {
     if (stopped) return;
-    cancel = p.scheduler.set(() => { void tickOnce().finally(loop); }, 1_000);
+    cancel = p.scheduler.set(() => {
+      const t0 = p.scheduler.nowMs();
+      void tickOnce().finally(() => loop(Math.max(0, 1_000 - (p.scheduler.nowMs() - t0))));
+    }, delayMs);
   };
   // Not awaited: M15's first reads go through M14's timers, which the loop's clock drives (and the virtual clock in tests).
   void rp.clock.start().catch(() => log.event('error', 'recorder.internal_error', { where: 'm15_start', error_code: 'E_THROWN' }));

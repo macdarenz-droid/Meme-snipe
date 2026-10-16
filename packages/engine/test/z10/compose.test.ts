@@ -26,4 +26,23 @@ describe('Z10 composition root', () => {
       await r.rec.stop();
     }
   }, 120_000);
+
+  it('a slow provider never delays the 1 s tick: the anchor and fee-config reads run beside it (Z09-32: a late tick stamps poll counts late)', async () => {
+    const r = await startRig(tempDir('z10-slow'));
+    try {
+      await r.run(5_000);
+      assert.equal(r.rec.status().anchored, true);
+      r.chain.provider('chainstack').delayMs = 1_400;            // under its 1.5 s read timeout, answered late
+      r.chain.provider('shyft').delayMs = 1_400;
+      const ticks: number[] = [];
+      for (let k = 0; k < 120; k++) {
+        await r.time.advance(1_000);
+        ticks.push(r.rec.status().lastTickMs as number);
+      }
+      const gaps = ticks.slice(1).map((t, i) => t - (ticks[i] as number));
+      assert.ok(gaps.every((g) => g === 1_000), `tick gaps: ${[...new Set(gaps)].join(',')}`);
+    } finally {
+      await r.rec.stop();
+    }
+  }, 120_000);
 });

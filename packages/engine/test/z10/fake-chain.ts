@@ -98,7 +98,7 @@ interface Acc { owner: string; data: Uint8Array }
 export interface FixturePool { pool: Pubkey; baseMint: Pubkey; quoteMint: Pubkey; baseVault: Pubkey; quoteVault: Pubkey }
 /** `slotOffset` moves the provider's context slots; `heightOffset` moves only its `getEpochInfo` answers (a node whose
  * height reading trails its own reads, to put the slot clock behind the tip). */
-export interface ProviderBehaviour { slotOffset: number; heightOffset: number; down: boolean; slotOverride?: bigint }
+export interface ProviderBehaviour { slotOffset: number; heightOffset: number; down: boolean; slotOverride?: bigint; delayMs?: number }
 
 /** Reads every pool set and config account of fixtures/mainnet. */
 export function loadFixtureAccounts(): { accounts: Map<string, Acc>; pools: FixturePool[]; baseSlot: bigint; migrations: Array<{ signature: string; slot: bigint; blockTime: number; json: unknown }> } {
@@ -268,6 +268,8 @@ export class FakeChain {
     const label = /^https:\/\/([a-z]+)\.fake\//.exec(url)?.[1] ?? 'unknown';
     this.calls.set(label, (this.calls.get(label) ?? 0) + 1);
     const req = JSON.parse(init.body) as { id: unknown; method: string; params?: unknown[] };
+    const delay = this.provider(label).delayMs ?? 0;
+    if (delay > 0) await new Promise<void>((r) => { this.time.set(r, delay); });
     if (this.provider(label).down) return new Response('unavailable', { status: 503 });
     this.byMethod.set(`${label} ${req.method}`, (this.byMethod.get(`${label} ${req.method}`) ?? 0) + 1);
     const a = this.answer(label, req.method, req.params ?? []);
