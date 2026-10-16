@@ -50,8 +50,10 @@ export interface Phase0Input {
   days: readonly Phase0Day[];
   streams: readonly StreamDayBytes[];
   poolStates: readonly PoolState[];
-  /** The recorded SOL/USD of D1 (null: not recorded, the hurdle is not computed). */
+  /** The recorded SOL/USD of D1 (null: not recorded, the hurdle is not computed); required, never a default (Z09-5). */
   solUsdD1: number | null;
+  /** Where `solUsdD1` came from (printed in the report, Z09-5). */
+  solUsdSource: string;
   simParams: SimParamSet;
   slippage?: { entryBps: number; exitBps: number; source: string };
 }
@@ -66,7 +68,7 @@ export interface HurdleRow {
 export interface Phase0Report {
   window: { r0Ms: number; d1: string; days: string[]; goodDays: string[]; lowCoverageDays: string[]; status: 'ok' | 'insufficient_days' };
   parked: { a24: 'parked'; a24b: 'parked'; moveRule: 'parked'; killCheck: 'not_run_mr01_parked'; pm01: 'no_phase0_check' };
-  hurdle: { solUsd: number | null; slippage: { entryBps: number; exitBps: number; source: string }; decides: false; bySize: HurdleRow[] };
+  hurdle: { solUsd: number | null; solUsdSource: string; slippage: { entryBps: number; exitBps: number; source: string }; decides: false; bySize: HurdleRow[] };
   a48: Array<{ stream: string; bytesPerDayCompressed: number; codec: 'zstd' | 'gzip'; ratio: number | null }>;
   diskProjection30dBytes: number; diskMinimumBytes: number; diskWithinMinimum: boolean;
   wB: { excludedDays: string[] };
@@ -193,7 +195,7 @@ export function phase0Report(i: Phase0Input): Phase0Report {
   return {
     window,
     parked: { a24: 'parked', a24b: 'parked', moveRule: 'parked', killCheck: 'not_run_mr01_parked', pm01: 'no_phase0_check' },
-    hurdle: { solUsd: i.solUsdD1, slippage: { ...slip }, decides: false, bySize },
+    hurdle: { solUsd: i.solUsdD1, solUsdSource: i.solUsdSource, slippage: { ...slip }, decides: false, bySize },
     a48, diskProjection30dBytes: projection, diskMinimumBytes: DISK_MINIMUM_BYTES, diskWithinMinimum: projection <= DISK_MINIMUM_BYTES,
     wB: { excludedDays: [...window.days] },
     caveats,
@@ -201,6 +203,12 @@ export function phase0Report(i: Phase0Input): Phase0Report {
 }
 
 const n = (v: number | null): string => (v === null ? '-' : String(v));
+/** Lamports as SOL with 9 decimals, trailing zeros cut (exact, no floating point). */
+const sol = (l: bigint): string => {
+  const s = l.toString().padStart(10, '0');
+  const frac = s.slice(-9).replace(/0+$/, '');
+  return `${s.slice(0, -9)}${frac === '' ? '' : `.${frac}`}`;
+};
 const thousands = (v: number): string => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 /** `docs/phase0/report-<date>.md`: the report as a person reads it (no clock, so reproducible). */
@@ -210,11 +218,11 @@ export function renderPhase0Markdown(r: Phase0Report): string {
   L.push('## Window', '', `- R0: ${new Date(r.window.r0Ms).toISOString()}`, `- D1: ${r.window.d1}; status: ${r.window.status}`,
     `- Days: ${r.window.days.join(', ')}`, `- Good days: ${r.window.goodDays.length}`, `- Low coverage or missing: ${r.window.lowCoverageDays.join(', ') || 'none'}`, '');
   L.push('## Not run', '', '- A-24 and A-24b: parked', '- Move rule: parked', '- Kill-only check: not run (MR-01 parked, C-76)', '- PM-01: no Phase 0 check', '');
-  L.push('## Hurdle by size', '', `SOL/USD of D1: ${n(r.hurdle.solUsd)}. Information only: decides nothing. Costs in bps of the trade.`, '',
+  L.push('## Hurdle by size', '', `SOL/USD of D1: ${n(r.hurdle.solUsd)} (${r.hurdle.solUsdSource}). Information only: decides nothing. Sizes in SOL, the dollar amount as a label; costs in bps of the trade.`, '',
     '| Size | Pools | Median pool | Lean g* | Strict g* | Conservative g* | Lean fees | Lean impact | Lean fixed | 414,009 line | $10 at 10/day |',
     '|---|---|---|---|---|---|---|---|---|---|---|');
   for (const h of r.hurdle.bySize) {
-    L.push(`| $${thousands(h.sizeUsd)}${h.subset ? ' (subset)' : ''} | ${h.poolsInSet} | ${h.medianPool ?? '-'} | ${n(h.gStarBpsLean)} | ${n(h.gStarBpsStrict)} | ${n(h.gStarBpsConservative)} | ${n(h.lean?.venueFeesBps ?? null)} | ${n(h.lean?.impactBps ?? null)} | ${n(h.lean?.fixedBps ?? null)} | ${h.sensitivityBps} | ${h.fixedTermBps.usd10['10']} |`);
+    L.push(`| ${sol(BigInt(h.sizeLamports))} SOL ($${thousands(h.sizeUsd)})${h.subset ? ' (subset)' : ''} | ${h.poolsInSet} | ${h.medianPool ?? '-'} | ${n(h.gStarBpsLean)} | ${n(h.gStarBpsStrict)} | ${n(h.gStarBpsConservative)} | ${n(h.lean?.venueFeesBps ?? null)} | ${n(h.lean?.impactBps ?? null)} | ${n(h.lean?.fixedBps ?? null)} | ${h.sensitivityBps} | ${h.fixedTermBps.usd10['10']} |`);
   }
   L.push('', '## Disk (A-48)', '', '| Stream | Codec | Bytes a day | Ratio |', '|---|---|---|---|');
   for (const a of r.a48) L.push(`| ${a.stream} | ${a.codec} | ${a.bytesPerDayCompressed} | ${n(a.ratio)} |`);

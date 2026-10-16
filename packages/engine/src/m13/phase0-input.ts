@@ -112,7 +112,8 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
   const r0Ms = Number.isFinite(r0) ? r0 : 0;
   // D1's price: the day the window starts (step 1), read from the same rule.
   const d1 = new Date(Math.ceil((r0Ms + 30 * 3_600_000) / 86_400_000) * 86_400_000).toISOString().slice(0, 10);
-  return { r0Ms, days, streams, poolStates, solUsdD1: solUsd.get(d1) ?? null };
+  const price = solUsd.get(d1) ?? null;
+  return { r0Ms, days, streams, poolStates, solUsdD1: price, solUsdSource: price === null ? `none recorded on ${d1}` : `ref_price, first price of ${d1}` };
 }
 
 /** The pool state a recorded `pool_snapshot` fields bag describes (the PumpSwap fields of `recordFields`, A-M04-01). */

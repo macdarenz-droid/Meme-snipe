@@ -1,4 +1,4 @@
-// A-M08-03 bar_1m persistence and OHLC aggregation (card Z09), on an M24 test database.
+// A-M08-03 bar_1m persistence and OHLC aggregation (card Z09), on an M24 test database; the bars are SYNTHETIC.
 import { strict as assert } from 'node:assert';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
@@ -26,7 +26,7 @@ const bar = (i: number, o: number, h: number, l: number, c: number): Bar => ({
   depthLamportsClose: 1_000n as Lamports, depthChangeBps: 0, netQuoteFlowLamports: 0n as SignedLamports, snapshots: 60, missing: 0,
 });
 
-describe('A-M08-03', () => {
+describe('A-M08-03 (SYNTHETIC bars)', () => {
   it('60 consecutive 1m bars: the 1h aggregate is the first open, the last close and the max/min of all', async () => {
     const db = await migrated();
     const s = createBarStore(db);

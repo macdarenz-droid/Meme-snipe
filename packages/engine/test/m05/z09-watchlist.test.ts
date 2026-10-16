@@ -33,7 +33,7 @@ function setup(o: { config?: Partial<WatchlistConfig>; maxHoldMs?: number } = {}
   };
 }
 
-describe('A-M05-02 acceptance', () => {
+describe('A-M05-02 acceptance (SYNTHETIC candidates)', () => {
   it('40 eligible candidates and 2 pinned pools: 30 candidates + 2 pinned are watched; the 10 shallowest wait', () => {
     const t = setup();
     const cands = Array.from({ length: 40 }, (_, i) => rec(i, 'eligible', 100 + i));

@@ -11,6 +11,8 @@ import {
 import { PRIOR_2026_10, type SimParamSet } from '../../src/m10/params.ts';
 import { archPool, atMinDepth, flatFees, pricingOf, SOL } from './pricing.ts';
 
+/** ARCH Table 2-A's SOL/USD: a test value only (ruling Z09-5). */
+const P_SOL = 150;
 const NO_EXTRAS = { includeJanitor: false, includeRung2: false } as const;
 const SLIP = { slippage: { entryBps: 100, exitBps: 100 } } as const;
 const rows = (p: PoolPricing, n: bigint, o: Parameters<typeof costRows>[3] = SLIP): CostRows => {
@@ -28,7 +30,7 @@ describe('A-M10-03 acceptance', () => {
     const table: Array<[number, bigint, number[]]> = [[125, 85n, [273, 276, 297, 336]], [95, 500n, [205, 201, 202, 207]], [30, 1_500n, [71, 66, 65, 66]]];
     for (const [fee, q, want] of table) {
       [5, 10, 25, 50].forEach((usd, i) => {
-        const got = estimateRoundTripCostBps(pricingOf(archPool(q), flatFees(fee)), usdToLamports(usd), 'lean', PRIOR_2026_10, NO_EXTRAS);
+        const got = estimateRoundTripCostBps(pricingOf(archPool(q), flatFees(fee)), usdToLamports(usd, P_SOL), 'lean', PRIOR_2026_10, NO_EXTRAS);
         assert.ok(Math.abs(got - (want[i] as number)) <= 2, `fee ${fee} Q ${q} $${usd}: ${got} vs ${want[i]}`);
       });
     }
@@ -43,18 +45,18 @@ describe('A-M10-03 acceptance', () => {
 
   it('premium landing at $5 on V5: the fixed part alone is about 754 bps (total 819, ARCH Table 2-B)', () => {
     const p = pricingOf(archPool(1_500n), flatFees(30));
-    assert.equal(estimateRoundTripCostBps(p, usdToLamports(5), 'premium', PRIOR_2026_10, NO_EXTRAS), 819);
+    assert.equal(estimateRoundTripCostBps(p, usdToLamports(5, P_SOL), 'premium', PRIOR_2026_10, NO_EXTRAS), 819);
     const premium: SimParamSet = { ...PRIOR_2026_10, cost: { ...PRIOR_2026_10.cost, leanCuPriceMicroLamports: PRIOR_2026_10.cost.premiumCuPriceMicroLamports, senderTipLamports: PRIOR_2026_10.cost.premiumTipLamports } };
-    const r = costRows(p, usdToLamports(5), premium, SLIP);
+    const r = costRows(p, usdToLamports(5, P_SOL), premium, SLIP);
     assert.ok(r.ok && !isUnpriced(r.value));
     const lean = (r.value as CostRows).lean;
-    const fixedBps = ((lean.legFixedLamports + lean.failedOverheadLamports) * 10_000n) / usdToLamports(5);
+    const fixedBps = ((lean.legFixedLamports + lean.failedOverheadLamports) * 10_000n) / usdToLamports(5, P_SOL);
     const fixed = Number(fixedBps);
     assert.ok(Math.abs(fixed - 754) <= 1, `${fixed}`);
   });
 
   it('PREREG §4 inputs: the strict row fixed part is 174,740 lamports', () => {
-    const s = rows(pricingOf(archPool(1_500n), flatFees(30)), usdToLamports(5)).strict;
+    const s = rows(pricingOf(archPool(1_500n), flatFees(30)), usdToLamports(5, P_SOL)).strict;
     assert.equal(s.legFixedLamports, 120_000n);
     assert.equal(s.failedOverheadLamports, 27_500n);
     assert.equal(s.janitorLamports, 15_000n);
@@ -63,7 +65,7 @@ describe('A-M10-03 acceptance', () => {
   });
 
   it('conservative = strict + 0.145 × rent deposits + one dust close; the 414,009 line is shown apart', () => {
-    const r = rows(pricingOf(archPool(1_500n), flatFees(30)), usdToLamports(10), { ...SLIP, rentDepositsLamports: 1_513_840n });
+    const r = rows(pricingOf(archPool(1_500n), flatFees(30)), usdToLamports(10, P_SOL), { ...SLIP, rentDepositsLamports: 1_513_840n });
     assert.equal(r.conservative.lostRentLamports, 219_507n);                     // ceil(0.145 × 1,513,840)
     assert.equal(r.conservative.dustLamports, 15_000n);
     assert.equal(fixedLamportsOf(r.conservative) - fixedLamportsOf(r.strict), 234_507n);
@@ -93,9 +95,9 @@ describe('A-M10-03 properties and edges', () => {
       (cu, extraCu, tip) => {
         const p = pricingOf(archPool(1_500n), flatFees(30));
         const set = (c: bigint, t: bigint): SimParamSet => ({ ...PRIOR_2026_10, cost: { ...PRIOR_2026_10.cost, leanCuPriceMicroLamports: c as MicroLamportsPerCu, senderTipLamports: t as never } });
-        const a = estimateRoundTripCostBps(p, usdToLamports(20), 'lean', set(cu, tip));
-        assert.ok(a <= estimateRoundTripCostBps(p, usdToLamports(20), 'lean', set(cu + extraCu, tip)));
-        assert.ok(a <= estimateRoundTripCostBps(p, usdToLamports(20), 'lean', set(cu, tip + extraCu)));
+        const a = estimateRoundTripCostBps(p, usdToLamports(20, P_SOL), 'lean', set(cu, tip));
+        assert.ok(a <= estimateRoundTripCostBps(p, usdToLamports(20, P_SOL), 'lean', set(cu + extraCu, tip)));
+        assert.ok(a <= estimateRoundTripCostBps(p, usdToLamports(20, P_SOL), 'lean', set(cu, tip + extraCu)));
       }), { numRuns: 100 });
   });
 
@@ -135,7 +137,7 @@ describe('A-M10-03 properties and edges', () => {
       const r = costRows(p, 1n * SOL, PRIOR_2026_10, o);
       assert.ok(!r.ok && r.error.code === 'E_INVALID_SLIPPAGE');
     }
-    const s = sizeSweep(p, PRIOR_2026_10, {});
+    const s = sizeSweep(p, PRIOR_2026_10, {}, P_SOL);
     assert.ok(!s.ok && s.error.code === 'E_INVALID_SLIPPAGE');
   });
 
@@ -146,7 +148,7 @@ describe('A-M10-03 properties and edges', () => {
     assert.ok(!z.ok && z.error.code === 'E_INVALID_ARG');
     const n = costRows(p, 1n * SOL, PRIOR_2026_10, { ...SLIP, rentDepositsLamports: -1n });
     assert.ok(!n.ok && n.error.code === 'E_INVALID_ARG');
-    assert.throws(() => usdToLamports(0));
+    assert.throws(() => usdToLamports(0, P_SOL));
     assert.throws(() => usdToLamports(5, 0));
   });
 
@@ -162,9 +164,9 @@ describe('A-M10-03 properties and edges', () => {
   });
 
   it('USD sizes at $150: $5 = 33,333,333; $10 = 66,666,667; $10,000 = 66,666,666,667', () => {
-    assert.equal(usdToLamports(5), 33_333_333n);
-    assert.equal(usdToLamports(10), 66_666_667n);
-    assert.equal(usdToLamports(10_000), 66_666_666_667n);
+    assert.equal(usdToLamports(5, P_SOL), 33_333_333n);
+    assert.equal(usdToLamports(10, P_SOL), 66_666_667n);
+    assert.equal(usdToLamports(10_000, P_SOL), 66_666_666_667n);
     assert.equal(usdToLamports(100, 200), 500_000_000n);
   });
 });
@@ -173,7 +175,7 @@ describe('size sweep ($5, $20, $100, $1,000, $10,000)', () => {
   it('splits venue fees, impact, fixed and the rest, on min(real, effective) depth, with the depth cap', () => {
     // A pool whose virtual quote is large: impact is charged on the real vault, not the effective reserve.
     const p = archPool(1_500n, { quoteReserveReal: 300n * SOL, quoteReserveVirtual: 1_200n * SOL });
-    const r = sizeSweep(pricingOf(atMinDepth(p), flatFees(30)), PRIOR_2026_10, SLIP);
+    const r = sizeSweep(pricingOf(atMinDepth(p), flatFees(30)), PRIOR_2026_10, SLIP, P_SOL);
     assert.ok(r.ok);
     assert.deepEqual(r.value.map((x) => x.usd), [5, 20, 100, 1_000, 10_000]);
     for (const x of r.value) {
@@ -189,13 +191,13 @@ describe('size sweep ($5, $20, $100, $1,000, $10,000)', () => {
     assert.ok((lean[0] as { fixedBps: number }).fixedBps > (lean[4] as { fixedBps: number }).fixedBps);
     assert.ok((lean[4] as { impactBps: number }).impactBps > (lean[0] as { impactBps: number }).impactBps);
     // Impact on the real vault (300 SOL) exceeds impact on the effective reserve (1,500 SOL) at $10,000.
-    const eff = sizeSweep(pricingOf(p, flatFees(30)), PRIOR_2026_10, SLIP);
+    const eff = sizeSweep(pricingOf(p, flatFees(30)), PRIOR_2026_10, SLIP, P_SOL);
     assert.ok(eff.ok);
     assert.ok((lean[4] as { impactBps: number }).impactBps > (eff.value[4]?.rows?.lean.impactBps as number));
   });
 
   it('an unpriceable size is listed with its reason, not dropped', () => {
-    const r = sizeSweep(fake('E_EXCEEDS_REAL_VAULT', 'sell'), PRIOR_2026_10, SLIP);
+    const r = sizeSweep(fake('E_EXCEEDS_REAL_VAULT', 'sell'), PRIOR_2026_10, SLIP, P_SOL);
     assert.ok(r.ok);
     assert.ok(r.value.every((x) => x.unpriced === 'E_EXCEEDS_REAL_VAULT' && x.rows === null));
   });

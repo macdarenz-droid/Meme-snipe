@@ -28,7 +28,7 @@ function series(f: FeatureEngine, poolId: string, n: number, ret: (i: number) =>
 const alt = (a: number) => (i: number): number => (i % 2 === 0 ? a : -a);
 const SIX_H_BARS = 1_440;
 
-describe('A-M08-02 acceptance', () => {
+describe('A-M08-02 acceptance (SYNTHETIC series)', () => {
   it('a −5σ 15 s return 10 minutes ago → dump; 31 minutes ago → clear', () => {
     for (const [minsAgo, want] of [[10, 'dump'], [31, 'clear']] as const) {
       const f = createFeatures();
@@ -132,7 +132,7 @@ describe('A-M08-02 hand-computed vectors', () => {
   });
 });
 
-describe('A-M08-02 properties', () => {
+describe('A-M08-02 properties (SYNTHETIC day)', () => {
   it('robustZ has the sign of the L-period return', () => {
     fc.assert(fc.property(fc.integer({ min: 1, max: 100 }), fc.array(fc.integer({ min: -500, max: 500 }), { minLength: 40, maxLength: 40 }), (lBars, steps) => {
       const f = createFeatures({ ...FEATURE_DEFAULTS, minCoverageBps: 1 });

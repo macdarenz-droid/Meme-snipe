@@ -33,8 +33,6 @@ export const T22_ATA_RENT_LAMPORTS = 1_513_840n as Lamports;
 export const ZEROED_SENSITIVITY_LAMPORTS = 414_009n as Lamports;
 /** ARCH `DEPTHPCT`: a size above 0.5% of min(real, effective) quote depth is refused at entry. */
 export const DEPTH_CAP_BPS = 50n;
-/** ARCH 1.5: sizes are converted at `P_SOL` = $150 unless a recorded SOL/USD is given. */
-export const P_SOL_USD = 150;
 /** The owner's size sweep (CLAUDE.md "Size is not the trial"). */
 export const SWEEP_USD: readonly number[] = [5, 20, 100, 1_000, 10_000];
 
@@ -225,8 +223,9 @@ export const sensitivityBps = (notional: bigint): Bps => {
   return toBps(ZEROED_SENSITIVITY_LAMPORTS, notional) as Bps;
 };
 
-/** USD to lamports at a SOL/USD price, rounded to nearest (ARCH 2.2: $5 = 33,333,333; $10 = 66,666,667 at $150). */
-export function usdToLamports(usd: number, solUsd: number = P_SOL_USD): bigint {
+/** USD to lamports at a SOL/USD price, rounded to nearest (ARCH 2.2 at $150: $5 = 33,333,333; $10 = 66,666,667). */
+/** `solUsd` is required (ruling Z09-5): ARCH Table 2-A's $150 is a test value, never a hidden default. */
+export function usdToLamports(usd: number, solUsd: number): bigint {
   if (!(Number.isFinite(usd) && usd > 0 && Number.isFinite(solUsd) && solUsd > 0)) throw { code: 'E_INVALID_ARG' };
   // Cents and micro-dollars keep it exact for every sweep size and any recorded price with 6 decimals.
   const u = BigInt(Math.round(usd * 100));
@@ -251,7 +250,11 @@ export interface SweepRow {
  * builds it: the same spot price with the quote reserve at the smaller of the two). `gStarBps` is the gross move a trade
  * needs before costs to break even.
  */
-export function sizeSweep(minDepth: PoolPricing, set: SimParamSet, o: CostOptions, solUsd: number = P_SOL_USD, sizesUsd: readonly number[] = SWEEP_USD, log?: CostLog):
+/**
+ * `solUsd` is a required input with its source (ruling Z09-5); sizes are computed in lamports and the dollar amount is
+ * only the row label (ruling Z09-6: profit in SOL).
+ */
+export function sizeSweep(minDepth: PoolPricing, set: SimParamSet, o: CostOptions, solUsd: number, sizesUsd: readonly number[] = SWEEP_USD, log?: CostLog):
   Result<SweepRow[], CostError> {
   const depth = minDepth.realQuoteLamports < minDepth.effectiveQuoteLamports ? minDepth.realQuoteLamports : minDepth.effectiveQuoteLamports;
   const out: SweepRow[] = [];

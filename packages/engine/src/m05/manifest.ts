@@ -12,7 +12,7 @@
 //
 // NEW fields beside SPEC-A's `UniverseManifestFile` (card Z09; supervisor review): `late`; `a24.upperBound`;
 // `crossCheck.otherDexPairs` and `crossCheck.knownPoolsUnderOtherDex` with `status` `dex_id_mismatch` (rulings Z08-9,
-// Z08-30, SPEC-A C-95); `migrationCoverage` (A-M03-02's PumpPortal gap, its definition of done).
+// Z08-30, SPEC-A C-95); `migrationCoverage` (A-M03-02's PumpPortal gap, its definition of done); `limitSet` (Z09-2).
 import { createHash } from 'node:crypto';
 import { canonicalJson, type CandidateState, type Pubkey, type UnixMs } from '@bot/types';
 
@@ -33,6 +33,8 @@ export interface UniverseManifestFile {
   a24: { eligibleCount: number; canonicalityUnknownCount: number; maxSimultaneous: number; upperBound: boolean };
   crossCheck: ManifestCrossCheck;
   migrationCoverage: { chainMigrations: number; seenByPumpPortal: number; gapBps: number };
+  /** The prefilter's named limit set and its parameter hash (ruling Z09-2). */
+  limitSet: { id: string; paramHash: string };
   sha256: string;
 }
 
@@ -54,6 +56,7 @@ export interface ManifestInput {
   watchlistEvictions?: ReadonlyArray<{ poolId: Pubkey; atMs: number; reason: string; tailUntilMs: number | null }>;
   crossCheck: ManifestCrossCheck;
   migrationCoverage: { chainMigrations: number; seenByPumpPortal: number; gapBps: number };
+  limitSet: { id: string; paramHash: string };
   enumerationCoverage?: UniverseManifestFile['enumerationCoverage'];
   generatedAtMs: number;
   late: boolean;
@@ -121,7 +124,7 @@ export function buildUniverseManifest(i: ManifestInput): UniverseManifestFile {
     enumerationCoverage: i.enumerationCoverage ?? 'migrations_since_start',
     eligible, evicted,
     a24: { eligibleCount: eligible.length, canonicalityUnknownCount: 0, maxSimultaneous: peak, upperBound: i.prefilterOnly },
-    crossCheck: { ...i.crossCheck }, migrationCoverage: { ...i.migrationCoverage },
+    crossCheck: { ...i.crossCheck }, migrationCoverage: { ...i.migrationCoverage }, limitSet: { ...i.limitSet },
   };
   return { ...body, sha256: manifestSha256(body) };
 }

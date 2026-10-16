@@ -12,6 +12,8 @@ const ms = { type: 'duration_ms', unit: 'ms', displayUnit: 'ms', step: '1' } as 
 export const M05_CONFIG = [
   { ...base, key: 'universe.screening_required', type: 'bool', default: UNIVERSE_DEFAULTS.screeningRequired, label: 'Screening',
     description: 'Off only while no strategy is enabled (Phase 0 recording).' },
+  { ...base, key: 'universe.phase0_limit_set', type: 'enum', enumValues: ['pm01', 'mr01'], default: UNIVERSE_DEFAULTS.limitSetId, affectsReturns: true,
+    label: 'Universe limits', description: 'The strategy limit set the prefilter uses (PM-01 by default; MR-01 is parked).' },
   { ...base, ...ms, key: 'universe.cooldown_ms', min: '0', max: '86400000', default: UNIVERSE_DEFAULTS.cooldownMs, affectsReturns: true,
     label: 'Cooldown', description: 'Wait per mint after a position ends.' },
   { ...base, ...ms, key: 'universe.prefilter_retry_ms', min: '600000', max: '86400000', default: UNIVERSE_DEFAULTS.prefilterRetryMs, affectsReturns: true,

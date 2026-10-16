@@ -1,6 +1,9 @@
 // `phase0-report` (A-M13-01 "Interfaces"; card Z09): reads a pulled dataset, writes `docs/phase0/report-<D1>.md` and
 // the CSVs beside it. Flags: --data <dir> --days <YYYY-MM-DD,...> --out <dir> [--sol-usd <price>] (overrides the
 // recorded D1 price, said in the caveats). The kill check reads nothing from flags (it is not run: MR-01 parked).
+// OPEN (supervisor): the operator script that binds `recordedPricing` to @bot/venue's `quoteExactIn` needs @bot/venue
+// as a runtime dependency of the package that holds it (the policy check refuses a dev-only import); until that is
+// ruled, the runner is exercised by its test with the real venue maths.
 import { join } from 'node:path';
 import type { SimParamSet } from '../m10/params.ts';
 import { phase0Report, renderPhase0Csv, renderPhase0Markdown } from './phase0.ts';
@@ -21,7 +24,7 @@ export function parsePhase0Args(argv: readonly string[]): Phase0Args | string {
 
 export function runPhase0Report(a: Phase0Args, deps: { pricing: RecordedPricing; simParams: SimParamSet; write(path: string, text: string): void }): { reportPath: string } {
   const input = readPhase0Dataset({ dataDir: a.data, days: a.days, pricing: deps.pricing });
-  const report = phase0Report({ ...input, solUsdD1: a.solUsd ?? input.solUsdD1, simParams: deps.simParams });
+  const report = phase0Report({ ...input, solUsdD1: a.solUsd ?? input.solUsdD1, solUsdSource: a.solUsd === null ? input.solUsdSource : 'command line --sol-usd', simParams: deps.simParams });
   if (a.solUsd !== null) report.caveats.push(`SOL/USD given on the command line (${a.solUsd}), not the recorded D1 price.`);
   const reportPath = join(a.out, `report-${report.window.d1}.md`);
   const csv = renderPhase0Csv(report);

@@ -25,7 +25,7 @@ function pools(nPools: number): PoolState[] {
   return out;
 }
 const input = (o: Partial<Phase0Input> = {}): Phase0Input => ({
-  r0Ms: R0, days: days(() => true), poolStates: pools(12), solUsdD1: 150, simParams: PRIOR_2026_10,
+  r0Ms: R0, days: days(() => true), poolStates: pools(12), solUsdD1: 150, solUsdSource: 'test value (ARCH Table 2-A)', simParams: PRIOR_2026_10,
   streams: [
     { dayUtc: day(0), stream: 'pool_snapshot', codec: 'gzip', compressedBytes: 1_000_000_000, decodedBytes: 8_000_000_000 },
     { dayUtc: day(1), stream: 'pool_snapshot', codec: 'gzip', compressedBytes: 1_200_000_000, decodedBytes: 9_600_000_000 },
@@ -35,7 +35,7 @@ const input = (o: Partial<Phase0Input> = {}): Phase0Input => ({
   ...o,
 });
 
-describe('A-M13-01 built parts', () => {
+describe('A-M13-01 built parts (SYNTHETIC inputs)', () => {
   it('the report is reproducible byte-for-byte from the same inputs (markdown and CSVs)', () => {
     const a = phase0Report(input()), b = phase0Report(input());
     assert.equal(renderPhase0Markdown(a), renderPhase0Markdown(b));
@@ -43,6 +43,11 @@ describe('A-M13-01 built parts', () => {
     assert.deepEqual(a.parked, { a24: 'parked', a24b: 'parked', moveRule: 'parked', killCheck: 'not_run_mr01_parked', pm01: 'no_phase0_check' });
     assert.equal(a.hurdle.decides, false);
     assert.ok(renderPhase0Markdown(a).includes('Kill-only check: not run (MR-01 parked, C-76)'));
+    // Z09-5 and Z09-6: the price and its source are printed; sizes read in SOL first.
+    assert.ok(renderPhase0Markdown(a).includes('SOL/USD of D1: 150 (test value (ARCH Table 2-A))'));
+    assert.ok(renderPhase0Markdown(a).includes('| 0.033333333 SOL ($5) |'));
+    assert.ok(renderPhase0Markdown(a).includes('| 66.666666667 SOL ($10,000) (subset) |'));
+    assert.ok(renderPhase0Markdown(phase0Report(input({ solUsdD1: 100 }))).includes('| 1 SOL ($100) |'));
   });
 
   it('window: good D1-D5, low D6-D7, good D8-D9 → D1-D9; fewer than 7 good by D14 → insufficient_days', () => {

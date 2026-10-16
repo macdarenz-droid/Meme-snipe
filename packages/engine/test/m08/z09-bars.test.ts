@@ -58,7 +58,7 @@ function runReplay(changed: readonly BarSnapshot[], counts: ReturnType<typeof ho
   return out;
 }
 
-describe('A-M08-01 acceptance', () => {
+describe('A-M08-01 acceptance (SYNTHETIC hour)', () => {
   it('an hour built live equals the same hour rebuilt in replay from changed snapshots plus poll_counts (OHLC, depth, flow; snapshots ±1)', () => {
     for (const seed of [1, 2, 3]) {
       const h = hour(seed);

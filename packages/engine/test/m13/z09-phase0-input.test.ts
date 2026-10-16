@@ -46,7 +46,7 @@ function dataset(): { dir: string; days: string[] } {
     const t0 = dayMs(day);
     const manifest = buildUniverseManifest({
       dayUtc: day, generatedAtMs: t0 + 86_400_000, late: false, prefilterOnly: true,
-      crossCheck: { poolsOnlyInVendor: 0, otherDexPairs: 0, knownPoolsUnderOtherDex: 0, status: 'ok' }, migrationCoverage: { chainMigrations: 1, seenByPumpPortal: 0, gapBps: 10_000 },
+      crossCheck: { poolsOnlyInVendor: 0, otherDexPairs: 0, knownPoolsUnderOtherDex: 0, status: 'ok' }, migrationCoverage: { chainMigrations: 1, seenByPumpPortal: 0, gapBps: 10_000 }, limitSet: { id: 'pm01', paramHash: 'h' },
       events: [{ poolId: 'pool-1', mint: 'mint-1', from: 'discovered', to: 'eligible', reason: 'r', atMs: t0 - 1 }],
     });
     const index = [
@@ -67,7 +67,7 @@ function dataset(): { dir: string; days: string[] } {
   return { dir, days };
 }
 
-describe('A-M13-01 phase0-report input', () => {
+describe('A-M13-01 phase0-report input (SYNTHETIC dataset)', () => {
   it('reads manifests (sha checked), coverage, stream bytes, D1 SOL/USD and weighted eligible pool states from a pulled dataset', () => {
     const { dir, days } = dataset();
     const i = readPhase0Dataset({ dataDir: dir, days, pricing });

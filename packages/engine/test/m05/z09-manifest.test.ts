@@ -7,7 +7,7 @@ import { describe, it } from 'vitest';
 import { canonicalJson, type Pubkey, type UnixMs } from '@bot/types';
 import { MINTS } from '@bot/venue/constants';
 import { buildUniverseManifest, dailyCrossCheck, dayBounds, eventsFromRows, manifestSha256, writeManifestOnce, type ManifestEvent, type UniverseManifestFile } from '../../src/m05/manifest.ts';
-import { createUniverse, UNIVERSE_DEFAULTS, type CandidateStore, type Transition } from '../../src/m05/universe.ts';
+import { createUniverse, LIMIT_SETS, limitSetHash, UNIVERSE_DEFAULTS, type CandidateStore, type Transition } from '../../src/m05/universe.ts';
 import { createWatchlist, WATCHLIST_DEFAULTS } from '../../src/m05/watchlist.ts';
 import { computeCoverage } from '../../src/m07/coverage.ts';
 
@@ -19,6 +19,7 @@ const GOLDEN = new URL('./fixtures/manifest-2026-10-16.json', import.meta.url);
 const pool = (i: number): Pubkey => `pool-${String(i).padStart(2, '0')}`;
 const CC = { poolsOnlyInVendor: 1, otherDexPairs: 2, knownPoolsUnderOtherDex: 0, status: 'ok' as const };
 const MC = { chainMigrations: 14, seenByPumpPortal: 0, gapBps: 10_000 };
+const LS = { id: 'pm01', paramHash: limitSetHash(LIMIT_SETS.pm01) };
 
 /** 12 pools discovered at different hours (Phase 0); max_watched 8, so the deepest are watched; 3 evictions. */
 function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; atMs: number; reason: string; tailUntilMs: number | null }> } {
@@ -58,10 +59,10 @@ function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; at
 }
 const asEvents = (ts: readonly Transition[]): ManifestEvent[] => ts.map((t) => ({ poolId: t.poolId, mint: t.mint, from: t.from, to: t.to, reason: t.reason, atMs: t.atMs }));
 
-describe('A-M05-03 acceptance', () => {
+describe('A-M05-03 acceptance (SYNTHETIC scripted day)', () => {
   it('a scripted day: 12 pools eligible at different times and 3 evictions are listed with reasons; the SHA-256 equals the CoverageReport value', () => {
     const d = scriptedDay();
-    const m = buildUniverseManifest({ dayUtc: DAY, events: asEvents(d.events), watchlistEvictions: d.tail, crossCheck: CC, migrationCoverage: MC, generatedAtMs: T0 + 86_400_000, late: false, prefilterOnly: true });
+    const m = buildUniverseManifest({ dayUtc: DAY, events: asEvents(d.events), watchlistEvictions: d.tail, crossCheck: CC, migrationCoverage: MC, limitSet: LS, generatedAtMs: T0 + 86_400_000, late: false, prefilterOnly: true });
     assert.equal(m.eligible.length, 12);
     assert.deepEqual(m.eligible.map((e) => e.firstEligibleAtMs - T0), Array.from({ length: 12 }, (_, i) => 30 * 60_000 + i * H));
     assert.ok(m.eligible.every((e) => e.reason.startsWith('set=pm-01;fee=30bps;depth=') && e.reason.endsWith('phase0_unscreened')));
@@ -70,6 +71,7 @@ describe('A-M05-03 acceptance', () => {
     assert.ok(m.evicted.every((e) => e.tailUntilMs === e.atMs + 3_600_000));
     assert.deepEqual(m.a24, { eligibleCount: 12, canonicalityUnknownCount: 0, maxSimultaneous: 12, upperBound: true });
     assert.deepEqual(m.evicted.map((e) => e.poolId), [pool(0), pool(1), pool(3)]);
+    assert.deepEqual(m.limitSet, { id: 'pm01', paramHash: limitSetHash(LIMIT_SETS.pm01) });
     const { sha256, ...body } = m;
     assert.equal(sha256, manifestSha256(body));
     const cov = computeCoverage({ dayUtc: DAY, watched: [], pollCounts: [], gaps: [], records: {}, universeManifestSha256: m.sha256 });
@@ -84,8 +86,8 @@ describe('A-M05-03 rules', () => {
   it('a late manifest is rebuilt from M24 rows with late: true and the same eligible set; written once (immutable)', () => {
     const d = scriptedDay();
     const rows = d.events.map((t) => ({ poolId: t.poolId, mint: t.mint, fromState: t.from, toState: t.to, reason: t.reason, at: t.atMs })).reverse();
-    const late = buildUniverseManifest({ dayUtc: DAY, events: eventsFromRows(rows), crossCheck: CC, migrationCoverage: MC, generatedAtMs: T0 + 90_000_000, late: true, prefilterOnly: true });
-    const live = buildUniverseManifest({ dayUtc: DAY, events: asEvents(d.events), crossCheck: CC, migrationCoverage: MC, generatedAtMs: T0 + 90_000_000, late: true, prefilterOnly: true });
+    const late = buildUniverseManifest({ dayUtc: DAY, events: eventsFromRows(rows), crossCheck: CC, migrationCoverage: MC, limitSet: LS, generatedAtMs: T0 + 90_000_000, late: true, prefilterOnly: true });
+    const live = buildUniverseManifest({ dayUtc: DAY, events: asEvents(d.events), crossCheck: CC, migrationCoverage: MC, limitSet: LS, generatedAtMs: T0 + 90_000_000, late: true, prefilterOnly: true });
     assert.deepEqual(late, live);
     assert.equal(late.late, true);
     assert.ok(late.evicted.every((e) => e.tailUntilMs === null));                    // tail ends are not in M24
@@ -106,10 +108,10 @@ describe('A-M05-03 rules', () => {
       { poolId: 'a', mint: 'ma', from: 'watched', to: 'blacklisted', reason: 'authority_changed', atMs: T0 + H },
       { poolId: 'c', mint: 'mc', from: 'discovered', to: 'eligible', reason: 'w', atMs: T0 + 86_400_000 + 1 },
     ];
-    const m = buildUniverseManifest({ dayUtc: DAY, events: ev, crossCheck: CC, migrationCoverage: MC, generatedAtMs: 0, late: false, prefilterOnly: false });
+    const m = buildUniverseManifest({ dayUtc: DAY, events: ev, crossCheck: CC, migrationCoverage: MC, limitSet: LS, generatedAtMs: 0, late: false, prefilterOnly: false });
     assert.deepEqual(m.eligible.map((e) => [e.poolId, e.firstEligibleAtMs - T0, e.lastEligibleAtMs - T0, e.reason]), [['a', 0, H, 'x']]);
     assert.equal(m.a24.upperBound, false);
-    assert.throws(() => buildUniverseManifest({ dayUtc: DAY, events: [...ev].reverse(), crossCheck: CC, migrationCoverage: MC, generatedAtMs: 0, late: false, prefilterOnly: false }));
+    assert.throws(() => buildUniverseManifest({ dayUtc: DAY, events: [...ev].reverse(), crossCheck: CC, migrationCoverage: MC, limitSet: LS, generatedAtMs: 0, late: false, prefilterOnly: false }));
     assert.throws(() => dayBounds('2026-02-30'));
     assert.throws(() => dayBounds('16/10/2026'));
   });
@@ -141,7 +143,7 @@ describe('A-M05-03 branch cases', () => {
       e('d', 'evicted', 'evicted', 'stale', T0 + 40),
     ];
     const m = buildUniverseManifest({
-      dayUtc: DAY, events: ev, crossCheck: CC, migrationCoverage: MC, generatedAtMs: 0, late: false, prefilterOnly: true,
+      dayUtc: DAY, events: ev, crossCheck: CC, migrationCoverage: MC, limitSet: LS, generatedAtMs: 0, late: false, prefilterOnly: true,
       watchlistEvictions: [{ poolId: 'z', atMs: T0 + 40, reason: 'tail_capacity', tailUntilMs: null }, { poolId: 'y', atMs: T0 - 1, reason: 'tail_capacity', tailUntilMs: null },
         { poolId: 'x', atMs: T0 + 86_400_000, reason: 'tail_capacity', tailUntilMs: null }],
     });

@@ -7,7 +7,7 @@ import fc from 'fast-check';
 import type { Lamports, UnixMs } from '@bot/types';
 import { MINTS } from '@bot/venue/constants';
 import {
-  ALLOWED, checkUniverseConfig, createUniverse, isAllowed, MR_LIMITS, PM_LIMITS, STATES, UNIVERSE_DEFAULTS,
+  ALLOWED, checkUniverseConfig, createUniverse, isAllowed, LIMIT_SETS, limitSetHash, MR_LIMITS, PM_LIMITS, STATES, UNIVERSE_DEFAULTS,
   type CandidateRecord, type CandidateStore, type PrefilterFacts, type Transition, type UniverseConfig, type UniverseDeps,
 } from '../../src/m05/universe.ts';
 import { CANDIDATE_TOPIC, m24CandidateStore } from '../../src/m05/store.ts';
@@ -53,7 +53,7 @@ function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => Pre
 }
 const disc = (i: number, migratedAtMs: number | null = T0 - 2 * 86_400_000) => ({ poolId: pubkey(100 + i), baseMint: pubkey(200 + i), quoteMint: MINTS.wsol, venue: 'pumpswap', verifiedOnChain: true, migratedAtMs: migratedAtMs as UnixMs | null });
 
-describe('A-M05-01 acceptance', () => {
+describe('A-M05-01 acceptance (SYNTHETIC events)', () => {
   it('property: no undefined transition; open_failed or written_off always moves the candidate to cooldown; a written-off mint is blacklisted', () => {
     const ev = fc.oneof(
       fc.record({ k: fc.constant('disc'), i: fc.integer({ min: 0, max: 4 }) }),
@@ -99,7 +99,7 @@ describe('A-M05-01 acceptance', () => {
   });
 
   it('a pool with no known migration has no age proof and fails the MR age prefilter (D30 parked); with the migration it passes at 24 h', () => {
-    const t = setup({ config: { limits: [MR_LIMITS], screeningRequired: false } });
+    const t = setup({ config: { limitSetId: 'mr01', limits: [MR_LIMITS], screeningRequired: false } });
     t.u.onDiscovery(disc(0, null));
     assert.equal(t.u.candidate(pubkey(100))?.state, 'prefiltered_out');
     assert.ok(t.u.candidate(pubkey(100))?.reasons.includes('mr-01:age=unknown'));
@@ -114,6 +114,16 @@ describe('A-M05-01 acceptance', () => {
     assert.match(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, screeningRequired: false, enabledStrategies: 1 }) as string, /C-44/);
     assert.throws(() => setup({ config: { screeningRequired: false, enabledStrategies: 1 } }));
     assert.equal(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, screeningRequired: false }), null);
+  });
+
+  it('Z09-2: the limit set is named explicitly (default pm01) and must match the limits in use', () => {
+    assert.equal(UNIVERSE_DEFAULTS.limitSetId, 'pm01');
+    assert.deepEqual(UNIVERSE_DEFAULTS.limits, [PM_LIMITS]);
+    assert.match(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, limits: [MR_LIMITS] }) as string, /Z09-2/);
+    assert.match(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, limitSetId: 'nope' }) as string, /Z09-2/);
+    assert.equal(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, limitSetId: 'mr01', limits: LIMIT_SETS.mr01 }), null);
+    assert.match(limitSetHash(LIMIT_SETS.pm01), /^[0-9a-f]{64}$/);
+    assert.notEqual(limitSetHash(LIMIT_SETS.pm01), limitSetHash(LIMIT_SETS.mr01));
   });
 });
 

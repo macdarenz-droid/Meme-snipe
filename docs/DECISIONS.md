@@ -4031,7 +4031,7 @@ Builder readings are marked as such. None changes a risk limit, a gate or a stra
 - **Z09-U5 · Manifest eligibility.** A pool counts as eligible from `eligible` on, and while evicted for budget, staleness or degraded reads: it still passed the prefilter and is "eligible again later". It does not count while evicted after a failed re-screen.
   - NEW manifest fields: `late`, `a24.upperBound` (Phase 0 is prefilter-only), `crossCheck.otherDexPairs`, `crossCheck.knownPoolsUnderOtherDex` and `migrationCoverage` (A-M03-02's definition of done). Each is listed in `m05/manifest.ts`.
   - A late manifest rebuilt from `candidate_event` has no tail ends (they are not in M24).
-- **Z09-U6 · Phase 0 prefilter limits.** MR-01 is parked (C-76), so the default limit set is PM-01's: 125 bps, 85 SOL, 20 min after migration. MR's set stays available. A candidate passes if it meets any configured set, and the manifest reason names the set. While D30 is parked, age is proven only by the migration's block time (C-15 (a)).
+- **Z09-U6 · Phase 0 prefilter limits** (replaced by ruling Z09-2 below). The set is named by `universe.phase0_limit_set` (default `pm01`: 125 bps, 85 SOL, 20 min after migration); `checkUniverseConfig` refuses limits that are not the named set's. A candidate passes if it meets the set, and the manifest reason names the set. While D30 is parked, age is proven only by the migration's block time (C-15 (a)).
 - **Z09-M1 · Backfill cursor and first start** (A-M03-02).
   - First start, with no cursor: only the newest page is read (`migrations_since_start`, Z08-1).
   - When the page cap stops a catch-up, the run saves `pendingTop` and `before`. The next run continues down to `until`, so nothing is skipped.
@@ -4044,3 +4044,19 @@ Builder readings are marked as such. None changes a risk limit, a gate or a stra
 - **Z09 defects fixed in Z08 code** (each test fails before and passes after):
   - `M03_LOG_CODES` did not declare `other_dex_pairs` or `known_pools_under_other_dex`, so M27 wrote them as `[redacted]`. They are now declared, and `CrossCheckResult.knownPoolsUnderOtherDex` carries the count to the manifest.
   - `m03.pp_disconnected` declared the reserved field `code`, so `mergeLogCodes(M03_LOG_CODES)` threw. The field is now `close_code`.
+
+### Z09 supervisor rulings on the builder's plan (Z09-1 to Z09-9, 2026-10-16)
+
+- **Z09-1** (Q1). A-M13-01 step 4 is a per-size hurdle table, for information only: no verdict and no A-24b rule. The report names each step not built and why: A-24 and A-24b are parked; step 9 is not run because MR-01 is parked (C-76).
+- **Z09-2** (Q2). The Phase 0 universe limits are `strategy.<id>.universe.*` (SPEC-A line 991: MR 30 bps / 300 SOL / 24 h; PM 125 bps / 85 SOL / 20 min).
+  - The recording set is an explicit config value, `universe.phase0_limit_set`, default `pm01`. It is never implicit.
+  - The manifest names the set and its parameter hash (`limitSet`).
+  - MR-01's set stays in config, unused while MR-01 is parked.
+- **Z09-3** (Q3). The strict row takes PM-01's PREREG bounds, entry 150 bps and exit 300 bps (research/pm01/PREREG.md:69). A missing bound gives `E_INVALID_SLIPPAGE`, and no strict row is shown.
+- **Z09-4** (Q4). No phase0 PREREG is needed, since step 9 is not built.
+- **Z09-5**. P_SOL is a required input of `sizeSweep` and `usdToLamports`, and the report prints its value and source. SPEC Table 2-A's $150 is a test value only, never a hidden default. The live SOL/USD source belongs to Z10 (C-90).
+- **Z09-6**. Amounts are computed and shown in lamports or SOL (owner: profit in SOL). The dollar size is the row label and a secondary display only.
+- **Z09-7**. Synthetic fixtures are marked SYNTHETIC in the file and in the test name. **Obligation to Z10's soak:** re-run the A-M03-02 and A-M08-01 acceptance on recorded data (the 150-signature list and the one-hour snapshot segment), replacing the synthetic fixtures.
+- **Z09-8**. The C-85 / C-88 reading is accepted: Z09 adds no `minOut`, decision or exit caller. The `E_ZERO_OUTPUT` and `E_INVALID_SLIPPAGE` tests on `costRows` stay.
+- **Z09-9**. Additions to `tools/purelist/pure-files.txt` are approved. The supervisor adds the deps-reviewed label after reading the diff.
+- Standing: no live reads. Backfill reads go only through M14's limiter at P4.

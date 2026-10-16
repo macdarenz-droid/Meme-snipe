@@ -11,7 +11,8 @@
 // - `stale` → `evicted`: A-M05-02 evicts stale pools first, so a stale pool can be evicted;
 // - a timed blacklist that expires re-runs the prefilter (to `prefiltered_out`, `screening` or `eligible`);
 // - a screening backlog drop (logic 13) goes to `rejected` (reason `backlog`), retried after 6 h like a soft reject.
-import type { CandidateState, Lamports, Pubkey, Result, UnixMs } from '@bot/types';
+import { createHash } from 'node:crypto';
+import { canonicalJson, type CandidateState, type Lamports, type Pubkey, type Result, type UnixMs } from '@bot/types';
 
 export const STATES: readonly CandidateState[] = ['discovered', 'prefiltered_out', 'screening', 'rejected', 'eligible', 'watched', 'signalled',
   'in_position', 'cooldown', 'blacklisted', 'stale', 'evicted'];
@@ -59,10 +60,22 @@ export interface UniverseLimits { strategyId: string; feeCeilingBps: number; min
 /** MR 30 bps / 300 SOL / 24 h; PM 125 bps / 85 SOL / 20 min after migration (A-M05-01 config). */
 export const MR_LIMITS: UniverseLimits = { strategyId: 'mr-01', feeCeilingBps: 30, minDepthLamports: 300_000_000_000n, minAgeMs: 86_400_000 };
 export const PM_LIMITS: UniverseLimits = { strategyId: 'pm-01', feeCeilingBps: 125, minDepthLamports: 85_000_000_000n, minAgeMs: 1_200_000 };
+/**
+ * The named limit sets the Phase 0 recording may use (ruling Z09-2): `universe.phase0_limit_set`, default `pm01`, never
+ * implicit. MR-01's set stays here, unused while MR-01 is parked (C-76).
+ */
+export const LIMIT_SETS: Readonly<Record<'pm01' | 'mr01', readonly UniverseLimits[]>> = { pm01: [PM_LIMITS], mr01: [MR_LIMITS] };
+export type LimitSetId = keyof typeof LIMIT_SETS;
+/** SHA-256 of the set's canonical JSON (bigints as decimal strings): the manifest names the set and this hash. */
+export function limitSetHash(limits: readonly UniverseLimits[]): string {
+  return createHash('sha256').update(canonicalJson(limits.map((l) => ({ ...l, minDepthLamports: l.minDepthLamports.toString() }))), 'utf8').digest('hex');
+}
 
 export interface UniverseConfig {
   screeningRequired: boolean;
   cooldownMs: number; prefilterRetryMs: number; staleToStateMs: number; screenBacklogMax: number;
+  /** The named set (`universe.phase0_limit_set`) and its limits; `limits` must be that set's (checked). */
+  limitSetId: string;
   limits: readonly UniverseLimits[];
   /** Strategies enabled in any mode (C-44: `screening_required = false` needs none). */
   enabledStrategies: number;
@@ -71,7 +84,7 @@ export interface UniverseConfig {
 }
 export const UNIVERSE_DEFAULTS: UniverseConfig = {
   screeningRequired: true, cooldownMs: 1_800_000, prefilterRetryMs: 21_600_000, staleToStateMs: 30_000, screenBacklogMax: 100,
-  limits: [PM_LIMITS], enabledStrategies: 0, venues: ['pumpswap'],
+  limitSetId: 'pm01', limits: LIMIT_SETS.pm01, enabledStrategies: 0, venues: ['pumpswap'],
 };
 export const SOFT_RETRY_MS = 21_600_000;
 export const HONEYPOT_BLACKLIST_MS = 86_400_000;
@@ -84,6 +97,8 @@ export function checkUniverseConfig(c: UniverseConfig): string | null {
   if (!range(c.staleToStateMs, 5_000, 600_000)) return 'universe.stale_to_state_ms must be 5,000-600,000';
   if (!range(c.screenBacklogMax, 10, 1_000)) return 'universe.screen_backlog_max must be 10-1,000';
   if (c.limits.length === 0) return 'at least one strategy universe limit set is needed';
+  const named = (LIMIT_SETS as Readonly<Record<string, readonly UniverseLimits[]>>)[c.limitSetId];
+  if (named === undefined || limitSetHash(named) !== limitSetHash(c.limits)) return `universe.phase0_limit_set "${c.limitSetId}" must name the limits in use (Z09-2)`;
   for (const l of c.limits) if (!range(l.feeCeilingBps, 0, 10_000) || l.minDepthLamports < 0n || !range(l.minAgeMs, 0, 30 * 86_400_000)) return `bad universe limits for ${l.strategyId}`;
   return null;
 }

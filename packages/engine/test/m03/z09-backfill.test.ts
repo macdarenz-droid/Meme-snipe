@@ -113,7 +113,7 @@ function sample150(): SigRow[] {
 }
 const VERIFIABLE = new Set(POOL_SETS.map((s) => (s.accounts.find((a) => a.role === 'pool') as FxAccount).pubkey));
 
-describe('A-M03-02 acceptance', () => {
+describe('A-M03-02 acceptance (SYNTHETIC signature list, real migrations and pools)', () => {
   it('71 failed of 150: only the successful transactions are fetched; each migration is published once, verified on chain', async () => {
     const r = await rig();
     const res = await r.b.backfillSince(null);
