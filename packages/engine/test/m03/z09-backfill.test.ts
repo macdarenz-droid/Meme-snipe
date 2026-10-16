@@ -108,6 +108,13 @@ async function rig(o: { sigs?: SigRow[]; poolsVisible?: boolean; config?: Partia
   });
   return { b, gw, reader, time, recorded, migrations, pools, logs, store };
 }
+/** The cursor never reached `signature`: none yet, or `until` strictly older than it (Z09-35 moves it up to just below). */
+function heldBelow(r: Rig, signature: string): void {
+  if (r.store.cursorValue === null) return;
+  const until = (JSON.parse(r.store.cursorValue) as { until: string | null }).until;
+  const idx = (x: string | null): number => r.gw.sigs.findIndex((g) => g.signature === x);
+  assert.ok(until === null || idx(until) > idx(signature), `cursor at ${until} is not below the stalled ${signature}`);
+}
 /** 150 signatures, newest first: 71 failed, the 3 migrations, 76 successful swaps. */
 function sample150(): SigRow[] {
   const rows: SigRow[] = [];
@@ -197,7 +204,7 @@ describe('A-M03-02 failures, cursor and the reconnect port', () => {
     r.gw.failTx = { signature: (MIG[0] as FxTx).signature, error: { code: 'E_RPC', message: 'v', rpcCode: -32_015 } };
     assert.ok(!(await r.b.backfillSince(null)).ok);
     assert.ok(r.logs.some(([l, c]) => l === 'critical' && c === 'm03.tx_version_unsupported'));
-    assert.equal(r.store.cursorValue, null);
+    heldBelow(r, (MIG[0] as FxTx).signature);
     r.gw.failTx = { signature: (MIG[0] as FxTx).signature, error: { code: 'E_TIMEOUT', message: 't' } };
     assert.ok(!(await r.b.backfillSince(null)).ok);
     r.gw.failTx = null;
@@ -383,7 +390,7 @@ describe('Z09 round 2 (red team RT-1, RT-2; rulings Z09-12, Z09-13, Z09-20, Z09-
     r.gw.failTx = { signature: (MIG[0] as FxTx).signature, error: { code: 'E_RPC', message: 'v', rpcCode: -32_015 } };
     await r.b.backfillSince(null);
     assert.ok(r.logs.some(([, c, f]) => c === 'm03.backfill_stalled' && f.reason === 'version_unsupported'));
-    assert.equal(r.store.cursorValue, null);
+    heldBelow(r, (MIG[0] as FxTx).signature);
   });
 });
 
@@ -402,7 +409,7 @@ describe('Z09-21 (amended): a transaction that stays null', () => {
     assert.equal(r.logs.filter(([l, c]) => l === 'critical' && c === 'm03.backfill_tx_missing').length, 1);
     await r.b.backfillSince(null);
     assert.equal(r.b.health().critical, true);
-    assert.equal(r.store.cursorValue, null);                                          // never moved past it
+    heldBelow(r, m.signature);                                                        // never moved past it
     assert.ok(!r.migrations.some((x) => x.signature === m.signature));               // older ones may publish; it never is
     r.gw.txs.set(m.signature, m.json);
     await r.b.backfillSince(null);
@@ -423,5 +430,42 @@ describe('Z09-21 (amended): a transaction that stays null', () => {
     await b.b.backfillSince(null);
     assert.equal(b.b.health().attempts, 2);
     db.close();
+  });
+});
+
+describe('Z09 round 3 minors (rulings Z09-35, Z09-36, Z09-37)', () => {
+  const txCalls = (r: Rig, from: number): string[] => r.gw.calls.slice(from).filter((c) => c.method === 'getTransaction').map((c) => c.params[0] as string);
+
+  it('Z09-35: a stall after paging to `until` keeps what was processed below it, so the next run fetches only from the stall up', async () => {
+    const r = await rig();
+    const m = MIG[0] as FxTx;
+    r.gw.txs.set(m.signature, null);
+    await r.b.backfillSince(null);
+    const at = r.gw.sigs.findIndex((s) => s.signature === m.signature);
+    assert.equal(JSON.parse(r.store.cursorValue as string).until, (r.gw.sigs[at + 1] as SigRow).signature);
+    const mark = r.gw.calls.length;
+    await r.b.backfillSince(null);
+    assert.deepEqual(txCalls(r, mark), [m.signature], 'only the stalled transaction (the newer ones failed) is fetched again');
+    r.gw.txs.set(m.signature, m.json);
+    await r.b.backfillSince(null);
+    assert.equal(r.migrations.length, 2);                                             // as with no stall (Z09-21 test)
+    assert.equal(JSON.parse(r.store.cursorValue as string).until, (r.gw.sigs[0] as SigRow).signature);
+  });
+
+  it('Z09-36: a deferred migration is recorded once, however many runs see it', async () => {
+    const r = await rig({ poolsVisible: false });
+    r.gw.txs.set((MIG[0] as FxTx).signature, null);                                   // each run stalls on the newest
+    for (let i = 0; i < 3; i++) await r.b.backfillSince(null);
+    for (const m of [MIG[1], MIG[2]] as FxTx[]) assert.equal(r.recorded.filter((x) => x.signature === m.signature).length, 1, m.signature);
+  });
+
+  it('Z09-37: a notice whose transaction is not visible yet logs its own code, not m03.backfill_stalled', async () => {
+    const r = await rig({ sigs: [] });
+    const m = MIG[0] as FxTx;
+    r.gw.txs.set(m.signature, null);
+    r.b.onNotice({ mint: m.mint, pool: m.pool, signature: m.signature, slot: BigInt(m.slot) as Slot });
+    await waitFor(() => r.logs.some(([, c]) => c === 'm03.notice_tx_not_visible'));
+    assert.ok(!r.logs.some(([, c]) => c === 'm03.backfill_stalled'));
+    assert.deepEqual(r.b.health(), { stalledSignature: null, attempts: 0, critical: false });
   });
 });

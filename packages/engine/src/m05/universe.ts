@@ -11,7 +11,7 @@
 // - `stale` → `evicted`: A-M05-02 evicts stale pools first, so a stale pool can be evicted;
 // - a timed blacklist that expires re-runs the prefilter (to `prefiltered_out`, `screening` or `eligible`);
 // - a screening backlog drop (logic 13) goes to `rejected` (reason `backlog`), retried after 6 h like a soft reject;
-// - U7: an `eligible` pool waiting for a slot whose current facts fail the prefilter goes to `prefiltered_out`.
+// - U7 (SPEC-A C-96): an `eligible` pool waiting for a slot whose current facts fail the prefilter goes to `prefiltered_out`.
 //
 // Round 2 (red team, rulings Z09-14..17, Z09-20, Z09-23):
 // - A retry that fails stays in its state (no edge in ARCH 7.5 leads elsewhere, e.g. rejected → prefiltered_out) with a
@@ -23,6 +23,16 @@
 //   `prefiltered_out`; no facts means no check.
 // - Memory holds active candidates only (discovered, screening, eligible, watched, stale, signalled, in_position,
 //   cooldown); the store is the source of truth for the rest, and timers come from `store.due` (O(active + due)).
+//
+// Round 3 (red team, rulings Z09-33, Z09-34, Z09-38):
+// - Facts carry `observedAtMs`; facts older than `factsMaxAgeMs` never pass the prefilter (`facts_stale`). An eligible
+//   pool with no fresh facts goes to `prefiltered_out` with a retry; watched and stale pools are re-checked only on
+//   fresh facts, and their staleness is measured from the facts' `observedAtMs` (so a restart does not reset it).
+// - A due retry whose facts are stale asks for a fresh read (`requestFacts`, M04 at P4 through M14, at most
+//   `factsRefreshMax` pools per tick) and looks again after `FACTS_WAIT_MS`; no read by then is a failed retry.
+// - A watched or stale pool that fails its re-check leaves with reasons starting `prefilter_recheck`, so the watchlist
+//   gives it an eviction tail (Z09-33).
+// - A blacklist write that fails is logged (`m05.blacklist_not_saved`) and never throws out of a handler (Z09-38).
 import { createHash } from 'node:crypto';
 import { canonicalJson, type CandidateState, type Lamports, type Pubkey, type Result, type UnixMs } from '@bot/types';
 
@@ -71,7 +81,8 @@ export interface CandidateStore {
   apply(prev: CandidateRecord | null, next: CandidateRecord, t: Transition): Result<void, { code: 'E_STATE_CHANGED' | 'E_WRITE' }>;
   /** Persists a change that is not a transition (retry time, reasons, migration time), by compare-and-set. */
   patch(prev: CandidateRecord, next: CandidateRecord): Result<void, { code: 'E_STATE_CHANGED' | 'E_WRITE' }>;
-  blacklist: { get(mint: Pubkey): BlacklistEntry | null; put(e: BlacklistEntry): void };
+  /** `put` refuses with E_WRITE on a write failure and never throws (Z09-38). */
+  blacklist: { get(mint: Pubkey): BlacklistEntry | null; put(e: BlacklistEntry): Result<void, { code: 'E_WRITE' }> };
 }
 /** `untilMs` null: permanent. */
 export interface BlacklistEntry { mint: Pubkey; untilMs: UnixMs | null; reason: string }
@@ -79,8 +90,8 @@ export interface BlacklistEntry { mint: Pubkey; untilMs: UnixMs | null; reason: 
 export const ACTIVE: ReadonlySet<CandidateState> = new Set<CandidateState>(['discovered', 'screening', 'eligible', 'watched', 'stale', 'signalled', 'in_position', 'cooldown']);
 export const DUE_BATCH = 1_000;
 
-/** What the prefilter reads: the venue, quote mint, per-side fee and effective depth of one snapshot. */
-export interface PrefilterFacts { venue: string; quoteMint: Pubkey; feeTotalBps: number; effectiveQuoteLamports: bigint }
+/** What the prefilter reads: the venue, quote mint, per-side fee and effective depth of one snapshot, and when it was observed. */
+export interface PrefilterFacts { venue: string; quoteMint: Pubkey; feeTotalBps: number; effectiveQuoteLamports: bigint; observedAtMs: UnixMs }
 /** One strategy's universe limits (`strategy.<id>.universe.*`). */
 export interface UniverseLimits { strategyId: string; feeCeilingBps: number; minDepthLamports: bigint; minAgeMs: number }
 /** MR 30 bps / 300 SOL / 24 h; PM 125 bps / 85 SOL / 20 min after migration (A-M05-01 config). */
@@ -105,13 +116,21 @@ export interface UniverseConfig {
   limits: readonly UniverseLimits[];
   /** Strategies enabled in any mode (C-44: `screening_required = false` needs none). */
   enabledStrategies: number;
+  /** `universe.facts_max_age_ms` (300,000; 30,000-3,600,000): older facts never pass the prefilter (Z09-34). */
+  factsMaxAgeMs: number;
+  /** `universe.facts_refresh_max` (30; 0-90): pools per tick whose facts a due retry may ask to be read again (Z09-34). */
+  factsRefreshMax: number;
   /** Venues the prefilter allows and that are specified (PumpSwap; Raydium after A-M01-06). */
   venues: readonly string[];
 }
 export const UNIVERSE_DEFAULTS: UniverseConfig = {
   screeningRequired: true, cooldownMs: 1_800_000, prefilterRetryMs: 21_600_000, staleToStateMs: 30_000, screenBacklogMax: 100,
-  limitSetId: 'pm01', limits: LIMIT_SETS.pm01, enabledStrategies: 0, venues: ['pumpswap'],
+  limitSetId: 'pm01', limits: LIMIT_SETS.pm01, enabledStrategies: 0, venues: ['pumpswap'], factsMaxAgeMs: 300_000, factsRefreshMax: 30,
 };
+/** How long a due retry waits for the fresh read it asked for before it counts as failed (Z09-34). */
+export const FACTS_WAIT_MS = 60_000;
+/** The first reason of a retry waiting for its fresh read. */
+const FACTS_REQUESTED = 'facts_requested';
 export const SOFT_RETRY_MS = 21_600_000;
 export const HONEYPOT_BLACKLIST_MS = 86_400_000;
 
@@ -122,6 +141,8 @@ export function checkUniverseConfig(c: UniverseConfig): string | null {
   if (!range(c.prefilterRetryMs, 600_000, 86_400_000)) return 'universe.prefilter_retry_ms must be 600,000-86,400,000';
   if (!range(c.staleToStateMs, 5_000, 600_000)) return 'universe.stale_to_state_ms must be 5,000-600,000';
   if (!range(c.screenBacklogMax, 10, 1_000)) return 'universe.screen_backlog_max must be 10-1,000';
+  if (!range(c.factsMaxAgeMs, 30_000, 3_600_000)) return 'universe.facts_max_age_ms must be 30,000-3,600,000';
+  if (!range(c.factsRefreshMax, 0, 90)) return 'universe.facts_refresh_max must be 0-90';
   if (c.limits.length === 0) return 'at least one strategy universe limit set is needed';
   const named = (LIMIT_SETS as Readonly<Record<string, readonly UniverseLimits[]>>)[c.limitSetId];
   if (named === undefined || limitSetHash(named) !== limitSetHash(c.limits)) return `universe.phase0_limit_set "${c.limitSetId}" must name the limits in use (Z09-2)`;
@@ -138,6 +159,11 @@ export interface UniverseDeps {
   wsolMint: Pubkey;
   /** The latest prefilter facts for a pool (M04's latest snapshot, or the verification read), or null. */
   facts(poolId: Pubkey): PrefilterFacts | null;
+  /**
+   * Asks for one fresh read of these slotless pools (M04 at P4 through M14, one batch); the facts arrive later through
+   * `facts`. Absent: a retry on stale facts simply fails (Z09-34).
+   */
+  requestFacts?(poolIds: readonly Pubkey[]): void;
   /** M22 lists (read): mints that never become candidates for new entries. */
   lists: { isWrittenOff(mint: Pubkey): boolean; isUnsolicited(mint: Pubkey): boolean };
   publish(t: Transition): void;
@@ -179,7 +205,9 @@ export function createUniverse(deps: UniverseDeps): Universe {
   if (problem !== null) throw { code: 'E_CONFIG', message: problem };
   const cfg = deps.config;
   const active = new Map<Pubkey, CandidateRecord>();
+  /** M04 `pool.stale` times (cleared by `pool.fresh`); with the facts' own age, the earlier decides (Z09-34). */
   const staleSince = new Map<Pubkey, number>();
+  const fresh = (f: PrefilterFacts | null, now: number): f is PrefilterFacts => f !== null && now - f.observedAtMs <= cfg.factsMaxAgeMs;
   for (const r of deps.store.active()) if (ACTIVE.has(r.state)) active.set(r.poolId, r);
 
   const get = (poolId: Pubkey): CandidateRecord | null => active.get(poolId) ?? deps.store.get(poolId);
@@ -233,6 +261,7 @@ export function createUniverse(deps: UniverseDeps): Universe {
   /** Logic 2: the cheap prefilter on one snapshot; the reasons of a pass describe which limits it met (manifest). */
   function prefilter(r: CandidateRecord, f: PrefilterFacts | null): { pass: boolean; reasons: string[]; depth: Lamports } {
     if (f === null) return { pass: false, reasons: ['no_snapshot'], depth: r.depthLamports };
+    if (!fresh(f, deps.nowMs())) return { pass: false, reasons: ['facts_stale'], depth: r.depthLamports };
     const depth = (f.effectiveQuoteLamports > 0n ? f.effectiveQuoteLamports : 0n) as Lamports;
     const fail: string[] = [];
     if (!cfg.venues.includes(f.venue)) fail.push(`venue=${f.venue}`);
@@ -318,7 +347,12 @@ export function createUniverse(deps: UniverseDeps): Universe {
       // An entry only lengthens: permanent stays permanent, and a shorter expiry never replaces a longer one.
       const longer = cur === null || cur.untilMs !== null && (untilMs === null || untilMs > cur.untilMs) || (cur.untilMs !== null && cur.untilMs <= deps.nowMs());
       const entry: BlacklistEntry = longer ? { mint, untilMs, reason } : cur;
-      if (longer) deps.store.blacklist.put(entry);
+      if (longer) {
+        // Z09-38: a failed write is logged and the candidates are still blacklisted (their rows carry the expiry).
+        let w: Result<void, { code: 'E_WRITE' }>;
+        try { w = deps.store.blacklist.put(entry); } catch { w = { ok: false, error: { code: 'E_WRITE' } }; }
+        if (!w.ok) deps.log.event('warn', 'm05.blacklist_not_saved', { mint, error_code: w.error.code });
+      }
       for (const r of deps.store.byMint(mint)) blacklistOne(active.get(r.poolId) ?? r, entry);
     },
     candidate: get,
@@ -334,11 +368,9 @@ export function createUniverse(deps: UniverseDeps): Universe {
     onWatched(poolId) {
       const r = active.get(poolId);
       if (r === undefined || r.state !== 'eligible') return false;
-      const f = deps.facts(poolId);
-      if (f !== null) {
-        const p = prefilter(r, f);
-        if (!p.pass) { move(r, { ...r, depthLamports: p.depth }, 'prefiltered_out', 'prefilter_recheck', { reasons: p.reasons, retryAtMs: (deps.nowMs() + cfg.prefilterRetryMs) as UnixMs }); return false; }
-      }
+      // Z09-34: no fresh facts, no slot (the pool waits for its retry in prefiltered_out).
+      const p = prefilter(r, deps.facts(poolId));
+      if (!p.pass) { move(r, { ...r, depthLamports: p.depth }, 'prefiltered_out', 'prefilter_recheck', { reasons: p.reasons, retryAtMs: (deps.nowMs() + cfg.prefilterRetryMs) as UnixMs }); return false; }
       return to(r, 'watched', 'slot');
     },
     onEvicted(poolId, reason, tailUntilMs) {
@@ -385,19 +417,23 @@ export function createUniverse(deps: UniverseDeps): Universe {
         const cur = active.get(r.poolId);
         if (cur === undefined) continue;
         if (cur.state === 'watched' || cur.state === 'stale' || cur.state === 'eligible') {
-          // Z09-17: the current facts decide; a pool below its set's limits leaves through the prefilter rules.
+          // Z09-17: the current facts decide; a pool below its set's limits leaves through the prefilter rules. Z09-34:
+          // an eligible pool needs fresh facts to stay; a watched or stale one is re-checked only on fresh facts.
           const f = deps.facts(cur.poolId);
-          if (f !== null) {
+          if (cur.state === 'eligible' || fresh(f, now)) {
             const p = prefilter(cur, f);
             if (!p.pass) {
               if (cur.state === 'eligible') move(cur, { ...cur, depthLamports: p.depth }, 'prefiltered_out', 'prefilter_recheck', { reasons: p.reasons, retryAtMs: (now + cfg.prefilterRetryMs) as UnixMs });
-              else to(cur, 'rejected', 'prefilter_recheck', { reasons: p.reasons, retryAtMs: (now + SOFT_RETRY_MS) as UnixMs });
+              else to(cur, 'rejected', 'prefilter_recheck', { reasons: ['prefilter_recheck', ...p.reasons], retryAtMs: (now + SOFT_RETRY_MS) as UnixMs });
               continue;
             }
             if (p.depth !== cur.depthLamports) active.set(cur.poolId, { ...cur, depthLamports: p.depth });   // ranking only, not persisted
           }
-          const s = staleSince.get(cur.poolId);
-          if (cur.state === 'watched' && s !== undefined && now - s > cfg.staleToStateMs) to(active.get(cur.poolId) as CandidateRecord, 'stale', 'stale_data');
+          // Staleness from the data's own time (Z09-34, so a restart does not reset it) or M04's stale event, the earlier.
+          const s = Math.min(f?.observedAtMs ?? Infinity, staleSince.get(cur.poolId) ?? Infinity);
+          const isStale = now - s > cfg.staleToStateMs;
+          if (cur.state === 'watched' && isStale) to(active.get(cur.poolId) as CandidateRecord, 'stale', 'stale_data');
+          else if (cur.state === 'stale' && f !== null && !isStale) to(cur, 'watched', 'fresh');   // fresh data, no stale event
         } else if (cur.state === 'cooldown' && cur.cooldownUntilMs !== null && cur.cooldownUntilMs <= now) {
           const b = isBlacklisted(cur.mint);
           if (b !== null) { blacklistOne(cur, b); continue; }
@@ -405,14 +441,25 @@ export function createUniverse(deps: UniverseDeps): Universe {
           to(cur, p.pass ? 'watched' : 'evicted', p.pass ? 'cooldown_done' : 'cooldown_rescreen_failed', { retryAtMs: p.pass ? null : ((now + cfg.prefilterRetryMs) as UnixMs) });
         }
       }
+      const ask: Pubkey[] = [];
       for (const r of deps.store.due(now, DUE_BATCH)) {
         if (r.retryAtMs === null || r.retryAtMs > now) continue;
         if (r.state === 'blacklisted') {
           const b = isBlacklisted(r.mint);
           if (b !== null) { patch(r, { retryAtMs: b.untilMs }); continue; }        // a longer entry since: wait for it
-          evaluate(r);
-        } else if (r.state === 'prefiltered_out' || r.state === 'rejected' || r.state === 'evicted') evaluate(r);
+        } else if (r.state !== 'prefiltered_out' && r.state !== 'rejected' && r.state !== 'evicted') continue;
+        const f = deps.facts(r.poolId);
+        // Z09-34: a slotless pool's facts are old; ask for one fresh read (capped per tick), then look again.
+        if (!fresh(f, now) && deps.requestFacts !== undefined && r.reasons[0] !== FACTS_REQUESTED) {
+          if (ask.length >= cfg.factsRefreshMax) continue;                            // still due: a later tick asks
+          const next = patch(r, { retryAtMs: (now + FACTS_WAIT_MS) as UnixMs, reasons: [FACTS_REQUESTED, ...r.reasons] });
+          if (next !== r) ask.push(r.poolId);
+          continue;
+        }
+        const back = r.reasons[0] === FACTS_REQUESTED ? { ...r, reasons: r.reasons.slice(1) } : r;
+        evaluate(back, f);
       }
+      if (ask.length > 0) deps.requestFacts?.(ask);
     },
   };
   return api;

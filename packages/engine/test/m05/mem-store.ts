@@ -1,5 +1,5 @@
 // An in-memory CandidateStore for the M05 tests (the M24 one is tested over a real database in z09-universe.test.ts).
-import type { Pubkey, UnixMs } from '@bot/types';
+import type { Pubkey, Result, UnixMs } from '@bot/types';
 import type { BlacklistEntry, CandidateRecord, CandidateStore, Transition } from '../../src/m05/universe.ts';
 import { ACTIVE } from '../../src/m05/universe.ts';
 
@@ -8,6 +8,7 @@ export class MemStore implements CandidateStore {
   log: Transition[] = [];
   bl = new Map<Pubkey, BlacklistEntry>();
   refuse = false;
+  failBlacklist = false;
   patches = 0;
   active(): CandidateRecord[] { return [...this.rows.values()].filter((r) => ACTIVE.has(r.state)); }
   get(poolId: Pubkey): CandidateRecord | null { return [...this.rows.values()].find((r) => r.poolId === poolId) ?? null; }
@@ -35,6 +36,10 @@ export class MemStore implements CandidateStore {
   }
   blacklist = {
     get: (mint: Pubkey): BlacklistEntry | null => this.bl.get(mint) ?? null,
-    put: (e: BlacklistEntry): void => { this.bl.set(e.mint, e); },
+    put: (e: BlacklistEntry): Result<void, { code: 'E_WRITE' }> => {
+      if (this.failBlacklist) return { ok: false, error: { code: 'E_WRITE' } };
+      this.bl.set(e.mint, e);
+      return { ok: true, value: undefined };
+    },
   };
 }

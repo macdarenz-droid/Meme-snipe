@@ -66,8 +66,9 @@ describe('config schema registry (B-M25-01 logic 1)', () => {
       'rpc.max_response_bytes', 'rpc.p0_reserve_bps', 'rpc.providers_file', 'rpc.reserve_block_units', 'rpc.send_enabled',
       'services.coingecko.base_url', 'services.coingecko.monthly_cap', 'services.dexscreener.base_url', 'services.jupiter.base_url',
       'services.rugcheck.base_url',
-      // Z09 (A-M05-01/02 "Config": affectsReturns no): Phase 0 screening switch (C-44), staleness, backlog, the tail.
-      'universe.screen_backlog_max', 'universe.screening_required', 'universe.stale_to_state_ms', 'universe.tail_extra_ms', 'universe.tail_max_pools',
+      // Z09 (A-M05-01/02 "Config": affectsReturns no): Phase 0 screening switch (C-44), staleness, backlog, the tail,
+      // and the per-tick cap on fresh reads for retries (Z09-34).
+      'universe.facts_refresh_max', 'universe.screen_backlog_max', 'universe.screening_required', 'universe.stale_to_state_ms', 'universe.tail_extra_ms', 'universe.tail_max_pools',
     ]);
   });
 

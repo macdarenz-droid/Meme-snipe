@@ -23,7 +23,7 @@ function setup(o: { config?: Partial<WatchlistConfig>; maxHoldMs?: number } = {}
   const w = createWatchlist({
     config: { ...WATCHLIST_DEFAULTS, ...o.config }, nowMs: () => now as UnixMs, maxHoldMs: () => o.maxHoldMs ?? 7_200_000, mode: () => mode,
     tracker: { watch: (p, c) => { classes.set(p, c); }, unwatch: (p) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(p); classes.delete(p); } },
-    universe: { onWatched: (p) => { granted.push(p); return true; }, onEvicted: (p, r) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(`evicted ${p}`); evicted.push([p, r]); } },
+    universe: { onWatched: (p) => { granted.push(p); return true; }, onEvicted: (p, r) => { if (pinnedNow.has(p)) unwatchedWhilePinned.push(`evicted ${p}`); evicted.push([p, r]); }, candidate: () => null },
     onEviction: (e) => evictions.push(e), log: { event: () => {} },
   });
   return {

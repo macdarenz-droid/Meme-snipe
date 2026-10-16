@@ -30,7 +30,7 @@ function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; at
   const depth = new Map<string, bigint>();
   const u = createUniverse({
     config: { ...UNIVERSE_DEFAULTS, screeningRequired: false }, store, nowMs: () => now as UnixMs, newId: () => `c${id++}`, wsolMint: MINTS.wsol,
-    facts: (p) => ({ venue: 'pumpswap', quoteMint: MINTS.wsol, feeTotalBps: 30, effectiveQuoteLamports: depth.get(p) ?? 0n }),
+    facts: (p) => ({ venue: 'pumpswap', quoteMint: MINTS.wsol, feeTotalBps: 30, effectiveQuoteLamports: depth.get(p) ?? 0n, observedAtMs: now as UnixMs }),
     lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: () => {} },
   });
   const tail: Array<{ poolId: Pubkey; atMs: number; reason: string; tailUntilMs: number | null }> = [];

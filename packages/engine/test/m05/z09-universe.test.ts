@@ -22,9 +22,11 @@ import { pubkey, ulid } from '../m24/samples.ts';
 
 const T0 = Date.UTC(2026, 9, 16) as UnixMs;
 const SOL = 1_000_000_000n;
-const deep: PrefilterFacts = { venue: 'pumpswap', quoteMint: MINTS.wsol, feeTotalBps: 30, effectiveQuoteLamports: 400n * SOL };
+/** Test facts; with no `observedAtMs` they are read as current (M04 polling the pool now). */
+type Facts = Omit<PrefilterFacts, 'observedAtMs'> & { observedAtMs?: UnixMs };
+const deep: Facts = { venue: 'pumpswap', quoteMint: MINTS.wsol, feeTotalBps: 30, effectiveQuoteLamports: 400n * SOL };
 
-function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => PrefilterFacts | null; store?: CandidateStore; idBase?: number } = {}) {
+function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => Facts | null; store?: CandidateStore; idBase?: number; requestFacts?: (ids: readonly string[]) => void } = {}) {
   let now: number = T0;
   let id = o.idBase ?? 0;
   const store = o.store ?? new MemStore();
@@ -33,7 +35,8 @@ function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => Pre
   const writtenOff = new Set<string>();
   const deps: UniverseDeps = {
     config: { ...UNIVERSE_DEFAULTS, ...o.config }, store, nowMs: () => now as UnixMs, newId: () => ulid(id++), wsolMint: MINTS.wsol,
-    facts: o.facts ?? (() => deep), lists: { isWrittenOff: (m) => writtenOff.has(m), isUnsolicited: () => false },
+    facts: (p) => { const f = (o.facts ?? (() => deep))(p); return f === null ? null : { observedAtMs: now as UnixMs, ...f }; },
+    ...(o.requestFacts === undefined ? {} : { requestFacts: o.requestFacts }), lists: { isWrittenOff: (m) => writtenOff.has(m), isUnsolicited: () => false },
     publish: (t) => published.push(t), log: { event: (_l, c) => logs.push(c) },
   };
   const u = createUniverse(deps);
@@ -125,7 +128,7 @@ describe('A-M05-01 acceptance (SYNTHETIC events)', () => {
 
 describe('A-M05-01 transitions', () => {
   it('Phase 0: PM limits 125 bps / 85 SOL / 20 min; fee, depth, venue and quote mint fail with reasons; re-evaluated after 6 h', () => {
-    let f: PrefilterFacts = { ...deep, feeTotalBps: 126 };
+    let f: Facts = { ...deep, feeTotalBps: 126 };
     const t = setup({ config: { screeningRequired: false }, facts: () => f });
     t.u.onDiscovery(disc(0, T0 - 1_200_000));
     const c = t.u.candidate(pubkey(100)) as CandidateRecord;
@@ -144,7 +147,7 @@ describe('A-M05-01 transitions', () => {
     const n = setup({ config: { screeningRequired: false }, facts: () => null });
     n.u.onDiscovery(disc(0));
     assert.deepEqual(n.u.candidate(pubkey(100))?.reasons, ['no_snapshot']);
-    n.u.onDiscovery(disc(0), deep);
+    n.u.onDiscovery(disc(0), { ...deep, observedAtMs: n.at() as UnixMs });
     assert.equal(n.u.candidate(pubkey(100))?.state, 'eligible');
     // Unverified discoveries and another mint on the same pool are ignored; one candidate per pool.
     n.u.onDiscovery({ ...disc(5), verifiedOnChain: false });
@@ -192,7 +195,7 @@ describe('A-M05-01 transitions', () => {
   });
 
   it('a cooldown whose re-screen fails ends evicted; honeypot is blacklisted 24 h, authority for good; expiry re-runs the prefilter', () => {
-    let f: PrefilterFacts | null = deep;
+    let f: Facts | null = deep;
     const t = setup({ facts: () => f });
     const [a, b] = [pubkey(100), pubkey(101)];
     for (const i of [0, 1]) t.u.onDiscovery(disc(i));
@@ -303,7 +306,7 @@ describe('A-M05-01 over M24', () => {
 
 describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, Z09-22, Z09-23)', () => {
   it('RT-3 / Z09-14: a soft-rejected candidate whose retry fails the prefilter stays rejected with a new persisted retry, logged once per retry', () => {
-    let f: PrefilterFacts | null = deep;
+    let f: Facts | null = deep;
     const store = new MemStore();
     const t = setup({ store, facts: () => f });
     t.u.onDiscovery(disc(1));
@@ -354,7 +357,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
   });
 
   it('RT-5 / Z09-16: a pool evicted after a failed cooldown re-screen is never watched again without passing the prefilter', () => {
-    let f: PrefilterFacts | null = deep;
+    let f: Facts | null = deep;
     const t = setup({ config: { screeningRequired: false }, facts: () => f });
     t.u.onDiscovery(disc(1));
     const p = pubkey(101);
@@ -387,7 +390,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     // The watchlist ranks on M04's current depth, not on the depth stored at the last prefilter.
     const order: string[] = [];
     const w = createWatchlist({ config: { ...WATCHLIST_DEFAULTS, maxWatched: 1 }, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
-      tracker: { watch: (id) => { order.push(id); return true; }, unwatch: () => {} }, universe: { onWatched: () => true, onEvicted: () => {} },
+      tracker: { watch: (id) => { order.push(id); return true; }, unwatch: () => {} }, universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null },
       depthOf: (id) => (id === 'p-shallow-then-deep' ? 900n * SOL : 10n * SOL), onEviction: () => {}, log: { event: () => {} } });
     const r = (id: string, d: bigint): CandidateRecord => ({ ...(t.u.candidate(pubkey(101)) as CandidateRecord), poolId: id, state: 'eligible', depthLamports: d });
     w.recompute([r('p-deep-then-shallow', 900n * SOL), r('p-shallow-then-deep', 1n * SOL)]);
@@ -417,7 +420,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     const store = new MemStore();
     let id = 0;
     const u = createUniverse({ config: { ...UNIVERSE_DEFAULTS, screeningRequired: false }, store, nowMs: () => now as UnixMs, newId: () => ulid(id++), wsolMint: MINTS.wsol,
-      facts: () => deep, lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: () => {} } });
+      facts: () => ({ ...deep, observedAtMs: now as UnixMs }), lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: () => {} } });
     const cuts: Array<{ poolId: string; atMs: number; reason: string; tailUntilMs: number | null }> = [];
     const w = createWatchlist({ config: { ...WATCHLIST_DEFAULTS, maxWatched: 1, tailMaxPools: 1 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
       tracker: { watch: () => true, unwatch: () => {} }, universe: u, onEviction: (e) => cuts.push(e), log: { event: () => {} } });
@@ -453,5 +456,131 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     assert.deepEqual(reads, [0]);                                                    // nothing due
     t.advance(21_600_000); t.u.tick();
     assert.deepEqual(reads, [0, 1_000]);                                             // one batch per tick, at most DUE_BATCH
+  });
+});
+
+describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)', () => {
+  /** A universe and a watchlist over it, with the tracker's classes and the eviction records. */
+  function rig(o: { facts?: (p: string) => Facts | null; requestFacts?: (ids: readonly string[]) => void; config?: Partial<UniverseConfig> } = {}) {
+    const t = setup({ config: { screeningRequired: false, ...o.config }, ...(o.facts === undefined ? {} : { facts: o.facts }), ...(o.requestFacts === undefined ? {} : { requestFacts: o.requestFacts }) });
+    const classes = new Map<string, string>();
+    const evictions: Array<{ poolId: string; reason: string; tailUntilMs: number | null }> = [];
+    const w = createWatchlist({ config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+      tracker: { watch: (id, c) => { classes.set(id, c); return true; }, unwatch: (id) => { classes.delete(id); } }, universe: t.u,
+      onEviction: (e) => evictions.push(e), log: { event: () => {} } });
+    return { ...t, w, classes, evictions };
+  }
+
+  it('Z09-33 (RT-8): a watched pool that drains below its limits keeps a tail and an eviction record (prefilter_recheck)', () => {
+    let depth = 400n * SOL;
+    const t = rig({ facts: () => ({ ...deep, effectiveQuoteLamports: depth }) });
+    t.u.onDiscovery(disc(1));
+    const p = pubkey(101);
+    t.w.recompute(t.u.candidates());
+    assert.equal(t.u.candidate(p)?.state, 'watched');
+    depth = 5n * SOL;                                                                // the pool is drained (a rug)
+    t.u.tick();
+    t.w.recompute(t.u.candidates());
+    assert.equal(t.u.candidate(p)?.state, 'rejected');
+    assert.equal(t.classes.get(p), 'tail', 'the aftermath is still recorded');
+    assert.deepEqual(t.evictions, [{ poolId: p, atMs: t.at(), reason: 'prefilter_recheck', tailUntilMs: t.at() + 3_600_000 }]);
+  });
+
+  it('Z09-33: a blacklisted watched pool and a failed cooldown re-screen also leave through the tail', () => {
+    let fee = 30;
+    const t = rig({ facts: () => ({ ...deep, feeTotalBps: fee }) });
+    t.u.onDiscovery(disc(1));
+    t.u.onDiscovery(disc(2));
+    t.w.recompute(t.u.candidates());
+    t.u.onAuthorityChanged(pubkey(201));
+    t.w.recompute(t.u.candidates());
+    // Pool 2 trades, then fails its cooldown re-screen.
+    const p2 = pubkey(102);
+    t.u.onSignal(p2); t.u.onRiskDecision(p2, true); t.w.recompute(t.u.candidates());
+    t.u.onPositionTerminal(p2, 'closed');
+    fee = 500;
+    t.advance(1_800_001); t.u.tick();
+    assert.equal(t.u.candidate(p2)?.state, 'evicted');
+    t.w.recompute(t.u.candidates());
+    assert.deepEqual(t.evictions.map((e) => [e.poolId, e.reason]), [[pubkey(101), 'blacklisted'], [p2, 'cooldown_rescreen_failed']]);
+    assert.deepEqual([t.classes.get(pubkey(101)), t.classes.get(p2)], ['tail', 'tail']);
+  });
+
+  it('Z09-34 (RT-9): an eligible pool that never gets a slot is not judged on 30-day-old facts', () => {
+    const t = setup({ config: { screeningRequired: false }, facts: () => ({ ...deep, observedAtMs: T0 }) });   // never polled again
+    t.u.onDiscovery(disc(1));
+    assert.equal(t.u.candidate(pubkey(101))?.state, 'eligible');
+    t.advance(30 * 86_400_000);
+    t.u.tick();
+    assert.equal(t.u.candidate(pubkey(101))?.state, 'prefiltered_out');
+    assert.deepEqual(t.u.candidate(pubkey(101))?.reasons, ['facts_stale']);
+    assert.equal(t.u.candidate(pubkey(101))?.retryAtMs, t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs);
+    // No facts at all: the same, and a slot is never granted on stale facts.
+    const n = setup({ config: { screeningRequired: false }, facts: () => null });
+    n.u.onDiscovery(disc(2), { ...deep, observedAtMs: T0 });
+    assert.equal(n.u.candidate(pubkey(102))?.state, 'eligible');
+    assert.equal(n.u.onWatched(pubkey(102)), false);
+    assert.deepEqual([n.u.candidate(pubkey(102))?.state, n.u.candidate(pubkey(102))?.reasons], ['prefiltered_out', ['no_snapshot']]);
+  });
+
+  it('Z09-34: a due retry on stale facts asks for one fresh read (capped per tick), then judges the fresh facts; no read is a failed retry', () => {
+    const reads: string[][] = [];
+    let freshFor = new Set<string>();
+    const t = setup({ config: { screeningRequired: false, factsRefreshMax: 2 }, requestFacts: (ids) => reads.push([...ids]),
+      facts: (p) => (freshFor.has(p) ? deep : { ...deep, observedAtMs: T0 }) });
+    for (const i of [1, 2, 3]) { freshFor.add(pubkey(100 + i)); t.u.onDiscovery(disc(i)); t.u.onWatched(pubkey(100 + i)); t.u.onEvicted(pubkey(100 + i), 'budget'); }
+    freshFor = new Set();
+    t.advance(UNIVERSE_DEFAULTS.prefilterRetryMs);
+    t.u.tick();
+    assert.deepEqual(reads, [[pubkey(101), pubkey(102)]], 'one batch, at most factsRefreshMax');
+    t.u.tick();
+    assert.deepEqual(reads, [[pubkey(101), pubkey(102)], [pubkey(103)]], 'the third is asked on the next tick');
+    // Pool 1's read arrives; pool 2's does not.
+    freshFor.add(pubkey(101));
+    t.advance(60_000);
+    t.u.tick();
+    assert.equal(t.u.candidate(pubkey(101))?.state, 'eligible');
+    assert.equal(t.u.candidate(pubkey(102))?.state, 'evicted', 'an evicted pool on stale facts stays put');
+    assert.deepEqual(t.u.candidate(pubkey(102))?.reasons, ['facts_stale']);
+    assert.equal(t.u.candidate(pubkey(102))?.retryAtMs, t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs);
+    assert.equal(reads.length, 2, 'no second read for the same retry');
+    // Without the port, a stale retry simply fails.
+    const q = setup({ config: { screeningRequired: false }, facts: (p) => (p === pubkey(104) && q.at() === T0 ? deep : { ...deep, observedAtMs: T0 }) });
+    q.u.onDiscovery(disc(4)); q.u.onWatched(pubkey(104)); q.u.onEvicted(pubkey(104), 'budget');
+    q.advance(UNIVERSE_DEFAULTS.prefilterRetryMs); q.u.tick();
+    assert.deepEqual([q.u.candidate(pubkey(104))?.state, q.u.candidate(pubkey(104))?.reasons], ['evicted', ['facts_stale']]);
+  });
+
+  it('Z09-34: staleness comes from the facts\' own time, so a restart does not reset it', () => {
+    const store = new MemStore();
+    const t = setup({ store, config: { screeningRequired: false }, facts: () => ({ ...deep, observedAtMs: T0 }) });
+    t.u.onDiscovery(disc(1));
+    t.u.onWatched(pubkey(101));
+    t.advance(20_000); t.u.tick();
+    assert.equal(t.u.candidate(pubkey(101))?.state, 'watched');
+    // Restart 11 s later: no stale event was ever received, but the data is 31 s old.
+    const t2 = setup({ store, idBase: 500, config: { screeningRequired: false }, facts: () => ({ ...deep, observedAtMs: T0 }) });
+    t2.advance(31_000); t2.u.tick();
+    assert.equal(t2.u.candidate(pubkey(101))?.state, 'stale');
+    assert.ok(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, factsMaxAgeMs: 29_999 }) !== null);
+    assert.ok(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, factsRefreshMax: 91 }) !== null);
+  });
+
+  it('Z09-38: a blacklist write that fails is logged as E_WRITE and never throws out of a handler', () => {
+    const store = new MemStore();
+    store.failBlacklist = true;
+    const t = setup({ store });
+    t.u.onDiscovery(disc(1));
+    assert.doesNotThrow(() => t.u.onScreen(pubkey(101), { verdict: 'hard_fail', kind: 'authority' }));
+    assert.equal(t.u.candidate(pubkey(101))?.state, 'blacklisted');
+    assert.ok(t.logs.includes('m05.blacklist_not_saved'));
+    // A put that throws is caught the same way.
+    const throwing = new MemStore();
+    throwing.blacklist.put = () => { throw new Error('disk'); };
+    const u = setup({ store: throwing });
+    u.u.onDiscovery(disc(2));
+    assert.doesNotThrow(() => u.u.onAuthorityChanged(pubkey(202)));
+    assert.equal(u.u.candidate(pubkey(102))?.state, 'blacklisted');
+    assert.ok(u.logs.includes('m05.blacklist_not_saved'));
   });
 });

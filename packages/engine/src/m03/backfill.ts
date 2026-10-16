@@ -20,7 +20,12 @@
 //   come from the chain, never from the notice; a later chain sighting fills a missing migration time and re-publishes.
 // - Published, verified, deferred and PumpPortal-seen state lives in `BackfillStore` (M24 `kv_state`), not in memory:
 //   after a restart publication is idempotent, and deferred pools survive the cursor moving past them.
-// - A run stopped by a missing transaction or -32015 logs `m03.backfill_stalled` (the cursor does not move).
+// - A run stopped by a missing transaction or -32015 logs `m03.backfill_stalled`. When the run had paged down to
+//   `until`, the cursor moves to the last signature fully processed before the stall, so the next run does not fetch
+//   them again (Z09-35); a run that had not (page cap) cannot move it.
+// - A migration is recorded to M07 once: when its outcome is known (published, deferred, dropped), never on a
+//   retry or a re-fetch of a pool already deferred (Z09-36).
+// - A notice's transaction that is not visible yet logs `m03.notice_tx_not_visible` (its own code; Z09-37) and is retried.
 import type { Pubkey, Result, Signature, Slot, UnixMs } from '@bot/types';
 import type { AccountsReader, PoolModelPort, PoolStateLike, RawAccount } from '../m04/types.ts';
 import type { LogPort, RpcError, RpcGateway } from '../m14/types.ts';
@@ -265,7 +270,7 @@ export function createMigrationBackfill<P extends VerifiableState>(deps: Backfil
         st.stall.put({ signature, attempts });
         if (attempts === NULL_TX_MAX_ATTEMPTS) deps.log.event('critical', 'm03.backfill_tx_missing', { signature, attempts });
       }
-      deps.log.event('warn', 'm03.backfill_stalled', { reason: 'tx_not_visible', signature });
+      if (source === 'chain_backfill') deps.log.event('warn', 'm03.backfill_stalled', { reason: 'tx_not_visible', signature });
       return 'stall';
     }
     if (source === 'chain_backfill' && st.stall.get()?.signature === signature) st.stall.put(null);
@@ -296,6 +301,7 @@ export function createMigrationBackfill<P extends VerifiableState>(deps: Backfil
       before = last.signature;
     }
     let found = 0;
+    const wasDeferred = new Set(st.deferred.list().map((d) => deferredKey(d.m)));
     // Pools that were not visible on an earlier run (kept in the store, so they survive the cursor moving on and a restart).
     for (const d of st.deferred.list()) {
       const out = await verifyAndPublish(d.m);
@@ -305,20 +311,28 @@ export function createMigrationBackfill<P extends VerifiableState>(deps: Backfil
       if (out === 'deferred') deps.log.event('info', 'm03.migration_rejected', { reason: 'not_found' });
       if (out === 'published') found += 1;
     }
+    // Z09-35: a stop after paging to `until` keeps what was fully processed (oldest first) below the stop.
+    let lastDone: Signature | null = null;
+    const stop = (): Result<never, { code: 'E_RPC' }> => {
+      if (complete && lastDone !== null) st.cursor.save(JSON.stringify({ until: lastDone, pendingTop: state.pendingTop, before: state.before }));
+      return { ok: false, error: { code: 'E_RPC' } };
+    };
     for (const s of [...collected].reverse()) {
-      if (s.err !== null) continue;                                             // failed transactions are common [EX-04]
+      if (s.err !== null) { lastDone = s.signature; continue; }                  // failed transactions are common [EX-04]
       const ms = await migrationsOf(s.signature, 'chain_backfill');
-      if (ms === 'rpc' || ms === 'stall') return { ok: false, error: { code: 'E_RPC' } };
-      if (ms === 'skip') continue;
-      for (const m of ms) {
-        const known = st.getVerified(m.mint, m.pool);
-        if (known !== null && (known.migratedAtMs !== null || m.migratedAtMs === null)) continue;
-        if (known === null) deps.record(m);
-        const out = await verifyAndPublish(m);
-        if (out === 'rpc') return { ok: false, error: { code: 'E_RPC' } };
-        if (out === 'deferred') st.deferred.put(m, DEFERRED_RUNS);
-        if (out === 'published' && known === null) found += 1;
+      if (ms === 'rpc' || ms === 'stall') return stop();
+      if (ms !== 'skip') {
+        for (const m of ms) {
+          const known = st.getVerified(m.mint, m.pool);
+          if (known !== null && (known.migratedAtMs !== null || m.migratedAtMs === null)) continue;
+          const out = await verifyAndPublish(m);
+          if (out === 'rpc') return stop();
+          if (known === null && !wasDeferred.has(deferredKey(m))) deps.record(m);   // once (Z09-36)
+          if (out === 'deferred') st.deferred.put(m, DEFERRED_RUNS);
+          if (out === 'published' && known === null) found += 1;
+        }
       }
+      lastDone = s.signature;
     }
     const newest = collected[0]?.signature ?? null;
     const top = state.pendingTop ?? newest;
@@ -367,6 +381,7 @@ export function createMigrationBackfill<P extends VerifiableState>(deps: Backfil
         void (async (): Promise<'done' | 'retry'> => {
           // Z09-13: the notice names a transaction; the migration, its slot and its time are read from the chain.
           const ms = await migrationsOf(signature, 'pumpportal');
+          if (ms === 'stall') deps.log.event('warn', 'm03.notice_tx_not_visible', { tries });
           if (ms === 'rpc' || ms === 'stall') return 'retry';
           if (ms === 'skip') return 'done';
           const m = ms.find((x) => x.mint === n.mint && x.pool === n.pool);

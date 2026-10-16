@@ -88,10 +88,12 @@ export function m24CandidateStore(db: Db, o: { newId(): string; nowMs(): UnixMs 
         return row === null ? null : { mint, untilMs: (row.until ?? null) as UnixMs | null, reason: row.reason };
       },
       put(e: BlacklistEntry) {
-        db.withTx((tx) => {
+        const w = write(() => db.withTx((tx) => {
           const now = o.nowMs();
           repos.blacklist.upsert(tx, { mint: e.mint, reason: e.reason.slice(0, 200), until: e.untilMs, setBy: 'm05', createdAt: now, updatedAt: now });
-        });
+          return { ok: true as const, value: undefined };
+        }));
+        return w.ok ? w : { ok: false as const, error: { code: 'E_WRITE' as const } };
       },
     },
   };
