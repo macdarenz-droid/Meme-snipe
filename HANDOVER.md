@@ -138,6 +138,16 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 2:26 PM: Z09 #330 round 2 at `221bccba`** (contains `cd2fe0a0`). Rulings Z09-12..31 applied (DECISIONS "Z09 round 2"); `pnpm check` 9,219/3, the 3 known environment failures.
+  - Ruling Z09-32 rejects the builder's bar rule Z09-B4, which closed bars on the minute's poll_counts and added up to 60 s latency to every live bar.
+    - M07 now writes `poll_counts` per 15 s bar, at the bar's close. Live and replay close at start+D+grace with exact `snapshots`.
+    - SPEC-A 1277/1284/1383/1390 are updated in the PR with the reason; nothing has been recorded yet, so nothing migrates.
+    - It needs a parity test and a leak test.
+  - Z09-17's new edge eligible→prefiltered_out is accepted only if no ARCH 7.5 edge fits; the reviewer checks.
+  - Z09-28 (worst-case sandwich in the conservative row): accepted.
+  - Z09-23: the cooldown_until index carries to Z10.
+  - Review and red team re-check `221bccba`, excluding the bar delta.
+  - OF-REARM still waits on the owner's instruction in `session_01JfcmEyJ1AqL4BQbyoGAZHT`.
 - **16 Oct 1:36 PM: #329 LOG-ORDER merged at `cd2fe0a0`** (the new base, ls-remote). CI was green on `719a57de` (run 38838788155).
   - Archived: the Z08 builder `session_01BfyLKa4mpPN4WMmaJK3m4v`, the Z08 reviewer `session_01Eo8pMLZFtqf7VtkTnqyVoZ` and the Z08 red team `session_01Et9a7HZLsEkdhHRWQQamJ1`. Their PRs (#327, #329) are merged, with no follow-ups.
   - Z09 #330 reviewer round 1 FAILED. Its 3 MAJORs equal RT-1/2/5. New rulings Z09-28..31 went to the builder:
