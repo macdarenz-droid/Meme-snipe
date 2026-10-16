@@ -48,13 +48,19 @@ async function seeded(): Promise<Db> {
 }
 
 /** The database with every `all` on candidate_event counted. */
-function counted(db: Db, sizes: number[]): Db {
+function counted(db: Db, sizes: number[], builds: Array<{ endMs: number; rids: number[] }> = []): Db {
   return new Proxy(db, {
     get(t, k) {
       if (k === 'reader') {
         return () => {
           const r = t.reader();
-          return { ...r, all: (sql: string, ...ps: Parameters<typeof r.all>[1][]) => { const out = r.all(sql, ...ps); if (sql.includes('candidate_event')) sizes.push(out.length); return out; } };
+          return { ...r, all: (sql: string, ...ps: Parameters<typeof r.all>[1][]) => { const out = r.all(sql, ...ps);
+            if (sql.includes('candidate_event')) {
+              sizes.push(out.length);
+              if (ps[1] === 0) builds.push({ endMs: Number(ps[0]), rids: [] });               // a manifest's first page
+              builds[builds.length - 1]?.rids.push(...out.map((x) => Number(x.rid)));
+            }
+            return out; } };
         };
       }
       const v = Reflect.get(t, k) as unknown;
@@ -67,10 +73,11 @@ describe('Z10-53 manifest reads candidate events in pages', () => {
   it('the daily job builds the same manifest as the whole-table read, and no read returns more than 2,000 rows (fails before: one read of 6,000+ rows)', async () => {
     const db = await seeded();
     const sizes: number[] = [];
+    const builds: Array<{ endMs: number; rids: number[] }> = [];
     let payload: Record<string, unknown> | null = null;
     let now = D - 2 * DAY_MS;
     const job = createDailyJob({
-      db: counted(db, sizes), dataDir: tempDir('z10-manifest-pages-md'), evictions: kvEvictionLog(db, () => ms(now)), limits: [], limitSetId: 'x', prefilterOnly: true,
+      db: counted(db, sizes, builds), dataDir: tempDir('z10-manifest-pages-md'), evictions: kvEvictionLog(db, () => ms(now)), limits: [], limitSetId: 'x', prefilterOnly: true,
       migrationCoverage: () => ({ chainMigrations: 0, seenByPumpPortal: 0, gapBps: 0 }), closedThrough: () => '2026-10-15T23',
       append: (r) => { if (r.stream === 'universe_manifest') payload = r.payload as Record<string, unknown>; return 'queued'; }, nowMs: () => ms(now), log: { event: () => {} },
     });
@@ -86,6 +93,13 @@ describe('Z10-53 manifest reads candidate events in pages', () => {
     assert.deepEqual(got.a24, want.a24);
     assert.ok(want.a24.eligibleCount > 2_500);
     assert.ok(sizes.length >= 4, `paged reads: ${sizes.join(',')}`);
+    // Ruling Z10-55: every row before the day's end streamed exactly once (fails on `rowid >= ?`: page edges twice).
+    assert.ok(builds.length >= 1);
+    for (const b of builds) {
+      const want = Number(db.reader().get('SELECT count(*) AS n FROM "candidate_event" WHERE "at" < ?', b.endMs)?.n);
+      assert.equal(b.rids.length, want, `rows streamed for the day ending ${b.endMs}`);
+      assert.equal(new Set(b.rids).size, want);
+    }
     assert.ok(Math.max(...sizes) <= 2_000, `largest read ${Math.max(...sizes)} rows`);
   }, 60_000);
 
