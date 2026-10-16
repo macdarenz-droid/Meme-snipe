@@ -97,8 +97,14 @@ export interface RecorderStatus {
   solUsdCheck: string;
   /** Ruling Z10-24: the newest slot of any stored snapshot (u64 as text), or null before the first. */
   newestStoredSlot: string | null;
-  /** Ruling Z10-24: codes of the critical lines raised in the last CRITICAL_ACTIVE_MS, sorted (codes only). */
+  /** Ruling Z10-24: codes of the other critical lines raised in the last CRITICAL_ACTIVE_MS, sorted (codes only). */
   criticalCodes: string[];
+  /** Ruling Z10-41: the STATE_CODES whose condition holds now. */
+  activeCodes: string[];
+  /** Ruling Z10-44: the monotonic clock (recorderTimers) now, at the last loop tick (null before the first) and at start. */
+  monoMs: number; lastTickMonoMs: number | null; startedMonoMs: number;
+  /** Ruling Z10-41: monotonic ms since the last two-provider agreement (since the start before the first). */
+  anchorAgeMs: number;
 }
 
 export interface RunningRecorder {
@@ -119,6 +125,17 @@ const FLUSH_BAR_STORE_MS = 60_000;
 const METRICS_EVERY_MS = 10_000;
 /** C-90: the kept first SOL/USD read on the server. */
 export const SOL_USD_CHECK_KEY = 'recorder.sol_usd_first_check';
+/** Ruling Z10-41: M04's verification count of the day (`{ day, count }`), in `kv_state`. */
+export const VERIFY_COUNT_KEY = 'm04.verify_count';
+/**
+ * Ruling Z10-41 (a new value; SPEC and ARCH give none): no two-provider agreement for this long, from the start or
+ * since the last, is `recorder.unanchored`. SPEC says nothing about recording on an unverified clock, so the recorder
+ * keeps recording and marks it: a `decision` record `{ kind: 'recorder_clock' }` at each change between anchored and
+ * unanchored, so a replay knows which stretch was extrapolated from an old anchor.
+ */
+export const UNANCHORED_MS = 600_000;
+/** Ruling Z10-41: critical codes that hold exactly while their condition does (never from the 15-minute window). */
+export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
 /**
  * Ruling Z10-24 (a new value: no SPEC or ARCH threshold exists): a critical line keeps the heartbeat critical for this
  * long after it was last raised. 15 minutes: at least three of the watchdog's 300 s repeats (`REPEAT_CRITICAL_S`).
@@ -393,6 +410,14 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   tracker = createPoolTracker<CpPoolState>({
     model, reader: pollReader, scheduler: p.scheduler, chain, clock, settings, log: trackerLog,
     providerOrder: () => rp.labels,
+    // Ruling Z10-41: the day's verification count survives a restart (the cap is a budget, and its state is a code).
+    verifyCount: {
+      load: () => {
+        const r = repos.kv_state.get(db.reader(), { key: VERIFY_COUNT_KEY });
+        try { const v = r === null ? null : JSON.parse(String(r.valueJson)) as { day: number; count: number }; return v !== null && Number.isSafeInteger(v.day) && Number.isSafeInteger(v.count) ? v : null; } catch { return null; }
+      },
+      save: (v) => { const t = nowMs(); db.withTx((tx) => { repos.kv_state.upsert(tx, { key: VERIFY_COUNT_KEY, valueJson: JSON.stringify(v), createdAt: t, updatedAt: t }); }); },
+    },
     // M04's metrics on the M27 registry (catalog names and labels A-M04-01..03).
     metrics: {
       counter: (name, labels) => { metrics.counter(name, labels as never).inc(); },
@@ -491,6 +516,23 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   // ---- The 1 s loop. ----
   const startedAtMs = nowMs();
   let lastTickMs: UnixMs | null = null;
+  /** Ruling Z10-44: the last tick on the monotonic clock (a wall-clock step never makes the loop look stale). */
+  let lastTickMono: number | null = null;
+  const startedMono = p.scheduler.nowMs();
+  let lastAgreeMono: number | null = null;
+  let unanchored = false;
+  let lastDisk: ReturnType<DiskManager['check']> | null = null;
+  /** Ruling Z10-41: the state codes, each exactly while its condition holds. */
+  const activeCodes = (): string[] => {
+    const out: string[] = [];
+    if (rp.gateway.status().some((x) => x.stopped)) out.push('m14.provider_stopped');
+    if (tracker?.verifyCapReached() === true) out.push('m04.verify_cap_reached');
+    if (clockTrouble?.alerted === true) out.push('recorder.clock_suspect');
+    if ((lastDisk?.unpulledOld ?? 0) > 0) out.push('m07.unpulled_segments');
+    if (daily.manifestMissing(nowMs())) out.push('recorder.manifest_not_recorded');
+    if (unanchored) out.push('recorder.unanchored');
+    return out;
+  };
   let lastMetricsMs = -Infinity, lastFlushMs = -Infinity, lastDiskMs = -Infinity, lastWatchlistMs = -Infinity, lastAnchorMs = -Infinity, lastBarStoreMs = -Infinity, lastVenueMs = -Infinity;
   const flushMs = configValue(cfg, 'recorder.flush_ms');
   const diskMs = configValue(cfg, 'recorder.disk_check_ms');
@@ -525,6 +567,17 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     const now = nowMs();
     const mono = p.scheduler.nowMs();
     lastTickMs = now;
+    lastTickMono = mono;
+    // Ruling Z10-41: the anchor's age on the monotonic clock; a change between anchored and unanchored is logged and
+    // written into the recording.
+    const unanchoredNow = mono - (lastAgreeMono ?? startedMono) >= UNANCHORED_MS;
+    if (unanchoredNow !== unanchored) {
+      unanchored = unanchoredNow;
+      const a = chain.anchor();
+      const fields = { anchor_age_ms: Math.round(mono - (lastAgreeMono ?? startedMono)), anchor_slot: a === null ? 'none' : a.slot.toString() };
+      if (unanchoredNow) log.event('critical', 'recorder.unanchored', fields); else log.event('info', 'recorder.anchored', fields);
+      queue.append({ stream: 'decision', recvMs: now, slot: null, commitment: null, source: 'recorder', payload: { kind: 'recorder_clock', anchored: !unanchoredNow, anchorAgeMs: fields.anchor_age_ms, anchorSlot: a === null ? null : fields.anchor_slot } });
+    }
     rp.tick();
     const trouble = clockTrouble as { sinceMs: number; alerted: boolean } | null;
     if (trouble !== null && !trouble.alerted && mono - trouble.sinceMs >= CLOCK_ALERT_MS) {
@@ -537,6 +590,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       lastAnchorMs = mono;
       anchoring = true;
       void chain.refresh().then((ok) => {
+        if (ok) lastAgreeMono = p.scheduler.nowMs();
         if (!chain.ready() && !ok && ++anchorTries % 12 === 1) log.event('warn', 'recorder.anchor_waiting', { tries: anchorTries });
       }).finally(() => { anchoring = false; });
     }
@@ -563,7 +617,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     await guard('venue_recorder', () => venueRecorder.tick(now));
     await guard('daily', () => daily.tick(now));
     if (mono - lastFlushMs >= flushMs) { lastFlushMs = mono; await guard('flush', () => writer.flush()); }
-    if (mono - lastDiskMs >= diskMs) { lastDiskMs = mono; await guard('disk', () => disk.check()); }
+    if (mono - lastDiskMs >= diskMs) { lastDiskMs = mono; await guard('disk', () => { lastDisk = disk.check(); }); }
     if (mono - lastMetricsMs >= METRICS_EVERY_MS) { lastMetricsMs = mono; await guard('metrics', () => sample()); }
     if (mono - lastBarStoreMs >= FLUSH_BAR_STORE_MS) { lastBarStoreMs = mono; await guard('bar_store', () => barStore.flush(now)); }
     metrics.tick();
@@ -592,7 +646,9 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         mode: rp.monitor.mode(), providers: rp.labels, watched: (tracker as PoolTracker<CpPoolState>).ready().length, halted: writer.haltReason(),
         queueDepth: queue.stats().queueDepth, lastTickMs, solUsdCheck: solUsdCheck()?.result ?? 'pending',
         newestStoredSlot: newestStoredSlot === null ? null : newestStoredSlot.toString(),
-        criticalCodes: [...criticalAt].filter(([, at]) => nowMs() - at <= CRITICAL_ACTIVE_MS).map(([c]) => c).sort(),
+        criticalCodes: [...criticalAt].filter(([c, at]) => !STATE_CODES.has(c) && nowMs() - at <= CRITICAL_ACTIVE_MS).map(([c]) => c).sort(),
+        activeCodes: activeCodes(), lastTickMonoMs: lastTickMono, monoMs: p.scheduler.nowMs(), startedMonoMs: startedMono,
+        anchorAgeMs: Math.round(p.scheduler.nowMs() - (lastAgreeMono ?? startedMono)),
       }),
       async stop(): Promise<void> {
         if (stopped) return;

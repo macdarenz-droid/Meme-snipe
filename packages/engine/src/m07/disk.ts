@@ -53,6 +53,8 @@ export interface DiskDeps {
 export interface Segment { path: string; sha256: string; bytes: number; hourStartMs: UnixMs }
 export interface DiskCheck {
   usedPct: number; freeBytes: number; recorderBytes: number; receipted: number; unreceipted: number;
+  /** Ruling Z10-41: closed segments past retention with no valid receipt (the `M07.unpulled_segments` condition). */
+  unpulledOld: number;
   deleted: string[]; halted: boolean; reasons: string[];
 }
 
@@ -213,7 +215,7 @@ export class DiskManager {
       if (this.deps.writer.resume() !== false) this.deps.log('info', 'M07.disk_ok_resume', { reason });
     }
     return {
-      usedPct: usedPct(), freeBytes, recorderBytes, receipted: left.filter(pulled).length, unreceipted: left.filter((s) => !pulled(s)).length,
+      usedPct: usedPct(), freeBytes, recorderBytes, receipted: left.filter(pulled).length, unreceipted: left.filter((s) => !pulled(s)).length, unpulledOld: unreceiptedOld,
       deleted, halted: this.deps.writer.isHalted(), reasons,
     };
   }

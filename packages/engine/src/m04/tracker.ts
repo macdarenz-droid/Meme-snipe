@@ -65,6 +65,8 @@ export interface PoolTracker<P extends PoolStateLike> {
   freshRead(poolId: Pubkey, maxLagSlots: number): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>>;
   /** True while a clock fault is confirmed (rulings Z07-9, Z07-13; tests and health). */
   clockFault(): boolean;
+  /** Ruling Z10-41: true for the rest of a UTC day once its verification cap (`pool_tracker.verify_daily_cap`) is reached. */
+  verifyCapReached(): boolean;
   /** Pools watched and ready (read once, mint known). */
   ready(): Pubkey[];
   /** In-flight `freshRead` entries (tests: MINOR-2). */
@@ -131,6 +133,11 @@ export interface TrackerDeps<P extends PoolStateLike> {
   source?: PoolSource;
   /** M14's providers in failover order (A-M04-02's "next provider"). */
   providerOrder(): readonly string[];
+  /**
+   * Ruling Z10-41: where the day's verification count is kept (the recorder: M24 `kv_state`), so a restart neither
+   * resets the cap nor forgets that it was reached. Without it the count is in memory only.
+   */
+  verifyCount?: { load(): { day: number; count: number } | null; save(v: { day: number; count: number }): void };
 }
 
 /** sha256 over the three raw accounts' data, each prefixed by its length (C-06; all three exist when a state built). */
@@ -273,9 +280,11 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   let lastVerifyMs = -Infinity;
   let verifySinceMs = -Infinity;
   let lastVerifyAskMs = -Infinity;
-  /** Ruling Z10-15: verification reads this UTC day (`pool_tracker.verify_daily_cap`). */
-  let verifyDay = -1;
-  let verifiesToday = 0;
+  /** Ruling Z10-15: verification reads this UTC day (`pool_tracker.verify_daily_cap`), kept through a restart (Z10-41). */
+  const savedVerify = deps.verifyCount?.load() ?? null;
+  let verifyDay = savedVerify?.day ?? -1;
+  let verifiesToday = savedVerify?.count ?? 0;
+  const dayNow = (): number => Math.floor(deps.clock.nowMs() / 86_400_000);
 
   /**
    * MINOR-R6 and MAJOR-R6b (Z07-22): lag against max(the clock's estimate, M15's highest slot seen when it is within
@@ -530,11 +539,13 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       // entries stay refused (the Z07 fail-closed behaviour). One critical line a day.
       if (verifiesToday === settings.verifyDailyCap) {
         verifiesToday++;
+        deps.verifyCount?.save({ day, count: verifiesToday });
         deps.log.event('critical', 'm04.verify_cap_reached', { cap: settings.verifyDailyCap, day: new Date(day * 86_400_000).toISOString().slice(0, 10) });
       }
       return;
     }
     verifiesToday++;
+    deps.verifyCount?.save({ day, count: verifiesToday });
     verifying = true;
     lastVerifyMs = now;
     // Ruling Z10-15: P1, so a metered peer (the backup) can confirm or refute (M14 refuses P2+ there).
@@ -781,6 +792,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     ready: () => [...pools.values()].filter((e) => e.ring !== null).map((e) => (e.addr as PoolAddresses).poolId),
     inflightCount: () => inflight.size,
     clockFault: () => fault !== null,
+    verifyCapReached: () => verifyDay === dayNow() && verifiesToday >= settings.verifyDailyCap,
     ringBytes: () => [...pools.values()].reduce((n, e) => n + (e.ring?.bytes ?? 0), 0),
     start() {
       every(settings.staleCheckMs, monitor);

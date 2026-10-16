@@ -158,15 +158,24 @@ release_links_exact() {
   return 0
 }
 
-# release_tree_refusal: reads `git ls-tree -r --full-tree <commit>` on stdin and prints why the commit may not become a
-# release (ruling Z10-25), or nothing: any path with a node_modules component (the release's only node_modules is the
-# links release_links makes), or any link (mode 120000) under the four linked packages.
+# release_tree_refusal: reads `git ls-tree -r -z --full-tree <commit>` on stdin (NUL-separated, so no path is ever
+# quoted: rulings Z10-42) and prints why the commit may not become a release (ruling Z10-25), or nothing: any path with
+# a node_modules component (the release's only node_modules is the links release_links makes), or any link (mode
+# 120000) under the four linked packages. It reads the whole list (Z10-43: no early exit, so the writer never gets
+# SIGPIPE and a refusal is never read as an unreadable list); the reason shows the path with anything unprintable as ?.
 release_tree_refusal() {
-  awk -F'\t' '
-    { split($1, m, " "); path = $2 }
-    path ~ /(^|\/)node_modules(\/|$)/ { print "it carries a node_modules path (" path ")"; exit }
-    m[1] == "120000" && path ~ /^packages\/(types|decoders|venue|engine)\// { print "it carries a link inside a linked package (" path ")"; exit }
-  '
+  local rec meta path mode why=""
+  while IFS= read -r -d '' rec; do
+    [ -z "$why" ] || continue
+    meta="${rec%%$'\t'*}"
+    path="${rec#*$'\t'}"
+    mode="${meta%% *}"
+    case "/$path/" in */node_modules/*) why="it carries a node_modules path (${path//[^[:print:]]/?})"; continue ;; esac
+    if [ "$mode" = 120000 ]; then
+      case "$path" in packages/types/* | packages/decoders/* | packages/venue/* | packages/engine/*) why="it carries a link inside a linked package (${path//[^[:print:]]/?})" ;; esac
+    fi
+  done
+  [ -z "$why" ] || printf '%s\n' "$why"
 }
 
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes

@@ -51,6 +51,8 @@ export const RECORDER_LOG_CODES = {
   'recorder.internal_error': { fields: { where: 'string', error_code: 'string' } },
   'recorder.facts_read_failed': { fields: { error_code: 'string', pools: 'integer' } },
   'recorder.universe_manifest': { fields: { day: 'string', sha256: 'string', eligible: 'integer', late: 'boolean' } },
+  'recorder.unanchored': { fields: { anchor_age_ms: 'integer', anchor_slot: 'string' } },
+  'recorder.anchored': { fields: { anchor_age_ms: 'integer', anchor_slot: 'string' } },
   'recorder.manifest_not_recorded': { fields: { day: 'string', eligible: 'integer', error_code: 'string' } },
   'recorder.coverage_report': { fields: { day: 'string', low_coverage: 'boolean' } },
   'recorder.sol_usd_check': { fields: { result: 'string' } },

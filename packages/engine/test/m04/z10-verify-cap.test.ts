@@ -10,7 +10,7 @@ import { FakeChain, fakeModel, Logs, Metrics, Outputs, poolAccounts, ScriptedRea
 
 const DAY = 86_400_000;
 
-async function setup(settings: Partial<M04Settings>) {
+async function setup(settings: Partial<M04Settings>, verifyCount?: { load(): { day: number; count: number } | null; save(v: { day: number; count: number }): void }) {
   const time = new FakeTime();
   time.now = 20_000 * DAY - 120_000;                                        // two minutes before a UTC midnight
   const reader = new ScriptedReader();
@@ -19,6 +19,7 @@ async function setup(settings: Partial<M04Settings>) {
   const log = new Logs();
   const tracker = createPoolTracker({
     model: fakeModel, reader, scheduler: time, chain, clock: time, outputs, log, metrics: new Metrics(), settings: { ...M04_DEFAULTS, ...settings }, providerOrder: () => ['primary', 'backup'],
+    ...(verifyCount === undefined ? {} : { verifyCount }),
   });
   for (const [k, v] of poolAccounts('a', 1_000n, 2_000n)) reader.accounts.set(k, v);
   chain.highest = 2_000n;
@@ -72,5 +73,26 @@ describe('Z10-15 verification reads: P1, capped a UTC day', () => {
       const r = checkM04Settings({ ...M04_DEFAULTS, verifyDailyCap: bad });
       assert.ok(!r.ok && r.error.key === 'pool_tracker.verify_daily_cap');
     }
+  });
+
+  it('Z10-41: the day\'s count survives a restart: the cap stays reached (its code holds) and no more verification reads are made that day; the next day starts again (fails before: a restart reset it)', async () => {
+    let saved: { day: number; count: number } | null = null;
+    const store = { load: () => saved, save: (v: { day: number; count: number }) => { saved = v; } };
+    const a = await setup({ verifyDailyCap: 3 }, store);
+    await a.time.advance(20_000);
+    assert.equal(a.verifies(), 3);
+    assert.equal(a.tracker.verifyCapReached(), true);
+    a.tracker.stop();
+    // A restart the same UTC day: the cap is still reached, no verification read, no second critical line.
+    const b = await setup({ verifyDailyCap: 3 }, store);
+    b.time.now = a.time.now;
+    assert.equal(b.tracker.verifyCapReached(), true);
+    await b.time.advance(20_000);
+    assert.equal(b.verifies(), 0);
+    assert.equal(b.capLines(), 0);
+    // The next UTC day: reads again, and the code clears.
+    await b.time.advance(130_000);
+    assert.ok(b.verifies() > 0);
+    b.tracker.stop();
   });
 });

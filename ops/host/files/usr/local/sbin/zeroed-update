@@ -386,7 +386,7 @@ prep_refused() {
   exit 1
 }
 if [ ! -d "$dest" ]; then
-  why="$(git -C "$REPO_DIR" ls-tree -r --full-tree "$commit" | release_tree_refusal)" || prep_refused "its file list could not be read"
+  why="$(git -C "$REPO_DIR" ls-tree -r -z --full-tree "$commit" | release_tree_refusal)" || prep_refused "its file list could not be read"
   [ -z "$why" ] || prep_refused "$why"
   rm -rf "$dest.new"
   mkdir -p "$dest.new"

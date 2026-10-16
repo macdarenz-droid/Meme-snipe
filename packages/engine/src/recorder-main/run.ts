@@ -121,13 +121,13 @@ export async function runRecorderProcess(): Promise<void> {
   const watchdog = env.WATCHDOG_URL ?? '';
   const hbKey = cred('heartbeat_hmac_key');
   const ownerChat = cred('telegram_chat_id');
-  const hbHealth = heartbeatHealth(recorderWallClock.nowMs());
+  const hbHealth = heartbeatHealth(recorderTimers.nowMs());
   let codes: string[] = [];
   const beat = async (): Promise<void> => {
     seq += 1;
     const s = rec?.status() ?? null;
     if (s?.halted != null) critical.set('halted', `Recording halted: ${s.halted.slice(0, 80)}.`); else critical.delete('halted');
-    codes = hbHealth.codes({ nowMs: recorderWallClock.nowMs(), status: s, memoryHigh: critical.has('memory') });
+    codes = hbHealth.codes({ monoMs: recorderTimers.nowMs(), status: s, memoryHigh: critical.has('memory') });
     if (watchdog === '' || hbKey === null) return;
     const lastSlot = s?.newestStoredSlot == null ? null : BigInt(s.newestStoredSlot);
     const text = heartbeatBody({ seq, boot, gitSha: releaseId, lastSlot, critical: codes, ownerChat, uptimeS: Math.floor((recorderTimers.nowMs() - startedAt) / 1000) }, recorderWallClock.nowMs() as UnixMs, paused);

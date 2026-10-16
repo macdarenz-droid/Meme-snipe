@@ -22,7 +22,9 @@ export class VirtualTime implements Clock, Scheduler {
   private heap: Array<{ at: number; seq: number; fn: () => void; live: boolean }> = [];
   readonly wallStartMs: number;
   constructor(wallStartMs: number) { this.wallStartMs = wallStartMs; }
-  nowMs(): UnixMs { return (this.wallStartMs + this.mono) as UnixMs; }
+  /** Ruling Z10-44: a wall-clock step (an NTP correction) that the monotonic clock does not see. */
+  wallOffsetMs = 0;
+  nowMs(): UnixMs { return (this.wallStartMs + this.mono + this.wallOffsetMs) as UnixMs; }
   /** The monotonic reading (M14 `Scheduler.nowMs`) and the wall reading are one line: a scheduler view of it. */
   readonly scheduler: Scheduler = { nowMs: () => this.mono, set: (fn, ms) => this.set(fn, ms) };
   set(fn: () => void, ms: number): () => void {
@@ -98,7 +100,7 @@ interface Acc { owner: string; data: Uint8Array }
 export interface FixturePool { pool: Pubkey; baseMint: Pubkey; quoteMint: Pubkey; baseVault: Pubkey; quoteVault: Pubkey }
 /** `slotOffset` moves the provider's context slots; `heightOffset` moves only its `getEpochInfo` answers (a node whose
  * height reading trails its own reads, to put the slot clock behind the tip). */
-export interface ProviderBehaviour { slotOffset: number; heightOffset: number; down: boolean; slotOverride?: bigint; delayMs?: number }
+export interface ProviderBehaviour { slotOffset: number; heightOffset: number; down: boolean; slotOverride?: bigint; delayMs?: number; /** Answers HTTP 429 (M14 stops a provider after its rate limits). */ limited?: boolean }
 
 /** Reads every pool set and config account of fixtures/mainnet. */
 export function loadFixtureAccounts(): { accounts: Map<string, Acc>; pools: FixturePool[]; baseSlot: bigint; migrations: Array<{ signature: string; slot: bigint; blockTime: number; json: unknown }> } {
@@ -319,6 +321,7 @@ export class FakeChain {
     const delay = this.provider(label).delayMs ?? 0;
     if (delay > 0) await new Promise<void>((r) => { this.time.set(r, delay); });
     if (this.provider(label).down) return new Response('unavailable', { status: 503 });
+    if (this.provider(label).limited === true) return new Response('rate limited', { status: 429 });
     this.byMethod.set(`${label} ${req.method}`, (this.byMethod.get(`${label} ${req.method}`) ?? 0) + 1);
     const a = this.answer(label, req.method, req.params ?? []);
     return new Response(jsonWithBigints({ jsonrpc: '2.0', id: req.id, ...a }), { status: 200, headers: { 'content-type': 'application/json' } });

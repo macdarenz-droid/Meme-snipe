@@ -1223,12 +1223,33 @@ describe('Z10-25 and Z10-27: the release links are exact, on the host and in the
     expect(sh(`release_links_exact "${d}"`).out).toBe("node_modules/@bot/types does not resolve to the release's packages/types");
   });
 
-  it('release_tree_refusal: a node_modules path anywhere, or a link inside a linked package, refuses the commit; other links do not', () => {
-    const t = (lines: string[]) => sh('release_tree_refusal', `${lines.join('\n')}\n`).out;
+  it('release_tree_refusal (NUL-separated, ruling Z10-42): a node_modules path anywhere, or a link inside a linked package, refuses the commit; other links do not', () => {
+    const t = (lines: string[]) => sh('release_tree_refusal', `${lines.join('\0')}\0`).out;
     expect(t(['100644 blob a\tpackages/engine/src/a.ts', '120000 blob b\tdocs/link'])).toBe('');
     expect(t(['100644 blob a\tnode_modules/@bot/x/i.js'])).toBe('it carries a node_modules path (node_modules/@bot/x/i.js)');
     expect(t(['100644 blob a\tapps/web/node_modules/y'])).toBe('it carries a node_modules path (apps/web/node_modules/y)');
     expect(t(['120000 blob b\tpackages/venue/src/evil'])).toBe('it carries a link inside a linked package (packages/venue/src/evil)');
+    // A path with a tab or a newline in it stays one record.
+    expect(t(['120000 blob b\tpackages/engine/a\nb'])).toBe('it carries a link inside a linked package (packages/engine/a?b)');
+  });
+
+  it('Z10-42: a link at packages/engine/src/é.ts to /etc/passwd in a real git tree is refused (fails before: git quotes the non-ASCII path without -z, so ^packages/ never matched)', () => {
+    const repo = join(tmp, 'tree-utf8');
+    mkdirSync(join(repo, 'packages/engine/src'), { recursive: true });
+    const git = (...a: string[]) => spawnSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+    git('init', '-q');
+    symlinkSync('/etc/passwd', join(repo, 'packages/engine/src/é.ts'));
+    git('add', '-A');
+    git('commit', '-qm', 'x');
+    expect(git('ls-tree', '-r', '--full-tree', 'HEAD').stdout).toContain('"packages/engine/src/\\303\\251.ts"');   // the quoting the old reader missed
+    const r = sh(`git -C "${repo}" ls-tree -r -z --full-tree HEAD | release_tree_refusal`);
+    expect(r).toMatchObject({ status: 0, out: 'it carries a link inside a linked package (packages/engine/src/??.ts)' });
+    expect(read('ops/host/files/usr/local/sbin/zeroed-update')).toContain('ls-tree -r -z --full-tree "$commit" | release_tree_refusal');
+  });
+
+  it('Z10-43: the whole list is read, so under pipefail a refusal on the first of 50,000 entries is a refusal, never a failed list (SIGPIPE)', () => {
+    const r = sh('{ printf "100644 blob a\\tnode_modules/x\\0"; for i in $(seq 50000); do printf "100644 blob a\\tpackages/engine/f%d.ts\\0" "$i"; done; } | release_tree_refusal');
+    expect(r).toMatchObject({ status: 0, out: 'it carries a node_modules path (node_modules/x)' });
   });
 
   it('zeroed-update checks the tree before extracting, makes and checks the links, and on any failure logs, alerts once and keeps the running release (Z10-27)', () => {

@@ -23,6 +23,12 @@ export const LATE_AFTER_MS = 600_000;
 export interface DailyJob {
   /** Call every second or so; builds what is due, never twice. */
   tick(nowMs: UnixMs): void;
+  /**
+   * Ruling Z10-41: true while a day that is due (ended `LATE_AFTER_MS` ago, after the first start, in the last 7) has no
+   * universe manifest in M24: the `recorder.manifest_not_recorded` condition, read from the database, so a restart
+   * rebuilds it.
+   */
+  manifestMissing(nowMs: UnixMs): boolean;
 }
 
 export function createDailyJob(o: {
@@ -67,6 +73,15 @@ export function createDailyJob(o: {
   };
 
   return {
+    manifestMissing(nowMs: UnixMs): boolean {
+      for (let k = 1; k <= 7; k++) {
+        const dayStart = Math.floor(nowMs / DAY_MS) * DAY_MS - k * DAY_MS;
+        if (dayStart + DAY_MS <= firstStart) break;
+        if (nowMs < dayStart + DAY_MS + LATE_AFTER_MS) continue;
+        if (!has('universe_manifest', new Date(dayStart).toISOString().slice(0, 10))) return true;
+      }
+      return false;
+    },
     tick(nowMs: UnixMs): void {
       const day = new Date(nowMs - DAY_MS).toISOString().slice(0, 10);
       const dayStart = Date.parse(`${day}T00:00:00.000Z`);
