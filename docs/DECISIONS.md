@@ -4008,3 +4008,20 @@ Builder notes (for review):
   - `crossCheck` logs `other_dex_pairs` and `known_pools_under_other_dex`. A pool we know that comes back under a dexId not configured as PumpSwap's sets `status = 'dex_id_mismatch'`, which is a warning. A partial answer stays `partial`, with the count in the log.
   - Budget: the register's 300/min for `/tokens` is UNVERIFIED; the only limit on the official reference page is 60/min. Under the owner's 50% rule, every DexScreener bucket runs at 30/min (`SERVICE_LIMITS.dexscreener.pairs` from 150 to 30). This is pinned in `z08-services.test.ts`, the 31st call waits, and SPEC-A C-95 and A-M14-03 note the open VERIFY. This replaces the 150/min of Z08-10.
   - The Shyft (≤ 5 req/s) and Chainstack (≤ 0.5 req/s) pins are duplicated into `z08-services.test.ts`, as Z08-10 said; Z03 keeps its own.
+
+### LOG-ORDER (Z02 follow-up; supervisor ruling LOG-1)
+
+- **LOG-1 · a clock step back never reorders a day's log lines.** Run 38817404562 read the 10-07 log back as "again, first" (`test/m24/review-round2.test.ts:176`). Rotating back to 10-07 opened a second append stream on the plain file while the first stream was still flushing. The two streams' writes ran on the thread pool in either order, and `ending` only stopped compression; it did not order the writes. Now, in `m27/logfile.ts`:
+  - A stream opened for a day that still has an earlier stream flushing is corked until every earlier stream of that day has ended.
+  - A corked stream that is rotated away, or closed, is ended only after those earlier streams, because `end()` would uncork it at once.
+  - Corked bytes still count toward the shed and lost bounds (`writableLength`).
+  - Unchanged: the synchronous open with its error path, compression (rulings 8 and 17), and `close()`.
+
+  The test seam is `createStream`, an injected stream whose flush the test holds (`test/m27/log-order.test.ts`).
+  - Tests 1 to 3 (the CI case, rotating away and back while held, and `close()` while waiting) are fail-before tests. They fail 5 out of 5 times on fa741fb4 with only the seam added, because the later 10-07 line reaches the file before the held one.
+  - Test 4 (held bytes count toward the shed bound) is a guard, not a fail-before test (ruling LOG-3). The old code holds nothing, so it has no held bytes to count. On fa741fb4 with the seam it differs only because the debug line is written straight through, not because of a defect in the accounting.
+- **LOG-2 · the queue bounds count every unfinished stream** (red team on 73058b5f). The shed (`queueBytes`) and lost (twice `queueBytes`) bounds were per stream, so held streams escaped them: a clock flapping across midnight 50 times while the first stream was held accepted 101,610 bytes against a 2,000-byte cap. Now:
+  - the bounds count the `writableLength` of every stream the sink has not finished: the current one, held ones and ending ones;
+  - a stream leaves that set on `finish`, on `close`, or when it is destroyed as broken.
+
+  So the bytes in memory stay within the existing caps. Test: the flap probe, with 100 info lines and then warn and error lines. The info bytes held stay at or below `queueBytes` plus one line, and warn and error are written up to twice `queueBytes` in total, then lost. It fails on 73058b5f (9,198 info bytes held, 3 out of 3 runs) and passes after.
