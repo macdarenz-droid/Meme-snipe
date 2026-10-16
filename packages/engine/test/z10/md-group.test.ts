@@ -2,6 +2,7 @@
 // folders inherit from the host's /var/lib/zeroed-md (2750, group zeroed-pull), so hour folders and segments got the
 // worker's group and the chrooted pull account could read none of them. The inherited bit, and so the group, is kept.
 import { strict as assert } from 'node:assert';
+import * as nodeFs from 'node:fs';
 import { chmodSync, chownSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
@@ -18,12 +19,22 @@ describe('Z10: M07 folders keep the md folder group', () => {
     chmodSync(dir, 0o2750);
     const root = process.getuid?.() === 0;
     if (root) chownSync(dir, 0, 65_534);                                   // another group, as zeroed-pull is on the host
-    const rec = SegmentWriter.recover({ dataDir: dir, nowMs: AT as UnixMs, log: () => undefined });
-    const q = startedQueue({ firstSeq: rec.nextSeq });
-    const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => AT as UnixMs, log: () => undefined }, rec);
-    q.append({ stream: 'universe_manifest', recvMs: AT as UnixMs, slot: null, commitment: null, source: 'test', payload: { n: 1 } });
-    w.pump();
-    const [m] = w.rotate();
+    // As under the worker's unit: UMask=0077, and RestrictSUIDSGID=yes refuses a chmod that sets setgid (EPERM).
+    const chmods: number[] = [];
+    const fs = { ...nodeFs, chmodSync: (p: nodeFs.PathLike, mode: nodeFs.Mode) => { chmods.push(Number(mode)); if ((Number(mode) & 0o6000) !== 0) throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); nodeFs.chmodSync(p, mode); } };
+    const umask = process.umask(0o077);
+    let m;
+    try {
+      const rec = SegmentWriter.recover({ dataDir: dir, nowMs: AT as UnixMs, log: () => undefined, fs } as never);
+      const q = startedQueue({ firstSeq: rec.nextSeq });
+      const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => AT as UnixMs, log: () => undefined, fs } as never, rec);
+      q.append({ stream: 'universe_manifest', recvMs: AT as UnixMs, slot: null, commitment: null, source: 'test', payload: { n: 1 } });
+      w.pump();
+      [m] = w.rotate();
+    } finally {
+      process.umask(umask);
+    }
+    assert.ok(chmods.every((x) => (x & 0o6000) === 0), 'never a chmod that sets setgid');
     assert.ok(m !== undefined);
     for (const d of ['2026-10-15', '2026-10-15/10']) {
       const st = statSync(join(dir, d));

@@ -135,23 +135,22 @@ function writeAtomic(fs: WriterFs, path: string, dir: string, text: string): voi
   try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); }
 }
 
-/** The setgid bit: a folder created in a setgid folder keeps its group (the host's `zeroed-pull`, PATHS-FIX). */
-export const SETGID = 0o2000;
-
 /**
- * Creates each missing folder at DIR_MODE. Card Z10 (found by the ops e2e's md-pull run): a folder inherits the setgid
- * bit and the group of a setgid parent (`/var/lib/zeroed-md` is 2750, group `zeroed-pull`), but chmod to 0750 cleared
- * the bit, so hour folders and their segments got the worker's group and the pull account could read none of them.
- * The inherited bit is now kept; nothing else is widened.
+ * Creates each missing folder at DIR_MODE. Card Z10 (finding F8, from the ops e2e's md-pull run): a folder inherits the
+ * setgid bit and the group of a setgid parent (`/var/lib/zeroed-md` is 2750, group `zeroed-pull`). The worker's unit
+ * has `UMask=0077` and `RestrictSUIDSGID=yes`: chmod to 0750 cleared the inherited bit (hour folders and segments then
+ * got the worker's group, and the pull account could read none of them), and a chmod that sets the bit is refused
+ * (EPERM). So the folder is made under a 027 umask, which gives 0750 with the inherited bit kept; chmod (never with
+ * setgid) only corrects a folder that still came out otherwise. Nothing is widened.
  */
 function mkdirs(fs: WriterFs, root: string, rel: string): void {
   let at = root;
   for (const part of rel.split('/')) {
-    const parent = at;
     at = join(at, part);
     if (!fs.existsSync(at)) {
-      fs.mkdirSync(at, { mode: DIR_MODE });
-      fs.chmodSync(at, DIR_MODE | (fs.statSync(parent).mode & SETGID));
+      const before = process.umask(0o027);
+      try { fs.mkdirSync(at, { mode: DIR_MODE }); } finally { process.umask(before); }
+      if ((fs.statSync(at).mode & 0o777) !== DIR_MODE) fs.chmodSync(at, DIR_MODE);
     }
   }
 }
