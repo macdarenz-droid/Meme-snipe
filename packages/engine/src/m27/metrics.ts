@@ -415,10 +415,12 @@ export class MetricsRegistry {
 
   private drop(entry: { s: Series; chunk: number }): void {
     const data = entry.s.chunks.get(entry.chunk);
-    if (entry.s.chunks.delete(entry.chunk)) this.chunkCount -= 1;
+    if (data === undefined) return;
+    entry.s.chunks.delete(entry.chunk);
+    this.chunkCount -= 1;
     // Ruling Z10-38: a dropped chunk is reused by the next one, so the ring allocates only while it grows. A chunk is
     // made only when no spare is left, so live plus spare chunks never pass ringBudgetBytes.
-    if (data !== undefined) this.spareChunks.push(data);
+    this.spareChunks.push(data);
   }
 
   private expire(oldestKept: number): void {

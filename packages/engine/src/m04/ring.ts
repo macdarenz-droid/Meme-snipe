@@ -67,6 +67,7 @@ export class SnapshotRing<P extends PoolStateLike> {
     this.buf = new Uint8Array(0);
     this.count = 0;
     this.head = 0;
+    this.last = null;
   }
 
   get capacity(): number { return this.cap; }

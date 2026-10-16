@@ -2,8 +2,10 @@
 // old ones stayed in glibc's heap until a major GC and pushed the heap's high-water mark (RssAnon) up hour by hour
 // at 60 pools. Ring buffers are now handed back and reused, so churn allocates nothing once the caps were reached.
 import { strict as assert } from 'node:assert';
+import type { Slot, UnixMs } from '@bot/types';
 import { describe, it } from 'vitest';
 import { RingBuffers, SnapshotRing } from '../../src/m04/ring.ts';
+import type { PoolSnapshot } from '../../src/m04/types.ts';
 import { createPoolTracker } from '../../src/m04/tracker.ts';
 import { FakeTime } from '../m14/helpers.ts';
 import { FakeChain, fakeModel, Logs, Metrics, Outputs, ScriptedReader, poolAccounts, type FakePool } from './fake.ts';
@@ -57,9 +59,44 @@ describe('Z10-38 ring buffers are reused', () => {
     assert.equal(b.bytes, bytes * 3);
     r.release();                                                        // twice is once
     assert.equal(b.bytes, bytes * 3);
-    for (let i = 0; i < 5; i++) b.give(new Uint8Array(bytes));
+    for (let i = 0; i < 5; i++) b.give(new Uint8Array(bytes).fill(7));
     assert.equal(b.bytes, bytes * 2 + bytes * 2, 'at most 2 spares per size');
     const t = b.take(bytes);
     assert.ok(t.every((x) => x === 0), 'a reused buffer is zeroed');
+  });
+
+  const addr = { poolId: 'r', baseVault: 'b', quoteVault: 'q', tokenMint: 'm' };
+  const snap = (i: number): PoolSnapshot<FakePool> => ({
+    pool: { poolId: 'r', asOfSlot: BigInt(i) as Slot, commitment: 'confirmed', observedAtMs: (i * 1_000) as UnixMs, base: BigInt(i), quote: 2n * BigInt(i) },
+    effectiveQuoteLamports: 2n * BigInt(i), spotSolPerToken: '2/1', feeTotalBps: 30, providerLabel: 'primary',
+    providerSlot: BigInt(i) as Slot, readLatencyMs: 7, observationLagSlots: 0, rawHash: i.toString(16).padStart(64, '0'),
+  });
+
+  it('Z10-56 (a): a dropped pool\'s ring stores nothing after release, and never writes into the buffer another pool now owns', () => {
+    const b = new RingBuffers(4);
+    const a = new SnapshotRing(addr, fakeModel, 10, [], b);
+    a.push(snap(1));
+    a.release();
+    assert.equal(a.latest(), null);
+    assert.equal(a.size, 0);
+    const other = new SnapshotRing({ ...addr, poolId: 'o' }, fakeModel, 10, [], b);   // takes a's buffer
+    assert.equal(b.bytes, 0);
+    a.push(snap(2));                                                                  // a late read for the dropped pool
+    assert.equal(a.latest(), null);
+    assert.equal(a.size, 0);
+    assert.deepEqual(a.history(0, Number.MAX_SAFE_INTEGER), []);
+    assert.equal(other.size, 0);
+    assert.deepEqual(other.history(0, Number.MAX_SAFE_INTEGER), []);
+    a.resize(20);                                                                     // and resizing it takes nothing
+    assert.equal(a.bytes, 0);
+    assert.equal(b.bytes, 0);
+    other.push(snap(3));
+    assert.deepEqual(other.history(0, Number.MAX_SAFE_INTEGER).map((x) => x.pool.asOfSlot), [3n]);
+  });
+
+  it('Z10-56 (b): an empty buffer is never kept as a spare', () => {
+    const b = new RingBuffers(4);
+    b.give(new Uint8Array(0));
+    assert.equal(b.bytes, 0);
   });
 });
