@@ -403,16 +403,23 @@ cat > "$S/zeroed-scan" <<'STUB'
 if [[ "$1" == unitlog ]]; then echo "$*" >> "$T/unitlog.args"; [[ -n "${UNITLOG_FAIL:-}" ]] && exit 2; exit 0; fi
 # first call exits FIRST_RC (75: a 429 with a 10 s back-off in the state), later calls 0
 echo scan >> "$T/calls.log"; echo "$*" > "$T/scan.args"
-while (( $# )); do [[ "$1" == -out ]] && out=$2; shift; done
+while (( $# )); do case "$1" in -out) out=$2 ;; -retention) sret=$2 ;; esac; shift; done
+# OF-FIX (OFX-2, OFX-4): a run writes its plan line; a finished scan leaves at least one
+# finished unit. ZERO_UNITS: the 07-22 batch-1 fault (exit 0, 0 units planned, none finished).
+if [[ -n "${ZERO_UNITS:-}" ]]; then echo "0 units planned (epochs )" > "$out/plan.txt"; exit 0; fi
+echo "2 units planned (epochs 1005 1006)" > "$out/plan.txt"
+fin() { compgen -G "$out/units/*/*/stats.json" > /dev/null || { mkdir -p "$out/units/1005/434160000-434164499"
+  printf '{"scanner_revision": "r1", "retention": "%s"}\n' "${sret:-K2}" > "$out/units/1005/434160000-434164499/stats.json"; }; }
 # SLOW: a scan that outlasts the budget; interrupted (SIGINT) it exits 1 like the scanner
 echo "plan: 12 units curve=5 amm=3" # (ruling 36: archive-derived counts, never in the public log)
 [[ -n "${SCAN_FAIL_RC:-}" ]] && exit "$SCAN_FAIL_RC" # a scanner failure (OF-3 ruling 24)
-if [[ -n "${SLOW:-}" ]]; then trap 'echo interrupted >> "$T/calls.log"; exit 1' INT; /bin/sleep 30 & wait; exit 0; fi
+if [[ -n "${SLOW:-}" ]]; then trap 'echo interrupted >> "$T/calls.log"; exit 1' INT; /bin/sleep 30 & wait; fin; exit 0; fi
 if [[ $(grep -c scan "$T/calls.log") == 1 && "${FIRST_RC:-0}" == 75 ]]; then
   now=$(date +%s); echo "$now 10 $((now + 10))" > "$out/archive-429.state"
   echo "429 from archive" > "$out/429.log"; exit 75
 fi
-exit 0
+[[ -n "${NO_FIN:-}" ]] && exit 0 # a plan line but no finished unit
+fin; exit 0
 STUB
 cat > "$S/sleep" <<'STUB'
 #!/usr/bin/env bash
@@ -546,6 +553,19 @@ o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o"; rc=0; SREV= scan "$o" || rc=$?
 o="$T/scanrev"; rm -rf "$o"; mkdir -p "$o/units/1047/3-4"; printf '{\n  "scanner_revision": "r1",\n  "retention": "K2"\n}\n' > "$o/units/1047/3-4/stats.json"
 SREV=r1 scan "$o" && [[ $(calls) == "scan " ]] || bad+=" [same-rev]"
 [[ -z "$bad" ]] && ok "OF-3: scan-day refuses (exit 2, no scanner call, nothing deleted) a cached unit of another revision or with none, and a run without SCANNER_REVISION; units of the frozen revision resume" || no "OF-3 revision refusal:$bad"
+# OF-FIX (OFX-2, OFX-4): the 07-22 batch-1 fault. A scanner exit 0 with 0 units planned,
+# or with a plan line but no finished unit, fails the day at the scan step (exit 1, never
+# "scanned"); a good run puts its plan line (count and epochs only) in the summary.
+bad=""
+for v in ZERO_UNITS NO_FIN; do
+  o="$T/scan0"; rm -rf "$o"; mkdir -p "$o"; : > "$T/summary.md"
+  rc=0; if [[ $v == ZERO_UNITS ]]; then ZERO_UNITS=1 scan "$o" || rc=$?; else NO_FIN=1 scan "$o" || rc=$?; fi
+  [[ $rc == 1 ]] && grep -q "scanner exited 0 but 2026-07-22 has .* and 0 finished units: no epoch covers the day (planning fault); the day fails" "$T/summary.md" &&
+    ! grep -q "day 2026-07-22 scanned" "$T/summary.md" || bad+=" [$v:$rc]"
+done
+o="$T/scan0"; rm -rf "$o"; mkdir -p "$o"; : > "$T/summary.md"; rc=0; scan "$o" || rc=$?
+[[ $rc == 0 ]] && grep -qx "plan for 2026-07-22: 2 units planned (epochs 1005 1006)" "$T/summary.md" && grep -q "day 2026-07-22 scanned" "$T/summary.md" || bad+=" [good:$rc]"
+[[ -z "$bad" ]] && ok "OF-FIX: a scanner exit 0 with 0 units planned or 0 finished units fails the day at the scan step (exit 1, never scanned); a good run's plan line (count and epochs) is in the summary" || no "OF-FIX zero units:$bad"
 
 # ---- publish-day.sh: one day, one create call, existing releases checked, never edited ----
 export GH_BIN="$T/bin/gh"
@@ -759,6 +779,23 @@ assert not any(st.get("with", {}).get("name") == "day-${{ matrix.day }}" for st 
 assert order("Note the store start") < order("store") < order("Log the store duration")
 PY
 
+# ---- OFX-10: no build sets the archive host (archiveBase is a test-only seam) ----
+# ldseam DIR...: lines that set archiveBase at build time (-X ...archiveBase, in any
+# spelling) or name it at all, in workflows and CI scripts; test-ci.sh itself is skipped.
+ldseam() { grep -rnE -e '-X[= ]*["'"'"']?[A-Za-z0-9_./-]*\.archiveBase' -e 'archiveBase' "$@" --exclude=test-ci.sh 2>/dev/null; }
+bad=""
+hits=$(ldseam "$here/../../../.github" "$here") && bad+=" [repo: $hits]"
+for v in '-ldflags "-X main.archiveBase=http://127.0.0.1:1"' "-ldflags='-X=main.archiveBase=http://x'" 'GOFLAGS=-ldflags=-X=zeroed/historical/scanner.archiveBase=x' 'X=archiveBase'; do
+  rm -rf "$T/ldx"; mkdir -p "$T/ldx/.github/workflows" "$T/ldx/ci"
+  printf 'jobs:\n  b:\n    steps:\n      - run: go build %s -o zeroed-scan .\n' "$v" > "$T/ldx/.github/workflows/w.yml"
+  ldseam "$T/ldx/.github" "$T/ldx/ci" > /dev/null || bad+=" [workflow not refused: $v]"
+  rm -f "$T/ldx/.github/workflows/w.yml"; echo "go build $v ." > "$T/ldx/ci/b.sh"
+  ldseam "$T/ldx/.github" "$T/ldx/ci" > /dev/null || bad+=" [script not refused: $v]"
+done
+rm -rf "$T/ldx"; mkdir -p "$T/ldx/ci"; echo 'go build -ldflags "-s -w" .' > "$T/ldx/ci/b.sh"
+ldseam "$T/ldx/ci" > /dev/null && bad+=" [plain ldflags refused]"
+[[ -z "$bad" ]] && ok "OFX-10: no workflow or CI script sets archiveBase at build time (-X ...archiveBase in any spelling, or any mention of it); fixtures that do are refused, plain -ldflags is not" || no "OFX-10 archiveBase ldflags:$bad"
+
 # ---- rpcscan: the scanner's own sources through symlinks; the IDLs byte-identical ----
 rs="$here/../rpcscan"; sc="$here/../scanner"; bad=""
 for f in $(cd "$sc" && git ls-files '*.go' | grep -v '_test.go$' | grep -v '^main.go$') go.mod go.sum; do
@@ -865,8 +902,25 @@ fi
 python3 - "$here/../../../docs/DECISIONS.md" "$here/archive-limits.conf" "$here/../../../.github/workflows/data-scan.yml" "$rev" > "$T/b10pull.txt" 2>&1 <<'PY' || bad+=" [$(tail -1 "$T/b10pull.txt")]"
 import re, sys, datetime
 dec, conf, wf, tree = sys.argv[1:5]
-rows = [l for l in open(dec) if re.match(r"\| \d{4}-\d{2}-\d{2} \| B10-PULL id=", l)]
-assert len(rows) == 1, "%d B10-PULL rows" % len(rows)
+lines = open(dec).read().splitlines()
+rows = [l for l in lines if re.match(r"\| \d{4}-\d{2}-\d{2} \| B10-PULL id=", l)]
+dated = {}
+for l in rows:
+    m = re.match(r"\| (\S+) \| B10-PULL id=(\S+) ", l)
+    # OFX-12: one row per id, counted raw (two rows of one id on one date are refused too)
+    assert m.group(2) not in dated, "id %s has more than one B10-PULL row" % m.group(2)
+    dated[m.group(2)] = m.group(1)
+ids = set(dated)
+# OF-FIX (OFX-3, OFX-7): older pins stay as history, each retired by a pinned row dated on
+# or after it; any other RETIRED row is an error (the guard then pins nothing)
+ret = [re.match(r"\| \S+ \| B10-PULL-RETIRED id=(\S+) by=(\S+) ", l) for l in lines if re.match(r"\| [^|]* \| B10-PULL-RETIRED", l)]
+assert all(ret), "RETIRED row fields"
+for m in ret:
+    o, n = m.group(1), m.group(2)
+    assert o != n and o in ids and n in ids and dated[n] >= dated[o], "RETIRED id=%s by=%s: not retired by a pinned, later row" % (o, n)
+gone = {m.group(1) for m in ret}
+rows = [l for l in rows if re.match(r"\| \S+ \| B10-PULL id=(\S+) ", l).group(1) not in gone]
+assert len(rows) == 1, "%d pinned B10-PULL rows" % len(rows)
 r = rows[0]
 m = re.match(r"\| \d{4}-\d{2}-\d{2} \| B10-PULL id=([A-Za-z0-9._:-]+) source=old-faithful scannerRev=([0-9a-f]{40})-go(\S+) days=(\S+) pinnedAt=(\S+) unitLog=units-D\.log ", r)
 assert m, "row fields"
@@ -881,7 +935,7 @@ assert "lacks the pools migrated on 07-21 from 19:00 UTC" in r and "07-22 is lea
 assert '"Old faithful but by batch to avoid blockage"' in r, "owner decision"
 print("ok", m.group(1))
 PY
-grep -q '^ok b10pull-of-1$' "$T/b10pull.txt" || bad+=" [id]"
+grep -q '^ok b10pull-of-2$' "$T/b10pull.txt" || bad+=" [id]"
 [[ -z "$bad" ]] && ok "OF-7: docs/DECISIONS.md holds one pinned B10-PULL row (source, scanner revision equal to this tree's scanner, ARCHIVE_DAYS, Go version, past pinnedAt, per-unit log, the 07-22 lead-in limit, the owner's decision)" || no "OF-7 B10-PULL row:$bad"
 # OF-7 (red team m2): scan-day refuses a scanner revision other than the pinned row's scannerRev.
 bad=""; mkfx "$T/fxpin"; o="$T/scpin"; rm -rf "$o"; mkdir -p "$o"; rc=0
@@ -1153,6 +1207,36 @@ mkfx "$T/fxnopin"; : > "$T/fxnopin/docs/DECISIONS.md"
 cp "$A/summary.md" "$A/summary-two.md"; ACFX=$T/fxnopin/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" ]] && grep -q "held (1)" "$A/summary-two.md" && grep -q "held (1)" "$A/summary.md" &&
   ok "OF-2 hold 1: two different pinned B10-PULL ids, or none, are unarmed" || no "OF-2 pin variants"
+# OF-FIX (OFX-3): an older pin is retired only by a RETIRED row naming a pinned successor;
+# a retirement by an unknown id, or two pins retiring each other, leaves nothing pinned.
+bad=""; pinf="$T/pin-dec.md"
+pin() { printf "$1" > "$pinf"; (. "$here/archive-guard.sh"; ag_decisions=$pinf; ag_pinned_id; true); }
+pinA='| 2026-10-09 | B10-PULL id=b10pull-a source=old-faithful scannerRev=r1 x | t | t |\n'
+pinB='| 2026-10-15 | B10-PULL id=b10pull-b source=old-faithful scannerRev=r2 x | t | t |\n'
+[[ $(pin "$pinA") == b10pull-a ]] || bad+=" one"
+[[ -z $(pin "$pinA$pinB") ]] || bad+=" two"
+[[ $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") == b10pull-b ]] || bad+=" retired"
+# OFX-7: a successor that is not a pinned row, an older pin retiring a newer one, a
+# retirement of an unknown id or a RETIRED row that cannot be read: nothing pinned
+[[ -z $(pin "$pinA| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") ]] || bad+=" by-unknown"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" older-retires-newer"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-z by=b10pull-b x | t | t |\n") ]] || bad+=" retires-unknown"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a x | t | t |\n") ]] || bad+=" malformed"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL id=b10pull-a source=old-faithful scannerRev=r3 x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n") ]] || bad+=" two-dates"
+pinC='| 2026-10-20 | B10-PULL id=b10pull-c source=old-faithful scannerRev=r3 x | t | t |\n'
+[[ $(pin "$pinA$pinB$pinC| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-20 | B10-PULL-RETIRED id=b10pull-b by=b10pull-c x | t | t |\n") == b10pull-c ]] || bad+=" chain"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-c x | t | t |\n") ]] || bad+=" by-other"
+[[ -z $(pin "$pinA$pinB| 2026-10-15 | B10-PULL-RETIRED id=b10pull-a by=b10pull-b x | t | t |\n| 2026-10-15 | B10-PULL-RETIRED id=b10pull-b by=b10pull-a x | t | t |\n") ]] || bad+=" mutual"
+# OFX-12: two rows of one id, even on one date (an EVIL rev first), pin nothing
+[[ -z $(pin '| 2026-10-09 | B10-PULL id=b10pull-a source=old-faithful scannerRev=EVIL x | t | t |\n'"$pinA") ]] || bad+=" same-date-dup"
+# OFX-13: the pinned rev is read for the exact id ("b10pull.a" never matches "b10pullXa")
+pinrev() { printf "$1" > "$pinf"; (. "$here/archive-guard.sh"; ag_decisions=$pinf; ag_pinned_rev; true); }
+pinX='| 2026-10-09 | B10-PULL id=b10pullXa source=old-faithful scannerRev=EVIL x | t | t |\n'
+pinD='| 2026-10-15 | B10-PULL id=b10pull.a source=old-faithful scannerRev=r2 x | t | t |\n'
+[[ $(pinrev "$pinX$pinD| 2026-10-15 | B10-PULL-RETIRED id=b10pullXa by=b10pull.a x | t | t |\n") == r2 ]] || bad+=" rev-regex"
+[[ $(pinrev "$pinA") == r1 ]] || bad+=" rev"
+(. "$here/archive-guard.sh"; [[ $(ag_pinned_id) == b10pull-of-2 ]]) || bad+=" repo-pin"
+[[ -z "$bad" ]] && ok "OF-FIX: a B10-PULL pin is retired only by a RETIRED row naming a pinned successor dated on or after it; a successor that is not pinned, an older pin retiring a newer one, an unknown retired id, an unreadable RETIRED row, an id with two rows (even on one date, OFX-12) or mutual retirement leave nothing pinned (OFX-7); a chain keeps its newest; the pinned rev is read for the exact id, never as a regex (OFX-13); the repo's pin is b10pull-of-2" || no "OF-FIX pin retirement:$bad"
 # 2: back-off from run history: a block (a data-scan archive batch whose scan job failed
 # and whose continue job did not chain it) 61 min ago, a non-served check 2 h ago.
 now=$(date -u +%s)
@@ -1873,7 +1957,7 @@ bad=""
 ( . "$here/archive-limits.conf"; . "$here/archive-guard.sh"
   days=$(ag_days) && [[ $(wc -l <<< "$days") == 31 && $(head -1 <<< "$days") == 2026-07-22 && $(tail -1 <<< "$days") == 2026-08-21 ]] &&
   ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && -z "$ARCHIVE_ARM" && -z "$ARCHIVE_RETENTION" ]] &&
-  ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-1 ]] && ! ag_armed >/dev/null 2>&1 ) &&
+  ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-2 ]] && ! ag_armed >/dev/null 2>&1 ) &&
   ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only), ARCHIVE_ARM and ARCHIVE_RETENTION empty, ARCHIVE_REARM_AT a valid UTC time; the one pinned B10-PULL row (OF-7) is b10pull-of-1 and the chain stays unarmed" || no "OF-2 repository values"
 
 # ---- OF-3: K3 reads take the pinned migration list; the K2 release keeps the rescan hashes and the per-unit log; the trim ----

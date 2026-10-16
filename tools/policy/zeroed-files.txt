@@ -2180,6 +2180,7 @@ research/historical/rpcscan/leanmeta.go
 research/historical/rpcscan/main.go
 research/historical/rpcscan/movements.go
 research/historical/rpcscan/pilot.go
+research/historical/rpcscan/plan.go
 research/historical/rpcscan/polite.go
 research/historical/rpcscan/raw.go
 research/historical/rpcscan/rpc_test.go
