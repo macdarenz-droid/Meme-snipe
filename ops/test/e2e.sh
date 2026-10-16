@@ -979,7 +979,7 @@ in_c "rm -rf '/opt/zeroed/releases/$signed2' && cp -a '$rrel' '/opt/zeroed/relea
 echo success >"$STATE/checks/$signed2"
 git -C "$BARE" tag -f deploy "$signed2" >/dev/null && git -C "$BARE" update-server-info
 upd_run || { in_c "journalctl -o cat --no-pager -u zeroed-update | tail -20" >"$LOGS/update-recorder.txt"; cat "$LOGS/update-recorder.txt"; fail "zeroed-update did not deploy the recorder release"; }
-[ "$(current)" = "/opt/zeroed/releases/$signed2" ] || fail "current is not the recorder release after zeroed-update"
+[ "$(current)" = "/opt/zeroed/releases/$signed2" ] || { in_c "journalctl -o cat --no-pager -u zeroed-update | tail -20" >"$LOGS/update-recorder.txt" 2>&1; cat "$LOGS/update-recorder.txt"; fail "current is not the recorder release after zeroed-update"; }
 in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed2" || fail "the deployed record is not the recorder release"
 rname="$signed2"
 wait_for 120 "the recorder anchored and recording" "docker exec $C curl -fsS -m 2 http://127.0.0.1:8787/health | jq -e --arg r '$rname' '.git_sha == \$r and .recording == true and .anchored == true' >/dev/null"
