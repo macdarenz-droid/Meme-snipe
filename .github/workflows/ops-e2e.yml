@@ -66,7 +66,9 @@ jobs:
       - name: Soak (48 h compressed)
         run: |
           bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; release_links "$GITHUB_WORKSPACE"'
-          node --expose-gc --no-warnings packages/engine/scripts/soak/soak.ts 48 "$RUNNER_TEMP/soak" "$(bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; echo $RECORDER_RSS_LIMIT_MB')"
+          # The server's own heap limit (logic.sh RECORDER_HEAP_MB): a heap the recorder could not hold there fails here.
+          limits="$(bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; echo "$RECORDER_HEAP_MB $RECORDER_RSS_LIMIT_MB"')"
+          node --expose-gc --no-warnings "--max-old-space-size=${limits% *}" packages/engine/scripts/soak/soak.ts 48 "$RUNNER_TEMP/soak" "${limits#* }"
       - name: Result
         if: always()
         run: cat "$RUNNER_TEMP/soak/soak-result.json" 2>/dev/null | head -c 20000 || true

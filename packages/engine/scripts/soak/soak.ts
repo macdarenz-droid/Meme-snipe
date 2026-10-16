@@ -15,7 +15,8 @@
 //   2. the least-squares slope of heap over hours 24-48 <= 0.5 MiB an hour;
 //   3. peak RSS <= LIMIT_RSS (75% of the unit's MemoryMax, passed in);
 //   4. no `m27.unknown_code` line, no `recorder.internal_error`, no unhandled rejection.
-// Usage: node --expose-gc --no-warnings scripts/soak/soak.ts [hours=48] [outDir] [rssLimitMiB=600]
+// Usage: node --expose-gc --no-warnings --max-old-space-size=<RECORDER_HEAP_MB> scripts/soak/soak.ts [hours=48] [outDir] [rssLimitMiB=600]
+// (CI passes the server's heap limit, so a heap the recorder could not hold on the server fails here too.)
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,10 +61,12 @@ rig.rec.parts.log.event = (level, code, fields) => {
 const fixtures = [...chain.pools];
 const clones: Array<{ p: (typeof fixtures)[number]; atMs: number }> = [];
 /** SYNTHETIC: a clone closes 12 h after its migration (past every tail: PM-01's window is 2 h, tails 1 h more). */
-const CLONE_KEEP_MS = 12 * 3_600_000;
+const CLONE_KEEP_MS = Number(process.env.SOAK_CLONE_KEEP_H ?? 12) * 3_600_000;
+let peakHeapTotal = 0;
+let peakRssAny = 0;
 let nextMigration = 0;
 let migrations = 0;
-const samples: Array<{ hour: number; heapMiB: number; rssMiB: number; rssAnonMiB: number; rssFileMiB: number; externalMiB: number; arrayBuffersMiB: number; mdMiB: number; dbMiB: number; watched: number; queueDepth: number; wallS: number }> = [];
+const samples: Array<{ hour: number; heapMiB: number; rssMiB: number; rssAnonMiB: number; rssFileMiB: number; externalMiB: number; arrayBuffersMiB: number; ringMiB: number; trackedPools: number; encoderStates: number; mdMiB: number; dbMiB: number; watched: number; queueDepth: number; wallS: number }> = [];
 /** RssAnon and RssFile of /proc/self/status (Linux), in MiB; -1 elsewhere. */
 const procRss = (field: 'RssAnon' | 'RssFile'): number => {
   try { return Number(new RegExp(`^${field}:\\s+(\\d+) kB$`, 'm').exec(readFileSync('/proc/self/status', 'utf8'))?.[1] ?? -1024) / 1024; } catch { return -1; }
@@ -89,13 +92,20 @@ for (let s = 0; s < HOURS * 3_600; s++) {
     });
   }
   await time.advance(1_000);
+  // Transient peaks (the 00:00 UTC jobs read a whole day): the committed heap and RSS each simulated minute, no GC.
+  if ((s + 1) % 60 === 0) {
+    const m = process.memoryUsage();
+    if (m.heapTotal > peakHeapTotal) peakHeapTotal = m.heapTotal;
+    if (m.rss > peakRssAny) peakRssAny = m.rss;
+  }
   if ((s + 1) % 3_600 === 0) {
     gc();
     const m = process.memoryUsage();
     const st = rig.rec.status();
     samples.push({
       hour: (s + 1) / 3_600, heapMiB: m.heapUsed / MIB, rssMiB: m.rss / MIB, rssAnonMiB: procRss('RssAnon'), rssFileMiB: procRss('RssFile'),
-      externalMiB: m.external / MIB, arrayBuffersMiB: m.arrayBuffers / MIB, mdMiB: du(rig.paths.mdDir) / MIB,
+      externalMiB: m.external / MIB, arrayBuffersMiB: m.arrayBuffers / MIB, ringMiB: rig.rec.parts.tracker.ringBytes() / MIB,
+      trackedPools: rig.rec.parts.tracker.ready().length, encoderStates: rig.rec.parts.queue.stats().encoderStates, mdMiB: du(rig.paths.mdDir) / MIB,
       dbMiB: ['', '-wal', '-shm'].reduce((n, x) => { try { return n + statSync(rig.paths.db + x).size; } catch { return n; } }, 0) / MIB, watched: st.watched, queueDepth: st.queueDepth,
       wallS: Number(process.hrtime.bigint() - started) / 1e9,
     });
@@ -115,7 +125,7 @@ const slope = (xs: typeof samples): number => {
 const result = {
   hours: HOURS, migrations, lines, logCodes: Object.fromEntries([...counted].sort((a, b) => b[1] - a[1]).slice(0, 25)),
   peakHeapFirstMiB: peak(half, 'heapMiB'), peakHeapSecondMiB: peak(second, 'heapMiB'), heapSlopeSecondMiBPerHour: slope(second),
-  peakRssMiB: peak(samples, 'rssMiB'), rssLimitMiB: LIMIT_RSS / MIB, recorderMiBEnd: samples.at(-1)?.mdMiB, dbMiBEnd: samples.at(-1)?.dbMiB,
+  peakRssMiB: Math.max(peak(samples, 'rssMiB'), peakRssAny / MIB), peakHeapCommittedMiB: peakHeapTotal / MIB, rssLimitMiB: LIMIT_RSS / MIB, recorderMiBEnd: samples.at(-1)?.mdMiB, dbMiBEnd: samples.at(-1)?.dbMiB,
   recorderMiBPerDay: ((samples.at(-1)?.mdMiB ?? 0) - (samples[23]?.mdMiB ?? 0)) / ((HOURS - 24) / 24 || 1),
   unknownCodes: unknown, internalErrors: internal, unhandledRejections: unhandled, wallSeconds: samples.at(-1)?.wallS,
 };

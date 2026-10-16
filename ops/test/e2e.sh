@@ -919,7 +919,8 @@ pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts unde
 # keeps the stand-in until the owner's three-red-team step). fixtures/mainnet comes along only for the TEST fake chain.
 rrel="$orig-recorder"
 in_c "rm -rf '$rrel' && cp -a '$orig' '$rrel' && rm -rf '$rrel/packages'"
-git -C "$ROOT" archive HEAD packages fixtures/mainnet ops/host-config.json | docker exec -i "$C" tar -x -C "$rrel" || fail "this commit's recorder could not be added to the test release"
+# This commit's ops too: zeroed-update runs the release's own install.sh --update before it switches.
+git -C "$ROOT" archive HEAD packages fixtures/mainnet ops | docker exec -i "$C" tar -x -C "$rrel" || fail "this commit's recorder could not be added to the test release"
 in_c "jq '.worker = \"recorder\"' '$rrel/ops/host-config.json' > /tmp/hc && mv /tmp/hc '$rrel/ops/host-config.json'"
 
 in_c ". /usr/local/lib/zeroed/logic.sh; release_links '$rrel'" || fail "the recorder release's package links"
@@ -949,8 +950,18 @@ T_CHAINSTACK_KEY="TESTCHAINSTACK$(rnd 16)"
 in_c "printf '%s' 'https://shyft.fake/rpc?api_key=$T_SHYFT_KEY' | systemd-creds encrypt --with-key=host --name=rpc_shyft_url - /etc/credstore.encrypted/rpc_shyft_url"
 in_c "printf '%s' 'https://chainstack.fake/$T_CHAINSTACK_KEY' | systemd-creds encrypt --with-key=host --name=rpc_chainstack_url - /etc/credstore.encrypted/rpc_chainstack_url"
 in_c "chmod 0600 /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url && cp /etc/zeroed/worker.env /root/worker.env.e2e && echo NODE_EXTRA_CA_CERTS=/etc/zeroed/e2e-fake-rpc.pem >> /etc/zeroed/worker.env"
-wrestart
-rname="$(basename "$rrel")"
+# 4. Through the deploy gate, as on the server: from the stand-in, a green, GitHub-signed release whose worker is the
+# recorder (its folder is this test's recorder release). zeroed-update tries it beside the stand-in, runs its
+# install.sh --update, switches, and holds it through the switch check.
+wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
+wait_for 60 "the stand-in back before the recorder's deploy" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
+in_c "rm -rf '/opt/zeroed/releases/$signed2' && cp -a '$rrel' '/opt/zeroed/releases/$signed2'"
+echo success >"$STATE/checks/$signed2"
+git -C "$BARE" tag -f deploy "$signed2" >/dev/null && git -C "$BARE" update-server-info
+upd_run || { in_c "journalctl -o cat --no-pager -u zeroed-update | tail -20" >"$LOGS/update-recorder.txt"; cat "$LOGS/update-recorder.txt"; fail "zeroed-update did not deploy the recorder release"; }
+[ "$(current)" = "/opt/zeroed/releases/$signed2" ] || fail "current is not the recorder release after zeroed-update"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed2" || fail "the deployed record is not the recorder release"
+rname="$signed2"
 wait_for 120 "the recorder anchored and recording" "docker exec $C curl -fsS -m 2 http://127.0.0.1:8787/health | jq -e --arg r '$rname' '.git_sha == \$r and .recording == true and .anchored == true' >/dev/null"
 in_c "curl -fsS -m 2 http://127.0.0.1:8787/health" >"$LOGS/health-recorder.json"
 jq -e '.mode == "paper" and .recorder == true and .signing_key == false and .halted == null' "$LOGS/health-recorder.json" >/dev/null || fail "recorder health is not paper, keyless and recording: $(cat "$LOGS/health-recorder.json")"
@@ -959,7 +970,7 @@ rinv >"$LOGS/recorder-unit.txt"
 grep -q 'Reconcile: 0 open intents, 0 open positions (recorder). OK' "$LOGS/recorder-unit.txt" || fail "the recorder's --reconcile did not write 0 open intents and positions"
 in_c "systemctl show -p ExecStartPre --value zeroed-worker" | has 'code=exited ; status=0 }' || fail "the recorder's --reconcile ExecStartPre did not exit 0"
 [ "$(in_c "cat /var/lib/zeroed/open_intents /var/lib/zeroed/open_positions | tr '\n' ' '")" = '0 0 ' ] || fail "open_intents and open_positions are not 0"
-in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has -- "--max-old-space-size=$(in_c ". /usr/local/lib/zeroed/logic.sh; echo \$RECORDER_HEAP_MB") .*$rentry" || fail "the recorder does not run with its own heap limit"
+in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has -- "--max-old-space-size=$(in_c ". /usr/local/lib/zeroed/logic.sh; echo \$RECORDER_HEAP_MB") .*/opt/zeroed/current/packages/engine/src/recorder-main/main.ts" || fail "the recorder does not run with its own heap limit"
 # The database was made from the marker (used up); market data in the M07 folder, the worker's.
 in_c "test -s /var/lib/zeroed/db/bot.db && ! test -e /var/lib/zeroed/init/first-start" || fail "the recorder's database was not made from the first-start marker"
 wait_for 60 "the process_start marker on disk" "docker exec $C bash -c 'ls /var/lib/zeroed-md/*/*/process_start.ndjson.gz' | grep -q ."
@@ -970,9 +981,11 @@ in_c "journalctl --no-pager -o cat" | grep -qF -e "$T_SHYFT_KEY" -e "$T_CHAINSTA
 in_c "systemctl show -p MemoryCurrent -p MemoryPeak -p MemoryMax zeroed-worker" >"$LOGS/recorder-memory.txt" || true
 # Back to the stand-in: no read providers, no TEST certificate, no fake chain.
 in_c "systemctl stop zeroed-e2e-fake-rpc; rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; sed -i '/shyft.fake/d' /etc/hosts"
-wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
+# The host's records as they were before this section: deployed and tagged at the signed release, no probation.
+git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
+wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel'"
 wait_for 60 "the stand-in back after the recorder" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
-pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/src/recorder-main/main.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, no provider key in any journal; back to the stand-in"
+pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/src/recorder-main/main.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) zeroed-update deploys it from the stand-in through the gate (trial, install --update, switch, hold); it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, no provider key in any journal; back to the stand-in"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on
