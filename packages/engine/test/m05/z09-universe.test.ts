@@ -374,7 +374,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     const t = setup({ config: { screeningRequired: false, ...MR }, facts: () => f });
     t.u.onDiscovery(disc(1));
     const p = pubkey(101);
-    const w = createWatchlist({ config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+    const w = createWatchlist({ restoreTails: () => [], config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
       tracker: { watch: () => true, unwatch: () => {} }, universe: t.u, onEviction: () => {}, log: { event: () => {} } });
     w.recompute(t.u.candidates());
     t.u.onSignal(p); t.u.onRiskDecision(p, true); t.u.onPositionTerminal(p, 'closed');
@@ -406,7 +406,7 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     assert.equal(t.u.candidate(pubkey(102))?.state, 'prefiltered_out');
     // The watchlist ranks on M04's current depth, not on the depth stored at the last prefilter.
     const order: string[] = [];
-    const w = createWatchlist({ config: { ...WATCHLIST_DEFAULTS, maxWatched: 1 }, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+    const w = createWatchlist({ restoreTails: () => [], config: { ...WATCHLIST_DEFAULTS, maxWatched: 1 }, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
       tracker: { watch: (id) => { order.push(id); return true; }, unwatch: () => {} }, universe: { onWatched: () => true, onEvicted: () => {}, candidate: () => null },
       depthOf: (id) => (id === 'p-shallow-then-deep' ? 900n * SOL : 10n * SOL), onEviction: () => {}, log: { event: () => {} } });
     const r = (id: string, d: bigint): CandidateRecord => ({ ...(t.u.candidate(pubkey(101)) as CandidateRecord), poolId: id, state: 'eligible', depthLamports: d });
@@ -439,12 +439,12 @@ describe('Z09 round 2 (red team RT-3 to RT-6; rulings Z09-14 to Z09-18, Z09-20, 
     const u = createUniverse({ config: { ...UNIVERSE_DEFAULTS, screeningRequired: false }, store, nowMs: () => now as UnixMs, newId: () => ulid(id++), wsolMint: MINTS.wsol,
       facts: () => ({ ...deep, observedAtMs: now as UnixMs }), lists: { isWrittenOff: () => false, isUnsolicited: () => false }, publish: () => {}, log: { event: () => {} } });
     const cuts: Array<{ poolId: string; atMs: number; reason: string; tailUntilMs: number | null }> = [];
-    const w = createWatchlist({ config: { ...WATCHLIST_DEFAULTS, maxWatched: 1, tailMaxPools: 1 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+    const w = createWatchlist({ restoreTails: () => [], config: { ...WATCHLIST_DEFAULTS, maxWatched: 1, tailMaxPools: 1 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
       tracker: { watch: () => true, unwatch: () => {} }, universe: u, onEviction: (e) => cuts.push(e), log: { event: () => {} } });
     for (const i of [1, 2]) u.onDiscovery(disc(i));
     w.recompute(u.candidates());                                                    // pool 101 or 102 watched
     now += 13;
-    const w0 = createWatchlist({ config: { ...WATCHLIST_DEFAULTS, maxWatched: 1, tailMaxPools: 1 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+    const w0 = createWatchlist({ restoreTails: () => [], config: { ...WATCHLIST_DEFAULTS, maxWatched: 1, tailMaxPools: 1 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
       tracker: { watch: () => true, unwatch: () => {} }, universe: u, onEviction: (e) => cuts.push(e), log: { event: () => {} } });
     // Two evictions on a moving clock: the second tail start ends the first tail (capacity 1), a millisecond later.
     const watchedNow = u.candidates().filter((c) => c.state === 'watched');
@@ -482,7 +482,7 @@ describe('Z09 round 3 (red team RT-8 and RT-9; rulings Z09-33, Z09-34, Z09-38)',
     const t = setup({ config: { screeningRequired: false, ...o.config }, ...(o.facts === undefined ? {} : { facts: o.facts }), ...(o.requestFacts === undefined ? {} : { requestFacts: o.requestFacts }) });
     const classes = new Map<string, string>();
     const evictions: Array<{ poolId: string; reason: string; tailUntilMs: number | null }> = [];
-    const w = createWatchlist({ config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+    const w = createWatchlist({ restoreTails: () => [], config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
       tracker: { watch: (id, c) => { classes.set(id, c); return true; }, unwatch: (id) => { classes.delete(id); } }, universe: t.u,
       onEviction: (e) => evictions.push(e), log: { event: () => {} } });
     return { ...t, w, classes, evictions };
@@ -664,5 +664,18 @@ describe('Z09-39: the fresh-read budget is bounded per hour, and pools that cann
     assert.equal(unknown.t.u.candidate(pubkey(100))?.reasons[0], 'retired=age_unknown');
     assert.ok(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, factsRefreshPerHour: 3_601 }) !== null);
     assert.ok(checkUniverseConfig({ ...UNIVERSE_DEFAULTS, retireAfterFailedRetries: 0 }) !== null);
+  });
+});
+
+describe('Z09-39 with the red team\'s RT-11 repro', () => {
+  it('300 dead pools (drained to 1 SOL) over 30 days, one tick a minute: far below 10 reads each (they are retired)', () => {
+    const asked: string[][] = [];
+    const t = setup({ config: { screeningRequired: false }, requestFacts: (ps) => asked.push([...ps]),
+      facts: () => ({ ...deep, effectiveQuoteLamports: 1n * SOL, observedAtMs: (t.at() - 3_600_000) as UnixMs }) });
+    for (let i = 0; i < 300; i++) t.u.onDiscovery(disc(i));
+    for (let k = 0; k < 30 * 24 * 60; k++) { t.advance(60_000); t.u.tick(); }
+    const reads = asked.reduce((a, x) => a + x.length, 0);
+    assert.ok(reads < 300 * 10, `${reads} pool reads in 30 days (${asked.length} calls)`);
+    assert.equal(reads, 0, 'PM-01 pools 2 days past migration are past every entry age: retired with no read');
   });
 });

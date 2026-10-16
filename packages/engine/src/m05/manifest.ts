@@ -6,7 +6,7 @@
 //
 // Eligible means any state from `eligible` on (eligible, watched, stale, signalled, in_position, cooldown), plus a pool
 // evicted for the watch budget, staleness or degraded reads, but only until its eviction tail ends (the end is carried in
-// the eviction's own reason, `;tail_until=<ms>`, or cut by a later tail_capacity / tail_degraded record of that pool) or
+// the eviction's own reason, `;tail_until=<ms>`, or cut by a later tail_capacity / tail_degraded / tail_restart_cut record of that pool) or
 // it is re-prefiltered (ruling Z09-18); an eviction with no tail, or after a failed re-screen, ends it at once. In Phase 0 eligibility is prefilter-only (`phase0_unscreened`),
 // so `a24.eligibleCount` is an UPPER BOUND and says so (`a24.upperBound`). `canonicalityUnknownCount` is 0 by
 // construction while every candidate comes from an on-chain-verified canonical pool (A-M03-02).
@@ -78,7 +78,7 @@ export function parseEvictionReason(r: string): { reason: string; tailUntilMs: n
   return m === null ? { reason: r, tailUntilMs: null } : { reason: m[1] as string, tailUntilMs: Number(m[2]) };
 }
 /** Watchlist records that end a tail early (not transitions; joined to the pool's latest eviction before them). */
-const TAIL_CUTS: ReadonlySet<string> = new Set(['tail_capacity', 'tail_degraded']);
+const TAIL_CUTS: ReadonlySet<string> = new Set(['tail_capacity', 'tail_degraded', 'tail_restart_cut']);
 
 export function buildUniverseManifest(i: ManifestInput): UniverseManifestFile {
   const { startMs, endMs } = dayBounds(i.dayUtc);

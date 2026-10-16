@@ -52,3 +52,4 @@ packages/engine/src/m08/bars.ts  # M08 15 s and 60 s bars, live and replay count
 packages/engine/src/m08/features.ts  # M08 features: MAD scale, robust z, median, dump flag, basket (A-M08-02, card Z09)
 packages/engine/src/m05/manifest.ts  # M05 daily universe manifest from candidate transitions (A-M05-03, card Z09)
 packages/engine/src/m13/phase0.ts  # M13 Phase 0 report, built parts: window, hurdle by size, A-48 (A-M13-01, card Z09)
+packages/engine/src/m08/replay.ts  # M08 replay feeder: recvMs order, restart markers reset the bar engine (rulings Z09-32, Z09-40)

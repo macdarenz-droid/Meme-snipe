@@ -1267,8 +1267,8 @@ interface TokenMetadataCache { get(mint: Pubkey): TokenMetadata | null; refresh(
 interface RecordEnvelope { stream: string; seq: bigint; recvMs: UnixMs; slot: Slot | null; commitment: Commitment | null; source: string; payload: unknown }
 interface Recorder { append(e: Omit<RecordEnvelope, 'seq'>): void /* non-blocking, bounded queue; seq assigned by M07 */;
   rotate(): Promise<SegmentManifest>; coverage(dayUtc: string): CoverageReport }
-type StreamName = 'order_event' | 'fill' | 'universe_manifest' | 'coverage' | 'venue_config' | 'pool_snapshot_position'
-  | 'decision' | 'signal' | 'screen' | 'pool_snapshot' | 'poll_counts' | 'discovery' | 'pumpportal_notice' | 'pool_snapshot_tail';   // NEW, in drop-priority order (first = never dropped)
+type StreamName = 'order_event' | 'fill' | 'universe_manifest' | 'coverage' | 'venue_config' | 'ref_price' | 'process_start' | 'pool_snapshot_position'
+  | 'decision' | 'signal' | 'screen' | 'pool_snapshot' | 'poll_counts' | 'discovery' | 'pumpportal_notice' | 'pool_snapshot_tail';   // NEW, in drop-priority order (first = never dropped); ref_price (Z08-8) and process_start (Z09-40) are never dropped
 ```
 
 - **Logic:**
@@ -1844,6 +1844,7 @@ interface BacktestResult { runId: Id; trades: TradeRecord[]; returnsPerDay: Arra
 - **Interfaces:** `RunSpec` with `mode: 'replay'`, `latencyInjection.multiplier`, `pSwMultiplier`; `CrashDayReport { days: Array<{ dayUtc: string; trigger: 'basket' | 'sol_usd' | 'multi_signal'; minBasketReturn30m: number | null; minSolUsdReturn30m: number | null; simultaneousSignalsMax: number; correlatedLossLamports: SignedLamports; maxRiskPfLamports: Lamports; withinLimit: boolean }>; solUsdAvailable: boolean }` (NEW).
 - **Logic:**
   1. Feed recorded snapshots through a recorded `PoolTracker` (A-M04 semantics: `latest`, `history`, `freshRead` returning the latest recorded snapshot at sim time with its recorded observation lag; lag > 8 at build → entry abandoned, as live).
+     Restarts (ruling Z09-40, rule (a)): M07 writes a `process_start` marker (`releaseId`, `startedAtMs`, `pollCountsFirstSeq`) when the worker starts. The driver splits the recording at each marker. A process's records are its snapshots received before the next marker and its `poll_counts` with a seq below the marker's `pollCountsFirstSeq`. Before a marker the bar engine closes nothing past that process's newest non-partial `poll_counts` recvMs. At the marker it resets the engine, so it starts cold as the restarted worker's engine does. A recording with no marker starts cold at its first record (`m08/replay.ts`).
      Bars (ruling Z09-32): the driver delivers every recorded record with `recvMs ≤ t` (snapshots and the per-bar `poll_counts`, A-M07-01 logic 3) before it calls the bar engine's `closeDue(t)`; a bar closes at its start + 15,000 + `bars.close_grace_ms` and uses a window's count only when its `recvMs` is at or before that close, exactly as live, where the worker calls M07's `tick(now)` and then `closeDue(now)` with the same `now`.
   2. Every attempt resolves through `SimCore.fill` with sampled latency (× `multiplier`) and `pSwMultiplier`; exits supersede after 8 slots via `notLandedSchedule` and climb the ladder through M19/M20's own code (ARCH 8.7).
   3. Gate R-4 runs: the same replay with `multiplier = 2 × (measured p95 decision-to-confirmed ÷ prior p95)` — when no measured p95 exists yet, multiplier 2 on the prior — and `pSwMultiplier = 2` (ARCH 3.4).

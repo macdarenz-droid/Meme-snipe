@@ -35,7 +35,7 @@ function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; at
   });
   const tail: Array<{ poolId: Pubkey; atMs: number; reason: string; tailUntilMs: number | null }> = [];
   const w = createWatchlist({
-    config: { ...WATCHLIST_DEFAULTS, maxWatched: 8 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+    restoreTails: () => [], config: { ...WATCHLIST_DEFAULTS, maxWatched: 8 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
     tracker: { watch: () => true, unwatch: () => {} }, universe: u, onEviction: (e) => tail.push(e), log: { event: () => {} },
   });
   for (let i = 0; i < 12; i++) {
@@ -49,7 +49,7 @@ function scriptedDay(): { events: Transition[]; tail: Array<{ poolId: Pubkey; at
   now += 31_000;
   u.tick();
   const w5 = createWatchlist({
-    config: { ...WATCHLIST_DEFAULTS, maxWatched: 5 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+    restoreTails: () => [], config: { ...WATCHLIST_DEFAULTS, maxWatched: 5 }, nowMs: () => now as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
     tracker: { watch: () => true, unwatch: () => {} }, universe: u, onEviction: (e) => tail.push(e), log: { event: () => {} },
   });
   w5.recompute(u.candidates());
@@ -154,5 +154,20 @@ describe('A-M05-03 branch cases', () => {
     // Rows whose chain does not link (a lost row) keep their stored order.
     const rows = [{ poolId: 'q', mint: 'mq', fromState: 'watched' as const, toState: 'evicted' as const, reason: 'budget', at: T0 }, { poolId: 'q', mint: 'mq', fromState: 'stale' as const, toState: 'watched' as const, reason: 'fresh', at: T0 }];
     assert.deepEqual(eventsFromRows(rows).map((x) => x.to), ['evicted', 'watched']);
+  });
+});
+
+describe('Z09-41: a tail cut at a restart ends the pool\'s eligible span there', () => {
+  it('tail_restart_cut joins its eviction like tail_capacity', () => {
+    const P = 'pool-r', M = 'mint-r';
+    const events = [
+      { poolId: P, mint: M, from: 'discovered' as const, to: 'eligible' as const, reason: 'set=pm-01;phase0_unscreened', atMs: T0 },
+      { poolId: P, mint: M, from: 'eligible' as const, to: 'watched' as const, reason: 'slot', atMs: T0 + 1 },
+      { poolId: P, mint: M, from: 'watched' as const, to: 'evicted' as const, reason: `budget;tail_until=${T0 + 3_600_000}`, atMs: T0 + 2 },
+    ];
+    const m = buildUniverseManifest({ dayUtc: DAY, events, crossCheck: { poolsOnlyInVendor: 0, otherDexPairs: 0, knownPoolsUnderOtherDex: 0, status: 'ok' },
+      migrationCoverage: { chainMigrations: 0, seenByPumpPortal: 0, gapBps: 0 }, limitSet: { id: 'pm01', paramHash: 'x' }, generatedAtMs: 0, late: false, prefilterOnly: true,
+      watchlistEvictions: [{ poolId: P, atMs: T0 + 600_000, reason: 'tail_restart_cut', tailUntilMs: null }] });
+    assert.deepEqual(m.eligible[0]?.intervals, [[T0, T0 + 600_000]]);
   });
 });

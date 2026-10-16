@@ -101,7 +101,18 @@ export interface PollCounts {
    */
   latePolls?: number;
   lateFromBarStartMs?: UnixMs;
+  /**
+   * Present when the record was written before its bar closed (an unwatch or a cap eviction mid-bar): its recvMs is
+   * still the close, but no tick had reached that close (ruling Z09-40: a replay's close frontier ignores it).
+   */
+  partial?: true;
 }
+
+/**
+ * The `process_start` marker (ruling Z09-40): written once when the worker starts. `pollCountsFirstSeq` is the seq the
+ * new process's first `poll_counts` record gets, so a replay knows which records each process wrote.
+ */
+export interface ProcessStart { releaseId: string; startedAtMs: UnixMs; pollCountsFirstSeq: string }
 
 export interface RecorderQueueConfig {
   /** `recorder.queue_max`: records, default 50,000, 1,000-500,000. */
@@ -1019,6 +1030,15 @@ export class RecorderQueue {
     return this.lastTickMs !== null && this.lastTickMs >= close ? Math.max(nowMs, this.lastTickMs + 1) : close;
   }
 
+  /**
+   * Records the worker's start (ruling Z09-40): call once, before any other record of the new process. A replay starts
+   * the bar engine cold at it, as the restarted worker's engine does.
+   */
+  markProcessStart(releaseId: string, nowMs: UnixMs): AppendResult {
+    const payload: ProcessStart = { releaseId, startedAtMs: nowMs, pollCountsFirstSeq: this.nextSeq.poll_counts.toString() };
+    return this.append({ stream: 'process_start', recvMs: nowMs, slot: null, commitment: null, source: 'M07', payload });
+  }
+
   private record(poolId: string, w: WatchedPool, bar: number, b: Bucket | undefined): PollCounts {
     const barStartMs = bar * POLL_BAR_MS;
     const payload: PollCounts = {
@@ -1066,7 +1086,9 @@ export class RecorderQueue {
     for (; w.nextBar < untilBar; w.nextBar++) {
       const b = w.buckets.get(w.nextBar);
       w.buckets.delete(w.nextBar);
-      this.emit(this.record(poolId, w, w.nextBar, b), this.stampOf(w.nextBar, nowMs));
+      const payload = this.record(poolId, w, w.nextBar, b);
+      if (nowMs < (w.nextBar + 1) * POLL_BAR_MS + this.cfg.pollCloseGraceMs) payload.partial = true;
+      this.emit(payload, this.stampOf(w.nextBar, nowMs));
     }
   }
 }

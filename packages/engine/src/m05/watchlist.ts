@@ -10,6 +10,11 @@
 // slot-holding state (a failed re-check to `rejected`, a blacklist, a failed cooldown re-screen to `evicted`) is
 // unwatched, put on the eviction tail and recorded (`onEviction`, reason `prefilter_recheck`, `rescreen_failed`,
 // `blacklisted` or `cooldown_rescreen_failed`), so a rug's aftermath is recorded (CA-25).
+//
+// Z09-41 (red team RT-12): eviction tails survive a restart. At start the watchlist restores each tail still running
+// from the persisted eviction records (`restoreTails`) and polling resumes; a tail it cannot restore (M04 refuses it,
+// the cap is full, or reads are degraded) is recorded as cut (`tail_restart_cut`), so the manifest ends that pool's
+// eligible span there.
 import type { Pubkey, UnixMs } from '@bot/types';
 import type { CandidateRecord } from './universe.ts';
 
@@ -53,6 +58,11 @@ export interface WatchlistDeps {
   depthOf?(poolId: Pubkey): bigint | null;
   /** Recorded in the manifest (A-M05-03): evictions and tail endings. */
   onEviction(e: { poolId: Pubkey; atMs: UnixMs; reason: string; tailUntilMs: UnixMs | null }): void;
+  /**
+   * At start: the tails of earlier evictions, from the persisted eviction records (their reason and `tail_until`); an
+   * ended one is ignored (Z09-41).
+   */
+  restoreTails(): ReadonlyArray<{ poolId: Pubkey; reason: string; tailUntilMs: UnixMs }>;
   log: { event(level: 'info' | 'warn', code: string, fields: Readonly<Record<string, unknown>>): void };
 }
 
@@ -130,6 +140,18 @@ export function createWatchlist(deps: WatchlistDeps): Watchlist {
     if (r.state === 'rejected') return r.reasons[0] === 'prefilter_recheck' ? 'prefilter_recheck' : 'rescreen_failed';
     if (r.state === 'evicted') return r.reasons[0] ?? 'evicted';
     return 'left_slot';
+  }
+
+  // Z09-41: restore the tails still running, newest end first while the cap allows; the rest are cut on the record.
+  {
+    const now = deps.nowMs();
+    const due = deps.restoreTails().filter((t) => t.tailUntilMs > now).sort((a, b) => b.tailUntilMs - a.tailUntilMs || (a.poolId < b.poolId ? -1 : 1));
+    const cut = (poolId: Pubkey): void => deps.onEviction({ poolId, atMs: now, reason: 'tail_restart_cut', tailUntilMs: null });
+    for (const t of due) {
+      if (tail.has(t.poolId)) continue;
+      if (tail.size >= cfg.tailMaxPools || deps.mode() === 'degraded_reads' || deps.tracker.watch(t.poolId, 'tail') === false) { cut(t.poolId); continue; }
+      tail.set(t.poolId, { untilMs: t.tailUntilMs, reason: t.reason, startedMs: now });
+    }
   }
 
   return {

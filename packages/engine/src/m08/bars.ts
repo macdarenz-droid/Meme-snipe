@@ -21,6 +21,11 @@
 // A bar opens at the state carried in from before `startMs` (the last change seen), or at its first change when there
 // is none (DECISIONS Z09-B1). Its flow is close real vault − carried real vault (consecutive changes telescope).
 // Memory (ruling Z09-23): a pool with nothing open, no count pending and no event for `idleForgetMs` is forgotten.
+//
+// Restarts (ruling Z09-40, rule (a)): a restarted worker's engine starts cold (no carried state, nothing open). A
+// replay does the same at each recorded `process_start` marker through `reset()` (see m08/replay.ts), so live and
+// replay agree across a restart. A count received before its window has ended cannot be a real count (Z09-42): it is
+// refused, counted and logged (`m08.poll_counts_early`).
 import type { DecimalStr, Lamports, Pubkey, SignedLamports, UnixMs } from '@bot/types';
 
 export const BAR_MS = 15_000;
@@ -95,7 +100,7 @@ interface PoolBars {
   stopped: boolean;
 }
 
-export interface BarEngineStats { droppedLate: number; skippedDecimals: number; skippedMalformed: number; unchanged: number; forgotten: number; lateCounts: number }
+export interface BarEngineStats { droppedLate: number; skippedDecimals: number; skippedMalformed: number; unchanged: number; forgotten: number; lateCounts: number; earlyCounts: number }
 export interface BarEngine {
   onSnapshot(s: BarSnapshot, expectedIntervalMs: number): void;
   onPollCounts(r: PollCountsIn): void;
@@ -106,16 +111,19 @@ export interface BarEngine {
   stats(): BarEngineStats;
   /** Pools held in memory (bounded-memory tests). */
   size(): number;
+  /** A process restart in a replay (Z09-40): every pool starts cold, as a restarted worker's engine does. */
+  reset(): void;
 }
+export interface BarLog { event(level: 'warn', code: 'm08.poll_counts_early', fields: Readonly<Record<string, unknown>>): void }
 
-export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS): BarEngine {
+export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS, log?: BarLog): BarEngine {
   const problem = checkBarConfig(cfg);
   if (problem !== null) throw { code: 'E_CONFIG', message: problem };
   const D = cfg.durationMs;
   const windows = D / BAR_MS;
   const pools = new Map<Pubkey, PoolBars>();
   const expected = new Map<Pubkey, number>();
-  const stats: BarEngineStats = { droppedLate: 0, skippedDecimals: 0, skippedMalformed: 0, unchanged: 0, forgotten: 0, lateCounts: 0 };
+  const stats: BarEngineStats = { droppedLate: 0, skippedDecimals: 0, skippedMalformed: 0, unchanged: 0, forgotten: 0, lateCounts: 0, earlyCounts: 0 };
   const barOf = (ms: number): number => Math.floor(ms / D) * D;
   const closeOf = (start: number): number => start + D + cfg.closeGraceMs;
 
@@ -204,6 +212,12 @@ export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS): BarEngine {
     onPollCounts(r) {
       if (!Number.isSafeInteger(r.barStartMs) || r.barStartMs % BAR_MS !== 0 || r.durationMs !== BAR_MS || r.skippedBars !== undefined) return;
       if (!Number.isSafeInteger(r.successfulPolls) || r.successfulPolls < 0 || !Number.isSafeInteger(r.receivedAtMs)) return;
+      // Z09-42: a count received before its window ended is not a count of that window.
+      if (r.receivedAtMs < r.barStartMs + BAR_MS) {
+        stats.earlyCounts += 1;
+        log?.event('warn', 'm08.poll_counts_early', { pool: r.poolId, early_ms: r.barStartMs + BAR_MS - r.receivedAtMs });
+        return;
+      }
       const p = poolOf(r.poolId, r.barStartMs);
       const start = barOf(r.barStartMs);
       if (p.stopped) return;
@@ -244,5 +258,9 @@ export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS): BarEngine {
 
     stats: () => ({ ...stats }),
     size: () => pools.size,
+    reset() {
+      pools.clear();
+      expected.clear();
+    },
   };
 }
