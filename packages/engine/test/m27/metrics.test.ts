@@ -246,6 +246,31 @@ describe('1 s history and 1-minute rollups (B-M27-01 logic 2)', () => {
     assert.equal(reg.ringBytes(), 5 * CHUNK_BYTES);    // the current hour of the 5 series
   });
 
+  it('Z10-38: at the budget, a new hour reuses the freed chunks: no new chunk is made, and old values do not leak in (fails before: 5 an hour)', () => {
+    const { reg, clock } = registry({ ringBudgetBytes: 5 * CHUNK_BYTES });
+    reg.gauge('rss_bytes', {}).set(1);
+    reg.tick();
+    clock.advance(10_000);                             // Z10-57: a value 10 s into the hour, in every chunk
+    reg.gauge('rss_bytes', {}).set(2);
+    reg.tick();
+    clock.advance(3_600_000 - 10_000);
+    const Orig = globalThis.Float64Array;
+    let made = 0;
+    globalThis.Float64Array = new Proxy(Orig, { construct(t, args, nt) { if (args[0] === CHUNK_BYTES / 8) made++; return Reflect.construct(t, args, nt === globalThis.Float64Array ? t : nt) as object; } });
+    try {
+      reg.tick();                                      // the next hour, on reused chunks
+      const hour = Math.floor(clock.nowMs() / 1000);
+      assert.deepEqual(reg.points('rss_bytes', {}, hour + 10, hour + 10), [], 'no value left over from the reused chunk');
+      for (let h = 1; h <= 2; h++) { clock.advance(3_600_000); reg.tick(); }
+    } finally {
+      globalThis.Float64Array = Orig;
+    }
+    assert.equal(made, 0);
+    assert.equal(reg.ringBytes(), 5 * CHUNK_BYTES);
+    const now = Math.floor(clock.nowMs() / 1000);
+    assert.equal(reg.points('rss_bytes', {}, now - 3_599, now).length, 1, 'only the tick written this hour');
+  });
+
   it('stays inside the memory budget: the oldest hour is freed first and counted', () => {
     const { reg, clock } = registry({ ringBudgetBytes: 5 * CHUNK_BYTES });
     reg.gauge('rss_bytes', {}).set(1);

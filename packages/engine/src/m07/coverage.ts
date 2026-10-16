@@ -40,8 +40,11 @@ export interface PollCountRecord {
 export interface CoverageInput {
   dayUtc: string;
   watched: readonly WatchInterval[];
-  /** The day's poll_counts records, plus the next day's first bar (its late polls may belong to 23:59:45). */
-  pollCounts: readonly PollCountRecord[];
+  /**
+   * The day's poll_counts records, plus the next day's first bar (its late polls may belong to 23:59:45). Read once,
+   * in order, so the daily job can stream them (card Z10).
+   */
+  pollCounts: Iterable<PollCountRecord>;
   gaps: ReadonlyArray<{ stream: string; gap: ManifestGap }>;
   /** Records written per stream that day (from the manifests). */
   records: Readonly<Record<string, number>>;
@@ -94,7 +97,13 @@ export function computeCoverage(input: CoverageInput): { report: CoverageReport;
   const observed = new Set<string>();
   const minuteOf = (ms: number): number => Math.floor(ms / MINUTE_MS) * MINUTE_MS;
   const k = (poolId: string, ms: number): string => `${poolId}\u0000${minuteOf(ms)}`;
+  // One pass over the poll counts (they may be a stream): observed minutes, and the day's successful polls per stream.
+  const polledByStream = new Map<string, number>();
   for (const r of input.pollCounts) {
+    if (r.barStartMs >= a && r.barStartMs < b) {
+      const s = STREAM_OF_CLASS[r.priorityClass as PriorityClass];
+      if (s !== undefined) polledByStream.set(s, (polledByStream.get(s) ?? 0) + r.successfulPolls);
+    }
     if (r.skippedBars !== undefined) continue;
     if (r.successfulPolls > 0) observed.add(k(r.poolId, r.barStartMs));
     if (r.latePolls !== undefined && r.latePolls > 0 && r.lateFromBarStartMs !== undefined) observed.add(k(r.poolId, r.lateFromBarStartMs));
@@ -150,11 +159,7 @@ export function computeCoverage(input: CoverageInput): { report: CoverageReport;
     const ms = clip(w.fromMs, w.toMs, a, b);
     entry(STREAM_OF_CLASS[w.priorityClass]).expected += Math.floor(ms / w.pollIntervalMs);
   }
-  for (const r of input.pollCounts) {
-    if (r.barStartMs < a || r.barStartMs >= b) continue;
-    const s = STREAM_OF_CLASS[r.priorityClass as PriorityClass];
-    if (s !== undefined) entry(s).recorded += r.successfulPolls;
-  }
+  for (const [s, n] of polledByStream) entry(s).recorded += n;
   for (const { stream, gap } of input.gaps) entry(stream).gaps.push({ fromMs: gap.fromMs, toMs: gap.toMs, reason: gap.reason });
   const report: CoverageReport = {
     dayUtc: input.dayUtc,

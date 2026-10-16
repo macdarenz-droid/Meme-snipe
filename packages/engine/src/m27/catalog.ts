@@ -219,6 +219,15 @@ export const METRICS = {
   service_budget_remaining: gauge('service'),
   pumpportal_notices_total: counter('kind'),                    // A-M03-01 (card Z08)
   pumpportal_dropped_total: counter('reason'),
+  // Card Z10 (the recorder's composition root; ruling Z09-11): M03 backfill, M05 universe and M08 bars. M10 and M13 do
+  // not run in the recorder process (the cost model and the Phase 0 study run offline), so they register nothing.
+  discoveries_total: counter('source'),                         // A-M03-02: pools verified and handed to M05
+  backfill_stalled: gauge(),                                    // A-M03-02 (Z09-21): 1 while the cursor is held at its cap
+  candidates: gauge('state'),                                   // A-M05-01: active candidates by state
+  facts_refresh_pools: gauge(),                                 // Z09-39: pools asked for fresh facts in the last hour
+  facts_queued_stale_share_bps: gauge(),                        // Z09-51: queued_stale asks as a share of the hourly ceiling
+  bars_closed_total: counter(),                                 // A-M08-01: closed 60 s bars
+  bars_counts_refused_total: counter('reason'),                 // A-M08-01 (Z09-32, Z09-42): late or early poll counts
   dexscreener_calls_total: counter('status'),                   // A-M03-04 (card Z08)                // A-M14-05 (card Z08): refused by the account ledger before sending
 } as const;
 

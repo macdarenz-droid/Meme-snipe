@@ -38,6 +38,15 @@ function recordOf(row: RowOf<'candidate'>): CandidateRecord {
   };
 }
 
+/**
+ * The due-retry scan (`due`). Z10 (ruling Z09-23): `+"state"` keeps SQLite's planner off `candidate_state`, so without
+ * ANALYZE statistics it takes the partial index on `cooldown_until` (migration 0002). Measured with
+ * packages/engine/scripts/measure-due.ts: 110,000 rows, 44-64 ms before, 1.4 ms after; 1,000,000 rows, 450 ms before,
+ * 0.9 ms after (docs/DECISIONS.md, Z10).
+ */
+export const DUE_SQL = `SELECT "candidate_id" FROM "candidate" WHERE +"state" IN (${INACTIVE_WITH_TIMER.map(() => '?').join(', ')})
+  AND "cooldown_until" IS NOT NULL AND "cooldown_until" <= ? ORDER BY "cooldown_until", "candidate_id" LIMIT ?`;
+
 export function m24CandidateStore(db: Db, o: { newId(): string; nowMs(): UnixMs }): CandidateStore {
   const write = (fn: () => { ok: true; value: undefined } | { ok: false; error: { code: 'E_STATE_CHANGED' } }) => {
     try { return fn(); } catch { return { ok: false as const, error: { code: 'E_WRITE' as const } }; }
@@ -54,8 +63,7 @@ export function m24CandidateStore(db: Db, o: { newId(): string; nowMs(): UnixMs 
       return repos.candidate.find(db.reader(), { mint }).map(recordOf);
     },
     due(nowMs: UnixMs, limit: number) {
-      const ids = db.reader().all(`SELECT "candidate_id" FROM "candidate" WHERE "state" IN (${INACTIVE_WITH_TIMER.map(() => '?').join(', ')})
-        AND "cooldown_until" IS NOT NULL AND "cooldown_until" <= ? ORDER BY "cooldown_until", "candidate_id" LIMIT ?`, ...INACTIVE_WITH_TIMER, nowMs, Math.max(0, Math.floor(limit)));
+      const ids = db.reader().all(DUE_SQL, ...INACTIVE_WITH_TIMER, nowMs, Math.max(0, Math.floor(limit)));
       return ids.map((r) => repos.candidate.get(db.reader(), { candidateId: String(r.candidate_id) })).filter((x) => x !== null).map((x) => recordOf(x as RowOf<'candidate'>));
     },
     apply(prev, next, t: Transition) {

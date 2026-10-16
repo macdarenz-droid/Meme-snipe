@@ -62,7 +62,7 @@ export function createPollSource(deps: { reader: AccountsReader; scheduler: Sche
     busy.add(cls);
     try {
       await Promise.all(packBatches(mine, deps.settings.maxAccountsPerCall).map(async (batch) => {
-        const r = await deps.reader.read(batch.flatMap((p) => p.accounts), { priority: priorityOf(cls) });
+        const r = await deps.reader.read(batch.flatMap((p) => p.accounts), { priority: priorityOf(cls), purpose: 'poll' });
         if (!r.ok) {
           deps.log.event('warn', 'm04.poll_failed', { class: cls, error_code: r.error.code });
           return;

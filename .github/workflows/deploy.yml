@@ -68,6 +68,9 @@ jobs:
           ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
           JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # Z10: the keyless recorder's read providers (both or neither; publish.sh base64-encodes them in the bundle).
+          RPC_SHYFT_URL: ${{ secrets.RPC_SHYFT_URL }}
+          RPC_CHAINSTACK_URL: ${{ secrets.RPC_CHAINSTACK_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER: ops/watchdog/deploy/node_modules/.bin/wrangler --config packages/ops/wrangler.toml

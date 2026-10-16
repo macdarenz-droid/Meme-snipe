@@ -24,9 +24,12 @@ export function dayManifests(dataDir: string, dayUtc: string, fs: ReadFs = nodeF
   return [...byPath.values()];
 }
 
-/** poll_counts records of the given manifests' segments (gzip only; a segment that cannot be read adds nothing). */
-export function pollCountsOf(dataDir: string, manifests: readonly SegmentManifest[], fs: ReadFs = nodeFs): PollCountRecord[] {
-  const out: PollCountRecord[] = [];
+/**
+ * poll_counts records of the given manifests' segments, one segment at a time (gzip only; a segment that cannot be
+ * read adds nothing). Lazy: only the segment being read is in memory, so the daily job's heap is bounded by one hour of
+ * poll_counts, not a whole day (card Z10: a day held at once kept about 100 MiB of RSS after the job).
+ */
+export function* eachPollCount(dataDir: string, manifests: readonly SegmentManifest[], fs: ReadFs = nodeFs): Generator<PollCountRecord> {
   for (const m of manifests) {
     if (m.stream !== 'poll_counts' || m.codec !== 'gzip') continue;
     const file = join(dataDir, m.path);
@@ -37,13 +40,18 @@ export function pollCountsOf(dataDir: string, manifests: readonly SegmentManifes
     } catch {
       continue;
     }
-    for (const line of text.split('\n')) {
-      if (line === '') continue;
-      const p = (JSON.parse(line) as { payload: PollCountRecord }).payload;
-      out.push(p);
+    for (let at = 0; at < text.length;) {
+      const nl = text.indexOf('\n', at);
+      const end = nl === -1 ? text.length : nl;
+      if (end > at) yield (JSON.parse(text.slice(at, end)) as { payload: PollCountRecord }).payload;
+      at = end + 1;
     }
   }
-  return out;
+}
+
+/** poll_counts records of the given manifests' segments, as one array (see eachPollCount). */
+export function pollCountsOf(dataDir: string, manifests: readonly SegmentManifest[], fs: ReadFs = nodeFs): PollCountRecord[] {
+  return [...eachPollCount(dataDir, manifests, fs)];
 }
 
 export interface DailyCoverage { report: CoverageReport; detail: CoverageDetail }
@@ -55,7 +63,11 @@ export function dailyCoverage(o: { dataDir: string; dayUtc: string; universeMani
   const manifests = dayManifests(o.dataDir, o.dayUtc, fs);
   // The next day's first bar may carry late polls of the 23:59:45 bar (ruling 38, in bars since Z09-32).
   const nextFirstHour = dayManifests(o.dataDir, next, fs).filter((m) => m.hourUtc === `${next}T00`);
-  const pollCounts = [...pollCountsOf(o.dataDir, manifests, fs), ...pollCountsOf(o.dataDir, nextFirstHour, fs).filter((r) => r.barStartMs === start + DAY_MS)];
+  const dataDir = o.dataDir;
+  const pollCounts = (function* (): Generator<PollCountRecord> {
+    yield* eachPollCount(dataDir, manifests, fs);
+    for (const r of eachPollCount(dataDir, nextFirstHour, fs)) if (r.barStartMs === start + DAY_MS) yield r;
+  })();
   const gaps: Array<{ stream: string; gap: ManifestGap }> = [];
   const records: Record<string, number> = {};
   for (const m of manifests) {

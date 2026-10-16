@@ -105,6 +105,8 @@ managed() {
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
     /etc/systemd/system/srv-zeroed_pull-*.mount) return 0 ;;
     /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
+    # Z10: the keyless recorder's root-owned engine files (ceilings, config, provider allocation).
+    /etc/bot/ceilings.json | /etc/bot/config.json | /etc/bot/rpc-allocation.json) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
   return 1
@@ -248,6 +250,15 @@ install -d -m 2730 -o zeroed-worker -g zeroed-spool /var/lib/zeroed-spool
 install -d -m 2770 -o zeroed-worker -g zeroed-sentinel /var/lib/zeroed-usage
 install -d -m 0755 -o root -g root /srv/zeroed_pull /etc/zeroed/pull-keys
 mountpoint -q /srv/zeroed_pull/md || install -d -m 0755 -o root -g root /srv/zeroed_pull/md
+# Z10: the keyless recorder's M24 database (/var/lib/zeroed/db/bot.db) is created only once, by an explicit first-start
+# marker (m24/db.ts: a missing database file is otherwise refused, so a lost one is never silently made again). The
+# marker is issued once per host: /var/lib/zeroed-host/bot_db_marker_issued records it, and a later install never
+# issues a second one. The recorder removes the marker when it has made the database.
+if [ ! -e /var/lib/zeroed/db/bot.db ] && [ ! -e /var/lib/zeroed-host/bot_db_marker_issued ]; then
+  install -d -m 0700 -o zeroed-worker -g zeroed-worker /var/lib/zeroed /var/lib/zeroed/init
+  install -m 0600 -o zeroed-worker -g zeroed-worker /dev/null /var/lib/zeroed/init/first-start
+  date -u +%FT%TZ > /var/lib/zeroed-host/bot_db_marker_issued
+fi
 
 say "Host key"
 # The host's own age key: backups are encrypted to it (the owner's key can be added later).

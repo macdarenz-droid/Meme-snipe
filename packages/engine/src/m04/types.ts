@@ -43,7 +43,8 @@ export interface PoolSnapshot<P extends PoolStateLike> {
 /** One batched read at `confirmed` (`getMultipleAccounts`, base64) through M14. */
 export interface ReadResult { contextSlot: Slot; providerLabel: string; latencyMs: number; accounts: Array<RawAccount | null> }
 export interface AccountsReader {
-  read(keys: readonly Pubkey[], o: { priority: 0 | 1 | 2 | 3 | 4; provider?: string }): Promise<Result<ReadResult, { code: string; message: string }>>;
+  /** `purpose: 'poll'` marks the class pollers' batches (source.ts), so a caller can tell them from M04's other reads (ruling Z10-34). */
+  read(keys: readonly Pubkey[], o: { priority: 0 | 1 | 2 | 3 | 4; provider?: string; purpose?: 'poll' }): Promise<Result<ReadResult, { code: string; message: string }>>;
 }
 
 /**

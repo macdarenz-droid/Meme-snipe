@@ -27,6 +27,8 @@ export const M07_CONFIG = [
     label: 'Free disk floor', description: 'Free space below this stops recording once no pulled segment is left to delete.' },
   { ...base, key: 'recorder.disk_check_ms', type: 'duration_ms', unit: 'ms', displayUnit: 'ms', min: '10000', max: '600000', step: '1', default: 60_000,
     label: 'Disk check', description: 'How often disk use and receipts are checked.' },
+  { ...base, key: 'recorder.record_max_bytes', type: 'int', unit: 'bytes', displayUnit: 'bytes', min: '1', max: '1048576', step: '1', default: 65_536,
+    label: 'Record size cap', description: 'Largest payload of one record (SPEC-A A-M07-02); the daily universe manifest has its own cap (Z10-20).' },
   { ...base, key: 'recorder.research_pubkey', type: 'string', default: '/etc/bot/research-ed25519.pub.pem', label: 'Research key',
     description: 'Root-owned public key that signs pull receipts.' },
 ] as const satisfies readonly ConfigFieldDef[];

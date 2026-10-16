@@ -53,6 +53,8 @@ export interface DiskDeps {
 export interface Segment { path: string; sha256: string; bytes: number; hourStartMs: UnixMs }
 export interface DiskCheck {
   usedPct: number; freeBytes: number; recorderBytes: number; receipted: number; unreceipted: number;
+  /** Ruling Z10-41: closed segments past retention with no valid receipt (the `M07.unpulled_segments` condition). */
+  unpulledOld: number;
   deleted: string[]; halted: boolean; reasons: string[];
 }
 
@@ -160,11 +162,37 @@ export class DiskManager {
     const drop = (s: Segment): void => {
       if (this.remove(s)) { deleted.push(s.path); recorderBytes -= s.bytes; freeBytes += s.bytes; }
     };
+    // Ruling Z10-26: the watch log's day files count against the same budget from the start.
+    const watchDir = join(this.deps.dataDir, 'watch');
+    const watchFiles = this.fs.existsSync(watchDir)
+      ? (this.fs.readdirSync(watchDir) as string[]).filter((n) => /^\d{4}-\d{2}-\d{2}\.ndjson$/.test(n)).sort().map((name) => ({ name, bytes: this.fs.statSync(join(watchDir, name)).size }))
+      : [];
+    for (const w of watchFiles) recorderBytes += w.bytes;
     const cutoff = now - p.retentionDays * DAY_MS;
     for (const s of closed) if (s.hourStartMs + 3_600_000 <= cutoff && pulled(s)) drop(s);
     for (const s of closed) {
       if (!pressured()) break;
       if (!deleted.includes(s.path) && pulled(s)) drop(s);
+    }
+    // Ruling Z10-26: a watch day file (the coverage denominator) goes once its day is past retention and no segment of
+    // that day is left (each was receipted and deleted), so a day's coverage can be rebuilt while any of its recording
+    // is on the host. Today's file and any day with a segment left are kept.
+    const daysLeft = new Set(closed.filter((s) => !deleted.includes(s.path)).map((s) => s.path.slice(0, 10)));
+    for (const d of (this.fs.readdirSync(this.deps.dataDir) as string[]).filter(isDayName)) {
+      if ((this.fs.readdirSync(join(this.deps.dataDir, d)) as string[]).some(isHourName)) daysLeft.add(d);
+    }
+    for (const w of watchFiles) {
+      const day = w.name.slice(0, 10);
+      if (Date.parse(`${day}T00:00:00Z`) + DAY_MS > cutoff || daysLeft.has(day)) continue;
+      try {
+        this.fs.unlinkSync(join(watchDir, w.name));
+        recorderBytes -= w.bytes;
+        freeBytes += w.bytes;
+        deleted.push(`watch/${w.name}`);
+        this.deps.log('info', 'M07.watch_deleted', { day });
+      } catch {
+        /* kept; tried again at the next check */
+      }
     }
     const left = closed.filter((s) => !deleted.includes(s.path));
     const unreceiptedOld = left.filter((s) => !pulled(s) && s.hourStartMs + 3_600_000 <= cutoff).length;
@@ -187,7 +215,7 @@ export class DiskManager {
       if (this.deps.writer.resume() !== false) this.deps.log('info', 'M07.disk_ok_resume', { reason });
     }
     return {
-      usedPct: usedPct(), freeBytes, recorderBytes, receipted: left.filter(pulled).length, unreceipted: left.filter((s) => !pulled(s)).length,
+      usedPct: usedPct(), freeBytes, recorderBytes, receipted: left.filter(pulled).length, unreceipted: left.filter((s) => !pulled(s)).length, unpulledOld: unreceiptedOld,
       deleted, halted: this.deps.writer.isHalted(), reasons,
     };
   }

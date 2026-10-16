@@ -55,7 +55,21 @@ for k in "${API_NAMES[@]}"; do
   [ -n "${v[$k]:-}" ] || { note "Rejected the handoff: $k is missing." "rejected"; exit 0; }
 done
 
+# Z10: the keyless recorder's read providers, when Deploy had them: both or neither, base64 in the bundle, each one
+# https:// URL. Checked before anything is stored, like the keys above.
+declare -A rpc_url=()
+for k in RPC_SHYFT_URL RPC_CHAINSTACK_URL; do
+  [ -n "${v[${k}_B64]:-}" ] || continue
+  url="$(printf '%s' "${v[${k}_B64]}" | base64 -d 2>/dev/null || true)"
+  [[ "$url" =~ ^https://[^[:space:]]{1,500}$ ]] || { note "Rejected the handoff: $k is not one https:// URL." "rejected"; exit 0; }
+  rpc_url[$k]="$url"
+done
+url=""
+[ "${#rpc_url[@]}" = 0 ] || [ "${#rpc_url[@]}" = 2 ] || { note "Rejected the handoff: only one of RPC_SHYFT_URL and RPC_CHAINSTACK_URL." "rejected"; exit 0; }
+
 for k in "${API_NAMES[@]}"; do printf '%s' "${v[$k]}" | store_cred "${k,,}"; done
+for k in "${!rpc_url[@]}"; do printf '%s' "${rpc_url[$k]}" | store_cred "${k,,}"; done
+rpc_url=()
 # Watchdog (when Deploy had the Cloudflare secrets): its address and the heartbeat key.
 watchdog="${v[WATCHDOG_URL]:-}"
 if [ -n "$watchdog" ] && [[ "$watchdog" =~ ^https://[A-Za-z0-9.-]+\.workers\.dev$ ]] && [ -n "${v[HEARTBEAT_HMAC_KEY]:-}" ]; then

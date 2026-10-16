@@ -5,7 +5,8 @@
 # nothing). Waits until the server downloaded it, or 15 minutes, then deletes the release and its tag.
 #
 # Inputs (environment): DEPLOY_CODE, ISSUED (run id, increasing), GH_REPO, GITHUB_SHA and the secrets
-# HELIUS_API_KEY ALCHEMY_API_KEY JUPITER_API_KEY TELEGRAM_BOT_TOKEN. With CLOUDFLARE_API_TOKEN and
+# HELIUS_API_KEY ALCHEMY_API_KEY JUPITER_API_KEY TELEGRAM_BOT_TOKEN, and optionally RPC_SHYFT_URL and RPC_CHAINSTACK_URL
+# (Z10). With CLOUDFLARE_API_TOKEN and
 # CLOUDFLARE_ACCOUNT_ID (and WRANGLER, the locked tool from ops/watchdog/deploy) it also deploys the
 # watchdog, sets its secrets, and hands its address, a fresh heartbeat key and the webhook secret to the
 # server in the same bundle (the server sets the Telegram webhook once paired).
@@ -34,6 +35,21 @@ for n in "${NAMES[@]}"; do
   [[ "$val" =~ $VALUE_RE ]] || die "$n has characters the server does not accept."
 done
 [ "${#missing[@]}" -eq 0 ] || die "Missing repository secrets: ${missing[*]}"
+# Z10: the keyless recorder's two read providers (RPC_SHYFT_URL, RPC_CHAINSTACK_URL; the secrets provider-reads.yml
+# already uses). Optional, but both or neither. A provider URL holds characters the bundle's value rule refuses (? &),
+# so each goes base64-encoded (RPC_*_URL_B64) and the server decodes it into its own credential.
+RPC_NAMES=(RPC_SHYFT_URL RPC_CHAINSTACK_URL)
+rpc_set=0
+for n in "${RPC_NAMES[@]}"; do [ -z "${!n:-}" ] || rpc_set=$((rpc_set + 1)); done
+case "$rpc_set" in
+  0) ;;
+  2)
+    for n in "${RPC_NAMES[@]}"; do [[ "${!n}" =~ ^https://[^[:space:]]{1,500}$ ]] || die "$n must be one https:// URL."; done
+    # GitHub masks the secrets themselves, not their base64; mask those first (a workflow command is never shown).
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then for n in "${RPC_NAMES[@]}"; do echo "::add-mask::$(printf '%s' "${!n}" | base64 -w0)"; done; fi
+    ;;
+  *) die "Set both RPC_SHYFT_URL and RPC_CHAINSTACK_URL, or neither." ;;
+esac
 
 recipient="$(printf '%s' "$DEPLOY_CODE" | node "$here/../host/files/usr/local/lib/zeroed/derive-key.mjs" | age-keygen -y)" ||
   die "DEPLOY_CODE must be the 6 words the server shows."
@@ -76,6 +92,9 @@ bundle="$(mktemp -d)/bundle.age"
   printf 'ZEROED_BUNDLE=1\n'
   printf 'ISSUED=%s\n' "$ISSUED"
   for n in "${NAMES[@]}"; do printf '%s=%s\n' "$n" "${!n}"; done
+  if [ "$rpc_set" = 2 ]; then
+    for n in "${RPC_NAMES[@]}"; do printf '%s_B64=%s\n' "$n" "$(printf '%s' "${!n}" | base64 -w0)"; done
+  fi
   if [ -n "$WATCHDOG_URL" ]; then
     printf 'WATCHDOG_URL=%s\n' "$WATCHDOG_URL"
     printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$WEBHOOK_SECRET"

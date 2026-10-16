@@ -12,10 +12,11 @@
 //   grade (infinite) never returns `E_STALE`, takes the freshest of up to two attempts (a second one when the first
 //   failed or is more than `build_lag_slots` behind) and alerts past `exit_lag_alert_slots`.
 //   Reads of one pool coalesce; an exit read in flight serves entry callers too (edge 3), who apply their own limit.
-// - A staleness monitor every 500 ms publishes `pool.stale` once per episode past `stale_lag_slots`, and `pool.fresh`.
+// - A staleness monitor every 500 ms publishes `pool.stale` once per episode past `stale_lag_slots` plus the pool's
+//   class interval in slots (ruling Z10-17), and `pool.fresh`.
 import { createHash } from 'node:crypto';
 import type { Clock, Pubkey, Result, Slot, UnixMs } from '@bot/types';
-import { SnapshotRing } from './ring.ts';
+import { RingBuffers, SnapshotRing } from './ring.ts';
 import { capOf, checkM04Settings, intervalOf, M04_DEFAULTS, type M04Settings, type UniverseLimits } from './settings.ts';
 import { createPollSource, thrownCode, type PoolSource, type SourceRecord } from './source.ts';
 import type {
@@ -64,6 +65,8 @@ export interface PoolTracker<P extends PoolStateLike> {
   freshRead(poolId: Pubkey, maxLagSlots: number): Promise<Result<PoolSnapshot<P>, FreshReadError<P>>>;
   /** True while a clock fault is confirmed (rulings Z07-9, Z07-13; tests and health). */
   clockFault(): boolean;
+  /** Ruling Z10-41: true for the rest of a UTC day once its verification cap (`pool_tracker.verify_daily_cap`) is reached. */
+  verifyCapReached(): boolean;
   /** Pools watched and ready (read once, mint known). */
   ready(): Pubkey[];
   /** In-flight `freshRead` entries (tests: MINOR-2). */
@@ -93,7 +96,8 @@ export const VERIFY_SPACING_MS = 2_000;
 /**
  * POLICY (ruling Z07-25): verification reads back off. For the first `VERIFY_FAST_MS` of an episode they are at most
  * one every `VERIFY_SPACING_MS`, then at most one every `VERIFY_SLOW_SPACING_MS` (a 10-minute fault costs about 48
- * P2 reads, not 300; Chainstack's owner rate is one read every 2 s, ARCH 11.2). An episode starts at the first request
+ * reads, not 300; Chainstack's owner rate is one read every 2 s, ARCH 11.2). Ruling Z10-15: at P1, at most
+ * `pool_tracker.verify_daily_cap` a UTC day. An episode starts at the first request
  * after `VERIFY_SLOW_SPACING_MS` with none. The reads go through M14, whose limiter holds each provider to 50% of its
  * documented limit.
  */
@@ -129,6 +133,11 @@ export interface TrackerDeps<P extends PoolStateLike> {
   source?: PoolSource;
   /** M14's providers in failover order (A-M04-02's "next provider"). */
   providerOrder(): readonly string[];
+  /**
+   * Ruling Z10-41: where the day's verification count is kept (the recorder: M24 `kv_state`), so a restart neither
+   * resets the cap nor forgets that it was reached. Without it the count is in memory only.
+   */
+  verifyCount?: { load(): { day: number; count: number } | null; save(v: { day: number; count: number }): void };
 }
 
 /** sha256 over the three raw accounts' data, each prefixed by its length (C-06; all three exist when a state built). */
@@ -156,6 +165,8 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   const timers: Array<{ cancel: () => void }> = [];
   let mintsBusy = false;
 
+  /** Ruling Z10-38: ring buffers are reused; spares per size at most the sum of the watch caps. */
+  const ringBuffers = new RingBuffers(capOf(settings, 'position') + capOf(settings, 'candidate') + capOf(settings, 'tail'));
   const capacity = (cls: PoolClass): number => Math.ceil(settings.historyMs / intervalOf(settings, cls));
   /** The highest slot a provider may claim now: the slot clock's estimate plus `max_provider_lag_slots`. */
   const ceiling = (): Slot => (deps.chain.expectedSlot(deps.clock.nowMs()) + BigInt(settings.maxProviderLagSlots)) as Slot;
@@ -180,7 +191,9 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   }
 
   function drop(poolId: Pubkey): void {
+    const gone = pools.get(poolId);
     if (!pools.delete(poolId)) return;
+    gone?.ring?.release();
     inflight.delete(poolId);
     deps.outputs.unwatched(poolId);
     restartSource();
@@ -231,7 +244,8 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       deps.log.event('warn', 'm04.first_read_failed', { pool: poolId, error_code: m.ok ? 'E_MINT' : m.error.code });
       return;
     }
-    Object.assign(now, { addr: addr.value, canonical, mint, ring: new SnapshotRing(addr.value, deps.model, capacity(now.cls), providers) });
+    now.ring?.release();
+    Object.assign(now, { addr: addr.value, canonical, mint, ring: new SnapshotRing(addr.value, deps.model, capacity(now.cls), providers, ringBuffers) });
     restartSource();
   }
 
@@ -271,6 +285,25 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   let lastVerifyMs = -Infinity;
   let verifySinceMs = -Infinity;
   let lastVerifyAskMs = -Infinity;
+  /** Ruling Z10-15: verification reads this UTC day (`pool_tracker.verify_daily_cap`), kept through a restart (Z10-41). */
+  const savedVerify = deps.verifyCount?.load() ?? null;
+  let verifyDay = savedVerify?.day ?? -1;
+  let verifiesToday = savedVerify?.count ?? 0;
+  const dayNow = (): number => Math.floor(deps.clock.nowMs() / 86_400_000);
+  /**
+   * Ruling Z10-50: a save that fails logs one warning (until a save works again) and keeps the in-memory count, which
+   * still bounds the reads; it never throws into the poll batch.
+   */
+  let saveFailing = false;
+  const saveVerifyCount = (day: number): void => {
+    try {
+      deps.verifyCount?.save({ day, count: verifiesToday });
+      saveFailing = false;
+    } catch (e) {
+      if (!saveFailing) deps.log.event('warn', 'm04.verify_count_save_failed', { error_code: thrownCode(e) });
+      saveFailing = true;
+    }
+  };
 
   /**
    * MINOR-R6 and MAJOR-R6b (Z07-22): lag against max(the clock's estimate, M15's highest slot seen when it is within
@@ -518,9 +551,24 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     lastVerifyAskMs = now;
     const spacing = now - verifySinceMs < VERIFY_FAST_MS ? VERIFY_SPACING_MS : VERIFY_SLOW_SPACING_MS;
     if (verifying || now - lastVerifyMs < spacing) return;
+    const day = Math.floor(now / 86_400_000);
+    if (day !== verifyDay) { verifyDay = day; verifiesToday = 0; }
+    if (verifiesToday >= settings.verifyDailyCap) {
+      // Past the cap: no verification until the next UTC day, so past-ceiling reads stay unverified and unstored, and
+      // entries stay refused (the Z07 fail-closed behaviour). One critical line a day.
+      if (verifiesToday === settings.verifyDailyCap) {
+        verifiesToday++;
+        saveVerifyCount(day);
+        deps.log.event('critical', 'm04.verify_cap_reached', { cap: settings.verifyDailyCap, day: new Date(day * 86_400_000).toISOString().slice(0, 10) });
+      }
+      return;
+    }
+    verifiesToday++;
+    saveVerifyCount(day);
     verifying = true;
     lastVerifyMs = now;
-    void readPool(poolId, 2, nextProvider(provider), false)
+    // Ruling Z10-15: P1, so a metered peer (the backup) can confirm or refute (M14 refuses P2+ there).
+    void readPool(poolId, 1, nextProvider(provider), false)
       .then((r) => { if (source !== null) strike(source, r.by, poolId); })
       .catch(caught('verify'))
       .finally(() => { verifying = false; });
@@ -637,6 +685,19 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     return { ok: true, value: best };
   }
 
+  /**
+   * Ruling Z10-17 as corrected by Z10-19 (amends Z07): a tail pool's stale lag is `stale_lag_slots` plus its poll
+   * interval in slots, so a pool polled every 10 s does not turn stale and fresh at every poll. Every other class keeps
+   * `stale_lag_slots` alone (SPEC-A A-M04-02 logic 4: M21 rejects entries on a watched pool's `pool.stale`, so its
+   * threshold is never looser; positions keep it too, the stricter choice). With no usable slot time (0, NaN, ±∞) the
+   * interval adds nothing. Entry reads are not changed: `freshRead(pool, maxLagSlots)` keeps the caller's limit.
+   */
+  function staleLimitSlots(cls: 'position' | 'candidate' | 'tail'): number {
+    if (cls !== 'tail') return settings.staleLagSlots;
+    const ms = deps.chain.slotDurationMsEstimate();
+    return settings.staleLagSlots + (Number.isFinite(ms) && ms > 0 ? Math.ceil(intervalOf(settings, cls) / ms) : 0);
+  }
+
   function monitor(): void {
     const now = deps.clock.nowMs();
     for (const [poolId, e] of pools) {
@@ -646,7 +707,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
       deps.metrics?.gauge('pool_snapshot_age_ms', { pool: poolId }, now - last.pool.observedAtMs);
       const lag = finite(lagOf(last.providerSlot));
       const ageMs = now - last.pool.observedAtMs;
-      if (lag > settings.staleLagSlots || ageMs > settings.staleAgeMs + intervalOf(settings, e.cls)) {
+      if (lag > staleLimitSlots(e.cls) || ageMs > settings.staleAgeMs + intervalOf(settings, e.cls)) {
         if (e.staleSinceMs !== null) continue;
         e.staleSinceMs = now;
         deps.log.event('warn', 'm04.pool_stale', { pool: poolId, lag_slots: lag, age_ms: ageMs });
@@ -750,6 +811,7 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
     ready: () => [...pools.values()].filter((e) => e.ring !== null).map((e) => (e.addr as PoolAddresses).poolId),
     inflightCount: () => inflight.size,
     clockFault: () => fault !== null,
+    verifyCapReached: () => verifyDay === dayNow() && verifiesToday >= settings.verifyDailyCap,
     ringBytes: () => [...pools.values()].reduce((n, e) => n + (e.ring?.bytes ?? 0), 0),
     start() {
       every(settings.staleCheckMs, monitor);

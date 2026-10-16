@@ -10,6 +10,15 @@ TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop 
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
 SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
+# Z10: the keyless recorder's limits, from its 48 h soak (docs/DECISIONS.md, Z10): heap peak 17.8 MiB and RSS peak
+# 278 MiB after F7 (35% of the unit's MemoryMax=800M), committed heap peak 66 MiB. The heap limit leaves about 4x that
+# committed peak; the soak fails above 75% of MemoryMax (600 MiB), the line of the recorder's own memory alert.
+RECORDER_HEAP_MB=256
+RECORDER_RSS_LIMIT_MB=600
+# Ruling Z10-30: the keyless recorder has no exits to protect, so it must not outlive tailscaled (the owner's only way
+# in), the sentinel or the update unit (all at 0 or below) in a host-wide OOM: worker-start raises its score to this
+# before it starts (raising needs no privilege). The unit keeps -500 (ARCH 14.3, CA-26) for the worker that owns exits.
+RECORDER_OOM_SCORE_ADJ=500
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
@@ -102,6 +111,73 @@ unit_sandbox() {
     grep -Ev '^(Type|User|Group|SupplementaryGroups|Environment|EnvironmentFile|ExecStart|ExecStartPre|ExecStop|Restart|RestartSec|TimeoutStopSec|LoadCredential|LoadCredentialEncrypted|ImportCredential|SetCredential|StateDirectory|StateDirectoryMode|ReadWritePaths|MemoryMax|OOMScoreAdjust)=' || true
 }
 
+# Z10: the workspace packages the recorder imports by name, linked inside each release so Node finds them with no
+# npm install: RELEASE_DIR/node_modules/@bot/<name> -> ../../packages/<name>. These four only (never the signer's or an
+# exit path's package), each its own source in the same release; there is nothing else in that node_modules.
+RELEASE_LINKS=(types decoders venue engine)
+# release_links RELEASE_DIR: makes the links (idempotent). A release without one of these packages (one from before
+# them) gets no link for it; a package folder that names another package is refused (return 1, nothing linked for it).
+# Ruling Z10-25: refused also when the release's node_modules or node_modules/@bot is itself a link, or a package
+# folder is not a real folder, so a link can never point outside the release.
+release_links() {
+  local d="$1" p
+  { [ -L "$d/node_modules" ] || [ -L "$d/node_modules/@bot" ]; } && { echo "refused: $d/node_modules or its @bot folder is a link" >&2; return 1; }
+  mkdir -p "$d/node_modules/@bot"
+  for p in "${RELEASE_LINKS[@]}"; do
+    [ -e "$d/packages/$p/package.json" ] || continue
+    { [ -L "$d/packages/$p" ] || [ ! -d "$d/packages/$p" ]; } && { echo "refused: $d/packages/$p is not a real folder" >&2; return 1; }
+    [ "$(jq -r '.name' "$d/packages/$p/package.json" 2>/dev/null)" = "@bot/$p" ] || { echo "refused: $d/packages/$p is not @bot/$p" >&2; return 1; }
+    ln -sfn "../../packages/$p" "$d/node_modules/@bot/$p"
+  done
+}
+
+# release_links_exact RELEASE_DIR: prints each way the release's node_modules differs from exactly the four links
+# release_links makes (ruling Z10-25), nothing when it matches: node_modules and node_modules/@bot real folders,
+# node_modules holding only @bot, @bot holding only types, decoders, venue and engine, each a link whose real path is
+# the release's own packages/<name>, a real folder.
+release_links_exact() {
+  local d="$1" real e p
+  real="$(realpath -e "$d")" || { echo "the release folder does not exist"; return 0; }
+  [ -L "$d/node_modules" ] && { echo "node_modules is a link"; return 0; }
+  [ -L "$d/node_modules/@bot" ] && { echo "node_modules/@bot is a link"; return 0; }
+  [ -d "$d/node_modules/@bot" ] || { echo "node_modules/@bot is missing"; return 0; }
+  for e in "$d"/node_modules/* "$d"/node_modules/.[!.]*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    [ "$e" = "$d/node_modules/@bot" ] || echo "unexpected node_modules/${e##*/}"
+  done
+  for e in "$d"/node_modules/@bot/* "$d"/node_modules/@bot/.[!.]*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    case " ${RELEASE_LINKS[*]} " in *" ${e##*/} "*) ;; *) echo "unexpected node_modules/@bot/${e##*/}" ;; esac
+  done
+  for p in "${RELEASE_LINKS[@]}"; do
+    e="$d/node_modules/@bot/$p"
+    if [ ! -L "$e" ]; then echo "node_modules/@bot/$p is not a link"; continue; fi
+    { [ -L "$d/packages/$p" ] || [ ! -d "$d/packages/$p" ]; } && { echo "packages/$p is not a real folder"; continue; }
+    [ "$(realpath -e "$e" 2>/dev/null)" = "$real/packages/$p" ] || echo "node_modules/@bot/$p does not resolve to the release's packages/$p"
+  done
+  return 0
+}
+
+# release_tree_refusal: reads `git ls-tree -r -z --full-tree <commit>` on stdin (NUL-separated, so no path is ever
+# quoted: rulings Z10-42) and prints why the commit may not become a release (ruling Z10-25), or nothing: any path with
+# a node_modules component (the release's only node_modules is the links release_links makes), or any link (mode
+# 120000) under the four linked packages. It reads the whole list (Z10-43: no early exit, so the writer never gets
+# SIGPIPE and a refusal is never read as an unreadable list); the reason shows the path with anything unprintable as ?.
+release_tree_refusal() {
+  local rec meta path mode why=""
+  while IFS= read -r -d '' rec; do
+    [ -z "$why" ] || continue
+    meta="${rec%%$'\t'*}"
+    path="${rec#*$'\t'}"
+    mode="${meta%% *}"
+    case "/$path/" in */node_modules/*) why="it carries a node_modules path (${path//[^[:print:]]/?})"; continue ;; esac
+    if [ "$mode" = 120000 ]; then
+      case "$path" in packages/types/* | packages/decoders/* | packages/venue/* | packages/engine/*) why="it carries a link inside a linked package (${path//[^[:print:]]/?})" ;; esac
+    fi
+  done
+  [ -z "$why" ] || printf '%s\n' "$why"
+}
+
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
@@ -113,8 +189,10 @@ funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == t
 # else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
 # healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
 # "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
-# loudly.
+# loudly. Z10: "recorder" runs the Blueprint's keyless M1 recorder (packages/engine/scripts/recorder.ts; no key,
+# no signer, no send path, paper only), and is refused the same way when that file is missing.
 STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
+RECORDER_ENTRY=packages/engine/scripts/recorder.ts # Z10, relative to the release
 worker_entry() {
   # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
   if [ ! -e "$1" ] && [ ! -L "$1" ]; then
@@ -135,9 +213,17 @@ worker_entry() {
         return 1
       fi
       ;;
+    recorder)
+      if [ -f "$1/$RECORDER_ENTRY" ]; then
+        printf '%s\n' "$1/$RECORDER_ENTRY"
+      else
+        echo "refused: host-config says \"worker\": \"recorder\" but $1/$RECORDER_ENTRY is missing" >&2
+        return 1
+      fi
+      ;;
     stub) printf '%s\n' "$STUB_ENTRY" ;;
     *)
-      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
+      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\", \"recorder\" or \"stub\"" >&2
       return 1
       ;;
   esac
@@ -189,7 +275,8 @@ DEPLOY_CHECK_APP=github-actions
 DEPLOY_SELF_JOB=zeroed-deploy
 DEPLOY_AUDIT_JOB=zeroed-advisories
 # The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
-E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
+# Z10: the keyless recorder runs on the host, so its sources (and the fixtures its e2e chain reads) are e2e paths too.
+E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml packages/engine packages/venue packages/decoders packages/types fixtures/mainnet)
 
 # commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
 # "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every

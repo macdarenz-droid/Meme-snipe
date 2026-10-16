@@ -19,7 +19,7 @@ const WEB3_V1 = 'Banned in the engine and signer: use @solana/kit (B-M30-01; LD-
  * paths, never a file-name pattern, so a new clock.ts or rng.ts elsewhere is linted like any other file. The card that
  * builds a clock or RNG module adds its path here, in review.
  */
-const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts', 'packages/dashboard/src/lib/clock.ts', 'packages/engine/src/m07/wall-clock.ts'];
+const CLOCK_AND_RNG_MODULES = ['tools/policy/clock.ts', 'packages/dashboard/src/lib/clock.ts', 'packages/engine/src/m07/wall-clock.ts', 'packages/engine/src/recorder-main/clock.ts'];
 
 /** The dashboard's formatting library (UI-T03): the one dashboard source allowed to call toFixed and friends. */
 const DASHBOARD_MONEY_MODULE = 'packages/dashboard/src/lib/money.ts';

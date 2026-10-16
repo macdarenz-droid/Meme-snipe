@@ -281,11 +281,11 @@ describe('worker start and API address', () => {
     writeFileSync(MAIN, '');
     refused(/host-config\.json is missing or cannot be read/); // main.ts but no host-config
     cfg({ offsite_backup: false });
-    refused(/"worker" is \(missing\), not "release" or "stub"/);
+    refused(/"worker" is \(missing\), not "release", "recorder" or "stub"/);
     cfg({ worker: 'stub' });
     expect(entry()).toBe(STUB);
     cfg({ worker: 'Release' });
-    refused(/"worker" is Release, not "release" or "stub"/);
+    refused(/"worker" is Release, not "release", "recorder" or "stub"/);
     cfg({ worker: 7 });
     refused(/"worker" is \(not a string\)/);
     cfg(['release']);
@@ -294,6 +294,15 @@ describe('worker start and API address', () => {
     expect(entry()).toBe(MAIN);
     rmSync(MAIN);
     refused(/main\.ts is missing/); // asked for, but the release has no worker
+    // Z10: "recorder" runs the keyless M1 recorder's entry, and is refused the same way when the release lacks it.
+    const RECORDER = join(rel, 'packages/engine/scripts/recorder.ts');
+    cfg({ worker: 'recorder' });
+    refused(/"recorder" but .*scripts\/recorder\.ts is missing/);
+    mkdirSync(join(rel, 'packages/engine/scripts'), { recursive: true });
+    writeFileSync(RECORDER, '');
+    expect(entry()).toBe(RECORDER);
+    cfg({ worker: 'Recorder' });
+    refused(/"worker" is Recorder, not "release", "recorder" or "stub"/);
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
     refused(/cannot be read/);
     // worker-start and worker-smoke take it under `set -e`: a refusal stops them, never runs anything.
@@ -1147,5 +1156,111 @@ describe('D07 host preflight (Z00)', () => {
     for (const later of ['JOURNAL=/var/lib/zeroed-host/update-journal', 'say "Packages"', 'say "Users"', 'say "Files"', 'install_file /']) {
       expect(script.indexOf(later), later).toBeGreaterThan(at);
     }
+  });
+});
+
+describe('Z10-25 and Z10-27: the release links are exact, on the host and in the e2e', () => {
+  const PKGS = ['types', 'decoders', 'venue', 'engine'];
+  const release = (name: string): string => {
+    const d = join(tmp, name);
+    for (const p of PKGS) { mkdirSync(join(d, 'packages', p), { recursive: true }); writeFileSync(join(d, 'packages', p, 'package.json'), JSON.stringify({ name: `@bot/${p}` })); }
+    return d;
+  };
+  const outside = (): string => { const o = join(tmp, `outside-${Math.random().toString(36).slice(2)}`); mkdirSync(join(o, '@bot'), { recursive: true }); return o; };
+
+  it('a clean release: release_links makes the four links and release_links_exact finds nothing', () => {
+    const d = release('rl-clean');
+    expect(sh(`release_links "${d}"`).status).toBe(0);
+    expect(sh(`release_links_exact "${d}"`)).toMatchObject({ status: 0, out: '' });
+    expect(readdirSync(join(d, 'node_modules/@bot')).sort()).toEqual([...PKGS].sort());
+  });
+
+  it("the red team's tree (a): node_modules is a link out of the release: both refuse (fails before: links made outside)", () => {
+    const d = release('rl-a');
+    const o = outside();
+    symlinkSync(o, join(d, 'node_modules'));
+    expect(sh(`release_links "${d}"`).status).toBe(1);
+    expect(readdirSync(join(o, '@bot'))).toEqual([]);
+    expect(sh(`release_links_exact "${d}"`).out).toBe('node_modules is a link');
+  });
+
+  it("the red team's tree (b): node_modules/@bot is a link out of the release: both refuse", () => {
+    const d = release('rl-b');
+    const o = outside();
+    mkdirSync(join(d, 'node_modules'));
+    symlinkSync(join(o, '@bot'), join(d, 'node_modules/@bot'));
+    expect(sh(`release_links "${d}"`).status).toBe(1);
+    expect(readdirSync(join(o, '@bot'))).toEqual([]);
+    expect(sh(`release_links_exact "${d}"`).out).toBe('node_modules/@bot is a link');
+  });
+
+  it("the red team's tree (c): a package folder is a link out of the release: release_links refuses, the exact check names it", () => {
+    const d = release('rl-c');
+    const o = join(tmp, 'rl-c-evil');
+    mkdirSync(o, { recursive: true });
+    writeFileSync(join(o, 'package.json'), JSON.stringify({ name: '@bot/engine' }));
+    rmSync(join(d, 'packages/engine'), { recursive: true });
+    symlinkSync(o, join(d, 'packages/engine'));
+    expect(sh(`release_links "${d}"`).status).toBe(1);
+    mkdirSync(join(d, 'node_modules/@bot'), { recursive: true });
+    symlinkSync('../../packages/engine', join(d, 'node_modules/@bot/engine'));
+    expect(sh(`release_links_exact "${d}"`).out).toContain('packages/engine is not a real folder');
+  });
+
+  it('only 3 of the 4 links, an extra entry, or a link that resolves elsewhere: the exact check names each', () => {
+    const d = release('rl-3');
+    expect(sh(`release_links "${d}"`).status).toBe(0);
+    rmSync(join(d, 'node_modules/@bot/venue'));
+    expect(sh(`release_links_exact "${d}"`).out).toBe('node_modules/@bot/venue is not a link');
+    symlinkSync('../../packages/venue', join(d, 'node_modules/@bot/venue'));
+    mkdirSync(join(d, 'node_modules/left-pad'));
+    symlinkSync('../../packages/engine', join(d, 'node_modules/@bot/kit'));
+    expect(sh(`release_links_exact "${d}"`).out.split('\n').sort()).toEqual(['unexpected node_modules/@bot/kit', 'unexpected node_modules/left-pad']);
+    rmSync(join(d, 'node_modules/left-pad'), { recursive: true });
+    rmSync(join(d, 'node_modules/@bot/kit'));
+    rmSync(join(d, 'node_modules/@bot/types'));
+    symlinkSync('../../packages/engine', join(d, 'node_modules/@bot/types'));
+    expect(sh(`release_links_exact "${d}"`).out).toBe("node_modules/@bot/types does not resolve to the release's packages/types");
+  });
+
+  it('release_tree_refusal (NUL-separated, ruling Z10-42): a node_modules path anywhere, or a link inside a linked package, refuses the commit; other links do not', () => {
+    const t = (lines: string[]) => sh('release_tree_refusal', `${lines.join('\0')}\0`).out;
+    expect(t(['100644 blob a\tpackages/engine/src/a.ts', '120000 blob b\tdocs/link'])).toBe('');
+    expect(t(['100644 blob a\tnode_modules/@bot/x/i.js'])).toBe('it carries a node_modules path (node_modules/@bot/x/i.js)');
+    expect(t(['100644 blob a\tapps/web/node_modules/y'])).toBe('it carries a node_modules path (apps/web/node_modules/y)');
+    expect(t(['120000 blob b\tpackages/venue/src/evil'])).toBe('it carries a link inside a linked package (packages/venue/src/evil)');
+    // A path with a tab or a newline in it stays one record.
+    expect(t(['120000 blob b\tpackages/engine/a\nb'])).toBe('it carries a link inside a linked package (packages/engine/a?b)');
+  });
+
+  it('Z10-42: a link at packages/engine/src/é.ts to /etc/passwd in a real git tree is refused (fails before: git quotes the non-ASCII path without -z, so ^packages/ never matched)', () => {
+    const repo = join(tmp, 'tree-utf8');
+    mkdirSync(join(repo, 'packages/engine/src'), { recursive: true });
+    const git = (...a: string[]) => spawnSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+    git('init', '-q');
+    symlinkSync('/etc/passwd', join(repo, 'packages/engine/src/é.ts'));
+    git('add', '-A');
+    git('commit', '-qm', 'x');
+    expect(git('ls-tree', '-r', '--full-tree', 'HEAD').stdout).toContain('"packages/engine/src/\\303\\251.ts"');   // the quoting the old reader missed
+    const r = sh(`git -C "${repo}" ls-tree -r -z --full-tree HEAD | release_tree_refusal`);
+    expect(r).toMatchObject({ status: 0, out: 'it carries a link inside a linked package (packages/engine/src/??.ts)' });
+    expect(read('ops/host/files/usr/local/sbin/zeroed-update')).toContain('ls-tree -r -z --full-tree "$commit" | release_tree_refusal');
+  });
+
+  it('Z10-43: the whole list is read, so under pipefail a refusal on the first of 50,000 entries is a refusal, never a failed list (SIGPIPE)', () => {
+    const r = sh('{ printf "100644 blob a\\tnode_modules/x\\0"; for i in $(seq 50000); do printf "100644 blob a\\tpackages/engine/f%d.ts\\0" "$i"; done; } | release_tree_refusal');
+    expect(r).toMatchObject({ status: 0, out: 'it carries a node_modules path (node_modules/x)' });
+  });
+
+  it('zeroed-update checks the tree before extracting, makes and checks the links, and on any failure logs, alerts once and keeps the running release (Z10-27)', () => {
+    const u = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const block = u.slice(u.indexOf('prep_refused() {'), u.indexOf('alert_clear release-prep'));
+    expect(block).toContain('rm -rf "$dest.new"');
+    expect(block).toContain('alert release-prep "ALERT Zeroed host: the release ${commit:0:12} could not be prepared ($1)');
+    expect(block.indexOf('release_tree_refusal')).toBeLessThan(block.indexOf('git -C "$REPO_DIR" archive'));
+    expect(block).toContain('why="$(release_links "$dest.new" 2>&1)" || prep_refused');
+    expect(block).toContain('release_links_exact "$dest.new"');
+    // The switch (current) is only reached after the release is prepared.
+    expect(u.indexOf('alert_clear release-prep')).toBeLessThan(u.indexOf('worker-smoke "$dest"'));
   });
 });

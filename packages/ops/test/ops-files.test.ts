@@ -114,6 +114,60 @@ describe('secrets never leak', () => {
   });
 });
 
+describe('Z10-3: the read-provider URLs in the deploy handoff', () => {
+  // TEST URLs (never real): the full path of publish.sh with stand-ins for gh, age and age-keygen, so the only place a
+  // URL may reach is the encrypted bundle (here the stand-in age writes its plaintext to a file the test reads).
+  const SHYFT = 'https://rpc.shyft.example/?api_key=TESTshyftKEY0123456789';
+  const CHAIN = 'https://solana-mainnet.chainstack.example/TESTchainKEY9876543210';
+  const run = (extra: Record<string, string>) => {
+    const bin = mkdtempSync(join(tmpdir(), 'z10-pub-'));
+    const plain = join(bin, 'plain.txt');
+    writeFileSync(join(bin, 'gh'), '#!/usr/bin/env bash\ncase "$1 $2" in "api "*) echo 1 ;; esac\nexit 0\n');
+    writeFileSync(join(bin, 'age'), `#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done; cat > ${JSON.stringify(plain)}; : > "$out"\n`);
+    writeFileSync(join(bin, 'age-keygen'), `#!/usr/bin/env bash\ncat >/dev/null; echo age1${'q'.repeat(58)}\n`);
+    for (const f of ['gh', 'age', 'age-keygen']) chmodSync(join(bin, f), 0o755);
+    const r = spawnSync('bash', [join(root, 'ops/deploy/publish.sh')], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${bin}:${process.env['PATH'] ?? ''}`, GH_REPO: 'o/r', GITHUB_SHA: 'a'.repeat(40), ISSUED: '1', PICKUP_POLL_S: '0', PICKUP_GRACE_S: '0',
+        DEPLOY_CODE: 'abacus abdomen able about above absent', HELIUS_API_KEY: 'TESTa', ALCHEMY_API_KEY: 'TESTb', JUPITER_API_KEY: 'TESTc', TELEGRAM_BOT_TOKEN: '1:TESTd',
+        RPC_SHYFT_URL: SHYFT, RPC_CHAINSTACK_URL: CHAIN, ...extra,
+      },
+    });
+    const bundle = existsSync(plain) ? readFileSync(plain, 'utf8') : '';
+    rmSync(bin, { recursive: true, force: true });
+    return { r, bundle };
+  };
+  const forms = (u: string): string[] => [u, Buffer.from(u).toString('base64'), u.replace(/^.*(TEST[A-Za-z0-9]+).*$/, '$1')];
+
+  it('neither URL, its base64 or its key part appears in the output; both reach the bundle, base64 only', () => {
+    const { r, bundle } = run({});
+    expect(r.status, r.stderr).toBe(0);
+    for (const u of [SHYFT, CHAIN]) for (const f of forms(u)) expect(r.stdout + r.stderr).not.toContain(f);
+    expect(bundle).toContain(`RPC_SHYFT_URL_B64=${Buffer.from(SHYFT).toString('base64')}\n`);
+    expect(bundle).toContain(`RPC_CHAINSTACK_URL_B64=${Buffer.from(CHAIN).toString('base64')}\n`);
+    expect(bundle).not.toContain(SHYFT);
+  });
+
+  it('on GitHub the base64 forms are masked before anything else is printed (GitHub masks the secrets, not their encodings)', () => {
+    const { r } = run({ GITHUB_ACTIONS: 'true' });
+    expect(r.status, r.stderr).toBe(0);
+    const lines = r.stdout.split('\n');
+    const masks = [SHYFT, CHAIN].map((u) => `::add-mask::${Buffer.from(u).toString('base64')}`);
+    expect(lines.slice(0, 2)).toEqual(masks);                                // the first lines printed
+    for (const u of [SHYFT, CHAIN]) expect(lines.filter((l) => l.includes(Buffer.from(u).toString('base64'))).length).toBe(1);
+  });
+
+  it('a refused URL is named, never echoed', () => {
+    for (const extra of [{ RPC_CHAINSTACK_URL: '' }, { RPC_SHYFT_URL: 'http://plain.example/TESTplainKEY55' }]) {
+      const { r, bundle } = run(extra);
+      expect(r.status).not.toBe(0);
+      expect(bundle).toBe('');
+      for (const u of [SHYFT, CHAIN, 'http://plain.example/TESTplainKEY55']) for (const f of forms(u)) expect(r.stdout + r.stderr).not.toContain(f);
+    }
+  });
+});
+
 describe('deploy code', () => {
   const derive = (code: string) => spawnSync('node', [join(root, 'ops/host/files/usr/local/lib/zeroed/derive-key.mjs')], { input: code, encoding: 'utf8' });
 

@@ -152,13 +152,19 @@ describe('A-M07-02 segment writer', () => {
       q.markProcessStart('child', now());
       const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: now, log }, rec);
       let i = 0;
-      setInterval(() => {
+      let flushes = 0;
+      const t = setInterval(() => {
         for (let k = 0; k < 200; k += 1) { q.append({ stream: 'decision', recvMs: now() + i, slot: BigInt(i), commitment: 'confirmed', source: 't', payload: { i, pad: 'x'.repeat(200) } }); i += 1; }
         w.pump(); w.flush(); process.stdout.write('f' + i + '\\n');
+        // Ruling Z10-40: after 5 flushes the child stops writing and says so, so the kill below never lands inside a
+        // write (on a loaded machine it could, and the read-back would end in a torn frame). The torn write itself is
+        // made by the test, below, at a known place. The segment stays open and unrotated, as in a crash mid-hour.
+        if (++flushes === 5) { clearInterval(t); process.stdout.write('idle\\n'); setInterval(() => {}, 1000); }
       }, 5);`], { stdio: ['ignore', 'pipe', 'inherit'] });
     let out = '';
     child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-    await waitFor(() => (out.match(/f\d+/g) ?? []).length >= 5);
+    await waitFor(() => out.includes('idle'));
+    assert.equal((out.match(/f\d+/g) ?? []).length, 5);
     child.kill('SIGKILL');
     await new Promise((r) => child.on('exit', r));
     // The kill may land between frames; also cut the file inside a frame, as a kill during write would.

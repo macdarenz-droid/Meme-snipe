@@ -42,7 +42,7 @@ export const TAKE_MAX = 5_000;
 /** The node:fs functions the writer uses; tests inject failures through it. */
 export type WriterFs = Pick<typeof nodeFs,
   'mkdirSync' | 'openSync' | 'writeSync' | 'fsyncSync' | 'closeSync' | 'renameSync' | 'readFileSync' | 'existsSync' | 'readdirSync'
-  | 'ftruncateSync' | 'fchmodSync' | 'chmodSync' | 'unlinkSync'>;
+  | 'ftruncateSync' | 'fchmodSync' | 'chmodSync' | 'unlinkSync' | 'statSync'>;
 
 export type WriterLogLevel = 'info' | 'warning' | 'error' | 'critical';
 export type WriterLog = (level: WriterLogLevel, code: string, fields: Record<string, string | number>) => void;
@@ -135,13 +135,22 @@ function writeAtomic(fs: WriterFs, path: string, dir: string, text: string): voi
   try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); }
 }
 
-function mkdirs(fs: WriterFs, root: string, rel: string): void {
+/**
+ * Creates each missing folder at DIR_MODE. Card Z10 (finding F8, from the ops e2e's md-pull run): a folder inherits the
+ * setgid bit and the group of a setgid parent (`/var/lib/zeroed-md` is 2750, group `zeroed-pull`). The worker's unit
+ * has `UMask=0077` and `RestrictSUIDSGID=yes`: chmod to 0750 cleared the inherited bit (hour folders and segments then
+ * got the worker's group, and the pull account could read none of them), and a chmod that sets the bit is refused
+ * (EPERM). So the folder is made under a 027 umask, which gives 0750 with the inherited bit kept; chmod (never with
+ * setgid) only corrects a folder that still came out otherwise. Nothing is widened.
+ */
+export function mkdirs(fs: Pick<typeof nodeFs, 'existsSync' | 'mkdirSync' | 'statSync' | 'chmodSync'>, root: string, rel: string): void {
   let at = root;
   for (const part of rel.split('/')) {
     at = join(at, part);
     if (!fs.existsSync(at)) {
-      fs.mkdirSync(at, { mode: DIR_MODE });
-      fs.chmodSync(at, DIR_MODE);
+      const before = process.umask(0o027);
+      try { fs.mkdirSync(at, { mode: DIR_MODE }); } finally { process.umask(before); }
+      if ((fs.statSync(at).mode & 0o777) !== DIR_MODE) fs.chmodSync(at, DIR_MODE);
     }
   }
 }
@@ -324,7 +333,9 @@ export class SegmentWriter {
     if (this.hour !== null && this.hour.hourUtc !== h.hourUtc) {
       const closing = this.hour.hourUtc;
       this.rotate();
-      this.lastRotated = closing;                                         // that hour takes no more records
+      // That hour takes no more records. Ruling Z10-31: never moved back when the wall clock steps back (a late record
+      // then lands in a new part of an hour already closed, and closedThrough() never goes back).
+      if (closing > this.lastRotated) this.lastRotated = closing;
     }
     this.hour = h;
     let n = 0;

@@ -101,9 +101,27 @@ describe('checks', () => {
 });
 
 describe('alert dedupe and escalation', () => {
+  it('ruling Z10-48: a code held for days does not hide a new one; each code alerts, repeats and clears on its own (fails before: one shared key)', () => {
+    const at = (critical: string[]) => evaluate(stored(hb({ critical })), T0, L, noChain);
+    const day = 86_400_000;
+    // m07.unpulled_segments has been held for 8 days (hourly STILL lines only).
+    let state = planAlerts({}, at(['m07.unpulled_segments']), T0, L).next;
+    state = planAlerts(state, at(['m07.unpulled_segments']), T0 + 8 * day, L).next;
+    // A new code: ALERT in the same run, the old one untouched.
+    const r = planAlerts(state, at(['m07.unpulled_segments', 'recorder.memory_high']), T0 + 8 * day + 60_000, L);
+    expect(r.lines).toEqual(['ALERT Worker critical: recorder.memory_high.']);
+    // Clearing one leaves the other active.
+    const c = planAlerts(r.next, at(['m07.unpulled_segments']), T0 + 8 * day + 120_000, L);
+    expect(c.lines).toEqual(['CLEARED Worker critical: recorder.memory_high.']);
+    expect(Object.keys(c.next)).toEqual(['worker_critical:m07.unpulled_segments']);
+    // Duplicates are one alert.
+    expect(at(['a.b', 'a.b']).map((x) => x.key)).toEqual(['worker_critical:a.b']);
+  });
+
+
   it('flags the worker\'s own critical alerts (WATCH-1), and nothing for an empty or missing list', () => {
     const a = evaluate(stored(hb({ critical: ['MintA: no fresh price (timeout)'] })), T0, L, noChain);
-    expect(a).toEqual([{ key: 'worker_critical', text: 'Worker critical: MintA: no fresh price (timeout).' }]);
+    expect(a).toEqual([{ key: 'worker_critical:MintA: no fresh price (timeout)', text: 'Worker critical: MintA: no fresh price (timeout).' }]);
     expect(evaluate(stored(hb({ critical: [] })), T0, L, noChain)).toEqual([]);
     expect(evaluate(stored(hb()), T0, L, noChain)).toEqual([]);
   });
