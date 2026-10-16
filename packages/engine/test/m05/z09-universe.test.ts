@@ -26,7 +26,7 @@ const SOL = 1_000_000_000n;
 type Facts = Omit<PrefilterFacts, 'observedAtMs'> & { observedAtMs?: UnixMs };
 const deep: Facts = { venue: 'pumpswap', quoteMint: MINTS.wsol, feeTotalBps: 30, effectiveQuoteLamports: 400n * SOL };
 
-function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => Facts | null; store?: CandidateStore; idBase?: number; requestFacts?: (ids: readonly string[]) => void } = {}) {
+function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => Facts | null; store?: CandidateStore; idBase?: number; requestFacts?: (ids: readonly string[]) => void; readsAvailable?: () => boolean } = {}) {
   let now: number = T0;
   let id = o.idBase ?? 0;
   const store = o.store ?? new MemStore();
@@ -36,7 +36,7 @@ function setup(o: { config?: Partial<UniverseConfig>; facts?: (p: string) => Fac
   const deps: UniverseDeps = {
     config: { ...UNIVERSE_DEFAULTS, ...o.config }, store, nowMs: () => now as UnixMs, newId: () => ulid(id++), wsolMint: MINTS.wsol,
     facts: (p) => { const f = (o.facts ?? (() => deep))(p); return f === null ? null : { observedAtMs: now as UnixMs, ...f }; },
-    ...(o.requestFacts === undefined ? {} : { requestFacts: o.requestFacts }), lists: { isWrittenOff: (m) => writtenOff.has(m), isUnsolicited: () => false },
+    ...(o.requestFacts === undefined ? {} : { requestFacts: o.requestFacts }), ...(o.readsAvailable === undefined ? {} : { readsAvailable: o.readsAvailable }), lists: { isWrittenOff: (m) => writtenOff.has(m), isUnsolicited: () => false },
     publish: (t) => published.push(t), log: { event: (_l, c) => logs.push(c) },
   };
   const u = createUniverse(deps);
@@ -677,5 +677,72 @@ describe('Z09-39 with the red team\'s RT-11 repro', () => {
     const reads = asked.reduce((a, x) => a + x.length, 0);
     assert.ok(reads < 300 * 10, `${reads} pool reads in 30 days (${asked.length} calls)`);
     assert.equal(reads, 0, 'PM-01 pools 2 days past migration are past every entry age: retired with no read');
+  });
+});
+
+describe('Z09-43: a pool too young for PM-01 is retried at its minimum age, not after 6 h; Z09-44: reads pause off the primary', () => {
+  const MIN = 60_000;
+  it('discovered 1 min after migration: prefiltered_out until migration + 20 min, then eligible', () => {
+    const t = setup({ config: { screeningRequired: false } });
+    t.u.onDiscovery(disc(1, T0 - MIN));
+    const c = t.u.candidate(pubkey(101)) as CandidateRecord;
+    assert.deepEqual([c.state, c.retryAtMs, c.reasons], ['prefiltered_out', T0 - MIN + 1_200_000, ['pm-01:age<1200000ms']]);
+    t.advance(19 * MIN - 1); t.u.tick();
+    assert.equal(t.u.candidate(pubkey(101))?.state, 'prefiltered_out');
+    t.advance(1); t.u.tick();
+    assert.equal(t.u.candidate(pubkey(101))?.state, 'eligible');
+    assert.equal(t.u.candidate(pubkey(101))?.failedRetries ?? 0, 0, 'an age wait is not a failed retry');
+    // A pool that also fails on something else keeps the 6 h retry.
+    t.u.onDiscovery({ ...disc(2, t.at() - MIN), venue: 'raydium_cpmm' }, { ...deep, venue: 'raydium_cpmm', observedAtMs: t.at() as UnixMs });
+    assert.equal(t.u.candidate(pubkey(102))?.retryAtMs, t.at() + UNIVERSE_DEFAULTS.prefilterRetryMs);
+  });
+
+  it('the reviewer\'s repro: migration at T0 − 60 s, a tick every minute for 8 h, with the verification read only: it reaches eligible', () => {
+    const asked: string[][] = [];
+    let read = new Map<string, number>();
+    const t = setup({ config: { screeningRequired: false }, requestFacts: (ids) => { asked.push([...ids]); for (const id of ids) read.set(id, t.at()); },
+      facts: (p) => ({ ...deep, observedAtMs: (read.get(p) ?? T0) as UnixMs }) });
+    t.u.onDiscovery(disc(1, T0 - MIN));
+    const states: string[] = [];
+    for (let k = 0; k < 8 * 60; k++) { t.advance(MIN); t.u.tick(); states.push(t.u.candidate(pubkey(101))?.state as string); }
+    assert.ok(states.includes('eligible'), `states: ${[...new Set(states)].join(', ')}`);
+    assert.equal(states.indexOf('eligible'), 19, 'eligible at migration + 21 min: the age-due retry asks one read, judged a minute later');
+    assert.deepEqual(asked, [[pubkey(101)]]);
+    read = new Map();
+  });
+
+  it('a scripted day of fresh migrations (each found 1 min after): the manifest\'s A-24 count is above 0', () => {
+    const store = new MemStore();
+    const t = setup({ store, config: { screeningRequired: false } });
+    const w = createWatchlist({ restoreTails: () => [], config: WATCHLIST_DEFAULTS, nowMs: () => t.at() as UnixMs, maxHoldMs: () => 0, mode: () => 'normal',
+      tracker: { watch: () => true, unwatch: () => {} }, universe: t.u, onEviction: () => {}, log: { event: () => {} } });
+    for (let m = 0; m < 24 * 60; m++) {
+      if (m % 60 === 1) t.u.onDiscovery(disc(m, t.at() - MIN));
+      t.u.tick();
+      w.recompute(t.u.candidates());
+      t.advance(MIN);
+    }
+    const m = buildUniverseManifest({ dayUtc: '2026-10-16', events: store.log.map((x) => ({ poolId: x.poolId, mint: x.mint, from: x.from, to: x.to, reason: x.reason, atMs: x.atMs })),
+      crossCheck: { poolsOnlyInVendor: 0, otherDexPairs: 0, knownPoolsUnderOtherDex: 0, status: 'ok' }, migrationCoverage: { chainMigrations: 24, seenByPumpPortal: 24, gapBps: 0 },
+      limitSet: { id: 'pm01', paramHash: 'x' }, generatedAtMs: T0 + 86_400_000, late: false, prefilterOnly: true });
+    assert.equal(m.a24.eligibleCount, 24);
+  });
+
+  it('Z09-44: while P4 has no unmetered primary, nothing is asked and nothing fails; it resumes when the primary is back', () => {
+    let primary = true;
+    const asked: string[][] = [];
+    const t = setup({ config: { screeningRequired: false, ...MR }, requestFacts: (ids) => asked.push([...ids]), readsAvailable: () => primary,
+      facts: (p) => (p === pubkey(101) && t.at() === T0 ? deep : { ...deep, observedAtMs: T0 }) });
+    t.u.onDiscovery(disc(1)); t.u.onWatched(pubkey(101)); t.u.onEvicted(pubkey(101), 'budget', (T0 + 30 * 3_600_000) as UnixMs);
+    t.advance(UNIVERSE_DEFAULTS.prefilterRetryMs); t.u.tick();
+    assert.deepEqual(asked, [[pubkey(101)]]);
+    primary = false;                                                                 // the read cannot be served
+    for (let k = 0; k < 120; k++) { t.advance(60_000); t.u.tick(); }
+    assert.equal(asked.length, 1, 'nothing asked while paused');
+    const c = t.u.candidate(pubkey(101)) as CandidateRecord;
+    assert.deepEqual([c.state, c.failedRetries ?? 0, c.reasons[0] === 'facts_requested'], ['evicted', 0, false]);
+    primary = true;
+    t.advance(60_000); t.u.tick();
+    assert.deepEqual(asked, [[pubkey(101)], [pubkey(101)]], 'asked again once the primary is back');
   });
 });
