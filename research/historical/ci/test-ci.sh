@@ -286,6 +286,8 @@ case "$1 $2" in
       repos/o/r/check-runs/*/annotations*)
         [[ -n "${GD_ANN_FAIL:-}" ]] && exit 1
         x=${path#repos/o/r/check-runs/}; id=${x%%/*}
+        # GD_ANN_FAIL_ID: one check run's annotations answer 403 with a body (OF-FR-4)
+        [[ "${GD_ANN_FAIL_ID:-}" == "$id" ]] && { printf 'gh: Forbidden (HTTP 403)\n{"message": "secret-body"}\n' >&2; exit 1; }
         [[ -f "$GD/ann-$id.json" ]] && out "$(cat "$GD/ann-$id.json")" || out '[]' ;;
       repos/o/r/branches*) out "$(cat "$GD/branches.json")" ;;
       repos/o/r/tags*) if [[ -f "$GD/tags.json" ]]; then out "$(cat "$GD/tags.json")"; else out '[]'; fi ;;
@@ -1199,7 +1201,7 @@ bad=""
 
 # ---- OF-2 holds 1-3, 5-7 in archive-check (each: no request at all) ----
 gdreset
-# OF-REARM: the repository is armed now, so the unarmed case uses a fixture with ARCHIVE_ARM empty
+# The unarmed case uses a fixture with ARCHIVE_ARM empty, whatever the repository's own value
 mkfx "$T/fxacunarmed" ARCHIVE_ARM=
 rc=0; ACFX=$T/fxacunarmed/research/historical/ci ac env AC_STATUS=206 || rc=$?
 [[ ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" ]] && grep -q "held (1): the archive chain is not armed (ARCHIVE_ARM is empty" "$A/summary.md" &&
@@ -3972,55 +3974,92 @@ o="$T/rr6w"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=1 SFX=$T/fx6/research/his
 o="$T/rr6r"; mk6 "$o" K2; rc=0; GFAILED=1 SFX=$T/fx6/research/historical/ci scan "$o" || rc=$?
 [[ $rc == 0 && $(calls) == "scan " ]] || bad+=" [resume: $rc]"
 [[ -z "$bad" ]] && ok "OF-6 re-read: the guard pass flags a day with a counted scan failure; a QA-REREAD row is used only for its day, with a past toldAt and well-formed units; scan-day then reads exactly the named units (deleted first, the rest kept) at the recorded retention (K3 with the day's list, the per-unit log marking them reread instead of k2 lines); no row, or a unit taken from the store, reads nothing; a fresh whole-day read of a failed day is refused while a resume of its progress runs" || no "OF-6 re-read:$bad"
-# ---- OF-6 ruling 3 amendment (2026-10-16): a FRESH-READ row lets a failed day that read no
-# unit be read fresh once ----
+# ---- OF-6 ruling 3 amendment (2026-10-16; OF-FRESH-FIX): a FRESH-READ row lets a failed day
+# whose counted failures it covers (each read no unit) be read fresh once ----
 bad=""; gdreset
 mkfx "$T/fxfr"; frdec="$T/fxfr/docs/DECISIONS.md"; cp "$frdec" "$T/frdec0"
 FXFR=$T/fxfr/research/historical/ci
-# batch 1's exact job shape (data-scan run 38776359833): nothing restored, the scan step
-# passed, only the K3 trim failed, and its log says the day holds no finished units
-frjobs() { # frjobs RUN DAY SCANSTEP OPENSTEP
+# A covered run's job "scan (DAY)": progress checked and saved, the given failed steps.
+# SHAPE trim: batch 1 (scan step passed, only the K3 trim failed); scan: run 38896609003
+# (the scan step refused). Its failure annotations: ANN ("2" = exactly one exit-code-2,
+# "1" = exit code 1, "22" = two, "none").
+frjobs() { # frjobs RUN DAY SHAPE [SAVE] [CHECK]
+  local scan=success trim=skipped
+  case $3 in trim) trim=failure ;; scan) scan=failure ;; both) scan=failure; trim=failure ;; esac
   printf '{"jobs": [{"id": %s1, "name": "plan", "conclusion": "success", "steps": [{"name": "Archive guard", "conclusion": "success"}]},
-    {"id": %s2, "name": "scan (%s)", "conclusion": "failure", "steps": [{"name": "Archive guard before the scan", "conclusion": "success"}, {"name": "Open the progress cache", "conclusion": "%s"},
-      {"name": "Scan (one lane, stops on 429)", "conclusion": "%s"}, {"name": "Trim the day to K3", "conclusion": "failure"}]},
+    {"id": %s2, "name": "scan (%s)", "conclusion": "failure", "steps": [{"name": "Archive guard before the scan", "conclusion": "success"}, {"name": "Open the progress cache", "conclusion": "skipped"},
+      {"name": "Scan (one lane, stops on 429)", "conclusion": "%s"}, {"name": "Check the progress did not shrink", "conclusion": "%s"}, {"name": "Save progress", "conclusion": "%s"}, {"name": "Trim the day to K3", "conclusion": "%s"}]},
     {"id": %s3, "name": "continue", "conclusion": "failure", "steps": [{"name": "Dispatch the next run if a day stopped resumably", "conclusion": "failure"}]}]}\n' \
-    "$1" "$1" "$2" "${4:-skipped}" "${3:-success}" "$1" > "$GD/jobs-$1.json"
+    "$1" "$1" "$2" "$scan" "${5:-success}" "${4:-success}" "$trim" "$1" > "$GD/jobs-$1.json"
+}
+frann() { # frann RUN KIND
+  local a='{"annotation_level": "failure", "message": "Process completed with exit code 2."}' w='{"annotation_level": "warning", "message": "Node.js 20 is deprecated."}'
+  case $2 in
+    2) printf '[%s, %s]\n' "$a" "$w" ;; 1) printf '[{"annotation_level": "failure", "message": "Process completed with exit code 1."}]\n' ;;
+    22) printf '[%s, %s]\n' "$a" "$a" ;; none) printf '[]\n' ;;
+  esac > "$GD/ann-${1}2.json"
 }
 frrun() { dsrun "$1" "data-scan scan source=archive" failure "${2:-300}" "${3:-200}"; }
-frrow() { printf '| 2026-10-16 | FRESH-READ id=%s day=%s failedRun=%s toldAt=%s | t | t |\n' "$1" "$2" "$3" "${4:-2026-10-16T05:00:00Z}" >> "$frdec"; }
-frlog() { echo "refused: /w/data holds no finished units" > "$GD/log-${1}2.txt"; }
+frrow() { printf '| 2026-10-16 | FRESH-READ id=%s day=%s failedRun=%s covers=%s toldAt=%s | t | t |\n' "$1" "$2" "$3" "$4" "${5:-2026-10-16T05:00:00Z}" >> "$frdec"; }
 fra() { rm -rf "$GP"; fl=; FXG=$FXFR guard attest 2026-07-22 "$GP"; read -r _ _ _ _ _ fl < "$GP/2026-07-22" 2>/dev/null; }
-frset() { gdreset; rm -f "$GD"/log-*.txt; cp "$T/frdec0" "$frdec"; }
-# allowed: the row, batch 1's shape and log
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 2 ]] || bad+=" [row+shape: ${fl:-none} $(tail -2 "$T/gout.txt" | tr '\n' ' ')]"
-# refused (the day stays failed=1): no row; a day that read a unit (scan step failed, or
-# progress restored, or a trim log without the 0-unit refusal); a row for another day or
-# another run; a duplicate row; a toldAt not yet filled in; a second counted failure
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; fra; [[ "$fl" == 1 ]] || bad+=" [no row: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22 failure; frlog 395; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [scan failed: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22 success success; frlog 395; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [progress restored: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; echo "refused: the list does not match" > "$GD/log-3952.txt"; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [other trim refusal: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [no log: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-23 395; fra; [[ "$fl" == 1 ]] || bad+=" [other day: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 999; fra; [[ "$fl" == 1 ]] || bad+=" [other run: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395; frrow fr-2 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [duplicate day: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395; frrow fr-1 2026-07-23 395; fra; [[ "$fl" == 1 ]] || bad+=" [duplicate id: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395 TOLD_AT_PLACEHOLDER; fra; [[ "$fl" == 1 ]] || bad+=" [placeholder toldAt: ${fl:-none}]"
-frset; frrun 395 | dsjson; frjobs 395 2026-07-22; frlog 395; frrow fr-1 2026-07-22 395 2099-01-01T00:00:00Z; fra; [[ "$fl" == 1 ]] || bad+=" [future toldAt: ${fl:-none}]"
-frset; { frrun 395 400 300; frrun 396 300 200; } | dsjson; frjobs 395 2026-07-22; frjobs 396 2026-07-22; frlog 395; frlog 396; frrow fr-1 2026-07-22 395; fra; [[ "$fl" == 1 ]] || bad+=" [second failure: ${fl:-none}]"
+frset() { gdreset; rm -f "$GD"/ann-*.json; cp "$T/frdec0" "$frdec"; }
+# the two 07-22 runs: batch 1 (trim shape) then the refused run (scan shape)
+fr2() { { frrun 395 400 300; frrun 396 300 200; } | dsjson; frjobs 395 2026-07-22 trim; frjobs 396 2026-07-22 scan; frann 395 2; frann 396 2; }
+# allowed: the row covers exactly both failures, each the pinned shape; no job log is read
+frset; fr2; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 2 ]] || bad+=" [both covered: ${fl:-none} $(tail -2 "$T/gout.txt" | tr '\n' ' ')]"
+grep -q "/logs" "$GD/gh.log" && bad+=" [a job log was read]"
+grep -q "actions/caches" <(grep -F "runs/39" "$GD/gh.log") && bad+=" [cache API read for the proof]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22 trim; frann 395 2; frrow fr-1 2026-07-22 395 395; fra; [[ "$fl" == 2 ]] || bad+=" [batch 1 alone: ${fl:-none}]"
+# OF-FR-5: the logs endpoint failing no longer matters (the stub has no log at all)
+[[ ! -e "$GD/log-3952.txt" ]] || bad+=" [stale log fixture]"
+# refused (FAILED stays 1)
+frset; fr2; fra; [[ "$fl" == 1 ]] || bad+=" [no row: ${fl:-none}]"
+frset; fr2; frrow fr-1 2026-07-22 395 395; fra; [[ "$fl" == 1 ]] || bad+=" [failure not covered: ${fl:-none}]"
+grep -q "are not exactly the covered runs" "$T/summary.md" || bad+=" [uncovered message]"
+frset; frrun 395 | dsjson; frjobs 395 2026-07-22 trim; frann 395 2; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [covers a run that is not a failure: ${fl:-none}]"
+frset; fr2; frrow fr-1 2026-07-22 395 396; fra; [[ "$fl" == 1 ]] || bad+=" [failedRun not covered: ${fl:-none}]"
+frset; fr2; frrow fr-1 2026-07-22 395 395,396,395; fra; [[ "$fl" == 1 ]] || bad+=" [run covered twice: ${fl:-none}]"
+frset; fr2; frjobs 396 2026-07-22 both; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [scan and trim failed: ${fl:-none}]"
+frset; fr2; frjobs 395 2026-07-22 none; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [no failed step: ${fl:-none}]"
+frset; fr2; frjobs 396 2026-07-22 scan failure; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [progress not saved: ${fl:-none}]"
+frset; fr2; frjobs 396 2026-07-22 scan success failure; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [progress shrank: ${fl:-none}]"
+frset; fr2; frjobs 395 2026-07-22 trim; sed -i 's/"Scan (one lane, stops on 429)", "conclusion": "success"/"Scan (one lane, stops on 429)", "conclusion": "cancelled"/' "$GD/jobs-395.json"; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [trim after a scan step that did not pass: ${fl:-none}]"
+frset; fr2; frann 396 1; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [exit code 1: ${fl:-none}]"
+frset; fr2; frann 396 22; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [two exit-2 annotations: ${fl:-none}]"
+frset; fr2; frann 396 none; frrow fr-1 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [no annotation: ${fl:-none}]"
+# OF-FR-4: an unreadable annotations API refuses naming only the HTTP status, never the body
+# (ag_fresh_ok called directly: the back-off check reads the same annotations first)
+frset; fr2; frrow fr-1 2026-07-22 395 395,396; rc=0
+(. "$FXFR/archive-guard.sh"; ag_summary=/dev/null; GH_BIN="$GD/bin/gh"; ag_gh="$GD/bin/gh"; ag_repo=o/r; AG_FAILED_RUNS=$'2026-07-22 395\n2026-07-22 396'
+  GD="$GD" GD_ANN_FAIL_ID=3962 ag_fresh_ok 2026-07-22) > "$T/frann.out" 2>&1 || rc=$?
+[[ $rc == 2 ]] && grep -q "annotations of run 396's scan job cannot be read (HTTP 403); fail closed" "$T/frann.out" && ! grep -q "secret-body" "$T/frann.out" || bad+=" [annotations unreadable: $rc $(cat "$T/frann.out")]"
+frset; fr2; frrow fr-1 2026-07-22 395 395,396; rm -f "$GD/jobs-396.json"; fra; [[ "$fl" == 1 ]] || bad+=" [jobs missing: ${fl:-none}]"
+(. "$here/archive-guard.sh"; ag_http_status <<< $'gh: Not Found (HTTP 404)\n{"message":"secret body"}') > "$T/frhttp.out"; [[ "$(cat "$T/frhttp.out")" == "HTTP 404" ]] || bad+=" [http status: $(cat "$T/frhttp.out")]"
+frset; fr2; frrow fr-1 2026-07-23 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [other day: ${fl:-none}]"
+frset; fr2; frrow fr-1 2026-07-22 395 395,396; frrow fr-2 2026-07-22 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [duplicate day: ${fl:-none}]"
+frset; fr2; frrow fr-1 2026-07-22 395 395,396; frrow fr-1 2026-07-23 395 395,396; fra; [[ "$fl" == 1 ]] || bad+=" [duplicate id: ${fl:-none}]"
+frset; fr2; frrow fr-1 2026-07-22 395 395,396 TOLD_AT_PLACEHOLDER; fra; [[ "$fl" == 1 ]] || bad+=" [placeholder toldAt: ${fl:-none}]"
+frset; fr2; frrow fr-1 2026-07-22 395 395,396 2099-01-01T00:00:00Z; fra; [[ "$fl" == 1 ]] || bad+=" [future toldAt: ${fl:-none}]"
+frset; fr2; printf '| 2026-10-16 | FRESH-READ id=fr-1 day=2026-07-22 failedRun=395 toldAt=2026-10-16T05:00:00Z | t | t |\n' >> "$frdec"; fra; [[ "$fl" == 1 ]] || bad+=" [row without covers: ${fl:-none}]"
+# a third failure the row does not cover: the chain is stopped (3 failures), nothing passes
+frset; { frrun 395 500 400; frrun 396 400 300; frrun 397 300 200; } | dsjson; frjobs 395 2026-07-22 trim; frjobs 396 2026-07-22 scan; frjobs 397 2026-07-22 scan; frann 395 2; frann 396 2; frann 397 2
+frrow fr-1 2026-07-22 395 395,396; fra; [[ -z "$fl" ]] && grep -q "the archive chain is stopped" "$T/gout.txt" || bad+=" [third failure: ${fl:-none}]"
+# another day's failure memory is untouched: a 07-23 failure is not one of 07-22's
+frset; { frrun 395 400 300; frrun 398 300 200; } | dsjson; frjobs 395 2026-07-22 trim; frjobs 398 2026-07-23 scan; frann 395 2; frann 398 2
+frrow fr-1 2026-07-22 395 395; fra; [[ "$fl" == 2 ]] || bad+=" [07-23 failure counted against 07-22: ${fl:-none} $(tail -1 "$T/gout.txt")]"
 # scan-day: failed=2 with the row reads the day fresh (and says so); without the row it refuses
-frset; frrow fr-1 2026-07-22 395
+frset; frrow fr-1 2026-07-22 395 395,396
 o="$T/fr6"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=2 SFX=$FXFR scan "$o" || rc=$?
-[[ $rc == 0 && $(calls) == "scan " ]] && grep -q "fresh read of 2026-07-22 under FRESH-READ fr-1: its one counted failure (run 395) read no archive unit" "$T/summary.md" || bad+=" [scan-day fresh: $rc $(tail -2 "$T/out.txt" | tr '\n' ' ')]"
+[[ $rc == 0 && $(calls) == "scan " ]] && grep -q "fresh read of 2026-07-22 under FRESH-READ fr-1: its counted failures (runs 395,396) read no archive unit" "$T/summary.md" || bad+=" [scan-day fresh: $rc $(tail -2 "$T/out.txt" | tr '\n' ' ')]"
 cp "$T/frdec0" "$frdec"; o="$T/fr6n"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=2 SFX=$FXFR scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "no single pinned FRESH-READ row for 2026-07-22" "$T/out.txt" || bad+=" [scan-day without row: $rc]"
-frrow fr-1 2026-07-22 395; o="$T/fr6w"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=1 SFX=$FXFR scan "$o" || rc=$?
+frrow fr-1 2026-07-22 395 395,396; o="$T/fr6w"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=1 SFX=$FXFR scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "a whole-day re-read is refused" "$T/out.txt" || bad+=" [row but failed=1: $rc]"
-# the repository's own rows: 07-22 names batch 1 (owner's answer "A"), and no other day has one
-(. "$here/archive-guard.sh"; ag_summary=/dev/null; ag_fresh_row 2026-07-22) > "$T/frrepo.out" 2>&1 && [[ "$(cat "$T/frrepo.out")" == "fr-0722 38776359833" ]] || bad+=" [repo 07-22 row: $(cat "$T/frrepo.out")]"
+# the repository's own rows: 07-22 covers batch 1 and run 38896609003, and no other day has one
+(. "$here/archive-guard.sh"; ag_summary=/dev/null; ag_fresh_row 2026-07-22) > "$T/frrepo.out" 2>&1 && [[ "$(cat "$T/frrepo.out")" == "fr-0722 38776359833 38776359833,38896609003" ]] || bad+=" [repo 07-22 row: $(cat "$T/frrepo.out")]"
 (. "$here/archive-guard.sh"; ag_summary=/dev/null; ag_fresh_row 2026-07-23) > /dev/null 2>&1 && bad+=" [repo 07-23 row accepted]"
-gdreset; rm -f "$GD"/log-*.txt
-[[ -z "$bad" ]] && ok "OF-6 ruling 3 amendment: a failed day is read fresh once only with the one pinned FRESH-READ row for it (past toldAt, unique id) whose failedRun is the day's only counted failure and read no unit (nothing restored, scan step passed, only the K3 trim failed, its log: holds no finished units); without the row, another day or run, a duplicate row or id, a placeholder or future toldAt, a run that read a unit or a second failure, the day stays refused; scan-day reads it fresh only with the row; the repository's only FRESH-READ row is 07-22 for batch 1 (run 38776359833)" || no "OF-6 fresh read:$bad"
+gdreset; rm -f "$GD"/ann-*.json
+[[ -z "$bad" ]] && ok "OF-6 ruling 3 amendment (OF-FRESH-FIX): a failed day is read fresh once only with the one pinned FRESH-READ row for it (past toldAt, unique id, covers holding failedRun once) whose covered runs are exactly the day's counted failures, each with progress checked and saved, only the scan step (or only the K3 trim after a passed scan step) failed and exactly one exit-code-2 failure annotation; no job log or cache API is read; an uncovered or third failure, a covered run that is not a failure, another shape, exit 1, two or no annotations, an unreadable API (refusal names only the HTTP status), another day, a duplicate row or id, a placeholder or future toldAt, or a row without covers keep the day refused; another day's failure stays its own; scan-day reads fresh only with the row; the repository's 07-22 row covers runs 38776359833 and 38896609003" || no "OF-6 fresh read:$bad"
 bad=""
 bad=""; gdreset
 

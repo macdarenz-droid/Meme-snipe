@@ -79,8 +79,8 @@ cfg_ret=$("$(dirname "$0")/archive-guard.sh" entry "$day") || exit 2
 # ARCHIVE_REARM_AT (from the guard pass), and, with ARCHIVE_REREAD_ID, the units the one
 # pinned QA-REREAD row names (written only after the owner is told).
 failed=$("$(dirname "$0")/archive-guard.sh" failed "$day") || exit 2
-# OF-6 ruling 3 amendment (2026-10-16): failed=2 when the guard pass found the day's one
-# counted failure to be the 0-unit run a FRESH-READ row names; the row is checked here again.
+# OF-6 ruling 3 amendment (2026-10-16, OF-FRESH-FIX): failed=2 when the guard pass found the day's counted
+# failures to be exactly the runs a FRESH-READ row covers; the row is checked here again.
 fresh=""
 if [ "$failed" = 2 ]; then
   fresh=$("$(dirname "$0")/archive-guard.sh" fresh "$day") || exit 2
@@ -152,10 +152,11 @@ done
 # OF-6 ruling 3: after a counted failure, only the units a QA-REREAD row names are read
 # again; a fresh whole-day read of a failed day is refused (it counts as missing and the
 # owner is asked about a spare day). A resume from saved progress reads nothing twice.
-# Amendment (2026-10-16): a day whose one counted failure read no unit (failed=2, a
-# FRESH-READ row) is read fresh once; a second failure makes it failed=1 again.
+# Amendment (2026-10-16, OF-FRESH-FIX): a day whose counted failures are exactly the runs a
+# FRESH-READ row covers (each read no unit; failed=2) is read fresh once; a further
+# failure the row does not cover makes it failed=1 again.
 if [ "$failed" = 2 ] && [ -z "$reread" ] && [ "$own" -eq 0 ]; then
-  echo "fresh read of $day under FRESH-READ ${fresh%% *}: its one counted failure (run ${fresh##* }) read no archive unit (OF-6 ruling 3 amendment)" | tee -a "$summary"
+  echo "fresh read of $day under FRESH-READ ${fresh%% *}: its counted failures (runs ${fresh##* }) read no archive unit (OF-6 ruling 3 amendment)" | tee -a "$summary"
 elif [ "$failed" != 0 ] && [ -z "$reread" ] && [ "$own" -eq 0 ]; then
   echo "refused: $day had a counted failure since ARCHIVE_REARM_AT and its progress holds none of its units: a whole-day re-read is refused; the day counts as missing and the owner is asked about a spare day (or a QA-REREAD row names the units to read again)" | tee -a "$summary" >&2
   exit 2

@@ -497,47 +497,77 @@ ag_reread() {
   done <<< "$(tr ',' '\n' <<< "$units")"
   printf '%s' "$list"
 }
-# ag_fresh_row DAY (OF-6 ruling 3 amendment, 2026-10-16): "ID RUN_ID" of the one pinned
-# FRESH-READ row for DAY, written only after the owner answered the spare-day question:
-#   | DATE | FRESH-READ id=ID day=DAY failedRun=RUN_ID toldAt=UTC-TIME ...
-# Refuses when DAY has no such row or more than one, when its id is used by another row,
-# when the row is malformed, or when toldAt is not a past UTC time (a placeholder fails).
+# ag_fresh_row DAY (OF-6 ruling 3 amendment, 2026-10-16; OF-FRESH-FIX rulings OF-FR-8 to
+# OF-FR-10): "ID FAILED_RUN COVERS" of the one pinned FRESH-READ row for DAY, written only
+# after the owner answered the spare-day question and the supervisor read each covered
+# run's scan log:
+#   | DATE | FRESH-READ id=ID day=DAY failedRun=RUN_ID covers=RUN_ID[,RUN_ID...] toldAt=UTC-TIME ...
+# COVERS (comma-joined) holds failedRun, each run once. Refuses when DAY has no such row
+# or more than one, when its id is used by another row, when the row is malformed, or
+# when toldAt is not a past UTC time (a placeholder fails).
 ag_fresh_row() {
-  local rows n id run told
+  local rows n id run covers told
   rows=$(grep -E "^\| [^|]* \| FRESH-READ " "$ag_decisions" 2>/dev/null | grep -F " day=$1 " || true)
   n=$(grep -c . <<< "$rows" || true)
   [[ "$n" == 1 ]] || { ag_refuse "no single pinned FRESH-READ row for $1 in docs/DECISIONS.md ($n found); a failed day is not read fresh before the owner decides"; return 2; }
-  [[ "$rows" =~ ^\|\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ \|\ FRESH-READ\ id=([A-Za-z0-9._:-]+)\ day=$1\ failedRun=([0-9]+)\ toldAt=([^ |]+)( |$) ]] ||
+  [[ "$rows" =~ ^\|\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ \|\ FRESH-READ\ id=([A-Za-z0-9._:-]+)\ day=$1\ failedRun=([0-9]+)\ covers=([0-9]+(,[0-9]+)*)\ toldAt=([^ |]+)( |$) ]] ||
     { ag_refuse "the FRESH-READ row for $1 is malformed"; return 2; }
-  id=${BASH_REMATCH[1]} run=${BASH_REMATCH[2]} told=${BASH_REMATCH[3]}
+  id=${BASH_REMATCH[1]} run=${BASH_REMATCH[2]} covers=${BASH_REMATCH[3]} told=${BASH_REMATCH[5]}
   [[ $(grep -cE "^\| [^|]* \| FRESH-READ id=$id " "$ag_decisions") == 1 ]] || { ag_refuse "the FRESH-READ id $id is used by more than one row"; return 2; }
+  [[ $(tr ',' '\n' <<< "$covers" | LC_ALL=C sort | uniq -d | grep -c .) == 0 ]] && tr ',' '\n' <<< "$covers" | grep -qxF "$run" ||
+    { ag_refuse "the FRESH-READ row $id covers a run twice or not its failedRun $run"; return 2; }
   told=$(ag_ts "$told") && (( told <= $(ag_now) )) || { ag_refuse "the FRESH-READ row $id has no past toldAt (UTC); the owner has not answered yet"; return 2; }
-  echo "$id $run"
+  echo "$id $run $covers"
 }
-# ag_fresh_ok DAY (with the token, after ag_history): the FRESH-READ row for DAY holds, its
-# failedRun is DAY's one counted scan failure since ARCHIVE_REARM_AT (so a fresh read
-# happens once: a second failure ends it), and that run read no archive unit. Its own
-# record shows that: attempt 1's job "scan (DAY)" restored no progress ("Open the progress
-# cache" skipped), its scan step succeeded (the scanner exited 0, so every planned unit
-# would have finished), its only failed step is "Trim the day to K3", and that step's log
-# reads "holds no finished units": 0 units finished, hence 0 planned and 0 read; only the
-# planner's probes went out (batch 1, data-scan run 38776359833, OF-FIX).
+# ag_http_status: the HTTP status in a gh error text on stdin ("HTTP 403"), else "no HTTP
+# status". A refusal names only that, never the response body or a token (OF-FR-4).
+ag_http_status() {
+  local s
+  s=$(grep -oE 'HTTP [0-9]{3}' | tail -1 || true)
+  echo "${s:-no HTTP status}"
+}
+# ag_fresh_ok DAY (with the token, after ag_history): the FRESH-READ row for DAY holds and
+# covers exactly DAY's counted scan failures since ARCHIVE_REARM_AT (a failure the row
+# does not pin ends the exception), and each covered run's own record matches a run that
+# read no unit. The supervisor pins a run only after reading its whole scan log; the
+# guard checks what the jobs and check-run annotations APIs show (no job log, no cache
+# API; OF-FR-8, OF-FR-10), for attempt 1's job "scan (DAY)":
+#   1. "Check the progress did not shrink" and "Save progress" succeeded;
+#   2. its only failed step is the scan step, or only "Trim the day to K3" with the scan
+#      step a success;
+#   3. its failure annotations are exactly one "Process completed with exit code 2.".
+# Exit 2 alone proves nothing (a Go runtime panic in the scanner also exits 2, possibly
+# after a unit read); the pinned, log-read run ids carry the proof, these checks only
+# confirm each run is the shape the supervisor read.
 ag_fresh_ok() {
-  local row id run jobs jid log
-  row=$(ag_fresh_row "$1") || return 2
-  read -r id run <<< "$row"
-  [[ "$(grep -F "$1 " <<< "${AG_FAILED_RUNS:-}" | grep -c .)" == 1 ]] && grep -qxF "$1 $run" <<< "${AG_FAILED_RUNS:-}" ||
-    { ag_refuse "FRESH-READ $id: $1's counted failures since ARCHIVE_REARM_AT are not exactly run $run"; return 2; }
-  jobs=$(ag_jobs "$run" 1) || { ag_refuse "FRESH-READ $id: the jobs of run $run cannot be read (fail closed)"; return 2; }
-  jobs=$(awk -F'\t' -v j="scan ($1)" '$1 == "job" { on = ($2 == j) } on' <<< "$jobs")
-  jid=$(awk -F'\t' 'NR == 1 && $1 == "job" && $3 == "failure" { print $4 }' <<< "$jobs")
-  [[ "$jid" =~ ^[0-9]+$ ]] && [[ "$(ag_scan_failed_steps <<< "$jobs")" == "Trim the day to K3" ]] &&
-    grep -qxF $'step\tScan (one lane, stops on 429)\tsuccess' <<< "$jobs" && grep -qxF $'step\tOpen the progress cache\tskipped' <<< "$jobs" ||
-    { ag_refuse "FRESH-READ $id: run $run is not a 0-unit failure of $1 (restored nothing, scan step passed, only the K3 trim failed)"; return 2; }
-  log=$("$ag_gh" api "repos/$ag_repo/actions/jobs/$jid/logs" 2>/dev/null) ||
-    { ag_refuse "FRESH-READ $id: the log of run $run's scan job cannot be read (fail closed)"; return 2; }
-  grep -q "holds no finished units" <<< "$log" ||
-    { ag_refuse "FRESH-READ $id: run $run's trim did not refuse for holding no finished units"; return 2; }
+  local row id run covers have r jobs jid steps ann err
+  err=$(mktemp) || return 1
+  row=$(ag_fresh_row "$1") || { rm -f "$err"; return 2; }
+  read -r id run covers <<< "$row"
+  have=$(awk -v d="$1" '$1 == d { print $2 }' <<< "${AG_FAILED_RUNS:-}" | LC_ALL=C sort -u)
+  [[ -n "$have" && "$have" == "$(tr ',' '\n' <<< "$covers" | LC_ALL=C sort -u)" ]] ||
+    { ag_refuse "FRESH-READ $id: $1's counted failures since ARCHIVE_REARM_AT ($(tr '\n' ' ' <<< "$have")) are not exactly the covered runs ($covers)"; rm -f "$err"; return 2; }
+  for r in $(tr ',' ' ' <<< "$covers"); do
+    if ! jobs=$("$ag_gh" api --paginate "repos/$ag_repo/actions/runs/$r/attempts/1/jobs?per_page=100" \
+        --jq '.jobs[] | ("job\t\(.name)\t\(.conclusion // "-")\t\(.id)"), (.steps[]? | "step\t\(.name)\t\(.conclusion // "-")")' 2>"$err"); then
+      ag_refuse "FRESH-READ $id: the jobs of run $r cannot be read ($(ag_http_status < "$err")); fail closed"; rm -f "$err"; return 2
+    fi
+    jobs=$(awk -F'\t' -v j="scan ($1)" '$1 == "job" { on = ($2 == j) } on' <<< "$jobs")
+    jid=$(awk -F'\t' 'NR == 1 && $1 == "job" && $3 == "failure" { print $4 }' <<< "$jobs")
+    steps=$(ag_scan_failed_steps <<< "$jobs")
+    [[ "$jid" =~ ^[0-9]+$ ]] &&
+      grep -qxF $'step\tCheck the progress did not shrink\tsuccess' <<< "$jobs" && grep -qxF $'step\tSave progress\tsuccess' <<< "$jobs" &&
+      { [[ "$steps" == "Scan (one lane, stops on 429)" ]] ||
+        { [[ "$steps" == "Trim the day to K3" ]] && grep -qxF $'step\tScan (one lane, stops on 429)\tsuccess' <<< "$jobs"; }; } ||
+      { ag_refuse "FRESH-READ $id: run $r's job scan ($1) is not the pinned shape (progress checked and saved; only the scan step, or only the K3 trim after a passed scan step, failed)"; rm -f "$err"; return 2; }
+    if ! ann=$("$ag_gh" api --paginate "repos/$ag_repo/check-runs/$jid/annotations?per_page=100" \
+        --jq '.[] | select(.annotation_level == "failure") | .message' 2>"$err"); then
+      ag_refuse "FRESH-READ $id: the annotations of run $r's scan job cannot be read ($(ag_http_status < "$err")); fail closed"; rm -f "$err"; return 2
+    fi
+    [[ "$ann" == "Process completed with exit code 2." ]] ||
+      { ag_refuse "FRESH-READ $id: run $r's scan job does not carry exactly one failure annotation \"Process completed with exit code 2.\""; rm -f "$err"; return 2; }
+  done
+  rm -f "$err"
   return 0
 }
 # ag_entry DAY: what scan-day.sh and check-day.sh check: ag_local plus ag_attested.
