@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 5:08 PM: #331 option A pushed at `0b9786e0`** (test-ci 290/0).
+  - ag_fresh_row and ag_fresh_ok, the FRESH-READ row fr-0722, and an "OF-6 fresh read" test-ci case; both MINORs restored.
+  - Open VERIFY: ag_fresh_ok reads the job log through `gh api …/actions/jobs/ID/logs`, which GitHub answers with a redirect. If that fails closed, failure 2 of 3 is burned.
+  - Re-check (`session_01RChWiiJc1Gz9XYnCmdC1wm`) must prove the redirect handling and the token permissions, or name non-log evidence instead.
 - **16 Oct 4:34 PM: the owner chose A for 07-22** (owner, 2026-10-16 about 4:34 PM: "A"). One fresh read of 07-22, because batch 1 planned and read 0 units.
   - It comes through a pinned `FRESH-READ` row: day=2026-07-22, failedRun=38776359833, toldAt=2026-10-16T05:34:31Z. A narrow amendment to OF-6 ruling 3 goes with it; every other failed day stays refused.
   - The builder finishes A1–A3 and the MINORs on #331. Then review, red team, green CI and merge.
