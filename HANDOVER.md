@@ -138,6 +138,18 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 11:50 PM: the 22 July fresh read was refused in CI; card OF-FRESH-FIX.** Archive-check run `38896554511` (11:51 UTC, on `58d703d9`) dispatched data-scan `38896609003` for 2026-07-22. Its attest step logged "refused: FRESH-READ fr-0722: the log of run 38776359833's scan job cannot be read (fail closed)", so FAILED stayed 1. The scan step then refused at `scan-day.sh:149` (exit 2) before any archive request ("progress-guard: 0 finished units"). Nothing was read. The continue job failed at its dispatch step.
+  - The log of job `116565097210` is still readable with the owner's token (checked), so retention is not the cause. The CI read with `github.token` (the scan job has `actions: read`, `env -i`) fails for a reason not yet proven; `2>/dev/null` hid the error.
+  - Likely counted failure 2 of 3 (to be confirmed by the builder). The plan job does not check FRESH-READ, so the next archive-check tick will likely dispatch 07-22 again. It is refused before any request, so the worst case is the designed 3-failure stop with no archive read. No rushed ARCHIVE_* change.
+  - Rulings OF-FR-1..6 to the OF builder `session_01JfcmEyJ1AqL4BQbyoGAZHT` (branch `claude/of-fresh-fix`):
+    1. Confirm nothing reaches the archive before the refusal, and compute AG_FAILS.
+    2. Root-cause the log read from evidence; the fresh-read proof must not depend on a job log.
+    3. The owner's answer A stands (one fresh read is still owed); the re-arm goes in the same PR if the chain has stopped.
+    4. A failed gh read records only the HTTP status.
+    5. Tests fail before and pass after, including a failing logs endpoint.
+    6. A safety refusal on an ARCHIVE_*/guard edit goes to the supervisor, then the owner.
+  - Review by a reviewer plus a red team when the PR is ready.
+- **16 Oct 11:50 PM: Z10** at `e42672e7`. The end-to-end run failed on the test's own credential write (its setup wrote the fake RPC credentials outside a handoff, so the host's key check alerted). The fix was e2e-only and a rerun is going. The builder reports after a green run.
 - **16 Oct 10:32 PM: still no archive-check run since 04:56 UTC** (6.5 h; the longest gap so far was about 7 h). The workflow state is `active`. Check-in re-armed for 13:30 UTC. Z10 branch is at `d81ad484` (work in progress).
 - **16 Oct 8:25 PM: Z10-17..18 ruled.**
   - Z10-17 (amends Z07 M04): the stale lag is stale_lag_slots plus the pool's class interval, so tail pools stop flapping (about 260k warn lines a day). Watched-class entry freshness is no looser.
