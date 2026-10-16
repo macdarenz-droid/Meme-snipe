@@ -4016,11 +4016,11 @@ cp "$T/frdec0" "$frdec"; o="$T/fr6n"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "no single pinned FRESH-READ row for 2026-07-22" "$T/out.txt" || bad+=" [scan-day without row: $rc]"
 frrow fr-1 2026-07-22 395; o="$T/fr6w"; rm -rf "$o"; mkdir -p "$o"; rc=0; GFAILED=1 SFX=$FXFR scan "$o" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "a whole-day re-read is refused" "$T/out.txt" || bad+=" [row but failed=1: $rc]"
-# the repository's own 07-22 row stays refused until the owner's answer time is filled in
-(. "$here/archive-guard.sh"; ag_summary=/dev/null; ag_fresh_row 2026-07-22) > "$T/frrepo.out" 2>&1 && bad+=" [repo row accepted: $(cat "$T/frrepo.out")]"
-grep -q "FRESH-READ row .* has no past toldAt\|no single pinned FRESH-READ row" "$T/frrepo.out" || bad+=" [repo row: $(cat "$T/frrepo.out")]"
+# the repository's own rows: 07-22 names batch 1 (owner's answer "A"), and no other day has one
+(. "$here/archive-guard.sh"; ag_summary=/dev/null; ag_fresh_row 2026-07-22) > "$T/frrepo.out" 2>&1 && [[ "$(cat "$T/frrepo.out")" == "fr-0722 38776359833" ]] || bad+=" [repo 07-22 row: $(cat "$T/frrepo.out")]"
+(. "$here/archive-guard.sh"; ag_summary=/dev/null; ag_fresh_row 2026-07-23) > /dev/null 2>&1 && bad+=" [repo 07-23 row accepted]"
 gdreset; rm -f "$GD"/log-*.txt
-[[ -z "$bad" ]] && ok "OF-6 ruling 3 amendment: a failed day is read fresh once only with the one pinned FRESH-READ row for it (past toldAt, unique id) whose failedRun is the day's only counted failure and read no unit (nothing restored, scan step passed, only the K3 trim failed, its log: holds no finished units); without the row, another day or run, a duplicate row or id, a placeholder or future toldAt, a run that read a unit or a second failure, the day stays refused; scan-day reads it fresh only with the row; the repository's 07-22 row is refused until its toldAt is filled in" || no "OF-6 fresh read:$bad"
+[[ -z "$bad" ]] && ok "OF-6 ruling 3 amendment: a failed day is read fresh once only with the one pinned FRESH-READ row for it (past toldAt, unique id) whose failedRun is the day's only counted failure and read no unit (nothing restored, scan step passed, only the K3 trim failed, its log: holds no finished units); without the row, another day or run, a duplicate row or id, a placeholder or future toldAt, a run that read a unit or a second failure, the day stays refused; scan-day reads it fresh only with the row; the repository's only FRESH-READ row is 07-22 for batch 1 (run 38776359833)" || no "OF-6 fresh read:$bad"
 bad=""
 bad=""; gdreset
 

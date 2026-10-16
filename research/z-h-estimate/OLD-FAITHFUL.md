@@ -108,7 +108,7 @@ scanner works in 4,500-slot units, written atomically, so a stopped day resumes 
 - 30 decision days are exactly B-10's minimum: there is no spare day. **A day is never read again whole** (round 3
   item 23). After a QA failure the owner is told first; then only the units QA names are read again, under the same
   batch rules. If that does not fix it, the day counts as missing, B-10 is short, and the owner is asked about a spare
-  day (a new day needs the owner's OK). Amendment (2026-10-16, OF-REARM, pending the owner's answer): a failed day
+  day (a new day needs the owner's OK). Amendment (2026-10-16, OF-REARM, option A, the owner's answer "A"): a failed day
   whose one counted failure read no archive unit (batch 1, data-scan run 38776359833: 0 units planned, only the
   planner's probes) may be read fresh once, and only when a pinned `FRESH-READ` row in `docs/DECISIONS.md` names
   the day and that run with the owner's answer time, and the day's saved progress holds none of its units
