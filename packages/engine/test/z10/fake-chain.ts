@@ -7,7 +7,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { base58 } from '@bot/decoders';
+import { base58, decodePubkey } from '@bot/decoders';
 import type { Clock, Pubkey, UnixMs } from '@bot/types';
 import type { FetchLike, Scheduler } from '../../src/m14/types.ts';
 
@@ -197,6 +197,41 @@ export class FakeChain {
       this.accounts.set(p.baseVault, { owner: base.owner, data: nb });
       this.accounts.set(p.quoteVault, { owner: quote.owner, data: nq });
     }
+  }
+
+  /**
+   * A SYNTHETIC copy of a fixture pool at a new address, with its own two vaults (copies of the fixture's, whose token
+   * authority, bytes 32-64 of an SPL token account, is the new pool) and the pool's data naming them. It trades like
+   * every pool (evolve). The mint is the fixture's, so the canonical-creator check still holds.
+   */
+  clonePool(from: FixturePool, label: string): FixturePool {
+    const pool = synthKey(`${label}:pool`), baseVault = synthKey(`${label}:base`), quoteVault = synthKey(`${label}:quote`);
+    const swap = (data: Uint8Array, a: string, b: string): Uint8Array => {
+      const out = new Uint8Array(data);
+      const old = decodePubkey(a), nu = decodePubkey(b);
+      for (let i = 0; i + 32 <= out.length; i++) if (old.every((x, k) => out[i + k] === x)) out.set(nu, i);
+      return out;
+    };
+    const src = this.accounts.get(from.pool) as Acc;
+    let poolData = swap(src.data, from.baseVault, baseVault);
+    poolData = swap(poolData, from.quoteVault, quoteVault);
+    this.accounts.set(pool, { owner: src.owner, data: poolData });
+    for (const [v, nv] of [[from.baseVault, baseVault], [from.quoteVault, quoteVault]] as const) {
+      const a = this.accounts.get(v) as Acc;
+      const d = new Uint8Array(a.data);
+      d.set(decodePubkey(pool), 32);
+      this.accounts.set(nv, { owner: a.owner, data: d });
+    }
+    const p: FixturePool = { pool, baseMint: from.baseMint, quoteMint: from.quoteMint, baseVault, quoteVault };
+    this.pools.push(p);
+    return p;
+  }
+
+  /** Forgets a clone's accounts (a pool that closed; keeps the fake's own memory bounded in long soaks). */
+  dropPool(p: FixturePool): void {
+    for (const k of [p.pool, p.baseVault, p.quoteVault]) this.accounts.delete(k);
+    const i = this.pools.indexOf(p);
+    if (i >= 0) this.pools.splice(i, 1);
   }
 
   private account(key: string): Acc | null {

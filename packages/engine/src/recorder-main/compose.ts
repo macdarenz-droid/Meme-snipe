@@ -104,6 +104,7 @@ export interface RunningRecorder {
     db: Db; config: ConfigService; log: Logger; metrics: MetricsRegistry; read: ReadPath; chain: AgreedChainState; queue: RecorderQueue;
     writer: SegmentWriter; disk: DiskManager; tracker: PoolTracker<CpPoolState>; universe: Universe; watchlist: Watchlist; bars: BarEngine;
     barStore: BarStore; backfill: MigrationBackfill<CpPoolState>; venue: VenueConfigCache; venueRecorder: VenueConfigRecorder; evictions: EvictionLog;
+    model: ReturnType<typeof createPumpSwapPoolModel>;
     tickOnce(): Promise<void>;
   };
 }
@@ -544,7 +545,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       },
       parts: {
         db, config, log, metrics, read: rp, chain, queue, writer, disk, tracker: tracker as PoolTracker<CpPoolState>, universe, watchlist, bars, barStore,
-        backfill, venue, venueRecorder, evictions, tickOnce,
+        backfill, venue, venueRecorder, evictions, model, tickOnce,
       },
     },
   };
