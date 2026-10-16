@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 5:27 PM: #331 `0b9786e0` passed the re-check** (`session_01RChWiiJc1Gz9XYnCmdC1wm`): no BLOCKER or MAJOR.
+  - Verified live and read-only: ag_history gives fails=1 and AG_FAILED_RUNS "2026-07-22 38776359833"; ag_fresh_ok 07-22 returns rc 0.
+  - gh 2.89.0 follows the job-log 302; the data-scan jobs have `actions: read`.
+  - A PR-body nit went to the builder. CI: coverage, historical-data and dashboard green, `check` running. It merges on green.
 - **16 Oct 5:23 PM: #330 round 5: review PASS, red team FAIL with 1 BLOCKER.**
   - RT-15: watched pools past their entry age hold every slot forever, so young pools are never watched (PR comment 6209438459).
   - Rulings went to the builder, together with Z09-51:
