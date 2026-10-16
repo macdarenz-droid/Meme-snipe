@@ -252,9 +252,13 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   // unit may write is always the one used; `recorder.data_dir` keeps its default, which is ENGINE_PATHS.mdDir.
   const dataDir = p.paths.mdDir;
   const recovery = SegmentWriter.recover({ dataDir, nowMs: nowMs(), log: wlog });
-  // Finding Z10-F5: a day's universe manifest is about 420 bytes per eligible pool (the soak's second day: 239 pools,
-  // 100,566 bytes), past the 64 KiB default, so the record cap is M07's largest (1 MiB, ruling Z08-28: about 2,500 pools).
-  const queue = new RecorderQueue({ firstSeq: recovery.nextSeq, log: wlog, config: { pollCloseGraceMs: configValue(cfg, 'bars.close_grace_ms'), recordMaxBytes: RECORD_MAX_BYTES_CAP } });
+  // Finding F5 (rulings Z10-20, Z10-29): a day's universe manifest is about 420 bytes per eligible pool (the soak's
+  // second day: 239 pools, 100,566 bytes), past the 64 KiB default, so that stream alone gets M07's largest cap (1 MiB,
+  // ruling Z08-28: about 2,490 pools); every other stream keeps `recorder.record_max_bytes`.
+  const queue = new RecorderQueue({
+    firstSeq: recovery.nextSeq, log: wlog,
+    config: { pollCloseGraceMs: configValue(cfg, 'bars.close_grace_ms'), recordMaxBytes: configValue(cfg, 'recorder.record_max_bytes'), streamMaxBytes: { universe_manifest: RECORD_MAX_BYTES_CAP } },
+  });
   // The stored 1-minute bars (M08 `bar_1m`). The 15 s base bars feed only features and strategies, none of which runs in
   // the recorder; replays rebuild them from the recording (A-M08-01, Z09-32).
   const bars = createBarEngine({ ...BAR_DEFAULTS, durationMs: 60_000, closeGraceMs: configValue(cfg, 'bars.close_grace_ms'), incompleteMissingBps: configValue(cfg, 'bars.incomplete_missing_bps') }, log);

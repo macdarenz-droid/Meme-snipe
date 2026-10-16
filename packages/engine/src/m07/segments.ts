@@ -143,7 +143,7 @@ function writeAtomic(fs: WriterFs, path: string, dir: string, text: string): voi
  * (EPERM). So the folder is made under a 027 umask, which gives 0750 with the inherited bit kept; chmod (never with
  * setgid) only corrects a folder that still came out otherwise. Nothing is widened.
  */
-function mkdirs(fs: WriterFs, root: string, rel: string): void {
+export function mkdirs(fs: Pick<typeof nodeFs, 'existsSync' | 'mkdirSync' | 'statSync' | 'chmodSync'>, root: string, rel: string): void {
   let at = root;
   for (const part of rel.split('/')) {
     at = join(at, part);
@@ -333,7 +333,9 @@ export class SegmentWriter {
     if (this.hour !== null && this.hour.hourUtc !== h.hourUtc) {
       const closing = this.hour.hourUtc;
       this.rotate();
-      this.lastRotated = closing;                                         // that hour takes no more records
+      // That hour takes no more records. Ruling Z10-31: never moved back when the wall clock steps back (a late record
+      // then lands in a new part of an hour already closed, and closedThrough() never goes back).
+      if (closing > this.lastRotated) this.lastRotated = closing;
     }
     this.hour = h;
     let n = 0;

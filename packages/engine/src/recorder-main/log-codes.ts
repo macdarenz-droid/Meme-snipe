@@ -27,6 +27,7 @@ export const M07_LOG_CODES = {
   'm07.segment_rotated': { fields: { stream: 'string', records: 'integer', sha256: 'string' } },
   'm07.receipts_swept': { fields: { category: 'string', deleted: 'integer', stuck: 'integer', over_cap: 'integer' } },
   'm07.segment_deleted': { fields: { path: 'string', sha256: 'string' } },
+  'm07.watch_deleted': { fields: { day: 'string' } },
   'm07.segment_delete_failed': { fields: { path: 'string', error_code: 'string' } },
   'm07.unpulled_segments': { fields: { count: 'integer', retention_days: 'integer' } },
   'm07.disk_full': { fields: { used_pct: 'integer', free_bytes: 'integer', recorder_bytes: 'integer', reasons: 'string' } },

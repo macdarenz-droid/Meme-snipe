@@ -123,6 +123,11 @@ export interface RecorderQueueConfig {
   /** `recorder.record_max_bytes`: serialised payload bytes, default 65,536. */
   recordMaxBytes: number;
   /**
+   * Ruling Z10-20/Z10-29: a larger cap for named streams only (at most RECORD_MAX_BYTES_CAP); every other stream keeps
+   * `recordMaxBytes`. The recorder gives `universe_manifest` 1 MiB.
+   */
+  streamMaxBytes?: Partial<Record<StreamName, number>>;
+  /**
    * Serialised bytes the queue may hold (payloads plus RECORD_OVERHEAD_BYTES each). Not in the ticket: 50,000 records
    * at the 64 KB cap would be 3.2 GB on a 2 GB host, so a count bound alone does not bound memory. Default 64 MiB.
    */
@@ -394,6 +399,10 @@ export class RecorderQueue {
     if (!Number.isInteger(c.recordMaxBytes) || c.recordMaxBytes < 1 || c.recordMaxBytes > RECORD_MAX_BYTES_CAP) {
       throw new RecorderError('E_CONFIG', 'recorder.record_max_bytes must be a whole number from 1 to 1,048,576');
     }
+    for (const [st, n] of Object.entries(c.streamMaxBytes ?? {})) {
+      if (!isStreamName(st) || !Number.isInteger(n) || (n as number) < 1 || (n as number) > RECORD_MAX_BYTES_CAP) throw new RecorderError('E_CONFIG', 'streamMaxBytes must name streams with a whole number from 1 to 1,048,576');
+      if (c.queueMaxBytes < (n as number) + RECORD_OVERHEAD_BYTES) throw new RecorderError('E_CONFIG', 'queueMaxBytes must hold at least one record of each stream cap');
+    }
     if (!Number.isInteger(c.queueMaxBytes) || c.queueMaxBytes < c.recordMaxBytes + RECORD_OVERHEAD_BYTES) {
       throw new RecorderError('E_CONFIG', 'queueMaxBytes must hold at least one record of record_max_bytes');
     }
@@ -478,7 +487,7 @@ export class RecorderQueue {
     }
     this.s.redactedTotal += red.redacted;
     const payloadBytes = Buffer.byteLength(json, 'utf8');
-    if (payloadBytes > this.cfg.recordMaxBytes) return this.reject(stream, 'E_TOO_LARGE', 'payload over recorder.record_max_bytes');
+    if (payloadBytes > (this.cfg.streamMaxBytes?.[stream] ?? this.cfg.recordMaxBytes)) return this.reject(stream, 'E_TOO_LARGE', 'payload over recorder.record_max_bytes');
     // A producer's time moves maxRecvMinute only once its record is accepted (ruling 27); a snapshot's after its pool
     // is admitted. The queue's own poll_counts never move it.
     const clock = this.classify(e.recvMs);

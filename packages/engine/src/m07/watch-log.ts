@@ -5,17 +5,17 @@
 // never closed (a crash) counts as watched to the end of the day: the coverage report then counts that time as missing,
 // which can only make a day look worse, never better.
 import * as nodeFs from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { UnixMs } from '@bot/types';
 import { DAY_MS, dayStartOf, type PriorityClass, type WatchInterval } from './coverage.ts';
-import { DIR_MODE, FILE_MODE } from './segments.ts';
+import { FILE_MODE, mkdirs } from './segments.ts';
 
 /** Poll interval of each class (A-M04-01: 2 Hz positions, 1 Hz candidates; M05 tails 0.1 Hz). */
 export const POLL_INTERVAL_MS: Readonly<Record<PriorityClass, number>> = { position: 500, candidate: 1_000, tail: 10_000 };
 
 interface Line { e: 'watch' | 'unwatch' | 'carry'; poolId: string; c?: PriorityClass; at: UnixMs }
 
-export type WatchLogFs = Pick<typeof nodeFs, 'appendFileSync' | 'existsSync' | 'mkdirSync' | 'chmodSync' | 'readFileSync'>;
+export type WatchLogFs = Pick<typeof nodeFs, 'appendFileSync' | 'existsSync' | 'mkdirSync' | 'chmodSync' | 'readFileSync' | 'statSync'>;
 
 export class WatchLog {
   private readonly dir: string;
@@ -32,8 +32,11 @@ export class WatchLog {
 
   /** Opens the day's file: on a new UTC day every pool still watched (but `except`) is carried over first. */
   private ensureDay(day: string, except: string | null): string {
-    if (!this.fs.existsSync(this.dir)) { this.fs.mkdirSync(this.dir, { mode: DIR_MODE }); this.fs.chmodSync(this.dir, DIR_MODE); }
+    // Ruling Z10-26: made as segments.ts makes its folders (finding F8: under the unit's UMask=0077 a chmod to 0750
+    // cleared the setgid group of /var/lib/zeroed-md), and the day file set to 0640 once, when it is first made.
+    if (!this.fs.existsSync(this.dir)) mkdirs(this.fs, dirname(this.dir), basename(this.dir));
     const path = join(this.dir, `${day}.ndjson`);
+    if (!this.fs.existsSync(path)) { this.fs.appendFileSync(path, '', { mode: FILE_MODE }); this.fs.chmodSync(path, FILE_MODE); }
     if (this.day !== day) {
       const carry = [...this.watched].filter(([p]) => p !== except).map(([poolId, c]) => JSON.stringify({ e: 'carry', poolId, c, at: dayStartOf(day) }));
       if (carry.length > 0) this.fs.appendFileSync(path, `${carry.join('\n')}\n`, { mode: FILE_MODE });

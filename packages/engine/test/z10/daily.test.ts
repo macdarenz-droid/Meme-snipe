@@ -67,4 +67,28 @@ describe('Z10 daily jobs', () => {
       await r.rec.stop();
     }
   }, 60_000);
+
+  it('ruling Z10-29: only the manifest gets 1 MiB; every other stream keeps recorder.record_max_bytes, which is live config (fails before: 1 MiB for every stream, and no such key)', async () => {
+    const time = new VirtualTime(Date.UTC(2026, 9, 6, 17, 30, 0));
+    const big = { blob: 'x'.repeat(100_000) };
+    const at = (): UnixMs => time.nowMs() as UnixMs;
+    const r = await startRig(tempDir('z10-cap'), { time, chain: new FakeChain(time, { seed: 9 }) });
+    try {
+      await r.run(2_000);
+      assert.deepEqual(r.rec.parts.queue.append({ stream: 'decision', recvMs: at(), slot: null, commitment: null, source: 'test', payload: big }), { rejected: 'E_TOO_LARGE' });
+      assert.equal(r.rec.parts.queue.append({ stream: 'universe_manifest', recvMs: at(), slot: null, commitment: null, source: 'm05', payload: big }), 'queued');
+    } finally {
+      await r.rec.stop();
+    }
+    const t2 = new VirtualTime(Date.UTC(2026, 9, 6, 17, 30, 0));
+    const r2 = await startRig(tempDir('z10-cap2'), { time: t2, chain: new FakeChain(t2, { seed: 9 }), config: { 'recorder.record_max_bytes': 1_000 } });
+    try {
+      await r2.run(2_000);
+      const rec = (n: number) => r2.rec.parts.queue.append({ stream: 'decision', recvMs: t2.nowMs() as UnixMs, slot: null, commitment: null, source: 'test', payload: { blob: 'y'.repeat(n) } });
+      assert.equal(rec(500), 'queued');
+      assert.deepEqual(rec(2_000), { rejected: 'E_TOO_LARGE' });
+    } finally {
+      await r2.rec.stop();
+    }
+  }, 60_000);
 });
