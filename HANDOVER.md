@@ -138,6 +138,19 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 4:27 PM: #330 round 4 FAILED in both review and red team, on the same BLOCKER.**
+  - The BLOCKER (RT-13, from round 1 and made permanent by Z09-39): under pm01, a pool found under 20 min old gets a 6 h retry and is then retired, so Phase 0 would record almost nothing in PM-01's window.
+  - Red team MAJOR RT-14: the read ceiling lives in memory only and resets on every restart.
+  - Z09-40..42 OK. The ceiling counts pools: 0.083 req/s worst case on Shyft (the free plan allows 10 rps; M14 caps it at 5).
+  - Rulings went to the builder for one delta:
+    - Z09-43: the age-only retry is set to migratedAtMs + minAgeMs.
+    - Z09-44: facts refresh pauses on the metered backup.
+    - Z09-45: a persisted ceiling window.
+    - Z09-46: batched asks, ≤ 60 calls an hour.
+    - Z09-47: the replay refuses overlapping markers (plus a Z10 firstSeq obligation).
+    - Z09-48: a seq-based snapshot split.
+    - Z09-49: no append before markProcessStart.
+    - Z09-50: restoreTails skips cut tails and keeps the original startedMs.
 - **16 Oct 4:24 PM: Z09 #330 round 4 at `cb70524b`.** Z09-39..42 applied; `pnpm check` 9,238/3, the known environment failures; the 11 new tests fail on `3ab6f9a4` and pass at the head.
   - Z09-39: retirement (age_unknown, past_entry_age, past_tail, failed_retries) and a per-hour ceiling `facts_refresh_per_hour` = 300. Worst case measured: 300 a hour, and retired pools read 0.
     - MR-01 note: an evicted pool comes back only within its tail or on rediscovery (recorded in DECISIONS).
