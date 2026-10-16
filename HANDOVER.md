@@ -138,6 +138,18 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 2:40 AM: #334 OF-FRESH-FIX merged at `466279ff`** (the new base; ls-remote checked).
+  - Base now: ARCHIVE_ARM=b10pull-of-2, K2, REARM_AT `2026-10-07T22:30:00Z`; the fr-0722 row is present. archive-limits.conf and .github/ are byte-equal to `58d703d9`.
+  - Merged on:
+    - review PASS (`session_01RChWiiJc1Gz9XYnCmdC1wm`) and red team PASS (`session_014S9V9zz15ASVntNsQw9SdS`) at `93ab4c20`;
+    - the red team also proved both API endpoints from real CI;
+    - test-ci 290/0, CI run `38920031473` green;
+    - head containing base `da18bc5d`;
+    - no archive-check run since 11:51Z.
+  - The 3 h back-off from `38896609003` ended at 14:53:50Z. The next archive-check tick dispatches the 07-22 fresh read; a failure there is failure 3 and stops the chain.
+  - Follow-up MINORs go into the OF builder's next push: the archive-guard.sh:1117 comment and test-ci.sh:4004 2>/dev/null.
+  - Reviewer and red team archived. OF builder `session_01JfcmEyJ1AqL4BQbyoGAZHT` parked.
+  - Watch check-in `trig_018ojesGKcaTp3FtPbCb9Dkm` at 17:45Z.
 - **17 Oct 2:37 AM: hourly update posted.**
   - #334 CI all green on `93ab4c20` (check 15:22Z). Waiting on the red team `session_014S9V9zz15ASVntNsQw9SdS` (its full test run).
   - Z10 builder: two compressed soaks running (the RSS slope and the 60-pool run); head `5cb37e2e`.
