@@ -10,11 +10,15 @@ TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop 
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
 SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
-# Z10: the keyless recorder's limits, from its 48 h soak (docs/DECISIONS.md, Z10): heap peak 17.7 MiB, RSS peak 447 MiB,
-# under the unit's MemoryMax=800M (56%). The heap limit leaves 14x the measured peak; the soak fails above 75% of
-# MemoryMax (600 MiB), the line of the recorder's own memory alert.
+# Z10: the keyless recorder's limits, from its 48 h soak (docs/DECISIONS.md, Z10): heap peak 17.8 MiB and RSS peak
+# 278 MiB after F7 (35% of the unit's MemoryMax=800M), committed heap peak 66 MiB. The heap limit leaves about 4x that
+# committed peak; the soak fails above 75% of MemoryMax (600 MiB), the line of the recorder's own memory alert.
 RECORDER_HEAP_MB=256
 RECORDER_RSS_LIMIT_MB=600
+# Ruling Z10-30: the keyless recorder has no exits to protect, so it must not outlive tailscaled (the owner's only way
+# in), the sentinel or the update unit (all at 0 or below) in a host-wide OOM: worker-start raises its score to this
+# before it starts (raising needs no privilege). The unit keeps -500 (ARCH 14.3, CA-26) for the worker that owns exits.
+RECORDER_OOM_SCORE_ADJ=500
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
@@ -113,14 +117,56 @@ unit_sandbox() {
 RELEASE_LINKS=(types decoders venue engine)
 # release_links RELEASE_DIR: makes the links (idempotent). A release without one of these packages (one from before
 # them) gets no link for it; a package folder that names another package is refused (return 1, nothing linked for it).
+# Ruling Z10-25: refused also when the release's node_modules or node_modules/@bot is itself a link, or a package
+# folder is not a real folder, so a link can never point outside the release.
 release_links() {
   local d="$1" p
+  { [ -L "$d/node_modules" ] || [ -L "$d/node_modules/@bot" ]; } && { echo "refused: $d/node_modules or its @bot folder is a link" >&2; return 1; }
   mkdir -p "$d/node_modules/@bot"
   for p in "${RELEASE_LINKS[@]}"; do
     [ -e "$d/packages/$p/package.json" ] || continue
+    { [ -L "$d/packages/$p" ] || [ ! -d "$d/packages/$p" ]; } && { echo "refused: $d/packages/$p is not a real folder" >&2; return 1; }
     [ "$(jq -r '.name' "$d/packages/$p/package.json" 2>/dev/null)" = "@bot/$p" ] || { echo "refused: $d/packages/$p is not @bot/$p" >&2; return 1; }
     ln -sfn "../../packages/$p" "$d/node_modules/@bot/$p"
   done
+}
+
+# release_links_exact RELEASE_DIR: prints each way the release's node_modules differs from exactly the four links
+# release_links makes (ruling Z10-25), nothing when it matches: node_modules and node_modules/@bot real folders,
+# node_modules holding only @bot, @bot holding only types, decoders, venue and engine, each a link whose real path is
+# the release's own packages/<name>, a real folder.
+release_links_exact() {
+  local d="$1" real e p
+  real="$(realpath -e "$d")" || { echo "the release folder does not exist"; return 0; }
+  [ -L "$d/node_modules" ] && { echo "node_modules is a link"; return 0; }
+  [ -L "$d/node_modules/@bot" ] && { echo "node_modules/@bot is a link"; return 0; }
+  [ -d "$d/node_modules/@bot" ] || { echo "node_modules/@bot is missing"; return 0; }
+  for e in "$d"/node_modules/* "$d"/node_modules/.[!.]*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    [ "$e" = "$d/node_modules/@bot" ] || echo "unexpected node_modules/${e##*/}"
+  done
+  for e in "$d"/node_modules/@bot/* "$d"/node_modules/@bot/.[!.]*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    case " ${RELEASE_LINKS[*]} " in *" ${e##*/} "*) ;; *) echo "unexpected node_modules/@bot/${e##*/}" ;; esac
+  done
+  for p in "${RELEASE_LINKS[@]}"; do
+    e="$d/node_modules/@bot/$p"
+    if [ ! -L "$e" ]; then echo "node_modules/@bot/$p is not a link"; continue; fi
+    { [ -L "$d/packages/$p" ] || [ ! -d "$d/packages/$p" ]; } && { echo "packages/$p is not a real folder"; continue; }
+    [ "$(realpath -e "$e" 2>/dev/null)" = "$real/packages/$p" ] || echo "node_modules/@bot/$p does not resolve to the release's packages/$p"
+  done
+  return 0
+}
+
+# release_tree_refusal: reads `git ls-tree -r --full-tree <commit>` on stdin and prints why the commit may not become a
+# release (ruling Z10-25), or nothing: any path with a node_modules component (the release's only node_modules is the
+# links release_links makes), or any link (mode 120000) under the four linked packages.
+release_tree_refusal() {
+  awk -F'\t' '
+    { split($1, m, " "); path = $2 }
+    path ~ /(^|\/)node_modules(\/|$)/ { print "it carries a node_modules path (" path ")"; exit }
+    m[1] == "120000" && path ~ /^packages\/(types|decoders|venue|engine)\// { print "it carries a link inside a linked package (" path ")"; exit }
+  '
 }
 
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes

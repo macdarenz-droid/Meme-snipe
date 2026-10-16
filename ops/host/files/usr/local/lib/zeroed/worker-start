@@ -35,7 +35,14 @@ if [ "${#old[@]}" -gt 5 ]; then
 fi
 heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")
 # Z10: the keyless recorder's heap is sized from its 48 h soak (logic.sh RECORDER_HEAP_MB), under its unit's MemoryMax.
-case "$entry" in */"$RECORDER_ENTRY") heap[0]="--max-old-space-size=$RECORDER_HEAP_MB" ;; esac
+case "$entry" in
+  */"$RECORDER_ENTRY")
+    heap[0]="--max-old-space-size=$RECORDER_HEAP_MB"
+    # Ruling Z10-30: taken before tailscaled, the sentinel and the update unit under memory pressure (logic.sh). If the
+    # score cannot be raised the recorder does not start, so it can never run at the unit's -500.
+    echo "$RECORDER_OOM_SCORE_ADJ" > /proc/self/oom_score_adj || { echo "worker-start: could not set the recorder's OOM score" >&2; exit 1; }
+    ;;
+esac
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
   exec /usr/local/bin/node --no-warnings "${heap[@]}" "$entry" "$@"

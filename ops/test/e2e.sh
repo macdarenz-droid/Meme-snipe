@@ -799,12 +799,12 @@ case "$(in_c "jq -r '.worker' '$rel/ops/host-config.json'")" in
 esac
 in_c "jq -e '.worker == \"release\" and (.shakedown | type) == \"object\"' '$rel/ops/host-config.json'" >/dev/null || fail "this commit's host-config does not run the release's worker with shakedown settings"
 # No npm code: the worker runs on Node 22's type stripping with no runtime dependency. The one node_modules is the
-# release's own name links (card Z10, logic.sh release_links): $rel/node_modules/@bot/<p>, each a symlink to
-# ../../packages/<p>, <p> one of RELEASE_LINKS. Any other node_modules folder, any file or folder inside it, or a link
-# anywhere else fails. find does not follow the links, so a package's own folder is never read as node_modules.
+# release's own name links (card Z10; ruling Z10-25, exact): node_modules and node_modules/@bot real folders, holding
+# exactly the four links types, decoders, venue and engine, each resolving to the release's own packages/<p> (a real
+# folder); and no other node_modules folder anywhere in the release (find does not follow the links).
 in_c "cd '$rel' && find . -name node_modules ! -path ./node_modules | grep -q ." && fail "the release carries a node_modules folder other than its own links"
-foreign=$(in_c "cd '$rel' && [ ! -e node_modules ] || find node_modules -mindepth 1 ! -path node_modules/@bot | while read -r e; do p=\${e#node_modules/@bot/}; case \" types decoders venue engine \" in *\" \$p \"*) [ -L \"\$e\" ] && [ \"\$(readlink \"\$e\")\" = \"../../packages/\$p\" ] && continue ;; esac; echo \"\$e\"; done")
-[ -z "$foreign" ] || fail "the release carries node_modules beyond its own @bot links: $foreign"
+foreign=$(in_c ". /usr/local/lib/zeroed/logic.sh; release_links_exact '$rel'")
+[ -z "$foreign" ] || fail "the release's node_modules is not exactly its four @bot links: $foreign"
 in_c "/usr/local/bin/node --version" | has -x 'v22\.[0-9]*\.[0-9]*' || fail "host node is not Node 22"
 # The release's worker takes only an https watchdog address: the one the handoff delivered (unreachable from the test
 # server, so its heartbeats fail, which it logs and survives). The trial reads the same environment file. Section 9b's
@@ -997,6 +997,9 @@ grep -q 'Reconcile: 0 open intents, 0 open positions (recorder). OK' "$LOGS/reco
 in_c "systemctl show -p ExecStartPre --value zeroed-worker" | has 'code=exited ; status=0 }' || fail "the recorder's --reconcile ExecStartPre did not exit 0"
 [ "$(in_c "cat /var/lib/zeroed/open_intents /var/lib/zeroed/open_positions | tr '\n' ' '")" = '0 0 ' ] || fail "open_intents and open_positions are not 0"
 in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has -- "--max-old-space-size=$(in_c ". /usr/local/lib/zeroed/logic.sh; echo \$RECORDER_HEAP_MB") .*/opt/zeroed/current/packages/engine/scripts/recorder.ts" || fail "the recorder does not run with its own heap limit"
+# Ruling Z10-30: the keyless recorder is taken before tailscaled, the sentinel and the update unit under memory pressure.
+[ "$(in_c "cat /proc/\$(systemctl show -p MainPID --value zeroed-worker)/oom_score_adj")" = "$(in_c ". /usr/local/lib/zeroed/logic.sh; echo \$RECORDER_OOM_SCORE_ADJ")" ] || fail "the recorder's OOM score is not RECORDER_OOM_SCORE_ADJ"
+for u in tailscaled zeroed-update zeroed-signer zeroed-sentinel; do a="$(in_c "systemctl show -p OOMScoreAdjust --value $u 2>/dev/null" || true)"; [ -z "$a" ] || [ "$a" -lt 500 ] || fail "$u would be taken before the recorder ($a)"; done
 # The database was made from the marker (used up); market data in the M07 folder, the worker's.
 in_c "test -s /var/lib/zeroed/db/bot.db && ! test -e /var/lib/zeroed/init/first-start" || fail "the recorder's database was not made from the first-start marker"
 wait_for 60 "the process_start marker on disk" "docker exec $C bash -c 'ls /var/lib/zeroed-md/*/*/process_start.ndjson.gz' | grep -q ."

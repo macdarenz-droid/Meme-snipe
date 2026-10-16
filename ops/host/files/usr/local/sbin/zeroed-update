@@ -377,13 +377,28 @@ if systemctl is-active --quiet zeroed-worker.service; then
 fi
 
 dest="/opt/zeroed/releases/$commit"
+# Ruling Z10-27: a release that cannot be prepared (its tree refused by Z10-25, or its links) is logged with one alert;
+# the running release and worker stay as they are, nothing is half switched, and the next run tries again.
+prep_refused() {
+  rm -rf "$dest.new"
+  log "The release ${commit:0:12} could not be prepared ($1); still on the old release, trying again next run."
+  alert release-prep "ALERT Zeroed host: the release ${commit:0:12} could not be prepared ($1), so the server stays on the release it runs."
+  exit 1
+}
 if [ ! -d "$dest" ]; then
+  why="$(git -C "$REPO_DIR" ls-tree -r --full-tree "$commit" | release_tree_refusal)" || prep_refused "its file list could not be read"
+  [ -z "$why" ] || prep_refused "$why"
+  rm -rf "$dest.new"
   mkdir -p "$dest.new"
-  git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
+  git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner || prep_refused "it could not be extracted"
   # Z10: the recorder's workspace packages by name, inside the release (logic.sh release_links).
-  release_links "$dest.new"
+  why="$(release_links "$dest.new" 2>&1)" || prep_refused "${why:-its package links could not be made}"
+  # The recorder's releases carry all four packages: check the result is exactly the four links (Z10-25). A release
+  # from before them (no packages/engine) has no links to check.
+  if [ -d "$dest.new/packages/engine" ]; then why="$(release_links_exact "$dest.new" | head -n 3 | tr '\n' ';')"; [ -z "$why" ] || prep_refused "its package links are not exact: $why"; fi
   mv "$dest.new" "$dest"
 fi
+alert_clear release-prep "CLEARED Zeroed host: the release ${commit:0:12} is prepared."
 # RC-FIXES-2b (red team C R3-1): onto the host's stand-in from a worker that is not, never while a position is open (the
 # stand-in runs no exits and reports none): it waits while the worker reports open positions, or the count cannot be
 # read, like the intents above.
