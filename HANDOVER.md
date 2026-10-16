@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 6:12 PM: Z09 #330 round 6 red team PASS at `bf07b3cc`** (no BLOCKER or MAJOR). Both review and red team now pass. It merges when the labelled CI is green.
+  - Two red-team MINORs carry to Z10/M11 as obligations; no push now, since both fail closed or apply only to the parked mr01:
+    - replayBars needs per-stream file order, so the M11 feeder must not merge streams by recvMs; otherwise E_MARKER_SEQ. State it in the feeder contract, or sort per stream inside.
+    - queued_stale under a set with no maximum entry age (mr01) is asked again at every flush forever. Retire it after K unanswered reads before any such set is enabled.
 - **16 Oct 6:10 PM: Z09 #330 round 6 review PASS at `bf07b3cc`** (the golden diff is explained by Z09-52/53 only). The red team has not reported yet.
   - CI asked for a label (E_LOCK_DRIFT). The supervisor read the diff:
     - engine deps move @bot/decoders and @bot/venue to `dependencies` (workspace links);
