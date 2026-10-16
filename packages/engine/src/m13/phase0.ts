@@ -125,8 +125,17 @@ function partsOf(rows: CostRows, size: bigint): { lean: SweepRowParts; strict: S
 }
 
 /** Step 4 at one size: the pool set that passes the depth cap at its median-depth state, and its lean-median pool. */
-function hurdleAt(sizeUsd: number, solUsd: number, medianStates: ReadonlyArray<{ poolId: string; state: PoolState }>, set: SimParamSet, slip: { entryBps: number; exitBps: number }): HurdleRow {
+/** The worst-case slippage bound (10,000 bps) the conservative row's sandwich term takes when the bounds are bad (Z09-28). */
+export const WORST_SLIPPAGE = { entryBps: 10_000, exitBps: 10_000 } as const;
+const slipValid = (s: { entryBps: number; exitBps: number }): boolean =>
+  [s.entryBps, s.exitBps].every((x) => Number.isInteger(x) && x >= 0 && x <= 10_000);
+
+function hurdleAt(sizeUsd: number, solUsd: number, medianStates: ReadonlyArray<{ poolId: string; state: PoolState }>, set: SimParamSet, given: { entryBps: number; exitBps: number }): HurdleRow {
   const size = usdToLamports(sizeUsd, solUsd);
+  // Z09-28: bad or missing bounds omit only the strict row; lean and conservative stay (the conservative sandwich term at
+  // the worst-case bound, which only raises it).
+  const strictShown = slipValid(given);
+  const slip = strictShown ? given : WORST_SLIPPAGE;
   const priced: Array<{ poolId: string; rows: CostRows }> = [];
   const unpriced: Record<string, number> = {};
   for (const { poolId, state } of medianStates) {
@@ -148,8 +157,8 @@ function hurdleAt(sizeUsd: number, solUsd: number, medianStates: ReadonlyArray<{
   const parts = med === null ? null : partsOf(med.rows, size);
   return {
     sizeUsd, sizeLamports: size.toString(), poolsInSet: priced.length, unpriced: Object.fromEntries(Object.entries(unpriced).sort((a, b) => cmp(a[0], b[0]))), subset: priced.length < 10, medianPool: med?.poolId ?? null,
-    gStarBpsLean: med?.rows.lean.gStarBps ?? null, gStarBpsStrict: med?.rows.strict.gStarBps ?? null, gStarBpsConservative: med?.rows.conservative.gStarBps ?? null,
-    lean: parts?.lean ?? null, strict: parts?.strict ?? null, conservative: parts?.conservative ?? null,
+    gStarBpsLean: med?.rows.lean.gStarBps ?? null, gStarBpsStrict: strictShown ? med?.rows.strict.gStarBps ?? null : null, gStarBpsConservative: med?.rows.conservative.gStarBps ?? null,
+    lean: parts?.lean ?? null, strict: strictShown ? parts?.strict ?? null : null, conservative: parts?.conservative ?? null,
     sensitivityBps: sensitivityBps(size), fixedTermBps: { usd10: term(10), usd12: term(12), usd59: term(59) },
   };
 }
@@ -199,6 +208,7 @@ export function phase0Report(i: Phase0Input): Phase0Report {
   ];
   if (window.status === 'insufficient_days') caveats.push('Fewer than 7 good days by D14: insufficient_days, no decision.');
   if (i.solUsdD1 === null) caveats.push('No recorded SOL/USD for D1: the hurdle by size is not computed.');
+  if (!slipValid(slip)) caveats.push('The slippage bounds are missing or out of range: the strict row is not shown, and the conservative sandwich term uses the worst-case bound (10,000 bps).');
   return {
     window,
     parked: { a24: 'parked', a24b: 'parked', moveRule: 'parked', killCheck: 'not_run_mr01_parked', pm01: 'no_phase0_check' },
@@ -227,10 +237,14 @@ export function renderPhase0Markdown(r: Phase0Report): string {
     `- Days: ${r.window.days.join(', ')}`, `- Good days: ${r.window.goodDays.length}`, `- Low coverage or missing: ${r.window.lowCoverageDays.join(', ') || 'none'}`, '');
   L.push('## Not run', '', '- A-24 and A-24b: parked', '- Move rule: parked', '- Kill-only check: not run (MR-01 parked, C-76)', '- PM-01: no Phase 0 check', '');
   L.push('## Hurdle by size', '', `SOL/USD of D1: ${n(r.hurdle.solUsd)} (${r.hurdle.solUsdSource}). Information only: decides nothing. Sizes in SOL, the dollar amount as a label; costs in bps of the trade.`, '',
-    '| Size | Pools | Unpriced | Median pool | Lean g* | Strict g* | Conservative g* | Lean fees | Lean impact | Lean fixed | 414,009 line | $10 at 10/day |',
+    '| Size | Pools | Unpriced | Median pool | Row | Fees | Impact | Fixed | Other | g* | 414,009 line | $10 at 10/day |',
     '|---|---|---|---|---|---|---|---|---|---|---|---|');
+  // Z09-29: every row's parts (lean, strict, conservative), not the lean row alone.
   for (const h of r.hurdle.bySize) {
-    L.push(`| ${sol(BigInt(h.sizeLamports))} SOL ($${thousands(h.sizeUsd)})${h.subset ? ' (subset)' : ''} | ${h.poolsInSet} | ${unpricedText(h.unpriced)} | ${h.medianPool ?? '-'} | ${n(h.gStarBpsLean)} | ${n(h.gStarBpsStrict)} | ${n(h.gStarBpsConservative)} | ${n(h.lean?.venueFeesBps ?? null)} | ${n(h.lean?.impactBps ?? null)} | ${n(h.lean?.fixedBps ?? null)} | ${h.sensitivityBps} | ${h.fixedTermBps.usd10['10']} |`);
+    for (const row of ['lean', 'strict', 'conservative'] as const) {
+      const p = h[row];
+      L.push(`| ${sol(BigInt(h.sizeLamports))} SOL ($${thousands(h.sizeUsd)})${h.subset ? ' (subset)' : ''} | ${h.poolsInSet} | ${unpricedText(h.unpriced)} | ${h.medianPool ?? '-'} | ${row} | ${n(p?.venueFeesBps ?? null)} | ${n(p?.impactBps ?? null)} | ${n(p?.fixedBps ?? null)} | ${n(p?.otherBps ?? null)} | ${n(p?.gStarBps ?? null)} | ${h.sensitivityBps} | ${h.fixedTermBps.usd10['10']} |`);
+    }
   }
   L.push('', '## Disk (A-48)', '', '| Stream | Codec | Bytes a day | Ratio |', '|---|---|---|---|');
   for (const a of r.a48) L.push(`| ${a.stream} | ${a.codec} | ${a.bytesPerDayCompressed} | ${n(a.ratio)} |`);

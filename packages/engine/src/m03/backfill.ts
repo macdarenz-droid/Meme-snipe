@@ -93,10 +93,14 @@ export interface BackfillStore {
   markPumpPortal(mint: Pubkey, pool: Pubkey, atMs: UnixMs): void;
   seenByPumpPortal(mint: Pubkey, pool: Pubkey): boolean;
   deferred: { list(): Array<{ m: MigrationObserved; runsLeft: number }>; put(m: MigrationObserved, runsLeft: number): void; remove(m: MigrationObserved): void };
+  /** The signature a run is stalled on (a getTransaction that stays null) and how many runs tried it (Z09-21). */
+  stall: { get(): { signature: Signature; attempts: number } | null; put(v: { signature: Signature; attempts: number } | null): void };
   /** Drops verified and PumpPortal entries older than `beforeMs` (kept 8 days: the 7-day window plus a day). */
   prune(beforeMs: number): void;
 }
 export const KEEP_MS = 8 * 86_400_000;
+/** Ruling Z09-21 (amended): runs that may find a transaction still null before the critical alert and health flag. */
+export const NULL_TX_MAX_ATTEMPTS = 10;
 
 export interface BackfillDeps<P extends VerifiableState> {
   config: BackfillConfig;
@@ -124,6 +128,8 @@ export interface MigrationBackfill<P extends VerifiableState> {
   coverage(windowMs: number): { chainMigrations: number; seenByPumpPortal: number; gapBps: number };
   /** A PumpPortal migration notice (A-M03-01): verified at once, retried 3 times at 2 s, then left to the backfill. */
   onNotice(n: { mint: Pubkey; pool: Pubkey | null; signature: Signature | null; slot: Slot | null }): void;
+  /** Health (Z09-21): the signature the cursor is held at, its attempts, and whether the cap was reached (critical). */
+  health(): { stalledSignature: Signature | null; attempts: number; critical: boolean };
   /** Reconnect port (Z08-2, Z08-20). */
   verifiedSlot(): Slot | null;
   migrationsSeenSince(ms: UnixMs): number;
@@ -250,7 +256,19 @@ export function createMigrationBackfill<P extends VerifiableState>(deps: Backfil
       deps.log.event('warn', 'm03.backfill_tx_failed', { error_code: tx.error.code });
       return 'rpc';
     }
-    if (tx.value.value === null) { deps.log.event('warn', 'm03.backfill_stalled', { reason: 'tx_not_visible', signature }); return 'stall'; }
+    if (tx.value.value === null) {
+      if (source === 'chain_backfill') {
+        // A capped number of runs may find it null; then a critical alert and a health flag. It is never skipped and
+        // the cursor never moves past it (Z09-21, amended).
+        const cur = st.stall.get();
+        const attempts = cur !== null && cur.signature === signature ? cur.attempts + 1 : 1;
+        st.stall.put({ signature, attempts });
+        if (attempts === NULL_TX_MAX_ATTEMPTS) deps.log.event('critical', 'm03.backfill_tx_missing', { signature, attempts });
+      }
+      deps.log.event('warn', 'm03.backfill_stalled', { reason: 'tx_not_visible', signature });
+      return 'stall';
+    }
+    if (source === 'chain_backfill' && st.stall.get()?.signature === signature) st.stall.put(null);
     const d = deps.decode(signature, tx.value.value);
     if (!d.ok) { deps.log.event('warn', 'm03.migration_rejected', { reason: d.error.code }); return 'skip'; }
     if (d.value.failed) return 'skip';
@@ -361,6 +379,10 @@ export function createMigrationBackfill<P extends VerifiableState>(deps: Backfil
       };
       attempt();
     },
+    health: () => {
+      const v = st.stall.get();
+      return { stalledSignature: v?.signature ?? null, attempts: v?.attempts ?? 0, critical: (v?.attempts ?? 0) >= NULL_TX_MAX_ATTEMPTS };
+    },
     verifiedSlot: () => st.newestVerifiedSlot(),
     migrationsSeenSince: (ms) => st.verifiedSince(ms).length,
     recentMigrations: (windowMs) => st.verifiedSince(deps.nowMs() - windowMs).map((v) => ({ mint: v.mint, pool: v.pool, atMs: timeOf(v) as UnixMs })),
@@ -390,7 +412,9 @@ export function memoryBackfillStore(): BackfillStore & { cursorValue: string | n
   const verified = new Map<string, VerifiedMigration>();
   const pp = new Map<string, number>();
   const deferred = new Map<string, { m: MigrationObserved; runsLeft: number }>();
+  let stall: { signature: Signature; attempts: number } | null = null;
   const s = {
+    stall: { get: () => stall, put: (v: { signature: Signature; attempts: number } | null) => { stall = v; } },
     cursorValue: null as string | null,
     cursor: { load: () => s.cursorValue, save: (c: string) => { s.cursorValue = c; } },
     getVerified: (mint: Pubkey, pool: Pubkey) => verified.get(keyOf(mint, pool)) ?? null,

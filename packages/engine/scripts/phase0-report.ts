@@ -11,8 +11,15 @@ if (typeof args === 'string') {
   console.error(`phase0-report: ${args}`);
   process.exit(2);
 }
-const { reportPath } = runPhase0Report(args, {
-  pricing: venueRecordedPricing(), simParams: PRIOR_2026_10,
-  write: (path, text) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); },
-});
-console.log(`phase0-report: wrote ${reportPath}`);
+try {
+  const { reportPath } = runPhase0Report(args, {
+    pricing: venueRecordedPricing(), simParams: PRIOR_2026_10,
+    write: (path, text) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); },
+  });
+  console.log(`phase0-report: wrote ${reportPath}`);
+} catch (e) {
+  const code = (e as { code?: unknown }).code;
+  if (code !== 'E_NO_SNAPSHOTS' && code !== 'E_R0_DAY_MISSING') throw e;
+  console.error(`phase0-report: ${String(code)}${code === 'E_R0_DAY_MISSING' ? ` (R0 is on ${String((e as { r0Day: string }).r0Day)}; add that day to --days)` : ''}`);
+  process.exit(2);
+}

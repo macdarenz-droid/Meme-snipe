@@ -78,7 +78,9 @@ describe('A-M05-03 acceptance (SYNTHETIC scripted day)', () => {
     assert.equal(cov.report.universeManifestSha256, m.sha256);
     // Golden file of the canonical JSON (reviewed by hand and pinned; a missing golden fails).
     assert.ok(existsSync(GOLDEN), 'golden manifest missing');
-    assert.equal(`${canonicalJson(m)}\n`, readFileSync(GOLDEN, 'utf8'));
+    const golden = JSON.parse(readFileSync(GOLDEN, 'utf8')) as { SYNTHETIC: string; canonicalJson: string };
+    assert.match(golden.SYNTHETIC, /not recorded data/);                              // Z09-30: marked inside the file
+    assert.equal(canonicalJson(m), golden.canonicalJson);
   });
 });
 

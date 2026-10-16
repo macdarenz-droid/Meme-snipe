@@ -46,6 +46,10 @@ export function m24BackfillStore(db: Db, nowMs: () => UnixMs): BackfillStore {
       },
       remove: (m) => del(`${DF}${m.signature}|${m.mint}`),
     },
+    stall: {
+      get: () => getKey<{ signature: string; attempts: number }>('m03.stall'),
+      put: (v) => { if (v === null) del('m03.stall'); else put('m03.stall', v); },
+    },
     prune: (beforeMs) => {
       for (const x of byPrefix<VerifiedMigration>(V)) if (timeOf(x.value) < beforeMs) del(x.key);
       for (const x of byPrefix<number>(PP)) if (x.value < beforeMs) del(x.key);

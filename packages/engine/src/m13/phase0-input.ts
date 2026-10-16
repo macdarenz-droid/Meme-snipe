@@ -22,7 +22,10 @@ import { manifestSha256, type UniverseManifestFile } from '../m05/manifest.ts';
 import type { PoolPricing } from '../m10/costs.ts';
 import type { Phase0Day, Phase0Input, PoolState, StreamDayBytes } from './phase0.ts';
 
-type ReadFs = Pick<typeof nodeFs, 'existsSync' | 'readFileSync'>;
+type ReadFs = Pick<typeof nodeFs, 'existsSync' | 'readFileSync' | 'readdirSync'>;
+
+/** Ruling Z09-31: the input refuses rather than shifting D1 or using R0 = 0. */
+export type Phase0InputError = { code: 'E_NO_SNAPSHOTS' } | { code: 'E_R0_DAY_MISSING'; r0Day: string };
 const MINUTE_MS = 60_000;
 const SNAPSHOT_STREAMS = new Set(['pool_snapshot', 'pool_snapshot_tail', 'pool_snapshot_position']);
 
@@ -70,7 +73,13 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
   const streams: StreamDayBytes[] = [];
   const poolStates: PoolState[] = [];
   const solUsd = new Map<string, number>();
+  // R0 is the recorder's first snapshot in the WHOLE dataset, so a --days list that leaves its day out is refused.
   let r0 = Number.POSITIVE_INFINITY;
+  const allDays = fs.existsSync(o.dataDir) ? (fs.readdirSync(o.dataDir) as string[]).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)) : [];
+  for (const d of allDays) for (const m of dayManifests(o.dataDir, d, fs)) if (SNAPSHOT_STREAMS.has(m.stream) && m.firstRecvMs !== null) r0 = Math.min(r0, m.firstRecvMs);
+  if (!Number.isFinite(r0)) throw { code: 'E_NO_SNAPSHOTS' } satisfies Phase0InputError;
+  const r0Day = new Date(r0).toISOString().slice(0, 10);
+  if (!o.days.includes(r0Day)) throw { code: 'E_R0_DAY_MISSING', r0Day } satisfies Phase0InputError;
   for (const dayUtc of [...o.days].sort()) {
     const manifests = dayManifests(o.dataDir, dayUtc, fs).sort((a, b) => (a.path < b.path ? -1 : 1));
     let manifest: UniverseManifestFile | null = null;
@@ -79,7 +88,6 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
     const polls = new Map<string, Map<number, number>>();               // pool → minute → successful polls
     const bytes = new Map<string, StreamDayBytes>();
     for (const m of manifests) {
-      if (m.stream.startsWith('pool_snapshot') && m.firstRecvMs !== null) r0 = Math.min(r0, m.firstRecvMs);
       const read = linesOf(o.dataDir, m, fs);
       const b = bytes.get(m.stream) ?? { dayUtc, stream: m.stream, codec: m.codec, compressedBytes: 0, decodedBytes: 0 };
       b.compressedBytes += m.bytes;
@@ -140,7 +148,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
       poolStates.push({ poolId: s.poolId, dayUtc, minDepthLamports: real < eff ? real : eff, pricing, weight });
     }
   }
-  const r0Ms = Number.isFinite(r0) ? r0 : 0;
+  const r0Ms = r0;
   // D1's price: the day the window starts (step 1), read from the same rule.
   const d1 = new Date(Math.ceil((r0Ms + 30 * 3_600_000) / 86_400_000) * 86_400_000).toISOString().slice(0, 10);
   const price = solUsd.get(d1) ?? null;

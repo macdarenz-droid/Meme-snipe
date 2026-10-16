@@ -10,7 +10,7 @@ import { createDecoders, decodeEventsWithGaps, readRpcTransaction, verifyPinnedI
 import type { Result, Slot, UnixMs } from '@bot/types';
 import { ACCOUNTS, MINTS, PROGRAMS } from '@bot/venue/constants';
 import { createPumpSwapPoolModel, createVenueConfigCache, type CpPoolState, type FeeInputs } from '@bot/venue';
-import { checkBackfillConfig, createMigrationBackfill, BACKFILL_DEFAULTS, DEFERRED_RUNS, memoryBackfillStore, PAGE_LIMIT, type BackfillDeps, type BackfillStore, type MigrationObserved, type PoolDiscovered } from '../../src/m03/backfill.ts';
+import { checkBackfillConfig, createMigrationBackfill, BACKFILL_DEFAULTS, DEFERRED_RUNS, memoryBackfillStore, NULL_TX_MAX_ATTEMPTS, PAGE_LIMIT, type BackfillDeps, type BackfillStore, type MigrationObserved, type PoolDiscovered } from '../../src/m03/backfill.ts';
 import { migrationDecoder } from '../../src/m03/decode-migrations.ts';
 import type { PumpPortalDeps } from '../../src/m03/pumpportal-client.ts';
 import type { RawAccount } from '../../src/m04/types.ts';
@@ -384,5 +384,44 @@ describe('Z09 round 2 (red team RT-1, RT-2; rulings Z09-12, Z09-13, Z09-20, Z09-
     await r.b.backfillSince(null);
     assert.ok(r.logs.some(([, c, f]) => c === 'm03.backfill_stalled' && f.reason === 'version_unsupported'));
     assert.equal(r.store.cursorValue, null);
+  });
+});
+
+describe('Z09-21 (amended): a transaction that stays null', () => {
+  it('gets a capped number of runs, then a critical log and a health flag; never skipped, the cursor held; cleared when it appears', async () => {
+    const r = await rig();
+    const m = MIG[0] as FxTx;
+    r.gw.txs.set(m.signature, null);
+    for (let i = 1; i < NULL_TX_MAX_ATTEMPTS; i++) {
+      await r.b.backfillSince(null);
+      assert.deepEqual(r.b.health(), { stalledSignature: m.signature, attempts: i, critical: false });
+    }
+    assert.ok(!r.logs.some(([l, c]) => l === 'critical' && c === 'm03.backfill_tx_missing'));
+    await r.b.backfillSince(null);
+    assert.deepEqual(r.b.health(), { stalledSignature: m.signature, attempts: NULL_TX_MAX_ATTEMPTS, critical: true });
+    assert.equal(r.logs.filter(([l, c]) => l === 'critical' && c === 'm03.backfill_tx_missing').length, 1);
+    await r.b.backfillSince(null);
+    assert.equal(r.b.health().critical, true);
+    assert.equal(r.store.cursorValue, null);                                          // never moved past it
+    assert.ok(!r.migrations.some((x) => x.signature === m.signature));               // older ones may publish; it never is
+    r.gw.txs.set(m.signature, m.json);
+    await r.b.backfillSince(null);
+    assert.deepEqual(r.b.health(), { stalledSignature: null, attempts: 0, critical: false });
+    assert.equal(r.migrations.length, 2);
+  });
+
+  it('the attempts survive a restart on M24', async () => {
+    const path = join(tempDir('stall'), 's.db');
+    const db = openDb({ create: true, path, clock: fakeClock() });
+    assert.equal((await prepareDatabase(db, { clock: fakeClock(), backupPath: `${path}.bak` })).ok, true);
+    const store = m24BackfillStore(db, () => (MIG[2] as FxTx).blockTime * 1_000 as UnixMs);
+    const a = await rig({ store });
+    a.gw.txs.set((MIG[0] as FxTx).signature, null);
+    await a.b.backfillSince(null);
+    const b = await rig({ store });
+    b.gw.txs.set((MIG[0] as FxTx).signature, null);
+    await b.b.backfillSince(null);
+    assert.equal(b.b.health().attempts, 2);
+    db.close();
   });
 });

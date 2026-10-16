@@ -4130,3 +4130,12 @@ Each ruling has a test that fails on f104023 and passes after. The universe, man
   - a stream leaves that set on `finish`, on `close`, or when it is destroyed as broken.
 
   So the bytes in memory stay within the existing caps. Test: the flap probe, with 100 info lines and then warn and error lines. The info bytes held stay at or below `queueBytes` plus one line, and warn and error are written up to twice `queueBytes` in total, then lost. It fails on 73058b5f (9,198 info bytes held, 3 out of 3 runs) and passes after.
+- **Reviewer's report on #330 (FAIL)**: its 3 MAJORs are RT-1, RT-2 and RT-5, covered by Z09-12, Z09-13 and Z09-16. Its MAJOR 1 repro is the round-2 `RT-1 / Z09-12` test: page cap, then `backfillSince(453_999_999n)`, then 5 runs; 1 migration is expected.
+- **Z09-28**: bad or missing slippage bounds omit only the strict row of the hurdle (`strict`, `gStarBpsStrict` null). The lean and conservative rows stay; the conservative sandwich term then takes the worst-case 10,000 bps bound, which can only raise it. The report carries a caveat (per Z09-3).
+- **Z09-29**: the phase0 markdown shows the parts of every row: fees, impact, fixed, other and g*, for lean, strict and conservative.
+- **Z09-30**: `test/m05/fixtures/manifest-2026-10-16.json` holds a `SYNTHETIC` marker and the manifest's canonical JSON as a string. The test checks both.
+- **Z09-31** (replaces "r0 tracked"): `readPhase0Dataset` takes R0 from every day folder in the dataset. It throws `E_NO_SNAPSHOTS` when there is none, and `E_R0_DAY_MISSING` (with `r0Day`) when R0's day is not among `--days`. The script exits 2 with the reason. D1 is never shifted, and R0 is never 0.
+- **Z09-21 (amended)**: a `getTransaction` that stays null counts attempts per signature in the store (`m03.stall`, survives a restart).
+  - At `NULL_TX_MAX_ATTEMPTS` (10 runs) it logs `m03.backfill_tx_missing` (critical, once) and `health().critical` is true.
+  - The run keeps stopping there: never skipped, and the cursor never moves past it.
+  - The count clears when the transaction appears.

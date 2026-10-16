@@ -124,8 +124,7 @@ describe('A-M13-01 branch cases', () => {
     const r = phase0Report(input({ poolStates: [...twin('b'), ...twin('a'), broken] }));
     assert.equal(r.hurdle.bySize[0]?.poolsInSet, 2);
     assert.equal(r.hurdle.bySize[0]?.medianPool, 'a');
-    const bad = phase0Report(input({ poolStates: twin('a'), slippage: { entryBps: -1, exitBps: 0, source: 'test' } }));
-    assert.equal(bad.hurdle.bySize[0]?.poolsInSet, 0);
+
     const streams = ['c', 'a', 'b'].map((s) => ({ dayUtc: day(0), stream: s, codec: 'gzip' as const, compressedBytes: 30_000_000_000, decodedBytes: null }));
     const big = phase0Report(input({ streams }));
     assert.deepEqual(big.a48.map((x) => x.stream), ['a', 'b', 'c']);
@@ -163,7 +162,34 @@ describe('Z09-24: unpriceable pools are counted in the row', () => {
     assert.equal(r.hurdle.bySize[0]?.poolsInSet, 1);
     assert.ok(renderPhase0Markdown(r).includes('| 2 E_FEE_UNKNOWN, 1 E_ZERO_OUTPUT |'));
     assert.ok(renderPhase0Csv(r).hurdle.split('\n')[1]?.startsWith('5,33333333,1,3,'));
-    const bad = phase0Report(input({ poolStates: pools(1), slippage: { entryBps: -1, exitBps: 0, source: 't' } }));
-    assert.deepEqual(bad.hurdle.bySize[0]?.unpriced, { E_INVALID_SLIPPAGE: 1 });
+    // Parameters the cost model refuses (Z09-26) are counted under their code too.
+    const badSet = phase0Report(input({ poolStates: pools(1), simParams: { ...PRIOR_2026_10, fFailEntry: 0.9999995 } }));
+    assert.deepEqual(badSet.hurdle.bySize[0]?.unpriced, { E_INVALID_PARAM: 1 });
+
+  });
+});
+
+describe('Z09-28 and Z09-29', () => {
+  it('Z09-28: bad or missing bounds omit only the strict row; lean and conservative stay, with a caveat', () => {
+    for (const slippage of [{ entryBps: -1, exitBps: 0, source: 't' }, { entryBps: 0, exitBps: 10_001, source: 't' }]) {
+      const r = phase0Report(input({ poolStates: pools(2), slippage }));
+      const h = r.hurdle.bySize[0];
+      assert.ok(h !== undefined && h.poolsInSet === 2);
+      assert.equal(h.strict, null);
+      assert.equal(h.gStarBpsStrict, null);
+      assert.ok(h.lean !== null && h.conservative !== null && h.gStarBpsLean !== null && h.gStarBpsConservative !== null);
+      assert.ok(r.caveats.some((c) => c.startsWith('The slippage bounds are missing or out of range')));
+    }
+    // The conservative row with the worst-case bound is at least the one with PM-01's bounds.
+    const good = phase0Report(input({ poolStates: pools(2) })).hurdle.bySize[0];
+    const worst = phase0Report(input({ poolStates: pools(2), slippage: { entryBps: -1, exitBps: 0, source: 't' } })).hurdle.bySize[0];
+    assert.ok((worst?.gStarBpsConservative as number) >= (good?.gStarBpsConservative as number));
+    assert.ok(!phase0Report(input()).caveats.some((c) => c.startsWith('The slippage bounds')));
+  });
+
+  it('Z09-29: the markdown shows the parts of every row', () => {
+    const md = renderPhase0Markdown(phase0Report(input()));
+    for (const row of ['lean', 'strict', 'conservative']) assert.ok(md.includes(`| 0.033333333 SOL ($5) | 12 | 0 | `) && new RegExp(`\\| ${row} \\| \\d+ \\| \\d+ \\| \\d+ \\| \\d+ \\| \\d+ \\|`).test(md), row);
+    assert.equal(md.split('\n').filter((l) => l.startsWith('| ') && / \| (lean|strict|conservative) \| /.test(l)).length, 15);
   });
 });

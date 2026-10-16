@@ -165,3 +165,21 @@ describe('Z09-25: eligible time from the intervals, weights from actual polls', 
     assert.equal(pollsIn(watched, [[T + 600_000, T + 700_000]], T, T + 180_000), 0);                       // outside every interval
   });
 });
+
+describe('Z09-31: phase0-input refuses rather than shifting D1', () => {
+  it('R0 day not among --days → E_R0_DAY_MISSING; a dataset with no snapshots → E_NO_SNAPSHOTS; the script exits 2', () => {
+    const { dir, days } = dataset();
+    assert.throws(() => readPhase0Dataset({ dataDir: dir, days: days.slice(1), pricing }), (e: unknown) => (e as { code: string; r0Day: string }).code === 'E_R0_DAY_MISSING' && (e as { r0Day: string }).r0Day === days[0]);
+    const empty = tempDir('phase0-empty');
+    assert.throws(() => readPhase0Dataset({ dataDir: empty, days: [D1], pricing }), (e: unknown) => (e as { code: string }).code === 'E_NO_SNAPSHOTS');
+    assert.throws(() => readPhase0Dataset({ dataDir: join(empty, 'missing'), days: [D1], pricing }), (e: unknown) => (e as { code: string }).code === 'E_NO_SNAPSHOTS');
+    const script = new URL('../../scripts/phase0-report.ts', import.meta.url).pathname;
+    try {
+      execFileSync(process.execPath, ['--no-warnings', script, '--data', dir, '--days', days.slice(1).join(','), '--out', tempDir('o')], { stdio: 'pipe' });
+      assert.fail('expected exit 2');
+    } catch (e) {
+      assert.equal((e as { status: number }).status, 2);
+      assert.match(String((e as { stderr: Buffer }).stderr), /E_R0_DAY_MISSING \(R0 is on 2026-10-20/);
+    }
+  });
+});
