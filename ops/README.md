@@ -260,8 +260,21 @@ The Blueprint's keyless M1 recorder (`packages/engine/src/recorder-main/`) runs 
 - **Files:** the installer writes `/etc/bot/ceilings.json` (every ceiling at 1: the recorder never trades), `/etc/bot/config.json` and `/etc/bot/rpc-allocation.json`, root-owned. The database is `/var/lib/zeroed/db/bot.db`. It is created once, from the first-start marker the installer issues once per host; a lost database is never silently made again.
 - **Host contract:** `--reconcile` writes `open_intents` and `open_positions` as `0`, and refuses (exit 1) when another worker left a count that is not `0`. `/health` on 8787 and 8788 says `mode: "paper"`, `git_sha`, `recorder: true`, `signing_key: false`, `recording`, `anchored` and `sol_usd_check`. The heartbeat is the stand-in's, with `signer: "not-used"`, and the recorder's critical lines (recording halted, memory) in `critical`.
 - **Memory:** the heap limit is `RECORDER_HEAP_MB` (`logic.sh`), under the unit's `MemoryMax`. Every 10 s the recorder reads its cgroup's anonymous memory (not page cache), and raises one critical alert per episode at 75% of `memory.max`.
-- **Disk:** M07 deletes a segment only with a verified PullReceipt. With no research key at `/etc/bot/research-ed25519.pub.pem`, nothing is ever deleted, and recording halts with an alert at its cap (8 GiB).
-- **Owner steps at switch-on:** run `zeroed-new-deploy-code` at the console and Deploy once, so the two read providers arrive; then merge the switch change. Optionally, make the md-pull research key, so pulled segments can be deleted.
+- **Disk:** M07 deletes a segment only with a verified PullReceipt, which only the operator's `md-pull` makes (on the operator's machine, never on the server). With no research key at `/etc/bot/research-ed25519.pub.pem`, nothing is ever deleted, and recording halts with an alert at its cap (8 GiB: about 51-83 days at the measured rates). The Zeroed uploader does not read the recorder's folder.
+- **Memory alert:** the alert reads the cgroup's `anon` memory; if a host's `memory.stat` lacks it, `memory.current` minus `file`, and the alert line says which (`source`).
+
+**Owner steps at switch-on (read providers; Z10-9).** Repository secrets `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` (the two URLs `provider-reads.yml` already uses) must both be set.
+1. On the server console (`linuxuser`, then `sudo -i`), run `zeroed-new-deploy-code` and note the 6 words.
+2. In GitHub, set the `DEPLOY_CODE` secret to those words, then run the Deploy workflow once.
+3. Check: the console shows the pairing code, and `ls /etc/credstore.encrypted` lists `rpc_chainstack_url` and `rpc_shyft_url`.
+4. Merge the reviewed one-line switch (`"worker": "recorder"`). After the deploy, `curl -s 127.0.0.1:8787/health` shows `"recorder":true,"recording":true,"anchored":true`.
+
+**Owner steps for md-pull (research key; Z10-14), on the operator's own computer, never on the server.** Not needed to start recording; needed before the 8 GiB cap. Steps 4 and 5 need the supervisor's ruling first (see `docs/DECISIONS.md` "Z10", switch-on blockers).
+1. Make the research key pair: `openssl genpkey -algorithm ed25519 -out research-ed25519.pem` and `openssl pkey -in research-ed25519.pem -pubout -out research-ed25519.pub.pem`. Keep `research-ed25519.pem` on that computer only: never in a repository, a chat or the server.
+2. Make the pull key: `ssh-keygen -t ed25519 -f ~/.ssh/zeroed-pull`.
+3. On the server console, as root, put the public halves in place: paste `research-ed25519.pub.pem` into `/etc/bot/research-ed25519.pub.pem` and `~/.ssh/zeroed-pull.pub` into `/etc/zeroed/pull-keys/zeroed-pull` (both `root`, mode 0644, folder `/etc/zeroed/pull-keys` 0755), then `systemctl restart zeroed-worker`.
+4. SSH to the pull account over the tailnet (not decided yet: the server's SSH is off).
+5. From a checkout of this repository: `node packages/engine/scripts/md-pull.ts --host <tailnet-name> --since <YYYY-MM-DD> --out <folder> --key research-ed25519.pem --verifier <a label for this computer>`. It downloads, checks every hash, and uploads signed receipts; it never deletes anything.
 
 ## Worker contract (for WORKER-1)
 
