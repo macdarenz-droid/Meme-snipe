@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 2:30 PM: #330 round 2 verdicts.**
+  - Review PASS: all of round 1 is closed, and Z09-17's eligible→prefiltered_out edge is kept as a SPEC-A clarification of ARCH 7.5 (U7).
+  - Red team FAIL, with 2 new MAJORs (PR comment 6207422577):
+    - RT-8: a rug that fails its re-check is dropped from its slot with no tail, so its aftermath is never recorded (survivorship bias).
+    - RT-9: an eligible pool with no slot is judged forever on stale facts.
+  - Rulings Z09-33..38 went to the builder, together with the Z09-32 bar delta:
+    - Z09-33: slot holders always leave through evict() with a tail.
+    - Z09-34: facts carry observedAtMs; stale facts never pass; a capped P4 refresh; staleSince derived from observedAtMs.
+    - Z09-35..38: stall progress saved; one M07 record per deferral; its own log code; blacklist writes return E_WRITE.
 - **16 Oct 2:26 PM: Z09 #330 round 2 at `221bccba`** (contains `cd2fe0a0`). Rulings Z09-12..31 applied (DECISIONS "Z09 round 2"); `pnpm check` 9,219/3, the 3 known environment failures.
   - Ruling Z09-32 rejects the builder's bar rule Z09-B4, which closed bars on the minute's poll_counts and added up to 60 s latency to every live bar.
     - M07 now writes `poll_counts` per 15 s bar, at the bar's close. Live and replay close at start+D+grace with exact `snapshots`.
