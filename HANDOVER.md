@@ -138,6 +138,7 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 3:36 AM: hourly update posted.** No archive-check run since 11:51Z (4 h 45 min). The re-armed chain waits for the next scheduled tick; check-in at 17:45Z. Z10 head `286ec840` (fixes in progress); base `466279ff`.
 - **17 Oct 3:22 AM: Z10 reviewer re-check FAIL at `5cb37e2e`.**
   - Verified fixed: B1, B2, M1, m3, m4. Typecheck and lint clean.
   - CI on `5cb37e2e`: e2e, recorder-soak, dashboard and historical-data green. check is red only for the label (`deps-reviewed:168c7fa377be4c419bdb0b470931b68d`, matching the reviewer's computation). coverage is red (B3).
