@@ -138,6 +138,7 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 10:32 PM: still no archive-check run since 04:56 UTC** (6.5 h; the longest gap so far was about 7 h). The workflow state is `active`. Check-in re-armed for 13:30 UTC. Z10 branch is at `d81ad484` (work in progress).
 - **16 Oct 8:25 PM: Z10-17..18 ruled.**
   - Z10-17 (amends Z07 M04): the stale lag is stale_lag_slots plus the pool's class interval, so tail pools stop flapping (about 260k warn lines a day). Watched-class entry freshness is no looser.
   - Z10-18: db moves to /var/lib/zeroed/db/bot.db, with the marker issued once per host.
