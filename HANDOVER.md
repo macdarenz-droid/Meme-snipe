@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 5:23 PM: #330 round 5: review PASS, red team FAIL with 1 BLOCKER.**
+  - RT-15: watched pools past their entry age hold every slot forever, so young pools are never watched (PR comment 6209438459).
+  - Rulings went to the builder, together with Z09-51:
+    - Z09-52: a pool past entry age at discovery is prefiltered_out.
+    - Z09-53: past-window watched pools are evicted with their tail when an in-window pool waits; in-window pools rank first.
+    - Z09-54: a corrupt window row fails closed.
+    - Z09-55: the replay seq check is per stream (bounded memory).
+    - Z09-56: tail tie-break by seq.
+    - Z10 obligations: firstSeq for all 4 streams; markProcessStart before M04 polls.
 - **16 Oct 5:17 PM: Z09 #330 round 5 at `53c4abbe`.** Z09-43..50 applied: A-24 = 24 on a scripted day; a crash loop reads exactly 300; ≤ 60 calls an hour; marker seq checks; E_NOT_STARTED; restoreTails. `pnpm check` 9,250/3, the known environment failures.
   - The builder's open point is ruled Z09-51: an eligible pool with stale facts asks for a fresh read at the next flush (within the ceiling) instead of the 6 h retry, holds no slot, and is not counted eligible while stale. Test: 40 pools against 30 slots.
   - Review and red team are re-checking `53c4abbe`; the Z09-51 delta follows.
