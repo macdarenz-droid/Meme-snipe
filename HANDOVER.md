@@ -138,6 +138,17 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 1:09 PM: OF-REARM refused by the builder's safety check, so it waits for the owner.**
+  - The builder `session_01JfcmEyJ1AqL4BQbyoGAZHT` had its one edit (`archive-limits.conf` ARCHIVE_ARM) refused by its auto-mode classifier ("Modify Shared Resources"). Nothing was pushed, and the refusal is not re-routed.
+  - As with #321 (option A, line "OF-ARM push"), the owner is asked to instruct the builder directly in its session. Push notification sent.
+  - Correction: the re-arm restores #321's owner-approved values, with the new pin:
+    - `ARCHIVE_ARM="b10pull-of-2"`;
+    - `ARCHIVE_RETENTION="K2"` (#326 had set it back to "", which would hold 07-23);
+    - `ARCHIVE_REARM_AT` unchanged;
+    - the test-ci "OF-2 repository values" case updated;
+    - a DECISIONS row.
+  - The failure count stays 1 of 3. The first cron tick after the merge (41 */3 UTC) probes once, then dispatches 07-22.
+  - #329 is now `719a57de` (base `d32d6549` merged; diff = logfile.ts, test, DECISIONS). CI is running.
 - **16 Oct 1:06 PM: #328 OF-FIX merged at `d32d6549`** (the new base, ls-remote).
   - CI was green on `02c0e694` (labelled run 38832306193). The `coverage` job's one re-run passed after the base log-order race.
   - `ARCHIVE_ARM` is still empty. Next card, OF-REARM: builder `session_01JfcmEyJ1AqL4BQbyoGAZHT`, branch `claude/of-rearm` from `d32d6549`.
