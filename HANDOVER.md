@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 7:18 PM: #330 Z09 merged at `58d703d9`** (the new base, ls-remote). CI was green on `bf07b3cc` (labelled run 38865250353). M1: 3 of 4 cards merged (Z07, Z08, Z09).
+  - Archived: the Z09 builder `session_01NgT7ERwftV1VocEMPCqogA`, reviewer `session_01Tkud9G4i96s2eFWamxoyTN` and red team `session_01E2i4Mw915Ea8td4gUtq5AM`.
+  - M1 card 4, Z10 Recorder on the server: builder `session_01SBu5hso3UgFgYVdWTfLnBb` (Opus, Auto), branch `claude/z10-recorder` from `58d703d9`. It plans first.
+    - Carried to it: C-84, C-85/C-88, C-90, and every Z09 obligation (requestFacts→M14 P4 wiring, firstSeq, markProcessStart order, tick then closeDue, the cooldown_until index, M27 metrics, the queued_stale share, the soak re-running the M03-02/M08 acceptance), plus the 2 M11 feeder MINORs.
+    - After merge, the owner's three-red-team step comes before switch-on.
+  - OF chain: still no archive-check run since 04:56 UTC, so the 06:41 tick is late or dropped. A check-in is set for 09:18 UTC. If the 09:41 tick has not run within 90 min, investigate why the schedule stopped.
 - **16 Oct 6:12 PM: Z09 #330 round 6 red team PASS at `bf07b3cc`** (no BLOCKER or MAJOR). Both review and red team now pass. It merges when the labelled CI is green.
   - Two red-team MINORs carry to Z10/M11 as obligations; no push now, since both fail closed or apply only to the parked mr01:
     - replayBars needs per-stream file order, so the M11 feeder must not merge streams by recvMs; otherwise E_MARKER_SEQ. State it in the feeder contract, or sort per stream inside.
