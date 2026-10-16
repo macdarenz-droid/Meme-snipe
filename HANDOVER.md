@@ -138,6 +138,18 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 1:06 PM: #328 OF-FIX merged at `d32d6549`** (the new base, ls-remote).
+  - CI was green on `02c0e694` (labelled run 38832306193). The `coverage` job's one re-run passed after the base log-order race.
+  - `ARCHIVE_ARM` is still empty. Next card, OF-REARM: builder `session_01JfcmEyJ1AqL4BQbyoGAZHT`, branch `claude/of-rearm` from `d32d6549`.
+    - It sets only `ARCHIVE_ARM=b10pull-of-2`. The failure count stays 1 of 3, and the chain resumes at 07-22.
+    - Review and red team: `session_01RChWiiJc1Gz9XYnCmdC1wm`.
+  - #329 LOG-ORDER `ed1ab3f0`: the review and red-team re-check of LOG-2 both passed. It merges `d32d6549`, then merges on green CI.
+  - Z09 #330 opened at `d5dbc12b`.
+    - Fresh reviewer: `session_01Tkud9G4i96s2eFWamxoyTN`. Fresh red team: `session_01E2i4Mw915Ea8td4gUtq5AM`. Both Opus, Auto.
+    - Builder rulings:
+      - Z09-10: @bot/venue and @bot/decoders become runtime dependencies of @bot/engine (they are already imported in src, and Z10 needs them). The lockfile comes from pnpm; the label goes on after the supervisor reads the diff. The phase0-report script is restored with an end-to-end test.
+      - Z09-11: M27 metrics for the new modules carry to Z10.
+    - Two Z08 defects were fixed in #330, each with a test that fails before and passes after: undeclared cross-check log fields, and a reserved "code" field in m03.pp_disconnected.
 - **16 Oct 12:38 PM: hourly back-check.** Base `91af4787`.
   - #328 `02c0e694`: labelled run 38832306193 has `check`, `historical-data` and `dashboard` green. `coverage` failed on the same base log-order race (`m24/review-round2.test.ts:176`). Comment 6206035803 on #328; its one re-run of the failed job is queued.
   - #329 is still `73058b5f`. Its builder had been idle since 00:39 UTC, waiting on a background check whose wake-up was likely lost in a container restart; it was woken. My own 23:55 and 01:04 UTC wakeups were also lost the same way.
