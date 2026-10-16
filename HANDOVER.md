@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 4:38 AM: OF chain STOPPED by an archive 429 (failure 3).**
+  - What happened: archive-check run `38935572431` (16:54Z, on `466279ff`) passed every hold and sent the single 64-byte probe for 2026-07-22. The archive answered **HTTP 429**: 0 bytes, curl exit 63 (the 429 body was bigger than the max file size), cf-ray `a4b896a94df9fe67-STL`, no Retry-After.
+  - The guard counted it, dispatched nothing, and saved a back-off to 19:54:57Z. With `38776359833` and `38896609003` that is failure 3, so the chain is stopped until a reviewed change re-arms it. Nothing was downloaded. Run 44's probe at 11:51Z had been served.
+  - **OF-FR-14:** no re-arm until at least 24 h after the 429 (17:00Z on 17 Oct). Then the OF builder prepares a reviewed re-arm: REARM_AT moved past 16:55Z, b10pull-of-2 and K2 kept, a DECISIONS row naming the 429; a fresh reviewer and red team check it. A second 429 stops the chain until Triton answers (Triton has not replied to the 4 Oct email).
+  - The owner is told (the stop rule says report it). Check-in `trig_01YSTosjCguRCYJgVgnZLnFr` at 17:00Z on 17 Oct. Watch check-in `trig_018ojesGKcaTp3FtPbCb9Dkm` deleted.
+  - Not verified: why a single probe got a 429. It could be shared GitHub-runner IP throttling at the archive's Cloudflare front; unknown.
+  - Z10: the 96 h run hit the container wall limit at hour 76; a 30 h tracked run is next (head `286ec840`).
 - **17 Oct 3:36 AM: hourly update posted.** No archive-check run since 11:51Z (4 h 45 min). The re-armed chain waits for the next scheduled tick; check-in at 17:45Z. Z10 head `286ec840` (fixes in progress); base `466279ff`.
 - **17 Oct 3:22 AM: Z10 reviewer re-check FAIL at `5cb37e2e`.**
   - Verified fixed: B1, B2, M1, m3, m4. Typecheck and lint clean.
