@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **16 Oct 3:36 PM: #330 round 3 FAILED, in both review and red team.** Z09-32 (per-bar counts) and Z09-33/35..38 held.
+  - Review MAJOR, same as red team RT-11: the facts-refresh reads per hour grow with every pool ever seen. That is new spend before the bot can trade.
+  - Red team RT-10: live/replay parity breaks at every restart.
+  - Red team RT-12: eviction tails are lost on restart.
+  - Rulings went to the builder for one delta:
+    - Z09-39: retire pools that can never pass (past every enabled set's maximum entry age; pm01: migration + 120 min) or after k = 3 failed retries; add a per-hour ceiling counted against M14 P4; test with N = 10,000.
+    - Z09-40: a process_start marker in M07; replay resets M08 and the queue's partial bar there; a restart parity test.
+    - Z09-41: tails restored at start, or a tail_restart_cut record.
+    - Z09-42: reject a recvMs earlier than the window end.
 - **16 Oct 3:30 PM: Z09 #330 round 3 at `3ab6f9a4`** (Z09-32 per-bar poll_counts, with the SPEC-A edits and C-96/C-97; Z09-33..38). `pnpm check` 9,227/3, the 3 known environment failures. The 9 new tests fail on `221bccba` and pass at the head. Review and red team are re-checking the delta, including the facts-refresh read budget (30 pools per tick).
 - **16 Oct 3:25 PM: the `d36dd320` probation passed, and the off-server backup is confirmed** (owner's Telegram screenshot, phone time 3:23 PM).
   - 12:59 AM: "deployed d36dd3208603. Worker restarted and up." No rollback alert and no other alert after it through 3:23 PM, so the 2 h probation passed.
