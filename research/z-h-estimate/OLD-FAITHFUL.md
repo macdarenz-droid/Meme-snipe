@@ -111,7 +111,7 @@ scanner works in 4,500-slot units, written atomically, so a stopped day resumes 
   day (a new day needs the owner's OK). Amendment (2026-10-16, OF-REARM, option A, the owner's answer "A"): a failed day
   whose one counted failure read no archive unit (batch 1, data-scan run 38776359833: 0 units planned, only the
   planner's probes) may be read fresh once, and only when a pinned `FRESH-READ` row in `docs/DECISIONS.md` names
-  the day and that run with the owner's answer time, and the day's saved progress holds none of its units
+  the day and covers exactly its counted failed runs (each pinned after its scan log was read) with the owner's answer time, and the day's saved progress holds none of its units
   (`archive-guard.sh` `ag_fresh_ok`, `scan-day.sh`). Any other failed day stays refused.
 - **Day order under OF-6** (round 3 item 24): day D+1 is dispatched only after day D's units are stored (as a release,
   or held in the store as a failed day's units), because D+1 takes D's forward-margin units from the store.
