@@ -1,6 +1,7 @@
-// Ruling Z10-17 (amends Z07 M04, card Z10): a pool's stale lag is `stale_lag_slots` + its class's poll interval in
-// slots. Found by the Z10 soak (113,242 `m04.pool_stale` lines in 48 h): tail pools, polled every 10 s, crossed the
-// fixed 12-slot lag between polls and turned stale and fresh at each poll.
+// Rulings Z10-17 and Z10-19 (amend Z07 M04, card Z10): a tail pool's stale lag is `stale_lag_slots` + its poll
+// interval in slots; every other class keeps `stale_lag_slots` (M21 gates entries on watched pools,
+// SPEC-A:905). Found by the Z10 soak (113,242 `m04.pool_stale` lines in 48 h): tail pools, polled every 10 s, crossed
+// the fixed 12-slot lag between polls and turned stale and fresh at each poll.
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import { M04_DEFAULTS, type M04Settings } from '../../src/m04/settings.ts';
@@ -53,25 +54,22 @@ describe('Z10-17 stale lag by class', () => {
     s.tracker.stop();
   });
 
-  it('the watched (candidate) class threshold changes only by its 1 s interval: 12 + 4 slots at 250 ms a slot', async () => {
-    /** Slots of missed polls until the first pool.stale (the chain moves one slot each step). */
-    const firstStale = async (slotMs: number): Promise<{ slots: number; lag: number }> => {
-      const s = await setup('candidate', {}, 0n, slotMs);
+  it('Z10-19: a watched (candidate) pool past stale_lag_slots is stale at once (lag 13 at the default 12), with any slot time; a tail pool within its interval is not (fails before: the watched pool waited to lag 17)', async () => {
+    /** Missed polls until the first pool.stale (the chain moves one slot each step; the monitor runs every 2 slots). */
+    const firstStale = async (cls: 'candidate' | 'tail', slotMs: number, maxSteps = 400): Promise<number | null> => {
+      const s = await setup(cls, {}, 0n, slotMs);
       await s.run(2_000);
       s.reader.fail = true;
-      const from = s.chain.highest;
-      while (s.outputs.staleEvents.length === 0) { s.chain.highest += 1n; await s.time.advance(250); }
+      for (let i = 0; i < maxSteps && s.outputs.staleEvents.length === 0; i++) { s.chain.highest += 1n; await s.time.advance(250); }
       s.tracker.stop();
-      return { slots: Number(s.chain.highest - from), lag: s.outputs.staleEvents[0]?.lagSlots as number };
+      return s.outputs.staleEvents[0]?.lagSlots ?? null;
     };
-    const t = await firstStale(250);
-    // The monitor runs every 500 ms (2 slots here), so the first stale lag is the first check past the limit.
-    assert.ok(t.lag === 17 || t.lag === 18, `lag ${t.lag}`);                // past 16 = stale_lag_slots 12 + ceil(1,000 / 250)
-    // No usable slot time (0, NaN, ∞): the interval adds nothing, so the limit is stale_lag_slots alone, never looser.
-    for (const bad of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const lag = (await firstStale(bad)).lag;
-      assert.ok(lag === 13 || lag === 14, `slot time ${bad}: lag ${lag}`);
+    for (const slotMs of [250, 0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const lag = await firstStale('candidate', slotMs);
+      assert.ok(lag === 13 || lag === 14, `candidate, slot time ${slotMs}: lag ${lag}`);
     }
+    // A tail pool 30 slots behind (inside its 12 + 40-slot limit at 250 ms, and within its 5 s + 10 s age) is not stale.
+    assert.equal(await firstStale('tail', 250, 30), null);
   });
 
   it('entry-time freshness is not looser: freshRead(pool, 8) and freshRead(pool, 12) refuse a read one slot past', async () => {

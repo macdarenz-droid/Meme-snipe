@@ -656,12 +656,14 @@ export function createPoolTracker<P extends PoolStateLike>(deps: TrackerDeps<P>)
   }
 
   /**
-   * Ruling Z10-17 (amends Z07): a pool's stale lag is `stale_lag_slots` plus its class's poll interval in slots, so a
-   * tail pool (polled every 10 s) does not turn stale and fresh at every poll. With no usable slot time (0, NaN, ±∞) the
-   * interval adds nothing: the limit is never looser than `stale_lag_slots` alone (fail closed). Entry reads are not
-   * changed: `freshRead(pool, maxLagSlots)` keeps the caller's limit.
+   * Ruling Z10-17 as corrected by Z10-19 (amends Z07): a tail pool's stale lag is `stale_lag_slots` plus its poll
+   * interval in slots, so a pool polled every 10 s does not turn stale and fresh at every poll. Every other class keeps
+   * `stale_lag_slots` alone (SPEC-A A-M04-02 logic 4: M21 rejects entries on a watched pool's `pool.stale`, so its
+   * threshold is never looser; positions keep it too, the stricter choice). With no usable slot time (0, NaN, ±∞) the
+   * interval adds nothing. Entry reads are not changed: `freshRead(pool, maxLagSlots)` keeps the caller's limit.
    */
   function staleLimitSlots(cls: 'position' | 'candidate' | 'tail'): number {
+    if (cls !== 'tail') return settings.staleLagSlots;
     const ms = deps.chain.slotDurationMsEstimate();
     return settings.staleLagSlots + (Number.isFinite(ms) && ms > 0 ? Math.ceil(intervalOf(settings, cls) / ms) : 0);
   }
