@@ -93,6 +93,13 @@ describe('Z10 obligations (Z09)', () => {
       const p4 = calls.filter((c) => c.method === 'getMultipleAccounts' && c.priority === 4);
       assert.ok(p4.length >= 2, `P4 reads ${p4.length}`);
       assert.ok(r.rec.status().watched >= 1);
+      // Z09-11 metrics: discoveries, candidates by state, the hour's fresh reads and the queued_stale share.
+      const last = (name: Parameters<typeof r.rec.parts.metrics.points>[0], labels: Record<string, string>): number => r.rec.parts.metrics.points(name, labels, 0, Number.MAX_SAFE_INTEGER).at(-1)?.value ?? -1;
+      assert.ok(last('discoveries_total', { source: 'chain_backfill' }) >= 2);
+      assert.ok(last('candidates', { state: 'watched' }) >= 1);
+      assert.ok(last('facts_refresh_pools', {}) >= 1);
+      assert.ok(last('facts_queued_stale_share_bps', {}) >= 0 && last('facts_queued_stale_share_bps', {}) <= 10_000);
+      assert.equal(last('backfill_stalled', {}), 0);
       // Shyft down: degraded mode; M05's fresh reads pause and nothing goes to the metered backup at P2+.
       r.chain.provider('shyft').down = true;
       const n0 = calls.length;

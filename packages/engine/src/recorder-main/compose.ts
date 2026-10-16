@@ -108,6 +108,7 @@ export interface RunningRecorder {
 
 const WATCHLIST_EVERY_MS = 10_000;
 const FLUSH_BAR_STORE_MS = 60_000;
+const METRICS_EVERY_MS = 10_000;
 /** A clock episode (Z10-F2) becomes one critical alert after this long (M04's DISAGREEMENT_ALERT_MS). */
 export const CLOCK_ALERT_MS = 10_000;
 /** The anchor is re-read this often before the first agreement and during a clock episode. */
@@ -263,6 +264,16 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     venue: 'pumpswap', quoteMint: MINTS.wsol, feeTotalBps: s.feeTotalBps, effectiveQuoteLamports: s.effectiveQuoteLamports, observedAtMs: s.pool.observedAtMs,
   });
   let tracker: PoolTracker<CpPoolState> | null = null;
+  // Z09-51: the queued_stale share of the hourly fresh-read ceiling. Asks are counted per minute over the last hour,
+  // each split by whether the pool was waiting as queued_stale when it was asked.
+  const asks: Array<{ minute: number; all: number; queuedStale: number }> = [];
+  const noteAsks = (ids: readonly Pubkey[]): void => {
+    const minute = Math.floor(nowMs() / 60_000);
+    const qs = ids.filter((id) => store.get(id)?.reasons.includes('queued_stale') === true).length;
+    const last = asks.at(-1);
+    if (last?.minute === minute) { last.all += ids.length; last.queuedStale += qs; } else asks.push({ minute, all: ids.length, queuedStale: qs });
+    while (asks.length > 0 && (asks[0] as { minute: number }).minute <= minute - 60) asks.shift();
+  };
   const universe = createUniverse({
     config: {
       ...UNIVERSE_DEFAULTS, screeningRequired: configValue(cfg, 'universe.screening_required'), limitSetId, limits: LIMIT_SETS[limitSetId],
@@ -273,7 +284,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     },
     store, nowMs, newId, wsolMint: MINTS.wsol,
     facts: (id) => facts.get(id) ?? null,
-    requestFacts: (ids) => { void factsRead(ids); },
+    requestFacts: (ids) => { noteAsks(ids); void factsRead(ids); },
     // Z09-44: fresh reads pause while M14 cannot serve P4 from the unmetered primary.
     readsAvailable: () => rp.monitor.mode() === 'normal',
     lists: { isWrittenOff: () => false, isUnsolicited: () => false },
@@ -385,6 +396,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     record: (m: MigrationObserved) => { queue.append({ stream: 'discovery', recvMs: nowMs(), slot: m.slot ?? null, commitment: 'confirmed', source: 'm03', payload: m }); },
     publishMigration: () => undefined,
     publishPool: (d: PoolDiscovered, state: CpPoolState) => {
+      metrics.counter('discoveries_total', { source: d.source }).inc();
       universe.onDiscovery({ poolId: d.poolId, baseMint: d.baseMint, quoteMint: d.quoteMint, venue: d.venue, verifiedOnChain: d.verifiedOnChain, migratedAtMs: d.migratedAtMs },
         { venue: 'pumpswap', quoteMint: MINTS.wsol, feeTotalBps: model.feeTotalBps(state) ?? 10_000, effectiveQuoteLamports: model.effectiveQuote(state), observedAtMs: state.observedAtMs });
     },
@@ -410,7 +422,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   // ---- The 1 s loop. ----
   const startedAtMs = nowMs();
   let lastTickMs: UnixMs | null = null;
-  let lastFlushMs = -Infinity, lastDiskMs = -Infinity, lastWatchlistMs = -Infinity, lastAnchorMs = -Infinity, lastBarStoreMs = -Infinity, lastVenueMs = -Infinity;
+  let lastMetricsMs = -Infinity, lastFlushMs = -Infinity, lastDiskMs = -Infinity, lastWatchlistMs = -Infinity, lastAnchorMs = -Infinity, lastBarStoreMs = -Infinity, lastVenueMs = -Infinity;
   const flushMs = configValue(cfg, 'recorder.flush_ms');
   const diskMs = configValue(cfg, 'recorder.disk_check_ms');
   let started = false;
@@ -418,6 +430,25 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const guard = async (where: string, fn: () => unknown): Promise<void> => {
     try { await fn(); } catch (e) { log.event('error', 'recorder.internal_error', { where, error_code: String((e as { code?: unknown })?.code ?? 'E_THROWN') }); }
   };
+
+  const ceiling = configValue(cfg, 'universe.facts_refresh_per_hour');
+  let barsSeen = { late: 0, early: 0 };
+  /** Gauges and counters read from the modules' own stats (Z09-11), every METRICS_EVERY_MS. */
+  function sample(): void {
+    const byState = new Map<string, number>();
+    for (const c of universe.candidates()) byState.set(c.state, (byState.get(c.state) ?? 0) + 1);
+    for (const st of ['discovered', 'screening', 'eligible', 'watched', 'stale', 'signalled', 'in_position', 'cooldown']) metrics.gauge('candidates', { state: st }).set(byState.get(st) ?? 0);
+    const all = asks.reduce((n, a) => n + a.all, 0), qs = asks.reduce((n, a) => n + a.queuedStale, 0);
+    metrics.gauge('facts_refresh_pools', {}).set(all);
+    metrics.gauge('facts_queued_stale_share_bps', {}).set(ceiling > 0 ? Math.floor((qs * 10_000) / ceiling) : 0);
+    metrics.gauge('backfill_stalled', {}).set(backfill.health().critical ? 1 : 0);
+    const st = bars.stats();
+    if (st.lateCounts > barsSeen.late) metrics.counter('bars_counts_refused_total', { reason: 'late' }).inc(st.lateCounts - barsSeen.late);
+    if (st.earlyCounts > barsSeen.early) metrics.counter('bars_counts_refused_total', { reason: 'early' }).inc(st.earlyCounts - barsSeen.early);
+    barsSeen = { late: st.lateCounts, early: st.earlyCounts };
+    const q = queue.stats();
+    metrics.gauge('recorder_queue_depth', {}).set(q.queueDepth);
+  }
 
   async function tickOnce(): Promise<void> {
     const now = nowMs();
@@ -444,7 +475,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     // Z09-32: the queue's tick, the writer's pump (poll counts to M08), then M08's closeDue, with one `now`.
     await guard('queue_tick', () => queue.tick(now));
     await guard('pump', () => writer.pump());
-    await guard('bars', () => { barStore.add(bars.closeDue(now)); });
+    await guard('bars', () => { const closed = bars.closeDue(now); if (closed.length > 0) metrics.counter('bars_closed_total', {}).inc(closed.length); barStore.add(closed); });
     if (started) {
       await guard('universe', () => universe.tick());
       if (mono - lastWatchlistMs >= WATCHLIST_EVERY_MS) { lastWatchlistMs = mono; await guard('watchlist', () => watchlist.recompute(universe.candidates())); }
@@ -454,6 +485,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     await guard('daily', () => daily.tick(now));
     if (mono - lastFlushMs >= flushMs) { lastFlushMs = mono; await guard('flush', () => writer.flush()); }
     if (mono - lastDiskMs >= diskMs) { lastDiskMs = mono; await guard('disk', () => disk.check()); }
+    if (mono - lastMetricsMs >= METRICS_EVERY_MS) { lastMetricsMs = mono; await guard('metrics', () => sample()); }
     if (mono - lastBarStoreMs >= FLUSH_BAR_STORE_MS) { lastBarStoreMs = mono; await guard('bar_store', () => barStore.flush(now)); }
     metrics.tick();
   }
