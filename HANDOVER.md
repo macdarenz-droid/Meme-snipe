@@ -138,6 +138,10 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 7:25 AM: Z10 head `94b6238d`** (Z10-52/53 plus prepared-once ledger statements). Red team PASS.
+  - Keyset paging is correct: a 3,000-table fuzz, and the tie-break mutation is caught.
+  - Z10-55 (MINOR, test only): assert each row is streamed exactly once, because a `rowid >= ?` mutation still passes.
+  - Waiting on: the reviewer's verdict on `94b6238d`, and the Z10-38 48 h soak (about hour 24 now) plus the peak-bytes tracker.
 - **17 Oct 7:05 AM: Z10-38 cause found (likely).**
   - Live allocations are flat: the malloc tracker shows 106.6→107.1 MB from hour 12 to hour 30.
   - glibc arena 0 holds 110.5 MB in use of 140.6 MB from the system. malloc_trim(0) on the live process cut RssAnon 333.6→295.4 MiB.
