@@ -1034,7 +1034,7 @@ in_c "test -e /root/e2e-pulled/$D_PULL" || fail "md-pull's copy was deleted"
 wait_for 90 "the alert for the unreceipted old day" "docker exec $C bash -c 'grep -rqs m07.unpulled_segments /var/lib/zeroed/log'"
 in_c "rm -rf /root/e2e-research.pem /root/e2e-pulled /root/.ssh/e2e-pull /root/.ssh/e2e-pull.pub /root/.ssh/config /root/.ssh/e2e-known /etc/zeroed/pull-keys/zeroed-pull /etc/bot/research-ed25519.pub.pem /var/lib/zeroed-md/$D_OLD /var/lib/zeroed-md/$D_PULL"
 # Back to the stand-in: no read providers, no TEST certificate, no fake chain.
-in_c "systemctl stop zeroed-e2e-fake-rpc; rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; sed -i '/shyft.fake/d' /etc/hosts"
+in_c "systemctl stop zeroed-e2e-fake-rpc; rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; grep -v shyft.fake /etc/hosts > /tmp/hosts.e2e; cat /tmp/hosts.e2e > /etc/hosts; rm -f /tmp/hosts.e2e"
 # The host's records as they were before this section: deployed and tagged at the signed release, no probation.
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel' && { ! test -e /root/failed_release.e2e || mv -f /root/failed_release.e2e /var/lib/zeroed-host/failed_release; }"
