@@ -1194,9 +1194,11 @@ bad=""
 
 # ---- OF-2 holds 1-3, 5-7 in archive-check (each: no request at all) ----
 gdreset
-rc=0; ACFX=$here ac env AC_STATUS=206 || rc=$?
+# OF-REARM: the repository is armed now, so the unarmed case uses a fixture with ARCHIVE_ARM empty
+mkfx "$T/fxacunarmed" ARCHIVE_ARM=
+rc=0; ACFX=$T/fxacunarmed/research/historical/ci ac env AC_STATUS=206 || rc=$?
 [[ ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" ]] && grep -q "held (1): the archive chain is not armed (ARCHIVE_ARM is empty" "$A/summary.md" &&
-  ok "OF-2 hold 1: today's archive-limits.conf (ARCHIVE_ARM empty) is unarmed: no request, no dispatch" || no "OF-2 unarmed: $(cat "$A/summary.md")"
+  ok "OF-2 hold 1: an archive-limits.conf with ARCHIVE_ARM empty is unarmed: no request, no dispatch" || no "OF-2 unarmed: $(cat "$A/summary.md")"
 mkfx "$T/fxother" ARCHIVE_ARM=b10pull-test-2
 ACFX=$T/fxother/research/historical/ci ac env AC_STATUS=206
 [[ ! -e "$A/curl.calls" && ! -e "$GD/dispatch.log" ]] && grep -q "held (1): the archive chain is not armed (ARCHIVE_ARM 'b10pull-test-2' is not the one pinned B10-PULL id 'b10pull-test-1'" "$A/summary.md" &&
@@ -1800,9 +1802,9 @@ for l in "2026-07-22..2026-09-21" "2026-09-22" "2026-07-21..2026-07-23" "2026-07
 done
 [[ -z "$bad" ]] && ok "OF-2: an ARCHIVE_DAYS that holds 09-21, a holdout day or a day before 07-22, or is malformed, refuses every day" || no "OF-2 bad list:$bad"
 bad=""
-# Unarmed: today's archive-limits.conf.
+# Unarmed: ARCHIVE_ARM empty (a fixture; the repository is armed since OF-REARM).
 mkfx "$T/fxunarmed" ARCHIVE_ARM=
-rc=0; FXG=$here guard full 2026-07-22 || rc=$?
+rc=0; FXG=$T/fxunarmed/research/historical/ci guard full 2026-07-22 || rc=$?
 [[ $rc == 2 && ! -e "$GD/gh.log" ]] && grep -q "the archive chain is not armed" "$T/gout.txt" || bad+=" plan:$rc"
 rc=0; sd 2026-07-22 "$T/fxunarmed/research/historical/ci" || rc=$?
 [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "not armed" "$T/out.txt" || bad+=" scan-day:$rc"
@@ -1811,7 +1813,7 @@ rc=0; CFX=$T/fxunarmed/research/historical/ci cdrun of2 0 || rc=$?
 mkfx "$T/fxrearm" ARCHIVE_REARM_AT=2099-01-01T00:00:00Z
 rc=0; FXG=$T/fxrearm/research/historical/ci guard full 2026-07-22 || rc=$?
 [[ $rc == 2 ]] && grep -q "ARCHIVE_REARM_AT .* is not a past UTC time" "$T/gout.txt" || bad+=" rearm-future:$rc"
-[[ -z "$bad" ]] && ok "OF-2: unarmed (today's ARCHIVE_ARM, empty) a manual dispatch is refused at the plan job, and scan-day.sh and check-day.sh refuse too; an ARCHIVE_REARM_AT in the future is refused" || no "OF-2 unarmed entry points:$bad"
+[[ -z "$bad" ]] && ok "OF-2: unarmed (ARCHIVE_ARM empty) a manual dispatch is refused at the plan job, and scan-day.sh and check-day.sh refuse too; an ARCHIVE_REARM_AT in the future is refused" || no "OF-2 unarmed entry points:$bad"
 bad=""
 # Retention: unset → 07-22 only (K2); K2 → 07-22 and 07-23; K3 → every day.
 mkfx "$T/fxret0" ARCHIVE_RETENTION=
@@ -1953,12 +1955,12 @@ rc=0; cont CHAIN=0 SOURCE=archive GD_RUNS_FAIL=1 || rc=$?; [[ $rc == 1 && ! -e "
 gdreset
 [[ -z "$bad" ]] && ok "OF-2: the continue job allows one resumable restart a day for the archive, counted per day from run history (a second exit 75 of 07-22 fails it whatever inputs.chain says; another day's restart does not count; an unreadable history stops); Helius chains are unchanged" || no "OF-2 continue:$bad"
 bad=""
-# The repository's values: 30 days; 31 with the 07-22 lead-in, unarmed, retention unset, re-arm time valid.
+# The repository's values: 30 days; 31 with the 07-22 lead-in; OF-REARM: armed on b10pull-of-2 at K2, re-arm time kept.
 ( . "$here/archive-limits.conf"; . "$here/archive-guard.sh"
   days=$(ag_days) && [[ $(wc -l <<< "$days") == 31 && $(head -1 <<< "$days") == 2026-07-22 && $(tail -1 <<< "$days") == 2026-08-21 ]] &&
-  ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && -z "$ARCHIVE_ARM" && -z "$ARCHIVE_RETENTION" ]] &&
-  ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-2 ]] && ! ag_armed >/dev/null 2>&1 ) &&
-  ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only), ARCHIVE_ARM and ARCHIVE_RETENTION empty, ARCHIVE_REARM_AT a valid UTC time; the one pinned B10-PULL row (OF-7) is b10pull-of-1 and the chain stays unarmed" || no "OF-2 repository values"
+  ! grep -qx 2026-09-21 <<< "$days" && [[ " $HELIUS_DAYS " == *" 2026-09-21 "* && "$ARCHIVE_ARM" == b10pull-of-2 && "$ARCHIVE_RETENTION" == K2 ]] &&
+  [[ "$ARCHIVE_REARM_AT" == 2026-10-07T22:30:00Z ]] && ag_ts "$ARCHIVE_REARM_AT" >/dev/null && [[ "$(ag_pinned_id)" == b10pull-of-2 ]] ) &&
+  ok "OF-2 archive-limits.conf: ARCHIVE_DAYS is exactly 2026-07-22..2026-08-21 (30 days; 31 with the 07-22 lead-in; 09-21 stays in HELIUS_DAYS only); OF-REARM: ARCHIVE_ARM is the pinned B10-PULL id b10pull-of-2, ARCHIVE_RETENTION K2, ARCHIVE_REARM_AT kept at 2026-10-07T22:30:00Z" || no "OF-2 repository values"
 
 # ---- OF-3: K3 reads take the pinned migration list; the K2 release keeps the rescan hashes and the per-unit log; the trim ----
 gdreset; bad=""
