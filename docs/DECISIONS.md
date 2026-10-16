@@ -4014,7 +4014,7 @@ Builder notes (for review):
 Builder readings are marked as such. None changes a risk limit, a gate or a strategy rule.
 
 - **Z09-B1 · Bar open is the carried state** (A-M08-01). A bar opens at the last state seen before `startMs`, or at its first snapshot when there is none. The recorder writes changed snapshots only, so a replay cannot see an unchanged poll before a bar's first change. Every such poll returned the carried state, so this is the state at the bar's start in both modes. With it, live and replay OHLC, depth and flow are equal by construction. Flow is close real vault − carried real vault, the telescoped sum of logic 3.
-- **Z09-B2 · Replay snapshot counts** (A-M08-01 logic 4). A minute's `successfulPolls` are spread over its bars:
+- **Z09-B2 · Replay snapshot counts** (A-M08-01 logic 4). REPLACED by ruling Z09-32 (per-bar `poll_counts`, exact counts; `spreadPolls` removed). As first built, a minute's `successfulPolls` were spread over its bars:
   - each bar keeps its changed snapshots;
   - each unchanged poll goes to the bar furthest below an even share of the minute (`spreadPolls`).
 
@@ -4094,7 +4094,8 @@ Each ruling has a test that fails on f104023 and passes after. The universe, man
   - **Event time**: each bar carries `closedAtMs`, the moment the rule first held, independent of how often `closeDue` is called.
   - **Parity test**: one SYNTHETIC hour, run as every poll (live) and as changed snapshots only (replay), each with the same `poll_counts` at their write times. Both produce identical `bar.closed` event lists, `closedAtMs` included; a seed with failed polls is included. No run emits before `closedAtMs` (leak rule).
   - **Cost**: a bar closes about at its minute's end plus the `poll_counts` delay (≤ 75 s after its start at 1 Hz), not 16.5 s after its start, in every mode.
-  - **Z10 obligation**: feed the live engine the recorder queue's `poll_counts` records with their write time.
+  - **Z10 obligation** (dropped by Z09-32, which replaces it): feed the live engine the recorder queue's `poll_counts` records with their write time.
+  - The close rule, the cost and the minute wait above are REPLACED by Z09-32.
   - **Bug found by the parity test and fixed**: a closed bar's changed count was dropped before the next bar of its minute took its spread.
 - **Z09-20**:
   - The backfill keeps verified migrations, PumpPortal sightings and deferred pools in `BackfillStore` (M24: `discovery_cursor`, plus `kv_state` prefixes `m03.verified:`, `m03.pp_seen:` and `m03.deferred:`; pruned after 8 days).
@@ -4108,11 +4109,28 @@ Each ruling has a test that fails on f104023 and passes after. The universe, man
   - **Backfill**: holds no maps.
   - Each part has a bounded-size test.
 - **Z09-24**: the hurdle row counts pools that pass the depth cap but cannot be priced, by reason (`unpriced`). The count appears in the markdown and the CSV.
-- **Z09-25**: `phase0-input` measures eligible time from the manifest's new per-pool `intervals` (gaps excluded). It reads the candidate, tail and position snapshot streams, and weights each state by the pool's actual successful polls from `poll_counts`, prorated by minute (0.1 Hz in the tail). A state no poll saw is left out.
+- **Z09-25**: `phase0-input` measures eligible time from the manifest's new per-pool `intervals` (gaps excluded). It reads the candidate, tail and position snapshot streams, and weights each state by the pool's actual successful polls from `poll_counts`, prorated by minute (0.1 Hz in the tail; by 15 s bar since Z09-32). A state no poll saw is left out.
 - **Z09-26**: `paramProblem` turns out-of-range parameters into `E_INVALID_PARAM`, never a RangeError: a probability that rounds to 1 at ppm (0.9999995), negative or NaN values, a cuLimit ≤ 0, or a negative cost.
 - **Z09-27**:
   - The script's venue binding is the typed adapter `m13/venue-pricing.ts` (`toCpPoolState`, `flatFeeInputs`), with no `as never`.
   - A degraded-mode tail clear writes a `tail_degraded` eviction record for each tail cut short.
+
+### Z09 round 3 (supervisor ruling Z09-32, notes on Z09-17, Z09-23 and Z09-28)
+
+- **Z09-32, a SPEC change (A-M07-01 logic 3 and its acceptance; A-M08-01 logic 4 and its acceptance; A-M07-03 per the per-bar record; A-M11-03 logic 1).** M07 writes `poll_counts` per 15 s base bar window instead of per minute.
+  - **Record**: one per watched pool per bar, with the same fields plus `barStartMs` and `durationMs: 15000`. `minuteStartMs` stays as the bar's minute. `skippedMinutes` becomes `skippedBars`, and `lateFromMinuteStartMs` becomes `lateFromBarStartMs`.
+  - **When**: written at the bar's close, start + 15 s + grace (`pollCloseGraceMs`, default 1,500, equal to `bars.close_grace_ms`). An hour is 240 records, not 60.
+  - **Stamp**: a record written on time (no tick at or after its close passed without writing it) carries the close as its `recvMs`; that includes an unwatch's partial bar. A later one (a clock step held the flush back) carries its write time, never earlier than just after the latest tick, so it is always after the close.
+  - **Bars**: a bar closes at start + duration + grace with no wait; `closedAtMs` is always that. Per 15 s window it counts the window's `successfulPolls` when its record was received by the bar's close (`receivedAtMs` ≤ close), else the window's changed snapshots. A late record is counted in `lateCounts` and never used; a `skippedBars` record is ignored. `spreadPolls` and `pollWaitMs` are gone.
+  - **Parity**: live and replay agree exactly, `snapshots` included; SPEC's "±1" becomes exact. The parity test drives the real `RecorderQueue` through a SYNTHETIC hour, three seeds, one with failed polls. Live: every poll, then `tick(t)`, then `closeDue(t)`. Replay: the recording, every record with `recvMs ≤ t` delivered before `closeDue(t)`. Both give identical `bar.closed` lists, times and per-bar counts included.
+  - **Leak test**: delivering every count early changes nothing; a planted future count is unused before 16.5 s; a count received after its close is never used. The queue's property test checks that no per-bar record is stamped before its close.
+  - **Clock rules unchanged**: rulings 25-41 still judge time by the minute (`maxRecvMinute`, episodes, outage). Only the counting unit (buckets, flushed-up-to marks, late and moved gaps, the catch-up span of `pollCatchUpMaxMinutes` × 4 bars) is the bar.
+  - **Coverage (A-M07-03)**: still judged per pool-minute. A minute is observed when any of its bars' records has a successful poll or a late credit (`lateFromBarStartMs`), so a 0.1 Hz tail pool is not missing between its polls. Per-bar `moved` and `clock_step` gaps exclude only their bars' minutes. `phase0-input` weights states by the per-bar counts.
+  - **Migration**: none, because no recording exists yet.
+  - **Wiring (Z10)**: the worker sets M07's `pollCloseGraceMs` from `bars.close_grace_ms`. It calls M07's `tick(now)`, then M08's `closeDue(now)`, with the same `now`, and hands each written `poll_counts` record to M08 with its `recvMs`. This replaces the Z09-19 obligation.
+- **Z09-17, ARCH deviation kept: `eligible → prefiltered_out` (Z09-U7).** ARCH 7.5 names no edge out of `eligible` except `watched`. `evicted` is reached only from `watched` ("evicted for budget") and `cooldown`, so `eligible → evicted` with a prefilter reason would be a new edge too, and a misleading one: the pool was never watched, so it has no eviction tail. `prefiltered_out` is the state ARCH gives a pool whose prefilter fails, and it is re-evaluated on the next discovery or every 6 h. The edge is in `ALLOWED`, and the A-M05-01 property test now drives pools' facts shallow and back, and asserts that the edge occurs.
+- **Z09-23, carried to Z10**: an M24 index on `candidate.cooldown_until`. Z10 measures the `due` query's cost on a table of realistic size before adding it.
+- **Z09-28**: accepted by the supervisor; no change.
 
 ### LOG-ORDER (Z02 follow-up; supervisor ruling LOG-1)
 

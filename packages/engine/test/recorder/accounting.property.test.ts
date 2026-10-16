@@ -1,13 +1,14 @@
-// Rulings 25, 26 and 30 (docs/reviews/Z04.md): every counted poll ends in exactly one (pool, minute) poll_counts
-// record, and every pool-minute whose count differs from the polls stamped in it is explained by a gap on poll_counts
-// (clock_step or late) or by a skippedMinutes record. Random polls, failed polls, unwatches, ticks, forward and
+// Rulings 25, 26 and 30 (docs/reviews/Z04.md), in 15-second bars since ruling Z09-32: every counted poll ends in
+// exactly one (pool, bar) poll_counts
+// record, and every pool-bar whose count differs from the polls stamped in it is explained by a gap on poll_counts
+// (clock_step or late) or by a skippedBars record. Random polls, failed polls, unwatches, ticks, forward and
 // backward clock steps, forward recvMs on any stream, and rejected records. Fixed seed so a run is reproducible for
 // the exact commit it ran on.
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'vitest';
 import fc from 'fast-check';
 import type { UnixMs } from '@bot/types';
-import { MINUTE_MS, RecorderQueue, type EncodedRecord, type Gap } from '../../src/index.ts';
+import { POLL_BAR_MS, RecorderQueue, type EncodedRecord, type Gap } from '../../src/index.ts';
 import { SEG, T0, payloadOf, snap } from './helpers.ts';
 
 const ms = (n: number): UnixMs => n as UnixMs;
@@ -26,15 +27,15 @@ const op = fc.oneof(
 );
 
 describe('poll accounting across clock steps and unwatches (rulings 25, 26 and 30)', () => {
-  it('polls counted equal polls appended, no (pool, minute) twice, and every differing pool-minute is explained', () => {
+  it('polls counted equal polls appended, no (pool, bar) twice, and every differing pool-bar is explained', () => {
     fc.assert(fc.property(fc.array(op, { minLength: 1, maxLength: 300 }), (ops) => {
       const q = new RecorderQueue({ config: { maxWatchedPools: 3 } });
       const out: EncodedRecord[] = [];
       const gaps: Gap[] = [];
-      // Polls stamped per (pool, minute), from the accepted ones.
+      // Polls stamped per (pool, bar), from the accepted ones.
       const stamped = new Map<string, { s: number; f: number }>();
       const stamp = (pool: string, recvMs: number, kind: 's' | 'f'): void => {
-        const k = `${pool}@${Math.floor(recvMs / MINUTE_MS) * MINUTE_MS}`;
+        const k = `${pool}@${Math.floor(recvMs / POLL_BAR_MS) * POLL_BAR_MS}`;
         const c = stamped.get(k) ?? { s: 0, f: 0 };
         c[kind]++;
         stamped.set(k, c);
@@ -48,7 +49,7 @@ describe('poll accounting across clock steps and unwatches (rulings 25, 26 and 3
       let failed = 0;
       for (const o of ops) {
         if (o.kind === 'poll') {
-          // recvMs up to 90 s behind the clock: late polls into minutes already written.
+          // recvMs up to 90 s behind the clock: late polls into bars already written.
           const stream = o.position ? 'pool_snapshot_position' : 'pool_snapshot';
           const t = clock - o.back;
           const r = q.append(snap(`p${o.pool}`, o.state, t, stream, o.position ? 'position' : 'normal'));
@@ -85,57 +86,65 @@ describe('poll accounting across clock steps and unwatches (rulings 25, 26 and 3
       q.tick(ms(clock));
       drain();
 
-      const counts = out.filter((r) => r.stream === 'poll_counts').map(payloadOf);
-      const keys = counts.map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
-      assert.equal(new Set(keys).size, keys.length, 'a (pool, minute) record appears twice');
-      // Ruling 32: every record expanded into the minutes it covers (a skippedMinutes record covers its whole span):
-      // no pool's minute is covered twice.
-      const minutesCovered = new Set<string>();
+      const countRecs = out.filter((r) => r.stream === 'poll_counts');
+      const counts = countRecs.map(payloadOf);
+      // Ruling Z09-32: a per-bar record carries its bar's close as recvMs when written on time, else a later time, so a
+      // reader keyed to the close never sees a late one as on time.
+      for (const r of countRecs) {
+        const p = payloadOf(r);
+        if (typeof p.skippedBars === 'number') continue;
+        assert.ok(r.recvMs >= (p.barStartMs as number) + POLL_BAR_MS + 1_500, `bar ${String(p.barStartMs)} stamped before its close`);
+      }
+      const keys = counts.map((p) => `${String(p.poolId)}@${String(p.barStartMs)}`);
+      assert.equal(new Set(keys).size, keys.length, 'a (pool, bar) record appears twice');
+      // Ruling 32: every record expanded into the bars it covers (a skippedBars record covers its whole span):
+      // no pool's bar is covered twice.
+      const barsCovered = new Set<string>();
       for (const c of counts) {
-        const span = typeof c.skippedMinutes === 'number' ? c.skippedMinutes : 1;
+        const span = typeof c.skippedBars === 'number' ? c.skippedBars : 1;
         for (let i = 0; i < span; i++) {
-          const k = `${String(c.poolId)}@${(c.minuteStartMs as number) + i * MINUTE_MS}`;
-          assert.ok(!minutesCovered.has(k), `${k} covered twice`);
-          minutesCovered.add(k);
+          const k = `${String(c.poolId)}@${(c.barStartMs as number) + i * POLL_BAR_MS}`;
+          assert.ok(!barsCovered.has(k), `${k} covered twice`);
+          barsCovered.add(k);
         }
       }
       assert.equal(counts.reduce((a, p) => a + (p.successfulPolls as number), 0), polls, 'successful polls lost or double counted');
       assert.equal(counts.reduce((a, p) => a + (p.failedPolls as number), 0), failed, 'failed polls lost or double counted');
       assert.equal(q.stats().droppedTotal.poll_counts, 0);
 
-      // Per-minute resolution (rulings 30 and 33): for each pool-minute not covered by that pool's clock_step gap or a
-      // skippedMinutes span, the polls stamped in it equal the polls recorded for it, where a record's latePolls came
-      // from the minute before.
-      const covered = (pool: string, minuteMs: number): boolean =>
-        gaps.some((g) => (g.poolId === undefined || g.poolId === pool) && g.fromMs <= minuteMs && g.toMs >= minuteMs + MINUTE_MS - 1)
-        || counts.some((c) => c.poolId === pool && typeof c.skippedMinutes === 'number'
-          && (c.minuteStartMs as number) <= minuteMs && minuteMs < (c.minuteStartMs as number) + (c.skippedMinutes) * MINUTE_MS);
+      // Per-bar resolution (rulings 30 and 33): for each pool-bar not covered by that pool's clock_step gap or a
+      // skippedBars span, the polls stamped in it equal the polls recorded for it, where a record's latePolls came
+      // from the bar before.
+      const covered = (pool: string, barMs: number): boolean =>
+        gaps.some((g) => (g.poolId === undefined || g.poolId === pool) && g.fromMs <= barMs && g.toMs >= barMs + POLL_BAR_MS - 1)
+        || counts.some((c) => c.poolId === pool && typeof c.skippedBars === 'number'
+          && (c.barStartMs as number) <= barMs && barMs < (c.barStartMs as number) + (c.skippedBars) * POLL_BAR_MS);
       const recorded = new Map<string, { n: number; late: number }>();
       for (const c of counts) {
         const n = (c.successfulPolls as number) + (c.failedPolls as number);
         const late = typeof c.latePolls === 'number' ? c.latePolls : 0;
-        if (late > 0) assert.equal(c.lateFromMinuteStartMs, (c.minuteStartMs as number) - MINUTE_MS);
-        recorded.set(`${String(c.poolId)}@${String(c.minuteStartMs)}`, { n, late });
+        if (late > 0) assert.equal(c.lateFromBarStartMs, (c.barStartMs as number) - POLL_BAR_MS);
+        recorded.set(`${String(c.poolId)}@${String(c.barStartMs)}`, { n, late });
       }
-      const minutesToCheck = new Set<string>([...stamped.keys(), ...recorded.keys()]);
-      for (const k of minutesToCheck) {
-        const [pool, minute] = k.split('@') as [string, string];
-        const m = Number(minute);
+      const barsToCheck = new Set<string>([...stamped.keys(), ...recorded.keys()]);
+      for (const k of barsToCheck) {
+        const [pool, bar] = k.split('@') as [string, string];
+        const m = Number(bar);
         if (covered(pool, m)) continue;
         const st = stamped.get(k) ?? { s: 0, f: 0 };
         const here = recorded.get(k) ?? { n: 0, late: 0 };
-        const next = recorded.get(`${pool}@${m + MINUTE_MS}`) ?? { n: 0, late: 0 };
-        // Recorded here, minus what came in from the minute before, plus what went on to the next minute.
+        const next = recorded.get(`${pool}@${m + POLL_BAR_MS}`) ?? { n: 0, late: 0 };
+        // Recorded here, minus what came in from the bar before, plus what went on to the next bar.
         const accounted = here.n - here.late + next.late;
         assert.equal(accounted, st.s + st.f, `${k}: stamped ${st.s + st.f}, accounted ${accounted}, no gap explains it`);
       }
-      // Ruling 33: gaps exclude at most the two pool-minutes of each poll moved more than one minute.
+      // Ruling 33: gaps exclude at most the two pool-bars of each poll moved more than one bar.
       const excluded = new Set<string>();
       for (const g of gaps) {
         assert.ok(g.poolId !== undefined || gaps.length > 1_000, 'a poll_counts gap without its pool');
-        for (let t = g.fromMs; t <= g.toMs; t += MINUTE_MS) excluded.add(`${String(g.poolId)}@${t}`);
+        for (let t = g.fromMs; t <= g.toMs; t += POLL_BAR_MS) excluded.add(`${String(g.poolId)}@${t}`);
       }
-      assert.ok(excluded.size <= 2 * q.stats().movedPolls, `${excluded.size} pool-minutes excluded for ${q.stats().movedPolls} moved polls`);
+      assert.ok(excluded.size <= 2 * q.stats().movedPolls, `${excluded.size} pool-bars excluded for ${q.stats().movedPolls} moved polls`);
     }), params);
   });
 });

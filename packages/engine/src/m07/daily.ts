@@ -53,9 +53,9 @@ export function dailyCoverage(o: { dataDir: string; dayUtc: string; universeMani
   const start = dayStartOf(o.dayUtc);
   const next = new Date(start + DAY_MS).toISOString().slice(0, 10);
   const manifests = dayManifests(o.dataDir, o.dayUtc, fs);
-  // The first minute of the next day may carry late polls of 23:59 (ruling 38).
+  // The next day's first bar may carry late polls of the 23:59:45 bar (ruling 38, in bars since Z09-32).
   const nextFirstHour = dayManifests(o.dataDir, next, fs).filter((m) => m.hourUtc === `${next}T00`);
-  const pollCounts = [...pollCountsOf(o.dataDir, manifests, fs), ...pollCountsOf(o.dataDir, nextFirstHour, fs).filter((r) => r.minuteStartMs === start + DAY_MS)];
+  const pollCounts = [...pollCountsOf(o.dataDir, manifests, fs), ...pollCountsOf(o.dataDir, nextFirstHour, fs).filter((r) => r.barStartMs === start + DAY_MS)];
   const gaps: Array<{ stream: string; gap: ManifestGap }> = [];
   const records: Record<string, number> = {};
   for (const m of manifests) {

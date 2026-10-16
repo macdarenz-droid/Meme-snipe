@@ -7,7 +7,7 @@
 // - `pool_snapshot`, `pool_snapshot_tail` and `pool_snapshot_position`: change-only keyframes and deltas, rebuilt with
 //   the recorder's decoder. Each state of a pool the day's manifest lists as eligible is clipped to the pool's eligible
 //   INTERVALS (gaps excluded) and weighted by the pool's ACTUAL successful polls from `poll_counts` over that time,
-//   prorated by minute (ruling Z09-25: 1 Hz watched, 0.1 Hz in the tail; a state no poll saw has weight 0 and is left
+//   per 15-second bar (rulings Z09-25 and Z09-32: 1 Hz watched, 0.1 Hz in the tail; a state no poll saw has weight 0 and is left
 //   out). A state from before the day (a quiet pool's carry-over) is not read: each day is read on its own.
 // The pricing of a recorded state comes from the caller (`pricing`), which binds the venue maths (the engine does not
 // depend on @bot/venue). Reads files only; never a provider.
@@ -18,6 +18,7 @@ import { dayManifests } from '../m07/daily.ts';
 import { scanGzipFrames } from '../m07/frames.ts';
 import type { SegmentManifest } from '../m07/manifest.ts';
 import { SnapshotDecoder, type EncodedSnapshot } from '../recorder/delta.ts';
+import { POLL_BAR_MS } from '../recorder/queue.ts';
 import { manifestSha256, type UniverseManifestFile } from '../m05/manifest.ts';
 import type { PoolPricing } from '../m10/costs.ts';
 import type { Phase0Day, Phase0Input, PoolState, StreamDayBytes } from './phase0.ts';
@@ -26,7 +27,6 @@ type ReadFs = Pick<typeof nodeFs, 'existsSync' | 'readFileSync' | 'readdirSync'>
 
 /** Ruling Z09-31: the input refuses rather than shifting D1 or using R0 = 0. */
 export type Phase0InputError = { code: 'E_NO_SNAPSHOTS' } | { code: 'E_R0_DAY_MISSING'; r0Day: string };
-const MINUTE_MS = 60_000;
 const SNAPSHOT_STREAMS = new Set(['pool_snapshot', 'pool_snapshot_tail', 'pool_snapshot_position']);
 
 export type RecordedPricing = (fields: Readonly<Record<string, unknown>>, pool: { poolId: string; mint: string }) => PoolPricing | null;
@@ -48,17 +48,18 @@ function linesOf(dataDir: string, m: SegmentManifest, fs: ReadFs): { lines: Line
 
 /**
  * The successful polls that saw a state held over [from, to), inside the eligible intervals (each [a, b] inclusive),
- * from the minute counts, each minute's count taken in proportion to the overlap; rounded to the nearest poll.
+ * from the per-bar counts (ruling Z09-32), each bar's count taken in proportion to the overlap; rounded to the nearest
+ * poll.
  */
-export function pollsIn(minutes: ReadonlyMap<number, number> | undefined, intervals: ReadonlyArray<readonly [number, number]>, from: number, to: number): number {
-  if (minutes === undefined) return 0;
+export function pollsIn(bars: ReadonlyMap<number, number> | undefined, intervals: ReadonlyArray<readonly [number, number]>, from: number, to: number): number {
+  if (bars === undefined) return 0;
   let w = 0;
   for (const [a, b] of intervals) {
     const lo = Math.max(a, from), hi = Math.min(b + 1, to);
-    for (let m = Math.floor(lo / MINUTE_MS) * MINUTE_MS; m < hi; m += MINUTE_MS) {
-      const n = minutes.get(m);
+    for (let m = Math.floor(lo / POLL_BAR_MS) * POLL_BAR_MS; m < hi; m += POLL_BAR_MS) {
+      const n = bars.get(m);
       if (n === undefined) continue;
-      w += (n * (Math.min(hi, m + MINUTE_MS) - Math.max(lo, m))) / MINUTE_MS;
+      w += (n * (Math.min(hi, m + POLL_BAR_MS) - Math.max(lo, m))) / POLL_BAR_MS;
     }
   }
   return Math.round(w);
@@ -85,7 +86,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
     let manifest: UniverseManifestFile | null = null;
     let low = true;
     const snapLines: Line[] = [];
-    const polls = new Map<string, Map<number, number>>();               // pool → minute → successful polls
+    const polls = new Map<string, Map<number, number>>();               // pool → bar start → successful polls
     const bytes = new Map<string, StreamDayBytes>();
     for (const m of manifests) {
       const read = linesOf(o.dataDir, m, fs);
@@ -102,10 +103,10 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
           const c = l.payload as Partial<CoverageReport>;
           if (c.dayUtc === dayUtc && typeof c.lowCoverage === 'boolean') low = c.lowCoverage;
         } else if (m.stream === 'poll_counts') {
-          const c = l.payload as { poolId?: unknown; minuteStartMs?: unknown; successfulPolls?: unknown; skippedMinutes?: unknown };
-          if (typeof c.poolId === 'string' && Number.isSafeInteger(c.minuteStartMs) && Number.isSafeInteger(c.successfulPolls) && c.skippedMinutes === undefined) {
+          const c = l.payload as { poolId?: unknown; barStartMs?: unknown; successfulPolls?: unknown; skippedBars?: unknown };
+          if (typeof c.poolId === 'string' && Number.isSafeInteger(c.barStartMs) && (c.barStartMs as number) % POLL_BAR_MS === 0 && Number.isSafeInteger(c.successfulPolls) && c.skippedBars === undefined) {
             const pm = polls.get(c.poolId) ?? new Map<number, number>();
-            pm.set(c.minuteStartMs as number, (pm.get(c.minuteStartMs as number) ?? 0) + (c.successfulPolls as number));
+            pm.set(c.barStartMs as number, (pm.get(c.barStartMs as number) ?? 0) + (c.successfulPolls as number));
             polls.set(c.poolId, pm);
           }
         } else if (m.stream === 'ref_price') {

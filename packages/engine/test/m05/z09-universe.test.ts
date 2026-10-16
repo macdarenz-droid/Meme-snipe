@@ -49,9 +49,13 @@ describe('A-M05-01 acceptance (SYNTHETIC events)', () => {
       fc.record({ k: fc.constant('screen'), i: fc.integer({ min: 0, max: 4 }), v: fc.constantFrom('eligible', 'rejected', 'honeypot', 'authority') }),
       fc.record({ k: fc.constant('terminal'), i: fc.integer({ min: 0, max: 4 }), v: fc.constantFrom('closed', 'open_failed', 'written_off') }),
       fc.record({ k: fc.constant('time'), ms: fc.integer({ min: 0, max: 30 * 3_600_000 }) }),
+      // Ruling Z09-17: a pool's current facts turn shallow (or deep again), so a tick re-checks it on them.
+      fc.record({ k: fc.constant('shallow'), i: fc.integer({ min: 0, max: 4 }) }),
     );
+    let eligibleToPrefiltered = 0;
     fc.assert(fc.property(fc.boolean(), fc.array(ev, { maxLength: 80 }), (screening, events) => {
-      const t = setup({ config: { screeningRequired: screening } });
+      const shallow = new Set<string>();
+      const t = setup({ config: { screeningRequired: screening }, facts: (p) => (shallow.has(p) ? { ...deep, effectiveQuoteLamports: 1n } : deep) });
       for (const e of events as Array<{ k: string; i: number; v?: string; ms?: number }>) {
         const pool = pubkey(100 + (e.i ?? 0)), mint = pubkey(200 + (e.i ?? 0));
         const before = t.u.candidate(pool)?.state;
@@ -69,6 +73,7 @@ describe('A-M05-01 acceptance (SYNTHETIC events)', () => {
           case 'auth': t.u.onAuthorityChanged(mint); break;
           case 'tick': t.u.tick(); break;
           case 'time': t.advance(e.ms as number); t.u.tick(); break;
+          case 'shallow': if (!shallow.delete(pool)) shallow.add(pool); break;
           case 'screen': t.u.onScreen(pool, e.v === 'eligible' || e.v === 'rejected' ? { verdict: e.v } : { verdict: 'hard_fail', kind: e.v as 'honeypot' | 'authority' }); break;
           case 'terminal': {
             t.u.onPositionTerminal(pool, e.v as 'closed');
@@ -82,8 +87,11 @@ describe('A-M05-01 acceptance (SYNTHETIC events)', () => {
         }
       }
       for (const x of (t.store as MemStore).log) assert.ok(isAllowed(x.from, x.to), `${x.from} → ${x.to}`);
+      eligibleToPrefiltered += (t.store as MemStore).log.filter((x) => x.from === 'eligible' && x.to === 'prefiltered_out').length;
       assert.deepEqual(t.published, (t.store as MemStore).log);
     }), { numRuns: 300 });
+    // The ARCH deviation U7 (DECISIONS Z09-17) is exercised, not only listed.
+    assert.ok(eligibleToPrefiltered > 0, 'eligible → prefiltered_out never happened');
   });
 
   it('a pool with no known migration has no age proof and fails the MR age prefilter (D30 parked); with the migration it passes at 24 h', () => {

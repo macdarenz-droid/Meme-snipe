@@ -50,8 +50,8 @@ describe('card Z08 M04 → M07 link', () => {
     assert.ok(!day.some((i) => i.poolId === 'C'));
     // The queue no longer counts polls for A or B: a tick emits no poll_counts for them past their unwatch.
     queue.tick((wall() + 120_000) as UnixMs);
-    const late = queue.take(10_000, 't').filter((r) => r.stream === 'poll_counts').map((r) => JSON.parse(r.payloadJson) as { poolId: string; minuteStartMs: number });
-    assert.ok(late.every((r) => r.minuteStartMs < wall()));
+    const late = queue.take(10_000, 't').filter((r) => r.stream === 'poll_counts').map((r) => JSON.parse(r.payloadJson) as { poolId: string; barStartMs: number });
+    assert.ok(late.every((r) => r.barStartMs < wall()));
     tracker.stop();
   });
 
@@ -61,7 +61,8 @@ describe('card Z08 M04 → M07 link', () => {
     const d0 = Date.UTC(2026, 9, 15) as UnixMs;
     h.watch('A', 'candidate', d0);
     h.watch('B', 'candidate', d0);
-    const polls = Array.from({ length: 1_440 }, (_, m) => ({ poolId: 'A', minuteStartMs: (d0 + m * 60_000) as UnixMs, successfulPolls: 60, priorityClass: 'candidate' }));
+    // One poll_counts record per 15-second bar (ruling Z09-32).
+    const polls = Array.from({ length: 1_440 * 4 }, (_, b) => ({ poolId: 'A', barStartMs: (d0 + b * 15_000) as UnixMs, successfulPolls: 15, priorityClass: 'candidate' }));
     const c = computeCoverage({ dayUtc: '2026-10-15', watched: WatchLog.readDay(dir, '2026-10-15'), pollCounts: polls, gaps: [], records: {}, universeManifestSha256: 'a'.repeat(64) });
     assert.equal(c.report.lowCoverage, true);
     assert.equal(c.detail.missingBps, 5_000);

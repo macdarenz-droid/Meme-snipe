@@ -91,7 +91,8 @@ describe('tick work (ruling 2)', () => {
     await yieldToTimers();
     const out = q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts');
     assert.equal(out.length, 1_000);
-    assert.ok(out.every((r) => payloadOf(r).skippedMinutes === 3 * 1_440));
+    // Every 15-second bar of the 3 days but the last, which closes 1.5 s after this tick (ruling Z09-32).
+    assert.ok(out.every((r) => payloadOf(r).skippedBars === 3 * 1_440 * 4 - 1));
   });
 });
 
@@ -193,7 +194,7 @@ describe('idle by elapsed time (round 4, rulings 17-20)', () => {
     // Each candidate finds no idle pool, so it alone is refused and counted.
     assert.equal(st.watchedPools, 60);
     assert.equal(st.rejectedTotal.E_POOL_CAP, 2);
-    const keys = counts.map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+    const keys = counts.map((p) => `${String(p.poolId)}@${String(p.barStartMs)}`);
     assert.equal(new Set(keys).size, keys.length, 'no (pool, minute) written twice');
     assert.equal(counts.reduce((a, p) => a + (p.changedPolls as number), 0), 0, 'no false changedPolls');
   });
@@ -228,7 +229,8 @@ describe('idle by elapsed time (round 4, rulings 17-20)', () => {
     assert.equal(q.notePollFailed('pos', 'position', ms(T0 + 2_000), true), true);
     q.tick(ms(T0 + 60_000));
     const pos = pollCounts(q).filter((p) => p.poolId === 'pos');
-    assert.deepEqual(pos.map((p) => p.failedPolls), [1]);
+    // Bars 0-2 have closed by T0 + 60 s; the failed poll is in bar 0 (ruling Z09-32).
+    assert.deepEqual(pos.map((p) => p.failedPolls), [1, 0, 0]);
   });
 
   it('unwatched and watched again in the same minute: no (pool, minute) record twice (ruling 18)', () => {
@@ -240,8 +242,9 @@ describe('idle by elapsed time (round 4, rulings 17-20)', () => {
     q.tick(ms(T0 + 120_000));
     q.append(rec('decision', T0 + 180_000));
     q.tick(ms(T0 + 180_000));
-    const keys = pollCounts(q).filter((p) => p.poolId === 'a').map((p) => p.minuteStartMs);
-    assert.deepEqual(keys, [T0, T0 + 60_000, T0 + 120_000]);
+    const keys = pollCounts(q).filter((p) => p.poolId === 'a').map((p) => p.barStartMs);
+    // Bar 0 from the unwatch, then bars 1-10 (closed by T0 + 180 s), each once (ruling Z09-32: per 15-second bar).
+    assert.deepEqual(keys, Array.from({ length: 11 }, (_, b) => T0 + b * 15_000));
   });
 });
 
@@ -275,7 +278,7 @@ describe('ruling 21: the no-repeat rule covers unwatch() too', () => {
     q.unwatch('a', ms(T0 + 119_500));
     q.append(snap('a', 2, T0 + 119_800, 'pool_snapshot_position', 'position'));
     q.tick(ms(T0 + 240_000));
-    const keys = pollCounts(q).map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+    const keys = pollCounts(q).map((p) => `${String(p.poolId)}@${String(p.barStartMs)}`);
     assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
   });
 });
@@ -283,22 +286,25 @@ describe('ruling 21: the no-repeat rule covers unwatch() too', () => {
 describe('round 5 (rulings 22 and 23)', () => {
   it('the tick race: a poll stamped in a written minute but appended after the tick writes no minute twice', () => {
     const q = new RecorderQueue();
+    // In 15-second bars (ruling Z09-32): the unwatch writes bars 0-2, the tick at 60.1 s covers bar 3, and the poll
+    // stamped in bar 2 arrives after both.
+    const bars = (from: number, to: number): string[] => Array.from({ length: to - from + 1 }, (_, i) => `p@${T0 + (from + i) * 15_000}`);
     q.append(snap('p', 1, T0 + 10_000));
     q.unwatch('p', ms(T0 + 30_000));
     q.tick(ms(T0 + 60_100));
-    q.append(snap('p', 1, T0 + 59_990));
+    q.append(snap('p', 1, T0 + 44_990));
     q.tick(ms(T0 + 120_100));
     const counts = (): string[] => q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf)
-      .map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+      .map((p) => `${String(p.poolId)}@${String(p.barStartMs)}`);
     const keys = counts();
-    // No record arrived in minute 2, so the second tick may not write minute 1 yet (ruling 25)...
-    assert.deepEqual(keys, [`p@${T0}`]);
-    // ...and once data reaches minute 2 it does, still once.
+    // No record arrived in minute 2, so the second tick may not write minute 1's bars yet (ruling 25)...
+    assert.deepEqual(keys, bars(0, 3));
+    // ...and once data reaches minute 2 it does (those closed by 120.3 s), still once.
     q.append(rec('decision', T0 + 120_200));
     q.tick(ms(T0 + 120_300));
     keys.push(...counts());
     assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
-    assert.deepEqual(keys, [`p@${T0}`, `p@${T0 + 60_000}`]);
+    assert.deepEqual(keys, bars(0, 6));
     assert.equal(q.stats().latePolls, 1);
   });
 
@@ -343,7 +349,7 @@ describe('round 5 (ruling 24): the forgotten pools map stays bounded without a t
     q.append(snap('p', 1, T0 + 4_000));
     q.tick(ms(T0 + 180_000));
     collected.push(...q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf));
-    const p = collected.filter((c) => c.poolId === 'p').map((c) => c.minuteStartMs);
+    const p = collected.filter((c) => c.poolId === 'p').map((c) => c.barStartMs);
     assert.equal(new Set(p).size, p.length, `p minutes ${p.join(', ')}`);
   });
 });
@@ -358,11 +364,12 @@ describe('round 6 (ruling 25): one wrong forward time cannot stop new pools\' pe
       q.append(snap('fresh', 1, T0 + sec * 1_000));
       q.tick(ms(T0 + sec * 1_000));
     }
-    q.tick(ms(T0 + 360_000));
+    // The last bar closes 1.5 s after minute 5 ends (ruling Z09-32).
+    q.tick(ms(T0 + 361_500));
   };
   const expectMinutes = (rows: Array<Record<string, unknown>>): void => {
-    assert.deepEqual(rows.map((p) => [p.minuteStartMs, p.successfulPolls, p.skippedMinutes]),
-      [1, 2, 3, 4, 5].map((m) => [T0 + m * 60_000, 60, undefined]));
+    assert.deepEqual(rows.map((p) => [p.barStartMs, p.successfulPolls, p.skippedBars]),
+      Array.from({ length: 20 }, (_, i) => [T0 + 60_000 + i * 15_000, 15, undefined]));
   };
 
   it('repro A: tick(T0 + 1 h), then 5 minutes of normal polls and ticks: the fresh pool gets per-minute records', () => {
@@ -401,7 +408,7 @@ describe('round 6 (ruling 26): polls moved late are never lost when the pool is 
     q.unwatch('a', ms(T0 + 5_000));
     q.tick(ms(T0 + 300_000));
     const rows = q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
-    const keys = rows.map((p) => `${String(p.poolId)}@${String(p.minuteStartMs)}`);
+    const keys = rows.map((p) => `${String(p.poolId)}@${String(p.barStartMs)}`);
     assert.equal(new Set(keys).size, keys.length, `duplicates in ${keys.join(', ')}`);
     assert.equal(rows.reduce((a, p) => a + (p.successfulPolls as number), 0), 3);
   });
@@ -431,9 +438,9 @@ describe('round 7 (rulings 27-29): producer clock steps, forward and backward', 
       q.append(snap('fresh', 1, T0 + sec * 1_000));
       q.tick(ms(T0 + sec * 1_000));
     }
-    q.tick(ms(T0 + 360_000));
-    assert.deepEqual(perMinute(q, 'fresh').map((p) => [p.minuteStartMs, p.successfulPolls, p.skippedMinutes]),
-      [1, 2, 3, 4, 5].map((m) => [T0 + m * 60_000, 60, undefined]));
+    q.tick(ms(T0 + 361_500));
+    assert.deepEqual(perMinute(q, 'fresh').map((p) => [p.barStartMs, p.successfulPolls, p.skippedBars]),
+      Array.from({ length: 20 }, (_, i) => [T0 + 60_000 + i * 15_000, 15, undefined]));
     assert.equal(q.stats().maxRecvMinute, (T0 + 359_000 - ((T0 + 359_000) % 60_000)) / 60_000);
     assert.ok(q.stats().clockSteps >= 2, 'the forward record and the forward tick each opened an episode');
   });
@@ -455,10 +462,10 @@ describe('round 7 (rulings 27-29): producer clock steps, forward and backward', 
     // Logged once per episode, not once per poll.
     assert.ok(logs.filter((l) => l === 'warning:M07.clock_step').length <= 3, `${logs.length} logs`);
     const stepGaps = gaps.filter((g) => g.reason === 'clock_step');
-    // Every corrected minute (6 to 13) is inside a clock_step gap.
-    for (let m = 6; m < 14; m++) {
-      const at = T0 + m * 60_000;
-      assert.ok(stepGaps.some((g) => g.fromMs <= at && g.toMs >= at + 59_999), `minute ${m} not covered`);
+    // Every corrected bar (minutes 6 to 13: bars 24 to 55) is inside a clock_step gap (ruling Z09-32: gaps per bar).
+    for (let b = 24; b < 56; b++) {
+      const at = T0 + b * 15_000;
+      assert.ok(stepGaps.some((g) => g.fromMs <= at && g.toMs >= at + 14_999), `bar ${b} not covered`);
     }
   });
 });
@@ -469,11 +476,11 @@ describe('round 7 (ruling 31): the queue\'s own poll_counts never move maxRecvMi
       q.append(snap('fresh', 1, T0 + sec * 1_000));
       q.tick(ms(T0 + sec * 1_000));
     }
-    q.tick(ms(T0 + 360_000));
+    q.tick(ms(T0 + 361_500));
     return q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf)
-      .filter((p) => p.poolId === 'fresh').map((p) => [p.minuteStartMs, p.successfulPolls, p.skippedMinutes]);
+      .filter((p) => p.poolId === 'fresh').map((p) => [p.barStartMs, p.successfulPolls, p.skippedBars]);
   };
-  const want = [1, 2, 3, 4, 5].map((m) => [T0 + m * 60_000, 60, undefined]);
+  const want = Array.from({ length: 20 }, (_, i) => [T0 + 60_000 + i * 15_000, 15, undefined]);
 
   it('two forward-stepped ticks in a row: a fresh pool still gets per-minute records', () => {
     const q = new RecorderQueue();
@@ -495,17 +502,17 @@ describe('round 7 (ruling 31): the queue\'s own poll_counts never move maxRecvMi
 });
 
 describe('round 8 (rulings 33-36)', () => {
-  it("the red team's repro: one pool's 20 ms boundary latency excludes nothing (ruling 33)", () => {
+  it("the red team's repro: one pool's boundary latency excludes nothing (ruling 33; in bars, latency past the close grace)", () => {
     const q = new RecorderQueue();
     const gaps: Array<{ fromMs: number; toMs: number; reason: string; poolId?: string }> = [];
     const rows: Array<Record<string, unknown>> = [];
-    // 30 pools at 1 Hz for 120 minutes; each minute one p0 poll stamped 20 ms before the minute, appended after the
-    // tick that wrote that minute.
+    // 30 pools at 1 Hz for 120 minutes; each minute one p0 poll stamped 20 ms before the minute, appended 2.02 s later,
+    // after the tick that wrote its bar (the bar closes 1.5 s after its end; ruling Z09-32).
     for (let sec = 0; sec < 7_200; sec++) {
       const t = T0 + sec * 1_000;
       for (let i = 0; i < 30; i++) q.append(snap(`p${i}`, 1, t));
       q.tick(ms(t));
-      if (sec % 60 === 0 && sec > 0) q.append(snap('p0', 1, t - 20));
+      if (sec % 60 === 2 && sec > 2) q.append(snap('p0', 1, t - 2_020));
       if (sec % 600 === 0) {
         gaps.push(...(q.drainGaps().poll_counts ?? []));
         rows.push(...q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf));
@@ -515,10 +522,10 @@ describe('round 8 (rulings 33-36)', () => {
     rows.push(...q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf));
     assert.deepEqual(gaps, [], 'no gap on poll_counts');
     assert.equal(q.stats().movedPolls, 0);
-    // The moved polls are noted in p0's records instead: one per minute, from the minute before.
+    // The moved polls are noted in p0's records instead: one per minute, from the bar before.
     const p0 = rows.filter((r) => r.poolId === 'p0' && r.latePolls !== undefined);
     assert.ok(p0.length >= 100, `${p0.length} p0 records with latePolls`);
-    assert.ok(p0.every((r) => r.latePolls === 1 && r.lateFromMinuteStartMs === (r.minuteStartMs as number) - 60_000));
+    assert.ok(p0.every((r) => r.latePolls === 1 && r.lateFromBarStartMs === (r.barStartMs as number) - 15_000));
     assert.ok(rows.filter((r) => r.poolId !== 'p0').every((r) => r.latePolls === undefined));
   });
 
@@ -596,13 +603,13 @@ describe('round 9 (ruling 37): the tick clock is trusted only when anchored or l
     for (let s = 0; s < 120; s++) step(T0 + s * 1_000);
     for (let s = 120; s < 240; s++) step(T0 + 3_600_000 + s * 1_000);
     for (let s = 240; s < 720; s++) step(T0 + s * 1_000);
-    q.tick(ms(T0 + 720_000));
+    q.tick(ms(T0 + 721_500));
     const rows = q.take(Number.MAX_SAFE_INTEGER, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
-    // Minutes 4 to 11 are whole minutes of 60 polls each; only the burst's minutes carry a clock_step gap.
-    for (let m = 4; m < 12; m++) {
-      const r = rows.find((x) => x.minuteStartMs === T0 + m * 60_000);
-      assert.equal(r?.successfulPolls, 60, `minute ${m}`);
-      assert.ok(!gaps.some((g) => g.fromMs <= T0 + m * 60_000 && g.toMs >= T0 + m * 60_000), `minute ${m} has a gap`);
+    // Minutes 4 to 11 (bars 16 to 47) are whole bars of 15 polls each; only the burst's bars carry a clock_step gap.
+    for (let b = 16; b < 48; b++) {
+      const r = rows.find((x) => x.barStartMs === T0 + b * 15_000);
+      assert.equal(r?.successfulPolls, 15, `bar ${b}`);
+      assert.ok(!gaps.some((g) => g.fromMs <= T0 + b * 15_000 + 14_999 && g.toMs >= T0 + b * 15_000), `bar ${b} has a gap`);
     }
     assert.ok(gaps.some((g) => g.reason === 'clock_step' && g.poolId === 'a'));
     assert.ok(q.stats().clockSteps >= 1);

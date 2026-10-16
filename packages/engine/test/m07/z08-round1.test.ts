@@ -243,7 +243,11 @@ describe('Z08-18 and Z08-19', () => {
     const { q, w } = start(dir, now);
     for (let m = 0; m < 1_440; m += 1) {
       now.t = D0 + m * 60_000 + 30_000;
-      q.append({ stream: 'poll_counts', recvMs: ms(now.t), slot: null, commitment: null, source: 'm07', payload: { poolId: 'A', minuteStartMs: D0 + m * 60_000, successfulPolls: 60, changedPolls: 0, failedPolls: 0, priorityClass: 'candidate' } });
+      // One poll_counts record per 15-second bar (ruling Z09-32).
+      for (let b = 0; b < 4; b++) {
+        const barStartMs = D0 + m * 60_000 + b * 15_000;
+        q.append({ stream: 'poll_counts', recvMs: ms(now.t), slot: null, commitment: null, source: 'm07', payload: { poolId: 'A', barStartMs, durationMs: 15_000, minuteStartMs: D0 + m * 60_000, successfulPolls: 15, changedPolls: 0, failedPolls: 0, priorityClass: 'candidate' } });
+      }
       w.pump();
     }
     const out: unknown[] = [];

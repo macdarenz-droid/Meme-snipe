@@ -237,60 +237,77 @@ describe('change-only snapshots (logic 2, edge case 3)', () => {
   });
 });
 
-describe('poll counts (logic 3)', () => {
-  it('writes one record per watched pool per minute, with zero minutes, failed polls and late polls', () => {
+describe('poll counts (logic 3; per 15-second bar since ruling Z09-32)', () => {
+  const BAR = 15_000;
+  const close = (bar: number): number => T0 + (bar + 1) * BAR + 1_500;
+
+  it('writes one record per watched pool per bar at its close, with zero bars, failed polls and late polls', () => {
     const q = new RecorderQueue();
     q.watch('quiet', 'normal', ms(T0));
     q.append(snap('busy', 1, T0 + 1_000));
     q.append(snap('busy', 1, T0 + 2_000));
     q.notePollFailed('busy', 'normal', ms(T0 + 3_000), false);
+    // Bars 0-2 have closed by T0 + 60 s (bar 2 at 46.5 s); bar 3 closes at 61.5 s.
     q.tick(ms(T0 + 60_000));
-    // A poll stamped in the minute already written is counted in the next one.
-    q.append(snap('busy', 2, T0 + 59_000));
+    // A poll stamped in bar 2, already written, is counted in the next bar.
+    q.append(snap('busy', 2, T0 + 44_000));
     q.append(rec('decision', T0 + 180_400));
     q.tick(ms(T0 + 180_500));
-    const counts = q.take(100, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
-    const by = (pool: string): unknown[] => counts.filter((p) => p.poolId === pool).map((p) => [p.minuteStartMs, p.successfulPolls, p.changedPolls, p.failedPolls]);
-    assert.deepEqual(by('quiet'), [[T0, 0, 0, 0], [T0 + 60_000, 0, 0, 0], [T0 + 120_000, 0, 0, 0]]);
+    const recs = q.take(100, SEG).filter((r) => r.stream === 'poll_counts');
+    const counts = recs.map(payloadOf);
+    const by = (pool: string): unknown[] => counts.filter((p) => p.poolId === pool).map((p) => [p.barStartMs, p.successfulPolls, p.changedPolls, p.failedPolls]);
+    const zeros = Array.from({ length: 11 }, (_, b) => [T0 + b * BAR, 0, 0, 0]);
+    assert.deepEqual(by('quiet'), zeros);
     // The first poll of a watch is not a change (ruling 18).
-    assert.deepEqual(by('busy'), [[T0, 2, 0, 1], [T0 + 60_000, 1, 1, 0], [T0 + 120_000, 0, 0, 0]]);
+    const busy = zeros.map((z) => [...z]);
+    busy[0] = [T0, 2, 0, 1];
+    busy[3] = [T0 + 3 * BAR, 1, 1, 0];
+    assert.deepEqual(by('busy'), busy);
+    const late = counts.find((p) => p.poolId === 'busy' && p.barStartMs === T0 + 3 * BAR);
+    assert.deepEqual([late?.latePolls, late?.lateFromBarStartMs, late?.durationMs, late?.minuteStartMs], [1, T0 + 2 * BAR, BAR, T0]);
     assert.equal(q.stats().latePolls, 1);
+    // Every record was written on time, so each carries its bar's close as recvMs.
+    for (const r of recs) assert.equal(r.recvMs, close((Number(payloadOf(r).barStartMs) - T0) / BAR));
   });
 
-  it('unwatch writes the last partial minute and forgets the pool', () => {
+  it('unwatch writes up to the bar of its time (the last one partial, stamped with its close) and forgets the pool', () => {
     const q = new RecorderQueue();
     q.append(snap('a', 1, T0 + 1_000));
     q.unwatch('a', ms(T0 + 30_000));
     q.tick(ms(T0 + 600_000));
-    const counts = q.take(100, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
-    assert.deepEqual(counts.map((p) => [p.minuteStartMs, p.successfulPolls]), [[T0, 1]]);
+    const recs = q.take(100, SEG).filter((r) => r.stream === 'poll_counts');
+    assert.deepEqual(recs.map((r) => [payloadOf(r).barStartMs, payloadOf(r).successfulPolls, r.recvMs]), [[T0, 1, close(0)], [T0 + BAR, 0, close(1)], [T0 + 2 * BAR, 0, close(2)]]);
     assert.equal(q.stats().watchedPools, 0);
     assert.equal(q.stats().acceptedHashes, 0);
   });
 
-  it('a silent feed (an outage) longer than pollCatchUpMaxMinutes resumes as one skippedMinutes record per pool', () => {
+  it('a silent feed (an outage) longer than pollCatchUpMaxMinutes resumes as one skippedBars record per pool', () => {
     const q = new RecorderQueue();
     q.append(snap('a', 1, T0 + 5_000));
     q.append(snap('a', 2, T0 + 125_000));
     // The writer ticks every minute; the feed is silent from minute 3 to minute 30.
     for (let m = 0; m < 30; m++) q.tick(ms(T0 + m * 60_000 + 500));
     let counts = q.take(10_000, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
-    // Minutes 0-2 one by one; nothing past the newest received minute + 1 while the feed is silent (ruling 25).
-    assert.deepEqual(counts.map((c) => [c.minuteStartMs, c.successfulPolls, c.skippedMinutes]), [[T0, 1, undefined], [T0 + 60_000, 0, undefined], [T0 + 120_000, 1, undefined]]);
+    // Bars 0-11 (minutes 0-2) one by one; nothing past the newest received minute + 1 while the feed is silent (ruling 25).
+    const expected = Array.from({ length: 12 }, (_, b) => [T0 + b * BAR, b === 0 || b === 8 ? 1 : 0, undefined]);
+    assert.deepEqual(counts.map((c) => [c.barStartMs, c.successfulPolls, c.skippedBars]), expected);
     assert.equal(q.stats().outages, 1, 'named an outage, not a clock step (ruling 29)');
     assert.equal(q.stats().clockSteps, 0);
-    // The feed resumes at minute 30: the silent minutes 3-29 arrive as one record.
+    // The feed resumes at minute 30: the silent bars 12-118 (closed by 30:00.5) arrive as one record, stamped with its
+    // write time.
     q.append(snap('a', 3, T0 + 30 * 60_000 + 1));
     q.tick(ms(T0 + 30 * 60_000 + 500));
-    counts = q.take(10_000, SEG).filter((r) => r.stream === 'poll_counts').map(payloadOf);
-    assert.deepEqual(counts, [{ poolId: 'a', minuteStartMs: T0 + 180_000, successfulPolls: 0, changedPolls: 0, failedPolls: 0, priorityClass: 'normal', skippedMinutes: 27 }]);
-    assert.equal(q.stats().skippedPollMinutes, 27);
-    // Then minute by minute again.
+    const recs = q.take(10_000, SEG).filter((r) => r.stream === 'poll_counts');
+    counts = recs.map(payloadOf);
+    assert.deepEqual(counts, [{ poolId: 'a', barStartMs: T0 + 180_000, durationMs: BAR, minuteStartMs: T0 + 180_000, successfulPolls: 0, changedPolls: 0, failedPolls: 0, priorityClass: 'normal', skippedBars: 107 }]);
+    assert.equal(recs[0]?.recvMs, T0 + 30 * 60_000 + 500);
+    assert.equal(q.stats().skippedPollBars, 107);
+    // Then bar by bar again: four a minute.
     for (let m = 31; m <= 33; m++) {
       q.append(snap('a', 3, T0 + m * 60_000 + 1));
       q.tick(ms(T0 + m * 60_000 + 500));
     }
-    assert.equal(q.take(100, SEG).filter((r) => r.stream === 'poll_counts').length, 3);
+    assert.equal(q.take(100, SEG).filter((r) => r.stream === 'poll_counts').length, 12);
   });
 });
 

@@ -59,9 +59,11 @@ function dataset(): { dir: string; days: string[] } {
         { recvMs: t0 + 12_000, payload: { kind: 'keyframe', poolId: 'pool-9', rawHash: 'y', priorityClass: 'candidate', fields: fields(1n, 0n) } },   // not eligible
         { recvMs: t0 + 13_000, payload: { kind: 'keyframe', poolId: 'pool-1', rawHash: 'z', priorityClass: 'candidate', fields: { ...fields(5_000n, 0n), feeTotalBps: 10_000 } } }, // fee unknown
       ]),
-      segment(dir, day, '00', 'poll_counts', [{ recvMs: t0 + 60_050, payload: { poolId: 'pool-1', minuteStartMs: t0, successfulPolls: 60, changedPolls: 3, failedPolls: 0, priorityClass: 'candidate' } },
-        { recvMs: t0 + 60_050, payload: { poolId: 'pool-9', minuteStartMs: t0, successfulPolls: 60, changedPolls: 1, failedPolls: 0, priorityClass: 'candidate' } },
-        { recvMs: t0 + 600_050, payload: { poolId: 'pool-1', minuteStartMs: t0 + 60_000, successfulPolls: 300, skippedMinutes: 5, changedPolls: 0, failedPolls: 0, priorityClass: 'candidate' } }]),
+      // One record per 15 s bar, stamped with the bar's close (ruling Z09-32); a skippedBars record adds no weight.
+      segment(dir, day, '00', 'poll_counts', [
+        ...[0, 1, 2, 3].map((b) => ({ recvMs: t0 + b * 15_000 + 16_500, payload: { poolId: 'pool-1', barStartMs: t0 + b * 15_000, durationMs: 15_000, minuteStartMs: t0, successfulPolls: 15, changedPolls: b === 0 ? 3 : 0, failedPolls: 0, priorityClass: 'candidate' } })),
+        { recvMs: t0 + 16_500, payload: { poolId: 'pool-9', barStartMs: t0, durationMs: 15_000, minuteStartMs: t0, successfulPolls: 15, changedPolls: 1, failedPolls: 0, priorityClass: 'candidate' } },
+        { recvMs: t0 + 600_050, payload: { poolId: 'pool-1', barStartMs: t0 + 60_000, durationMs: 15_000, minuteStartMs: t0 + 60_000, successfulPolls: 300, skippedBars: 20, changedPolls: 0, failedPolls: 0, priorityClass: 'candidate' } }]),
       segment(dir, day, '00', 'universe_manifest', [{ recvMs: t0 + 86_400_000, payload: k === 3 ? { ...manifest, sha256: '0'.repeat(64) } : manifest }]),
       segment(dir, day, '00', 'coverage', [{ recvMs: t0 + 86_400_000, payload: { dayUtc: day, streams: [], universeManifestSha256: manifest.sha256, lowCoverage: k === 5 } }]),
       segment(dir, day, '00', 'ref_price', [{ recvMs: t0, payload: { kind: 'unavailable', pair: 'SOL/USD', pool: 'p', reason: 'x' } }, { recvMs: t0 + 1, payload: { kind: 'price', pair: 'SOL/USD', pool: 'p', usdE6PerSol: '150000000', sqrtPriceX64: '1', solVaultLamports: '1', usdcVaultE6: '1' } }]),
@@ -153,13 +155,15 @@ describe('phase0-report operator script, end to end (SYNTHETIC dataset; ruling Z
 });
 
 describe('Z09-25: eligible time from the intervals, weights from actual polls', () => {
-  it('pollsIn counts the polls inside the intervals only (gaps excluded), prorated by minute; the tail polls at 0.1 Hz', () => {
+  it('pollsIn counts the polls inside the intervals only (gaps excluded), prorated by 15 s bar (Z09-32); the tail polls at 0.1 Hz', () => {
     const T = Date.UTC(2026, 9, 22);
-    const watched = new Map([[T, 60], [T + 60_000, 60], [T + 120_000, 60]]);
-    assert.equal(pollsIn(watched, [[T, T + 179_999]], T, T + 180_000), 180);
-    assert.equal(pollsIn(watched, [[T, T + 59_999], [T + 120_000, T + 179_999]], T, T + 180_000), 120);   // a 1-minute gap left out
-    assert.equal(pollsIn(watched, [[T, T + 179_999]], T + 30_000, T + 90_000), 60);                        // half of two minutes
-    const tail = new Map([[T, 6], [T + 60_000, 6]]);
+    // 12 bars of 15 polls (1 Hz for 3 minutes), except bar 1 with 5 (a short stall).
+    const watched = new Map(Array.from({ length: 12 }, (_, b) => [T + b * 15_000, b === 1 ? 5 : 15] as [number, number]));
+    assert.equal(pollsIn(watched, [[T, T + 179_999]], T, T + 180_000), 170);
+    assert.equal(pollsIn(watched, [[T, T + 59_999], [T + 120_000, T + 179_999]], T, T + 180_000), 110);   // a 1-minute gap left out
+    assert.equal(pollsIn(watched, [[T, T + 179_999]], T + 7_500, T + 22_500), 10);                         // half of bar 0, half of bar 1
+    assert.equal(pollsIn(watched, [[T, T + 179_999]], T + 15_000, T + 30_000), 5);                         // bar 1 alone
+    const tail = new Map(Array.from({ length: 8 }, (_, b) => [T + b * 15_000, b % 2 === 0 ? 2 : 1] as [number, number]));
     assert.equal(pollsIn(tail, [[T, T + 119_999]], T, T + 120_000), 12);
     assert.equal(pollsIn(undefined, [[T, T + 1]], T, T + 2), 0);
     assert.equal(pollsIn(watched, [[T + 600_000, T + 700_000]], T, T + 180_000), 0);                       // outside every interval
