@@ -107,6 +107,10 @@ export interface RunningRecorder {
 
 const WATCHLIST_EVERY_MS = 10_000;
 const FLUSH_BAR_STORE_MS = 60_000;
+/** A clock episode (Z10-F2) becomes one critical alert after this long (M04's DISAGREEMENT_ALERT_MS). */
+export const CLOCK_ALERT_MS = 10_000;
+/** The anchor is re-read this often before the first agreement and during a clock episode. */
+export const ANCHOR_RETRY_MS = 5_000;
 
 /** M04 at the port M03 and M01 read through: one `getMultipleAccounts` at `confirmed` through M14. */
 function accountsReader(read: ReadPath, timeoutMs: number): AccountsReader {
@@ -292,11 +296,29 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   });
 
   // ---- M04: the tracker, its outputs to M07, M05, M08 and M14. ----
+  // Z10-F2: with polls only (no entry or exit reads), M04 raises no critical alert while its reads sit past the clock's
+  // ceiling: it logs `m04.clock_suspect` (warn) and stores nothing. The recorder watches for that: an episode starts at
+  // M04's first clock event and ends when a snapshot is stored again; past CLOCK_ALERT_MS it raises ONE critical
+  // `recorder.clock_suspect`, and while it lasts the anchor is re-read every ANCHOR_RETRY_MS.
+  let clockTrouble: { sinceMs: number; alerted: boolean } | null = null;
+  const trackerLog = {
+    event(level: 'info' | 'warn' | 'error' | 'critical', code: string, fields: Readonly<Record<string, unknown>>): void {
+      log.event(level, code, fields);
+      if ((code === 'm04.clock_suspect' || code === 'm04.clock_fault' || code === 'm04.clock_disagreement') && clockTrouble === null) clockTrouble = { sinceMs: p.scheduler.nowMs(), alerted: false };
+    },
+  };
   tracker = createPoolTracker<CpPoolState>({
-    model, reader, scheduler: p.scheduler, chain, clock, settings, log,
+    model, reader, scheduler: p.scheduler, chain, clock, settings, log: trackerLog,
     providerOrder: () => rp.labels,
+    // M04's metrics on the M27 registry (catalog names and labels A-M04-01..03).
+    metrics: {
+      counter: (name, labels) => { metrics.counter(name, labels as never).inc(); },
+      observe: (name, labels, value) => { metrics.histogram(name, labels as never).observe(value); },
+      gauge: (name, labels, value) => { metrics.gauge(name, labels as never).set(value); },
+    },
     outputs: {
       snapshot(s, cls) {
+        clockTrouble = null;                                            // a stored snapshot ends a clock episode
         link.outputs.snapshot(s, cls);
         facts.set(s.pool.poolId, factOf(s));
         bars.onSnapshot(barSnapshotOf(s), cls === 'tail' ? settings.tailIntervalMs : settings.candidateIntervalMs);
@@ -375,7 +397,12 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     const mono = p.scheduler.nowMs();
     lastTickMs = now;
     rp.tick();
-    if (mono - lastAnchorMs >= (chain.ready() ? ANCHOR_EVERY_MS : 5_000)) {
+    const trouble = clockTrouble as { sinceMs: number; alerted: boolean } | null;
+    if (trouble !== null && !trouble.alerted && mono - trouble.sinceMs >= CLOCK_ALERT_MS) {
+      trouble.alerted = true;
+      log.event('critical', 'recorder.clock_suspect', { error_code: 'E_CLOCK', since_ms: Math.round(mono - trouble.sinceMs) });
+    }
+    if (mono - lastAnchorMs >= (chain.ready() && trouble === null ? ANCHOR_EVERY_MS : ANCHOR_RETRY_MS)) {
       lastAnchorMs = mono;
       const ok = await chain.refresh();
       if (!chain.ready() && !ok && ++anchorTries % 12 === 1) log.event('warn', 'recorder.anchor_waiting', { tries: anchorTries });

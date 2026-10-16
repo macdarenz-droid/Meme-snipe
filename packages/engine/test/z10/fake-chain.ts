@@ -96,7 +96,9 @@ export function rng(seed: number): () => number {
 
 interface Acc { owner: string; data: Uint8Array }
 export interface FixturePool { pool: Pubkey; baseMint: Pubkey; quoteMint: Pubkey; baseVault: Pubkey; quoteVault: Pubkey }
-export interface ProviderBehaviour { slotOffset: number; down: boolean; slotOverride?: bigint }
+/** `slotOffset` moves the provider's context slots; `heightOffset` moves only its `getEpochInfo` answers (a node whose
+ * height reading trails its own reads, to put the slot clock behind the tip). */
+export interface ProviderBehaviour { slotOffset: number; heightOffset: number; down: boolean; slotOverride?: bigint }
 
 /** Reads every pool set and config account of fixtures/mainnet. */
 export function loadFixtureAccounts(): { accounts: Map<string, Acc>; pools: FixturePool[]; baseSlot: bigint; migrations: Array<{ signature: string; slot: bigint; blockTime: number; json: unknown }> } {
@@ -155,7 +157,7 @@ export class FakeChain {
 
   provider(label: string): ProviderBehaviour {
     let b = this.behaviour.get(label);
-    if (b === undefined) { b = { slotOffset: 0, down: false }; this.behaviour.set(label, b); }
+    if (b === undefined) { b = { slotOffset: 0, heightOffset: 0, down: false }; this.behaviour.set(label, b); }
     return b;
   }
 
@@ -201,7 +203,7 @@ export class FakeChain {
     const slot = this.slotFor(label);
     const ctx = { context: { slot: Number(slot) } };
     switch (method) {
-      case 'getEpochInfo': return { result: { absoluteSlot: Number(slot), blockHeight: Number(slot) - 20_000_000, epoch: 1000, slotIndex: 1, slotsInEpoch: 432_000, transactionCount: null } };
+      case 'getEpochInfo': return { result: { absoluteSlot: Number(slot) + this.provider(label).heightOffset, blockHeight: Number(slot) - 20_000_000, epoch: 1000, slotIndex: 1, slotsInEpoch: 432_000, transactionCount: null } };
       case 'getSlot': return { result: Number(slot) };
       case 'getHealth': return { result: 'ok' };
       case 'getRecentPerformanceSamples': return { result: Array.from({ length: 30 }, (_, i) => ({ slot: Number(slot) - i * 150, numSlots: 150, numTransactions: 1, numNonVoteTransactions: 1, samplePeriodSecs: 60 })) };

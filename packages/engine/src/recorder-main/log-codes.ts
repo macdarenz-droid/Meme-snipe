@@ -45,6 +45,7 @@ export const RECORDER_LOG_CODES = {
   'recorder.anchor_disagreement': { fields: { providers: 'string', slots: 'string' } },
   'recorder.anchor_agreed': { fields: { providers: 'string' } },
   'recorder.anchor_waiting': { fields: { tries: 'integer' } },
+  'recorder.clock_suspect': { fields: { error_code: 'string', since_ms: 'integer' } },
   'recorder.bus_handler_failed': { fields: { topic: 'string' } },
   'recorder.internal_error': { fields: { where: 'string', error_code: 'string' } },
   'recorder.facts_read_failed': { fields: { error_code: 'string', pools: 'integer' } },
