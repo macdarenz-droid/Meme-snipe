@@ -141,6 +141,14 @@ export class FakeChain {
   /** Pool ids served as aliases of a fixture pool (same account bytes; SYNTHETIC). */
   readonly aliases = new Map<string, string>();
   migrationsVisible = 0;
+  /**
+   * Ruling Z10-35: SYNTHETIC failed transactions on the migration authority, this many a second of virtual time, so a
+   * backfill run pages past PAGE_LIMIT (failed transactions are skipped without a transaction read). Each signature
+   * encodes its own index, so nothing is stored per signature.
+   */
+  failedSigsPerSec = 0;
+  /** getSignaturesForAddress calls that named `before`: the backfill paging past a full page. */
+  sigPagesBefore = 0;
   /** A getMultipleAccounts that names any of these keys answers an RPC error (a read that never reaches the account). */
   readonly failKeys = new Set<string>();
   private readonly rand: () => number;
@@ -163,6 +171,22 @@ export class FakeChain {
     let b = this.behaviour.get(label);
     if (b === undefined) { b = { slotOffset: 0, heightOffset: 0, down: false }; this.behaviour.set(label, b); }
     return b;
+  }
+
+  /** SYNTHETIC failed signature `i`: 64 bytes, a marker then `i`, so `failedIndex` reads it back. */
+  failedSig(i: number): string {
+    const b = Buffer.alloc(64, 7);
+    b.write('Z10FAIL!', 0, 'latin1');
+    b.writeUInt32BE(i, 8);
+    return base58.encode(new Uint8Array(b));
+  }
+  failedIndex(sig: string): number | null {
+    try {
+      const b = Buffer.from(base58.decode(sig));
+      return b.length === 64 && b.toString('latin1', 0, 8) === 'Z10FAIL!' ? b.readUInt32BE(8) : null;
+    } catch {
+      return null;
+    }
   }
 
   tipSlot(): bigint { return this.baseSlot + BigInt(Math.floor(this.time.elapsedMs() / SLOT_MS)); }
@@ -253,8 +277,32 @@ export class FakeChain {
         return { result: { ...ctx, value: keys.map((k) => { const a = this.account(k); return a === null ? null : { owner: a.owner, data: [Buffer.from(a.data).toString('base64'), 'base64'], lamports: 2_000_000, executable: false, rentEpoch: 0, space: a.data.length }; }) } };
       }
       case 'getSignaturesForAddress': {
-        const visible = this.migrations.slice(0, this.migrationsVisible).sort((a, b) => (b.slot > a.slot ? 1 : b.slot < a.slot ? -1 : 0));
-        return { result: visible.map((m) => ({ signature: m.signature, slot: m.slot, err: null, memo: null, blockTime: m.blockTime, confirmationStatus: 'confirmed' })) };
+        const o = (params[1] ?? {}) as { limit?: number; before?: string; until?: string };
+        const limit = Math.min(o.limit ?? 1_000, 1_000);
+        if (o.before !== undefined) this.sigPagesBefore++;
+        const visible = this.migrations.slice(0, this.migrationsVisible).sort((a, b) => (b.slot > a.slot ? 1 : b.slot < a.slot ? -1 : 0))
+          .map((m) => ({ signature: m.signature, slot: m.slot, err: null as unknown, memo: null, blockTime: m.blockTime, confirmationStatus: 'confirmed' }));
+        // Newest first: the SYNTHETIC failed transactions (all newer than the fixtures' migrations), then the migrations.
+        const out: typeof visible = [];
+        const count = Math.floor((this.time.elapsedMs() * this.failedSigsPerSec) / 1_000);
+        const beforeIdx = o.before === undefined ? count : this.failedIndex(o.before);
+        const untilIdx = o.until === undefined ? -1 : this.failedIndex(o.until);
+        if (o.until !== undefined && untilIdx === null && !visible.some((m) => m.signature === o.until)) return { result: [] };
+        if (beforeIdx !== null) {
+          for (let i = Math.min(beforeIdx, count) - 1; i >= 0 && out.length < limit; i--) {
+            if (untilIdx !== null && i <= untilIdx) return { result: out };
+            const at = Math.floor((i * 1_000) / this.failedSigsPerSec);
+            out.push({ signature: this.failedSig(i), slot: this.baseSlot + BigInt(Math.floor(at / SLOT_MS)), err: { InstructionError: [0, 'Custom'] }, memo: null, blockTime: Math.floor((this.time.wallStartMs + at) / 1_000), confirmationStatus: 'confirmed' });
+          }
+          if (untilIdx !== null && untilIdx >= 0) return { result: out };
+        }
+        let after = beforeIdx === null ? visible.findIndex((m) => m.signature === o.before) + 1 : 0;
+        for (; after < visible.length && out.length < limit; after++) {
+          const m = visible[after] as (typeof visible)[number];
+          if (m.signature === o.until) break;
+          out.push(m);
+        }
+        return { result: out };
       }
       case 'getTransaction': {
         const m = this.migrations.find((x) => x.signature === params[0]);

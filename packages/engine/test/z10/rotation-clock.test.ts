@@ -51,7 +51,8 @@ describe('Z10-31 M07 hour rotation across wall-clock steps', () => {
       if (before !== undefined) assert.equal(m.sha256, before, `${m.path} was rewritten`);
     }
     // Every record exactly once, in seq order across segments.
-    const seen = manifests.sort((a, b) => (BigInt(a.firstSeq) < BigInt(b.firstSeq) ? -1 : 1))
+    for (const m of manifests) assert.ok(m.firstSeq !== null && m.lastSeq !== null, `${m.path} has records`);
+    const seen = manifests.sort((a, b) => (BigInt(a.firstSeq as string) < BigInt(b.firstSeq as string) ? -1 : 1))
       .flatMap((m) => gunzipSync(fs.readFileSync(join(dir, m.path))).toString('utf8').split('\n').filter((l) => l !== '').map((l) => JSON.parse(l) as { seq: string; payload: { n: number } }));
     assert.deepEqual(seen.map((r) => r.payload.n), Array.from({ length: n }, (_, i) => i));
     for (let i = 1; i < seen.length; i++) assert.ok(BigInt(seen[i]!.seq) > BigInt(seen[i - 1]!.seq));

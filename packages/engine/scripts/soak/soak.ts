@@ -12,7 +12,8 @@
 // Each simulated hour, after a full GC: heap used, RSS, the recorder folder's bytes and the database's size. Pass
 // (all must hold):
 //   1. peak heap in hours 24-48 <= peak heap in hours 1-24 x 1.10 + 8 MiB (bounded, no growth in the second day);
-//   2. the least-squares slope of heap over hours 24-48 <= 0.5 MiB an hour;
+//   2. the least-squares slope of heap over hours 24-48 <= 0.5 MiB an hour, and of RssAnon <= 1 MiB an hour (ruling
+//      Z10-35: 24 MiB a day at most, where the bounded rings have filled by hour 14);
 //   3. peak RSS <= LIMIT_RSS (75% of the unit's MemoryMax, passed in);
 //   4. no `m27.unknown_code` line, no `recorder.internal_error`, no unhandled rejection.
 // Usage: node --expose-gc --no-warnings --max-old-space-size=<RECORDER_HEAP_MB> scripts/soak/soak.ts [hours=48] [outDir] [rssLimitMiB=600]
@@ -28,8 +29,8 @@ import { startRig } from '../../test/z10/rig.ts';
 const HOURS = Number(process.argv[2] ?? 48);
 const OUT = process.argv[3] ?? mkdtempSync(join(tmpdir(), 'z10-soak-'));
 const LIMIT_RSS = Number(process.argv[4] ?? 600) * 1_048_576;
-/** SYNTHETIC: a new migration every 5 minutes (288 a day; the real rate is UNVERIFIED). */
-export const MIGRATION_EVERY_MS = 300_000;
+/** SYNTHETIC: a new migration every 5 minutes (288 a day; the real rate is UNVERIFIED); SOAK_MIGRATION_MS changes it. */
+export const MIGRATION_EVERY_MS = Number(process.env.SOAK_MIGRATION_MS ?? 300_000);
 const MIB = 1_048_576;
 const gc = (globalThis as { gc?: () => void }).gc;
 if (gc === undefined) { process.stdout.write('run with --expose-gc\n'); process.exit(2); }
@@ -45,6 +46,9 @@ const du = (dir: string): number => {
 
 const time = new VirtualTime(Date.UTC(2026, 9, 6, 17, 30, 0));
 const chain = new FakeChain(time, { seed: 48 });
+// Ruling Z10-35: SOAK_FAILED_SIGS_PER_S SYNTHETIC failed transactions a second on the migration authority, so each
+// backfill run pages past its 1,000-signature page.
+chain.failedSigsPerSec = Number(process.env.SOAK_FAILED_SIGS_PER_S ?? 0);
 let unknown = 0, internal = 0, lines = 0;
 const counted = new Map<string, number>();
 const rig = await startRig(join(OUT, 'run'), { time, chain, keepLines: false });
@@ -117,14 +121,16 @@ await rig.rec.stop();
 
 const half = samples.filter((x) => x.hour <= HOURS / 2), second = samples.filter((x) => x.hour > HOURS / 2);
 const peak = (xs: typeof samples, k: 'heapMiB' | 'rssMiB'): number => Math.max(...xs.map((x) => x[k]));
-const slope = (xs: typeof samples): number => {
-  const n = xs.length, mx = xs.reduce((a, x) => a + x.hour, 0) / n, my = xs.reduce((a, x) => a + x.heapMiB, 0) / n;
-  const num = xs.reduce((a, x) => a + (x.hour - mx) * (x.heapMiB - my), 0), den = xs.reduce((a, x) => a + (x.hour - mx) ** 2, 0);
+const slope = (xs: typeof samples, k: 'heapMiB' | 'rssAnonMiB' = 'heapMiB'): number => {
+  const n = xs.length, mx = xs.reduce((a, x) => a + x.hour, 0) / n, my = xs.reduce((a, x) => a + x[k], 0) / n;
+  const num = xs.reduce((a, x) => a + (x.hour - mx) * (x[k] - my), 0), den = xs.reduce((a, x) => a + (x.hour - mx) ** 2, 0);
   return den === 0 ? 0 : num / den;
 };
 const result = {
   hours: HOURS, migrations, lines, logCodes: Object.fromEntries([...counted].sort((a, b) => b[1] - a[1]).slice(0, 25)),
   peakHeapFirstMiB: peak(half, 'heapMiB'), peakHeapSecondMiB: peak(second, 'heapMiB'), heapSlopeSecondMiBPerHour: slope(second),
+  rssAnonSlopeSecondMiBPerHour: slope(second, 'rssAnonMiB'), maxWatched: Math.max(...samples.map((x) => x.watched)), migrationEveryMs: MIGRATION_EVERY_MS,
+  failedSigsPerSec: chain.failedSigsPerSec, sigPagesBefore: chain.sigPagesBefore,
   peakRssMiB: Math.max(peak(samples, 'rssMiB'), peakRssAny / MIB), peakHeapCommittedMiB: peakHeapTotal / MIB, rssLimitMiB: LIMIT_RSS / MIB, recorderMiBEnd: samples.at(-1)?.mdMiB, dbMiBEnd: samples.at(-1)?.dbMiB,
   recorderMiBPerDay: ((samples.at(-1)?.mdMiB ?? 0) - (samples[23]?.mdMiB ?? 0)) / ((HOURS - 24) / 24 || 1),
   unknownCodes: unknown, internalErrors: internal, unhandledRejections: unhandled, wallSeconds: samples.at(-1)?.wallS,
@@ -132,6 +138,7 @@ const result = {
 const checks = {
   heapBounded: result.peakHeapSecondMiB <= result.peakHeapFirstMiB * 1.10 + 8,
   heapFlat: result.heapSlopeSecondMiBPerHour <= 0.5,
+  rssFlat: result.rssAnonSlopeSecondMiBPerHour <= 1,
   rssUnderLimit: result.peakRssMiB * MIB <= LIMIT_RSS,
   clean: unknown === 0 && internal === 0 && unhandled === 0,
 };

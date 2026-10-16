@@ -3,7 +3,8 @@
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'vitest';
 import { getProgramDerivedAddress, isOffCurveAddress, type Address } from '@solana/kit';
 import { base58 } from '@bot/decoders';
@@ -94,28 +95,39 @@ describe('pda.ts against @solana/kit', () => {
     assert.deepEqual(findProgramAddress(PROGRAMS.pumpCurve as Pubkey, [new Uint8Array(32), '']), await kit(PROGRAMS.pumpCurve as Pubkey, [new Uint8Array(32), '']));
   });
 
-  it('ruling Z10-4, mutation: each mutant of the curve check (flipped, the zero case, the sign bit) is caught by the kit cross-check', async () => {
+  it('ruling Z10-4, mutation: each mutant of the curve check (flipped, the zero case, the sign bit) is caught by the kit cross-check', () => {
     const src = readFileSync(fileURLToPath(new URL('../src/pda.ts', import.meta.url)), 'utf8');
     const mutants: Array<[string, string, string]> = [
       ['flipped', 'return pow(w, (P - 1n) / 2n) === 1n;', 'return pow(w, (P - 1n) / 2n) !== 1n;'],
       ['zero case', 'if (w === 0n) return true;', 'if (w === 0n) return false;'],
       ['sign bit kept', 'y &= (1n << 255n) - 1n;', 'y &= (1n << 256n) - 1n;'],
     ];
-    for (const [name, from, to] of mutants) {
-      assert.equal(src.split(from).length, 2, `${name}: the line is in pda.ts once`);
+    // The control first: pda.ts as it is misses none.
+    for (const [name, from, to] of [['control', '', ''], ...mutants] as Array<[string, string, string]>) {
+      if (name !== 'control') assert.equal(src.split(from).length, 2, `${name}: the line is in pda.ts once`);
       const file = fileURLToPath(new URL(`./.mutant-${name.replace(/ /g, '-')}.ts`, import.meta.url));
-      writeFileSync(file, src.replace(from, to));
+      writeFileSync(file, name === 'control' ? src : src.replace(from, to));
       try {
-        const m = (await import(file)) as typeof import('../src/pda.ts');
-        const next = chain('z10-mutant');
-        let caught = 0;
-        for (let i = 0; i < 2_000; i++) {
-          const b = new Uint8Array(next());
-          if (i % 4 === 0) b[31] = (b[31] as number) | 0x80;                 // half of the checks with the sign bit set
-          if (i === 0) b.fill(0).set([1]);                                      // y = 1: x² = 0, the zero case
-          if (m.isOnCurve(b) !== !isOffCurveAddress(base58.encode(b) as Address)) caught++;
-        }
-        assert.ok(caught > 0, `${name}: the mutant was not caught`);
+        // Ruling Z10-32: each mutant runs in its own process (no dynamic import here); the check compares it with kit
+        // on 2,000 fixed points, a quarter with the sign bit set and one the zero case (y = 1), and prints the misses.
+        const r = spawnSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', `
+          import { createHash } from 'node:crypto';
+          import { isOffCurveAddress } from '@solana/kit';
+          import { base58 } from '@bot/decoders';
+          import { isOnCurve } from ${JSON.stringify(pathToFileURL(file).href)};
+          let h = createHash('sha256').update('z10-mutant').digest();
+          let caught = 0;
+          for (let i = 0; i < 2000; i++) {
+            h = createHash('sha256').update(h).digest();
+            const b = new Uint8Array(h);
+            if (i % 4 === 0) b[31] = b[31] | 0x80;
+            if (i === 0) { b.fill(0); b[0] = 1; }
+            if (isOnCurve(b) !== !isOffCurveAddress(base58.encode(b))) caught++;
+          }
+          process.stdout.write(String(caught));`], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' });
+        assert.equal(r.status, 0, `${name}: ${r.stderr}`);
+        if (name === 'control') assert.equal(r.stdout, '0', 'pda.ts itself disagrees with kit');
+        else assert.ok(Number(r.stdout) > 0, `${name}: the mutant was not caught`);
       } finally {
         rmSync(file, { force: true });
       }

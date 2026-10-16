@@ -376,7 +376,10 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     async read(keys, o) {
       const r = await reader.read(keys, o);
       const cls = CLASS_OF[o.priority];
-      if (!r.ok && cls !== undefined && keys.length % 3 === 0 && tracker !== null) {
+      // Ruling Z10-34: only M04's class polls count (source.ts marks them `purpose: 'poll'`). Its other reads (a
+      // verification at P1, pinned or not, an entry or exit fresh read) must not count a poll that never happened, nor
+      // mark a candidate or tail pool as a position (P1) and change its interval.
+      if (!r.ok && o.purpose === 'poll' && cls !== undefined && keys.length % 3 === 0 && tracker !== null) {
         const ready = new Set(tracker.ready());
         const at = nowMs();
         for (let i = 0; i < keys.length; i += 3) {

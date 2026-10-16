@@ -133,6 +133,31 @@ describe('Z10 obligations (Z09)', () => {
   }, 120_000);
 });
 
+describe('Z10-34: only M04 class polls count as failed polls', () => {
+  it('a failed entry fresh read or verification read (P1, pinned or not) never counts a poll, marks a candidate pool as a position or moves its class (fails before: notePollFailed(pool, position, true))', async () => {
+    const r = await startRig(tempDir('z10-notepoll'));
+    try {
+      await r.run(5_000);
+      assert.ok(r.rec.parts.tracker.watch(POOL(r), 'candidate'));
+      await r.run(10_000);
+      const q = r.rec.parts.queue;
+      const seen: Array<[string, boolean]> = [];
+      const orig = q.notePollFailed.bind(q);
+      q.notePollFailed = (id, cls, at, position) => { seen.push([cls, position]); return orig(id, cls, at, position); };
+      r.chain.provider('shyft').down = true;
+      r.chain.provider('chainstack').down = true;
+      const fresh = r.rec.parts.tracker.freshRead(POOL(r), 8);                     // P1, unpinned then pinned
+      await r.run(3_000);
+      assert.equal((await fresh).ok, false);
+      await r.run(5_000);
+      assert.ok(seen.length > 0, 'the failed candidate polls are still counted');
+      assert.deepEqual([...new Set(seen.map(([c, p]) => `${c}:${p}`))], ['candidate:false']);
+    } finally {
+      await r.rec.stop();
+    }
+  }, 120_000);
+});
+
 describe('Z10 ruling Z09-23: the candidate.cooldown_until index', () => {
   it('M05 due query is served by the partial index (migration 0002), not by a scan of every inactive state', async () => {
     const r = await startRig(tempDir('z10-index'));

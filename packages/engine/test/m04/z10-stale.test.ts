@@ -64,9 +64,19 @@ describe('Z10-17 stale lag by class', () => {
       s.tracker.stop();
       return s.outputs.staleEvents[0]?.lagSlots ?? null;
     };
+    // Ruling Z10-36: pinned to exactly lag 13, one monitor tick (500 ms) each: lag 12 is not stale, lag 13 is.
     for (const slotMs of [250, 0, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const lag = await firstStale('candidate', slotMs);
-      assert.ok(lag === 13 || lag === 14, `candidate, slot time ${slotMs}: lag ${lag}`);
+      const s = await setup('candidate', {}, 0n, slotMs);
+      await s.run(2_000);
+      s.reader.fail = true;
+      const last = s.tracker.latest('a')?.providerSlot as bigint;
+      s.chain.highest = last + 12n;
+      await s.time.advance(M04_DEFAULTS.staleCheckMs);
+      assert.equal(s.outputs.staleEvents.length, 0, `slot time ${slotMs}: stale at lag 12`);
+      s.chain.highest = last + 13n;
+      await s.time.advance(M04_DEFAULTS.staleCheckMs);
+      assert.deepEqual(s.outputs.staleEvents.map((e) => e.lagSlots), [13], `slot time ${slotMs}`);
+      s.tracker.stop();
     }
     // A tail pool 30 slots behind (inside its 12 + 40-slot limit at 250 ms, and within its 5 s + 10 s age) is not stale.
     assert.equal(await firstStale('tail', 250, 30), null);
