@@ -12,8 +12,8 @@
 // Each simulated hour, after a full GC: heap used, RSS, the recorder folder's bytes and the database's size. Pass
 // (all must hold):
 //   1. peak heap in hours 24-48 <= peak heap in hours 1-24 x 1.10 + 8 MiB (bounded, no growth in the second day);
-//   2. the least-squares slope of heap over hours 24-48 <= 0.5 MiB an hour, and of RssAnon <= 1 MiB an hour (ruling
-//      Z10-35: 24 MiB a day at most, where the bounded rings have filled by hour 14);
+//   2. the least-squares slope of heap over hours 24-48 <= 0.5 MiB an hour, and of RssAnon <= 0.25 MiB an hour (ruling
+//      Z10-38, tightened from Z10-35's 1 MiB: 6 MiB a day at most, where the bounded rings have filled by hour 14);
 //   3. peak RSS <= LIMIT_RSS (75% of the unit's MemoryMax, passed in);
 //   4. no `m27.unknown_code` line, no `recorder.internal_error`, no unhandled rejection.
 // Usage: node --expose-gc --no-warnings --max-old-space-size=<RECORDER_HEAP_MB> scripts/soak/soak.ts [hours=48] [outDir] [rssLimitMiB=600]
@@ -138,7 +138,7 @@ const result = {
 const checks = {
   heapBounded: result.peakHeapSecondMiB <= result.peakHeapFirstMiB * 1.10 + 8,
   heapFlat: result.heapSlopeSecondMiBPerHour <= 0.5,
-  rssFlat: result.rssAnonSlopeSecondMiBPerHour <= 1,
+  rssFlat: result.rssAnonSlopeSecondMiBPerHour <= 0.25,
   rssUnderLimit: result.peakRssMiB * MIB <= LIMIT_RSS,
   clean: unknown === 0 && internal === 0 && unhandled === 0,
 };

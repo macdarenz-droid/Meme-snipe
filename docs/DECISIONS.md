@@ -4286,13 +4286,19 @@ Rulings Z10-32..37 (the reviewer's FAIL at 66459a37):
 - **Z10-35 (m3) · The soak's RSS slope and the 60-pool run.** Pass now also needs the least-squares slope of RssAnon over hours 24-48 at most 1 MiB an hour (24 MiB a day; the bounded rings have filled by about hour 14). The fake chain can add SYNTHETIC failed transactions on the migration authority (`SOAK_FAILED_SIGS_PER_S`; skipped by the backfill without a transaction read), so each backfill run pages past its 1,000-signature page, and `SOAK_MIGRATION_MS` raises the migration rate. Results are in the PR.
 - **Z10-36 (m4) · The stale test pinned.** With polls failing, the chain is moved to exactly 12 slots past the stored read and one monitor tick (500 ms) runs: no `pool.stale`; then to 13 and one more tick: exactly one, with lag 13. For slot times 250 ms, 0, NaN and ∞.
 - **Z10-37 · PR body.** It carries the Z10-23 spec citations and the fd bounds of Z10-31.
-- **Z10-38 · RssAnon growth at 60 pools (merge blocker).** It needs an explicit bound and a proof: the 60-pool soak's RssAnon slope over hours 24-48 at most 0.25 MiB an hour, and the soak's limit tightened to that. Findings so far:
-  - At hour 30, live malloc allocations are flat. The call-site tracker (LD_PRELOAD) measured 106.6 MB at hour 12 and 107.1 MB at hour 30.
-  - glibc arena 0 had 110.5 MB in use out of 140.6 MB taken from the system.
-  - malloc_trim(0) on the live process gave back 37 MiB of RssAnon.
-  - So the growth is freed memory that glibc keeps, not live objects.
-  - These had no effect: MALLOC_ARENA_MAX=2, a smaller SQLite cache, paging off, and the mmap and trim thresholds.
-  - Status and result are recorded under Z10-38 in the PR.
+- **Z10-38 · RssAnon growth at 60 pools (closed).** The bound needed a proof: the 60-pool soak's RssAnon slope over hours 24-48 at most 0.25 MiB an hour, and the soak's limit tightened to that.
+  - **Not live objects.** A call-site malloc tracker (LD_PRELOAD) showed live allocations flat between hours 12 and 30: 106.6 to 107.1 MB. malloc_trim(0) on the live process gave back 37 MiB. smaps showed the growth only in `[heap]` (brk), with the anonymous mmaps flat.
+  - **The peak.** What rose was the peak of ArrayBuffer backing stores: +9 MB between hours 12 and 20, while live memory stayed flat. Dead buffers wait for a major GC, so each new high-water mark extended glibc's heap, and the freed space stayed resident.
+  - **The sources,** from a JS-level tally of allocations of 16 KiB or more:
+    - a new M04 snapshot ring per pool, about 0.8 MiB each and about 36 an hour, kept for hours;
+    - a new M27 metric chunk per series-hour, 28.8 KB each, with the ring at its budget;
+    - RPC response buffers, about 120 MiB an hour. These die young.
+  - **Bound.** Ring buffers are reused (`RingBuffers` in `m04/ring.ts`): a pool that leaves or changes class hands its buffer back. Spares per size are at most the sum of the watch caps (positions + candidates + tail). Metric chunks dropped or retired are reused, so live plus spare chunks never pass `ringBudgetBytes`.
+  - **Tests.** Both fail before: 30 pools replaced 5 times make no new ring buffer (150 before), and a new hour at the budget makes no chunk.
+  - **Ruled out:** MALLOC_ARENA_MAX=2, a smaller SQLite cache, paging off, the mmap and trim thresholds, and the manifest read (Z10-53, slope still 1.01).
+  - **Proof on 337e16ab.** The 48 h soak at 60 pools has an RssAnon slope over hours 24-48 of 0.12 MiB an hour, about 212 MiB flat from hour 12, against 0.99-1.01 before. Peak RSS is 293 MiB (was 314).
+  - **Limit.** The soak's `rssFlat` is now at most 0.25 MiB an hour.
+  - No malloc_trim is used.
 - **Z10-39 · Only class polls count as failed polls.** Z10-34 is accepted as built. A test covers an entry freshRead whose unpinned first try fails and is not counted.
 - **Z10-40 · closedThrough and the kill -9 test.** The backward-step fix is accepted with a test that fails before. In the M07 kill -9 test, the child stops writing and says so before the kill, so a loaded machine cannot cut a frame. The checks are unchanged.
 - **Z10-41 · Critical codes last as long as their condition.**
@@ -4302,7 +4308,7 @@ Rulings Z10-32..37 (the reviewer's FAIL at 66459a37):
 - **Z10-42, Z10-43 · Release tree check.** `git ls-tree -r -z --full-tree` is read to the end with no early exit. Two cases are refused, and both tests fail before: a non-ASCII path link to /etc/passwd, and a bad first entry in a 50,000-entry list.
 - **Z10-44 · Loop age on the monotonic clock.** A 2 h forward wall-clock step raises no loop_stale.
 - **Z10-45 · PDA mutants.** They are written to a mkdtemp folder outside every walked tree (CI ENOENT in the eslint walker).
-- **Z10-46 · CI soak at 60 pools.** This follows Z10-38. If the 45 min job cannot fit it, the manual run's commit and numbers go in the PR.
+- **Z10-46 · CI soak at 60 pools.** The `recorder-soak` job now runs at the 60-pool settings (`SOAK_MIGRATION_MS=60000`, `SOAK_FAILED_SIGS_PER_S=20`). The default rate took 17 min in CI on 337e16ab, and the 60-pool run takes about 1.2 times as long here, so it fits the 45 min limit.
 - **Z10-47 · Base merge.** Base 466279ff was merged at 286ec840.
 - **Z10-48 · One watchdog key per critical code.** The key is `worker_critical:<code>`, so a long-held code never hides a new one.
 - **Z10-49 · Daily catch-up.** Every missing manifest in the 7-day window is built, oldest first. A day recorded, or refused once, is not looked at again in that process.
