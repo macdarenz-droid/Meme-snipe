@@ -951,8 +951,9 @@ in_c "test -e /var/lib/zeroed-host/bot_db_marker_issued && test -e /var/lib/zero
 in_c "/usr/local/lib/zeroed/worker-smoke '$rrel'" >"$LOGS/smoke-recorder.txt" 2>&1 || { cat "$LOGS/smoke-recorder.txt"; fail "worker-smoke refused the recorder release"; }
 in_c "! systemctl list-units --all --plain --no-legend 'zeroed-worker-smoke*' | grep -q ." || fail "the recorder trial left a unit behind"
 # 2. Under the unit with no read-provider credentials: refused loudly, never a recorder that cannot record. (The
-# rotation in section 4 stored TEST URLs that point nowhere; this step needs none.)
-in_c "rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url"
+# rotation in section 4 stored TEST URLs that point nowhere; this step needs none. They are set aside and put back at
+# the end of the section, so zeroed-check's records still match them.)
+in_c "mkdir -p /root/rpc-cred.e2e && mv /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /root/rpc-cred.e2e/"
 rinv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
 wrestart "ln -sfn '$rrel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the recorder refused without read providers" "docker exec $C bash -c 'journalctl -o cat --no-pager -u zeroed-worker --since=-60s' | grep -q 'no read provider credentials'"
@@ -1033,8 +1034,8 @@ in_c "ls /var/lib/zeroed-md/\$(date -u +%F)/*/*.ndjson.gz" >/dev/null 2>&1 || fa
 in_c "test -e /root/e2e-pulled/$D_PULL" || fail "md-pull's copy was deleted"
 wait_for 90 "the alert for the unreceipted old day" "docker exec $C bash -c 'grep -rqs m07.unpulled_segments /var/lib/zeroed/log'"
 in_c "rm -rf /root/e2e-research.pem /root/e2e-pulled /root/.ssh/e2e-pull /root/.ssh/e2e-pull.pub /root/.ssh/config /root/.ssh/e2e-known /etc/zeroed/pull-keys/zeroed-pull /etc/bot/research-ed25519.pub.pem /var/lib/zeroed-md/$D_OLD /var/lib/zeroed-md/$D_PULL"
-# Back to the stand-in: no read providers, no TEST certificate, no fake chain.
-in_c "systemctl stop zeroed-e2e-fake-rpc; rm -f /etc/credstore.encrypted/rpc_shyft_url /etc/credstore.encrypted/rpc_chainstack_url /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; grep -v shyft.fake /etc/hosts > /tmp/hosts.e2e; cat /tmp/hosts.e2e > /etc/hosts; rm -f /tmp/hosts.e2e"
+# Back to the stand-in: the rotation's TEST read-provider credentials back as they were, no TEST certificate, no fake chain.
+in_c "systemctl stop zeroed-e2e-fake-rpc; mv -f /root/rpc-cred.e2e/rpc_shyft_url /root/rpc-cred.e2e/rpc_chainstack_url /etc/credstore.encrypted/ && rmdir /root/rpc-cred.e2e; rm -f /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; grep -v shyft.fake /etc/hosts > /tmp/hosts.e2e; cat /tmp/hosts.e2e > /etc/hosts; rm -f /tmp/hosts.e2e"
 # The host's records as they were before this section: deployed and tagged at the signed release, no probation.
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel' && { ! test -e /root/failed_release.e2e || mv -f /root/failed_release.e2e /var/lib/zeroed-host/failed_release; }"
