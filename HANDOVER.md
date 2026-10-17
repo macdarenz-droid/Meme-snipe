@@ -138,6 +138,14 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **18 Oct 4:32 AM: SW-35a cost proof, ruling SW-36.**
+  - Measured in 48 h soaks at 60 pools on `262738c2`, per hour over hours 24–48. semi=1 fails the cost conditions:
+    - CPU +23%;
+    - scavenges 978 → 14,620, pause 2.6 → 8.5 s;
+    - lag p99 52 → 65 ms.
+  - Without the flag the 48 h slope passes at 0.040 MiB/h (0.155 with it).
+  - New finding: the daily coverage runs as one synchronous block of 1.3–1.6 s, so the 1 s tick is late once a day (already true on `512ee4c6`).
+  - Ruling SW-36 (in this card): coverage yields so that no block is longer than 100 ms, with a test that fails on `512ee4c6`. Then a 96 h soak with no flag. If there is a step after day 1, use the smallest semi value that meets SW-35a's cost conditions, else back to the supervisor.
 - **18 Oct 4:00 AM: OF re-arm check (trig_01YSTosjCguRCYJgVgnZLnFr fired at 17:00Z).**
   - The owner has said nothing about the 429 or Triton.
   - There are no data-scan runs after 16 Oct 11:51Z.
