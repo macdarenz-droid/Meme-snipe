@@ -8,7 +8,7 @@
 // (366 days, 25 series), candidate events 5,811 (1 year), outbox 5,811 (7 days, published). One day more than each
 // horizon is written, so the run deletes about one day of each, as the daily run does. The days end at SQLite's wall
 // clock (the append-only triggers compare with it too).
-//   taskset -c 0 node --no-warnings packages/engine/scripts/measure-retention.ts [days] [scale] [dir]
+//   taskset -c 0 node --no-warnings packages/engine/scripts/measure-retention.ts [days] [scale] [dir] [batchRows]
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,7 @@ import { recorderRetention } from '../src/recorder-main/retention.ts';
 const DAYS = Number(process.argv[2] ?? 366);
 const SCALE = Number(process.argv[3] ?? 1);
 const ROOT = process.argv[4] ?? tmpdir();
+const BATCH = process.argv[5] === undefined ? undefined : Number(process.argv[5]);
 const DAY = 86_400_000;
 const MIN = 60_000;
 const BAR_DAYS = 14;
@@ -114,16 +115,23 @@ console.log(`day ${DAYS} sizes at scale ${SCALE}`);
 {
   const { db, path, dir } = await build('after', MIGRATIONS);
   console.log(`after (every migration, bounded steps): ${sizes(db)}; file ${(statSync(path).size / 1e9).toFixed(2)} GB`);
-  const r = recorderRetention({ db, clock, barStore: createBarStore(db, { retentionDays: BAR_DAYS }), rollupSink: { expired: () => undefined } });
+  const r = recorderRetention({ db, clock, barStore: createBarStore(db, { retentionDays: BAR_DAYS }), rollupSink: { expired: () => undefined }, ...(BATCH === undefined ? {} : { batchRows: BATCH }) });
   r.start();
   const times: number[] = [];
+  const worst: Record<string, number> = {};
   let last = null as ReturnType<typeof r.step>;
   for (;;) {
     let s = null as ReturnType<typeof r.step>;
-    times.push(ms(() => { s = r.step(); }));
-    last = s;
-    if (s === null || s.done) break;
+    const t = ms(() => { s = r.step(); });
+    times.push(t);
+    const cur = s as ReturnType<typeof r.step>;
+    // Which job the step was on: the table whose total moved (bar_1m for the bars), or the previous one.
+    const moved = Object.keys(cur?.byTable ?? {}).find((k) => (cur?.byTable[k] ?? 0) !== (last?.byTable[k] ?? 0)) ?? ((cur?.bars ?? 0) !== (last?.bars ?? 0) ? 'bar_1m' : 'other');
+    worst[moved] = Math.max(worst[moved] ?? 0, t);
+    last = cur;
+    if (cur === null || cur.done) break;
   }
+  console.log(`  slowest step by table: ${Object.entries(worst).map(([k, v]) => `${k} ${v.toFixed(1)} ms`).join(', ')}`);
   const sorted = [...times].sort((a, b) => a - b);
   console.log(`  ${times.length} steps; max ${(sorted.at(-1) as number).toFixed(1)} ms, p99 ${(sorted[Math.floor(sorted.length * 0.99)] as number).toFixed(1)} ms, median ${(sorted[Math.floor(sorted.length / 2)] as number).toFixed(1)} ms, total ${times.reduce((a, b) => a + b, 0).toFixed(0)} ms; deleted ${JSON.stringify(last?.byTable)}, bars ${last?.bars}`);
   const drain = ms(() => r.drainOutbox());
