@@ -1,6 +1,8 @@
 import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { evaluate, isNewer, limitsFrom, parseCommand, parseHeartbeat, planAlerts, sign, statusText, takeLease, verifySignature, type Heartbeat, type Stored } from '../src/watchdog/logic.ts';
+import { evaluate, HELD_CODES, isNewer, limitsFrom, parseCommand, parseHeartbeat, planAlerts, sign, statusText, takeLease, verifySignature, type Heartbeat, type Stored } from '../src/watchdog/logic.ts';
 import worker, { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
@@ -118,6 +120,29 @@ describe('alert dedupe and escalation', () => {
     expect(at(['a.b', 'a.b']).map((x) => x.key)).toEqual(['worker_critical:a.b']);
   });
 
+
+  it('SW-4: a held state code repeats STILL once a day, not hourly; other codes keep the 5-minute then hourly rule (fails before: hourly)', () => {
+    const at = (critical: string[]) => evaluate(stored(hb({ critical })), T0, L, noChain);
+    const day = 86_400_000;
+    let state = planAlerts({}, at(['m07.unpulled_segments', 'recorder.memory_high']), T0, L).next;
+    const lines: string[] = [];
+    for (let m = 1; m <= 25 * 60; m++) {
+      const r = planAlerts(state, at(['m07.unpulled_segments', 'recorder.memory_high']), T0 + m * 60_000, L);
+      lines.push(...r.lines);
+      state = r.next;
+    }
+    const held = lines.filter((l) => l.includes('m07.unpulled_segments'));
+    expect(held).toEqual(['STILL Worker critical: m07.unpulled_segments. (since 1440 min)']);
+    expect(lines.filter((l) => l.includes('recorder.memory_high')).length).toBe(11 + 24);
+    expect(planAlerts(state, at([]), T0 + day + 3_600_000 + 60_000, L).lines).toContain('CLEARED Worker critical: m07.unpulled_segments.');
+  });
+
+  it('SW-4: HELD_CODES is the recorder\'s STATE_CODES list', () => {
+    const src = readFileSync(fileURLToPath(new URL('../../engine/src/recorder-main/compose.ts', import.meta.url)), 'utf8');
+    const m = /export const STATE_CODES: ReadonlySet<string> = new Set\(\[([^\]]*)\]\)/.exec(src);
+    expect(m).not.toBeNull();
+    expect([...(m![1] as string).matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()).toEqual([...HELD_CODES].sort());
+  });
 
   it('flags the worker\'s own critical alerts (WATCH-1), and nothing for an empty or missing list', () => {
     const a = evaluate(stored(hb({ critical: ['MintA: no fresh price (timeout)'] })), T0, L, noChain);

@@ -31,6 +31,7 @@ export const M07_LOG_CODES = {
   'm07.watch_deleted': { fields: { day: 'string' } },
   'm07.segment_delete_failed': { fields: { path: 'string', error_code: 'string' } },
   'm07.unpulled_segments': { fields: { count: 'integer', retention_days: 'integer' } },
+  'm07.disk_budget_high': { fields: { recorder_bytes: 'integer', max_bytes: 'integer', pct: 'integer', days_to_cap: 'integer' } },
   'm07.disk_full': { fields: { used_pct: 'integer', free_bytes: 'integer', recorder_bytes: 'integer', reasons: 'string' } },
   'm07.disk_ok_resume': { fields: { reason: 'string' } },
   'm07.outage': { fields: { silent_minutes: 'integer' } },

@@ -224,12 +224,22 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   return out;
 }
 
+/**
+ * SW-4: the recorder's state codes (packages/engine/src/recorder-main/compose.ts STATE_CODES; a test keeps the two
+ * lists equal). Each holds exactly while its condition does, often for days (segments waiting for a pull, a stopped
+ * provider waiting for its runbook), so after the ALERT its STILL line comes once a day, not every hour.
+ */
+export const HELD_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
+const HELD_REPEAT_MS = 86_400_000;
+const isHeld = (key: string): boolean => key.startsWith('worker_critical:') && HELD_CODES.has(key.slice('worker_critical:'.length));
+
 /** OPS-SUMMARY: a summary that was refused or not written. Trading and the other checks are unaffected. */
 export const summaryAlert = (reason: string): Alert => ({ key: 'summary', text: `Daily summary not written: ${reason}.` });
 
 /**
  * Dedupe and escalate: a new alert is sent at once, repeated every `repeatCriticalS` during its first hour
- * and hourly after that while it lasts, and a "cleared" line is always sent when it goes away. All lines of
+ * and hourly after that while it lasts (a held state code: daily, SW-4), and a "cleared" line is always sent when it
+ * goes away. All lines of
  * one run go out as one message (Telegram allows about one message per second per chat).
  */
 export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[], now: number, l: Limits): { lines: string[]; next: Record<string, ActiveAlert> } {
@@ -242,7 +252,7 @@ export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[]
       next[a.key] = { text: a.text, since: now, lastSent: now };
       continue;
     }
-    const every = now - prev.since < 3_600_000 ? l.repeatCriticalS * 1000 : 3_600_000;
+    const every = isHeld(a.key) ? HELD_REPEAT_MS : now - prev.since < 3_600_000 ? l.repeatCriticalS * 1000 : 3_600_000;
     if (now - prev.lastSent >= every) {
       lines.push(`STILL ${a.text} (since ${Math.round((now - prev.since) / 60000)} min)`);
       next[a.key] = { text: a.text, since: prev.since, lastSent: now };
