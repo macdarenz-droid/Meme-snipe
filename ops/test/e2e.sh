@@ -314,7 +314,7 @@ in_c "curl -sS -m 5 -o /dev/null $BASE/" || fail "root could not reach the fake 
 # through /etc/group, which a unit cannot take a group out of.
 in_c "! id -nG zeroed-worker | tr ' ' '\\n' | grep -qx zeroed-signer" || fail "SW-18: zeroed-worker is in zeroed-signer in /etc/group"
 in_c "systemctl show -p SupplementaryGroups --value zeroed-worker" | tr ' ' '\n' | grep -qx zeroed-signer || fail "SW-18: the full worker unit does not give the signer group"
-in_c "setpriv --reuid zeroed-worker --regid zeroed-worker --clear-groups --groups zeroed-signer node -e \"require('net').connect('/run/zeroed-signer/signer.sock').on('data',d=>{process.stdout.write(d);process.exit(0)}).write('status\\\\n')\"" | grep -q '"status":"not-ready"' || fail "worker cannot reach the signer socket"
+in_c "setpriv --reuid zeroed-worker --regid zeroed-worker --groups zeroed-signer node -e \"require('net').connect('/run/zeroed-signer/signer.sock').on('data',d=>{process.stdout.write(d);process.exit(0)}).write('status\\\\n')\"" | grep -q '"status":"not-ready"' || fail "worker cannot reach the signer socket"
 in_c "! setpriv --reuid nobody --regid nogroup --clear-groups test -w /run/zeroed-signer/signer.sock" || fail "signer socket reachable by other users"
 pass "hardening: signer no network (only lo, AF_UNIX, IPAddressDeny, MDWE, jitless), worker sandboxed, worker uid limited to 443/53 out, signer socket only for the worker group"
 
