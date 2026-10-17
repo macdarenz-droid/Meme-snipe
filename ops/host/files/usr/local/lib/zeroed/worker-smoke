@@ -52,6 +52,8 @@ while IFS= read -r line; do
   props+=(-p "$line")
 done < <(unit_sandbox "$UNIT_FILE")
 [ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
+# SW-18: the body's own supplementary groups (the user is in no extra group in /etc/group).
+while IFS= read -r line; do props+=(-p "$line"); done < <(sed -n '/^\[Service\]/,/^\[/p' "$UNIT_FILE" | grep -E '^SupplementaryGroups=' || true)
 
 # trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
 # RUN-1 environment and shakedown settings (worker-start) on the trial's state directory and ports, and the memory cap.

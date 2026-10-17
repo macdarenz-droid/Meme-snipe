@@ -109,12 +109,35 @@ describe('SW-1(c): the server disk alerts (SPEC-B B-M24-04: 80% warning, 95% or 
   });
 
   it('the backup budget alert reads budget.status; zeroed-check runs both, before any key check', () => {
-    expect(sh('backup_budget_alert "floor_bytes 9000000000 kept_bytes 9000000000 kept 31 over 1 max_bytes 6000000000" 6000000000').out).toMatch(/^on\|backup-budget\|ALERT .*9000 MB, over the 6000 MB budget/);
-    expect(sh('backup_budget_alert "floor_bytes 1 kept_bytes 1 kept 1 over 0" 6000000000').out).toMatch(/^off\|backup-budget\|CLEARED/);
-    expect(sh('backup_budget_alert "nonsense" 6000000000').out).toBe('');
+    const alert = (st: string) => sh(`backup_budget_alert ${JSON.stringify(st)}`).out.split('\n');
+    expect(alert('floor_bytes 9000000000 kept_bytes 9000000000 kept 31 over 1 max_bytes 6000000000 days_left 0')).toEqual([
+      expect.stringMatching(/^on\|backup-budget\|ALERT .*9000 MB, over the 6000 MB budget/), expect.stringMatching(/^off\|backup-budget-warn\|CLEARED/)]);
+    expect(alert('floor_bytes 1 kept_bytes 1 kept 1 over 0 max_bytes 6000000000 days_left -1')).toEqual([expect.stringMatching(/^off\|backup-budget\|CLEARED/), expect.stringMatching(/^off\|backup-budget-warn\|CLEARED/)]);
+    expect(sh('backup_budget_alert "nonsense"').out).toBe('');
+    expect(sh('backup_budget_alert "floor_bytes 1 kept_bytes 1 kept 1 over 0"').out).toBe('');            // no budget: nothing changes
+  });
+
+  it('SW-1b: from 80% of the budget a warning with the days left, from the floor\'s growth over the history (fails before: nothing until over)', () => {
+    const alert = (st: string) => sh(`backup_budget_alert ${JSON.stringify(st)}`).out.split('\n');
+    expect(alert('floor_bytes 4900000000 kept_bytes 4900000000 kept 31 over 0 max_bytes 6000000000 days_left 21')).toEqual([
+      expect.stringMatching(/^off\|backup-budget\|/), expect.stringMatching(/^on\|backup-budget-warn\|ALERT .*4900 MB, 81% of the 6000 MB budget \(about 21 days left at the last week's growth\)/)]);
+    expect(alert('floor_bytes 4799999999 kept_bytes 1 kept 31 over 0 max_bytes 6000000000 days_left 21')[1]).toMatch(/^off\|backup-budget-warn\|/);
+    expect(alert('floor_bytes 4900000000 kept_bytes 1 kept 31 over 0 max_bytes 6000000000 days_left -1')[1]).toMatch(/not growing now/);
+    const day = 86_400;
+    // 7 days of hourly runs growing 50 MB a day from 4.65 GB: 1.0 GB left at 50 MB a day is 20 days.
+    const hist = Array.from({ length: 168 }, (_, h) => `${1_800_000_000 + h * 3_600} ${Math.round(4_650_000_000 + (50_000_000 * h) / 24)}`).join('\n');
+    const last = 4_650_000_000 + (50_000_000 * 167) / 24;
+    expect(Number(sh('budget_days_left 6000000000', `${hist}\n`).out)).toBe(Math.floor((6_000_000_000 - last) / 50_000_000));
+    expect(sh('budget_days_left 6000000000', '1800000000 5\n1800000100 9\n').out).toBe('-1');         // under an hour
+    expect(sh('budget_days_left 6000000000', `1800000000 9\n${1_800_000_000 + day} 5\n`).out).toBe('-1');   // shrinking
+    expect(sh('budget_days_left 6000000000', `1800000000 6000000001\n`).out).toBe('0');
+    expect(sh('budget_days_left 6000000000', '').out).toBe('-1');
+    const backup = read('ops/host/files/usr/local/sbin/zeroed-backup');
+    expect(backup).toContain('days_left="$(budget_days_left "$MAX_BYTES" < "$OUT/budget.history")"');
+    expect(backup).toContain('tail -n 167 "$OUT/budget.history"');
     const check = read('ops/host/files/usr/local/sbin/zeroed-check');
     expect(check).toContain('done < <(df -B1 --output=size,avail / 2>/dev/null | disk_alerts)');
-    expect(check).toContain('done < <(backup_budget_alert "$budget" "$budget_max")');
+    expect(check).toContain('done < <(backup_budget_alert "$budget")');
     expect(check.indexOf('disk_alerts')).toBeLessThan(check.indexOf('keys_stored || exit 0'));
   });
 });

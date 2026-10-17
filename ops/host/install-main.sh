@@ -211,8 +211,12 @@ say "Users"
 getent group zeroed-signer >/dev/null || groupadd --system zeroed-signer
 getent passwd zeroed-signer >/dev/null || useradd --system --gid zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-signer
 getent group zeroed-worker >/dev/null || groupadd --system zeroed-worker
-# The worker may reach the signer's socket through the zeroed-signer group; nothing else is in that group.
-getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --groups zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
+# The worker may reach the signer's socket through the zeroed-signer group, which its full unit body gives it
+# (SupplementaryGroups=zeroed-signer). SW-18: never through the group database, because a unit can only add to that
+# list (systemd.exec SupplementaryGroups=), so the recorder's body could not leave it out; a membership an older
+# installer made is removed.
+getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
+if id -nG zeroed-worker 2>/dev/null | tr ' ' '\n' | grep -qx zeroed-signer; then gpasswd -d zeroed-worker zeroed-signer >/dev/null; fi
 # PATHS-FIX: the worker reads pull receipts through zeroed-pull and import bundles through zeroed-spool (never botops,
 # which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
 getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull

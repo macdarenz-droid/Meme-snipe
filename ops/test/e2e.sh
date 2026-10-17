@@ -310,7 +310,11 @@ for want in 'User=zeroed-worker' 'NoNewPrivileges=yes' 'ProtectSystem=strict' 'R
 done
 in_c "setpriv --reuid zeroed-worker --regid zeroed-worker --init-groups curl -sS -m 5 -o /dev/null $BASE/" 2>/dev/null && fail "worker uid reached a non-443 port"
 in_c "curl -sS -m 5 -o /dev/null $BASE/" || fail "root could not reach the fake service (test setup)"
-in_c "setpriv --reuid zeroed-worker --regid zeroed-worker --init-groups node -e \"require('net').connect('/run/zeroed-signer/signer.sock').on('data',d=>{process.stdout.write(d);process.exit(0)}).write('status\\\\n')\"" | grep -q '"status":"not-ready"' || fail "worker cannot reach the signer socket"
+# SW-18: the worker reaches it through the group its full unit body gives it (SupplementaryGroups=zeroed-signer), never
+# through /etc/group, which a unit cannot take a group out of.
+in_c "! id -nG zeroed-worker | tr ' ' '\\n' | grep -qx zeroed-signer" || fail "SW-18: zeroed-worker is in zeroed-signer in /etc/group"
+in_c "systemctl show -p SupplementaryGroups --value zeroed-worker" | tr ' ' '\n' | grep -qx zeroed-signer || fail "SW-18: the full worker unit does not give the signer group"
+in_c "setpriv --reuid zeroed-worker --regid zeroed-worker --clear-groups --groups zeroed-signer node -e \"require('net').connect('/run/zeroed-signer/signer.sock').on('data',d=>{process.stdout.write(d);process.exit(0)}).write('status\\\\n')\"" | grep -q '"status":"not-ready"' || fail "worker cannot reach the signer socket"
 in_c "! setpriv --reuid nobody --regid nogroup --clear-groups test -w /run/zeroed-signer/signer.sock" || fail "signer socket reachable by other users"
 pass "hardening: signer no network (only lo, AF_UNIX, IPAddressDeny, MDWE, jitless), worker sandboxed, worker uid limited to 443/53 out, signer socket only for the worker group"
 
@@ -410,7 +414,7 @@ in_c "systemctl start zeroed-backup.service" || fail "backup failed"
 bk="$(in_c "ls -1 /var/backups/zeroed/ | grep '^zeroed-' | tail -1")"
 # SW-1: zstd inside the age envelope, and the keep rule's status beside the copies.
 [[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.zst\.age$ ]] || fail "no backup file"
-in_c "grep -Eq '^floor_bytes [0-9]+ kept_bytes [0-9]+ kept [0-9]+ over [01] max_bytes 6000000000$' /var/backups/zeroed/budget.status" || fail "SW-1: no backup budget status"
+in_c "grep -Eq '^floor_bytes [0-9]+ kept_bytes [0-9]+ kept [0-9]+ over [01] max_bytes 6000000000 days_left -?[0-9]+$' /var/backups/zeroed/budget.status" || fail "SW-1: no backup budget status"
 in_c "command -v zstd" >/dev/null || fail "SW-1: the installer did not install zstd"
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key" >"$LOGS/drill-host.txt" 2>&1 || { cat "$LOGS/drill-host.txt"; fail "drill"; }
 in_c "cp /var/backups/zeroed/$bk /root/tampered.age && printf 'x' | dd of=/root/tampered.age bs=1 seek=200 conv=notrunc 2>/dev/null"

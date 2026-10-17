@@ -43,16 +43,16 @@ while IFS='|' read -r what key text; do
 done < <(systemctl is-active "${PULL_MOUNT_UNITS[@]}" 2>/dev/null | pull_mount_alerts "${PULL_MOUNT_UNITS[@]}")
 
 # 9. SW-1(c): the server disk's free space (SPEC-B B-M24-04 logic 3: warning under 20% free, critical under 5% or the
-# 500 MB reserve), and SW-1(a): the backups' floor over its budget (zeroed-backup's budget.status).
+# 500 MB reserve), and SW-1(a) and SW-1b: the backups' floor over its budget, or from 80% of it (zeroed-backup's
+# budget.status).
 while IFS='|' read -r what key text; do
   if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
 done < <(df -B1 --output=size,avail / 2>/dev/null | disk_alerts)
 budget="$(head -c 300 "${ZEROED_BACKUP_OUT:-/var/backups/zeroed}/budget.status" 2>/dev/null || true)"
-budget_max="$(printf '%s' "$budget" | sed -n 's/.* max_bytes \([0-9][0-9]*\).*/\1/p')"
-if [ -n "$budget_max" ]; then
+if [ -n "$budget" ]; then
   while IFS='|' read -r what key text; do
     if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
-  done < <(backup_budget_alert "$budget" "$budget_max")
+  done < <(backup_budget_alert "$budget")
 fi
 
 # 10. SW-22: with the pull account's key in place, SSH must be on the tailnet only. A public SSH rule then is an alert

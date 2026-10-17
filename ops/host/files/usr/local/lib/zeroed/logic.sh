@@ -377,17 +377,33 @@ disk_alerts() {
   }'
 }
 
-# SW-1(a): the backup budget's alert, from the status zeroed-backup writes ("floor_bytes N kept_bytes N kept N over 0|1"
-# and the budget). No status prints nothing.
-backup_budget_alert() { # STATUS_LINE MAX_BYTES
-  local fb over
-  read -r _ fb _ _ _ _ _ over _ <<< "$1" || return 0
-  [[ "$fb" =~ ^[0-9]+$ ]] && [[ "$over" =~ ^[01]$ ]] || return 0
-  if [ "$over" = 1 ]; then
-    printf 'on|backup-budget|ALERT Zeroed host: the backups'"'"' floor (24 hourly and 7 daily copies) takes %s MB, over the %s MB budget. No backup is deleted for it; free space elsewhere or raise ZEROED_BACKUP_MAX_BYTES.\n' "$((fb / 1000000))" "$(($2 / 1000000))"
-  else
-    printf 'off|backup-budget|CLEARED Zeroed host: the backups fit their budget again.\n'
-  fi
+# SW-1b (supervisor ruling): days left until the backups' floor reaches MAX_BYTES, from "EPOCH_S FLOOR_BYTES" lines on
+# stdin (zeroed-backup's budget.history, one line a run, oldest first): the growth from the oldest line to the newest.
+# -1 when it is not growing or the lines span under an hour; 0 when already there. Pure: prints only.
+budget_days_left() { # MAX_BYTES
+  awk -v MAX="$1" '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { if (n == 0) { t0 = $1; f0 = $2 } t1 = $1; f1 = $2; n++ }
+    END {
+      if (n == 0) { print -1; exit }
+      if (f1 >= MAX) { print 0; exit }
+      if (t1 - t0 < 3600 || f1 <= f0) { print -1; exit }
+      printf "%d\n", (MAX - f1) / ((f1 - f0) / (t1 - t0)) / 86400
+    }'
+}
+
+# SW-1(a) and SW-1b: the backup budget's alerts, from the status zeroed-backup writes ("floor_bytes N kept_bytes N kept
+# N over 0|1 max_bytes N days_left D"): backup-budget while the floor is over the budget (backups are never deleted for
+# it), backup-budget-warn from 80% of it, with the days left. A status it cannot read prints nothing.
+backup_budget_alert() { # STATUS_LINE
+  printf '%s\n' "$1" | awk '{
+      for (i = 1; i < NF; i += 2) v[$i] = $(i + 1)
+      if (v["floor_bytes"] !~ /^[0-9]+$/ || v["max_bytes"] !~ /^[0-9]+$/ || v["over"] !~ /^[01]$/) exit
+      fb = v["floor_bytes"]; mb = v["max_bytes"]; d = (v["days_left"] ~ /^-?[0-9]+$/) ? v["days_left"] : -1
+      left = (d < 0) ? "not growing now" : "about " d " days left at the last week'"'"'s growth"
+      if (v["over"] == 1) printf "on|backup-budget|ALERT Zeroed host: the backups'"'"' floor (24 hourly and 7 daily copies) takes %d MB, over the %d MB budget. No backup is deleted for it; free space elsewhere or raise ZEROED_BACKUP_MAX_BYTES.\n", fb / 1000000, mb / 1000000
+      else printf "off|backup-budget|CLEARED Zeroed host: the backups fit their budget again.\n"
+      if (v["over"] != 1 && fb >= 0.8 * mb) printf "on|backup-budget-warn|ALERT Zeroed host: the backups'"'"' floor takes %d MB, %d%% of the %d MB budget (%s).\n", fb / 1000000, fb * 100 / mb, mb / 1000000, left
+      else printf "off|backup-budget-warn|CLEARED Zeroed host: the backups'"'"' floor is under 80%% of its budget again.\n"
+    }'
 }
 
 # PATHS-FIX ruling 23: the pull account's own filesystem and its two chroot binds.

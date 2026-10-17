@@ -7,7 +7,7 @@
 # Kept (SW-1, DISK-BUDGET R1, review ruling 3; logic.sh backup_keep): a floor of the newest 24 hourly copies and 7
 # daily copies (one per UTC day) that the byte budget never cuts; above it, newer copies while all fit in
 # ZEROED_BACKUP_MAX_BYTES (6 GB) and number at most ZEROED_BACKUP_KEEP (72). A floor over the budget is an alert
-# (zeroed-check reads budget.status), never a delete.
+# (zeroed-check reads budget.status), never a delete; from 80% of it a warning with the days left (SW-1b).
 set -euo pipefail
 umask 077
 . "${ZEROED_LOGIC:-/usr/local/lib/zeroed/logic.sh}"
@@ -53,6 +53,10 @@ mv -f "$OUT/$name.new" "$OUT/$name"
 status="$(find "$OUT" -maxdepth 1 -type f -name 'zeroed-*.age' -printf '%f %s\n' | backup_keep "$FLOOR_HOURLY" "$FLOOR_DAILY" "$MAX_BYTES" "$KEEP" | while read -r what f rest; do
   if [ "$what" = delete ]; then rm -f -- "$OUT/$f"; else printf '%s %s %s\n' "$what" "$f" "$rest"; fi
 done)"
-printf '%s max_bytes %s\n' "$status" "$MAX_BYTES" > "$OUT/budget.status.new" && mv -f "$OUT/budget.status.new" "$OUT/budget.status"
+# SW-1b: the floor's size a run (the last 7 days of hourly runs), for the days left to the budget.
+floor_now="$(printf '%s\n' "$status" | awk '{ print $2 }')"
+{ tail -n 167 "$OUT/budget.history" 2>/dev/null || true; printf '%s %s\n' "$(date +%s)" "$floor_now"; } > "$OUT/budget.history.new" && mv -f "$OUT/budget.history.new" "$OUT/budget.history"
+days_left="$(budget_days_left "$MAX_BYTES" < "$OUT/budget.history")"
+printf '%s max_bytes %s days_left %s\n' "$status" "$MAX_BYTES" "$days_left" > "$OUT/budget.status.new" && mv -f "$OUT/budget.status.new" "$OUT/budget.status"
 echo "Backup $name: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
 echo "Kept: $status (budget $MAX_BYTES bytes)."

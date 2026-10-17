@@ -211,8 +211,12 @@ say "Users"
 getent group zeroed-signer >/dev/null || groupadd --system zeroed-signer
 getent passwd zeroed-signer >/dev/null || useradd --system --gid zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-signer
 getent group zeroed-worker >/dev/null || groupadd --system zeroed-worker
-# The worker may reach the signer's socket through the zeroed-signer group; nothing else is in that group.
-getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --groups zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
+# The worker may reach the signer's socket through the zeroed-signer group, which its full unit body gives it
+# (SupplementaryGroups=zeroed-signer). SW-18: never through the group database, because a unit can only add to that
+# list (systemd.exec SupplementaryGroups=), so the recorder's body could not leave it out; a membership an older
+# installer made is removed.
+getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
+if id -nG zeroed-worker 2>/dev/null | tr ' ' '\n' | grep -qx zeroed-signer; then gpasswd -d zeroed-worker zeroed-signer >/dev/null; fi
 # PATHS-FIX: the worker reads pull receipts through zeroed-pull and import bundles through zeroed-spool (never botops,
 # which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
 getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
@@ -522,8 +526,8 @@ ConditionPathExists=/var/lib/zeroed/recorder
 [Service]
 Type=oneshot
 # The worker's own user: it already holds every credential read here and owns the recorder, so no capability is needed.
-# That user is in the zeroed-signer group (/etc/group), which systemd applies here too, so the signer's folders are made
-# inaccessible below.
+# That user is in no extra group in /etc/group (SW-18: the worker unit gives the signer group itself); the signer's
+# folders are made inaccessible below all the same.
 User=zeroed-worker
 Group=zeroed-worker
 EnvironmentFile=/etc/zeroed/worker.env
@@ -1875,17 +1879,33 @@ disk_alerts() {
   }'
 }
 
-# SW-1(a): the backup budget's alert, from the status zeroed-backup writes ("floor_bytes N kept_bytes N kept N over 0|1"
-# and the budget). No status prints nothing.
-backup_budget_alert() { # STATUS_LINE MAX_BYTES
-  local fb over
-  read -r _ fb _ _ _ _ _ over _ <<< "$1" || return 0
-  [[ "$fb" =~ ^[0-9]+$ ]] && [[ "$over" =~ ^[01]$ ]] || return 0
-  if [ "$over" = 1 ]; then
-    printf 'on|backup-budget|ALERT Zeroed host: the backups'"'"' floor (24 hourly and 7 daily copies) takes %s MB, over the %s MB budget. No backup is deleted for it; free space elsewhere or raise ZEROED_BACKUP_MAX_BYTES.\n' "$((fb / 1000000))" "$(($2 / 1000000))"
-  else
-    printf 'off|backup-budget|CLEARED Zeroed host: the backups fit their budget again.\n'
-  fi
+# SW-1b (supervisor ruling): days left until the backups' floor reaches MAX_BYTES, from "EPOCH_S FLOOR_BYTES" lines on
+# stdin (zeroed-backup's budget.history, one line a run, oldest first): the growth from the oldest line to the newest.
+# -1 when it is not growing or the lines span under an hour; 0 when already there. Pure: prints only.
+budget_days_left() { # MAX_BYTES
+  awk -v MAX="$1" '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { if (n == 0) { t0 = $1; f0 = $2 } t1 = $1; f1 = $2; n++ }
+    END {
+      if (n == 0) { print -1; exit }
+      if (f1 >= MAX) { print 0; exit }
+      if (t1 - t0 < 3600 || f1 <= f0) { print -1; exit }
+      printf "%d\n", (MAX - f1) / ((f1 - f0) / (t1 - t0)) / 86400
+    }'
+}
+
+# SW-1(a) and SW-1b: the backup budget's alerts, from the status zeroed-backup writes ("floor_bytes N kept_bytes N kept
+# N over 0|1 max_bytes N days_left D"): backup-budget while the floor is over the budget (backups are never deleted for
+# it), backup-budget-warn from 80% of it, with the days left. A status it cannot read prints nothing.
+backup_budget_alert() { # STATUS_LINE
+  printf '%s\n' "$1" | awk '{
+      for (i = 1; i < NF; i += 2) v[$i] = $(i + 1)
+      if (v["floor_bytes"] !~ /^[0-9]+$/ || v["max_bytes"] !~ /^[0-9]+$/ || v["over"] !~ /^[01]$/) exit
+      fb = v["floor_bytes"]; mb = v["max_bytes"]; d = (v["days_left"] ~ /^-?[0-9]+$/) ? v["days_left"] : -1
+      left = (d < 0) ? "not growing now" : "about " d " days left at the last week'"'"'s growth"
+      if (v["over"] == 1) printf "on|backup-budget|ALERT Zeroed host: the backups'"'"' floor (24 hourly and 7 daily copies) takes %d MB, over the %d MB budget. No backup is deleted for it; free space elsewhere or raise ZEROED_BACKUP_MAX_BYTES.\n", fb / 1000000, mb / 1000000
+      else printf "off|backup-budget|CLEARED Zeroed host: the backups fit their budget again.\n"
+      if (v["over"] != 1 && fb >= 0.8 * mb) printf "on|backup-budget-warn|ALERT Zeroed host: the backups'"'"' floor takes %d MB, %d%% of the %d MB budget (%s).\n", fb / 1000000, fb * 100 / mb, mb / 1000000, left
+      else printf "off|backup-budget-warn|CLEARED Zeroed host: the backups'"'"' floor is under 80%% of its budget again.\n"
+    }'
 }
 
 # PATHS-FIX ruling 23: the pull account's own filesystem and its two chroot binds.
@@ -3146,6 +3166,8 @@ while IFS= read -r line; do
   props+=(-p "$line")
 done < <(unit_sandbox "$UNIT_FILE")
 [ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
+# SW-18: the body's own supplementary groups (the user is in no extra group in /etc/group).
+while IFS= read -r line; do props+=(-p "$line"); done < <(sed -n '/^\[Service\]/,/^\[/p' "$UNIT_FILE" | grep -E '^SupplementaryGroups=' || true)
 
 # trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
 # RUN-1 environment and shakedown settings (worker-start) on the trial's state directory and ports, and the memory cap.
@@ -3254,7 +3276,7 @@ install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 # Kept (SW-1, DISK-BUDGET R1, review ruling 3; logic.sh backup_keep): a floor of the newest 24 hourly copies and 7
 # daily copies (one per UTC day) that the byte budget never cuts; above it, newer copies while all fit in
 # ZEROED_BACKUP_MAX_BYTES (6 GB) and number at most ZEROED_BACKUP_KEEP (72). A floor over the budget is an alert
-# (zeroed-check reads budget.status), never a delete.
+# (zeroed-check reads budget.status), never a delete; from 80% of it a warning with the days left (SW-1b).
 set -euo pipefail
 umask 077
 . "${ZEROED_LOGIC:-/usr/local/lib/zeroed/logic.sh}"
@@ -3300,7 +3322,11 @@ mv -f "$OUT/$name.new" "$OUT/$name"
 status="$(find "$OUT" -maxdepth 1 -type f -name 'zeroed-*.age' -printf '%f %s\n' | backup_keep "$FLOOR_HOURLY" "$FLOOR_DAILY" "$MAX_BYTES" "$KEEP" | while read -r what f rest; do
   if [ "$what" = delete ]; then rm -f -- "$OUT/$f"; else printf '%s %s %s\n' "$what" "$f" "$rest"; fi
 done)"
-printf '%s max_bytes %s\n' "$status" "$MAX_BYTES" > "$OUT/budget.status.new" && mv -f "$OUT/budget.status.new" "$OUT/budget.status"
+# SW-1b: the floor's size a run (the last 7 days of hourly runs), for the days left to the budget.
+floor_now="$(printf '%s\n' "$status" | awk '{ print $2 }')"
+{ tail -n 167 "$OUT/budget.history" 2>/dev/null || true; printf '%s %s\n' "$(date +%s)" "$floor_now"; } > "$OUT/budget.history.new" && mv -f "$OUT/budget.history.new" "$OUT/budget.history"
+days_left="$(budget_days_left "$MAX_BYTES" < "$OUT/budget.history")"
+printf '%s max_bytes %s days_left %s\n' "$status" "$MAX_BYTES" "$days_left" > "$OUT/budget.status.new" && mv -f "$OUT/budget.status.new" "$OUT/budget.status"
 echo "Backup $name: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
 echo "Kept: $status (budget $MAX_BYTES bytes)."
 __ZEROED_FILE__
@@ -3413,16 +3439,16 @@ while IFS='|' read -r what key text; do
 done < <(systemctl is-active "${PULL_MOUNT_UNITS[@]}" 2>/dev/null | pull_mount_alerts "${PULL_MOUNT_UNITS[@]}")
 
 # 9. SW-1(c): the server disk's free space (SPEC-B B-M24-04 logic 3: warning under 20% free, critical under 5% or the
-# 500 MB reserve), and SW-1(a): the backups' floor over its budget (zeroed-backup's budget.status).
+# 500 MB reserve), and SW-1(a) and SW-1b: the backups' floor over its budget, or from 80% of it (zeroed-backup's
+# budget.status).
 while IFS='|' read -r what key text; do
   if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
 done < <(df -B1 --output=size,avail / 2>/dev/null | disk_alerts)
 budget="$(head -c 300 "${ZEROED_BACKUP_OUT:-/var/backups/zeroed}/budget.status" 2>/dev/null || true)"
-budget_max="$(printf '%s' "$budget" | sed -n 's/.* max_bytes \([0-9][0-9]*\).*/\1/p')"
-if [ -n "$budget_max" ]; then
+if [ -n "$budget" ]; then
   while IFS='|' read -r what key text; do
     if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
-  done < <(backup_budget_alert "$budget" "$budget_max")
+  done < <(backup_budget_alert "$budget")
 fi
 
 # 10. SW-22: with the pull account's key in place, SSH must be on the tailnet only. A public SSH rule then is an alert
