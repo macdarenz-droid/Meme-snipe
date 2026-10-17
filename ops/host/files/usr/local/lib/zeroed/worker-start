@@ -38,7 +38,6 @@ heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report
 case "$entry" in
   */"$RECORDER_ENTRY")
     heap[0]="--max-old-space-size=$RECORDER_HEAP_MB"
-    heap+=("--max-semi-space-size=$RECORDER_SEMI_SPACE_MB") # SW-35 (logic.sh)
     # Ruling Z10-30: taken before tailscaled, the sentinel and the update unit under memory pressure (logic.sh). If the
     # score cannot be raised the recorder does not start, so it can never run at the unit's -500.
     echo "$RECORDER_OOM_SCORE_ADJ" > /proc/self/oom_score_adj || { echo "worker-start: could not set the recorder's OOM score" >&2; exit 1; }

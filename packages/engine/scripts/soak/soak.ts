@@ -17,8 +17,7 @@
 //   3. peak RSS <= LIMIT_RSS (75% of the unit's MemoryMax, passed in);
 //   4. no `m27.unknown_code` line, no `recorder.internal_error`, no unhandled rejection;
 //   5. at least one pool watched (SWITCH-FIX: a soak that recorded nothing passed 1-4).
-// Usage: node --expose-gc --no-warnings --max-old-space-size=<RECORDER_HEAP_MB> --max-semi-space-size=<RECORDER_SEMI_SPACE_MB>
-//   scripts/soak/soak.ts [hours=48] [outDir] [rssLimitMiB=600]   (SW-35: both from logic.sh, as worker-start passes them)
+// Usage: node --expose-gc --no-warnings --max-old-space-size=<RECORDER_HEAP_MB> scripts/soak/soak.ts [hours=48] [outDir] [rssLimitMiB=600]
 // (CI passes the server's heap limit, so a heap the recorder could not hold on the server fails here too.)
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

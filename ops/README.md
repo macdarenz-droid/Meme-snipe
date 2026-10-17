@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/4794d45cffb3534d63b01a144713f2a0e4a5308b/ops/install.sh -o i && echo 'e80ae79ad153a009a74f2d452df08ecf369c0c6d15bda46c5bb6ccfacd1ec2b9  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/653cecd14daece0aa882eb1f301f7580648a9ccf/ops/install.sh -o i && echo '3777a49cfdcedf8b93e58348319d025ceece3908eba1c0619f4d0e0a09447c62  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -23,7 +23,7 @@ The console screen can be left at any time (Ctrl+C); setup carries on in the bac
 
 The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
 
-SHA-256 of `install.sh`: `e80ae79ad153a009a74f2d452df08ecf369c0c6d15bda46c5bb6ccfacd1ec2b9`
+SHA-256 of `install.sh`: `3777a49cfdcedf8b93e58348319d025ceece3908eba1c0619f4d0e0a09447c62`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
