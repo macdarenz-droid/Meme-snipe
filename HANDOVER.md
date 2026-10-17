@@ -138,6 +138,16 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **18 Oct 7:40 AM: SW-36 results, ruling SW-35b.**
+  - SW-36 (stepped coverage) fixed the latency: no second over 1 s real (1 before), longest stall 136 ms (1,598 before), CPU about equal, 48 h slope 0.021 MiB/h.
+  - The 96 h soaks on the SW-36 code still rise after day 1:
+    - no flag: 215.4 → 224.5 MiB over hours 48–96;
+    - semi=2: 185.9 → 191.1 → 188.7;
+    - semi=4: 191.0 → 198.1.
+  - All variants, base included, level off near 222–225 MiB.
+  - Ruling SW-35b: ship with no flag (SW-36 plus bitmap plus member reader; no guarded file), and push to #336 now so CI and the RT delta re-checks run in parallel.
+  - Merge gate: one 192 h compressed soak at 60 pools, no flag, alone on the machine. RssAnon must rise less than 2 MiB from h96 to h192, with peak RSS under 260 MiB. A failure means real growth, back to root cause.
+  - Watch list: RssAnon day over day for the first 7 days on the server, with the 75% memory alert as the backstop.
 - **18 Oct 4:32 AM: SW-35a cost proof, ruling SW-36.**
   - Measured in 48 h soaks at 60 pools on `262738c2`, per hour over hours 24–48. semi=1 fails the cost conditions:
     - CPU +23%;
