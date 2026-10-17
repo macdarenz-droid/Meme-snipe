@@ -138,6 +138,23 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 11:02 AM: RT1 (stays up) FAIL on `bac1f88a`.**
+  - **BLOCKER 1: the disk fills.**
+    - zeroed-backup keeps 72 uncompressed hourly copies of bot.db.
+    - The recorder never runs the M24 retention job, BarStore.purge has no caller, nothing drains the outbox, and candidate_event grows forever.
+    - At the soak rate the DB grows about 28 MiB/day, so about 74 copies make about 2 GiB/day. The M07 floor halts recording around day 18-26; then the disk fills and SQLite gets ENOSPC.
+    - DiskManager does not see the DB or the backups, and zeroed-check has no disk check.
+    - DISK-BUDGET R1 (docs/reviews/DISKBUDGET.md) is not landed.
+    - Fix: land R1 (24 hourly + 7 daily copies, a byte budget, zstd); wire retention, bar purge and outbox drain into the recorder; add a root-fs free-space alert.
+  - **MAJOR 2: a provider stop is permanent.** The stop is saved in kv_state and restored at start, and resumeProvider has no caller. So recorder.unanchored lasts forever and the anchor extrapolates. Fix: a host command or loopback route to resume, named in the alert, with tests.
+  - MINORs:
+    - 3: no unhandledRejection/uncaughtException handler; guard compose.ts:585/627/343 and the health body.
+    - 4: alert noise from day 8 (unpulled_segments STILL lines hourly) and no warning before the 8 GiB cap.
+    - 5: disk.ts check() is synchronous and O(segments), 152-235 ms at 80 days.
+    - 6: the `facts` Map is never pruned.
+    - 7: no time-sync.target ordering.
+    - 8: slot_lag false alerts while 0 pools are watched.
+  - The 48 h on-server watch list is recorded in the RT1 report: df, DB/WAL/backups, the m14 stop row, anon slope, fds, NRestarts, log size, tick gaps, backup time, timedatectl, md bytes/day.
 - **17 Oct 10:56 AM: RT3 (security, providers) PASS on `bac1f88a`**, with 5 MINORs, all to fix before switch-on.
   - Holding:
     - The import graph has no net, child_process, signer or Telegram; sends are refused.
