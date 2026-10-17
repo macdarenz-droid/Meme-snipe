@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 2:52 PM: #335 SWITCH-FIX ready** at `ca304a5b` (base `bac1f88a`, contains it). Builder results:
+  - lint and typecheck clean; `pnpm test` 9,391 pass, 0 fail;
+  - 48 h soak at 60 pools passes (RssAnon 0.132 MiB/h, 57 watched);
+  - ops e2e passes locally (3 cgroup-v2/OOM checks run in CI only);
+  - 27 new tests fail on the base.
+  - New: the installer had put zeroed-worker in zeroed-signer in /etc/group. Fixed with gpasswd -d.
+  - Guarded file `deploy.yml` (SW-20, `npm ci` without the GitHub token) read; it is a tightening. Label `deps-reviewed:744a08262edc074451fd08826a65f662` added.
+  - The three RT sessions are re-checking their own findings and attacking the fixes: RT1 012H1i4e, RT2 01NBmU4p, RT3 017i994s. Their verdicts are read from their transcripts (no send_message).
+  - Not built, recorded in DECISIONS: R9 shed-growers; candidate 1-y horizon; bar_1m may count halt-dropped polls.
 - **17 Oct 12:38 PM: SW-1b.**
   - Builder's measurements: DB 546 MB on day 14 and 911 MB on day 90; zstd 5.47x. The backup floor is 5.16 GB at day 90 (86% of 6 GB) and crosses 6 GB at about day 121, because the one-year tables (metric_rollup_1m aggregate and candidate_event) keep growing. A backup takes 16.1 s on 1 CPU.
   - Ruling: accepted, plus:
