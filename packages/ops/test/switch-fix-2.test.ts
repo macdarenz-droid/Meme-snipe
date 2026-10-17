@@ -86,3 +86,22 @@ describe('SW-31: m07.disk_budget_high is a held code with its runbook', () => {
     expect(planAlerts(state, at([]), T0 + 26 * 3_600_000, L).lines[0]).toMatch(/^CLEARED Worker critical: m07\.disk_budget_high\./);
   });
 });
+
+describe('SW-23: the spool group only from the full unit body', () => {
+  const main = read('ops/host/install-main.sh');
+  it('the installer never adds zeroed-worker to zeroed-spool in /etc/group and removes an older membership (fails before: usermod -aG zeroed-pull,zeroed-spool)', () => {
+    expect(main).not.toMatch(/usermod[^\n]*zeroed-spool/);
+    expect(main).toContain("if id -nG zeroed-worker 2>/dev/null | tr ' ' '\\n' | grep -qx zeroed-spool; then gpasswd -d zeroed-worker zeroed-spool >/dev/null; fi");
+    expect(main).toContain('usermod -aG zeroed-pull zeroed-worker');
+  });
+  it('the full body gives the spool group; the recorder body neither gives it nor sees the spool', () => {
+    expect(read('ops/host/files/etc/systemd/system/zeroed-worker.service')).toMatch(/^SupplementaryGroups=zeroed-pull zeroed-spool$/m);
+    const rec = read('ops/host/files/usr/local/lib/zeroed/units/zeroed-worker.recorder.service');
+    expect(rec.split('\n').filter((l) => l.startsWith('SupplementaryGroups='))).toEqual(['SupplementaryGroups=zeroed-pull']);
+    expect(rec).toMatch(/^InaccessiblePaths=.* -\/var\/lib\/zeroed-spool$/m);
+  });
+  it('nothing else running as the worker\'s user names the spool', () => {
+    expect(read('ops/host/files/etc/systemd/system/zeroed-record-upload@.service')).not.toContain('spool');
+    expect(read('ops/host/files/usr/local/lib/zeroed/record-upload.mjs')).not.toContain('spool');
+  });
+});

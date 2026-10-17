@@ -277,7 +277,7 @@ describe('SW-18: one worker unit name, two bodies (ruling SW-18a, option A)', ()
   it('the recorder body: no signer group or folders, the four credentials only, link-local and private ranges refused; otherwise the full body\'s sandbox', () => {
     expect(lines(REC, 'SupplementaryGroups')).toEqual(['SupplementaryGroups=zeroed-pull']);
     expect(REC).not.toMatch(/zeroed-signer\.service|SupplementaryGroups=.*zeroed-signer/);
-    expect(REC).toMatch(/^InaccessiblePaths=-\/run\/zeroed-signer -\/var\/lib\/zeroed-signer$/m);
+    expect(REC).toMatch(/^InaccessiblePaths=-\/run\/zeroed-signer -\/var\/lib\/zeroed-signer -\/var\/lib\/zeroed-spool$/m);
     const creds = [...lines(REC, 'LoadCredentialEncrypted'), ...lines(REC, 'LoadCredential'), ...lines(REC, 'ImportCredential'), ...lines(REC, 'SetCredential')].map((l) => l.split('=')[1]!.split(':')[0]).sort();
     expect(creds).toEqual(['heartbeat_hmac_key', 'rpc_chainstack_url', 'rpc_shyft_url', 'telegram_chat_id']);
     expect(REC).toMatch(/^IPAddressDeny=169\.254\.0\.0\/16 10\.0\.0\.0\/8 172\.16\.0\.0\/12 192\.168\.0\.0\/16 fe80::\/10$/m);
