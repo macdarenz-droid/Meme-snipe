@@ -347,6 +347,24 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.throws(() => runPull({ transport, localRoot: local, since: 'x', privateKey: privKey, verifier: 'v', nowMs: () => ms(0), log: () => undefined }), RangeError);
   });
 
+  it('SW-17: md-pull also brings the day\'s watch log, so the pulled copy computes the same coverage as the host (fails before: no denominator)', () => {
+    const host = tempDir('sw17-host');
+    const local = tempDir('sw17-local');
+    const wl = new WatchLog(host, () => undefined);
+    wl.watch('A', 'candidate', ms(D0));
+    fs.mkdirSync(join(host, DAY), { recursive: true });
+    const transport: PullTransport = {
+      listDays: () => [DAY],
+      fetchDay(day, root) { fs.cpSync(join(host, day), join(root, day), { recursive: true }); },
+      fetchWatch(day, root) { const f = join(host, 'watch', `${day}.ndjson`); if (fs.existsSync(f)) fs.copyFileSync(f, join(root, 'watch', `${day}.ndjson`)); },
+      putReceipts() { /* none */ },
+    };
+    const r = runPull({ transport, localRoot: local, since: DAY, privateKey: privKey, verifier: 'v', nowMs: () => ms(D0), log: () => undefined });
+    assert.deepEqual(r.watch, [DAY]);
+    assert.deepEqual(WatchLog.readDay(local, DAY), WatchLog.readDay(host, DAY));
+    assert.ok(WatchLog.readDay(local, DAY).length > 0);
+  });
+
   it('the sftp transport sends safe batch lines only; arguments are parsed', () => {
     const seen: Array<{ args: string[]; batch: string }> = [];
     const t = sftpTransport('zeroed-host', (args, batch) => { seen.push({ args, batch }); return { status: 0, stdout: 'md/2026-10-15\nmd/receipts\n' }; });
@@ -356,6 +374,10 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.deepEqual(seen.map((s) => s.batch), ['ls -1 md\n', 'lcd /tmp/x\nget -r md/2026-10-15\n', 'put /tmp/x/receipts/a.receipt.json md/receipts/a.receipt.json\n']);
     assert.deepEqual(seen[0]?.args, ['-b', '-', '-o', 'BatchMode=yes', 'zeroed-pull@zeroed-host']);
     assert.throws(() => sftpBatch([['get', 'a b']]), /unsafe/);
+    // SW-17: the day's watch log comes too (the coverage denominator).
+    seen.length = 0;
+    t.fetchWatch?.('2026-10-15', '/tmp/x');
+    assert.deepEqual(seen.map((s) => s.batch), ['lcd /tmp/x\n-get md/watch/2026-10-15.ndjson watch/2026-10-15.ndjson\n']);
     assert.throws(() => sftpTransport('evil host'), RangeError);
     const failing = sftpTransport('h', () => ({ status: 255, stdout: '' }));
     assert.throws(() => failing.listDays(), /sftp exited 255/);
@@ -389,12 +411,36 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.equal(dayManifests(dir, DAY).length, 24);
     const appended: unknown[] = [];
     const saved: unknown[] = [];
-    const c = runDailyCoverage({ dataDir: dir, nowMs: ms(D0 + 86_400_000 + 5), universeManifestSha256: null, closedThrough: () => '2026-10-15T23', append: (r) => appended.push(r), save: (r) => saved.push(r) });
+    const c = runDailyCoverage({ dataDir: dir, nowMs: ms(D0 + 86_400_000 + 5), universeManifestSha256: null, closedThrough: () => '2026-10-16T00', append: (r) => appended.push(r), save: (r) => saved.push(r) });
     assert.ok(c !== null);
     assert.equal(c.detail.missingMs, 0);
     assert.equal(c.report.lowCoverage, false);
     assert.equal(c.report.universeManifestSha256, createHash('sha256').update(fs.readFileSync(join(dir, 'watch', `${DAY}.ndjson`))).digest('hex'));
     assert.deepEqual([appended, saved], [[c.report], [c.report]]);
     assert.equal(dailyCoverage({ dataDir: dir, dayUtc: '2026-10-01', universeManifestSha256: 'e'.repeat(64) }).report.lowCoverage, true);
+  });
+
+  it('SW-12: the day\'s last bar (23:59:45), stamped with its close in the next day\'s hour 00, is observed, not missing (fails before: the job ran without it, and 23:59 was missing)', () => {
+    const dir = tempDir('sw12');
+    const now = { t: D0 + 1_000 };
+    const wl = new WatchLog(dir, () => undefined);
+    wl.watch('A', 'candidate', ms(D0));
+    const rec = SegmentWriter.recover({ dataDir: dir, nowMs: ms(now.t), log: () => undefined });
+    const q = startedQueue({ firstSeq: rec.nextSeq });
+    const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => ms(now.t), log: () => undefined }, rec);
+    // One record per 15 s bar, stamped with its close plus a little grace (ruling Z09-32), as the queue writes them.
+    for (let b = 0; b < 5_760; b += 1) {
+      now.t = D0 + (b + 1) * BAR + 500;
+      q.append({ stream: 'poll_counts', recvMs: ms(now.t), slot: null, commitment: null, source: 'm07', payload: { poolId: 'A', barStartMs: ms(D0 + b * BAR), successfulPolls: b >= 5_756 && b < 5_759 ? 0 : 15, priorityClass: 'candidate' } });
+      w.pump();
+    }
+    // 23:59's first three bars saw no poll, so only 23:59:45 observes that minute.
+    const out: unknown[] = [];
+    assert.equal(runDailyCoverage({ dataDir: dir, nowMs: ms(now.t), universeManifestSha256: null, closedThrough: () => w.lastRotatedHourUtc(), append: (r) => out.push(r), save: () => undefined }), null, 'waits for D+1/00 to close');
+    now.t = D0 + 86_400_000 + 3_600_000 + 1_000;
+    w.pump();                                                             // closes D+1's hour 00
+    const c = runDailyCoverage({ dataDir: dir, nowMs: ms(now.t), universeManifestSha256: null, closedThrough: () => w.lastRotatedHourUtc(), append: (r) => out.push(r), save: () => undefined });
+    assert.ok(c !== null);
+    assert.equal(c.detail.missingMs, 0);
   });
 });

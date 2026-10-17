@@ -19,6 +19,7 @@ import { M27_LOG_CODES, mergeLogCodes, type Level, type LogCodes } from '../m27/
 
 export const M07_LOG_CODES = {
   'm07.codec_fallback': { fields: { wanted: 'string', used: 'string' } },
+  'm07.index_repaired': { fields: { stream: 'string', path: 'string' } },
   'm07.crash_recovered': { fields: { stream: 'string', path: 'string', records: 'integer', cut_bytes: 'integer', cut_reason: 'string' } },
   'm07.recording_halted': { fields: { reason: 'string' } },
   'm07.recording_halted_again': { fields: { reason: 'string', failures: 'integer' } },
@@ -30,6 +31,7 @@ export const M07_LOG_CODES = {
   'm07.watch_deleted': { fields: { day: 'string' } },
   'm07.segment_delete_failed': { fields: { path: 'string', error_code: 'string' } },
   'm07.unpulled_segments': { fields: { count: 'integer', retention_days: 'integer' } },
+  'm07.disk_budget_high': { fields: { recorder_bytes: 'integer', max_bytes: 'integer', pct: 'integer', days_to_cap: 'integer' } },
   'm07.disk_full': { fields: { used_pct: 'integer', free_bytes: 'integer', recorder_bytes: 'integer', reasons: 'string' } },
   'm07.disk_ok_resume': { fields: { reason: 'string' } },
   'm07.outage': { fields: { silent_minutes: 'integer' } },
@@ -56,6 +58,8 @@ export const RECORDER_LOG_CODES = {
   'recorder.manifest_not_recorded': { fields: { day: 'string', eligible: 'integer', error_code: 'string' } },
   'recorder.coverage_report': { fields: { day: 'string', low_coverage: 'boolean' } },
   'recorder.sol_usd_check': { fields: { result: 'string' } },
+  'recorder.retention': { fields: { rows: 'integer', bars: 'integer' } },
+  'recorder.provider_resume': { fields: { provider: 'string', result: 'string' } },
   'recorder.memory_high': { fields: { memory_bytes: 'integer', limit_bytes: 'integer', pct: 'integer', source: 'string' } },
 } as const satisfies LogCodes;
 

@@ -13,7 +13,8 @@
 // Each second: M07 `tick(now)`, the writer's `pump()` (which hands every written `poll_counts` record to M08 with its
 // recvMs), then M08 `closeDue(now)`, all with the same `now` (Z09-32).
 import { createPublicKey, type KeyObject } from 'node:crypto';
-import { statfsSync } from 'node:fs';
+import { lstatSync, readdirSync, statfsSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { base58, createDecoders, decodeEventsWithGaps, readRpcTransaction, verifyPinnedIdls, VENDORED_IDL_DIR } from '@bot/decoders';
 import type { Clock, Config, Pubkey, Result, Slot, UnixMs } from '@bot/types';
 import { createPumpSwapPoolModel, createVenueConfigCache, type CpPoolState, type VenueConfigCache } from '@bot/venue';
@@ -50,17 +51,21 @@ import { createLogger, type Logger, type LogSink } from '../m27/log.ts';
 import { MetricsRegistry } from '../m27/metrics.ts';
 import { m27Settings } from '../m27/settings.ts';
 import { RECORD_MAX_BYTES_CAP, RecorderQueue, type EncodedRecord } from '../recorder/queue.ts';
+import { isStreamName, STREAM_NAMES, type StreamName } from '../recorder/streams.ts';
 import { createAgreedChainState, ANCHOR_EVERY_MS, type AgreedChainState } from './chain.ts';
 import { m07Log, RECORDER_LOG_TABLE } from './log-codes.ts';
 import { createReadPath, type ReadPath } from './rpc.ts';
 import { createDailyJob } from './daily.ts';
 import { kvEvictionLog, type EvictionLog } from './evictions.ts';
 import { ulid } from './ids.ts';
+import { OUTBOX_DRAIN_EVERY_MS, recorderRetention, RETENTION_EVERY_MS } from './retention.ts';
 
 /** Where the recorder writes (ENGINE_PATHS on the host; a scratch folder in the smoke trial and the soak). */
 export interface RecorderPaths {
   db: string; preMigrationBackup: string; initMarker: string; logDir: string; usageDb: string; mdDir: string; receiptsDir: string;
   ceilings: string; config: string;
+  /** SW-2: the folder of operator requests (`ENGINE_PATHS.controlDir`); none read when absent. */
+  controlDir?: string;
 }
 
 export interface RecorderPorts {
@@ -116,6 +121,8 @@ export interface RunningRecorder {
     writer: SegmentWriter; disk: DiskManager; tracker: PoolTracker<CpPoolState>; universe: Universe; watchlist: Watchlist; bars: BarEngine;
     barStore: BarStore; backfill: MigrationBackfill<CpPoolState>; venue: VenueConfigCache; venueRecorder: VenueConfigRecorder; evictions: EvictionLog;
     model: ReturnType<typeof createPumpSwapPoolModel>;
+    /** SW-6: the prefilter facts held per pool. */
+    facts: ReadonlyMap<Pubkey, PrefilterFacts> & { set(k: Pubkey, v: PrefilterFacts): unknown };
     tickOnce(): Promise<void>;
   };
 }
@@ -123,8 +130,26 @@ export interface RunningRecorder {
 const WATCHLIST_EVERY_MS = 10_000;
 const FLUSH_BAR_STORE_MS = 60_000;
 const METRICS_EVERY_MS = 10_000;
+/** SW-2: how often the control folder is looked at. */
+const CONTROL_EVERY_MS = 5_000;
 /** C-90: the kept first SOL/USD read on the server. */
 export const SOL_USD_CHECK_KEY = 'recorder.sol_usd_first_check';
+/** SW-11: every stream's next seq at the last rotation (`{ stream: "<u64>" }`), in `kv_state`. */
+export const NEXT_SEQ_KEY = 'm07.next_seq';
+
+/** SW-11: the saved next seqs; an unreadable or malformed row reads as none (the manifests then decide alone). */
+export function savedNextSeq(db: Db): Partial<Record<StreamName, bigint>> {
+  const r = createRepos().kv_state.get(db.reader(), { key: NEXT_SEQ_KEY });
+  if (r === null) return {};
+  try {
+    const v = JSON.parse(String(r.valueJson)) as Record<string, unknown>;
+    const out: Partial<Record<StreamName, bigint>> = {};
+    for (const [k, x] of Object.entries(v)) if (isStreamName(k) && typeof x === 'string' && /^\d{1,20}$/.test(x)) out[k] = BigInt(x);
+    return out;
+  } catch {
+    return {};
+  }
+}
 /** Ruling Z10-41: M04's verification count of the day (`{ day, count }`), in `kv_state`. */
 export const VERIFY_COUNT_KEY = 'm04.verify_count';
 /**
@@ -145,6 +170,22 @@ export const CRITICAL_ACTIVE_MS = 900_000;
 export const CLOCK_ALERT_MS = 10_000;
 /** The anchor is re-read this often before the first agreement and during a clock episode. */
 export const ANCHOR_RETRY_MS = 5_000;
+
+/**
+ * The anchor's height read: P1 pinned to each provider (P0 stays the exits'); the answer must come from that provider,
+ * and parse as M15 does. SW-16: its time is when the request was sent. The provider read the slot somewhere between
+ * the send and the answer, so the send time never puts the slot later than it was (the answer's time did, by the whole
+ * latency, which made every expected slot low by that much).
+ */
+export function heightReader(gateway: Pick<ReadPath['gateway'], 'call'>, nowMs: () => UnixMs, timeoutMs: number): (provider: string) => Promise<{ slot: Slot; atMs: number } | null> {
+  return async (provider) => {
+    const sentAt = nowMs();
+    const r = await gateway.call<unknown>('getEpochInfo', [], { priority: 1, role: 'read', commitment: 'confirmed', timeoutMs, provider });
+    if (!r.ok || r.value.providerLabel !== provider) return null;
+    const e = parseEpochInfo(r.value.value);
+    return e === null ? null : { slot: e.slot, atMs: sentAt };
+  };
+}
 
 /** M04 at the port M03 and M01 read through: one `getMultipleAccounts` at `confirmed` through M14. */
 function accountsReader(read: ReadPath, timeoutMs: number): AccountsReader {
@@ -223,7 +264,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const cfg: Config = config.current();
   const m27 = m27Settings(cfg);
   const log = bootLog;
-  const metrics = new MetricsRegistry({ clock, seriesCap: m27.seriesCap, ringBudgetBytes: m27.ringBudgetBytes, sink: metricRollupSink(db, repos.metric_rollup_1m, clock, { maxBytes: m27.rollupMaxBytes, log }), log });
+  const rollupSink = metricRollupSink(db, repos.metric_rollup_1m, clock, { maxBytes: m27.rollupMaxBytes, log });
+  const metrics = new MetricsRegistry({ clock, seriesCap: m27.seriesCap, ringBudgetBytes: m27.ringBudgetBytes, sink: rollupSink, log });
 
   // ---- M14 and M15. ----
   let allocationRaw: unknown;
@@ -244,13 +286,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const settings = { ...M04_DEFAULTS };
   const chain = createAgreedChainState({
     clock: rp.clock, providers: rp.labels, maxProviderLagSlots: settings.maxProviderLagSlots, initialSlotMs: m15Settings(cfg).slotMsInitial, nowMs, log,
-    // P1 pinned to each provider (P0 stays the exits'); the answer must come from that provider, and parse as M15 does.
-    readHeight: async (provider) => {
-      const r = await rp.gateway.call<unknown>('getEpochInfo', [], { priority: 1, role: 'read', commitment: 'confirmed', timeoutMs: m15Settings(cfg).heightTimeoutMs, provider });
-      if (!r.ok || r.value.providerLabel !== provider) return null;
-      const e = parseEpochInfo(r.value.value);
-      return e === null ? null : { slot: e.slot, atMs: nowMs() };
-    },
+    readHeight: heightReader(rp.gateway, nowMs, m15Settings(cfg).heightTimeoutMs),
   });
 
   // ---- M01: the decoders, the fee-config cache and the PumpSwap pool model. ----
@@ -269,11 +305,18 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   // unit may write is always the one used; `recorder.data_dir` keeps its default, which is ENGINE_PATHS.mdDir.
   const dataDir = p.paths.mdDir;
   const recovery = SegmentWriter.recover({ dataDir, nowMs: nowMs(), log: wlog });
+  // SW-11: each stream's next seq is also kept in M24 at every rotation, so a stream whose segments were all received
+  // and deleted (DiskManager) never starts again at a seq it already used; the larger of that and the manifests wins.
+  const firstSeq = { ...recovery.nextSeq };
+  for (const [stream, seq] of Object.entries(savedNextSeq(db))) {
+    const had = firstSeq[stream as keyof typeof firstSeq];
+    if (had === undefined || seq > had) firstSeq[stream as keyof typeof firstSeq] = seq;
+  }
   // Finding F5 (rulings Z10-20, Z10-29): a day's universe manifest is about 420 bytes per eligible pool (the soak's
   // second day: 239 pools, 100,566 bytes), past the 64 KiB default, so that stream alone gets M07's largest cap (1 MiB,
   // ruling Z08-28: about 2,490 pools); every other stream keeps `recorder.record_max_bytes`.
   const queue = new RecorderQueue({
-    firstSeq: recovery.nextSeq, log: wlog,
+    firstSeq, log: wlog,
     config: { pollCloseGraceMs: configValue(cfg, 'bars.close_grace_ms'), recordMaxBytes: configValue(cfg, 'recorder.record_max_bytes'), streamMaxBytes: { universe_manifest: RECORD_MAX_BYTES_CAP } },
   });
   // The stored 1-minute bars (M08 `bar_1m`). The 15 s base bars feed only features and strategies, none of which runs in
@@ -292,8 +335,20 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         return taken;
       },
       drainGaps: () => queue.drainGaps(),
+      unwrite: (records, giveBackSeqs) => { queue.unwrite(records, giveBackSeqs); },
     },
+    onManifest: () => { seqsRotated = true; },
   }, recovery);
+  let seqsRotated = false;
+  /** SW-11: every stream's next seq as of now (each at least what is on disk), after a rotation. */
+  const saveNextSeq = (): void => {
+    if (!seqsRotated) return;
+    seqsRotated = false;
+    const v = Object.fromEntries(STREAM_NAMES.map((st) => [st, queue.peekNextSeq(st).toString()]));
+    const t = nowMs();
+    db.withTx((tx) => { repos.kv_state.upsert(tx, { key: NEXT_SEQ_KEY, valueJson: JSON.stringify(v), createdAt: t, updatedAt: t }); });
+  };
+  const retention = recorderRetention({ db, clock, barStore, rollupSink });
   const researchKey = p.researchKey ?? (() => { try { return createPublicKey(p.readFile(configValue(cfg, 'recorder.research_pubkey'))); } catch { return null; } });
   const key = researchKey();
   const disk = new DiskManager({
@@ -313,7 +368,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
 
   // ---- M05: the universe, the watchlist, and their persisted eviction records. ----
   const store = m24CandidateStore(db, { newId, nowMs });
-  const evictions = kvEvictionLog(db, nowMs);
+  // SW-14: a failed eviction write is logged (the tail it records would not survive a restart).
+  const evictions = kvEvictionLog(db, nowMs, (e) => { log.event('error', 'recorder.internal_error', { where: 'eviction_log', error_code: String((e as { code?: unknown } | null)?.code ?? 'E_WRITE') }); });
   const limitSetId = configValue(cfg, 'universe.phase0_limit_set') as LimitSetId;
   const facts = new Map<Pubkey, PrefilterFacts>();
   const factOf = (s: PoolSnapshot<CpPoolState>): PrefilterFacts => ({
@@ -340,7 +396,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     },
     store, nowMs, newId, wsolMint: MINTS.wsol,
     facts: (id) => facts.get(id) ?? null,
-    requestFacts: (ids) => { noteAsks(ids); void factsRead(ids); },
+    requestFacts: (ids) => { noteAsks(ids); void guard('facts_read', () => factsRead(ids)); },
     // Z09-44: fresh reads pause while M14 cannot serve P4 from the unmetered primary.
     readsAvailable: () => rp.monitor.mode() === 'normal',
     lists: { isWrittenOff: () => false, isUnsolicited: () => false },
@@ -536,6 +592,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (unanchored) out.push('recorder.unanchored');
     return out;
   };
+  let lastOutboxMs = -Infinity, lastRetentionMs = -Infinity;
   let lastMetricsMs = -Infinity, lastFlushMs = -Infinity, lastDiskMs = -Infinity, lastWatchlistMs = -Infinity, lastAnchorMs = -Infinity, lastBarStoreMs = -Infinity, lastVenueMs = -Infinity;
   const flushMs = configValue(cfg, 'recorder.flush_ms');
   const diskMs = configValue(cfg, 'recorder.disk_check_ms');
@@ -546,6 +603,31 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const guard = async (where: string, fn: () => unknown): Promise<void> => {
     try { await fn(); } catch (e) { log.event('error', 'recorder.internal_error', { where, error_code: String((e as { code?: unknown })?.code ?? 'E_THROWN') }); }
   };
+
+  /**
+   * SW-2: the operator's provider resume. M14's stop (three 429/403 answers in ten minutes, owner rule) is kept in M24
+   * and restored at start, so only an operator ends it: `zeroed-provider-resume <label>` on the host writes
+   * `provider-resume-<label>` into the control folder, and the recorder clears that stop (M14 `resumeProvider`, which
+   * saves the cleared state), logs the result and deletes the file. Names only: a file's contents are never read, and a
+   * name that is not one of this recorder's providers is deleted with an `unknown` line.
+   */
+  function controlRequests(): void {
+    const dir = p.paths.controlDir;
+    if (dir === undefined) return;
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return; }
+    for (const name of names.slice(0, 16)) {
+      const m = /^provider-resume-([a-z0-9_-]{1,32})$/.exec(name);
+      if (m === null) continue;
+      const label = m[1] as string;
+      let regular = false;
+      try { regular = lstatSync(join(dir, name)).isFile(); } catch { regular = false; }
+      const result = !regular ? 'not_a_file' : !rp.labels.includes(label) ? 'unknown' : rp.gateway.resumeProvider(label) ? 'resumed' : 'not_stopped';
+      try { unlinkSync(join(dir, name)); } catch { /* tried again at the next look */ }
+      log.event('warn', 'recorder.provider_resume', { provider: rp.labels.includes(label) ? label : 'unknown', result });
+    }
+  }
+  let lastControlMs = -Infinity;
 
   const ceiling = configValue(cfg, 'universe.facts_refresh_per_hour');
   let barsSeen = { late: 0, early: 0 };
@@ -566,6 +648,20 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     metrics.gauge('recorder_queue_depth', {}).set(q.queueDepth);
   }
 
+  /**
+   * SW-6: the facts of a pool are dropped once nothing can read them again: its candidate is retired (or gone) and
+   * M04 no longer tracks it. A retired pool that comes back is read fresh, as any pool whose facts are too old.
+   */
+  function pruneFacts(): void {
+    const tracked = new Set(tracker?.ready() ?? []);
+    for (const id of facts.keys()) {
+      if (tracked.has(id)) continue;
+      // `candidate` reads the store: `candidates()` holds only the active ones, not those waiting for a retry.
+      const c = universe.candidate(id);
+      if (c === null || c.reasons.some((r) => r.startsWith('retired='))) facts.delete(id);
+    }
+  }
+
   async function tickOnce(): Promise<void> {
     const now = nowMs();
     const mono = p.scheduler.nowMs();
@@ -579,10 +675,10 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       const a = chain.anchor();
       const fields = { anchor_age_ms: Math.round(mono - (lastAgreeMono ?? startedMono)), anchor_slot: a === null ? 'none' : a.slot.toString() };
       if (unanchoredNow) log.event('critical', 'recorder.unanchored', fields); else log.event('info', 'recorder.anchored', fields);
-      queue.append({ stream: 'decision', recvMs: now, slot: null, commitment: null, source: 'recorder', payload: { kind: 'recorder_clock', anchored: !unanchoredNow, anchorAgeMs: fields.anchor_age_ms, anchorSlot: a === null ? null : fields.anchor_slot } });
+      await guard('unanchored_record', () => queue.append({ stream: 'decision', recvMs: now, slot: null, commitment: null, source: 'recorder', payload: { kind: 'recorder_clock', anchored: !unanchoredNow, anchorAgeMs: fields.anchor_age_ms, anchorSlot: a === null ? null : fields.anchor_slot } }));
     }
     await guard('active_codes', () => { tickCodes = activeCodes(); if (tickSolUsd === 'pending') tickSolUsd = solUsdCheck()?.result ?? 'pending'; });
-    rp.tick();
+    await guard('rpc_tick', () => rp.tick());
     const trouble = clockTrouble as { sinceMs: number; alerted: boolean } | null;
     if (trouble !== null && !trouble.alerted && mono - trouble.sinceMs >= CLOCK_ALERT_MS) {
       trouble.alerted = true;
@@ -612,6 +708,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     // Z09-32: the queue's tick, the writer's pump (poll counts to M08), then M08's closeDue, with one `now`.
     await guard('queue_tick', () => queue.tick(now));
     await guard('pump', () => writer.pump());
+    await guard('next_seq', saveNextSeq);
     await guard('bars', () => { const closed = bars.closeDue(now); if (closed.length > 0) metrics.counter('bars_closed_total', {}).inc(closed.length); barStore.add(closed); });
     if (started) {
       await guard('universe', () => universe.tick());
@@ -622,9 +719,20 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     await guard('daily', () => daily.tick(now));
     if (mono - lastFlushMs >= flushMs) { lastFlushMs = mono; await guard('flush', () => writer.flush()); }
     if (mono - lastDiskMs >= diskMs) { lastDiskMs = mono; await guard('disk', () => { lastDisk = disk.check(); }); }
-    if (mono - lastMetricsMs >= METRICS_EVERY_MS) { lastMetricsMs = mono; await guard('metrics', () => sample()); }
+    if (mono - lastControlMs >= CONTROL_EVERY_MS) { lastControlMs = mono; await guard('control', controlRequests); }
+    if (mono - lastMetricsMs >= METRICS_EVERY_MS) { lastMetricsMs = mono; await guard('metrics', () => sample()); await guard('facts_prune', pruneFacts); }
     if (mono - lastBarStoreMs >= FLUSH_BAR_STORE_MS) { lastBarStoreMs = mono; await guard('bar_store', () => barStore.flush(now)); }
-    metrics.tick();
+    // SW-1(b): the database's own retention, daily, and the outbox drain each minute (retention.ts).
+    if (mono - lastOutboxMs >= OUTBOX_DRAIN_EVERY_MS) { lastOutboxMs = mono; await guard('outbox', () => retention.drainOutbox()); }
+    if (mono - lastRetentionMs >= RETENTION_EVERY_MS) {
+      lastRetentionMs = mono;
+      await guard('retention', () => {
+        const r = retention.run();
+        if (r.bars > 0) metrics.counter('bar_1m_purged_total', {}).inc(r.bars);
+        log.event('info', 'recorder.retention', { rows: r.rows, bars: r.bars });
+      });
+    }
+    await guard('metrics_tick', () => metrics.tick());
   }
 
   let cancel: (() => void) | null = null;
@@ -662,13 +770,14 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         (tracker as PoolTracker<CpPoolState>).stop();
         rp.clock.stop();
         try { writer.pump(); writer.flush(); } catch { /* a failed final flush is recovered at the next start (crash recovery) */ }
+        try { seqsRotated = true; saveNextSeq(); } catch { /* the manifests still hold every seq on disk */ }
         try { barStore.flush(nowMs()); } catch { /* bars are re-derived from the recording */ }
         log.event('info', 'recorder.stopped', { reason: 'signal' });
         db.close();
       },
       parts: {
         db, config, log, metrics, read: rp, chain, queue, writer, disk, tracker: tracker as PoolTracker<CpPoolState>, universe, watchlist, bars, barStore,
-        backfill, venue, venueRecorder, evictions, model, tickOnce,
+        backfill, venue, venueRecorder, evictions, model, facts, tickOnce,
       },
     },
   };

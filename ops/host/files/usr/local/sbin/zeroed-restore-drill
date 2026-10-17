@@ -10,14 +10,18 @@ SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
 USAGE_SRC="${ZEROED_BACKUP_USAGE_SRC:-/var/lib/zeroed-usage}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 identity="${1:?usage: zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]}"
-backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
+# SW-1: copies are zeroed-<time>.tar.zst.age (zstd inside); older ones zeroed-<time>.tar.age (plain tar).
+backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age "$OUT"/zeroed-*.tar.zst.age 2>/dev/null | LC_ALL=C sort -r | head -n 1 || true)}"
 [ -n "$backup" ] && [ -f "$backup" ] || { echo "FAIL: no backup found"; exit 1; }
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 
-age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+case "$backup" in
+  *.tar.zst.age) age -d -i "$identity" "$backup" 2>/dev/null | zstd -q -d -c 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")" ;;
+  *) age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")" ;;
+esac
 [ -f "$work/MANIFEST.sha256" ] || fail "manifest missing"
 (cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null 2>&1 || fail "a file does not match the manifest"
 

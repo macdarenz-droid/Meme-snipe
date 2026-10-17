@@ -105,6 +105,7 @@ managed() {
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
     /etc/systemd/system/srv-zeroed_pull-*.mount) return 0 ;;
     /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
+    /etc/systemd/system/systemd-time-wait-sync.service.d/zeroed-*) return 0 ;;
     # Z10: the keyless recorder's root-owned engine files (ceilings, config, provider allocation).
     /etc/bot/ceilings.json | /etc/bot/config.json | /etc/bot/rpc-allocation.json) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
@@ -185,7 +186,8 @@ fi
 
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
-PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
+# SW-1: zstd compresses the backups (zeroed-backup); an update installs it when missing (the check below).
+PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils zstd)
 # An update only touches apt when a package is missing (and waits for unattended-upgrades' lock).
 if [ "$UPDATE" = 0 ] || ! dpkg -s "${PACKAGES[@]}" >/dev/null 2>&1; then
   apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null
@@ -209,8 +211,12 @@ say "Users"
 getent group zeroed-signer >/dev/null || groupadd --system zeroed-signer
 getent passwd zeroed-signer >/dev/null || useradd --system --gid zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-signer
 getent group zeroed-worker >/dev/null || groupadd --system zeroed-worker
-# The worker may reach the signer's socket through the zeroed-signer group; nothing else is in that group.
-getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --groups zeroed-signer --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
+# The worker may reach the signer's socket through the zeroed-signer group, which its full unit body gives it
+# (SupplementaryGroups=zeroed-signer). SW-18: never through the group database, because a unit can only add to that
+# list (systemd.exec SupplementaryGroups=), so the recorder's body could not leave it out; a membership an older
+# installer made is removed.
+getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin zeroed-worker
+if id -nG zeroed-worker 2>/dev/null | tr ' ' '\n' | grep -qx zeroed-signer; then gpasswd -d zeroed-worker zeroed-signer >/dev/null; fi
 # PATHS-FIX: the worker reads pull receipts through zeroed-pull and import bundles through zeroed-spool (never botops,
 # which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
 getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
@@ -301,12 +307,14 @@ keep_old /etc/ssh/sshd_config.d/10-zeroed.conf
 printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
 if [ "$UPDATE" = 1 ]; then
   # SSH stays exactly as it was: open (key-only) only if the running firewall already let it in.
-  [ "$SSH_WAS_OPEN" = 0 ] || sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
+  # SW-22: on the tailnet only once the pull account has a key (logic.sh ssh_rule).
+  if [ "$SSH_WAS_OPEN" = 1 ]; then rules="$(ssh_rule /etc/zeroed/pull-keys/zeroed-pull < /etc/nftables.conf)"; printf '%s\n' "$rules" > /etc/nftables.conf; fi
 elif [ -n "$SSH_KEY" ]; then
   install -d -m 0700 /root/.ssh
   printf '%s\n' "$SSH_KEY" > /root/.ssh/authorized_keys
   chmod 0600 /root/.ssh/authorized_keys
-  sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
+  rules="$(ssh_rule /etc/zeroed/pull-keys/zeroed-pull < /etc/nftables.conf)"
+  printf '%s\n' "$rules" > /etc/nftables.conf
   systemctl reload ssh 2>/dev/null || true
 else
   for u in ssh.socket ssh.service; do systemctl disable --now "$u" >/dev/null 2>&1 || true; done
@@ -356,6 +364,14 @@ done
 keep_old /var/lib/zeroed-host/release-units
 printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
+# SW-18 (ruling SW-18a): the full worker body just installed is kept aside, so a rollback can put it back with no network;
+# then the body the current release's worker needs goes in place (common.sh worker_unit_apply; the recorder's for
+# "worker": "recorder"). A body that cannot be put in place stops the install (and rolls it back).
+keep_old /usr/local/lib/zeroed/units/zeroed-worker.full.service
+install -d -m 0755 -o root -g root /usr/local/lib/zeroed/units
+install -m 0644 -o root -g root /etc/systemd/system/zeroed-worker.service /usr/local/lib/zeroed/units/zeroed-worker.full.service
+worker_unit_apply /opt/zeroed/current --no-reload || die "the worker unit for the current release could not be put in place (SW-18)"
+
 say "Services"
 systemctl daemon-reload
 # HOST-CAPS: journald reads its size limits only when it starts.
@@ -373,6 +389,8 @@ done
 [ "${#PULL_DOWN[@]}" = 0 ] || systemctl start "${PULL_DOWN[@]}"
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
+# SW-7: the worker waits for a synchronised clock at boot (bounded: systemd-time-wait-sync.service.d/zeroed-timeout.conf).
+systemctl enable systemd-time-wait-sync.service >/dev/null 2>&1 || true
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null
 # The dry run starts only when a merged release asks for one by name (packages/runner/qualifying-run.json).
 if [ -e /etc/systemd/system/zeroed-dryrun-tick.timer ]; then systemctl enable --now zeroed-dryrun-tick.timer >/dev/null; fi

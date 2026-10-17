@@ -784,6 +784,36 @@ export class RecorderQueue {
     return out;
   }
 
+  /**
+   * Card SWITCH-FIX SW-10: records `take` handed out that never reached disk (the writer halted, or a frame failed to
+   * write). Each snapshot's pool loses its encoder state and accepted hash, so its next snapshot is a keyframe of what
+   * the pool is then (a delta against an unwritten state could never be decoded right). A stream's seqs are given back
+   * when the records are its newest taken (always so for the writer: a halt discards a batch as it is taken, and a failed
+   * flush loses everything taken since the last flush), so the seqs on disk stay dense. `giveBackSeqs` false: the
+   * records may still be on disk (a file recovery will cut), so only the encoder states go.
+   */
+  unwrite(records: readonly EncodedRecord[], giveBackSeqs = true): void {
+    const byStream = new Map<StreamName, bigint[]>();
+    for (const r of records) {
+      const list = byStream.get(r.stream) ?? [];
+      list.push(r.seq);
+      byStream.set(r.stream, list);
+      if (SNAPSHOT_STREAMS.has(r.stream)) {
+        const poolId = (JSON.parse(r.payloadJson) as { poolId?: unknown }).poolId;
+        if (typeof poolId === 'string') { this.encoder.forget(poolId); this.lastAccepted.delete(poolId); }
+      }
+      if (giveBackSeqs) { this.s.recordsTotal[r.stream].written--; this.s.recordsTotal[r.stream].notWritten++; }
+    }
+    if (!giveBackSeqs) return;
+    for (const [stream, seqs] of byStream) {
+      const sorted = [...new Set(seqs)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      const first = sorted[0] as bigint;
+      // Only a run that ends at the newest seq handed out can be given back; anything else keeps its seqs (a hole that
+      // the manifests' gaps explain), never a seq used twice.
+      if (sorted.length === Number(this.nextSeq[stream] - first) && sorted.every((s, i) => s === first + BigInt(i))) this.nextSeq[stream] = first;
+    }
+  }
+
   /** The seq the next written record of `stream` gets; A-M07-02 stores `lastSeq` in manifests from this. */
   peekNextSeq(stream: StreamName): bigint {
     return this.nextSeq[stream];

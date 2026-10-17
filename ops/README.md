@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/993ee4ef851ba6a45ffcfe3dd8a011ce4f5e4b7b/ops/install.sh -o i && echo '0deaccd0c2b6b63772f021960056573c9369c716223e15749fb8c9e9a8e3b9a0  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/bcc7c66e4f1bcb63d243a2964ff4fcf3db833af5/ops/install.sh -o i && echo '286ef1c21298729f6b8d6a9d3cef53405945a7e877220b7f621b456f171203bf  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -23,7 +23,7 @@ The console screen can be left at any time (Ctrl+C); setup carries on in the bac
 
 The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
 
-SHA-256 of `install.sh`: `0deaccd0c2b6b63772f021960056573c9369c716223e15749fb8c9e9a8e3b9a0`
+SHA-256 of `install.sh`: `286ef1c21298729f6b8d6a9d3cef53405945a7e877220b7f621b456f171203bf`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -79,7 +79,7 @@ First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). 
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` and under `/var/lib/zeroed-usage` (the provider usage ledger, stored as `zeroed-usage/` in the bundle) with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` and under `/var/lib/zeroed-usage` (the provider usage ledger, stored as `zeroed-usage/` in the bundle) with SQLite's online backup and checks it. It writes a SHA-256 manifest, compresses the bundle with zstd and encrypts it with age to the host key and, once set, to the owner's backup code (`zeroed-<UTC time>.tar.zst.age`). What stays in `/var/backups/zeroed` (SW-1, DISK-BUDGET R1): the newest 24 hourly copies and one copy for each of the last 7 UTC days, always; above that, newer copies while all of them fit in 6 GB (`ZEROED_BACKUP_MAX_BYTES`) and number at most 72. When the floor alone is over 6 GB, `zeroed-check` alerts (`backup-budget`) and no backup is deleted for it. `zeroed-check` also alerts at 80% and 95% use of the server disk (`disk-low`, `disk-critical`; SPEC-B B-M24-04).
 
 **Off-server copy (free, no R2): on.** The owner approved it on 9 Oct ("Yes", about 12:54 AM; CLAUDE.md "Off-server backup"), because sending backups to Telegram sends data to a third party. `ops/host-config.json` says `"offsite_backup": true`. Each code update (`zeroed-update`) turns `zeroed-backup-offsite.timer` on while it says `true`, and off if it is ever set back to `false`. `zeroed-backup-offsite` sends nothing until the owner's backup code exists and Telegram is paired.
 
@@ -90,7 +90,7 @@ Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` and u
 
 How it works: only the code's public half (an age recipient, derived with the same scrypt step as the deploy code but a different salt) stays on the server. Every day at 17:20 UTC the newest backup is re-encrypted to that recipient alone, so nothing on the server, the host key included, can open the copy. It is then sent as a silent Telegram document to the paired chat (bots may send up to 50 MB).
 
-To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age | tar -x`.
+To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.zst.age | zstd -d | tar -x` (copies made before SW-1 end in `.tar.age` and need no `zstd -d`).
 
 `zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It prints PASS once the manifest, the integrity check and the tables all match, and never touches the live files.
 
@@ -262,6 +262,11 @@ The Blueprint's keyless M1 recorder (`packages/engine/src/recorder-main/`) runs 
 - **Memory:** the heap limit is `RECORDER_HEAP_MB` (`logic.sh`), under the unit's `MemoryMax`. Every 10 s the recorder reads its cgroup's anonymous memory (not page cache), and raises one critical alert per episode at 75% of `memory.max`.
 - **Disk:** M07 deletes a segment only with a verified PullReceipt, which only the operator's `md-pull` makes (on the operator's machine, never on the server). With no research key at `/etc/bot/research-ed25519.pub.pem`, nothing is ever deleted, and recording halts with an alert at its cap (8 GiB: about 51-83 days at the measured rates). The Zeroed uploader does not read the recorder's folder.
 - **Memory alert:** the alert reads the cgroup's `anon` memory; if a host's `memory.stat` lacks it, `memory.current` minus `file`, and the alert line says which (`source`).
+
+**Runbook: a stopped read provider (`m14.provider_stopped`; SW-2).** M14 stops a provider after three 429 or 403 answers within ten minutes (owner rule) and keeps the stop across restarts, so it never resumes by itself. The alert `Worker critical: m14.provider_stopped` names this command. Recording goes on with the other provider while one is left.
+1. Find out why: the provider's dashboard (usage, rate limits, a changed plan) and `journalctl -u zeroed-worker | grep m14.provider` for the stop line and its reason. Resume only once the cause is understood; the 50% rate rule still applies.
+2. On the server console as root: `zeroed-provider-resume shyft` (or `chainstack`). It asks the running recorder to clear the stop, waits up to 30 s, and logs to the journal. The recorder writes `recorder.provider_resume` with `resumed`, `not_stopped` or `unknown`.
+3. Check: the alert clears at the next heartbeat, and `curl -s 127.0.0.1:8787/health` shows the recorder recording. If the provider limits us again, it is stopped again after three answers.
 
 **Owner steps at switch-on (read providers; Z10-9).** Repository secrets `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` (the two URLs `provider-reads.yml` already uses) must both be set.
 1. On the server console (`linuxuser`, then `sudo -i`), run `zeroed-new-deploy-code` and note the 6 words.

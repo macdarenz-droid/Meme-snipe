@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 # Hourly encrypted backup of every SQLite file under /var/lib/zeroed, and (PATHS-FIX ruling 24) of the provider usage
 # ledger's folder /var/lib/zeroed-usage, stored in the bundle under zeroed-usage/. Each file is copied with SQLite's
-# online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed and
-# encrypted with age to /etc/zeroed/backup-recipients (the host key, plus the owner's key once the
-# Deploy workflow delivered one). Keeps the newest 72 locally.
+# online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed, compressed
+# with zstd (SW-1; the installer's PACKAGES guarantee it) and encrypted with age to /etc/zeroed/backup-recipients (the
+# host key, plus the owner's key once the Deploy workflow delivered one), as zeroed-<UTC time>.tar.zst.age.
+# Kept (SW-1, DISK-BUDGET R1, review ruling 3; logic.sh backup_keep): a floor of the newest 24 hourly copies and 7
+# daily copies (one per UTC day) that the byte budget never cuts; above it, newer copies while all fit in
+# ZEROED_BACKUP_MAX_BYTES (6 GB) and number at most ZEROED_BACKUP_KEEP (72). A floor over the budget is an alert
+# (zeroed-check reads budget.status), never a delete; from 80% of it a warning with the days left (SW-1b).
 set -euo pipefail
 umask 077
+. "${ZEROED_LOGIC:-/usr/local/lib/zeroed/logic.sh}"
 
 SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
 USAGE_SRC="${ZEROED_BACKUP_USAGE_SRC:-/var/lib/zeroed-usage}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 RECIPIENTS="${ZEROED_BACKUP_RECIPIENTS:-/etc/zeroed/backup-recipients}"
 KEEP="${ZEROED_BACKUP_KEEP:-72}"
+MAX_BYTES="${ZEROED_BACKUP_MAX_BYTES:-6000000000}"
+FLOOR_HOURLY=24
+FLOOR_DAILY=7
 
 [ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
 # Each entry is "source|path in the bundle"; the usage ledger's files go under zeroed-usage/.
@@ -39,7 +47,16 @@ done
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
-tar -C "$work/snap" -c . | age -R "$RECIPIENTS" -o "$OUT/zeroed-$ts.tar.age.new"
-mv -f "$OUT/zeroed-$ts.tar.age.new" "$OUT/zeroed-$ts.tar.age"
-ls -1 "$OUT"/zeroed-*.tar.age | LC_ALL=C sort -r | tail -n +"$((KEEP + 1))" | xargs -r rm -f
-echo "Backup zeroed-$ts.tar.age: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
+name="zeroed-$ts.tar.zst.age"
+tar -C "$work/snap" -c . | zstd -q -3 -T1 | age -R "$RECIPIENTS" -o "$OUT/$name.new"
+mv -f "$OUT/$name.new" "$OUT/$name"
+status="$(find "$OUT" -maxdepth 1 -type f -name 'zeroed-*.age' -printf '%f %s\n' | backup_keep "$FLOOR_HOURLY" "$FLOOR_DAILY" "$MAX_BYTES" "$KEEP" | while read -r what f rest; do
+  if [ "$what" = delete ]; then rm -f -- "$OUT/$f"; else printf '%s %s %s\n' "$what" "$f" "$rest"; fi
+done)"
+# SW-1b: the floor's size a run (the last 7 days of hourly runs), for the days left to the budget.
+floor_now="$(printf '%s\n' "$status" | awk '{ print $2 }')"
+{ tail -n 167 "$OUT/budget.history" 2>/dev/null || true; printf '%s %s\n' "$(date +%s)" "$floor_now"; } > "$OUT/budget.history.new" && mv -f "$OUT/budget.history.new" "$OUT/budget.history"
+days_left="$(budget_days_left "$MAX_BYTES" < "$OUT/budget.history")"
+printf '%s max_bytes %s days_left %s\n' "$status" "$MAX_BYTES" "$days_left" > "$OUT/budget.status.new" && mv -f "$OUT/budget.status.new" "$OUT/budget.status"
+echo "Backup $name: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
+echo "Kept: $status (budget $MAX_BYTES bytes)."

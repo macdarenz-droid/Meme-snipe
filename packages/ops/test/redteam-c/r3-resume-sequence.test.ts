@@ -90,6 +90,8 @@ paired() { return 1; }
 worker_ready() { [ -s "$CRED_DIR/helius_api_key" ]; }
 commit_verdict() { cat >/dev/null; echo green; }
 e2e_commit() { echo "$2"; }
+# SW-18: the unit-body step is tested on its own (switch-fix.test.ts); here it always succeeds.
+worker_unit_apply() { :; }
 `);
   exe('git', `case "$*" in
   *rev-parse*) cat ${root}/sd/tag ;;

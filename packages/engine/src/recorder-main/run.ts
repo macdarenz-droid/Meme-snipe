@@ -12,7 +12,8 @@
 //                         telegram_chat_id are read.
 //   WATCHDOG_URL, ZEROED_HEARTBEAT_MS  the watchdog heartbeat (OPS-1b).
 //   ZEROED_GIT_SHA        the release id; else the folder name of /opt/zeroed/current.
-// Exit codes: 0 stopped by a signal; 1 a start refused (the update gate then holds or rolls back); 2 a refused setting.
+// Exit codes: 0 stopped by a signal; 1 a start refused (the update gate then holds or rolls back); 2 a refused setting;
+// 70 an error nothing caught (SW-3, health.ts fatalHandler).
 import { existsSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { UnixMs } from '@bot/types';
@@ -21,7 +22,7 @@ import type { FetchLike } from '../m14/types.ts';
 import { FileLogSink } from '../m27/logfile.ts';
 import { recorderTimers, recorderWallClock } from './clock.ts';
 import { createRecorder, type RecorderPaths, type RunningRecorder } from './compose.ts';
-import { cgroupMemory, heartbeatBody, heartbeatHealth, memoryWatch, parseLoopback, reconcile, sendHeartbeat, startHealthServers, type HealthBody } from './health.ts';
+import { cgroupMemory, fatalHandler, heartbeatBody, heartbeatHealth, heartbeatSlot, memoryWatch, parseLoopback, reconcile, sendHeartbeat, startHealthServers, type HealthBody } from './health.ts';
 import { credentialSecrets } from './rpc.ts';
 
 /** The whole process: refused settings exit 2, a refused start exits 1, a signal stops it (exit 0). */
@@ -52,15 +53,17 @@ export async function runRecorderProcess(): Promise<void> {
   const scratchPaths = (d: string): RecorderPaths => ({
     db: join(d, 'bot.db'), preMigrationBackup: join(d, 'premigrate/bot.premigrate'), initMarker: join(d, 'init/first-start'), logDir: join(d, 'log'),
     usageDb: join(d, 'usage/rpc-usage.db'), mdDir: join(d, 'md'), receiptsDir: join(d, 'md/receipts'), ceilings: '/etc/bot/ceilings.json', config: '/etc/bot/config.json',
+    controlDir: join(d, 'control'),
   });
   const paths: RecorderPaths = scratch !== null ? scratchPaths(join(scratch, 'recorder')) : {
     db: ENGINE_PATHS.db, preMigrationBackup: ENGINE_PATHS.preMigrationBackup, initMarker: ENGINE_PATHS.initMarker, logDir: ENGINE_PATHS.logDir,
     usageDb: ENGINE_PATHS.rpcUsageDb, mdDir: ENGINE_PATHS.mdDir, receiptsDir: ENGINE_PATHS.receiptsDir, ceilings: '/etc/bot/ceilings.json', config: '/etc/bot/config.json',
+    controlDir: ENGINE_PATHS.controlDir,
   };
   if (scratch !== null) for (const d of ['premigrate', 'init', 'log', 'usage', 'md/receipts']) mkdirSync(join(scratch, 'recorder', d), { recursive: true });
   // The database's own folder (paths.ts: never the marker's), the pre-migration backup's and the log folder, inside the
   // unit's 0700 state folder; the folders outside it are the installer's.
-  for (const d of [dirname(paths.db), dirname(paths.preMigrationBackup), paths.logDir]) mkdirSync(d, { recursive: true, mode: 0o700 });
+  for (const d of [dirname(paths.db), dirname(paths.preMigrationBackup), paths.logDir, paths.controlDir as string]) mkdirSync(d, { recursive: true, mode: 0o700 });
 
   const credDir = env.CREDENTIALS_DIRECTORY;
   const cred = (name: string): string | null => {
@@ -90,6 +93,15 @@ export async function runRecorderProcess(): Promise<void> {
 
   // The log sink: the day files of M27 (m27.log_dir); in the scratch trial its own folder.
   const sink = new FileLogSink({ dir: paths.logDir, clock: recorderWallClock, retentionDays: 14, maxBytesPerDay: 256 * 1_048_576, queueBytes: 8 * 1_048_576 });
+
+  // SW-3: an error nothing caught ends the process on purpose, after one line and a last flush.
+  const fatal = fatalHandler({
+    log: (where, code) => { rec?.parts.log.event('error', 'recorder.internal_error', { where, error_code: code }); },
+    stop: async () => { await rec?.stop(); await sink.close(); },
+    exit: (code) => process.exit(code), say, setTimer: (fn, ms) => { setTimeout(fn, ms).unref(); },
+  });
+  process.on('uncaughtException', (e) => { fatal('uncaught_exception', e); });
+  process.on('unhandledRejection', (e) => { fatal('unhandled_rejection', e); });
 
   const started = await createRecorder({
     paths, secrets, fetch: ((url, init) => fetch(url, init)) as FetchLike, clock: recorderWallClock, scheduler: recorderTimers, releaseId,
@@ -129,7 +141,7 @@ export async function runRecorderProcess(): Promise<void> {
     if (s?.halted != null) critical.set('halted', `Recording halted: ${s.halted.slice(0, 80)}.`); else critical.delete('halted');
     codes = hbHealth.codes({ monoMs: recorderTimers.nowMs(), status: s, memoryHigh: critical.has('memory') });
     if (watchdog === '' || hbKey === null) return;
-    const lastSlot = s?.newestStoredSlot == null ? null : BigInt(s.newestStoredSlot);
+    const lastSlot = heartbeatSlot(s);
     const text = heartbeatBody({ seq, boot, gitSha: releaseId, lastSlot, critical: codes, ownerChat, uptimeS: Math.floor((recorderTimers.nowMs() - startedAt) / 1000) }, recorderWallClock.nowMs() as UnixMs, paused);
     const r = await sendHeartbeat({ url: watchdog, key: hbKey, body: text, nowMs: recorderWallClock.nowMs(), fetch });
     if (r.paused !== undefined) paused = r.paused;                    // echoed back so the state and the message agree

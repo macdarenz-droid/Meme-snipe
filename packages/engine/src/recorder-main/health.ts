@@ -53,8 +53,17 @@ export function startHealthServers(addrs: ReadonlyArray<{ host: string; port: nu
         res.end('{"error":"not found"}');
         return;
       }
+      // SW-3: a status that throws answers 500; it never becomes an uncaught exception in the server's callback.
+      let text: string;
+      try {
+        text = JSON.stringify(body());
+      } catch {
+        res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end('{"error":"internal"}');
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      res.end(JSON.stringify(body()));
+      res.end(text);
     });
     s.once('error', reject);
     s.listen(a.port, a.host, () => resolve(s));
@@ -80,6 +89,47 @@ export function heartbeatBody(s: HeartbeatState, nowMs: number, paused: boolean)
     unresolved_intents: { count: 0, oldest_age_s: null }, signer: 'not-used', lease_epoch: null, sol_reserve: null,
     paused, owner_chat_id: s.ownerChat, critical: s.critical, uptime_s: s.uptimeS,
   }).replace(/"__slot:(\d+)__"/, '$1');
+}
+
+/** SW-3: what a fatal handler needs; the process's own in run.ts, fakes in tests. */
+export interface FatalDeps {
+  log: (where: string, errorCode: string) => void;
+  /** The recorder's stop and the log sink's close (best effort, bounded by `graceMs`). */
+  stop: () => Promise<void>;
+  exit: (code: number) => void;
+  say: (line: string) => void;
+  setTimer: (fn: () => void, ms: number) => void;
+  graceMs?: number;
+}
+/** SW-3: the exit code of a deliberate stop after an error nothing caught (EX_SOFTWARE; systemd starts it again). */
+export const FATAL_EXIT = 70;
+
+/**
+ * SW-3: the handler for `uncaughtException` and `unhandledRejection`. One `recorder.internal_error` line (codes only),
+ * a best-effort stop (the writer's last flush, the log's), then a deliberate exit, at most `graceMs` (5 s) later. The
+ * process never runs on in a state nothing checked; the restart count and the probation see the exit.
+ */
+export function fatalHandler(d: FatalDeps): (where: string, e: unknown) => void {
+  let dying = false;
+  return (where, e) => {
+    if (dying) return;
+    dying = true;
+    const raw = (e as { code?: unknown } | null)?.code;
+    const code = (typeof raw === 'string' || typeof raw === 'number' ? String(raw) : 'E_THROWN').replace(/[^A-Za-z0-9_]/g, '_').slice(0, 40);
+    try { d.log(where, code); } catch { /* the line is best effort */ }
+    d.say(`Recorder stopping: ${where} (${code}).`);
+    d.setTimer(() => d.exit(FATAL_EXIT), d.graceMs ?? 5_000);
+    void d.stop().catch(() => undefined).finally(() => d.exit(FATAL_EXIT));
+  };
+}
+
+/**
+ * SW-8: the heartbeat's `last_processed_slot`. Null while no pool is watched: the newest stored slot then only ages,
+ * and the watchdog would read it as the worker falling behind the chain (a false `slot_lag`).
+ */
+export function heartbeatSlot(s: { watched: number; newestStoredSlot: string | null } | null): bigint | null {
+  if (s === null || s.watched === 0 || s.newestStoredSlot === null) return null;
+  return BigInt(s.newestStoredSlot);
 }
 
 /** One heartbeat; returns the watchdog's `paused` flag when it sent one (applied by echoing it, as the stand-in does). */

@@ -26,6 +26,8 @@ if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${DATA_STORE_TOKEN:-}" ]; then
 fi
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || die "CLOUDFLARE_ACCOUNT_ID is missing."
 [ -n "${WRANGLER:-}" ] || die "WRANGLER is not set."
+# SW-20: wrangler (an npm package) gets the Cloudflare token and account only; the reports token goes on its stdin.
+wrangler() { env -u DATA_STORE_TOKEN -u GH_TOKEN -u GITHUB_TOKEN $WRANGLER "$@"; }
 [[ "${DATA_STORE_TOKEN}" =~ ^[A-Za-z0-9_]{20,255}$ ]] || die "DATA_STORE_TOKEN has characters a GitHub token does not have."
 repo="${DATA_REPO:-}"
 [[ "$repo" =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || die "The repository variable DATA_REPO must be owner/name (Settings > Secrets and variables > Actions > Variables)."
@@ -48,10 +50,10 @@ config="$src/w/packages/ops/wrangler.toml"
 
 "$here/cf-subdomain.sh" >/dev/null
 # The repository name is not a secret: it goes in as a plain variable, the only argument that carries a value.
-out="$($WRANGLER --config "$config" deploy --var "DATA_REPO:$repo" 2>&1 || true)"
+out="$(wrangler --config "$config" deploy --var "DATA_REPO:$repo" 2>&1 || true)"
 if ! printf '%s\n' "$out" | grep -qE 'https://[A-Za-z0-9.-]+\.workers\.dev'; then
   printf '%s\n' "$out" | tail -n 20 >&2
   die "Watchdog deploy failed (no workers.dev address in wrangler's output; its last lines are above)."
 fi
-printf '%s' "$DATA_STORE_TOKEN" | $WRANGLER --config "$config" secret put REPORTS_TOKEN >/dev/null
+printf '%s' "$DATA_STORE_TOKEN" | wrangler --config "$config" secret put REPORTS_TOKEN >/dev/null
 echo "Watchdog code deployed from ${sha:0:12} (the deploy tag); REPORTS_TOKEN set. Its other secrets are unchanged."

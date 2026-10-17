@@ -159,6 +159,49 @@ keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || retu
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
 # worker_ready: the worker may start: every key stored and the owner's chat paired (its unit's ConditionPathExists, and more).
 worker_ready() { keys_stored && paired; }
+# SW-18 (ruling SW-18a, option A): one unit name, two bodies. worker_unit_apply RELEASE_DIR [--no-reload] puts in place
+# the body the release's worker needs: the recorder's (units/zeroed-worker.recorder.service: no signer group or
+# folders, four credentials) for "worker": "recorder", else the full one. A full body already in place is left as it
+# is (the installer's own, also the one a rollback's older installer writes); a recorder body in place goes back to the
+# full one kept by the installer (units/zeroed-worker.full.service: on this host, no network). Written atomically
+# (temporary file, systemd-analyze verify, rename), then systemctl daemon-reload unless --no-reload. Returns 1 and
+# changes nothing when any step fails; the caller then makes no restart.
+WORKER_UNIT_FILE="${ZEROED_WORKER_UNIT_FILE:-/etc/systemd/system/zeroed-worker.service}"
+WORKER_UNIT_BODIES="${ZEROED_WORKER_UNIT_BODIES:-/usr/local/lib/zeroed/units}"
+worker_unit_apply() {
+  local entry body tmp
+  entry="$(worker_entry "$1" 2>/dev/null)" || return 1
+  case "$entry" in
+    */"$RECORDER_ENTRY") body="$WORKER_UNIT_BODIES/zeroed-worker.recorder.service" ;;
+    *)
+      cmp -s "$WORKER_UNIT_FILE" "$WORKER_UNIT_BODIES/zeroed-worker.recorder.service" || return 0
+      body="$WORKER_UNIT_BODIES/zeroed-worker.full.service" ;;
+  esac
+  [ -s "$body" ] || return 1
+  cmp -s "$body" "$WORKER_UNIT_FILE" && return 0
+  tmp="$(mktemp -d)" || return 1
+  if ! cp "$body" "$tmp/zeroed-worker.service" || ! "${SYSTEMD_ANALYZE:-systemd-analyze}" verify "$tmp/zeroed-worker.service" >"$tmp/verify.log" 2>&1; then
+    log "The worker unit body $(basename "$body") does not verify: $(tr -cd '[:print:]\n' < "$tmp/verify.log" 2>/dev/null | head -n 3 | tr '\n' ' ' | cut -c1-300)"
+    rm -rf "$tmp"
+    return 1
+  fi
+  # The body in place now, so a failed reload puts it back (nothing changed).
+  [ ! -e "$WORKER_UNIT_FILE" ] || cp -p "$WORKER_UNIT_FILE" "$tmp/before" || { rm -rf "$tmp"; return 1; }
+  if ! install -m 0644 -o root -g root "$body" "$WORKER_UNIT_FILE.zeroed-unit" 2>/dev/null && ! install -m 0644 "$body" "$WORKER_UNIT_FILE.zeroed-unit"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  mv -f "$WORKER_UNIT_FILE.zeroed-unit" "$WORKER_UNIT_FILE" || { rm -f "$WORKER_UNIT_FILE.zeroed-unit"; rm -rf "$tmp"; return 1; }
+  if [ "${2:-}" != --no-reload ] && ! "${SYSTEMCTL:-systemctl}" daemon-reload; then
+    if [ -e "$tmp/before" ]; then mv -f "$tmp/before" "$WORKER_UNIT_FILE"; else rm -f "$WORKER_UNIT_FILE"; fi
+    "${SYSTEMCTL:-systemctl}" daemon-reload || true
+    rm -rf "$tmp"
+    return 1
+  fi
+  rm -rf "$tmp"
+  log "Worker unit: $(basename "$body") in place for $(basename "$1")."
+}
+
 # restart_for_chat: the worker reads the chat at start, so a re-paired chat restarts it now, or at the next safe moment
 # (pending_restart, from zeroed-check) while it is busy.
 restart_for_chat() {

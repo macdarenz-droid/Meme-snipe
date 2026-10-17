@@ -8,8 +8,8 @@ ConditionPathExists=/var/lib/zeroed/recorder
 [Service]
 Type=oneshot
 # The worker's own user: it already holds every credential read here and owns the recorder, so no capability is needed.
-# That user is in the zeroed-signer group (/etc/group), which systemd applies here too, so the signer's folders are made
-# inaccessible below.
+# That user is in no extra group in /etc/group (SW-18: the worker unit gives the signer group itself); the signer's
+# folders are made inaccessible below all the same.
 User=zeroed-worker
 Group=zeroed-worker
 EnvironmentFile=/etc/zeroed/worker.env

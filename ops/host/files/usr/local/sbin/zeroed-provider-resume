@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# SW-2: ends a read provider's stop (M14 stops a provider after three 429/403 answers within ten minutes, owner rule,
+# and keeps the stop across restarts). Run as root at the host console, once the provider's limits are understood:
+#   zeroed-provider-resume <label>     (label: shyft or chainstack, as the alert and zeroed-status show it)
+# It writes the request provider-resume-<label> into the worker's control folder; the running recorder clears that
+# stop, logs `recorder.provider_resume` with the result, and deletes the request. Logged to the journal here too.
+set -euo pipefail
+umask 077
+CONTROL="${ZEROED_CONTROL_DIR:-/var/lib/zeroed/control}"
+WAIT_S="${ZEROED_PROVIDER_RESUME_WAIT_S:-30}"
+label="${1:-}"
+[[ "$label" =~ ^[a-z0-9_-]{1,32}$ ]] || { echo "Usage: zeroed-provider-resume <label> (lowercase letters, digits, - or _)."; exit 2; }
+[ -d "$CONTROL" ] && [ ! -L "$CONTROL" ] || { echo "No control folder at $CONTROL: is a recorder release running?"; exit 1; }
+req="$CONTROL/provider-resume-$label"
+# Made exclusively under a fresh name (never through a link the folder's owner left), then renamed over the request
+# name (rename replaces a link or file there, never follows it), so the recorder never sees a half-made request.
+tmp="$(mktemp -p "$CONTROL" .provider-resume.XXXXXX)"
+chown --reference="$CONTROL" "$tmp" 2>/dev/null || true
+mv -fT "$tmp" "$req"
+logger -t zeroed-provider-resume "requested resume of provider $label" 2>/dev/null || true
+for _ in $(seq 1 "$WAIT_S"); do
+  [ -e "$req" ] || { echo "Resume of $label handled by the recorder; its result is the log line recorder.provider_resume."; exit 0; }
+  sleep 1
+done
+rm -f "$req"
+echo "The recorder did not pick up the request within ${WAIT_S}s (is it running?). Nothing was changed."
+exit 1

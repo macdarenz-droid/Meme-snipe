@@ -24,6 +24,8 @@ import { RECEIPT_CAPS, receiptFileName, sweepReceipts, type ReceiptCaps } from '
 
 export const GIB = 1_073_741_824;
 export const DAY_MS = 86_400_000;
+/** SW-4: the share of `recorder.max_bytes` that raises `M07.disk_budget_high`. */
+export const BUDGET_WARN_SHARE = 0.75;
 
 export interface DiskPolicy {
   warnPct: number; stopPct: number; maxBytes: number; minFreeBytes: number; retentionDays: number;
@@ -69,6 +71,15 @@ export class DiskManager {
   private readonly deps: DiskDeps;
   private readonly fs: NonNullable<DiskDeps['fs']>;
   private unpulledAlertDay: string | null = null;
+  /**
+   * SW-5: the segments of each closed hour, by the hour folder's mtime. A closed hour only changes when a file in it is
+   * made, renamed or removed (a late part, a recovered manifest, a delete here), each of which changes the folder's
+   * mtime, so an unchanged folder is not read again: a check costs one stat per hour on disk, not three calls per file.
+   */
+  /** SW-4: the recorder's bytes, one sample an hour over the last day (the growth rate for days-to-cap). */
+  private readonly growth: Array<{ atMs: number; bytes: number }> = [];
+  private budgetAlertDay: string | null = null;
+  private readonly hourCache = new Map<string, { mtimeMs: number; closed: Segment[]; totalBytes: number }>();
 
   constructor(deps: DiskDeps) {
     const problem = checkPolicy(deps.policy);
@@ -83,14 +94,29 @@ export class DiskManager {
     let totalBytes = 0;
     const root = this.deps.dataDir;
     if (!this.fs.existsSync(root)) return { closed, totalBytes };
+    const currentHour = hourOf(this.deps.nowMs()).startMs;
+    const seen = new Set<string>();
     for (const day of (this.fs.readdirSync(root) as string[]).filter(isDayName).sort()) {
       for (const hour of (this.fs.readdirSync(join(root, day)) as string[]).filter(isHourName).sort()) {
         const dir = join(root, day, hour);
+        const key = `${day}/${hour}`;
+        seen.add(key);
+        const hourStart = Date.parse(`${day}T${hour}:00:00Z`);
+        let mtimeMs: number | null = null;
+        try { const t = this.fs.statSync(dir).mtimeMs; mtimeMs = typeof t === 'number' && Number.isFinite(t) ? t : null; } catch { mtimeMs = null; }
+        const hit = this.hourCache.get(key);
+        if (hit !== undefined && mtimeMs !== null && hit.mtimeMs === mtimeMs && hourStart < currentHour) {
+          closed.push(...hit.closed);
+          totalBytes += hit.totalBytes;
+          continue;
+        }
+        const hourClosed: Segment[] = [];
+        let hourBytes = 0;
         for (const name of (this.fs.readdirSync(dir) as string[]).sort()) {
           const seg = parseSegmentName(name);
           if (seg === null) continue;
           const bytes = this.fs.statSync(join(dir, name)).size;
-          totalBytes += bytes;
+          hourBytes += bytes;
           const mPath = join(dir, manifestNameOf(name) as string);
           if (!this.fs.existsSync(mPath)) continue;
           let m: unknown;
@@ -100,10 +126,16 @@ export class DiskManager {
             continue;                                                     // unreadable manifest: never deleted
           }
           if (!isManifest(m)) continue;
-          closed.push({ path: `${day}/${hour}/${name}`, sha256: m.sha256, bytes, hourStartMs: Date.parse(`${day}T${hour}:00:00Z`) as UnixMs });
+          hourClosed.push({ path: `${day}/${hour}/${name}`, sha256: m.sha256, bytes, hourStartMs: hourStart as UnixMs });
         }
+        closed.push(...hourClosed);
+        totalBytes += hourBytes;
+        // Only a closed hour is kept: the current one still grows, and its files change without a new name.
+        if (mtimeMs !== null && hourStart < currentHour) this.hourCache.set(key, { mtimeMs, closed: hourClosed, totalBytes: hourBytes });
+        else this.hourCache.delete(key);
       }
     }
+    for (const key of this.hourCache.keys()) if (!seen.has(key)) this.hourCache.delete(key);
     return { closed, totalBytes };
   }
 
@@ -144,6 +176,24 @@ export class DiskManager {
     }
   }
 
+  /**
+   * SW-4: at 75% of `recorder.max_bytes`, one warning a UTC day with the days left at the last day's growth (-1 when
+   * it is not growing, or there is under an hour of samples). It comes days before the cap halts recording.
+   */
+  private budgetWarning(now: number, bytes: number, day: string): void {
+    const last = this.growth.at(-1);
+    if (last === undefined || now - last.atMs >= 3_600_000 || now < last.atMs) this.growth.push({ atMs: now, bytes });
+    while (this.growth.length > 25 || (this.growth.length > 1 && now - (this.growth[0] as { atMs: number }).atMs > DAY_MS)) this.growth.shift();
+    const max = this.deps.policy.maxBytes;
+    if (bytes < BUDGET_WARN_SHARE * max || this.budgetAlertDay === day) return;
+    this.budgetAlertDay = day;
+    const first = this.growth[0] as { atMs: number; bytes: number };
+    const spanMs = now - first.atMs;
+    const perDay = spanMs >= 3_600_000 ? ((bytes - first.bytes) * DAY_MS) / spanMs : 0;
+    const daysToCap = perDay > 0 ? Math.max(0, Math.floor((max - bytes) / perDay)) : -1;
+    this.deps.log('warning', 'M07.disk_budget_high', { recorder_bytes: bytes, max_bytes: max, pct: Math.floor((bytes * 100) / max), days_to_cap: daysToCap });
+  }
+
   check(): DiskCheck {
     const p = this.deps.policy;
     const now = this.deps.nowMs();
@@ -159,8 +209,9 @@ export class DiskManager {
     const open = new Set(this.deps.writer.openPaths());
     const pulled = (s: Segment): boolean => s.hourStartMs < currentHour && !open.has(s.path) && receipts.get(s.path) === s.sha256;
     const deleted: string[] = [];
+    const gone = new Set<string>();
     const drop = (s: Segment): void => {
-      if (this.remove(s)) { deleted.push(s.path); recorderBytes -= s.bytes; freeBytes += s.bytes; }
+      if (this.remove(s)) { deleted.push(s.path); gone.add(s.path); recorderBytes -= s.bytes; freeBytes += s.bytes; }
     };
     // Ruling Z10-26: the watch log's day files count against the same budget from the start.
     const watchDir = join(this.deps.dataDir, 'watch');
@@ -172,12 +223,12 @@ export class DiskManager {
     for (const s of closed) if (s.hourStartMs + 3_600_000 <= cutoff && pulled(s)) drop(s);
     for (const s of closed) {
       if (!pressured()) break;
-      if (!deleted.includes(s.path) && pulled(s)) drop(s);
+      if (!gone.has(s.path) && pulled(s)) drop(s);
     }
     // Ruling Z10-26: a watch day file (the coverage denominator) goes once its day is past retention and no segment of
     // that day is left (each was receipted and deleted), so a day's coverage can be rebuilt while any of its recording
     // is on the host. Today's file and any day with a segment left are kept.
-    const daysLeft = new Set(closed.filter((s) => !deleted.includes(s.path)).map((s) => s.path.slice(0, 10)));
+    const daysLeft = new Set(closed.filter((s) => !gone.has(s.path)).map((s) => s.path.slice(0, 10)));
     for (const d of (this.fs.readdirSync(this.deps.dataDir) as string[]).filter(isDayName)) {
       if ((this.fs.readdirSync(join(this.deps.dataDir, d)) as string[]).some(isHourName)) daysLeft.add(d);
     }
@@ -194,13 +245,14 @@ export class DiskManager {
         /* kept; tried again at the next check */
       }
     }
-    const left = closed.filter((s) => !deleted.includes(s.path));
+    const left = closed.filter((s) => !gone.has(s.path));
     const unreceiptedOld = left.filter((s) => !pulled(s) && s.hourStartMs + 3_600_000 <= cutoff).length;
     const day = new Date(now).toISOString().slice(0, 10);
     if (unreceiptedOld > 0 && this.unpulledAlertDay !== day) {
       this.unpulledAlertDay = day;
       this.deps.log('warning', 'M07.unpulled_segments', { count: unreceiptedOld, retention_days: p.retentionDays });
     }
+    this.budgetWarning(now, recorderBytes, day);
     const reasons: string[] = [];
     if (usedPct() > p.stopPct) reasons.push('disk_stop_pct');
     if (recorderBytes > p.maxBytes) reasons.push('max_bytes');
