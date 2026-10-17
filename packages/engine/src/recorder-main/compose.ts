@@ -653,12 +653,12 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
    * M04 no longer tracks it. A retired pool that comes back is read fresh, as any pool whose facts are too old.
    */
   function pruneFacts(): void {
-    const byPool = new Map(universe.candidates().map((c) => [c.poolId, c]));
     const tracked = new Set(tracker?.ready() ?? []);
     for (const id of facts.keys()) {
       if (tracked.has(id)) continue;
-      const c = byPool.get(id);
-      if (c === undefined || c.reasons.some((r) => r.startsWith('retired='))) facts.delete(id);
+      // `candidate` reads the store: `candidates()` holds only the active ones, not those waiting for a retry.
+      const c = universe.candidate(id);
+      if (c === null || c.reasons.some((r) => r.startsWith('retired='))) facts.delete(id);
     }
   }
 

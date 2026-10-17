@@ -15,7 +15,8 @@
 //   2. the least-squares slope of heap over hours 24-48 <= 0.5 MiB an hour, and of RssAnon <= 0.25 MiB an hour (ruling
 //      Z10-38, tightened from Z10-35's 1 MiB: 6 MiB a day at most, where the bounded rings have filled by hour 14);
 //   3. peak RSS <= LIMIT_RSS (75% of the unit's MemoryMax, passed in);
-//   4. no `m27.unknown_code` line, no `recorder.internal_error`, no unhandled rejection.
+//   4. no `m27.unknown_code` line, no `recorder.internal_error`, no unhandled rejection;
+//   5. at least one pool watched (SWITCH-FIX: a soak that recorded nothing passed 1-4).
 // Usage: node --expose-gc --no-warnings --max-old-space-size=<RECORDER_HEAP_MB> scripts/soak/soak.ts [hours=48] [outDir] [rssLimitMiB=600]
 // (CI passes the server's heap limit, so a heap the recorder could not hold on the server fails here too.)
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -141,6 +142,8 @@ const checks = {
   rssFlat: result.rssAnonSlopeSecondMiBPerHour <= 0.25,
   rssUnderLimit: result.peakRssMiB * MIB <= LIMIT_RSS,
   clean: unknown === 0 && internal === 0 && unhandled === 0,
+  // SWITCH-FIX: memory that stays flat proves nothing if nothing was recorded: the soak must watch pools.
+  recording: result.maxWatched > 0,
 };
 const pass = Object.values(checks).every(Boolean);
 writeFileSync(join(OUT, 'soak-result.json'), `${JSON.stringify({ pass, checks, result, samples }, null, 2)}\n`);
