@@ -9,6 +9,8 @@ import { dayManifests } from '../../src/m07/daily.ts';
 import { SegmentWriter } from '../../src/m07/segments.ts';
 import { readPhase0Dataset } from '../../src/m13/phase0-input.ts';
 import { venueRecordedPricing } from '../../src/m13/venue-pricing.ts';
+import { M14_CONFIG } from '../../src/m14/config.ts';
+import { DEFAULT_PROVIDERS } from '../../src/m14/defaults.ts';
 import { heightReader, NEXT_SEQ_KEY } from '../../src/recorder-main/compose.ts';
 import { FATAL_EXIT, fatalHandler, heartbeatSlot, startHealthServers } from '../../src/recorder-main/health.ts';
 import { tempDir } from '../helpers.ts';
@@ -235,4 +237,16 @@ describe('SW-2: a provider stop survives a restart, and only the operator\'s res
       await c.rec.stop();
     }
   }, 60_000);
+});
+
+describe('SW-21: Chainstack request units as its official pages give them (read 2026-10-17)', () => {
+  it('3M RU a month on Developer, the rolling cap at 50% of it, and every archive-billable method counted at 2 RU (fails before: only getSignaturesForAddress)', () => {
+    const cs = DEFAULT_PROVIDERS.find((p) => p.label === 'chainstack');
+    assert.equal(cs?.metering?.monthlyAllowance, 3_000_000);
+    for (const m of ['getTransaction', 'getBlock', 'getBlockTime', 'getBlocks', 'getBlocksWithLimit', 'getSignaturesForAddress', 'getFirstAvailableBlock', 'getSignatureStatuses']) {
+      assert.equal(cs?.metering?.methodCost[m], 2, m);
+    }
+    const cap = M14_CONFIG.find((f) => f.key === 'rpc.chainstack.rolling_31d_ru_cap');
+    assert.ok(cap !== undefined && Number(cap.max) <= 1_500_000 && Number(cap.default) <= 0.5 * 3_000_000);
+  });
 });

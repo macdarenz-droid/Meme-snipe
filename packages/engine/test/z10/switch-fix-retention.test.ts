@@ -24,14 +24,16 @@ const ULID = (n: number): string => [...n.toString(32)].map((c) => CROCKFORD[par
 describe('SW-1(b): the recorder database over 90 simulated days', () => {
   it('bar_1m stops at 90 days, pool rollups at 7, the outbox at 7; 1-year tables keep every row of their year; the file stops growing', async () => {
     const days = 100;
-    const start = Math.floor((Date.now() - (days + 1) * DAY) / DAY) * DAY;
-    let now = start;
+    let now = Date.UTC(2026, 0, 1);
     const clock = { kind: 'sim' as const, nowMs: () => now as UnixMs };
     const dir = tempDir('sw1b');
     const path = join(dir, 'bot.db');
     const db = openDb({ path, clock, create: true });
     const prep = await prepareDatabase(db, { clock, backupPath: join(dir, 'pre.bak') });
     assert.ok(prep.ok);
+    // The real now, from SQLite's own wall clock (the one its triggers compare with): the simulated days end there.
+    const wall = Number((db.reader().get(`SELECT unixepoch('now') * 1000 AS t`) as { t: bigint }).t);
+    const start = Math.floor((wall - (days + 1) * DAY) / DAY) * DAY;
     const barStore = createBarStore(db, { retentionDays: 90 });
     let expired = 0;
     const retention = recorderRetention({ db, clock, barStore, rollupSink: { expired: (n) => { expired += n; } } });
@@ -54,7 +56,7 @@ describe('SW-1(b): the recorder database over 90 simulated days', () => {
         for (let i = 0; i < RATE.candidateEvents; i++) {
           const at = t0 + i * 500_000;
           tx.run('INSERT INTO "candidate_event" ("event_id", "candidate_id", "pool_id", "mint", "from_state", "to_state", "reason", "at", "created_at") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            ULID(++seq), ULID(seq), POOLS[0], POOLS[1], 'discovered', 'screening', 'prefilter_pass', at, at);
+            ULID(++seq), ULID(seq), POOLS[0] as string, POOLS[1] as string, 'discovered', 'screening', 'prefilter_pass', at, at);
           db.outbox.append(tx, 'universe.candidate_state', { n: seq });
         }
       });
