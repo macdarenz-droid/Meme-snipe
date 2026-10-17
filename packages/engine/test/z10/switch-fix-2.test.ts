@@ -30,14 +30,19 @@ describe('SW-28: catch-up days get their coverage report', () => {
         log: { event: (_l, code, f) => { if (code === 'recorder.coverage_report') reports.push(String(f.day)); } },
       });
       const d2 = Date.UTC(2026, 9, 8, 0, 10, 0);
-      job.tick(d2 as UnixMs);
+      let t = d2;
+      // SW-36: a report is built over several ticks (one bounded step each); tick until it is saved, at most 100.
+      const tickUntil = (n: number): void => { for (let i = 0; i < 100 && reports.length < n; i++) job.tick((t += 1_000) as UnixMs); };
+      for (let i = 0; i < 20; i++) job.tick((t += 1_000) as UnixMs);
       assert.deepEqual(reports, [], 'no report while its D+1 hour 00 is open');
       closed = '2026-10-07T23';
-      job.tick((d2 + 1_000) as UnixMs);
+      tickUntil(1);
       assert.deepEqual(reports, ['2026-10-06'], 'the catch-up day\'s report, once 2026-10-07T00 is closed');
+      for (let i = 0; i < 20; i++) job.tick((t += 1_000) as UnixMs);
+      assert.deepEqual(reports, ['2026-10-06'], 'D+1 waits for its own hour 00');
       closed = '2026-10-08T00';
-      job.tick((d2 + 2_000) as UnixMs);
-      job.tick((d2 + 3_000) as UnixMs);
+      tickUntil(2);
+      for (let i = 0; i < 20; i++) job.tick((t += 1_000) as UnixMs);
       assert.deepEqual(reports, ['2026-10-06', '2026-10-07'], 'each day once');
       const rows = db.reader().all('SELECT "day_utc", "manifest_sha256" FROM "coverage_report" ORDER BY "day_utc"') as Array<{ day_utc: string; manifest_sha256: string }>;
       const shas = db.reader().all('SELECT "day_utc", "sha256" FROM "universe_manifest" ORDER BY "day_utc"') as Array<{ day_utc: string; sha256: string }>;

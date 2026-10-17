@@ -8,7 +8,7 @@ import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import type { CoverageReport, UnixMs } from '@bot/types';
 import { frameLines, scanGzipFrames } from './frames.ts';
-import { computeCoverage, DAY_MS, dayStartOf, type CoverageDetail, type PollCountRecord } from './coverage.ts';
+import { coverageRun, DAY_MS, dayStartOf, type CoverageDetail, type PollCountRecord } from './coverage.ts';
 import { isManifest, type ManifestGap, type SegmentManifest } from './manifest.ts';
 import { WatchLog } from './watch-log.ts';
 
@@ -51,28 +51,91 @@ export function pollCountsOf(dataDir: string, manifests: readonly SegmentManifes
 export interface DailyCoverage { report: CoverageReport; detail: CoverageDetail }
 
 export function dailyCoverage(o: { dataDir: string; dayUtc: string; universeManifestSha256: string | null; fs?: ReadFs }): DailyCoverage {
-  const fs = o.fs ?? nodeFs;
-  const start = dayStartOf(o.dayUtc);
-  const next = new Date(start + DAY_MS).toISOString().slice(0, 10);
-  const manifests = dayManifests(o.dataDir, o.dayUtc, fs);
-  // The next day's first hour holds the records of the day's last bar (23:59:45 is stamped with its close, 00:00:00
-  // plus the grace; SW-12) and of any bar of the day whose counts were moved late, and its first bar may carry late
-  // polls of 23:59:45 (ruling 38, in bars since Z09-32).
-  const nextFirstHour = dayManifests(o.dataDir, next, fs).filter((m) => m.hourUtc === `${next}T00`);
-  const dataDir = o.dataDir;
-  const pollCounts = (function* (): Generator<PollCountRecord> {
-    yield* eachPollCount(dataDir, manifests, fs);
-    for (const r of eachPollCount(dataDir, nextFirstHour, fs)) if (r.barStartMs >= start && r.barStartMs <= start + DAY_MS) yield r;
-  })();
-  const gaps: Array<{ stream: string; gap: ManifestGap }> = [];
-  const records: Record<string, number> = {};
-  for (const m of manifests) {
-    records[m.stream] = (records[m.stream] ?? 0) + m.records;
-    for (const g of m.gaps) gaps.push({ stream: m.stream, gap: g });
+  const job = dailyCoverageJob(o);
+  for (;;) {
+    const done = job.step();
+    if (done !== null) return done;
   }
-  const watchFile = join(o.dataDir, 'watch', `${o.dayUtc}.ndjson`);
-  const sha = o.universeManifestSha256 ?? createHash('sha256').update(fs.existsSync(watchFile) ? (fs.readFileSync(watchFile) as Buffer) : Buffer.alloc(0)).digest('hex');
-  return computeCoverage({ dayUtc: o.dayUtc, watched: WatchLog.readDay(o.dataDir, o.dayUtc, fs), pollCounts, gaps, records, universeManifestSha256: sha });
+}
+
+/** SW-36: the most poll_counts lines one step of the daily coverage reads, and the most watched pools it works through. */
+export const COVERAGE_STEP_LINES = 5_000;
+export const COVERAGE_STEP_POOLS = 100;
+
+export interface DailyCoverageJob {
+  /** One bounded part of the job; the result once the last part is done, null before. */
+  step(): DailyCoverage | null;
+}
+
+/**
+ * SW-36: the daily coverage in bounded steps (one a recorder loop tick), so it never holds the loop for long (in one
+ * call it took about 1.3-1.6 s at 60 pools): the setup (the day's manifests, the watch log), then each poll_counts
+ * segment one gzip member at a time, first checked whole (a segment that does not decode whole adds nothing, as
+ * before) and then read, at most COVERAGE_STEP_LINES lines a step, then the watched pools COVERAGE_STEP_POOLS at a
+ * time, then the report. The same records in the same order as `dailyCoverage` always read.
+ */
+export function dailyCoverageJob(o: {
+  dataDir: string; dayUtc: string; universeManifestSha256: string | null; fs?: ReadFs; lines?: number; pools?: number;
+}): DailyCoverageJob {
+  const fs = o.fs ?? nodeFs;
+  const maxLines = o.lines ?? COVERAGE_STEP_LINES;
+  const maxPools = o.pools ?? COVERAGE_STEP_POOLS;
+  const start = dayStartOf(o.dayUtc);
+  let run: ReturnType<typeof coverageRun> | null = null;
+  // The day's poll_counts segments, then the next day's first hour (only its records of the day count: SW-12).
+  let files: Array<{ m: SegmentManifest; next: boolean }> = [];
+  let fileAt = 0;
+  let open: { bytes: Buffer; lines: Generator<string, unknown, undefined>; checking: boolean; next: boolean } | null = null;
+  let poolsDone = false;
+  const setup = (): void => {
+    const next = new Date(start + DAY_MS).toISOString().slice(0, 10);
+    const manifests = dayManifests(o.dataDir, o.dayUtc, fs);
+    // The next day's first hour holds the records of the day's last bar (23:59:45 is stamped with its close, 00:00:00
+    // plus the grace; SW-12) and of any bar of the day whose counts were moved late, and its first bar may carry late
+    // polls of 23:59:45 (ruling 38, in bars since Z09-32).
+    const nextFirstHour = dayManifests(o.dataDir, next, fs).filter((m) => m.hourUtc === `${next}T00`);
+    const pc = (m: SegmentManifest): boolean => m.stream === 'poll_counts' && m.codec === 'gzip';
+    files = [...manifests.filter(pc).map((m) => ({ m, next: false })), ...nextFirstHour.filter(pc).map((m) => ({ m, next: true }))];
+    const gaps: Array<{ stream: string; gap: ManifestGap }> = [];
+    const records: Record<string, number> = {};
+    for (const m of manifests) {
+      records[m.stream] = (records[m.stream] ?? 0) + m.records;
+      for (const g of m.gaps) gaps.push({ stream: m.stream, gap: g });
+    }
+    const watchFile = join(o.dataDir, 'watch', `${o.dayUtc}.ndjson`);
+    const sha = o.universeManifestSha256 ?? createHash('sha256').update(fs.existsSync(watchFile) ? (fs.readFileSync(watchFile) as Buffer) : Buffer.alloc(0)).digest('hex');
+    run = coverageRun({ dayUtc: o.dayUtc, watched: WatchLog.readDay(o.dataDir, o.dayUtc, fs), gaps, records, universeManifestSha256: sha });
+  };
+  return {
+    step(): DailyCoverage | null {
+      if (run === null) { setup(); return null; }
+      if (open === null && fileAt < files.length) {
+        const f = files[fileAt++] as { m: SegmentManifest; next: boolean };
+        const file = join(o.dataDir, f.m.path);
+        if (!fs.existsSync(file)) return null;
+        const bytes = fs.readFileSync(file) as Buffer;
+        open = { bytes, lines: frameLines(bytes), checking: true, next: f.next };
+        return null;
+      }
+      if (open !== null) {
+        const cur = open;
+        for (let n = 0; n < maxLines; n++) {
+          const r = cur.lines.next();
+          if (r.done === true) {
+            if (cur.checking && r.value === null) { open = { ...cur, lines: frameLines(cur.bytes), checking: false }; }
+            else open = null;                                               // read, or it does not decode whole: skipped
+            return null;
+          }
+          if (cur.checking || r.value === '') continue;
+          const rec = (JSON.parse(r.value) as { payload: PollCountRecord }).payload;
+          if (!cur.next || (rec.barStartMs >= start && rec.barStartMs <= start + DAY_MS)) run.add(rec);
+        }
+        return null;
+      }
+      if (!poolsDone) { poolsDone = run.pools(maxPools); return null; }
+      return run.finish();
+    },
+  };
 }
 
 /**
