@@ -138,6 +138,11 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 11:28 PM: SW-35 findings.**
+  - The step is older than #336. In 96 h soaks, base `3439ee02`, #336 `512ee4c6`, and #336 without 0003 all step at the day boundaries (hours 32/56/80) and level off near 222–224 MiB. The base's own +10 MiB step fell at hour 56, outside CI's 24–48 h window, so the base's green soak was timing luck.
+  - Candidate 1 (`9b35a62e` on `claude/switch-fix-2-sw35`, coverage read one gzip member at a time) passes the 48 h soak (−0.054 MiB/h) but still climbs over 96 h. It is not the cause on its own.
+  - Now testing: SQLite page cache capped at 128 KiB per connection, in a 96 h soak.
+  - If that fixes it, SW-32 timing and the manifest/coverage run times are re-measured, and the base finding is recorded in DECISIONS SW-35.
 - **17 Oct 8:36 PM: `seven_day` usage warning** (`allowed_warning`; resets Thu 22 Oct 3:00 PM Melbourne, 04:00Z). Rule "Resume, watching tokens" (15 Oct) applies: no new card starts, and the owner is told.
   - The in-flight cards finish: SW-35 on #336 and SW-34 on `claude/switch-fix-3`, with their red-team re-checks and merges.
   - On hold until the reset or the owner's word: the switch-on PR, R3-SPLIT, and the OF re-arm PR (trig_01YSTosjCguRCYJgVgnZLnFr fires at 17:00Z; it will be noted, not acted on).
