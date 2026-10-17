@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **18 Oct 8:37 AM: #336 `c83f9b15`, RT1 and RT2 PASS** (no BLOCKER or MAJOR).
+  - CI green so far: check, coverage, dashboard, historical-data, e2e. recorder-soak is still running.
+  - The merge waits on recorder-soak and the 192 h gate (due about 23:50Z).
+  - MINORs queued for SWITCH-FIX-3, with SW-34:
+    - SW-37: log m07.segment_unreadable;
+    - SW-38: a JSON.parse failure skips the whole file and marks the report;
+    - SW-39: Phase 0 linesOf uses the same rule for damaged segments;
+    - SW-40: guard stepCoverage, with a held code recorder.coverage_failed, so manifests still run.
+  - Watch list adds max coverage step time (RT1 saw one 345 ms step on a cold cache).
 - **18 Oct 8:16 AM: #336 pushed at `c83f9b15`** (fast-forward from `512ee4c6`; base `3439ee02`). It holds SW-35 (bitmap, member reader) and SW-36 (stepped coverage), with no V8 flag and no ops or guarded files.
   - `pnpm test` 9,414 pass.
   - The 192 h gate soak started at 20:50Z, alone and with no flag.
