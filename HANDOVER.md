@@ -138,6 +138,16 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 11:05 AM: RT2 (data) FAIL on `bac1f88a`; card SWITCH-FIX started.**
+  - RT2 findings:
+    - **BLOCKER:** Phase 0 never finds day D's manifest or coverage, because they are written in D+1/00 and the Z09 fixture hides it.
+    - **MAJOR:** after a halt or failed flush, the encoder and seq advance for discarded records, so the next delta is against unwritten state and seqs are not dense. Proved by a probe.
+    - **MAJOR:** seqs restart after DiskManager deletes a quiet stream (E_MARKER_SEQ in replay).
+    - MINORs: last-bar coverage; a crash between manifest and index; the eviction-log onError; decision parity not rebuildable (recorded only); anchor atMs bias; md-pull skips watch/.
+    - Verified OK: live bars equal replayed bars (117/117, 120/120, including across a restart).
+  - **SWITCH-FIX builder `session_01TdPUVeRXzgeM3SGmtTXL4u`** (Opus, Auto, branch `claude/switch-fix`). Rulings SW-1..22 cover RT1 B1/M2/m3-m8, RT2 B1/M2/M3/m4-m9 and RT3 m1-m5.
+  - The three RT sessions (`012H1i4e`, `01NBmU4p`, `017i994s`) are parked to re-check their own findings on the PR. Then the host-config switch PR.
+  - The RT1 and RT2 on-server 48 h watch lists are kept for the M1 exit run, including: a manual SOL/USD check, the whirlpool mint order, md-pull plus phase0-report on the first real day, seqs across deletions, and observationLagSlots against a second clock.
 - **17 Oct 11:02 AM: RT1 (stays up) FAIL on `bac1f88a`.**
   - **BLOCKER 1: the disk fills.**
     - zeroed-backup keeps 72 uncompressed hourly copies of bot.db.
