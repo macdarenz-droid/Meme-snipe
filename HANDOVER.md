@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 3:38 PM: #335 SWITCH-FIX merged at `3439ee02`** (the new base).
+  - Red teams 1, 2 and 3 PASS on `ca304a5b`, with no BLOCKER or MAJOR.
+  - CI green on `ca304a5b`: labelled `check` (run 39000504938), coverage, dashboard, historical-data, e2e and recorder-soak. The unlabelled `check` failed only at the drift gate, as expected.
+  - Card **SWITCH-FIX-2** (MINORs, same builder 01TdPUVe, branch `claude/switch-fix-2`):
+    - fixes SW-23 (spool group), SW-24 (Chainstack cost pin), SW-25 (Phase 0 D+1T00 counts), SW-28 (catch-up coverage), SW-29 (md-pull errors), SW-30 (unwrite required), SW-31 (disk_budget_high to the heartbeat), SW-32 (retention ≤100 ms per step at day-366 sizes), SW-33 (backup .new cleanup);
+    - recorded only: SW-26 (sentAt before the limiter; watch list) and SW-27 (manifest after the 1-year purge; added to the R3-SPLIT scope);
+    - RT1's watch items added to the switch-on watch list.
+  - The RT sessions stay parked to re-check their own items on SWITCH-FIX-2.
+  - Then come the switch-on PR ("worker": "recorder") and the owner's switch-on steps.
 - **17 Oct 2:52 PM: #335 SWITCH-FIX ready** at `ca304a5b` (base `bac1f88a`, contains it). Builder results:
   - lint and typecheck clean; `pnpm test` 9,391 pass, 0 fail;
   - 48 h soak at 60 pools passes (RssAnon 0.132 MiB/h, 57 watched);
