@@ -90,8 +90,10 @@ export function dailyCoverage(o: { dataDir: string; dayUtc: string; universeMani
 export function runDailyCoverage(o: {
   dataDir: string; nowMs: UnixMs; universeManifestSha256: string | null; closedThrough: () => string;
   append: (report: CoverageReport, atMs: UnixMs) => void; save: (report: CoverageReport) => void; fs?: ReadFs;
+  /** SW-28: an earlier day (a catch-up after the recorder was down); the day before `nowMs` when absent. */
+  dayUtc?: string;
 }): DailyCoverage | null {
-  const dayUtc = new Date(o.nowMs - DAY_MS).toISOString().slice(0, 10);
+  const dayUtc = o.dayUtc ?? new Date(o.nowMs - DAY_MS).toISOString().slice(0, 10);
   const next = new Date(Date.parse(`${dayUtc}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
   if (o.closedThrough() < `${next}T00`) return null;
   const c = dailyCoverage({ dataDir: o.dataDir, dayUtc, universeManifestSha256: o.universeManifestSha256, ...(o.fs === undefined ? {} : { fs: o.fs }) });

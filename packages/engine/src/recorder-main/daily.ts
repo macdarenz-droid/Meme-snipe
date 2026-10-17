@@ -52,6 +52,8 @@ export function createDailyJob(o: {
   let lastDay = '';
   /** Ruling Z10-49: catch-up days already recorded or refused in this process. */
   const settled = new Set<string>();
+  /** SW-28: catch-up days with a manifest whose D+1 hour 00 is not closed yet (day → the manifest's SHA-256). */
+  const waiting = new Map<string, string>();
   let recordedCount = 0;
   let missingMemo: { minute: number; recorded: number; missing: boolean } | null = null;
 
@@ -120,11 +122,16 @@ export function createDailyJob(o: {
     // Ruling Z10-49: every missing manifest of the 7-day window before yesterday, oldest first, so a recorder that was
     // down across a day boundary never leaves a day that cannot clear. A day found recorded, or refused once in this
     // process (its critical line already raised), is not looked at again.
+    // SW-28: and its coverage report, once D+1's hour 00 is closed (until then the day is looked at again, without a
+    // database read); a day whose manifest was refused gets none (Z10-F5).
     for (let k = 7; k >= 2; k--) {
       const ds = Math.floor(nowMs / DAY_MS) * DAY_MS - k * DAY_MS;
       const d = new Date(ds).toISOString().slice(0, 10);
       if (ds + DAY_MS <= firstStart || settled.has(d)) continue;
-      if (!has('universe_manifest', d)) manifest(d, ds, nowMs);
+      const sha = waiting.get(d) ?? manifest(d, ds, nowMs);
+      if (sha !== null && o.closedThrough() < `${new Date(ds + DAY_MS).toISOString().slice(0, 10)}T00`) { waiting.set(d, sha); continue; }
+      waiting.delete(d);
+      if (sha !== null && !has('coverage_report', d)) coverage(d, sha, nowMs);
       settled.add(d);
     }
     const day = new Date(nowMs - DAY_MS).toISOString().slice(0, 10);
@@ -132,16 +139,20 @@ export function createDailyJob(o: {
     if (day === lastDay || dayStart + DAY_MS <= firstStart) return;
     const sha = manifest(day, dayStart, nowMs);
     if (sha === null || has('coverage_report', day)) { lastDay = day; return; }
+    if (coverage(day, sha, nowMs)) lastDay = day;
+  }
+
+  /** Day `day`'s CoverageReport, appended and saved; false while D+1's hour 00 is still open. */
+  function coverage(day: string, sha: string, nowMs: UnixMs): boolean {
     const done = runDailyCoverage({
-      dataDir: o.dataDir, nowMs, universeManifestSha256: sha, closedThrough: o.closedThrough,
+      dataDir: o.dataDir, nowMs, dayUtc: day, universeManifestSha256: sha, closedThrough: o.closedThrough,
       append: (report: CoverageReport, atMs: UnixMs) => { o.append({ stream: 'coverage', recvMs: atMs, slot: null, commitment: null, source: 'm07', payload: report }); },
       save: (report: CoverageReport) => {
         o.db.withTx((tx) => { repos.coverage_report.insert(tx, { dayUtc: report.dayUtc, json: JSON.stringify(report), lowCoverage: report.lowCoverage, manifestSha256: sha, createdAt: nowMs }); });
       },
     });
-    if (done !== null) {
-      o.log.event('info', 'recorder.coverage_report', { day, low_coverage: done.report.lowCoverage });
-      lastDay = day;
-    }
+    if (done === null) return false;
+    o.log.event('info', 'recorder.coverage_report', { day, low_coverage: done.report.lowCoverage });
+    return true;
   }
 }
