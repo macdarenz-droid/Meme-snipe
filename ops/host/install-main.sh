@@ -360,6 +360,14 @@ done
 keep_old /var/lib/zeroed-host/release-units
 printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
+# SW-18 (ruling SW-18a): the full worker body just installed is kept aside, so a rollback can put it back with no network;
+# then the body the current release's worker needs goes in place (common.sh worker_unit_apply; the recorder's for
+# "worker": "recorder"). A body that cannot be put in place stops the install (and rolls it back).
+keep_old /usr/local/lib/zeroed/units/zeroed-worker.full.service
+install -d -m 0755 -o root -g root /usr/local/lib/zeroed/units
+install -m 0644 -o root -g root /etc/systemd/system/zeroed-worker.service /usr/local/lib/zeroed/units/zeroed-worker.full.service
+worker_unit_apply /opt/zeroed/current --no-reload || die "the worker unit for the current release could not be put in place (SW-18)"
+
 say "Services"
 systemctl daemon-reload
 # HOST-CAPS: journald reads its size limits only when it starts.

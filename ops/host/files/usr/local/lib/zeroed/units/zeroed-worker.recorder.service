@@ -1,0 +1,95 @@
+# SW-18 (supervisor ruling SW-18a, option A): the worker unit's body while the current release runs the keyless recorder
+# ("worker": "recorder"). zeroed-update writes it as /etc/systemd/system/zeroed-worker.service before every restart
+# it makes for such a release (common.sh worker_unit_apply), and the full body (the installer's, kept as
+# /usr/local/lib/zeroed/units/zeroed-worker.full.service) for any other. Least privilege for a process that holds no
+# key and sends nothing: no signer group, no signer folders, no import spool, and only the four credentials it reads.
+[Unit]
+Description=Zeroed worker (keyless recorder)
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+After=network-online.target zeroed-receipts-fs.service time-sync.target
+# PATHS-FIX ruling 32: the worker starts after the receipts' own filesystem is mounted (Wants, so a failed mount never
+# keeps the worker down; zeroed-check alerts on it instead).
+Wants=network-online.target zeroed-receipts-fs.service time-sync.target
+# SW-7: and after the clock is synchronised (systemd-time-wait-sync, enabled by the installer and bounded to 2 minutes),
+# so no record is stamped from a boot clock that NTP then steps.
+# Starts only after the keys arrived and the owner's Telegram chat is paired.
+ConditionPathExists=/etc/credstore.encrypted/helius_api_key
+ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=zeroed-worker
+Group=zeroed-worker
+# Only the pull account's receipts (zeroed-pull): never zeroed-signer (the signer's socket), never zeroed-spool (the
+# recorder imports nothing), never botops (DISK-BUDGET.md ruling 15).
+SupplementaryGroups=zeroed-pull
+EnvironmentFile=/etc/zeroed/worker.env
+Environment=NODE_ENV=production
+# Reconcile first: every start and restart settles open intents against the chain before trading.
+ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile
+ExecStart=/usr/local/lib/zeroed/worker-start
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+# The four credentials the recorder reads (run.ts): the paired chat id, the heartbeat key and the two read providers.
+LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
+# Optional: present once Deploy delivered the watchdog (ImportCredential does not fail when it is missing).
+ImportCredential=heartbeat_hmac_key
+# Z10: the two read providers (Shyft primary, Chainstack backup), optional the same way.
+ImportCredential=rpc_shyft_url
+ImportCredential=rpc_chainstack_url
+StateDirectory=zeroed
+StateDirectoryMode=0700
+# PATHS-FIX: one StateDirectoryMode per unit, so the market-data folder (2750, group zeroed-pull) and the import spool
+# (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here; so is the
+# provider usage ledger's folder (2770, group zeroed-sentinel), which the sentinel writes too (ruling 21).
+ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-usage
+# Not even listed: the signer's runtime and state folders ("-": a folder that is not there is not an error).
+InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer
+UMask=0077
+# Z10: kept for the keyless recorder from its 48 h soak: RSS peak 278 MiB after F7 (35%), its 75% alert at 600 MiB
+# (logic.sh).
+MemoryMax=800M
+# The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
+# The keyless recorder owns none: worker-start raises it to +500 (ruling Z10-30, logic.sh RECORDER_OOM_SCORE_ADJ).
+OOMScoreAdjust=-500
+TasksMax=256
+LimitCORE=0
+# Hardening (ARCHITECTURE.md 12.1). MemoryDenyWriteExecute is off here only: V8's JIT needs it.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+KeyringMode=private
+DevicePolicy=closed
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Egress: systemd filters by address only (systemd.resource-control IPAddressAllow=/IPAddressDeny=), and the providers
+# and the watchdog sit behind CDNs whose addresses change, so no host-name allow-list is possible here; the firewall's
+# per-user port rule (nftables.conf: 443 and 53 only) stays. Refused: the cloud metadata service (link-local) and the
+# private ranges, which no recorder path uses (health and the API are on loopback; tailscale serve reaches them there).
+IPAddressDeny=169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fe80::/10
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

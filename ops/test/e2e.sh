@@ -1020,6 +1020,19 @@ in_c "systemctl show -p MemoryCurrent -p MemoryPeak -p MemoryMax zeroed-worker" 
 # (health.ts cgroupMemory, source "anon"; memory.current minus file is only the fallback).
 in_c "cat /sys/fs/cgroup\$(systemctl show -p ControlGroup --value zeroed-worker)/memory.stat" >"$LOGS/recorder-memory-stat.txt" || fail "the recorder's cgroup memory.stat is unreadable"
 grep -qE '^anon [0-9]+$' "$LOGS/recorder-memory-stat.txt" || fail "the recorder's cgroup has no anon field (the alert would use its fallback)"
+# SW-18 (ruling SW-18a): zeroed-update put the recorder's own unit body in place for this release: no signer group, the
+# signer folders inaccessible, and only the four credentials the recorder reads.
+in_c "cmp -s /etc/systemd/system/zeroed-worker.service /usr/local/lib/zeroed/units/zeroed-worker.recorder.service" || fail "SW-18: the recorder runs under the full worker unit"
+in_c "cmp -s /usr/local/lib/zeroed/units/zeroed-worker.full.service /opt/zeroed/current/ops/host/files/etc/systemd/system/zeroed-worker.service" || fail "SW-18: the kept full body is not the release's"
+rpid="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
+sgid="$(in_c "getent group zeroed-signer | cut -d: -f3")"
+in_c "sed -n 's/^Groups:\t*//p' /proc/$rpid/status" | tr ' ' '\n' | grep -qx "$sgid" && fail "SW-18: the recorder is in the zeroed-signer group"
+for d in /run/zeroed-signer /var/lib/zeroed-signer; do
+  in_c "test ! -e $d || { [ \"\$(stat -c %a /proc/$rpid/root$d)\" = 0 ] && [ -z \"\$(ls -A /proc/$rpid/root$d)\" ]; }" || fail "SW-18: the recorder can see $d"
+done
+in_c "ls /run/credentials/zeroed-worker.service" >"$LOGS/recorder-creds.txt" || fail "SW-18: the recorder's credentials cannot be listed"
+grep -vxE 'telegram_chat_id|heartbeat_hmac_key|rpc_shyft_url|rpc_chainstack_url' "$LOGS/recorder-creds.txt" && fail "SW-18: the recorder has a credential it does not read"
+for c in telegram_chat_id rpc_shyft_url rpc_chainstack_url; do grep -qx "$c" "$LOGS/recorder-creds.txt" || fail "SW-18: the recorder lacks $c"; done
 # 5. Ruling Z10-5: the M07 cycle seal → pull → receipt → delete on this host. Two sealed TEST days (10 and 9 days
 # ago, past recorder.retention_days 7) are written by M07's own writer while the recorder is stopped. The operator's
 # md-pull (here run in the container as the operator would, with a TEST research key and a TEST pull key) reaches the
@@ -1046,6 +1059,21 @@ in_c "ls /var/lib/zeroed-md/$D_OLD/*/*.ndjson.gz" >/dev/null 2>&1 || fail "an un
 in_c "ls /var/lib/zeroed-md/\$(date -u +%F)/*/*.ndjson.gz" >/dev/null 2>&1 || fail "today's recording was deleted"
 in_c "test -e /root/e2e-pulled/$D_PULL" || fail "md-pull's copy was deleted"
 wait_for 90 "the alert for the unreceipted old day" "docker exec $C bash -c 'grep -rqs m07.unpulled_segments /var/lib/zeroed/log'"
+# SW-18 condition 3: NRestarts and the probation across a daemon-reload. A kill is an automatic restart (NRestarts + 1); a
+# daemon-reload (what worker_unit_apply makes) keeps the count; the next zeroed-update run, still inside the probation,
+# rolls the recorder back to the stand-in, and the rollback puts the full unit body back first (from this host).
+n_before="$(in_c "systemctl show -p NRestarts --value zeroed-worker")"
+in_c "kill -9 \$(systemctl show -p MainPID --value zeroed-worker)"
+wait_for 60 "the recorder restarted by systemd" "[ \$(docker exec $C systemctl show -p NRestarts --value zeroed-worker) -gt $n_before ]"
+n_after="$(in_c "systemctl show -p NRestarts --value zeroed-worker")"
+in_c "systemctl daemon-reload"
+[ "$(in_c "systemctl show -p NRestarts --value zeroed-worker")" = "$n_after" ] || fail "SW-18: a daemon-reload reset NRestarts ($n_after before)"
+upd_run || true
+[ "$(current)" = "$orig" ] || { in_c "journalctl -o cat --no-pager -u zeroed-update | tail -20"; fail "SW-18: the probation did not roll the restarted recorder back"; }
+in_c "cmp -s /etc/systemd/system/zeroed-worker.service /usr/local/lib/zeroed/units/zeroed-worker.full.service" || fail "SW-18: the rollback to the stand-in did not put the full unit body back"
+wait_for 60 "the stand-in up after the probation rollback" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
+# This test's own rollback: its records go with the section's cleanup below (no standing stand-in alert afterwards).
+in_c "rm -f /var/lib/zeroed-host/standin_after_rollback /var/lib/zeroed-host/rollback_due"
 in_c "rm -rf /root/e2e-research.pem /root/e2e-pulled /root/.ssh/e2e-pull /root/.ssh/e2e-pull.pub /root/.ssh/config /root/.ssh/e2e-known /etc/zeroed/pull-keys/zeroed-pull /etc/bot/research-ed25519.pub.pem /var/lib/zeroed-md/$D_OLD /var/lib/zeroed-md/$D_PULL"
 # Back to the stand-in: the rotation's TEST read-provider credentials back as they were, no TEST certificate, no fake chain.
 in_c "systemctl stop zeroed-e2e-fake-rpc; mv -f /root/rpc-cred.e2e/rpc_shyft_url /root/rpc-cred.e2e/rpc_chainstack_url /etc/credstore.encrypted/ && mv -f /root/rpc-cred.e2e/sha/rpc_shyft_url /root/rpc-cred.e2e/sha/rpc_chainstack_url /var/lib/zeroed-host/cred_sha/ && rm -rf /root/rpc-cred.e2e; rm -f /etc/zeroed/e2e-fake-rpc.pem /root/e2e-fake-rpc.key; mv /root/worker.env.e2e /etc/zeroed/worker.env; grep -v shyft.fake /etc/hosts > /tmp/hosts.e2e; cat /tmp/hosts.e2e > /etc/hosts; rm -f /tmp/hosts.e2e"
@@ -1053,6 +1081,7 @@ in_c "systemctl stop zeroed-e2e-fake-rpc; mv -f /root/rpc-cred.e2e/rpc_shyft_url
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 wrestart "ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && printf '%s\n' '$signed' > /var/lib/zeroed-host/deployed && rm -f /var/lib/zeroed-host/probation /var/lib/zeroed-host/probation.prev && rm -rf '/opt/zeroed/releases/$signed2' '$rrel' && { ! test -e /root/failed_release.e2e || mv -f /root/failed_release.e2e /var/lib/zeroed-host/failed_release; }"
 wait_for 60 "the stand-in back after the recorder" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
+pass "SW-18: the recorder's unit body (no signer group or folders, its four credentials only) put in place by zeroed-update; NRestarts kept across a daemon-reload; the probation rolls a restarted recorder back with the full body first"
 pass "keyless recorder (Z10): \"worker\": \"recorder\" runs packages/engine/scripts/recorder.ts under the host's Node 22 with no npm package (its four workspace packages linked inside the release); the trial answers health in paper mode; with no read providers the unit refuses loudly; with TEST providers (fake chain over HTTPS on loopback) zeroed-update deploys it from the stand-in through the gate (trial, install --update, switch, hold); it reconciles 0 intents and positions, anchors on two providers, records into the M07 folder from the first-start marker's database, answers /health and the worker API in paper mode with no signing key, holds no signer socket, its own heap limit, its cgroup's anon field read for the 75% alert, no provider key in any journal; M07's cycle (Z10-5): sealed days, md-pull over the chrooted sftp account with signed receipts (0640, group zeroed-pull), only the receipted day past retention deleted, the unreceipted one kept with an alert; back to the stand-in"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------

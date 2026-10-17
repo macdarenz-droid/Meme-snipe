@@ -86,6 +86,8 @@ ${real('start_worker')}
 ${relocate(real('worker_busy'))}
 ${real('restart_for_chat')}
 ${real('pending_restart')}
+# SW-18: the unit-body step is tested on its own (switch-fix.test.ts); here it is recorded, and fails with sd/unit_fail.
+worker_unit_apply() { echo "unit $(basename "$1")" >> "${root}/sd/unit_calls"; [ ! -e "${root}/sd/unit_fail" ]; }
 commit_verdict() { cat >/dev/null; echo green; }
 e2e_commit() { echo "$2"; }
 `);
@@ -188,6 +190,21 @@ describe('zeroed-update on a host with keys but no Telegram pairing (OPS-CLEAN, 
     expect(h.read('state/switch_unheld')).toBe('');
     expect(h.read('state/failed_release')).toBe('');
     expect(h.read('log')).toContain(`Deployed ${B.slice(0, 12)}. Worker: restarted and up.`);
+  });
+
+  it('SW-18: the unit body goes in place for B before current moves and again before the restart; a body that cannot be put in place switches nothing', () => {
+    const h = host([...KEYS, 'telegram_chat_id']);
+    expect(h.update().status).toBe(0);
+    expect(h.read('sd/unit_calls')).toBe(`unit ${B}\nunit current\n`);
+    const f = host([...KEYS, 'telegram_chat_id']);
+    f.set('sd/unit_fail', '');
+    const r = f.update();
+    expect(r.status).toBe(1);
+    expect(f.current()).toBe(f.rel(A));
+    expect(f.read('state/deployed').trim()).toBe(A);
+    expect(f.read('state/switch_unheld')).toBe('');
+    expect(f.workerStarts()).toBe(0);
+    expect(f.read('notify')).toContain(`the worker unit for ${B.slice(0, 12)} could not be put in place`);
   });
 
   it('no keys: the switch goes through and the worker is not started', () => {

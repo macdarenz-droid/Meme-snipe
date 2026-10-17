@@ -243,3 +243,91 @@ describe('SW-20: wrangler never sees a provider URL, an API key, the deploy code
     expect(read('.github/workflows/deploy.yml')).toContain('run: env -u GH_TOKEN -u GITHUB_TOKEN npm ci --ignore-scripts --no-audit --no-fund');
   });
 });
+
+describe('SW-18: one worker unit name, two bodies (ruling SW-18a, option A)', () => {
+  const FULL = read('ops/host/files/etc/systemd/system/zeroed-worker.service');
+  const REC = read('ops/host/files/usr/local/lib/zeroed/units/zeroed-worker.recorder.service');
+  const COMMON = read('ops/host/files/usr/local/lib/zeroed/common.sh');
+  const fn = COMMON.slice(COMMON.indexOf('WORKER_UNIT_FILE='), COMMON.indexOf('\n}\n', COMMON.indexOf('worker_unit_apply() {')) + 3);
+  const lines = (u: string, key: string) => u.split('\n').filter((l) => l.startsWith(`${key}=`));
+
+  it('the recorder body: no signer group or folders, the four credentials only, link-local and private ranges refused; otherwise the full body\'s sandbox', () => {
+    expect(lines(REC, 'SupplementaryGroups')).toEqual(['SupplementaryGroups=zeroed-pull']);
+    expect(REC).not.toMatch(/zeroed-signer\.service|SupplementaryGroups=.*zeroed-signer/);
+    expect(REC).toMatch(/^InaccessiblePaths=-\/run\/zeroed-signer -\/var\/lib\/zeroed-signer$/m);
+    const creds = [...lines(REC, 'LoadCredentialEncrypted'), ...lines(REC, 'LoadCredential'), ...lines(REC, 'ImportCredential'), ...lines(REC, 'SetCredential')].map((l) => l.split('=')[1]!.split(':')[0]).sort();
+    expect(creds).toEqual(['heartbeat_hmac_key', 'rpc_chainstack_url', 'rpc_shyft_url', 'telegram_chat_id']);
+    expect(REC).toMatch(/^IPAddressDeny=169\.254\.0\.0\/16 10\.0\.0\.0\/8 172\.16\.0\.0\/12 192\.168\.0\.0\/16 fe80::\/10$/m);
+    expect(REC).not.toMatch(/^IPAddress(Deny|Allow)=.*(127\.|::1|100\.64|localhost)/m);
+    expect(lines(REC, 'ReadWritePaths')).toEqual(['ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-usage']);
+    // Every other setting of the full body is kept as it is (the deploy gate, probation, the OOM order, the hardening).
+    const rest = (u: string) => u.split('\n').filter((l) => /^[A-Z][A-Za-z]*=/.test(l) && !/^(Description|After|SupplementaryGroups|LoadCredentialEncrypted|ReadWritePaths|InaccessiblePaths|IPAddressDeny)=/.test(l));
+    expect(rest(REC)).toEqual(rest(FULL));
+    expect(lines(FULL, 'SupplementaryGroups')).toContain('SupplementaryGroups=zeroed-signer');   // the full body is unchanged
+  });
+
+  const sandbox = () => {
+    const d = mkdtempSync(join(tmpdir(), 'sw18-'));
+    for (const x of ['units', 'rel-rec/ops', 'rel-rec/packages/engine/scripts', 'rel-stub/ops', 'bin']) mkdirSync(join(d, x), { recursive: true });
+    writeFileSync(join(d, 'units/zeroed-worker.recorder.service'), REC);
+    writeFileSync(join(d, 'units/zeroed-worker.full.service'), FULL);
+    writeFileSync(join(d, 'live.service'), FULL);
+    writeFileSync(join(d, 'rel-rec/ops/host-config.json'), '{"worker":"recorder"}');
+    writeFileSync(join(d, 'rel-rec/packages/engine/scripts/recorder.ts'), '');
+    writeFileSync(join(d, 'rel-stub/ops/host-config.json'), '{"worker":"stub"}');
+    writeFileSync(join(d, 'bin/analyze'), `#!/usr/bin/env bash\necho "verify $*" >> ${JSON.stringify(join(d, 'calls'))}\n[ ! -e ${JSON.stringify(join(d, 'verify_fail'))} ]\n`);
+    writeFileSync(join(d, 'bin/systemctl'), `#!/usr/bin/env bash\necho "systemctl $*" >> ${JSON.stringify(join(d, 'calls'))}\n[ ! -e ${JSON.stringify(join(d, 'reload_fail'))} ]\n`);
+    chmodSync(join(d, 'bin/analyze'), 0o755);
+    chmodSync(join(d, 'bin/systemctl'), 0o755);
+    const apply = (rel: string, extra = '') => spawnSync('bash', ['-c', `set -euo pipefail; . "${LOGIC}"; log() { echo "$*" >> "${d}/log"; }; ZEROED_WORKER_UNIT_FILE="${d}/live.service" ZEROED_WORKER_UNIT_BODIES="${d}/units"; ${fn}
+SYSTEMD_ANALYZE="${d}/bin/analyze" SYSTEMCTL="${d}/bin/systemctl" worker_unit_apply "${join(d, rel)}" ${extra}`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '' } });
+    const calls = () => (existsSync(join(d, 'calls')) ? readFileSync(join(d, 'calls'), 'utf8').trim().split('\n') : []);
+    return { d, apply, calls, live: () => readFileSync(join(d, 'live.service'), 'utf8') };
+  };
+
+  it('worker_unit_apply: the recorder body for a recorder release (verified, renamed in, reloaded); nothing again when in place; the full body back for any other', () => {
+    const s = sandbox();
+    expect(s.apply('rel-rec').status).toBe(0);
+    expect(s.live()).toBe(REC);
+    expect(s.calls()).toEqual([expect.stringMatching(/^verify .*\/zeroed-worker\.service$/), 'systemctl daemon-reload']);
+    expect(s.apply('rel-rec').status).toBe(0);
+    expect(s.calls().length).toBe(2);                                     // in place: no verify, no reload
+    expect(s.apply('rel-stub').status).toBe(0);
+    expect(s.live()).toBe(FULL);
+    expect(s.apply('rel-stub').status).toBe(0);
+    expect(s.calls().length).toBe(4);
+    expect(s.apply('missing').status).toBe(0);                            // no current: the stand-in, full body kept
+    expect(readdirSync(s.d)).not.toContain('live.service.zeroed-unit');
+  });
+
+  it('worker_unit_apply: a full body of an older release is left as it is; a body that does not verify or a failed reload changes nothing', () => {
+    const s = sandbox();
+    writeFileSync(join(s.d, 'live.service'), `${FULL}# an older release's full body\n`);
+    expect(s.apply('rel-stub').status).toBe(0);
+    expect(s.live()).toBe(`${FULL}# an older release's full body\n`);
+    writeFileSync(join(s.d, 'verify_fail'), '');
+    expect(s.apply('rel-rec').status).toBe(1);
+    expect(s.live()).toBe(`${FULL}# an older release's full body\n`);
+    rmSync(join(s.d, 'verify_fail'));
+    writeFileSync(join(s.d, 'reload_fail'), '');
+    expect(s.apply('rel-rec').status).toBe(1);
+    expect(s.live()).toBe(`${FULL}# an older release's full body\n`);
+    rmSync(join(s.d, 'reload_fail'));
+    rmSync(join(s.d, 'units/zeroed-worker.recorder.service'));
+    expect(s.apply('rel-rec').status).toBe(1);                            // no body on this host: refused
+    expect(s.apply('rel-rec', '--no-reload').status).toBe(1);
+  });
+
+  it('zeroed-update applies it before current moves, before the held restart and before the rollback\'s restart; the installer and worker-smoke use it', () => {
+    const u = read('ops/host/files/usr/local/sbin/zeroed-update');
+    expect(u.indexOf('if ! worker_unit_apply "$dest"; then')).toBeLessThan(u.indexOf('printf \'%s|%s|%s\\n\' "$commit" "$prev" "$current" > "$STATE_DIR/switch_unheld"'));
+    const held = u.slice(u.indexOf('held_restart() {'), u.indexOf('\n}\n', u.indexOf('held_restart() {')));
+    expect(held.indexOf('worker_unit_apply /opt/zeroed/current || due_rollback')).toBeLessThan(held.indexOf('systemctl restart zeroed-worker.service'));
+    const roll = u.slice(u.indexOf('apply_host "${current:-$(basename "$prev")}" "$prev" || true'));
+    expect(roll.indexOf('if worker_unit_apply "$prev"; then')).toBeLessThan(roll.indexOf('systemctl restart zeroed-worker.service'));
+    const main = read('ops/host/install-main.sh');
+    expect(main).toContain('install -m 0644 -o root -g root /etc/systemd/system/zeroed-worker.service /usr/local/lib/zeroed/units/zeroed-worker.full.service');
+    expect(main.indexOf('worker_unit_apply /opt/zeroed/current --no-reload')).toBeLessThan(main.indexOf('say "Services"'));
+    expect(read('ops/host/files/usr/local/lib/zeroed/worker-smoke')).toContain('*/"$RECORDER_ENTRY") UNIT_FILE="${ZEROED_WORKER_UNIT_BODIES:-/usr/local/lib/zeroed/units}/zeroed-worker.recorder.service"');
+  });
+});

@@ -21,6 +21,8 @@ entry="$(worker_entry "$dir")"
 [ "$entry" != /opt/zeroed/stub/worker.mjs ] || exit 0
 
 UNIT_FILE=/etc/systemd/system/zeroed-worker.service
+# SW-18: a recorder release is tried under the recorder's own unit body (no signer folders, the same egress rules).
+case "$entry" in */"$RECORDER_ENTRY") UNIT_FILE="${ZEROED_WORKER_UNIT_BODIES:-/usr/local/lib/zeroed/units}/zeroed-worker.recorder.service" ;; esac
 TRIAL=zeroed-worker-smoke
 # A trial left by an earlier run that was cut off is cleared first (the unit names are fixed).
 systemctl stop "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true

@@ -18,7 +18,7 @@ export const RECORDER_ALLOCATION = { shares: { shyft: { engine: 10_000 }, chains
 export function recorderConfig(paths: RecorderPaths, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     'm24.db_path': paths.db, 'm27.log_dir': paths.logDir, 'recorder.data_dir': paths.mdDir, 'rpc.allocation_file': join(paths.ceilings, '..', 'rpc-allocation.json'),
-    'universe.screening_required': false, ...over,
+    'universe.screening_required': false, 'bars.bar_1m_retention_days': 14, ...over,
   };
 }
 

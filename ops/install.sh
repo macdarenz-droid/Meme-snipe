@@ -261,7 +261,7 @@ install_file /etc/bot/ceilings.json 0644 <<'__ZEROED_FILE__'
 {"per_trade_notional_lamports":"1","open_positions":1,"daily_loss_lamports":"1","hot_wallet_cap_lamports":"1","slippage_bps":1,"signer_day_cap_lamports":"1","tip_cap_lamports":"1","exit_fee_cap_lamports":"1"}
 __ZEROED_FILE__
 install_file /etc/bot/config.json 0644 <<'__ZEROED_FILE__'
-{"universe.screening_required":false}
+{"universe.screening_required":false,"bars.bar_1m_retention_days":14}
 __ZEROED_FILE__
 install_file /etc/bot/rpc-allocation.json 0644 <<'__ZEROED_FILE__'
 {"shares":{"shyft":{"engine":10000},"chainstack":{"engine":10000}},"credits":{"chainstack":{"engine":"rest"}}}
@@ -1372,6 +1372,49 @@ keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || retu
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
 # worker_ready: the worker may start: every key stored and the owner's chat paired (its unit's ConditionPathExists, and more).
 worker_ready() { keys_stored && paired; }
+# SW-18 (ruling SW-18a, option A): one unit name, two bodies. worker_unit_apply RELEASE_DIR [--no-reload] puts in place
+# the body the release's worker needs: the recorder's (units/zeroed-worker.recorder.service: no signer group or
+# folders, four credentials) for "worker": "recorder", else the full one. A full body already in place is left as it
+# is (the installer's own, also the one a rollback's older installer writes); a recorder body in place goes back to the
+# full one kept by the installer (units/zeroed-worker.full.service: on this host, no network). Written atomically
+# (temporary file, systemd-analyze verify, rename), then systemctl daemon-reload unless --no-reload. Returns 1 and
+# changes nothing when any step fails; the caller then makes no restart.
+WORKER_UNIT_FILE="${ZEROED_WORKER_UNIT_FILE:-/etc/systemd/system/zeroed-worker.service}"
+WORKER_UNIT_BODIES="${ZEROED_WORKER_UNIT_BODIES:-/usr/local/lib/zeroed/units}"
+worker_unit_apply() {
+  local entry body tmp
+  entry="$(worker_entry "$1" 2>/dev/null)" || return 1
+  case "$entry" in
+    */"$RECORDER_ENTRY") body="$WORKER_UNIT_BODIES/zeroed-worker.recorder.service" ;;
+    *)
+      cmp -s "$WORKER_UNIT_FILE" "$WORKER_UNIT_BODIES/zeroed-worker.recorder.service" || return 0
+      body="$WORKER_UNIT_BODIES/zeroed-worker.full.service" ;;
+  esac
+  [ -s "$body" ] || return 1
+  cmp -s "$body" "$WORKER_UNIT_FILE" && return 0
+  tmp="$(mktemp -d)" || return 1
+  if ! cp "$body" "$tmp/zeroed-worker.service" || ! "${SYSTEMD_ANALYZE:-systemd-analyze}" verify "$tmp/zeroed-worker.service" >"$tmp/verify.log" 2>&1; then
+    log "The worker unit body $(basename "$body") does not verify: $(tr -cd '[:print:]\n' < "$tmp/verify.log" 2>/dev/null | head -n 3 | tr '\n' ' ' | cut -c1-300)"
+    rm -rf "$tmp"
+    return 1
+  fi
+  # The body in place now, so a failed reload puts it back (nothing changed).
+  [ ! -e "$WORKER_UNIT_FILE" ] || cp -p "$WORKER_UNIT_FILE" "$tmp/before" || { rm -rf "$tmp"; return 1; }
+  if ! install -m 0644 -o root -g root "$body" "$WORKER_UNIT_FILE.zeroed-unit" 2>/dev/null && ! install -m 0644 "$body" "$WORKER_UNIT_FILE.zeroed-unit"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  mv -f "$WORKER_UNIT_FILE.zeroed-unit" "$WORKER_UNIT_FILE" || { rm -f "$WORKER_UNIT_FILE.zeroed-unit"; rm -rf "$tmp"; return 1; }
+  if [ "${2:-}" != --no-reload ] && ! "${SYSTEMCTL:-systemctl}" daemon-reload; then
+    if [ -e "$tmp/before" ]; then mv -f "$tmp/before" "$WORKER_UNIT_FILE"; else rm -f "$WORKER_UNIT_FILE"; fi
+    "${SYSTEMCTL:-systemctl}" daemon-reload || true
+    rm -rf "$tmp"
+    return 1
+  fi
+  rm -rf "$tmp"
+  log "Worker unit: $(basename "$body") in place for $(basename "$1")."
+}
+
 # restart_for_chat: the worker reads the chat at start, so a re-paired chat restarts it now, or at the next safe moment
 # (pending_restart, from zeroed-check) while it is busy.
 restart_for_chat() {
@@ -2951,6 +2994,103 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   );
 }
 __ZEROED_FILE__
+install_file /usr/local/lib/zeroed/units/zeroed-worker.recorder.service 0644 <<'__ZEROED_FILE__'
+# SW-18 (supervisor ruling SW-18a, option A): the worker unit's body while the current release runs the keyless recorder
+# ("worker": "recorder"). zeroed-update writes it as /etc/systemd/system/zeroed-worker.service before every restart
+# it makes for such a release (common.sh worker_unit_apply), and the full body (the installer's, kept as
+# /usr/local/lib/zeroed/units/zeroed-worker.full.service) for any other. Least privilege for a process that holds no
+# key and sends nothing: no signer group, no signer folders, no import spool, and only the four credentials it reads.
+[Unit]
+Description=Zeroed worker (keyless recorder)
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+After=network-online.target zeroed-receipts-fs.service time-sync.target
+# PATHS-FIX ruling 32: the worker starts after the receipts' own filesystem is mounted (Wants, so a failed mount never
+# keeps the worker down; zeroed-check alerts on it instead).
+Wants=network-online.target zeroed-receipts-fs.service time-sync.target
+# SW-7: and after the clock is synchronised (systemd-time-wait-sync, enabled by the installer and bounded to 2 minutes),
+# so no record is stamped from a boot clock that NTP then steps.
+# Starts only after the keys arrived and the owner's Telegram chat is paired.
+ConditionPathExists=/etc/credstore.encrypted/helius_api_key
+ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=zeroed-worker
+Group=zeroed-worker
+# Only the pull account's receipts (zeroed-pull): never zeroed-signer (the signer's socket), never zeroed-spool (the
+# recorder imports nothing), never botops (DISK-BUDGET.md ruling 15).
+SupplementaryGroups=zeroed-pull
+EnvironmentFile=/etc/zeroed/worker.env
+Environment=NODE_ENV=production
+# Reconcile first: every start and restart settles open intents against the chain before trading.
+ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile
+ExecStart=/usr/local/lib/zeroed/worker-start
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+# The four credentials the recorder reads (run.ts): the paired chat id, the heartbeat key and the two read providers.
+LoadCredentialEncrypted=telegram_chat_id:/etc/credstore.encrypted/telegram_chat_id
+# Optional: present once Deploy delivered the watchdog (ImportCredential does not fail when it is missing).
+ImportCredential=heartbeat_hmac_key
+# Z10: the two read providers (Shyft primary, Chainstack backup), optional the same way.
+ImportCredential=rpc_shyft_url
+ImportCredential=rpc_chainstack_url
+StateDirectory=zeroed
+StateDirectoryMode=0700
+# PATHS-FIX: one StateDirectoryMode per unit, so the market-data folder (2750, group zeroed-pull) and the import spool
+# (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here; so is the
+# provider usage ledger's folder (2770, group zeroed-sentinel), which the sentinel writes too (ruling 21).
+ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-usage
+# Not even listed: the signer's runtime and state folders ("-": a folder that is not there is not an error).
+InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer
+UMask=0077
+# Z10: kept for the keyless recorder from its 48 h soak: RSS peak 278 MiB after F7 (35%), its 75% alert at 600 MiB
+# (logic.sh).
+MemoryMax=800M
+# The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
+# The keyless recorder owns none: worker-start raises it to +500 (ruling Z10-30, logic.sh RECORDER_OOM_SCORE_ADJ).
+OOMScoreAdjust=-500
+TasksMax=256
+LimitCORE=0
+# Hardening (ARCHITECTURE.md 12.1). MemoryDenyWriteExecute is off here only: V8's JIT needs it.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+KeyringMode=private
+DevicePolicy=closed
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Egress: systemd filters by address only (systemd.resource-control IPAddressAllow=/IPAddressDeny=), and the providers
+# and the watchdog sit behind CDNs whose addresses change, so no host-name allow-list is possible here; the firewall's
+# per-user port rule (nftables.conf: 443 and 53 only) stays. Refused: the cloud metadata service (link-local) and the
+# private ranges, which no recorder path uses (health and the API are on loopback; tailscale serve reaches them there).
+IPAddressDeny=169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fe80::/10
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
+__ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # worker-smoke RELEASE_DIR: can this release's own worker start and stay up? zeroed-update runs it before it switches to
@@ -2975,6 +3115,8 @@ entry="$(worker_entry "$dir")"
 [ "$entry" != /opt/zeroed/stub/worker.mjs ] || exit 0
 
 UNIT_FILE=/etc/systemd/system/zeroed-worker.service
+# SW-18: a recorder release is tried under the recorder's own unit body (no signer folders, the same egress rules).
+case "$entry" in */"$RECORDER_ENTRY") UNIT_FILE="${ZEROED_WORKER_UNIT_BODIES:-/usr/local/lib/zeroed/units}/zeroed-worker.recorder.service" ;; esac
 TRIAL=zeroed-worker-smoke
 # A trial left by an earlier run that was cut off is cleared first (the unit names are fixed).
 systemctl stop "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
@@ -4055,8 +4197,14 @@ rollback() {
   ln -sfn "$prev" /opt/zeroed/current.new
   mv -Tf /opt/zeroed/current.new /opt/zeroed/current
   apply_host "${current:-$(basename "$prev")}" "$prev" || true
-  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
-  systemctl restart zeroed-worker.service || true
+  # SW-18: the unit body for the release gone back to (the full one for the stand-in, from this host: no network), or
+  # no restart at all.
+  if worker_unit_apply "$prev"; then
+    systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+    systemctl restart zeroed-worker.service || true
+  else
+    alert worker-unit "ALERT Zeroed host: the worker unit for $(basename "$prev" | cut -c1-12) could not be put in place during the rollback of ${commit:0:12}, so the worker was not restarted. Run zeroed-update at the console."
+  fi
   # RC-FIXES-2b (red team C R3-4): the release gone back to keeps the probation it had before the failed switch, from a
   # new restart baseline (the failed release's restarts are not its own).
   if [ -s "$STATE_DIR/probation.prev" ] && [ "$(cut -d'|' -f1 "$STATE_DIR/probation.prev")" = "$current" ]; then
@@ -4176,6 +4324,8 @@ held_restart() {
   : > "$STATE_DIR/holding"
   # OPS-CLEAN round 4: released only once holding is down, so no re-pair or check slips in between.
   flock -u 9 2>/dev/null || true
+  # SW-18: put in place before the switch; checked again here, and no restart without it.
+  worker_unit_apply /opt/zeroed/current || due_rollback "its worker unit could not be put in place"
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
   systemctl restart zeroed-worker.service || due_rollback "it failed to start"
   if ! why="$(holds)"; then due_rollback "$why"; fi
@@ -4403,6 +4553,17 @@ if [ -s "$STATE_DIR/switch_unheld" ]; then IFS='|' read -r _ prev current < "$ST
 # OPS-CLEAN m1 and round 4: the marker goes down before current moves, whether or not the worker can start now, so no
 # crash or reboot between the switch and its hold leaves the release unheld; held_restart removes it. A marker for a
 # commit that never became deployed is dropped or rewritten by the next run (unheld_start).
+# SW-18 (ruling SW-18a): the unit body the new release's worker needs goes in place before current moves (the running
+# worker is not restarted by it). If it cannot, nothing switches: the running release's body and host files go back,
+# one alert, and the next run tries again.
+if ! worker_unit_apply "$dest"; then
+  log "The worker unit for ${commit:0:12} could not be put in place; still on the old release, trying again next run."
+  alert worker-unit "ALERT Zeroed host: the worker unit for ${commit:0:12} could not be put in place, so the server stays on the release it runs. It tries again every 5 minutes."
+  apply_host "${current:-none}" "$(readlink -f /opt/zeroed/current 2>/dev/null || true)" || true
+  worker_unit_apply /opt/zeroed/current || true
+  exit 1
+fi
+alert_clear worker-unit "CLEARED Zeroed host: the worker unit is in place."
 printf '%s|%s|%s\n' "$commit" "$prev" "$current" > "$STATE_DIR/switch_unheld"
 # RC-R2-3: a new switch ends the probation of the release before it; RC-FIXES-2b (R3-4): kept aside, so a rollback to
 # that release puts it back.
@@ -12346,6 +12507,14 @@ for n in $(cat /var/lib/zeroed-host/release-units 2>/dev/null || true); do
 done
 keep_old /var/lib/zeroed-host/release-units
 printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
+
+# SW-18 (ruling SW-18a): the full worker body just installed is kept aside, so a rollback can put it back with no network;
+# then the body the current release's worker needs goes in place (common.sh worker_unit_apply; the recorder's for
+# "worker": "recorder"). A body that cannot be put in place stops the install (and rolls it back).
+keep_old /usr/local/lib/zeroed/units/zeroed-worker.full.service
+install -d -m 0755 -o root -g root /usr/local/lib/zeroed/units
+install -m 0644 -o root -g root /etc/systemd/system/zeroed-worker.service /usr/local/lib/zeroed/units/zeroed-worker.full.service
+worker_unit_apply /opt/zeroed/current --no-reload || die "the worker unit for the current release could not be put in place (SW-18)"
 
 say "Services"
 systemctl daemon-reload
