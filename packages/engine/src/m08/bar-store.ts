@@ -37,8 +37,11 @@ export interface BarStore {
   add(bars: readonly Bar[]): void;
   /** Writes every held bar in one transaction; on failure keeps them up to 10 minutes, then drops them as gaps. */
   flush(nowMs: UnixMs): { written: number; dropped: StoreGap[] };
-  /** Deletes rows older than the retention (logic 5, daily). */
-  purge(nowMs: UnixMs): number;
+  /**
+   * Deletes rows older than the retention (logic 5, daily). SW-32: with `limit`, at most that many in one transaction,
+   * found along the `bar_1m_minute` index (migration 0003); the caller repeats while it returns `limit`.
+   */
+  purge(nowMs: UnixMs, limit?: number): number;
   ohlc(h: ReaderHandle, poolId: Pubkey, resolution: Resolution, fromMs: UnixMs, toMs: UnixMs,
     coverageGaps?: ReadonlyArray<{ fromMs: number; toMs: number; reason: string }>): Ohlc;
   held(): number;
@@ -79,8 +82,10 @@ export function createBarStore(db: Db, o: { retentionDays?: number; log?: { even
         return { written: 0, dropped };
       }
     },
-    purge(nowMs) {
-      return db.withTx((tx) => tx.run('DELETE FROM "bar_1m" WHERE "minute" < ?', nowMs - days * DAY).changes);
+    purge(nowMs, limit) {
+      if (limit === undefined) return db.withTx((tx) => tx.run('DELETE FROM "bar_1m" WHERE "minute" < ?', nowMs - days * DAY).changes);
+      if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError('m08: purge limit must be a positive integer');
+      return db.withTx((tx) => tx.run('DELETE FROM "bar_1m" WHERE rowid IN (SELECT rowid FROM "bar_1m" WHERE "minute" < ? LIMIT ?)', nowMs - days * DAY, limit).changes);
     },
     held: () => pending.length,
     ohlc(h, poolId, resolution, fromMs, toMs, coverageGaps = []) {

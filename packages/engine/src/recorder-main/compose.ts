@@ -726,14 +726,14 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (mono - lastBarStoreMs >= FLUSH_BAR_STORE_MS) { lastBarStoreMs = mono; await guard('bar_store', () => barStore.flush(now)); }
     // SW-1(b): the database's own retention, daily, and the outbox drain each minute (retention.ts).
     if (mono - lastOutboxMs >= OUTBOX_DRAIN_EVERY_MS) { lastOutboxMs = mono; await guard('outbox', () => retention.drainOutbox()); }
-    if (mono - lastRetentionMs >= RETENTION_EVERY_MS) {
-      lastRetentionMs = mono;
-      await guard('retention', () => {
-        const r = retention.run();
-        if (r.bars > 0) metrics.counter('bar_1m_purged_total', {}).inc(r.bars);
-        log.event('info', 'recorder.retention', { rows: r.rows, bars: r.bars });
-      });
-    }
+    // SW-32: a pass starts daily and runs one bounded step a loop tick until it is through.
+    if (mono - lastRetentionMs >= RETENTION_EVERY_MS) { lastRetentionMs = mono; retention.start(); }
+    await guard('retention', () => {
+      const r = retention.step();
+      if (r === null || !r.done) return;
+      if (r.bars > 0) metrics.counter('bar_1m_purged_total', {}).inc(r.bars);
+      log.event('info', 'recorder.retention', { rows: r.rows, bars: r.bars });
+    });
     await guard('metrics_tick', () => metrics.tick());
   }
 
