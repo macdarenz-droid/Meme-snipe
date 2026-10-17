@@ -331,3 +331,38 @@ SYSTEMD_ANALYZE="${d}/bin/analyze" SYSTEMCTL="${d}/bin/systemctl" worker_unit_ap
     expect(read('ops/host/files/usr/local/lib/zeroed/worker-smoke')).toContain('*/"$RECORDER_ENTRY") UNIT_FILE="${ZEROED_WORKER_UNIT_BODIES:-/usr/local/lib/zeroed/units}/zeroed-worker.recorder.service"');
   });
 });
+
+describe('SW-1a (supervisor ruling, C plus 6 GB): at the default settings the 90-day backup floor fits the budget', () => {
+  // Measured on the 48 h soak at the 60-pool settings (SOAK_MIGRATION_MS=60000, 57 pools watched at most; SYNTHETIC
+  // chain data), SQLite dbstat bytes per table and index over its rows (DECISIONS "SWITCH-FIX" SW-1a):
+  const BYTES_PER_ROW = { bar: 258, rollup: 74, candidateEvent: 316, outbox: 337, candidate: 501 };
+  // Rows a day at 60 pools: bars 60 x 1,440; pool rollups as measured (142,003 a day over 29 pools' bars) scaled to 60;
+  // aggregate rollups, candidate events, outbox rows and candidates as measured (a migration a minute, SYNTHETIC).
+  const ROWS_PER_DAY = { bar: 86_400, poolRollup: 293_799, aggregateRollup: 35_263, candidateEvent: 5_811, outbox: 5_811, candidate: 724 };
+  // ASSUMED compression: zstd -3 on that soak's database gave 5.47x (56,971,264 to 10,421,657 bytes). Real chain data
+  // is UNVERIFIED and on the switch-on watch list (DECISIONS); a lower real ratio moves the crossing day earlier.
+  const RATIO = 5.47;
+  const barDays = (JSON.parse(read('ops/host/files/etc/bot/config.json')) as Record<string, number>)['bars.bar_1m_retention_days'] as number;
+  const budget = Number(/MAX_BYTES="\$\{ZEROED_BACKUP_MAX_BYTES:-(\d+)\}"/.exec(read('ops/host/files/usr/local/sbin/zeroed-backup'))?.[1]);
+  const db = (d: number): number => BYTES_PER_ROW.bar * ROWS_PER_DAY.bar * Math.min(d, barDays)
+    + BYTES_PER_ROW.rollup * (ROWS_PER_DAY.poolRollup * Math.min(d, 7) + ROWS_PER_DAY.aggregateRollup * Math.min(d, 366))
+    + BYTES_PER_ROW.candidateEvent * ROWS_PER_DAY.candidateEvent * Math.min(d, 366) + BYTES_PER_ROW.outbox * ROWS_PER_DAY.outbox * Math.min(d, 7)
+    + BYTES_PER_ROW.candidate * ROWS_PER_DAY.candidate * d;
+  const floor = (d: number): number => (24 + 7) * db(d) / RATIO;            // every floor copy at day d's size (an upper bound)
+
+  it('the defaults are the ruled ones: 14 days of bar_1m and a 6 GB backup budget', () => {
+    expect(barDays).toBe(14);
+    expect(budget).toBe(6_000_000_000);
+  });
+
+  it('day 90: the database and its 31-copy floor, with at least 10% of the budget left (fails before: 90-day bars, 15 GB)', () => {
+    expect(db(90)).toBeLessThan(1_000_000_000);
+    expect(floor(90)).toBeLessThanOrEqual(0.9 * budget);
+    // Recorded, not asserted as a pass: the 1-year tables (aggregate rollups, candidate events) keep growing, so the
+    // floor crosses the budget at about day 121 at these rates (DECISIONS "SWITCH-FIX" SW-1a, open problem).
+    let d = 90;
+    while (floor(d) <= budget) d++;
+    expect(d).toBeGreaterThan(90);
+    expect(d).toBeLessThan(150);
+  });
+});

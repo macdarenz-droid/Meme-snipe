@@ -1,7 +1,7 @@
 // SW-1(b) (red team 1 on bac1f88a): what keeps the recorder's database bounded. Nothing called these before, so
 // `metric_rollup_1m`, `bar_1m`, `outbox` and `candidate_event` grew for as long as the recorder ran.
 // - M24's retention job (ARCH 15; SPEC-B B-M24-02 logic 3, CL-51): every append-only table with a horizon, through
-//   `deleteExpired` (`withRetentionClock`), so only rows past it by both clocks go: `candidate_event` and
+//   `deleteExpired` (M24's own retention transaction), so only rows past it by both clocks go: `candidate_event` and
 //   `screen_result` at 1 year, `metric_rollup_1m` pool series at 7 days and aggregate ones at 1 year (Z02 round 2
 //   ruling 7), the others at theirs. The rollup sink is told how many of its rows went.
 // - M08's daily purge of `bar_1m` past `bars.bar_1m_retention_days` (SPEC-A A-M08-03 logic 5; 90 days).
