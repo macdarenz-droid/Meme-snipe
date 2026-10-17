@@ -57,7 +57,8 @@ jobs:
         id: tooling
         if: ${{ !cancelled() }}
         working-directory: ops/watchdog/deploy
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        # SW-20: npm never sees the job's GitHub token (it needs none for the public registry).
+        run: env -u GH_TOKEN -u GITHUB_TOKEN npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Hand the keys to the server
         if: ${{ !cancelled() }}

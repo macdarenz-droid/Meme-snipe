@@ -44,7 +44,10 @@ for n in "${RPC_NAMES[@]}"; do [ -z "${!n:-}" ] || rpc_set=$((rpc_set + 1)); don
 case "$rpc_set" in
   0) ;;
   2)
-    for n in "${RPC_NAMES[@]}"; do [[ "${!n}" =~ ^https://[^[:space:]]{1,500}$ ]] || die "$n must be one https:// URL."; done
+    # SW-19: at most 384 characters, so its base64 (512) fits the bundle's value rule (zeroed-pair, {0,512}); the server
+    # checks the same 384.
+    for n in "${RPC_NAMES[@]}"; do u="${!n}"; [[ "$u" =~ ^https://[^[:space:]]+$ ]] && [ "${#u}" -le 384 ] || die "$n must be one https:// URL of at most 384 characters."; done
+    u=""
     # GitHub masks the secrets themselves, not their base64; mask those first (a workflow command is never shown).
     if [ "${GITHUB_ACTIONS:-}" = true ]; then for n in "${RPC_NAMES[@]}"; do echo "::add-mask::$(printf '%s' "${!n}" | base64 -w0)"; done; fi
     ;;
@@ -62,6 +65,9 @@ WEBHOOK_SECRET=""
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || die "CLOUDFLARE_ACCOUNT_ID is missing."
   [ -n "${WRANGLER:-}" ] || die "WRANGLER is not set."
+  # SW-20: wrangler is an npm package, so it gets only what it needs (the Cloudflare token and account): never a
+  # provider URL, an API key, the deploy code or the GitHub token. Secrets it stores go on its stdin.
+  wrangler() { env -u RPC_SHYFT_URL -u RPC_CHAINSTACK_URL -u HELIUS_API_KEY -u ALCHEMY_API_KEY -u JUPITER_API_KEY -u TELEGRAM_BOT_TOKEN -u DEPLOY_CODE -u GH_TOKEN -u GITHUB_TOKEN $WRANGLER "$@"; }
   # Repository secrets are masked by GitHub already; these two are new, so mask them first. (A workflow
   # command line is consumed by the runner and never shown in the log.)
   HEARTBEAT_HMAC_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -69,16 +75,16 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   if [ "${GITHUB_ACTIONS:-}" = true ]; then echo "::add-mask::$HEARTBEAT_HMAC_KEY"; echo "::add-mask::$hook_secret"; fi
   # The account needs a workers.dev subdomain once (registered only if Cloudflare clearly has none).
   "$here/cf-subdomain.sh" >/dev/null
-  out="$($WRANGLER deploy 2>&1 || true)"
+  out="$(wrangler deploy 2>&1 || true)"
   WATCHDOG_URL="$(printf '%s\n' "$out" | grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' | head -n 1 || true)"
   if [ -z "$WATCHDOG_URL" ]; then
     # Wrangler's output holds no secret (the token is only in its environment); its tail says what failed.
     printf '%s\n' "$out" | tail -n 20 >&2
     die "Watchdog deploy failed (no workers.dev address in wrangler's output; its last lines are above)."
   fi
-  printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put HEARTBEAT_HMAC_KEY >/dev/null
-  printf '%s' "$TELEGRAM_BOT_TOKEN" | $WRANGLER secret put TELEGRAM_BOT_TOKEN >/dev/null
-  printf '%s' "$hook_secret" | $WRANGLER secret put TELEGRAM_WEBHOOK_SECRET >/dev/null
+  printf '%s' "$HEARTBEAT_HMAC_KEY" | wrangler secret put HEARTBEAT_HMAC_KEY >/dev/null
+  printf '%s' "$TELEGRAM_BOT_TOKEN" | wrangler secret put TELEGRAM_BOT_TOKEN >/dev/null
+  printf '%s' "$hook_secret" | wrangler secret put TELEGRAM_WEBHOOK_SECRET >/dev/null
   # The Telegram webhook is set by the server, not here: it reads /pair through getUpdates first, which
   # Telegram refuses while a webhook is set. The secret travels to it in the encrypted bundle.
   WEBHOOK_SECRET="$hook_secret"

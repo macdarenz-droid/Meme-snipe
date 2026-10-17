@@ -574,7 +574,8 @@ describe('install.sh --update', () => {
     expect(main).toContain('--update) UPDATE=1; shift ;;');
     expect(main).toContain(`[ "$UPDATE" = 0 ] || ! nft list ruleset 2>/dev/null | grep -Eq 'tcp dport 22 .*accept' || SSH_WAS_OPEN=1`);
     expect(upd('SSH_WAS_OPEN=1')).toBeLessThan(upd('# @@FILES@@'));
-    expect(main).toMatch(/if \[ "\$UPDATE" = 1 \]; then\n\s+# SSH stays[^\n]*\n\s+\[ "\$SSH_WAS_OPEN" = 0 \] \|\| sed -i 's\/\^#SSH_RULE#\/\/' \/etc\/nftables.conf\nelif/);
+    // SW-22: the rule goes through ssh_rule (tailnet only once the pull account has a key).
+    expect(main).toMatch(/if \[ "\$UPDATE" = 1 \]; then\n\s+# SSH stays[^\n]*\n\s+# SW-22[^\n]*\n\s+if \[ "\$SSH_WAS_OPEN" = 1 \]; then rules="\$\(ssh_rule \/etc\/zeroed\/pull-keys\/zeroed-pull < \/etc\/nftables.conf\)"; printf '%s\\n' "\$rules" > \/etc\/nftables.conf; fi\nelif/);
     expect(main).toContain('[ "$UPDATE" = 1 ] || keys_stored || [ -s "$DEPLOY_CODE_FILE" ] || new_deploy_code');
     const end = main.slice(upd('if [ "$UPDATE" = 1 ]; then\n  # zeroed-update restarts'));
     expect(end.indexOf('exit 0')).toBeLessThan(end.indexOf('exec /usr/local/sbin/zeroed-setup'));

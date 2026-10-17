@@ -1,7 +1,9 @@
 // Card SWITCH-FIX (the three red teams on bac1f88a): the host-side fixes. The decision helpers run in bash (logic.sh,
 // as host-logic.test.ts does); the scripts and unit files are checked for the wiring the ops e2e drives on a real host.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -148,5 +150,96 @@ describe('SW-2: zeroed-provider-resume', () => {
   it('the README has the runbook', () => {
     expect(read('ops/README.md')).toContain('**Runbook: a stopped read provider (`m14.provider_stopped`; SW-2).**');
     writeFileSync(join(tmp, 'x'), '');
+  });
+});
+
+describe('SW-7: the worker starts on a synchronised clock, never blocked by it', () => {
+  it('Wants= and After=time-sync.target; the installer enables systemd-time-wait-sync and bounds its wait to 2 minutes', () => {
+    const unit = read('ops/host/files/etc/systemd/system/zeroed-worker.service');
+    expect(unit).toMatch(/^Wants=.*\btime-sync\.target\b/m);
+    expect(unit).toMatch(/^After=.*\btime-sync\.target\b/m);
+    expect(unit).not.toMatch(/^Requires=.*time-sync/m);
+    expect(read('ops/host/install-main.sh')).toContain('systemctl enable systemd-time-wait-sync.service');
+    expect(read('ops/host/files/etc/systemd/system/systemd-time-wait-sync.service.d/zeroed-timeout.conf')).toMatch(/^\[Service\]\nTimeoutStartSec=120$/m);
+    expect(read('ops/host/install-main.sh')).toContain('/etc/systemd/system/systemd-time-wait-sync.service.d/zeroed-*) return 0 ;;');
+  });
+});
+
+describe('SW-22: SSH on the tailnet only once the pull account has a key', () => {
+  const conf = read('ops/host/files/etc/nftables.conf');
+  it('ssh_rule turns the rule on, tailnet-only with a pull key; ssh_public_open tells the two apart', () => {
+    const key = join(tmp, 'pull-key');
+    const none = join(tmp, 'no-key');
+    writeFileSync(key, 'ssh-ed25519 AAAA test\n');
+    const withKey = sh(`ssh_rule ${JSON.stringify(key)}`, conf).out;
+    const without = sh(`ssh_rule ${JSON.stringify(none)}`, conf).out;
+    expect(withKey).toMatch(/^    iifname "tailscale0" tcp dport 22 ct state new limit rate 6\/minute accept$/m);
+    expect(withKey).not.toMatch(/^#SSH_RULE#/m);
+    expect(without).toMatch(/^    tcp dport 22 ct state new limit rate 6\/minute accept$/m);
+    expect(sh('ssh_public_open && echo y || echo n', without).out).toBe('y');
+    expect(sh('ssh_public_open && echo y || echo n', withKey).out).toBe('n');
+    expect(sh('ssh_public_open && echo y || echo n', conf).out).toBe('n');
+    // The installer's two places that open SSH both go through it; zeroed-check alerts on a public rule with a key.
+    const main = read('ops/host/install-main.sh');
+    expect(main.match(/ssh_rule \/etc\/zeroed\/pull-keys\/zeroed-pull < \/etc\/nftables.conf/g)?.length).toBe(2);
+    expect(main).not.toContain("sed -i 's/^#SSH_RULE#//' /etc/nftables.conf");
+    expect(read('ops/host/files/usr/local/sbin/zeroed-check')).toContain('nft list ruleset 2>/dev/null | ssh_public_open');
+  });
+});
+
+describe('SW-19: one length limit for the provider URLs on both sides', () => {
+  it('384 characters: its base64 (512) fits the handoff\'s value rule; both scripts check the same 384', () => {
+    expect(Buffer.from('x'.repeat(384)).toString('base64').length).toBe(512);
+    expect(Buffer.from('x'.repeat(385)).toString('base64').length).toBeGreaterThan(512);
+    const pair = read('ops/host/files/usr/local/sbin/zeroed-pair');
+    expect(pair).toContain('[[ "$val" =~ ^[A-Za-z0-9._:/+=@-]{0,512}$ ]]');
+    expect(pair).toContain('[ "${#url}" -le 384 ]');
+    expect(read('ops/deploy/publish.sh')).toContain('[ "${#u}" -le 384 ]');
+    expect(pair).not.toContain('{1,500}');
+  });
+});
+
+describe('SW-20: wrangler never sees a provider URL, an API key, the deploy code or the GitHub token', () => {
+  const run = (script: string, env: Record<string, string>) => new Promise<{ status: number | null; out: string }>((resolve) => {
+    const c = spawn('bash', [join(root, script)], { env: { PATH: process.env['PATH'] ?? '', ...env } });
+    let out = '';
+    c.stdout.on('data', (d) => { out += String(d); });
+    c.stderr.on('data', (d) => { out += String(d); });
+    c.on('close', (status) => resolve({ status, out }));
+  });
+
+  it('publish.sh: every wrangler call gets only the Cloudflare values (TEST values; fails before: the whole step environment)', async () => {
+    const server = createServer((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ success: true, result: { subdomain: 'owners-pick' } })); });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const bin = mkdtempSync(join(tmpdir(), 'sw20-'));
+    const envLog = join(bin, 'wrangler-env.log');
+    writeFileSync(join(bin, 'gh'), '#!/usr/bin/env bash\ncase "$1 $2" in "api "*) echo 1 ;; esac\nexit 0\n');
+    writeFileSync(join(bin, 'age'), '#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done; cat > /dev/null; : > "$out"\n');
+    writeFileSync(join(bin, 'age-keygen'), `#!/usr/bin/env bash\ncat >/dev/null; echo age1${'q'.repeat(58)}\n`);
+    writeFileSync(join(bin, 'wrangler'), `#!/usr/bin/env bash\nenv | cut -d= -f1 | sort | tr '\\n' ' ' >> ${JSON.stringify(envLog)}; echo >> ${JSON.stringify(envLog)}\n[ "\${1:-}" = secret ] && cat > /dev/null\n[ "\${1:-}" = deploy ] && echo "Deployed https://zeroed-watchdog.owners-pick.workers.dev"\nexit 0\n`);
+    for (const f of ['gh', 'age', 'age-keygen', 'wrangler']) chmodSync(join(bin, f), 0o755);
+    const r = await run('ops/deploy/publish.sh', {
+      PATH: `${bin}:${process.env['PATH'] ?? ''}`, GH_REPO: 'o/r', GH_TOKEN: 'TESTgh', GITHUB_SHA: 'a'.repeat(40), ISSUED: '1', PICKUP_POLL_S: '0', PICKUP_GRACE_S: '0',
+      DEPLOY_CODE: 'abacus abdomen able about above absent', HELIUS_API_KEY: 'TESTa', ALCHEMY_API_KEY: 'TESTb', JUPITER_API_KEY: 'TESTc', TELEGRAM_BOT_TOKEN: '1:TESTd',
+      RPC_SHYFT_URL: 'https://rpc.shyft.example/?api_key=TESTs', RPC_CHAINSTACK_URL: 'https://chainstack.example/TESTc',
+      CLOUDFLARE_API_TOKEN: 'TESTcf', CLOUDFLARE_ACCOUNT_ID: 'acc', CLOUDFLARE_API_URL: `http://127.0.0.1:${port}/client/v4`, WRANGLER: join(bin, 'wrangler'),
+    });
+    server.close();
+    const calls = existsSync(envLog) ? readFileSync(envLog, 'utf8').trim().split('\n') : [];
+    rmSync(bin, { recursive: true, force: true });
+    expect(r.status, r.out).toBe(0);
+    expect(calls.length).toBe(4);                                         // deploy and three secrets
+    for (const c of calls) {
+      const names = c.split(' ');
+      expect(names).toContain('CLOUDFLARE_API_TOKEN');
+      for (const n of ['RPC_SHYFT_URL', 'RPC_CHAINSTACK_URL', 'HELIUS_API_KEY', 'ALCHEMY_API_KEY', 'JUPITER_API_KEY', 'TELEGRAM_BOT_TOKEN', 'DEPLOY_CODE', 'GH_TOKEN']) expect(names, n).not.toContain(n);
+    }
+  });
+
+  it('reports.sh and the npm step keep their tokens away from the npm tools', () => {
+    expect(read('ops/deploy/reports.sh')).toContain('wrangler() { env -u DATA_STORE_TOKEN -u GH_TOKEN -u GITHUB_TOKEN $WRANGLER "$@"; }');
+    expect(read('ops/deploy/reports.sh')).not.toMatch(/\$WRANGLER --config/);
+    expect(read('.github/workflows/deploy.yml')).toContain('run: env -u GH_TOKEN -u GITHUB_TOKEN npm ci --ignore-scripts --no-audit --no-fund');
   });
 });

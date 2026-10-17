@@ -61,7 +61,8 @@ declare -A rpc_url=()
 for k in RPC_SHYFT_URL RPC_CHAINSTACK_URL; do
   [ -n "${v[${k}_B64]:-}" ] || continue
   url="$(printf '%s' "${v[${k}_B64]}" | base64 -d 2>/dev/null || true)"
-  [[ "$url" =~ ^https://[^[:space:]]{1,500}$ ]] || { note "Rejected the handoff: $k is not one https:// URL." "rejected"; exit 0; }
+  # SW-19: the same 384 as publish.sh (its base64 is at most 512, the value rule above).
+  [[ "$url" =~ ^https://[^[:space:]]+$ ]] && [ "${#url}" -le 384 ] || { note "Rejected the handoff: $k is not one https:// URL of at most 384 characters." "rejected"; exit 0; }
   rpc_url[$k]="$url"
 done
 url=""

@@ -261,6 +261,15 @@ worker_shakedown() {
         else "\(.key)=\(.value)" end end' "$1/ops/host-config.json"
 }
 
+# ssh_rule PULL_KEY: reads nftables.conf on stdin and prints it with the SSH rule turned on. SW-22: once the pull
+# account has a key (PULL_KEY non-empty; md-pull over the tailnet), SSH is let in on the tailnet interface only.
+ssh_rule() {
+  if [ -s "$1" ]; then sed 's/^#SSH_RULE#    tcp dport 22 /    iifname "tailscale0" tcp dport 22 /'; else sed 's/^#SSH_RULE#//'; fi
+}
+
+# ssh_public_open: reads `nft list ruleset` on stdin; true when SSH is let in on any interface but the tailnet's (SW-22).
+ssh_public_open() { grep -E '^[^#]*tcp dport 22 .*accept' | grep -vq 'iifname "tailscale0"'; }
+
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
 

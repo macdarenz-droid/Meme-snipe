@@ -300,7 +300,7 @@ describe('watchdog tooling', () => {
       expect(p.resolved, name).toMatch(/^https:\/\/registry\.npmjs\.org\//);
     }
     const wf = read('.github/workflows/deploy.yml');
-    expect(wf).toContain('run: npm ci --ignore-scripts --no-audit --no-fund');
+    expect(wf).toContain('run: env -u GH_TOKEN -u GITHUB_TOKEN npm ci --ignore-scripts --no-audit --no-fund');   // SW-20: no GitHub token for npm
     expect(wf).not.toMatch(/npx|npm install/);
     expect(read('pnpm-workspace.yaml')).not.toMatch(/ops/);
   });
@@ -709,8 +709,8 @@ describe('PATHS-FIX: the engine folders, the pull account and its chroot', () =>
     expect(worker.split('\n').filter((l) => !l.startsWith('#')).join('\n')).not.toContain('botops');
     expect(worker).toMatch(/^StateDirectoryMode=0700$/m);
     // Ruling 32: the worker never sees receipts/ before its own filesystem is mounted, and is never held down by it.
-    expect(worker).toMatch(/^After=network-online\.target zeroed-signer\.service zeroed-receipts-fs\.service$/m);
-    expect(worker).toMatch(/^Wants=network-online\.target zeroed-receipts-fs\.service$/m);
+    expect(worker).toMatch(/^After=network-online\.target zeroed-signer\.service zeroed-receipts-fs\.service time-sync\.target$/m);
+    expect(worker).toMatch(/^Wants=network-online\.target zeroed-receipts-fs\.service time-sync\.target$/m);
     expect(worker).not.toMatch(/^Requires=.*zeroed-receipts-fs/m);
     // The groups exist before any unit names them.
     expect(main.indexOf('groupadd --system zeroed-pull')).toBeLessThan(main.indexOf('# @@FILES@@'));

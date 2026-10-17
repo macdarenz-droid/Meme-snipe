@@ -105,6 +105,7 @@ managed() {
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
     /etc/systemd/system/srv-zeroed_pull-*.mount) return 0 ;;
     /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
+    /etc/systemd/system/systemd-time-wait-sync.service.d/zeroed-*) return 0 ;;
     # Z10: the keyless recorder's root-owned engine files (ceilings, config, provider allocation).
     /etc/bot/ceilings.json | /etc/bot/config.json | /etc/bot/rpc-allocation.json) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
@@ -302,12 +303,14 @@ keep_old /etc/ssh/sshd_config.d/10-zeroed.conf
 printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
 if [ "$UPDATE" = 1 ]; then
   # SSH stays exactly as it was: open (key-only) only if the running firewall already let it in.
-  [ "$SSH_WAS_OPEN" = 0 ] || sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
+  # SW-22: on the tailnet only once the pull account has a key (logic.sh ssh_rule).
+  if [ "$SSH_WAS_OPEN" = 1 ]; then rules="$(ssh_rule /etc/zeroed/pull-keys/zeroed-pull < /etc/nftables.conf)"; printf '%s\n' "$rules" > /etc/nftables.conf; fi
 elif [ -n "$SSH_KEY" ]; then
   install -d -m 0700 /root/.ssh
   printf '%s\n' "$SSH_KEY" > /root/.ssh/authorized_keys
   chmod 0600 /root/.ssh/authorized_keys
-  sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
+  rules="$(ssh_rule /etc/zeroed/pull-keys/zeroed-pull < /etc/nftables.conf)"
+  printf '%s\n' "$rules" > /etc/nftables.conf
   systemctl reload ssh 2>/dev/null || true
 else
   for u in ssh.socket ssh.service; do systemctl disable --now "$u" >/dev/null 2>&1 || true; done
@@ -374,6 +377,8 @@ done
 [ "${#PULL_DOWN[@]}" = 0 ] || systemctl start "${PULL_DOWN[@]}"
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
+# SW-7: the worker waits for a synchronised clock at boot (bounded: systemd-time-wait-sync.service.d/zeroed-timeout.conf).
+systemctl enable systemd-time-wait-sync.service >/dev/null 2>&1 || true
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null
 # The dry run starts only when a merged release asks for one by name (packages/runner/qualifying-run.json).
 if [ -e /etc/systemd/system/zeroed-dryrun-tick.timer ]; then systemctl enable --now zeroed-dryrun-tick.timer >/dev/null; fi

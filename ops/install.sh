@@ -105,6 +105,7 @@ managed() {
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
     /etc/systemd/system/srv-zeroed_pull-*.mount) return 0 ;;
     /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
+    /etc/systemd/system/systemd-time-wait-sync.service.d/zeroed-*) return 0 ;;
     # Z10: the keyless recorder's root-owned engine files (ceilings, config, provider allocation).
     /etc/bot/ceilings.json | /etc/bot/config.json | /etc/bot/rpc-allocation.json) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
@@ -359,6 +360,14 @@ Options=bind,ro,nodev,nosuid,noexec,private
 
 [Install]
 WantedBy=multi-user.target
+__ZEROED_FILE__
+install_file /etc/systemd/system/systemd-time-wait-sync.service.d/zeroed-timeout.conf 0644 <<'__ZEROED_FILE__'
+# SW-7: the worker starts after time-sync.target (zeroed-worker.service), which systemd-time-wait-sync holds until the
+# kernel clock is synchronised. Its own unit waits forever (TimeoutStartSec=infinity), so a host whose time service
+# never syncs would never start the worker. Two minutes, then the wait fails and the worker starts anyway (Wants=, not
+# Requires=): the recorder then still checks its clock against two providers (recorder.clock_suspect, unanchored).
+[Service]
+TimeoutStartSec=120
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup-offsite.service 0644 <<'__ZEROED_FILE__'
 [Unit]
@@ -657,10 +666,12 @@ install_file /etc/systemd/system/zeroed-worker.service 0644 <<'__ZEROED_FILE__'
 [Unit]
 Description=Zeroed worker
 Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
-After=network-online.target zeroed-signer.service zeroed-receipts-fs.service
+After=network-online.target zeroed-signer.service zeroed-receipts-fs.service time-sync.target
 # PATHS-FIX ruling 32: the worker starts after the receipts' own filesystem is mounted (Wants, so a failed mount never
 # keeps the worker down; zeroed-check alerts on it instead).
-Wants=network-online.target zeroed-receipts-fs.service
+Wants=network-online.target zeroed-receipts-fs.service time-sync.target
+# SW-7: and after the clock is synchronised (systemd-time-wait-sync, enabled by the installer and bounded to 2 minutes),
+# so no record is stamped from a boot clock that NTP then steps.
 # Starts only after the keys arrived and the owner's Telegram chat is paired.
 ConditionPathExists=/etc/credstore.encrypted/helius_api_key
 ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id
@@ -1704,6 +1715,15 @@ worker_shakedown() {
         elif (.value | type) != "string" or (.value | test("\\A[A-Za-z0-9,]{1,400}\\z") | not) then error("\(.key) is not 1 to 400 letters, digits and commas")
         else "\(.key)=\(.value)" end end' "$1/ops/host-config.json"
 }
+
+# ssh_rule PULL_KEY: reads nftables.conf on stdin and prints it with the SSH rule turned on. SW-22: once the pull
+# account has a key (PULL_KEY non-empty; md-pull over the tailnet), SSH is let in on the tailnet interface only.
+ssh_rule() {
+  if [ -s "$1" ]; then sed 's/^#SSH_RULE#    tcp dport 22 /    iifname "tailscale0" tcp dport 22 /'; else sed 's/^#SSH_RULE#//'; fi
+}
+
+# ssh_public_open: reads `nft list ruleset` on stdin; true when SSH is let in on any interface but the tailnet's (SW-22).
+ssh_public_open() { grep -E '^[^#]*tcp dport 22 .*accept' | grep -vq 'iifname "tailscale0"'; }
 
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
@@ -3263,6 +3283,14 @@ if [ -n "$budget_max" ]; then
   done < <(backup_budget_alert "$budget" "$budget_max")
 fi
 
+# 10. SW-22: with the pull account's key in place, SSH must be on the tailnet only. A public SSH rule then is an alert
+# until the next install --update (every deploy runs it) writes the tailnet-only rule.
+if [ -s /etc/zeroed/pull-keys/zeroed-pull ] && nft list ruleset 2>/dev/null | ssh_public_open; then
+  alert ssh-public "ALERT Zeroed host: the pull account has a key but SSH is open on the public interface. The next deploy (install --update) limits it to the tailnet."
+else
+  alert_clear ssh-public "CLEARED Zeroed host: SSH is not open on the public interface with the pull key in place."
+fi
+
 # 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
 # it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.
 if [ -s "$STATE_DIR/standin_after_rollback" ] && [ "$(worker_entry /opt/zeroed/current 2>/dev/null || true)" = "$STUB_ENTRY" ]; then
@@ -3449,7 +3477,8 @@ declare -A rpc_url=()
 for k in RPC_SHYFT_URL RPC_CHAINSTACK_URL; do
   [ -n "${v[${k}_B64]:-}" ] || continue
   url="$(printf '%s' "${v[${k}_B64]}" | base64 -d 2>/dev/null || true)"
-  [[ "$url" =~ ^https://[^[:space:]]{1,500}$ ]] || { note "Rejected the handoff: $k is not one https:// URL." "rejected"; exit 0; }
+  # SW-19: the same 384 as publish.sh (its base64 is at most 512, the value rule above).
+  [[ "$url" =~ ^https://[^[:space:]]+$ ]] && [ "${#url}" -le 384 ] || { note "Rejected the handoff: $k is not one https:// URL of at most 384 characters." "rejected"; exit 0; }
   rpc_url[$k]="$url"
 done
 url=""
@@ -12261,12 +12290,14 @@ keep_old /etc/ssh/sshd_config.d/10-zeroed.conf
 printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'AuthenticationMethods publickey' > /etc/ssh/sshd_config.d/10-zeroed.conf
 if [ "$UPDATE" = 1 ]; then
   # SSH stays exactly as it was: open (key-only) only if the running firewall already let it in.
-  [ "$SSH_WAS_OPEN" = 0 ] || sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
+  # SW-22: on the tailnet only once the pull account has a key (logic.sh ssh_rule).
+  if [ "$SSH_WAS_OPEN" = 1 ]; then rules="$(ssh_rule /etc/zeroed/pull-keys/zeroed-pull < /etc/nftables.conf)"; printf '%s\n' "$rules" > /etc/nftables.conf; fi
 elif [ -n "$SSH_KEY" ]; then
   install -d -m 0700 /root/.ssh
   printf '%s\n' "$SSH_KEY" > /root/.ssh/authorized_keys
   chmod 0600 /root/.ssh/authorized_keys
-  sed -i 's/^#SSH_RULE#//' /etc/nftables.conf
+  rules="$(ssh_rule /etc/zeroed/pull-keys/zeroed-pull < /etc/nftables.conf)"
+  printf '%s\n' "$rules" > /etc/nftables.conf
   systemctl reload ssh 2>/dev/null || true
 else
   for u in ssh.socket ssh.service; do systemctl disable --now "$u" >/dev/null 2>&1 || true; done
@@ -12333,6 +12364,8 @@ done
 [ "${#PULL_DOWN[@]}" = 0 ] || systemctl start "${PULL_DOWN[@]}"
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
+# SW-7: the worker waits for a synchronised clock at boot (bounded: systemd-time-wait-sync.service.d/zeroed-timeout.conf).
+systemctl enable systemd-time-wait-sync.service >/dev/null 2>&1 || true
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null
 # The dry run starts only when a merged release asks for one by name (packages/runner/qualifying-run.json).
 if [ -e /etc/systemd/system/zeroed-dryrun-tick.timer ]; then systemctl enable --now zeroed-dryrun-tick.timer >/dev/null; fi

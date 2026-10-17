@@ -55,6 +55,14 @@ if [ -n "$budget_max" ]; then
   done < <(backup_budget_alert "$budget" "$budget_max")
 fi
 
+# 10. SW-22: with the pull account's key in place, SSH must be on the tailnet only. A public SSH rule then is an alert
+# until the next install --update (every deploy runs it) writes the tailnet-only rule.
+if [ -s /etc/zeroed/pull-keys/zeroed-pull ] && nft list ruleset 2>/dev/null | ssh_public_open; then
+  alert ssh-public "ALERT Zeroed host: the pull account has a key but SSH is open on the public interface. The next deploy (install --update) limits it to the tailnet."
+else
+  alert_clear ssh-public "CLEARED Zeroed host: SSH is not open on the public interface with the pull key in place."
+fi
+
 # 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
 # it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.
 if [ -s "$STATE_DIR/standin_after_rollback" ] && [ "$(worker_entry /opt/zeroed/current 2>/dev/null || true)" = "$STUB_ENTRY" ]; then
