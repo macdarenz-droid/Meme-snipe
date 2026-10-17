@@ -1,8 +1,12 @@
 // Card SWITCH-FIX-2 SW-28 (RT2-d): a catch-up day (k = 7..2, the recorder was down across a day boundary) gets its
-// coverage report too, once its D+1 hour 00 is closed, not only its universe manifest.
+// coverage report too, once its D+1 hour 00 is closed, not only its universe manifest. SW-31 (RT1-4): the disk warning
+// is a held state code.
 import { strict as assert } from 'node:assert';
+import { mkdirSync, truncateSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'vitest';
 import type { UnixMs } from '@bot/types';
+import { STATE_CODES } from '../../src/recorder-main/compose.ts';
 import { createDailyJob } from '../../src/recorder-main/daily.ts';
 import { kvEvictionLog } from '../../src/recorder-main/evictions.ts';
 import { tempDir } from '../helpers.ts';
@@ -65,4 +69,29 @@ describe('SW-28: catch-up days get their coverage report', () => {
       await r.rec.stop();
     }
   }, 60_000);
+});
+
+describe('SW-31: the 75% disk warning reaches the heartbeat as a held state code', () => {
+  it('m07.disk_budget_high is an active code while the recorder is at or over 75% of recorder.max_bytes, and only then (fails before: log only)', async () => {
+    const GIB = 1_073_741_824;
+    const r = await startRig(tempDir('sw31'), { config: { 'recorder.max_bytes': GIB } });
+    try {
+      await r.run(65_000);                                                  // one disk check (recorder.disk_check_ms 60 s)
+      assert.ok(!r.rec.status().activeCodes.includes('m07.disk_budget_high'));
+      // A sparse watch-log file of yesterday (it counts against the cap, Z10-26, and is inside retention, so it is kept)
+      // takes the recorder to 80% without using the disk.
+      mkdirSync(join(r.paths.mdDir, 'watch'), { recursive: true });
+      const big = join(r.paths.mdDir, 'watch', `${new Date(r.time.nowMs() - 86_400_000).toISOString().slice(0, 10)}.ndjson`);
+      writeFileSync(big, '');
+      truncateSync(big, Math.ceil(0.8 * GIB));
+      await r.run(65_000);
+      assert.ok(r.rec.status().activeCodes.includes('m07.disk_budget_high'), String(r.rec.status().activeCodes));
+      assert.ok(STATE_CODES.has('m07.disk_budget_high'));
+      truncateSync(big, Math.ceil(0.5 * GIB));
+      await r.run(65_000);
+      assert.ok(!r.rec.status().activeCodes.includes('m07.disk_budget_high'), 'cleared below 75%');
+    } finally {
+      await r.rec.stop();
+    }
+  }, 120_000);
 });

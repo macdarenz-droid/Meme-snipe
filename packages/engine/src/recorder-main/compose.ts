@@ -160,7 +160,7 @@ export const VERIFY_COUNT_KEY = 'm04.verify_count';
  */
 export const UNANCHORED_MS = 600_000;
 /** Ruling Z10-41: critical codes that hold exactly while their condition does (never from the 15-minute window). */
-export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
+export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
 /**
  * Ruling Z10-24 (a new value: no SPEC or ARCH threshold exists): a critical line keeps the heartbeat critical for this
  * long after it was last raised. 15 minutes: at least three of the watchdog's 300 s repeats (`REPEAT_CRITICAL_S`).
@@ -588,6 +588,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (tracker?.verifyCapReached() === true) out.push('m04.verify_cap_reached');
     if (clockTrouble?.alerted === true) out.push('recorder.clock_suspect');
     if ((lastDisk?.unpulledOld ?? 0) > 0) out.push('m07.unpulled_segments');
+    // SW-31: held from 75% of the cap, so the owner hears of it days before recording halts at the cap.
+    if (lastDisk?.budgetHigh === true) out.push('m07.disk_budget_high');
     if (daily.manifestMissing(nowMs())) out.push('recorder.manifest_not_recorded');
     if (unanchored) out.push('recorder.unanchored');
     return out;

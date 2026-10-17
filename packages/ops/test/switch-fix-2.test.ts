@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { evaluate, HELD_CODES, limitsFrom, planAlerts, type Heartbeat } from '../src/watchdog/logic.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
@@ -59,5 +60,29 @@ describe('SW-33: zeroed-backup leaves no half-written bundle behind', () => {
   it('the bundle is written under one name the exit trap knows', () => {
     const s = read('ops/host/files/usr/local/sbin/zeroed-backup');
     expect(s).toContain(`trap 'rm -rf "$work"; [ -z "$pending" ] || rm -f -- "$pending"' EXIT`);
+  });
+});
+
+describe('SW-31: m07.disk_budget_high is a held code with its runbook', () => {
+  const T0 = 1_800_000_000_000;
+  const L = limitsFrom({});
+  const hb = (critical: string[]): Heartbeat => ({ seq: 1, ts: T0, boot: 'b1', git_sha: 'a'.repeat(40), policy_version: 'stub', last_processed_slot: null, feed_ages_ms: {},
+    open_position: null, unresolved_intents: { count: 0, oldest_age_s: null }, signer: 'not-ready', lease_epoch: null, sol_reserve: null, paused: false, critical });
+  const at = (critical: string[]) => evaluate({ hb: hb(critical), receivedAt: T0 }, T0, L, { slot: null, heldMints: null });
+
+  it('ALERT names md-pull; STILL once a day, not hourly; CLEARED below 75% (fails before: hourly, no runbook)', () => {
+    expect(HELD_CODES.has('m07.disk_budget_high')).toBe(true);
+    const first = planAlerts({}, at(['m07.disk_budget_high']), T0, L);
+    expect(first.lines).toEqual(['ALERT Worker critical: m07.disk_budget_high. The recorder is over 75% of its disk cap; run md-pull before it halts at the cap (ops/README.md).']);
+    let state = first.next;
+    const lines: string[] = [];
+    for (let m = 1; m <= 25 * 60; m++) {
+      const r = planAlerts(state, at(['m07.disk_budget_high']), T0 + m * 60_000, L);
+      lines.push(...r.lines);
+      state = r.next;
+    }
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^STILL Worker critical: m07\.disk_budget_high\..*\(since 1440 min\)$/);
+    expect(planAlerts(state, at([]), T0 + 26 * 3_600_000, L).lines[0]).toMatch(/^CLEARED Worker critical: m07\.disk_budget_high\./);
   });
 });
