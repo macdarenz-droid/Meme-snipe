@@ -10,6 +10,7 @@ import { SegmentWriter } from '../../src/m07/segments.ts';
 import { readPhase0Dataset } from '../../src/m13/phase0-input.ts';
 import { venueRecordedPricing } from '../../src/m13/venue-pricing.ts';
 import { heightReader, NEXT_SEQ_KEY } from '../../src/recorder-main/compose.ts';
+import { FATAL_EXIT, fatalHandler, heartbeatSlot, startHealthServers } from '../../src/recorder-main/health.ts';
 import { tempDir } from '../helpers.ts';
 import { FakeChain, VirtualTime } from './fake-chain.ts';
 import { startRig, WALL_START, type Rig } from './rig.ts';
@@ -118,5 +119,85 @@ describe('SW-14 and SW-16', () => {
     const got = await read('shyft');
     assert.deepEqual(got, { slot: 500n, atMs: 1_000_000 });
     assert.equal(await read('chainstack'), null);                          // an answer from another provider is not this one's
+  });
+});
+
+describe('SW-6: the facts map is bounded', () => {
+  it('facts of a pool with no live candidate and no tracking are dropped; a live candidate\'s stay (fails before: kept forever)', async () => {
+    const r = await startRig(tempDir('sw6'));
+    try {
+      await r.run(5_000);
+      const fact = { venue: 'pumpswap' as const, quoteMint: 'q' as Pubkey, feeTotalBps: 30, effectiveQuoteLamports: 1n, observedAtMs: r.time.nowMs() };
+      r.rec.parts.facts.set('ghost' as Pubkey, fact);
+      const live = r.rec.parts.universe.candidates().find((c) => !c.reasons.some((x) => x.startsWith('retired=')));
+      if (live !== undefined) r.rec.parts.facts.set(live.poolId, fact);
+      await r.run(11_000);
+      assert.equal(r.rec.parts.facts.has('ghost' as Pubkey), false);
+      if (live !== undefined) assert.equal(r.rec.parts.facts.has(live.poolId), true);
+    } finally {
+      await r.rec.stop();
+    }
+  });
+});
+
+describe('SW-8: no slot in the heartbeat while nothing is watched', () => {
+  it('heartbeatSlot is null at 0 watched pools, the newest stored slot otherwise (fails before: the stale slot was sent)', () => {
+    assert.equal(heartbeatSlot({ watched: 0, newestStoredSlot: '400000000' }), null);
+    assert.equal(heartbeatSlot({ watched: 3, newestStoredSlot: null }), null);
+    assert.equal(heartbeatSlot(null), null);
+    assert.equal(heartbeatSlot({ watched: 3, newestStoredSlot: '18446744073709551615' }), 18_446_744_073_709_551_615n);
+  });
+});
+
+describe('SW-3: nothing the loop or the process does can throw past a handler', () => {
+  it('fatalHandler: one line, a stop, then exit 70, once; the grace timer exits even if the stop hangs', async () => {
+    const seen: string[] = [];
+    let timer: (() => void) | null = null;
+    const h = fatalHandler({
+      log: (w, c) => seen.push(`log ${w} ${c}`), stop: () => new Promise<void>(() => undefined), exit: (c) => seen.push(`exit ${c}`), say: () => undefined,
+      setTimer: (fn) => { timer = fn; },
+    });
+    h('unhandled_rejection', Object.assign(new Error('x'), { code: 'E_BAD/../x' }));
+    h('uncaught_exception', new Error('again'));                          // a second one while stopping: ignored
+    assert.deepEqual(seen, ['log unhandled_rejection E_BAD____x']);
+    (timer as unknown as () => void)();
+    assert.deepEqual(seen, ['log unhandled_rejection E_BAD____x', `exit ${FATAL_EXIT}`]);
+    const done: string[] = [];
+    fatalHandler({ log: () => undefined, stop: async () => { done.push('stopped'); }, exit: (c) => done.push(`exit ${c}`), say: () => undefined, setTimer: () => undefined })('uncaught_exception', 'not an error');
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(done, ['stopped', 'exit 70']);
+  });
+
+  it('a status that throws answers /health with 500 and the server keeps running (fails before: an uncaught exception)', async () => {
+    let bad = true;
+    const [s] = await startHealthServers([{ host: '127.0.0.1', port: 0 }], () => { if (bad) throw new Error('status'); return { mode: 'paper', git_sha: 'x', signing_key: false }; });
+    try {
+      const port = (s!.address() as { port: number }).port;
+      assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 500);
+      bad = false;
+      assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+    } finally {
+      s!.close();
+    }
+  });
+
+  it('a throw in M14\'s tick or the metrics tick is one internal_error line, and the loop goes on (fails before: the tick rejected)', async () => {
+    const r = await startRig(tempDir('sw3'));
+    try {
+      await r.run(2_000);
+      const rp = r.rec.parts.read as { tick: () => void };
+      const m = r.rec.parts.metrics as unknown as { tick: () => void };
+      const [t0, t1] = [rp.tick, m.tick];
+      rp.tick = () => { throw Object.assign(new Error('x'), { code: 'E_TICK' }); };
+      m.tick = () => { throw Object.assign(new Error('y'), { code: 'E_METRICS' }); };
+      const before = r.rec.status().lastTickMs;
+      await r.run(3_000);
+      rp.tick = t0; m.tick = t1;
+      const where = r.lines.map((l) => JSON.parse(l) as { code: string; where?: string }).filter((l) => l.code === 'recorder.internal_error').map((l) => l.where);
+      assert.ok(where.includes('rpc_tick') && where.includes('metrics_tick'), where.join(','));
+      assert.ok((r.rec.status().lastTickMs ?? 0) > (before ?? 0), 'the loop kept ticking');
+    } finally {
+      await r.rec.stop();
+    }
   });
 });

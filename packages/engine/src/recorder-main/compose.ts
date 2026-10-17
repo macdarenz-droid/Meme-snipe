@@ -117,6 +117,8 @@ export interface RunningRecorder {
     writer: SegmentWriter; disk: DiskManager; tracker: PoolTracker<CpPoolState>; universe: Universe; watchlist: Watchlist; bars: BarEngine;
     barStore: BarStore; backfill: MigrationBackfill<CpPoolState>; venue: VenueConfigCache; venueRecorder: VenueConfigRecorder; evictions: EvictionLog;
     model: ReturnType<typeof createPumpSwapPoolModel>;
+    /** SW-6: the prefilter facts held per pool. */
+    facts: ReadonlyMap<Pubkey, PrefilterFacts> & { set(k: Pubkey, v: PrefilterFacts): unknown };
     tickOnce(): Promise<void>;
   };
 }
@@ -386,7 +388,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     },
     store, nowMs, newId, wsolMint: MINTS.wsol,
     facts: (id) => facts.get(id) ?? null,
-    requestFacts: (ids) => { noteAsks(ids); void factsRead(ids); },
+    requestFacts: (ids) => { noteAsks(ids); void guard('facts_read', () => factsRead(ids)); },
     // Z09-44: fresh reads pause while M14 cannot serve P4 from the unmetered primary.
     readsAvailable: () => rp.monitor.mode() === 'normal',
     lists: { isWrittenOff: () => false, isUnsolicited: () => false },
@@ -612,6 +614,20 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     metrics.gauge('recorder_queue_depth', {}).set(q.queueDepth);
   }
 
+  /**
+   * SW-6: the facts of a pool are dropped once nothing can read them again: its candidate is retired (or gone) and
+   * M04 no longer tracks it. A retired pool that comes back is read fresh, as any pool whose facts are too old.
+   */
+  function pruneFacts(): void {
+    const byPool = new Map(universe.candidates().map((c) => [c.poolId, c]));
+    const tracked = new Set(tracker?.ready() ?? []);
+    for (const id of facts.keys()) {
+      if (tracked.has(id)) continue;
+      const c = byPool.get(id);
+      if (c === undefined || c.reasons.some((r) => r.startsWith('retired='))) facts.delete(id);
+    }
+  }
+
   async function tickOnce(): Promise<void> {
     const now = nowMs();
     const mono = p.scheduler.nowMs();
@@ -625,10 +641,10 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       const a = chain.anchor();
       const fields = { anchor_age_ms: Math.round(mono - (lastAgreeMono ?? startedMono)), anchor_slot: a === null ? 'none' : a.slot.toString() };
       if (unanchoredNow) log.event('critical', 'recorder.unanchored', fields); else log.event('info', 'recorder.anchored', fields);
-      queue.append({ stream: 'decision', recvMs: now, slot: null, commitment: null, source: 'recorder', payload: { kind: 'recorder_clock', anchored: !unanchoredNow, anchorAgeMs: fields.anchor_age_ms, anchorSlot: a === null ? null : fields.anchor_slot } });
+      await guard('unanchored_record', () => queue.append({ stream: 'decision', recvMs: now, slot: null, commitment: null, source: 'recorder', payload: { kind: 'recorder_clock', anchored: !unanchoredNow, anchorAgeMs: fields.anchor_age_ms, anchorSlot: a === null ? null : fields.anchor_slot } }));
     }
     await guard('active_codes', () => { tickCodes = activeCodes(); if (tickSolUsd === 'pending') tickSolUsd = solUsdCheck()?.result ?? 'pending'; });
-    rp.tick();
+    await guard('rpc_tick', () => rp.tick());
     const trouble = clockTrouble as { sinceMs: number; alerted: boolean } | null;
     if (trouble !== null && !trouble.alerted && mono - trouble.sinceMs >= CLOCK_ALERT_MS) {
       trouble.alerted = true;
@@ -669,9 +685,9 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     await guard('daily', () => daily.tick(now));
     if (mono - lastFlushMs >= flushMs) { lastFlushMs = mono; await guard('flush', () => writer.flush()); }
     if (mono - lastDiskMs >= diskMs) { lastDiskMs = mono; await guard('disk', () => { lastDisk = disk.check(); }); }
-    if (mono - lastMetricsMs >= METRICS_EVERY_MS) { lastMetricsMs = mono; await guard('metrics', () => sample()); }
+    if (mono - lastMetricsMs >= METRICS_EVERY_MS) { lastMetricsMs = mono; await guard('metrics', () => sample()); await guard('facts_prune', pruneFacts); }
     if (mono - lastBarStoreMs >= FLUSH_BAR_STORE_MS) { lastBarStoreMs = mono; await guard('bar_store', () => barStore.flush(now)); }
-    metrics.tick();
+    await guard('metrics_tick', () => metrics.tick());
   }
 
   let cancel: (() => void) | null = null;
@@ -716,7 +732,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       },
       parts: {
         db, config, log, metrics, read: rp, chain, queue, writer, disk, tracker: tracker as PoolTracker<CpPoolState>, universe, watchlist, bars, barStore,
-        backfill, venue, venueRecorder, evictions, model, tickOnce,
+        backfill, venue, venueRecorder, evictions, model, facts, tickOnce,
       },
     },
   };
