@@ -138,6 +138,14 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 6:24 PM: #336 SWITCH-FIX-2 ready** at `512ee4c6` (base `3439ee02`, contains it). No guarded files. Migration 0003 is index-only (two indexes) and accepted under the 3 Oct stored-data ruling.
+  - Builder results:
+    - `pnpm test` 9,410 pass, 0 fail;
+    - soak passes (0.114 MiB/h);
+    - e2e passes locally;
+    - SW-32: slowest retention step 21.5 ms at day-366 sizes on 1 CPU (3.25–3.70 s before), batches of 2,000.
+  - SW-31 reaches the owner only after a watchdog Deploy.
+  - RT1/RT2/RT3 are re-checking their own items. CI is running.
 - **17 Oct 3:38 PM: #335 SWITCH-FIX merged at `3439ee02`** (the new base).
   - Red teams 1, 2 and 3 PASS on `ca304a5b`, with no BLOCKER or MAJOR.
   - CI green on `ca304a5b`: labelled `check` (run 39000504938), coverage, dashboard, historical-data, e2e and recorder-soak. The unlabelled `check` failed only at the drift gate, as expected.
