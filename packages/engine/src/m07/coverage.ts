@@ -94,9 +94,19 @@ export function dayStartOf(dayUtc: string): UnixMs {
 export function computeCoverage(input: CoverageInput): { report: CoverageReport; detail: CoverageDetail } {
   const a = dayStartOf(input.dayUtc);
   const b = a + DAY_MS;
-  const observed = new Set<string>();
-  const minuteOf = (ms: number): number => Math.floor(ms / MINUTE_MS) * MINUTE_MS;
-  const k = (poolId: string, ms: number): string => `${poolId}\u0000${minuteOf(ms)}`;
+  // SW-35: the observed pool-minutes of the day as one bitmap of its 1,440 minutes per pool (1.4 KB), not a string per
+  // pool-minute: that Set (tens of thousands of keys a day) was the daily job's largest allocation and raised the
+  // recorder's resident memory in steps at each day's coverage (soak, DECISIONS). Only minutes inside the day are ever
+  // looked up, so a minute outside it is not kept.
+  const minutes = DAY_MS / MINUTE_MS;
+  const observed = new Map<string, Uint8Array>();
+  const observe = (poolId: string, ms: number): void => {
+    if (ms < a || ms >= b) return;
+    let bits = observed.get(poolId);
+    if (bits === undefined) { bits = new Uint8Array(minutes); observed.set(poolId, bits); }
+    bits[Math.floor((ms - a) / MINUTE_MS)] = 1;
+  };
+  const wasObserved = (poolId: string, ms: number): boolean => observed.get(poolId)?.[Math.floor((ms - a) / MINUTE_MS)] === 1;
   // One pass over the poll counts (they may be a stream): observed minutes, and the day's successful polls per stream.
   const polledByStream = new Map<string, number>();
   for (const r of input.pollCounts) {
@@ -105,8 +115,8 @@ export function computeCoverage(input: CoverageInput): { report: CoverageReport;
       if (s !== undefined) polledByStream.set(s, (polledByStream.get(s) ?? 0) + r.successfulPolls);
     }
     if (r.skippedBars !== undefined) continue;
-    if (r.successfulPolls > 0) observed.add(k(r.poolId, r.barStartMs));
-    if (r.latePolls !== undefined && r.latePolls > 0 && r.lateFromBarStartMs !== undefined) observed.add(k(r.poolId, r.lateFromBarStartMs));
+    if (r.successfulPolls > 0) observe(r.poolId, r.barStartMs);
+    if (r.latePolls !== undefined && r.latePolls > 0 && r.lateFromBarStartMs !== undefined) observe(r.poolId, r.lateFromBarStartMs);
   }
   const poolGaps = new Map<string, Array<{ fromMs: number; toMs: number }>>();
   const streamGaps: Array<{ fromMs: number; toMs: number }> = [];
@@ -137,7 +147,7 @@ export function computeCoverage(input: CoverageInput): { report: CoverageReport;
       if (inMinute === 0) continue;
       watchedMs += inMinute;
       const poolGapHere = pg.some((g) => clip(g.fromMs, g.toMs, m, m + MINUTE_MS) > 0);
-      if (!observed.has(k(poolId, m)) || poolGapHere) missingMs += inMinute;
+      if (!wasObserved(poolId, m) || poolGapHere) missingMs += inMinute;
       else missingMs += overlapLength(intervals, streamGaps, m, m + MINUTE_MS);
     }
   }
