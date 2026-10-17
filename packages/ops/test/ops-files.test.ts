@@ -794,6 +794,8 @@ describe('PATHS-FIX ruling 24: the provider usage ledger is in every backup', ()
     // (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md); the host installs it (install-main.sh PACKAGES).
     const cli = spawnSync('sqlite3', ['-version'], { encoding: 'utf8' });
     if (cli.status !== 0) throw new Error('sqlite3 missing: install the sqlite3 command-line tool (apt-get install sqlite3); zeroed-backup and zeroed-restore-drill need it');
+    // SW-1: the backups are zstd-compressed, so the zstd CLI is needed too (never skipped; the host installs it, PACKAGES).
+    if (spawnSync('zstd', ['--version'], { encoding: 'utf8' }).status !== 0) throw new Error('zstd missing: install the zstd command-line tool (apt-get install zstd); zeroed-backup and zeroed-restore-drill need it');
     const t = mkdtempSync(join(tmpdir(), 'zeroed-bk-'));
     const src = join(t, 'zeroed');
     const usage = join(t, 'zeroed-usage');
@@ -804,12 +806,14 @@ describe('PATHS-FIX ruling 24: the provider usage ledger is in every backup', ()
     expect(db(join(src, 'bot.db'), 'ledger').status).toBe(0);
     expect(db(join(usage, 'rpc-usage.db'), 'reservations').status).toBe(0);
     writeFileSync(join(t, 'recipients'), 'age1test\n');
-    const env = { ZEROED_BACKUP_SRC: src, ZEROED_BACKUP_USAGE_SRC: usage, ZEROED_BACKUP_OUT: out, ZEROED_BACKUP_RECIPIENTS: join(t, 'recipients') };
+    const env = { ZEROED_BACKUP_SRC: src, ZEROED_BACKUP_USAGE_SRC: usage, ZEROED_BACKUP_OUT: out, ZEROED_BACKUP_RECIPIENTS: join(t, 'recipients'), ZEROED_LOGIC: join(root, 'ops/host/files/usr/local/lib/zeroed/logic.sh') };
     const bk = run('ops/host/files/usr/local/sbin/zeroed-backup', [], env);
     expect(bk.status, bk.stderr + bk.stdout).toBe(0);
     expect(bk.stdout).toMatch(/: 2 file\(s\), 1 recipient\(s\)\.$/m);
-    const file = join(out, readdirSync(out)[0]!);
-    const listing = spawnSync('tar', ['-tf', file], { encoding: 'utf8' }).stdout.split('\n');
+    const name = readdirSync(out).find((f) => f.endsWith('.age'))!;
+    expect(name).toMatch(/^zeroed-\d{8}T\d{6}Z\.tar\.zst\.age$/);
+    const file = join(out, name);
+    const listing = spawnSync('bash', ['-c', 'zstd -q -d -c "$1" | tar -t', '_', file], { encoding: 'utf8' }).stdout.split('\n');
     expect(listing).toContain('./zeroed-usage/rpc-usage.db');
     expect(listing).toContain('./bot.db');
     const drill = run('ops/host/files/usr/local/sbin/zeroed-restore-drill', [join(t, 'identity')], env);

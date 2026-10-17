@@ -47,7 +47,7 @@ describe('engine write paths (PATHS-FIX)', () => {
   });
 
   it('the private state stays out of the folders others can read', () => {
-    for (const k of ['db', 'preMigrationBackup', 'initMarker', 'recoveryDir', 'diskReserve', 'logDir'] as const) {
+    for (const k of ['db', 'preMigrationBackup', 'initMarker', 'recoveryDir', 'diskReserve', 'logDir', 'controlDir'] as const) {
       assert.ok(inside(ENGINE_PATHS[k], [STATE_DIR]), k);
     }
     // zeroed-backup copies every *.db / *.sqlite under the state folder; the pre-migration copy must not match.

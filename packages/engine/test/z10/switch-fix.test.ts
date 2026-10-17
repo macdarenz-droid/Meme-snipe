@@ -1,6 +1,6 @@
 // Card SWITCH-FIX (the three red teams on bac1f88a): the composition-root fixes, on the rig (virtual clock, fake chain).
 import { strict as assert } from 'node:assert';
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
@@ -200,4 +200,39 @@ describe('SW-3: nothing the loop or the process does can throw past a handler', 
       await r.rec.stop();
     }
   });
+});
+
+describe('SW-2: a provider stop survives a restart, and only the operator\'s resume ends it', () => {
+  it('stop kept across a restart; provider-resume-<label> clears it, is deleted, and the clear survives the next restart (fails before: no way to resume)', async () => {
+    const dir = tempDir('sw2');
+    const time = new VirtualTime(WALL_START);
+    const chain = new FakeChain(time, { seed: 3 });
+    const a = await startRig(dir, { time, chain });
+    const label = a.rec.status().providers[1] as string;
+    await a.run(2_000);
+    // Three 429s in the window (the owner's rule) is what stops a provider; the stop is what M14 saves.
+    const store = a.rec.parts.db;
+    const t = time.nowMs();
+    store.withTx((tx) => { tx.run('INSERT OR REPLACE INTO "kv_state" ("key", "value_json", "created_at", "updated_at") VALUES (?, ?, ?, ?)', 'm14.stop_state', JSON.stringify({ stopped: [{ label, stoppedAtMs: t, reason: 'rate_limited' }], recent: [] }), t, t); });
+    await a.rec.stop();
+    const b = await startRig(dir, { time, chain });
+    try {
+      assert.ok(b.rec.parts.read.gateway.status().find((x) => x.label === label)?.stopped, 'the stop survived the restart');
+      writeFileSync(join(b.paths.controlDir as string, `provider-resume-${label}`), '');
+      writeFileSync(join(b.paths.controlDir as string, 'provider-resume-nosuch'), '');
+      await b.run(6_000);
+      assert.equal(b.rec.parts.read.gateway.status().find((x) => x.label === label)?.stopped, false);
+      assert.deepEqual(readdirSync(b.paths.controlDir as string), []);
+      const res = b.lines.map((l) => JSON.parse(l) as { code: string; provider?: string; result?: string }).filter((l) => l.code === 'recorder.provider_resume').map((l) => `${l.provider}:${l.result}`).sort();
+      assert.deepEqual(res, [`${label}:resumed`, 'unknown:unknown'].sort());
+    } finally {
+      await b.rec.stop();
+    }
+    const c = await startRig(dir, { time, chain });
+    try {
+      assert.equal(c.rec.parts.read.gateway.status().find((x) => x.label === label)?.stopped, false, 'the resume was saved');
+    } finally {
+      await c.rec.stop();
+    }
+  }, 60_000);
 });

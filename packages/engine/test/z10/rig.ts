@@ -44,9 +44,9 @@ export async function startRig(dir: string, o: { seed?: number; config?: Record<
   const paths: RecorderPaths = {
     db: join(dir, 'state/bot.db'), preMigrationBackup: join(dir, 'state/premigrate/bot.premigrate'), initMarker: join(dir, 'state/init/first-start'),
     logDir: join(dir, 'state/log'), usageDb: join(dir, 'usage/rpc-usage.db'), mdDir: join(dir, 'md'), receiptsDir: join(dir, 'md/receipts'),
-    ceilings: join(etc, 'ceilings.json'), config: join(etc, 'config.json'),
+    ceilings: join(etc, 'ceilings.json'), config: join(etc, 'config.json'), controlDir: join(dir, 'state/control'),
   };
-  for (const d of ['state/premigrate', 'state/init', 'state/log', 'usage', 'md/receipts']) mkdirSync(join(dir, d), { recursive: true });
+  for (const d of ['state/premigrate', 'state/init', 'state/log', 'state/control', 'usage', 'md/receipts']) mkdirSync(join(dir, d), { recursive: true });
   writeFileSync(paths.ceilings, JSON.stringify(RECORDER_CEILINGS));
   writeFileSync(paths.config, JSON.stringify(recorderConfig(paths, o.config)));
   writeFileSync(join(etc, 'rpc-allocation.json'), JSON.stringify(RECORDER_ALLOCATION));

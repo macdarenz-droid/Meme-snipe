@@ -220,7 +220,7 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
   // Ruling Z10-48: one key per critical entry (the recorder sends codes; WORKER-1 free text), so a code held for days
   // never hides a new one: each gets its own ALERT, repeats and CLEARED in planAlerts.
-  for (const c of [...new Set(critical.map((x) => x.slice(0, 80)))]) out.push({ key: `worker_critical:${c}`, text: `Worker critical: ${c}.` });
+  for (const c of [...new Set(critical.map((x) => x.slice(0, 80)))]) out.push({ key: `worker_critical:${c}`, text: `Worker critical: ${c}.${RUNBOOK[c] ?? ''}` });
   return out;
 }
 
@@ -231,6 +231,10 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
  */
 export const HELD_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
 const HELD_REPEAT_MS = 86_400_000;
+/** SW-2: the host command an alert names, for the codes that need one (ops/README.md, the runbooks). */
+const RUNBOOK: Readonly<Record<string, string>> = {
+  'm14.provider_stopped': ' Find the cause, then run zeroed-provider-resume <provider> at the console (ops/README.md).',
+};
 const isHeld = (key: string): boolean => key.startsWith('worker_critical:') && HELD_CODES.has(key.slice('worker_critical:'.length));
 
 /** OPS-SUMMARY: a summary that was refused or not written. Trading and the other checks are unaffected. */

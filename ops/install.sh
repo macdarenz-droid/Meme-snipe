@@ -185,7 +185,8 @@ fi
 
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
-PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
+# SW-1: zstd compresses the backups (zeroed-backup); an update installs it when missing (the check below).
+PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils zstd)
 # An update only touches apt when a package is missing (and waits for unattended-upgrades' lock).
 if [ "$UPDATE" = 0 ] || ! dpkg -s "${PACKAGES[@]}" >/dev/null 2>&1; then
   apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null
@@ -1770,6 +1771,60 @@ prunable_releases() {
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
 }
 
+# SW-1 (DISK-BUDGET R1, review ruling 3): which backup copies to delete. Reads "NAME BYTES" lines on stdin, one per
+# copy (zeroed-YYYYmmddTHHMMSSZ.tar.age, or .tar.zst.age once compressed; any other name is never touched). The floor,
+# which the byte budget never cuts: the newest HOURLY copies, and the newest copy of each of the newest DAILY UTC days.
+# Above the floor, copies stay newest first while every kept copy fits in MAX_BYTES and at most MAX_COUNT are kept; from
+# the first that does not, every older one above the floor is printed "delete NAME". The last line is
+# "floor_bytes N kept_bytes N kept N over 0|1": over is 1 when the floor alone is above MAX_BYTES (an alert; backups
+# are never deleted for it, the other growers are shed instead). Pure: prints only.
+backup_keep() { # HOURLY DAILY MAX_BYTES MAX_COUNT
+  LC_ALL=C sort -r -k1,1 | awk -v H="$1" -v D="$2" -v MAX="$3" -v CNT="$4" '
+    $1 ~ /^zeroed-[0-9]+T[0-9]+Z\.tar(\.zst)?\.age$/ && length($1) >= 31 && substr($1, 16, 1) == "T" && $2 ~ /^[0-9]+$/ { n++; name[n] = $1; size[n] = $2 + 0 }
+    END {
+      days = 0
+      for (i = 1; i <= n; i++) {
+        keep[i] = (i <= H)
+        d = substr(name[i], 8, 8)
+        if (!(d in seen)) { seen[d] = 1; days++; if (days <= D) keep[i] = 1 }
+      }
+      fb = 0; kb = 0; k = 0; full = 0
+      for (i = 1; i <= n; i++) if (keep[i]) { fb += size[i]; kb += size[i]; k++ }
+      for (i = 1; i <= n; i++) {
+        if (keep[i]) continue
+        if (!full && kb + size[i] <= MAX && k < CNT) { kb += size[i]; k++ } else { full = 1; print "delete " name[i] }
+      }
+      printf "floor_bytes %.0f kept_bytes %.0f kept %d over %d\n", fb, kb, k, (fb > MAX) ? 1 : 0
+    }'
+}
+
+# SW-1(c) (SPEC-B B-M24-04 logic 3, SPEC-B:2027 and :2035; DISK-BUDGET ruling 7): the root filesystem's free space. Reads
+# `df -B1 --output=size,avail /` on stdin and prints one line per level: "on|KEY|TEXT" or "off|KEY|TEXT" for disk-low
+# (used above 80%: free under 20%) and disk-critical (used above 95%: free under 5%, or under the 500 MB reserve).
+# Input it cannot read prints nothing, so no alert changes.
+disk_alerts() {
+  awk 'NR == 2 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $1 > 0 {
+    used = 100 - ($2 * 100 / $1); mb = $2 / 1000000
+    if (used > 95 || $2 < 500000000) printf "on|disk-critical|ALERT Zeroed host: the server disk is %.0f%% full (%.0f MB free). New recording stops at 95%%; backups are kept. Free space now.\n", used, mb
+    else printf "off|disk-critical|CLEARED Zeroed host: the server disk is below 95%% again.\n"
+    if (used > 80) printf "on|disk-low|ALERT Zeroed host: the server disk is %.0f%% full (%.0f MB free).\n", used, mb
+    else printf "off|disk-low|CLEARED Zeroed host: the server disk is below 80%% again.\n"
+  }'
+}
+
+# SW-1(a): the backup budget's alert, from the status zeroed-backup writes ("floor_bytes N kept_bytes N kept N over 0|1"
+# and the budget). No status prints nothing.
+backup_budget_alert() { # STATUS_LINE MAX_BYTES
+  local fb over
+  read -r _ fb _ _ _ _ _ over _ <<< "$1" || return 0
+  [[ "$fb" =~ ^[0-9]+$ ]] && [[ "$over" =~ ^[01]$ ]] || return 0
+  if [ "$over" = 1 ]; then
+    printf 'on|backup-budget|ALERT Zeroed host: the backups'"'"' floor (24 hourly and 7 daily copies) takes %s MB, over the %s MB budget. No backup is deleted for it; free space elsewhere or raise ZEROED_BACKUP_MAX_BYTES.\n' "$((fb / 1000000))" "$(($2 / 1000000))"
+  else
+    printf 'off|backup-budget|CLEARED Zeroed host: the backups fit their budget again.\n'
+  fi
+}
+
 # PATHS-FIX ruling 23: the pull account's own filesystem and its two chroot binds.
 PULL_MOUNT_UNITS=(zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount)
 
@@ -3031,17 +3086,25 @@ install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Hourly encrypted backup of every SQLite file under /var/lib/zeroed, and (PATHS-FIX ruling 24) of the provider usage
 # ledger's folder /var/lib/zeroed-usage, stored in the bundle under zeroed-usage/. Each file is copied with SQLite's
-# online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed and
-# encrypted with age to /etc/zeroed/backup-recipients (the host key, plus the owner's key once the
-# Deploy workflow delivered one). Keeps the newest 72 locally.
+# online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed, compressed
+# with zstd (SW-1; the installer's PACKAGES guarantee it) and encrypted with age to /etc/zeroed/backup-recipients (the
+# host key, plus the owner's key once the Deploy workflow delivered one), as zeroed-<UTC time>.tar.zst.age.
+# Kept (SW-1, DISK-BUDGET R1, review ruling 3; logic.sh backup_keep): a floor of the newest 24 hourly copies and 7
+# daily copies (one per UTC day) that the byte budget never cuts; above it, newer copies while all fit in
+# ZEROED_BACKUP_MAX_BYTES (6 GB) and number at most ZEROED_BACKUP_KEEP (72). A floor over the budget is an alert
+# (zeroed-check reads budget.status), never a delete.
 set -euo pipefail
 umask 077
+. "${ZEROED_LOGIC:-/usr/local/lib/zeroed/logic.sh}"
 
 SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
 USAGE_SRC="${ZEROED_BACKUP_USAGE_SRC:-/var/lib/zeroed-usage}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 RECIPIENTS="${ZEROED_BACKUP_RECIPIENTS:-/etc/zeroed/backup-recipients}"
 KEEP="${ZEROED_BACKUP_KEEP:-72}"
+MAX_BYTES="${ZEROED_BACKUP_MAX_BYTES:-6000000000}"
+FLOOR_HOURLY=24
+FLOOR_DAILY=7
 
 [ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
 # Each entry is "source|path in the bundle"; the usage ledger's files go under zeroed-usage/.
@@ -3069,10 +3132,15 @@ done
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
-tar -C "$work/snap" -c . | age -R "$RECIPIENTS" -o "$OUT/zeroed-$ts.tar.age.new"
-mv -f "$OUT/zeroed-$ts.tar.age.new" "$OUT/zeroed-$ts.tar.age"
-ls -1 "$OUT"/zeroed-*.tar.age | LC_ALL=C sort -r | tail -n +"$((KEEP + 1))" | xargs -r rm -f
-echo "Backup zeroed-$ts.tar.age: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
+name="zeroed-$ts.tar.zst.age"
+tar -C "$work/snap" -c . | zstd -q -3 -T1 | age -R "$RECIPIENTS" -o "$OUT/$name.new"
+mv -f "$OUT/$name.new" "$OUT/$name"
+status="$(find "$OUT" -maxdepth 1 -type f -name 'zeroed-*.age' -printf '%f %s\n' | backup_keep "$FLOOR_HOURLY" "$FLOOR_DAILY" "$MAX_BYTES" "$KEEP" | while read -r what f rest; do
+  if [ "$what" = delete ]; then rm -f -- "$OUT/$f"; else printf '%s %s %s\n' "$what" "$f" "$rest"; fi
+done)"
+printf '%s max_bytes %s\n' "$status" "$MAX_BYTES" > "$OUT/budget.status.new" && mv -f "$OUT/budget.status.new" "$OUT/budget.status"
+echo "Backup $name: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
+echo "Kept: $status (budget $MAX_BYTES bytes)."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup-code 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -3120,7 +3188,7 @@ enabled="$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.j
 owner="$(cat "$STATE_DIR/owner_backup_recipient" 2>/dev/null || true)"
 [[ "$owner" =~ ^age1[a-z0-9]{58}$ ]] || { log "No backup code yet (zeroed-backup-code): no off-server copy."; exit 0; }
 paired || { log "Telegram not paired: no off-server copy."; exit 0; }
-newest="$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1 || true)"
+newest="$(ls -1 "$OUT"/zeroed-*.tar.age "$OUT"/zeroed-*.tar.zst.age 2>/dev/null | LC_ALL=C sort -r | head -n 1 || true)"
 [ -n "$newest" ] || { log "No backup yet."; exit 0; }
 
 work="$(mktemp -d)"
@@ -3132,7 +3200,7 @@ size="$(stat -c %s "$copy")"
 [ "$size" -le 49000000 ] || { log "Backup is $size bytes, over Telegram's 50 MB: not sent."; notify "Zeroed server: backup too large for the Telegram copy ($size bytes)." || true; exit 1; }
 chat="$(cred telegram_chat_id)"
 tg_chat="$chat" tg_field=form tg sendDocument -o /dev/null -F "document=@$copy" -F "disable_notification=true" \
-  -F "caption=Zeroed backup $(basename "$newest" .tar.age). Opens only with your backup code." 2>/dev/null ||
+  -F "caption=Zeroed backup $(basename "$(basename "$newest" .age)" | sed 's/\.tar\(\.zst\)\{0,1\}$//'). Opens only with your backup code." 2>/dev/null ||
   { log "Sending the off-server copy failed."; exit 1; }
 printf '%s\n' "$(basename "$newest")" > "$STATE_DIR/last_offsite"
 log "Sent $(basename "$newest") ($size bytes, owner key only) to the paired Telegram chat."
@@ -3152,6 +3220,7 @@ install_file /usr/local/sbin/zeroed-check 0755 <<'__ZEROED_FILE__'
 #  6. A standing alert while the bot sits on the stand-in after a rollback.
 #  7. A worker that refused to start on lost or corrupt state (its refused.json, or exit 78), with the reason.
 #  8. A worker unit that systemd stopped restarting (failed).
+#  9. The server disk's free space (80% and 95% used), and a backup floor over its byte budget (SW-1).
 # Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
 set -euo pipefail
 umask 077
@@ -3180,6 +3249,19 @@ done < <(printf '%s' "$rec" | record_alerts "$now" /var/lib/zeroed/recorder "$se
 while IFS='|' read -r what key text; do
   if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
 done < <(systemctl is-active "${PULL_MOUNT_UNITS[@]}" 2>/dev/null | pull_mount_alerts "${PULL_MOUNT_UNITS[@]}")
+
+# 9. SW-1(c): the server disk's free space (SPEC-B B-M24-04 logic 3: warning under 20% free, critical under 5% or the
+# 500 MB reserve), and SW-1(a): the backups' floor over its budget (zeroed-backup's budget.status).
+while IFS='|' read -r what key text; do
+  if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
+done < <(df -B1 --output=size,avail / 2>/dev/null | disk_alerts)
+budget="$(head -c 300 "${ZEROED_BACKUP_OUT:-/var/backups/zeroed}/budget.status" 2>/dev/null || true)"
+budget_max="$(printf '%s' "$budget" | sed -n 's/.* max_bytes \([0-9][0-9]*\).*/\1/p')"
+if [ -n "$budget_max" ]; then
+  while IFS='|' read -r what key text; do
+    if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
+  done < <(backup_budget_alert "$budget" "$budget_max")
+fi
 
 # 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
 # it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.
@@ -3432,6 +3514,35 @@ fi
 log "Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
 log "One try only, within 30 minutes; a wrong or late code needs a new one from here."
 __ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-provider-resume 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# SW-2: ends a read provider's stop (M14 stops a provider after three 429/403 answers within ten minutes, owner rule,
+# and keeps the stop across restarts). Run as root at the host console, once the provider's limits are understood:
+#   zeroed-provider-resume <label>     (label: shyft or chainstack, as the alert and zeroed-status show it)
+# It writes the request provider-resume-<label> into the worker's control folder; the running recorder clears that
+# stop, logs `recorder.provider_resume` with the result, and deletes the request. Logged to the journal here too.
+set -euo pipefail
+umask 077
+CONTROL="${ZEROED_CONTROL_DIR:-/var/lib/zeroed/control}"
+WAIT_S="${ZEROED_PROVIDER_RESUME_WAIT_S:-30}"
+label="${1:-}"
+[[ "$label" =~ ^[a-z0-9_-]{1,32}$ ]] || { echo "Usage: zeroed-provider-resume <label> (lowercase letters, digits, - or _)."; exit 2; }
+[ -d "$CONTROL" ] && [ ! -L "$CONTROL" ] || { echo "No control folder at $CONTROL: is a recorder release running?"; exit 1; }
+req="$CONTROL/provider-resume-$label"
+# Made exclusively under a fresh name (never through a link the folder's owner left), then renamed over the request
+# name (rename replaces a link or file there, never follows it), so the recorder never sees a half-made request.
+tmp="$(mktemp -p "$CONTROL" .provider-resume.XXXXXX)"
+chown --reference="$CONTROL" "$tmp" 2>/dev/null || true
+mv -fT "$tmp" "$req"
+logger -t zeroed-provider-resume "requested resume of provider $label" 2>/dev/null || true
+for _ in $(seq 1 "$WAIT_S"); do
+  [ -e "$req" ] || { echo "Resume of $label handled by the recorder; its result is the log line recorder.provider_resume."; exit 0; }
+  sleep 1
+done
+rm -f "$req"
+echo "The recorder did not pick up the request within ${WAIT_S}s (is it running?). Nothing was changed."
+exit 1
+__ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-record-upload 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # RECORD-UPLOAD at the console: one run now, for every recording (no argument) or one UTC day (--day YYYY-MM-DD), in
@@ -3470,14 +3581,18 @@ SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
 USAGE_SRC="${ZEROED_BACKUP_USAGE_SRC:-/var/lib/zeroed-usage}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 identity="${1:?usage: zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]}"
-backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
+# SW-1: copies are zeroed-<time>.tar.zst.age (zstd inside); older ones zeroed-<time>.tar.age (plain tar).
+backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age "$OUT"/zeroed-*.tar.zst.age 2>/dev/null | LC_ALL=C sort -r | head -n 1 || true)}"
 [ -n "$backup" ] && [ -f "$backup" ] || { echo "FAIL: no backup found"; exit 1; }
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 
-age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+case "$backup" in
+  *.tar.zst.age) age -d -i "$identity" "$backup" 2>/dev/null | zstd -q -d -c 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")" ;;
+  *) age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")" ;;
+esac
 [ -f "$work/MANIFEST.sha256" ] || fail "manifest missing"
 (cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null 2>&1 || fail "a file does not match the manifest"
 

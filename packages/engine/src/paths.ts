@@ -27,6 +27,11 @@ export const ENGINE_PATHS = {
   recoveryDir: `${STATE_DIR}/recovery`,
   /** M24 disk-guard reserve file (500 MB). */
   diskReserve: `${STATE_DIR}/reserve`,
+  /**
+   * SW-2: operator requests from the host (`zeroed-provider-resume`, run as root): a file `provider-resume-<label>` asks
+   * the running recorder to clear that provider's stop; the recorder deletes it once handled.
+   */
+  controlDir: `${STATE_DIR}/control`,
   /** M27 log folder (`m27.log_dir`). */
   logDir: `${STATE_DIR}/log`,
   /** M14 provider usage ledger: the engine and the sentinel both write it, so it is not in the 0700 state folder. */

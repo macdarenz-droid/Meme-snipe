@@ -227,6 +227,7 @@ export const METRICS = {
   facts_refresh_pools: gauge(),                                 // Z09-39: pools asked for fresh facts in the last hour
   facts_queued_stale_share_bps: gauge(),                        // Z09-51: queued_stale asks as a share of the hourly ceiling
   bars_closed_total: counter(),                                 // A-M08-01: closed 60 s bars
+  bar_1m_purged_total: counter(),                               // A-M08-03 Observability: bar_1m rows past retention (SW-1)
   bars_counts_refused_total: counter('reason'),                 // A-M08-01 (Z09-32, Z09-42): late or early poll counts
   dexscreener_calls_total: counter('status'),                   // A-M03-04 (card Z08)                // A-M14-05 (card Z08): refused by the account ledger before sending
 } as const;

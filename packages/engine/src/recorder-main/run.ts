@@ -53,15 +53,17 @@ export async function runRecorderProcess(): Promise<void> {
   const scratchPaths = (d: string): RecorderPaths => ({
     db: join(d, 'bot.db'), preMigrationBackup: join(d, 'premigrate/bot.premigrate'), initMarker: join(d, 'init/first-start'), logDir: join(d, 'log'),
     usageDb: join(d, 'usage/rpc-usage.db'), mdDir: join(d, 'md'), receiptsDir: join(d, 'md/receipts'), ceilings: '/etc/bot/ceilings.json', config: '/etc/bot/config.json',
+    controlDir: join(d, 'control'),
   });
   const paths: RecorderPaths = scratch !== null ? scratchPaths(join(scratch, 'recorder')) : {
     db: ENGINE_PATHS.db, preMigrationBackup: ENGINE_PATHS.preMigrationBackup, initMarker: ENGINE_PATHS.initMarker, logDir: ENGINE_PATHS.logDir,
     usageDb: ENGINE_PATHS.rpcUsageDb, mdDir: ENGINE_PATHS.mdDir, receiptsDir: ENGINE_PATHS.receiptsDir, ceilings: '/etc/bot/ceilings.json', config: '/etc/bot/config.json',
+    controlDir: ENGINE_PATHS.controlDir,
   };
   if (scratch !== null) for (const d of ['premigrate', 'init', 'log', 'usage', 'md/receipts']) mkdirSync(join(scratch, 'recorder', d), { recursive: true });
   // The database's own folder (paths.ts: never the marker's), the pre-migration backup's and the log folder, inside the
   // unit's 0700 state folder; the folders outside it are the installer's.
-  for (const d of [dirname(paths.db), dirname(paths.preMigrationBackup), paths.logDir]) mkdirSync(d, { recursive: true, mode: 0o700 });
+  for (const d of [dirname(paths.db), dirname(paths.preMigrationBackup), paths.logDir, paths.controlDir as string]) mkdirSync(d, { recursive: true, mode: 0o700 });
 
   const credDir = env.CREDENTIALS_DIRECTORY;
   const cred = (name: string): string | null => {

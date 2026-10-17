@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { evaluate, HELD_CODES, isNewer, limitsFrom, parseCommand, parseHeartbeat, planAlerts, sign, statusText, takeLease, verifySignature, type Heartbeat, type Stored } from '../src/watchdog/logic.ts';
@@ -135,6 +135,12 @@ describe('alert dedupe and escalation', () => {
     expect(held).toEqual(['STILL Worker critical: m07.unpulled_segments. (since 1440 min)']);
     expect(lines.filter((l) => l.includes('recorder.memory_high')).length).toBe(11 + 24);
     expect(planAlerts(state, at([]), T0 + day + 3_600_000 + 60_000, L).lines).toContain('CLEARED Worker critical: m07.unpulled_segments.');
+  });
+
+  it('SW-2: the provider-stopped alert names the resume command', () => {
+    const a = evaluate(stored(hb({ critical: ['m14.provider_stopped'] })), T0, L, noChain);
+    expect(a[0]?.text).toContain('zeroed-provider-resume');
+    expect(existsSync(fileURLToPath(new URL('../../../ops/host/files/usr/local/sbin/zeroed-provider-resume', import.meta.url)))).toBe(true);
   });
 
   it('SW-4: HELD_CODES is the recorder\'s STATE_CODES list', () => {

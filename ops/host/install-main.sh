@@ -185,7 +185,8 @@ fi
 
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
-PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils)
+# SW-1: zstd compresses the backups (zeroed-backup); an update installs it when missing (the check below).
+PACKAGES=(age ca-certificates curl e2fsprogs git gnupg jq nftables sqlite3 unattended-upgrades xz-utils zstd)
 # An update only touches apt when a package is missing (and waits for unattended-upgrades' lock).
 if [ "$UPDATE" = 0 ] || ! dpkg -s "${PACKAGES[@]}" >/dev/null 2>&1; then
   apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null

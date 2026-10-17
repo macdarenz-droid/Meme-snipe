@@ -13,7 +13,8 @@
 // Each second: M07 `tick(now)`, the writer's `pump()` (which hands every written `poll_counts` record to M08 with its
 // recvMs), then M08 `closeDue(now)`, all with the same `now` (Z09-32).
 import { createPublicKey, type KeyObject } from 'node:crypto';
-import { statfsSync } from 'node:fs';
+import { lstatSync, readdirSync, statfsSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { base58, createDecoders, decodeEventsWithGaps, readRpcTransaction, verifyPinnedIdls, VENDORED_IDL_DIR } from '@bot/decoders';
 import type { Clock, Config, Pubkey, Result, Slot, UnixMs } from '@bot/types';
 import { createPumpSwapPoolModel, createVenueConfigCache, type CpPoolState, type VenueConfigCache } from '@bot/venue';
@@ -57,11 +58,14 @@ import { createReadPath, type ReadPath } from './rpc.ts';
 import { createDailyJob } from './daily.ts';
 import { kvEvictionLog, type EvictionLog } from './evictions.ts';
 import { ulid } from './ids.ts';
+import { OUTBOX_DRAIN_EVERY_MS, recorderRetention, RETENTION_EVERY_MS } from './retention.ts';
 
 /** Where the recorder writes (ENGINE_PATHS on the host; a scratch folder in the smoke trial and the soak). */
 export interface RecorderPaths {
   db: string; preMigrationBackup: string; initMarker: string; logDir: string; usageDb: string; mdDir: string; receiptsDir: string;
   ceilings: string; config: string;
+  /** SW-2: the folder of operator requests (`ENGINE_PATHS.controlDir`); none read when absent. */
+  controlDir?: string;
 }
 
 export interface RecorderPorts {
@@ -126,6 +130,8 @@ export interface RunningRecorder {
 const WATCHLIST_EVERY_MS = 10_000;
 const FLUSH_BAR_STORE_MS = 60_000;
 const METRICS_EVERY_MS = 10_000;
+/** SW-2: how often the control folder is looked at. */
+const CONTROL_EVERY_MS = 5_000;
 /** C-90: the kept first SOL/USD read on the server. */
 export const SOL_USD_CHECK_KEY = 'recorder.sol_usd_first_check';
 /** SW-11: every stream's next seq at the last rotation (`{ stream: "<u64>" }`), in `kv_state`. */
@@ -258,7 +264,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const cfg: Config = config.current();
   const m27 = m27Settings(cfg);
   const log = bootLog;
-  const metrics = new MetricsRegistry({ clock, seriesCap: m27.seriesCap, ringBudgetBytes: m27.ringBudgetBytes, sink: metricRollupSink(db, repos.metric_rollup_1m, clock, { maxBytes: m27.rollupMaxBytes, log }), log });
+  const rollupSink = metricRollupSink(db, repos.metric_rollup_1m, clock, { maxBytes: m27.rollupMaxBytes, log });
+  const metrics = new MetricsRegistry({ clock, seriesCap: m27.seriesCap, ringBudgetBytes: m27.ringBudgetBytes, sink: rollupSink, log });
 
   // ---- M14 and M15. ----
   let allocationRaw: unknown;
@@ -341,6 +348,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     const t = nowMs();
     db.withTx((tx) => { repos.kv_state.upsert(tx, { key: NEXT_SEQ_KEY, valueJson: JSON.stringify(v), createdAt: t, updatedAt: t }); });
   };
+  const retention = recorderRetention({ db, clock, barStore, rollupSink });
   const researchKey = p.researchKey ?? (() => { try { return createPublicKey(p.readFile(configValue(cfg, 'recorder.research_pubkey'))); } catch { return null; } });
   const key = researchKey();
   const disk = new DiskManager({
@@ -584,6 +592,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (unanchored) out.push('recorder.unanchored');
     return out;
   };
+  let lastOutboxMs = -Infinity, lastRetentionMs = -Infinity;
   let lastMetricsMs = -Infinity, lastFlushMs = -Infinity, lastDiskMs = -Infinity, lastWatchlistMs = -Infinity, lastAnchorMs = -Infinity, lastBarStoreMs = -Infinity, lastVenueMs = -Infinity;
   const flushMs = configValue(cfg, 'recorder.flush_ms');
   const diskMs = configValue(cfg, 'recorder.disk_check_ms');
@@ -594,6 +603,31 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const guard = async (where: string, fn: () => unknown): Promise<void> => {
     try { await fn(); } catch (e) { log.event('error', 'recorder.internal_error', { where, error_code: String((e as { code?: unknown })?.code ?? 'E_THROWN') }); }
   };
+
+  /**
+   * SW-2: the operator's provider resume. M14's stop (three 429/403 answers in ten minutes, owner rule) is kept in M24
+   * and restored at start, so only an operator ends it: `zeroed-provider-resume <label>` on the host writes
+   * `provider-resume-<label>` into the control folder, and the recorder clears that stop (M14 `resumeProvider`, which
+   * saves the cleared state), logs the result and deletes the file. Names only: a file's contents are never read, and a
+   * name that is not one of this recorder's providers is deleted with an `unknown` line.
+   */
+  function controlRequests(): void {
+    const dir = p.paths.controlDir;
+    if (dir === undefined) return;
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return; }
+    for (const name of names.slice(0, 16)) {
+      const m = /^provider-resume-([a-z0-9_-]{1,32})$/.exec(name);
+      if (m === null) continue;
+      const label = m[1] as string;
+      let regular = false;
+      try { regular = lstatSync(join(dir, name)).isFile(); } catch { regular = false; }
+      const result = !regular ? 'not_a_file' : !rp.labels.includes(label) ? 'unknown' : rp.gateway.resumeProvider(label) ? 'resumed' : 'not_stopped';
+      try { unlinkSync(join(dir, name)); } catch { /* tried again at the next look */ }
+      log.event('warn', 'recorder.provider_resume', { provider: rp.labels.includes(label) ? label : 'unknown', result });
+    }
+  }
+  let lastControlMs = -Infinity;
 
   const ceiling = configValue(cfg, 'universe.facts_refresh_per_hour');
   let barsSeen = { late: 0, early: 0 };
@@ -685,8 +719,19 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     await guard('daily', () => daily.tick(now));
     if (mono - lastFlushMs >= flushMs) { lastFlushMs = mono; await guard('flush', () => writer.flush()); }
     if (mono - lastDiskMs >= diskMs) { lastDiskMs = mono; await guard('disk', () => { lastDisk = disk.check(); }); }
+    if (mono - lastControlMs >= CONTROL_EVERY_MS) { lastControlMs = mono; await guard('control', controlRequests); }
     if (mono - lastMetricsMs >= METRICS_EVERY_MS) { lastMetricsMs = mono; await guard('metrics', () => sample()); await guard('facts_prune', pruneFacts); }
     if (mono - lastBarStoreMs >= FLUSH_BAR_STORE_MS) { lastBarStoreMs = mono; await guard('bar_store', () => barStore.flush(now)); }
+    // SW-1(b): the database's own retention, daily, and the outbox drain each minute (retention.ts).
+    if (mono - lastOutboxMs >= OUTBOX_DRAIN_EVERY_MS) { lastOutboxMs = mono; await guard('outbox', () => retention.drainOutbox()); }
+    if (mono - lastRetentionMs >= RETENTION_EVERY_MS) {
+      lastRetentionMs = mono;
+      await guard('retention', () => {
+        const r = retention.run();
+        if (r.bars > 0) metrics.counter('bar_1m_purged_total', {}).inc(r.bars);
+        log.event('info', 'recorder.retention', { rows: r.rows, bars: r.bars });
+      });
+    }
     await guard('metrics_tick', () => metrics.tick());
   }
 

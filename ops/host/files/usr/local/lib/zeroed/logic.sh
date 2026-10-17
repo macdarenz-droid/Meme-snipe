@@ -327,6 +327,60 @@ prunable_releases() {
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
 }
 
+# SW-1 (DISK-BUDGET R1, review ruling 3): which backup copies to delete. Reads "NAME BYTES" lines on stdin, one per
+# copy (zeroed-YYYYmmddTHHMMSSZ.tar.age, or .tar.zst.age once compressed; any other name is never touched). The floor,
+# which the byte budget never cuts: the newest HOURLY copies, and the newest copy of each of the newest DAILY UTC days.
+# Above the floor, copies stay newest first while every kept copy fits in MAX_BYTES and at most MAX_COUNT are kept; from
+# the first that does not, every older one above the floor is printed "delete NAME". The last line is
+# "floor_bytes N kept_bytes N kept N over 0|1": over is 1 when the floor alone is above MAX_BYTES (an alert; backups
+# are never deleted for it, the other growers are shed instead). Pure: prints only.
+backup_keep() { # HOURLY DAILY MAX_BYTES MAX_COUNT
+  LC_ALL=C sort -r -k1,1 | awk -v H="$1" -v D="$2" -v MAX="$3" -v CNT="$4" '
+    $1 ~ /^zeroed-[0-9]+T[0-9]+Z\.tar(\.zst)?\.age$/ && length($1) >= 31 && substr($1, 16, 1) == "T" && $2 ~ /^[0-9]+$/ { n++; name[n] = $1; size[n] = $2 + 0 }
+    END {
+      days = 0
+      for (i = 1; i <= n; i++) {
+        keep[i] = (i <= H)
+        d = substr(name[i], 8, 8)
+        if (!(d in seen)) { seen[d] = 1; days++; if (days <= D) keep[i] = 1 }
+      }
+      fb = 0; kb = 0; k = 0; full = 0
+      for (i = 1; i <= n; i++) if (keep[i]) { fb += size[i]; kb += size[i]; k++ }
+      for (i = 1; i <= n; i++) {
+        if (keep[i]) continue
+        if (!full && kb + size[i] <= MAX && k < CNT) { kb += size[i]; k++ } else { full = 1; print "delete " name[i] }
+      }
+      printf "floor_bytes %.0f kept_bytes %.0f kept %d over %d\n", fb, kb, k, (fb > MAX) ? 1 : 0
+    }'
+}
+
+# SW-1(c) (SPEC-B B-M24-04 logic 3, SPEC-B:2027 and :2035; DISK-BUDGET ruling 7): the root filesystem's free space. Reads
+# `df -B1 --output=size,avail /` on stdin and prints one line per level: "on|KEY|TEXT" or "off|KEY|TEXT" for disk-low
+# (used above 80%: free under 20%) and disk-critical (used above 95%: free under 5%, or under the 500 MB reserve).
+# Input it cannot read prints nothing, so no alert changes.
+disk_alerts() {
+  awk 'NR == 2 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $1 > 0 {
+    used = 100 - ($2 * 100 / $1); mb = $2 / 1000000
+    if (used > 95 || $2 < 500000000) printf "on|disk-critical|ALERT Zeroed host: the server disk is %.0f%% full (%.0f MB free). New recording stops at 95%%; backups are kept. Free space now.\n", used, mb
+    else printf "off|disk-critical|CLEARED Zeroed host: the server disk is below 95%% again.\n"
+    if (used > 80) printf "on|disk-low|ALERT Zeroed host: the server disk is %.0f%% full (%.0f MB free).\n", used, mb
+    else printf "off|disk-low|CLEARED Zeroed host: the server disk is below 80%% again.\n"
+  }'
+}
+
+# SW-1(a): the backup budget's alert, from the status zeroed-backup writes ("floor_bytes N kept_bytes N kept N over 0|1"
+# and the budget). No status prints nothing.
+backup_budget_alert() { # STATUS_LINE MAX_BYTES
+  local fb over
+  read -r _ fb _ _ _ _ _ over _ <<< "$1" || return 0
+  [[ "$fb" =~ ^[0-9]+$ ]] && [[ "$over" =~ ^[01]$ ]] || return 0
+  if [ "$over" = 1 ]; then
+    printf 'on|backup-budget|ALERT Zeroed host: the backups'"'"' floor (24 hourly and 7 daily copies) takes %s MB, over the %s MB budget. No backup is deleted for it; free space elsewhere or raise ZEROED_BACKUP_MAX_BYTES.\n' "$((fb / 1000000))" "$(($2 / 1000000))"
+  else
+    printf 'off|backup-budget|CLEARED Zeroed host: the backups fit their budget again.\n'
+  fi
+}
+
 # PATHS-FIX ruling 23: the pull account's own filesystem and its two chroot binds.
 PULL_MOUNT_UNITS=(zeroed-receipts-fs.service srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount)
 
