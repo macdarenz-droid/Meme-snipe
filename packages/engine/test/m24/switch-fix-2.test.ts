@@ -91,11 +91,13 @@ describe('SW-32: retention in bounded steps', () => {
     assert.match(ev, /USING (COVERING )?INDEX candidate_event_created_at/);
     const bars = plan('SELECT rowid FROM "bar_1m" WHERE "minute" < ? LIMIT ?', 1, 1);
     assert.match(bars, /USING (COVERING )?INDEX bar_1m_minute/);
-    const seek = plan('SELECT "metric", "labels_hash", "scope" AS "v" FROM "metric_rollup_1m" WHERE ("metric", "labels_hash") > (?, ?) ORDER BY "metric", "labels_hash" LIMIT 1', 'm', 1n);
-    assert.match(seek, /SEARCH metric_rollup_1m USING PRIMARY KEY/);
+    const seek = plan('SELECT "metric", "labels_hash", "scope" AS "v" FROM "metric_rollup_1m" WHERE "metric" = ? AND "labels_hash" > ? ORDER BY "labels_hash" LIMIT 1', 'm', 1n);
+    assert.match(seek, /SEARCH metric_rollup_1m USING PRIMARY KEY \(metric=\? AND labels_hash>\?\)/);
+    const nextMetric = plan('SELECT "metric", "labels_hash", "scope" AS "v" FROM "metric_rollup_1m" WHERE "metric" > ? ORDER BY "metric", "labels_hash" LIMIT 1', 'm');
+    assert.match(nextMetric, /SEARCH metric_rollup_1m USING PRIMARY KEY \(metric>\?\)/);
     const series = plan(`SELECT "metric", "labels_hash", "minute" FROM "metric_rollup_1m" WHERE "metric" = ? AND "labels_hash" = ? AND "minute" <= ? AND "scope" = ? AND "created_at" <= ? LIMIT ?`, 'm', 1n, 1, 'pool', 1, 1);
     assert.match(series, /SEARCH metric_rollup_1m USING PRIMARY KEY \(metric=\? AND labels_hash=\? AND minute<\?\)/);
-    for (const p of [ev, bars, seek, series]) assert.doesNotMatch(p, /\bSCAN\b/);
+    for (const p of [ev, bars, seek, nextMetric, series]) assert.doesNotMatch(p, /\bSCAN\b/);
     db.close();
   });
 

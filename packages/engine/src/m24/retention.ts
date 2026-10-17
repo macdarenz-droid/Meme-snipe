@@ -89,11 +89,17 @@ export function expiryJob(db: Db, table: TableName, clock: Clock, observers: rea
     const key = def.key.map((k) => snake(k));
     if (seek === undefined || key.at(-1) !== seek) throw new RangeError(`m24: ${table} has no key seek for its retention`);
     const prefix = key.slice(0, -1);
-    const cols = prefix.map((c) => `"${c}"`).join(', ');
+    // The next series is found with two plain seeks, never a row-value comparison: `(a, b) > (?, ?)` reports a key
+    // range in its plan but measured about 40 times slower (600 series: 82 ms against 2 ms, node:sqlite 22.23.3).
+    if (prefix.length !== 2) throw new RangeError(`m24: ${table}: the key seek needs a two-column series`);
+    const [p1, p2] = prefix as [string, string];
+    const cols = `"${p1}", "${p2}"`;
     const keyCols = key.map((c) => `"${c}"`).join(', ');
     const first = `SELECT ${cols}${byCol === null ? '' : `, "${byCol}" AS "v"`} FROM "${table}"`;
+    const sameFirst = `${first} WHERE "${p1}" = ? AND "${p2}" > ? ORDER BY "${p2}" LIMIT 1`;
+    const nextFirst = `${first} WHERE "${p1}" > ? ORDER BY ${cols} LIMIT 1`;
     const order = ` ORDER BY ${cols} LIMIT 1`;
-    const inSeries = prefix.map((c) => `"${c}" = ?`).join(' AND ');
+    const inSeries = `"${p1}" = ? AND "${p2}" = ?`;
     let after: unknown[] | null = null;
     return {
       step(): ExpiryStep {
@@ -102,7 +108,7 @@ export function expiryJob(db: Db, table: TableName, clock: Clock, observers: rea
         return finish(db.withRetentionClock(now, (tx) => {
           let n = 0;
           for (let visits = 0; n < rows && visits < series; visits++) {
-            const s = after === null ? tx.get(first + order) : tx.get(`${first} WHERE (${cols}) > (${prefix.map(() => '?').join(', ')})${order}`, ...(after as never[]));
+            const s = after === null ? tx.get(first + order) : (tx.get(sameFirst, ...(after as never[])) ?? tx.get(nextFirst, after[0] as never));
             if (s === undefined) { done = true; break; }
             const vals = prefix.map((c) => s[c]);
             const days = daysOf(s.v);
