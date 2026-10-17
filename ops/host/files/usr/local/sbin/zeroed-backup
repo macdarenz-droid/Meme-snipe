@@ -32,7 +32,9 @@ mapfile -t entries < <(list "$SRC" ''; list "$USAGE_SRC" 'zeroed-usage/')
 dbs=()
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# SW-33: a failed or killed run never leaves its half-written bundle behind (it would hold disk the budget never counts).
+pending=""
+trap 'rm -rf "$work"; [ -z "$pending" ] || rm -f -- "$pending"' EXIT
 mkdir -p "$work/snap"
 for e in "${entries[@]}"; do
   src="${e%%|*}"
@@ -47,9 +49,14 @@ done
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
+# SW-33: and a run that could not clean up (power loss, SIGKILL) is swept by the next: any leftover .new not written
+# to for 10 minutes (a live run writes its bundle within seconds of starting it).
+find "$OUT" -maxdepth 1 -type f \( -name 'zeroed-*.age.new' -o -name 'budget.*.new' \) -mmin +10 -delete
 name="zeroed-$ts.tar.zst.age"
-tar -C "$work/snap" -c . | zstd -q -3 -T1 | age -R "$RECIPIENTS" -o "$OUT/$name.new"
-mv -f "$OUT/$name.new" "$OUT/$name"
+pending="$OUT/$name.new"
+tar -C "$work/snap" -c . | zstd -q -3 -T1 | age -R "$RECIPIENTS" -o "$pending"
+mv -f "$pending" "$OUT/$name"
+pending=""
 status="$(find "$OUT" -maxdepth 1 -type f -name 'zeroed-*.age' -printf '%f %s\n' | backup_keep "$FLOOR_HOURLY" "$FLOOR_DAILY" "$MAX_BYTES" "$KEEP" | while read -r what f rest; do
   if [ "$what" = delete ]; then rm -f -- "$OUT/$f"; else printf '%s %s %s\n' "$what" "$f" "$rest"; fi
 done)"

@@ -1,0 +1,63 @@
+// Card SWITCH-FIX-2 (the three red teams on 3439ee02): the host-side fixes, run against the real scripts with stand-in
+// tools where a real one cannot run here.
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+const root = fileURLToPath(new URL('../../../', import.meta.url));
+const read = (p: string) => readFileSync(join(root, p), 'utf8');
+
+describe('SW-33: zeroed-backup leaves no half-written bundle behind', () => {
+  // A stand-in `age` that writes part of its output and then fails (as a full disk or a kill would) when AGE_FAIL is
+  // set, and copies otherwise; sqlite3, zstd and tar are the real ones (the PATHS-FIX backup test requires them).
+  const bin = mkdtempSync(join(tmpdir(), 'zeroed-sw33-bin-'));
+  writeFileSync(join(bin, 'age'), '#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -R) shift 2 ;; *) shift ;; esac; done\nif [ -n "${AGE_FAIL:-}" ]; then head -c 100 > "$out"; exit 1; fi\ncat > "$out"\n');
+  chmodSync(join(bin, 'age'), 0o755);
+  const setup = () => {
+    const t = mkdtempSync(join(tmpdir(), 'zeroed-sw33-'));
+    const src = join(t, 'zeroed');
+    const out = join(t, 'backups');
+    mkdirSync(src);
+    mkdirSync(out);
+    expect(spawnSync('sqlite3', [join(src, 'bot.db'), 'CREATE TABLE ledger(x); INSERT INTO ledger VALUES (1);']).status).toBe(0);
+    writeFileSync(join(t, 'recipients'), 'age1test\n');
+    const env = { ZEROED_BACKUP_SRC: src, ZEROED_BACKUP_USAGE_SRC: join(t, 'none'), ZEROED_BACKUP_OUT: out, ZEROED_BACKUP_RECIPIENTS: join(t, 'recipients'),
+      ZEROED_LOGIC: join(root, 'ops/host/files/usr/local/lib/zeroed/logic.sh') };
+    const run = (extra: Record<string, string> = {}) => spawnSync('bash', [join(root, 'ops/host/files/usr/local/sbin/zeroed-backup')],
+      { encoding: 'utf8', env: { PATH: `${bin}:${process.env['PATH'] ?? ''}`, ...env, ...extra } });
+    return { t, out, run };
+  };
+
+  it('a run that fails while writing removes its .new file and keeps no bundle', () => {
+    const { t, out, run } = setup();
+    const r = run({ AGE_FAIL: '1' });
+    expect(r.status).not.toBe(0);
+    expect(readdirSync(out)).toEqual([]);
+    rmSync(t, { recursive: true, force: true });
+  });
+
+  it('the next run sweeps a stale .new (a run that could not clean up), never one a live run is still writing', () => {
+    const { t, out, run } = setup();
+    const stale = join(out, 'zeroed-20261001T000000Z.tar.zst.age.new');
+    const staleStatus = join(out, 'budget.status.new');
+    const live = join(out, 'zeroed-20261017T000000Z.tar.zst.age.new');
+    for (const f of [stale, staleStatus, live]) writeFileSync(f, 'partial');
+    const old = new Date(Date.now() - 11 * 60_000);
+    utimesSync(stale, old, old);
+    utimesSync(staleStatus, old, old);
+    const r = run();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    const left = readdirSync(out).sort();
+    expect(left.filter((f) => f.endsWith('.new'))).toEqual(['zeroed-20261017T000000Z.tar.zst.age.new']);
+    expect(left.filter((f) => /^zeroed-\d{8}T\d{6}Z\.tar\.zst\.age$/.test(f))).toHaveLength(1);
+    rmSync(t, { recursive: true, force: true });
+  });
+
+  it('the bundle is written under one name the exit trap knows', () => {
+    const s = read('ops/host/files/usr/local/sbin/zeroed-backup');
+    expect(s).toContain(`trap 'rm -rf "$work"; [ -z "$pending" ] || rm -f -- "$pending"' EXIT`);
+  });
+});
