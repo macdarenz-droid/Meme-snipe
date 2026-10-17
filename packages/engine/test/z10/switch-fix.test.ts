@@ -4,12 +4,12 @@ import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
-import type { Pubkey } from '@bot/types';
+import type { Pubkey, UnixMs } from '@bot/types';
 import { dayManifests } from '../../src/m07/daily.ts';
 import { SegmentWriter } from '../../src/m07/segments.ts';
 import { readPhase0Dataset } from '../../src/m13/phase0-input.ts';
 import { venueRecordedPricing } from '../../src/m13/venue-pricing.ts';
-import { NEXT_SEQ_KEY } from '../../src/recorder-main/compose.ts';
+import { heightReader, NEXT_SEQ_KEY } from '../../src/recorder-main/compose.ts';
 import { tempDir } from '../helpers.ts';
 import { FakeChain, VirtualTime } from './fake-chain.ts';
 import { startRig, WALL_START, type Rig } from './rig.ts';
@@ -87,4 +87,36 @@ describe('SW-9: the recorder\'s real layout read by Phase 0, across a day bounda
     assert.ok(dayManifests(r.paths.mdDir, '2026-10-07').some((x) => x.stream === 'universe_manifest' && x.hourUtc === '2026-10-07T00'));
     assert.ok(dayManifests(r.paths.mdDir, '2026-10-07').some((x) => x.stream === 'coverage' && x.hourUtc === '2026-10-07T01'));
   }, 180_000);
+});
+
+describe('SW-14 and SW-16', () => {
+  it('SW-14: a failed eviction write is logged as recorder.internal_error (fails before: silent)', async () => {
+    const r = await startRig(tempDir('sw14'));
+    try {
+      await r.run(2_000);
+      const db = r.rec.parts.db as { withTx: unknown };
+      const orig = db.withTx;
+      db.withTx = () => { throw Object.assign(new Error('busy'), { code: 'E_BUSY' }); };
+      try {
+        r.rec.parts.evictions.append({ poolId: 'p' as Pubkey, atMs: r.time.nowMs(), reason: 'cap', tailUntilMs: null });
+      } finally {
+        db.withTx = orig;
+      }
+      const line = r.lines.map((l) => JSON.parse(l) as { code: string; where?: string; error_code?: string }).find((l) => l.code === 'recorder.internal_error' && l.where === 'eviction_log');
+      assert.equal(line?.error_code, 'E_BUSY');
+    } finally {
+      await r.rec.stop();
+    }
+  });
+
+  it('SW-16: the anchor reading is timed at the send, not the answer (fails before: atMs = answer time, expected slot low by the latency)', async () => {
+    let now = 1_000_000;
+    const gateway = {
+      call: async () => { now += 400; return { ok: true, value: { providerLabel: 'shyft', value: { absoluteSlot: 500, blockHeight: 1, epoch: 1, slotIndex: 1, slotsInEpoch: 432_000 }, contextSlot: null, latencyMs: 400 } }; },
+    };
+    const read = heightReader(gateway as never, () => now as UnixMs, 1_000);
+    const got = await read('shyft');
+    assert.deepEqual(got, { slot: 500n, atMs: 1_000_000 });
+    assert.equal(await read('chainstack'), null);                          // an answer from another provider is not this one's
+  });
 });

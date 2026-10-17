@@ -23,11 +23,17 @@ export interface PullTransport {
   listDays(): string[];
   /** Copies the host's `<day>` folder into `<localRoot>/<day>`. */
   fetchDay(day: string, localRoot: string): void;
+  /**
+   * SW-17: copies the host's `watch/<day>.ndjson` (the day's watch log, the coverage denominator; Z10-26) into
+   * `<localRoot>/watch/<day>.ndjson`, if the host has it. A day still running is copied as it stands and copied again by
+   * the next pull. Never verified or receipted: the host keeps it until the day's segments are all gone.
+   */
+  fetchWatch?(day: string, localRoot: string): void;
   /** Uploads one receipt file into the host's receipts folder. */
   putReceipts(files: ReadonlyArray<{ local: string; name: string }>): void;
 }
 
-export interface PullResult { days: string[]; verified: PullReceipt[]; mismatched: string[]; unmanifested: string[] }
+export interface PullResult { days: string[]; verified: PullReceipt[]; mismatched: string[]; unmanifested: string[]; watch: string[] }
 
 const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
 
@@ -58,12 +64,17 @@ export function runPull(o: {
   if (!isDayName(o.since)) throw new RangeError('--since must be YYYY-MM-DD');
   const fs = o.fs ?? nodeFs;
   const days = o.transport.listDays().filter((d) => isDayName(d) && d >= o.since).sort();
-  const out: PullResult = { days, verified: [], mismatched: [], unmanifested: [] };
+  const out: PullResult = { days, verified: [], mismatched: [], unmanifested: [], watch: [] };
   const receiptsDir = join(o.localRoot, 'receipts');
   if (!fs.existsSync(receiptsDir)) fs.mkdirSync(receiptsDir, { recursive: true });
   const toUpload: Array<{ local: string; name: string }> = [];
   for (const day of days) {
     o.transport.fetchDay(day, o.localRoot);
+    if (o.transport.fetchWatch !== undefined) {
+      if (!fs.existsSync(join(o.localRoot, 'watch'))) fs.mkdirSync(join(o.localRoot, 'watch'), { recursive: true });
+      o.transport.fetchWatch(day, o.localRoot);
+      if (fs.existsSync(join(o.localRoot, 'watch', `${day}.ndjson`))) out.watch.push(day);
+    }
     const dayDir = join(o.localRoot, day);
     if (!fs.existsSync(dayDir)) continue;
     for (const hour of (fs.readdirSync(dayDir) as string[]).filter(isHourName).sort()) {
@@ -99,7 +110,7 @@ export function runPull(o: {
     }
   }
   if (toUpload.length > 0) o.transport.putReceipts(toUpload);
-  o.log(`days ${days.length}, verified ${out.verified.length}, mismatched ${out.mismatched.length}, open ${out.unmanifested.length}`);
+  o.log(`days ${days.length}, verified ${out.verified.length}, mismatched ${out.mismatched.length}, open ${out.unmanifested.length}, watch logs ${out.watch.length}`);
   return out;
 }
 
@@ -127,6 +138,10 @@ export function sftpTransport(host: string, run: (args: string[], batch: string)
     },
     fetchDay(day: string, localRoot: string): void {
       call(sftpBatch([['lcd', localRoot], ['get', '-r', `md/${day}`]]));
+    },
+    fetchWatch(day: string, localRoot: string): void {
+      // `-get`: a day with no watch log (nothing was watched) is not an error.
+      call(sftpBatch([['lcd', localRoot], ['-get', `md/watch/${day}.ndjson`, `watch/${day}.ndjson`]]));
     },
     putReceipts(files): void {
       call(sftpBatch(files.map((f) => ['put', f.local, `md/receipts/${f.name}`])));

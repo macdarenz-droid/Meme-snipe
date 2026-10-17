@@ -163,6 +163,22 @@ export const CLOCK_ALERT_MS = 10_000;
 /** The anchor is re-read this often before the first agreement and during a clock episode. */
 export const ANCHOR_RETRY_MS = 5_000;
 
+/**
+ * The anchor's height read: P1 pinned to each provider (P0 stays the exits'); the answer must come from that provider,
+ * and parse as M15 does. SW-16: its time is when the request was sent. The provider read the slot somewhere between
+ * the send and the answer, so the send time never puts the slot later than it was (the answer's time did, by the whole
+ * latency, which made every expected slot low by that much).
+ */
+export function heightReader(gateway: Pick<ReadPath['gateway'], 'call'>, nowMs: () => UnixMs, timeoutMs: number): (provider: string) => Promise<{ slot: Slot; atMs: number } | null> {
+  return async (provider) => {
+    const sentAt = nowMs();
+    const r = await gateway.call<unknown>('getEpochInfo', [], { priority: 1, role: 'read', commitment: 'confirmed', timeoutMs, provider });
+    if (!r.ok || r.value.providerLabel !== provider) return null;
+    const e = parseEpochInfo(r.value.value);
+    return e === null ? null : { slot: e.slot, atMs: sentAt };
+  };
+}
+
 /** M04 at the port M03 and M01 read through: one `getMultipleAccounts` at `confirmed` through M14. */
 function accountsReader(read: ReadPath, timeoutMs: number): AccountsReader {
   return {
@@ -261,13 +277,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   const settings = { ...M04_DEFAULTS };
   const chain = createAgreedChainState({
     clock: rp.clock, providers: rp.labels, maxProviderLagSlots: settings.maxProviderLagSlots, initialSlotMs: m15Settings(cfg).slotMsInitial, nowMs, log,
-    // P1 pinned to each provider (P0 stays the exits'); the answer must come from that provider, and parse as M15 does.
-    readHeight: async (provider) => {
-      const r = await rp.gateway.call<unknown>('getEpochInfo', [], { priority: 1, role: 'read', commitment: 'confirmed', timeoutMs: m15Settings(cfg).heightTimeoutMs, provider });
-      if (!r.ok || r.value.providerLabel !== provider) return null;
-      const e = parseEpochInfo(r.value.value);
-      return e === null ? null : { slot: e.slot, atMs: nowMs() };
-    },
+    readHeight: heightReader(rp.gateway, nowMs, m15Settings(cfg).heightTimeoutMs),
   });
 
   // ---- M01: the decoders, the fee-config cache and the PumpSwap pool model. ----
@@ -348,7 +358,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
 
   // ---- M05: the universe, the watchlist, and their persisted eviction records. ----
   const store = m24CandidateStore(db, { newId, nowMs });
-  const evictions = kvEvictionLog(db, nowMs);
+  // SW-14: a failed eviction write is logged (the tail it records would not survive a restart).
+  const evictions = kvEvictionLog(db, nowMs, (e) => { log.event('error', 'recorder.internal_error', { where: 'eviction_log', error_code: String((e as { code?: unknown } | null)?.code ?? 'E_WRITE') }); });
   const limitSetId = configValue(cfg, 'universe.phase0_limit_set') as LimitSetId;
   const facts = new Map<Pubkey, PrefilterFacts>();
   const factOf = (s: PoolSnapshot<CpPoolState>): PrefilterFacts => ({

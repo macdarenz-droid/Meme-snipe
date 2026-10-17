@@ -347,6 +347,24 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.throws(() => runPull({ transport, localRoot: local, since: 'x', privateKey: privKey, verifier: 'v', nowMs: () => ms(0), log: () => undefined }), RangeError);
   });
 
+  it('SW-17: md-pull also brings the day\'s watch log, so the pulled copy computes the same coverage as the host (fails before: no denominator)', () => {
+    const host = tempDir('sw17-host');
+    const local = tempDir('sw17-local');
+    const wl = new WatchLog(host, () => undefined);
+    wl.watch('A', 'candidate', ms(D0));
+    fs.mkdirSync(join(host, DAY), { recursive: true });
+    const transport: PullTransport = {
+      listDays: () => [DAY],
+      fetchDay(day, root) { fs.cpSync(join(host, day), join(root, day), { recursive: true }); },
+      fetchWatch(day, root) { const f = join(host, 'watch', `${day}.ndjson`); if (fs.existsSync(f)) fs.copyFileSync(f, join(root, 'watch', `${day}.ndjson`)); },
+      putReceipts() { /* none */ },
+    };
+    const r = runPull({ transport, localRoot: local, since: DAY, privateKey: privKey, verifier: 'v', nowMs: () => ms(D0), log: () => undefined });
+    assert.deepEqual(r.watch, [DAY]);
+    assert.deepEqual(WatchLog.readDay(local, DAY), WatchLog.readDay(host, DAY));
+    assert.ok(WatchLog.readDay(local, DAY).length > 0);
+  });
+
   it('the sftp transport sends safe batch lines only; arguments are parsed', () => {
     const seen: Array<{ args: string[]; batch: string }> = [];
     const t = sftpTransport('zeroed-host', (args, batch) => { seen.push({ args, batch }); return { status: 0, stdout: 'md/2026-10-15\nmd/receipts\n' }; });
@@ -356,6 +374,10 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.deepEqual(seen.map((s) => s.batch), ['ls -1 md\n', 'lcd /tmp/x\nget -r md/2026-10-15\n', 'put /tmp/x/receipts/a.receipt.json md/receipts/a.receipt.json\n']);
     assert.deepEqual(seen[0]?.args, ['-b', '-', '-o', 'BatchMode=yes', 'zeroed-pull@zeroed-host']);
     assert.throws(() => sftpBatch([['get', 'a b']]), /unsafe/);
+    // SW-17: the day's watch log comes too (the coverage denominator).
+    seen.length = 0;
+    t.fetchWatch?.('2026-10-15', '/tmp/x');
+    assert.deepEqual(seen.map((s) => s.batch), ['lcd /tmp/x\n-get md/watch/2026-10-15.ndjson watch/2026-10-15.ndjson\n']);
     assert.throws(() => sftpTransport('evil host'), RangeError);
     const failing = sftpTransport('h', () => ({ status: 255, stdout: '' }));
     assert.throws(() => failing.listDays(), /sftp exited 255/);
