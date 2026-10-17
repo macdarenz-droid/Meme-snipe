@@ -313,13 +313,13 @@ describe('A-M07-02 segment writer', () => {
     const gaps = { poll_counts: [{ fromMs: H0 as UnixMs, toMs: (H0 + 60_000) as UnixMs, reason: 'moved' as const, poolId: 'P' }] };
     let drained = false;
     const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', nowMs: () => now.t as UnixMs, log: l.log,
-      queue: { take: () => [], drainGaps: () => { if (drained) return {}; drained = true; return gaps; } } }, { nextSeq: {}, lastRecordMs: null, recovered: [] });
+      queue: { take: () => [], drainGaps: () => { if (drained) return {}; drained = true; return gaps; }, unwrite: () => undefined } }, { nextSeq: {}, lastRecordMs: null, recovered: [] });
     w.pump();
     w.flush();
     const [m] = w.rotate();
     assert.deepEqual([m?.stream, m?.records, m?.bytes, m?.gaps], ['poll_counts', 0, 0, gaps.poll_counts]);
     assert.ok(compressorFor('gzip') !== null);
-    assert.throws(() => new SegmentWriter({ dataDir: dir, codec: 'lz4' as 'gzip', nowMs: () => H0 as UnixMs, log: l.log, queue: { take: () => [], drainGaps: () => ({}) } },
+    assert.throws(() => new SegmentWriter({ dataDir: dir, codec: 'lz4' as 'gzip', nowMs: () => H0 as UnixMs, log: l.log, queue: { take: () => [], drainGaps: () => ({}), unwrite: () => undefined } },
       { nextSeq: {}, lastRecordMs: null, recovered: [] }));
   });
 

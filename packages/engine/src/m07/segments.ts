@@ -110,8 +110,8 @@ interface Open {
 export interface SegmentWriterDeps {
   dataDir: string;
   codec: Codec;
-  /** SW-10: `unwrite` gets back every taken record that never reached disk (its seq and its pool's encoder state). */
-  queue: { take(max: number, segmentId: string): EncodedRecord[]; drainGaps(): Partial<Record<StreamName, Gap[]>>; unwrite?(records: readonly EncodedRecord[], giveBackSeqs?: boolean): void };
+  /** SW-10: `unwrite` gets back every taken record that never reached disk (its seq and its pool's encoder state); SW-30: required, so no writer can lose them silently. */
+  queue: { take(max: number, segmentId: string): EncodedRecord[]; drainGaps(): Partial<Record<StreamName, Gap[]>>; unwrite(records: readonly EncodedRecord[], giveBackSeqs?: boolean): void };
   nowMs: () => UnixMs;
   log: WriterLog;
   fs?: WriterFs;
@@ -381,7 +381,7 @@ export class SegmentWriter {
         seg.lines.push({ line, rec: statsOfLine(line), r });
         n += 1;
       }
-      if (discarded.length > 0) this.deps.queue.unwrite?.(discarded);
+      if (discarded.length > 0) this.deps.queue.unwrite(discarded);
       if (batch.length < TAKE_MAX) break;
     }
     for (const [s, gaps] of Object.entries(this.deps.queue.drainGaps()) as Array<[StreamName, Gap[]]>) {
@@ -473,7 +473,7 @@ export class SegmentWriter {
           this.fs.ftruncateSync(seg.fd, seg.bytes);
           this.fs.fsyncSync(seg.fd);
           seg.gaps.push(lost);
-          this.deps.queue.unwrite?.(pending.map((x) => x.r));              // SW-10: cut off, so their seqs and encoder states go back
+          this.deps.queue.unwrite(pending.map((x) => x.r));              // SW-10: cut off, so their seqs and encoder states go back
         } catch {
           // Cannot be cut back now: the file is closed without a manifest and recovered (cut after its last complete
           // frame, with a crash gap) on resume or at the next start; the stream continues in a new part.
@@ -483,7 +483,7 @@ export class SegmentWriter {
           this.broken.push(seg.rel);
           // SW-10: recovery may still keep the frame, so its seqs stay used; the encoder starts again from keyframes,
           // since the stream goes on in a new part, which must decode on its own.
-          this.deps.queue.unwrite?.(pending.map((x) => x.r), false);
+          this.deps.queue.unwrite(pending.map((x) => x.r), false);
           for (const g of seg.gaps) this.addPending(seg.stream, g);
           this.addPending(seg.stream, lost);
         }
