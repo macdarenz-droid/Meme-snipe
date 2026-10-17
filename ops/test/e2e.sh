@@ -4,7 +4,7 @@
 # gates → backup and restore drill → restart drills → dry-run update gate and install --update → webhook
 # retry and change alerts → stored-key check → re-pairing → live view → scan of every log and output for every test value and
 # code. Prints PASS/FAIL lines; exits non-zero on the first failure.
-# Needs: docker (daemon running), node 22, age, git, gpg, curl, jq.
+# Needs: docker (daemon running), node 22, age, git, gpg, curl, jq, zstd.
 #   bash ops/test/e2e.sh [--keep]
 set -euo pipefail
 
@@ -169,6 +169,11 @@ for w in $CODE1; do grep -qx -- "$w" "$ROOT/ops/host/files/usr/local/share/zeroe
 in_c "systemctl is-active zeroed-signer" >/dev/null || fail "signer not running"
 in_c "! systemctl is-active zeroed-worker" >/dev/null || fail "worker started without keys"
 in_c "for t in zeroed-pair zeroed-update zeroed-backup zeroed-check; do systemctl is-active \$t.timer; done" >/dev/null || fail "timers not active"
+# SW-7: the bounded clock wait is installed and enabled (in a container its ConditionVirtualization skips it at boot).
+in_c "systemctl is-enabled systemd-time-wait-sync.service && grep -qx 'TimeoutStartSec=120' /etc/systemd/system/systemd-time-wait-sync.service.d/zeroed-timeout.conf" >/dev/null || fail "SW-7: systemd-time-wait-sync not enabled with its 2-minute bound"
+# SW-1(c): zeroed-check runs its disk and backup-budget checks without an error (their levels: packages/ops tests; the
+# runner's own disk use decides whether this container's disk alerts, so no level is asserted here).
+in_c "systemctl start zeroed-check.service" >/dev/null || fail "SW-1: zeroed-check failed with the disk checks"
 in_c "stat -c '%a %U' /etc/zeroed/deploy-code /etc/zeroed/age/host.key" | sort -u | grep -qx '400 root' || fail "deploy code and host key are not root-only 0400"
 in_c "nft list ruleset" >"$LOGS/nft.txt"
 grep -q 'hook input priority filter; policy drop;' "$LOGS/nft.txt" && ! grep -q 'dport 22' "$LOGS/nft.txt" || fail "inbound not closed"
@@ -402,8 +407,11 @@ for f in usr/local/sbin/zeroed-backup usr/local/sbin/zeroed-restore-drill etc/sy
 done
 in_c "sqlite3 /var/lib/zeroed-usage/rpc-usage.db 'PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS reservations(x); INSERT INTO reservations VALUES (1);' >/dev/null" || fail "PATHS-FIX: test usage ledger"
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
-bk="$(in_c "ls -1 /var/backups/zeroed/ | tail -1")"
-[[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.age$ ]] || fail "no backup file"
+bk="$(in_c "ls -1 /var/backups/zeroed/ | grep '^zeroed-' | tail -1")"
+# SW-1: zstd inside the age envelope, and the keep rule's status beside the copies.
+[[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.zst\.age$ ]] || fail "no backup file"
+in_c "grep -Eq '^floor_bytes [0-9]+ kept_bytes [0-9]+ kept [0-9]+ over [01] max_bytes 6000000000$' /var/backups/zeroed/budget.status" || fail "SW-1: no backup budget status"
+in_c "command -v zstd" >/dev/null || fail "SW-1: the installer did not install zstd"
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key" >"$LOGS/drill-host.txt" 2>&1 || { cat "$LOGS/drill-host.txt"; fail "drill"; }
 in_c "cp /var/backups/zeroed/$bk /root/tampered.age && printf 'x' | dd of=/root/tampered.age bs=1 seek=200 conv=notrunc 2>/dev/null"
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key /root/tampered.age" >"$LOGS/drill-tampered.txt" 2>&1 && fail "tampered backup passed"
@@ -441,7 +449,7 @@ in_c "zeroed-status" | grep "off-server copy off (waits for the owner's approval
 in_c "jq '.offsite_backup = true' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json && systemctl start zeroed-backup-offsite.service" || fail "off-server copy failed"
 grep -q "\"method\":\"sendDocument\",\"token_ok\":true,\"chat_id\":\"$T_CHAT\"" "$STATE/telegram.jsonl" || fail "backup not sent to the owner chat"
 printf '%s' "$BCODE" | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs" --backup >"$E2E/owner-backup.id"
-age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -t | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
+age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | zstd -q -d -c | tar -t | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
 docker cp "$STATE/received-document" "$C:/root/received.age" >/dev/null
 in_c "age -d -i /etc/zeroed/age/host.key /root/received.age >/dev/null 2>&1" && fail "the Telegram copy opens with the host key"
 in_c "rm -f /root/received.age"
