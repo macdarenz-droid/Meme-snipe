@@ -59,6 +59,7 @@ export const RECORDER_LOG_CODES = {
   'recorder.coverage_report': { fields: { day: 'string', low_coverage: 'boolean' } },
   'recorder.sol_usd_check': { fields: { result: 'string' } },
   'recorder.retention': { fields: { rows: 'integer', bars: 'integer' } },
+  'recorder.retention_failed': { fields: { error_code: 'string', failures: 'integer', retry_in_ms: 'integer' } },
   'recorder.provider_resume': { fields: { provider: 'string', result: 'string' } },
   'recorder.memory_high': { fields: { memory_bytes: 'integer', limit_bytes: 'integer', pct: 'integer', source: 'string' } },
 } as const satisfies LogCodes;

@@ -75,3 +75,41 @@ export function recorderRetention(o: { db: Db; clock: Clock; barStore: Pick<BarS
   };
   return self;
 }
+
+/** SW-34: the first wait after a failed step, doubled on each failure in a row up to RETENTION_BACKOFF_MAX_MS. */
+export const RETENTION_BACKOFF_START_MS = 1_000;
+export const RETENTION_BACKOFF_MAX_MS = 3_600_000;
+/** SW-34: failures in a row that raise the held state code `recorder.retention_failed`. */
+export const RETENTION_FAILED_AFTER = 3;
+
+export interface RetentionGate {
+  /** Whether a step may run now (monotonic ms). */
+  due(monoMs: number): boolean;
+  /** A step threw: the failures in a row so far and the wait before the next try. */
+  failed(monoMs: number): { failures: number; waitMs: number };
+  /** A step ran: the back-off and the held code clear. */
+  succeeded(): void;
+  /** RETENTION_FAILED_AFTER or more failures in a row. */
+  failing(): boolean;
+}
+
+/**
+ * SW-34: a step that fails the same way every time never finishes its pass, so it is not retried every loop tick:
+ * after each failure in a row the next try waits twice as long (1 s, 2 s, 4 s, ... at most 1 h), with one log line per
+ * failure, and from the third the held state code `recorder.retention_failed` is up until a step succeeds.
+ */
+export function retentionGate(): RetentionGate {
+  let failures = 0;
+  let nextAt = -Infinity;
+  return {
+    due: (monoMs) => monoMs >= nextAt,
+    failed(monoMs) {
+      failures++;
+      const waitMs = Math.min(RETENTION_BACKOFF_MAX_MS, RETENTION_BACKOFF_START_MS * 2 ** Math.min(failures - 1, 32));
+      nextAt = monoMs + waitMs;
+      return { failures, waitMs };
+    },
+    succeeded() { failures = 0; nextAt = -Infinity; },
+    failing: () => failures >= RETENTION_FAILED_AFTER,
+  };
+}
