@@ -105,3 +105,17 @@ describe('SW-23: the spool group only from the full unit body', () => {
     expect(read('ops/host/files/usr/local/lib/zeroed/record-upload.mjs')).not.toContain('spool');
   });
 });
+
+describe('SW-35: the recorder\'s young generation is capped the same way on the server and in CI', () => {
+  const logic = read('ops/host/files/usr/local/lib/zeroed/logic.sh');
+  it('logic.sh sets RECORDER_SEMI_SPACE_MB=1; worker-start passes it to the recorder only; the CI soak passes the same value (fails before: no cap)', () => {
+    expect(logic).toMatch(/^RECORDER_SEMI_SPACE_MB=1$/m);
+    const ws = read('ops/host/files/usr/local/lib/zeroed/worker-start');
+    const recorderCase = ws.slice(ws.indexOf('*/"$RECORDER_ENTRY")'), ws.indexOf('esac'));
+    expect(recorderCase).toContain('heap+=("--max-semi-space-size=$RECORDER_SEMI_SPACE_MB")');
+    expect(ws.split('--max-semi-space-size').length).toBe(2);                   // only there: the full worker keeps V8's default
+    const wf = read('.github/workflows/ops-e2e.yml');
+    expect(wf).toContain(`semi="$(bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; echo "$RECORDER_SEMI_SPACE_MB"')"`);
+    expect(wf).toMatch(/node --expose-gc --no-warnings "--max-old-space-size=\$\{limits% \*\}" "--max-semi-space-size=\$semi" packages\/engine\/scripts\/soak\/soak\.ts 48 /);
+  });
+});

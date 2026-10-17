@@ -15,6 +15,10 @@ SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800
 # committed peak; the soak fails above 75% of MemoryMax (600 MiB), the line of the recorder's own memory alert.
 RECORDER_HEAP_MB=256
 RECORDER_RSS_LIMIT_MB=600
+# SW-35: V8's young generation (semi-space) kept at its starting size. Left to grow, it doubled to fit each day's
+# coverage burst (about 300k poll_counts records parsed at once: 2, 8, then 16 MiB) and was never handed back, which
+# showed as RssAnon steps at the day boundaries until it reached V8's cap. The steady load never outgrew the start size.
+RECORDER_SEMI_SPACE_MB=1
 # Ruling Z10-30: the keyless recorder has no exits to protect, so it must not outlive tailscaled (the owner's only way
 # in), the sentinel or the update unit (all at 0 or below) in a host-wide OOM: worker-start raises its score to this
 # before it starts (raising needs no privilege). The unit keeps -500 (ARCH 14.3, CA-26) for the worker that owns exits.

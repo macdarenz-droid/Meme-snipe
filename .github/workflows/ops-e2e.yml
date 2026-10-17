@@ -73,7 +73,9 @@ jobs:
           bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; release_links "$GITHUB_WORKSPACE"'
           # The server's own heap limit (logic.sh RECORDER_HEAP_MB): a heap the recorder could not hold there fails here.
           limits="$(bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; echo "$RECORDER_HEAP_MB $RECORDER_RSS_LIMIT_MB"')"
-          node --expose-gc --no-warnings "--max-old-space-size=${limits% *}" packages/engine/scripts/soak/soak.ts 48 "$RUNNER_TEMP/soak" "${limits#* }"
+          # SW-35: and the server's young-generation size (logic.sh RECORDER_SEMI_SPACE_MB, as worker-start passes it).
+          semi="$(bash -c '. ops/host/files/usr/local/lib/zeroed/logic.sh; echo "$RECORDER_SEMI_SPACE_MB"')"
+          node --expose-gc --no-warnings "--max-old-space-size=${limits% *}" "--max-semi-space-size=$semi" packages/engine/scripts/soak/soak.ts 48 "$RUNNER_TEMP/soak" "${limits#* }"
       - name: Result
         if: always()
         run: cat "$RUNNER_TEMP/soak/soak-result.json" 2>/dev/null | head -c 20000 || true
