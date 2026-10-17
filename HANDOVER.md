@@ -138,6 +138,11 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **18 Oct 8:16 AM: #336 pushed at `c83f9b15`** (fast-forward from `512ee4c6`; base `3439ee02`). It holds SW-35 (bitmap, member reader) and SW-36 (stepped coverage), with no V8 flag and no ops or guarded files.
+  - `pnpm test` 9,414 pass.
+  - The 192 h gate soak started at 20:50Z, alone and with no flag.
+  - The gate was amended before its result: peak RSS includes about 55 MiB of file-backed pages, and every build peaked at 274–297 MiB, so the new lines are RssAnon h96→h192 under 2 MiB, peak RssAnon under 240 MiB, and peak RSS at or below 300 MiB.
+  - RT1 and RT2 are re-checking the delta. RT3 is not needed, because there is no ops or security surface change.
 - **18 Oct 7:40 AM: SW-36 results, ruling SW-35b.**
   - SW-36 (stepped coverage) fixed the latency: no second over 1 s real (1 before), longest stall 136 ms (1,598 before), CPU about equal, 48 h slope 0.021 MiB/h.
   - The 96 h soaks on the SW-36 code still rise after day 1:
