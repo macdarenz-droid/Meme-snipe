@@ -19,6 +19,7 @@ import { M27_LOG_CODES, mergeLogCodes, type Level, type LogCodes } from '../m27/
 
 export const M07_LOG_CODES = {
   'm07.codec_fallback': { fields: { wanted: 'string', used: 'string' } },
+  'm07.index_repaired': { fields: { stream: 'string', path: 'string' } },
   'm07.crash_recovered': { fields: { stream: 'string', path: 'string', records: 'integer', cut_bytes: 'integer', cut_reason: 'string' } },
   'm07.recording_halted': { fields: { reason: 'string' } },
   'm07.recording_halted_again': { fields: { reason: 'string', failures: 'integer' } },

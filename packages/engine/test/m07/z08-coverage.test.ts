@@ -389,12 +389,36 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.equal(dayManifests(dir, DAY).length, 24);
     const appended: unknown[] = [];
     const saved: unknown[] = [];
-    const c = runDailyCoverage({ dataDir: dir, nowMs: ms(D0 + 86_400_000 + 5), universeManifestSha256: null, closedThrough: () => '2026-10-15T23', append: (r) => appended.push(r), save: (r) => saved.push(r) });
+    const c = runDailyCoverage({ dataDir: dir, nowMs: ms(D0 + 86_400_000 + 5), universeManifestSha256: null, closedThrough: () => '2026-10-16T00', append: (r) => appended.push(r), save: (r) => saved.push(r) });
     assert.ok(c !== null);
     assert.equal(c.detail.missingMs, 0);
     assert.equal(c.report.lowCoverage, false);
     assert.equal(c.report.universeManifestSha256, createHash('sha256').update(fs.readFileSync(join(dir, 'watch', `${DAY}.ndjson`))).digest('hex'));
     assert.deepEqual([appended, saved], [[c.report], [c.report]]);
     assert.equal(dailyCoverage({ dataDir: dir, dayUtc: '2026-10-01', universeManifestSha256: 'e'.repeat(64) }).report.lowCoverage, true);
+  });
+
+  it('SW-12: the day\'s last bar (23:59:45), stamped with its close in the next day\'s hour 00, is observed, not missing (fails before: the job ran without it, and 23:59 was missing)', () => {
+    const dir = tempDir('sw12');
+    const now = { t: D0 + 1_000 };
+    const wl = new WatchLog(dir, () => undefined);
+    wl.watch('A', 'candidate', ms(D0));
+    const rec = SegmentWriter.recover({ dataDir: dir, nowMs: ms(now.t), log: () => undefined });
+    const q = startedQueue({ firstSeq: rec.nextSeq });
+    const w = new SegmentWriter({ dataDir: dir, codec: 'gzip', queue: q, nowMs: () => ms(now.t), log: () => undefined }, rec);
+    // One record per 15 s bar, stamped with its close plus a little grace (ruling Z09-32), as the queue writes them.
+    for (let b = 0; b < 5_760; b += 1) {
+      now.t = D0 + (b + 1) * BAR + 500;
+      q.append({ stream: 'poll_counts', recvMs: ms(now.t), slot: null, commitment: null, source: 'm07', payload: { poolId: 'A', barStartMs: ms(D0 + b * BAR), successfulPolls: b >= 5_756 && b < 5_759 ? 0 : 15, priorityClass: 'candidate' } });
+      w.pump();
+    }
+    // 23:59's first three bars saw no poll, so only 23:59:45 observes that minute.
+    const out: unknown[] = [];
+    assert.equal(runDailyCoverage({ dataDir: dir, nowMs: ms(now.t), universeManifestSha256: null, closedThrough: () => w.lastRotatedHourUtc(), append: (r) => out.push(r), save: () => undefined }), null, 'waits for D+1/00 to close');
+    now.t = D0 + 86_400_000 + 3_600_000 + 1_000;
+    w.pump();                                                             // closes D+1's hour 00
+    const c = runDailyCoverage({ dataDir: dir, nowMs: ms(now.t), universeManifestSha256: null, closedThrough: () => w.lastRotatedHourUtc(), append: (r) => out.push(r), save: () => undefined });
+    assert.ok(c !== null);
+    assert.equal(c.detail.missingMs, 0);
   });
 });

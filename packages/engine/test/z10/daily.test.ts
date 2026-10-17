@@ -17,7 +17,7 @@ describe('Z10 daily jobs', () => {
     try {
       await r.run(5_000);
       assert.ok(r.rec.parts.tracker.watch(chain.pools[0]!.pool, 'candidate'));
-      await r.run(30 * 60_000);
+      await r.run(85 * 60_000);                                           // SW-12: the report waits for D+1's hour 00 to close
       const rd = r.rec.parts.db.reader();
       const manifests = rd.all('SELECT "day_utc", "sha256" FROM "universe_manifest" ORDER BY "day_utc"') as Array<{ day_utc: string; sha256: string }>;
       assert.deepEqual(manifests.map((m) => m.day_utc), ['2026-10-06']);

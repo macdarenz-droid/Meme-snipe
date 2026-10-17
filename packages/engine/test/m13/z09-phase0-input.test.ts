@@ -42,8 +42,13 @@ const fields = (realSol: bigint, virtSol: bigint, fee = 30) => ({
 function dataset(): { dir: string; days: string[] } {
   const dir = tempDir('phase0');
   const days: string[] = [];
+  const indexes = new Map<string, object[]>();
+  const put = (day: string, m: object): void => { indexes.set(day, [...(indexes.get(day) ?? []), m]); };
   for (let k = -2; k < 10; k++) {
     const day = new Date(dayMs(D1) + k * 86_400_000).toISOString().slice(0, 10);
+    // SW-9: the writer's layout. Day D's universe manifest is written at 00:00 UTC of D+1 (D+1/00) and its coverage
+    // report once D+1's hour 00 is closed (D+1/01), both in D+1's index.
+    const next = new Date(dayMs(day) + 86_400_000).toISOString().slice(0, 10);
     days.push(day);
     const t0 = dayMs(day);
     const manifest = buildUniverseManifest({
@@ -64,13 +69,14 @@ function dataset(): { dir: string; days: string[] } {
         ...[0, 1, 2, 3].map((b) => ({ recvMs: t0 + b * 15_000 + 16_500, payload: { poolId: 'pool-1', barStartMs: t0 + b * 15_000, durationMs: 15_000, minuteStartMs: t0, successfulPolls: 15, changedPolls: b === 0 ? 3 : 0, failedPolls: 0, priorityClass: 'candidate' } })),
         { recvMs: t0 + 16_500, payload: { poolId: 'pool-9', barStartMs: t0, durationMs: 15_000, minuteStartMs: t0, successfulPolls: 15, changedPolls: 1, failedPolls: 0, priorityClass: 'candidate' } },
         { recvMs: t0 + 600_050, payload: { poolId: 'pool-1', barStartMs: t0 + 60_000, durationMs: 15_000, minuteStartMs: t0 + 60_000, successfulPolls: 300, skippedBars: 20, changedPolls: 0, failedPolls: 0, priorityClass: 'candidate' } }]),
-      segment(dir, day, '00', 'universe_manifest', [{ recvMs: t0 + 86_400_000, payload: k === 3 ? { ...manifest, sha256: '0'.repeat(64) } : manifest }]),
-      segment(dir, day, '00', 'coverage', [{ recvMs: t0 + 86_400_000, payload: { dayUtc: day, streams: [], universeManifestSha256: manifest.sha256, lowCoverage: k === 5 } }]),
       segment(dir, day, '00', 'ref_price', [{ recvMs: t0, payload: { kind: 'unavailable', pair: 'SOL/USD', pool: 'p', reason: 'x' } }, { recvMs: t0 + 1, payload: { kind: 'price', pair: 'SOL/USD', pool: 'p', usdE6PerSol: '150000000', sqrtPriceX64: '1', solVaultLamports: '1', usdcVaultE6: '1' } }]),
       { ...(segment(dir, day, '01', 'discovery', [{ recvMs: t0, payload: {} }]) as object), codec: 'zstd', path: `${day}/01/discovery.ndjson.zst` },
     ];
-    writeFileSync(join(dir, day, 'index.json'), JSON.stringify(index));
+    for (const m of index) put(day, m);
+    put(next, segment(dir, next, '00', 'universe_manifest', [{ recvMs: t0 + 86_400_000, payload: k === 3 ? { ...manifest, sha256: '0'.repeat(64) } : manifest }]));
+    put(next, segment(dir, next, '01', 'coverage', [{ recvMs: t0 + 86_400_000 + 3_601_000, payload: { dayUtc: day, streams: [], universeManifestSha256: manifest.sha256, lowCoverage: k === 5 } }]));
   }
+  for (const [day, index] of indexes) writeFileSync(join(dir, day, 'index.json'), JSON.stringify(index));
   return { dir, days };
 }
 

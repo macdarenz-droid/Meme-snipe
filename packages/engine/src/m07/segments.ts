@@ -100,7 +100,7 @@ interface Open {
   stream: StreamName; rel: string; manifestRel: string; abs: string; fd: number;
   /** Counts of the records on disk: a record counts only once its frame is written and fsynced (ruling Z08-14). */
   stats: SegmentStats;
-  lines: Array<{ line: string; rec: ReturnType<typeof statsOfLine> }>; gaps: ManifestGap[];
+  lines: Array<{ line: string; rec: ReturnType<typeof statsOfLine>; r: EncodedRecord }>; gaps: ManifestGap[];
   /** Bytes on disk after the last good frame; a failed write is cut back to this. */
   bytes: number;
   /** A failed write could not be cut back: no more writes, no manifest; the next start recovers the file. */
@@ -110,7 +110,8 @@ interface Open {
 export interface SegmentWriterDeps {
   dataDir: string;
   codec: Codec;
-  queue: { take(max: number, segmentId: string): EncodedRecord[]; drainGaps(): Partial<Record<StreamName, Gap[]>> };
+  /** SW-10: `unwrite` gets back every taken record that never reached disk (its seq and its pool's encoder state). */
+  queue: { take(max: number, segmentId: string): EncodedRecord[]; drainGaps(): Partial<Record<StreamName, Gap[]>>; unwrite?(records: readonly EncodedRecord[], giveBackSeqs?: boolean): void };
   nowMs: () => UnixMs;
   log: WriterLog;
   fs?: WriterFs;
@@ -153,6 +154,20 @@ export function mkdirs(fs: Pick<typeof nodeFs, 'existsSync' | 'mkdirSync' | 'sta
       if ((fs.statSync(at).mode & 0o777) !== DIR_MODE) fs.chmodSync(at, DIR_MODE);
     }
   }
+}
+
+/** The paths a day's index lists; null when it cannot be read (left as it is: never rewritten from a guess). */
+function indexedPaths(fs: WriterFs, dataDir: string, day: string): Set<string> | null {
+  const path = join(dataDir, day, 'index.json');
+  const out = new Set<string>();
+  if (!fs.existsSync(path)) return out;
+  try {
+    const list: unknown = JSON.parse(fs.readFileSync(path, 'utf8'));
+    if (Array.isArray(list)) for (const m of list) if (isManifest(m)) out.add(m.path);
+  } catch {
+    return null;
+  }
+  return out;
 }
 
 /** Appends `m` to the day's index (`<day>/index.json`, a JSON array), atomically. */
@@ -209,6 +224,9 @@ export class SegmentWriter {
     // Every manifest is read; the highest lastSeq of each stream wins (parts of one hour sort part 0 first).
     for (const day of [...days].reverse()) {
       const hours = (fs.readdirSync(join(o.dataDir, day)) as string[]).filter(isHourName).sort().reverse();
+      // SW-13: a manifest written just before a crash, whose index entry was not (rotate writes the manifest, then the
+      // index), is added to the index here, so the daily jobs and the pull see it.
+      const indexed = indexedPaths(fs, o.dataDir, day);
       for (const hour of hours) {
         const dir = join(o.dataDir, day, hour);
         for (const name of (fs.readdirSync(dir) as string[]).sort()) {
@@ -219,6 +237,11 @@ export class SegmentWriter {
           if (fs.existsSync(manifestPath)) {
             const parsed: unknown = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
             if (isManifest(parsed)) m = parsed;
+            if (m !== null && indexed !== null && !indexed.has(m.path)) {
+              appendIndex(fs, o.dataDir, m);
+              indexed.add(m.path);
+              o.log('warning', 'M07.index_repaired', { stream: m.stream, path: m.path });
+            }
           } else {
             m = SegmentWriter.recoverOne(fs, o.dataDir, `${day}/${hour}/${name}`, seg.stream, seg.codec, o.nowMs, o.log);
             recovered.push(m);
@@ -341,20 +364,24 @@ export class SegmentWriter {
     let n = 0;
     for (;;) {
       const batch = this.deps.queue.take(TAKE_MAX, h.hourUtc);
+      const discarded: EncodedRecord[] = [];
       for (const r of batch) {
         if (this.halted !== null && !KEEP_WHEN_HALTED.has(r.stream)) {
           this.haltGap(r.stream, r.recvMs);
+          discarded.push(r);
           continue;
         }
         const seg = this.segment(r.stream);
         if (seg === null) {
           this.haltGap(r.stream, r.recvMs);                               // a kept stream whose segment cannot take writes
+          discarded.push(r);
           continue;
         }
         const line = recordLine(r);
-        seg.lines.push({ line, rec: statsOfLine(line) });
+        seg.lines.push({ line, rec: statsOfLine(line), r });
         n += 1;
       }
+      if (discarded.length > 0) this.deps.queue.unwrite?.(discarded);
       if (batch.length < TAKE_MAX) break;
     }
     for (const [s, gaps] of Object.entries(this.deps.queue.drainGaps()) as Array<[StreamName, Gap[]]>) {
@@ -446,6 +473,7 @@ export class SegmentWriter {
           this.fs.ftruncateSync(seg.fd, seg.bytes);
           this.fs.fsyncSync(seg.fd);
           seg.gaps.push(lost);
+          this.deps.queue.unwrite?.(pending.map((x) => x.r));              // SW-10: cut off, so their seqs and encoder states go back
         } catch {
           // Cannot be cut back now: the file is closed without a manifest and recovered (cut after its last complete
           // frame, with a crash gap) on resume or at the next start; the stream continues in a new part.
@@ -453,6 +481,9 @@ export class SegmentWriter {
           try { this.fs.closeSync(seg.fd); } catch { /* already failing */ }
           this.open.delete(seg.stream);
           this.broken.push(seg.rel);
+          // SW-10: recovery may still keep the frame, so its seqs stay used; the encoder starts again from keyframes,
+          // since the stream goes on in a new part, which must decode on its own.
+          this.deps.queue.unwrite?.(pending.map((x) => x.r), false);
           for (const g of seg.gaps) this.addPending(seg.stream, g);
           this.addPending(seg.stream, lost);
         }

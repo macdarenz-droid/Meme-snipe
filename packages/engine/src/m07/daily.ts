@@ -61,12 +61,14 @@ export function dailyCoverage(o: { dataDir: string; dayUtc: string; universeMani
   const start = dayStartOf(o.dayUtc);
   const next = new Date(start + DAY_MS).toISOString().slice(0, 10);
   const manifests = dayManifests(o.dataDir, o.dayUtc, fs);
-  // The next day's first bar may carry late polls of the 23:59:45 bar (ruling 38, in bars since Z09-32).
+  // The next day's first hour holds the records of the day's last bar (23:59:45 is stamped with its close, 00:00:00
+  // plus the grace; SW-12) and of any bar of the day whose counts were moved late, and its first bar may carry late
+  // polls of 23:59:45 (ruling 38, in bars since Z09-32).
   const nextFirstHour = dayManifests(o.dataDir, next, fs).filter((m) => m.hourUtc === `${next}T00`);
   const dataDir = o.dataDir;
   const pollCounts = (function* (): Generator<PollCountRecord> {
     yield* eachPollCount(dataDir, manifests, fs);
-    for (const r of eachPollCount(dataDir, nextFirstHour, fs)) if (r.barStartMs === start + DAY_MS) yield r;
+    for (const r of eachPollCount(dataDir, nextFirstHour, fs)) if (r.barStartMs >= start && r.barStartMs <= start + DAY_MS) yield r;
   })();
   const gaps: Array<{ stream: string; gap: ManifestGap }> = [];
   const records: Record<string, number> = {};
@@ -80,16 +82,18 @@ export function dailyCoverage(o: { dataDir: string; dayUtc: string; universeMani
 }
 
 /**
- * Runs the job for the day before `nowMs`: appends the report to `coverage` and saves it (M24). Ruling Z08-19: it runs
- * only once the writer has closed that day's hour 23 (`closedThrough()`, the writer's `lastRotatedHourUtc`), so no
- * record of the day is still in an open segment; before that it returns null and the caller tries again.
+ * Runs the job for the day before `nowMs`: appends the report to `coverage` and saves it (M24). Ruling Z08-19, moved
+ * one hour by SW-12: it runs only once the writer has closed the NEXT day's hour 00 (`closedThrough()`, the writer's
+ * `lastRotatedHourUtc`), because the day's last bar is written there; no record of the day is then still in an open
+ * segment. Before that it returns null and the caller tries again.
  */
 export function runDailyCoverage(o: {
   dataDir: string; nowMs: UnixMs; universeManifestSha256: string | null; closedThrough: () => string;
   append: (report: CoverageReport, atMs: UnixMs) => void; save: (report: CoverageReport) => void; fs?: ReadFs;
 }): DailyCoverage | null {
   const dayUtc = new Date(o.nowMs - DAY_MS).toISOString().slice(0, 10);
-  if (o.closedThrough() < `${dayUtc}T23`) return null;
+  const next = new Date(Date.parse(`${dayUtc}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
+  if (o.closedThrough() < `${next}T00`) return null;
   const c = dailyCoverage({ dataDir: o.dataDir, dayUtc, universeManifestSha256: o.universeManifestSha256, ...(o.fs === undefined ? {} : { fs: o.fs }) });
   o.append(c.report, o.nowMs);
   o.save(c.report);

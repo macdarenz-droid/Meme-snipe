@@ -235,7 +235,7 @@ describe('Z08-18 and Z08-19', () => {
     assert.deepEqual(WatchLog.readDay(dir, '2026-10-15').map((i) => (i.toMs - Date.UTC(2026, 9, 15)) / 3_600_000), [4]);
   });
 
-  it('Z08-19: the 00:00 job waits until hour 23 is closed; a full-coverage day then gives missingBps 0', () => {
+  it('Z08-19 and SW-12: the 00:00 job waits until hour 23, then the next day\'s hour 00, is closed; a full-coverage day then gives missingBps 0', () => {
     const dir = tempDir('r1-19');
     const D0 = Date.UTC(2026, 9, 15);
     const now = { t: D0 + 1_000 };
@@ -257,6 +257,10 @@ describe('Z08-18 and Z08-19', () => {
     assert.equal(early, null);
     assert.equal(out.length, 0);
     w.pump();                                                             // the hour change closes hour 23
+    // SW-12: hour 23 closed is not enough; the day's last bar is written in the next day's hour 00.
+    assert.equal(runDailyCoverage({ dataDir: dir, nowMs: ms(now.t), universeManifestSha256: null, closedThrough: () => w.lastRotatedHourUtc(), append: (r) => out.push(r), save: noLog }), null);
+    now.t = D0 + 86_400_000 + 3_600_000;
+    w.pump();                                                             // closes the next day's hour 00
     const c = runDailyCoverage({ dataDir: dir, nowMs: ms(now.t), universeManifestSha256: null, closedThrough: () => w.lastRotatedHourUtc(), append: (r) => out.push(r), save: noLog });
     assert.ok(c !== null);
     assert.equal(c.detail.missingBps, 0);

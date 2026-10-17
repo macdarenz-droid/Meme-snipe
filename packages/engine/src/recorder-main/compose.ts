@@ -50,6 +50,7 @@ import { createLogger, type Logger, type LogSink } from '../m27/log.ts';
 import { MetricsRegistry } from '../m27/metrics.ts';
 import { m27Settings } from '../m27/settings.ts';
 import { RECORD_MAX_BYTES_CAP, RecorderQueue, type EncodedRecord } from '../recorder/queue.ts';
+import { isStreamName, STREAM_NAMES, type StreamName } from '../recorder/streams.ts';
 import { createAgreedChainState, ANCHOR_EVERY_MS, type AgreedChainState } from './chain.ts';
 import { m07Log, RECORDER_LOG_TABLE } from './log-codes.ts';
 import { createReadPath, type ReadPath } from './rpc.ts';
@@ -125,6 +126,22 @@ const FLUSH_BAR_STORE_MS = 60_000;
 const METRICS_EVERY_MS = 10_000;
 /** C-90: the kept first SOL/USD read on the server. */
 export const SOL_USD_CHECK_KEY = 'recorder.sol_usd_first_check';
+/** SW-11: every stream's next seq at the last rotation (`{ stream: "<u64>" }`), in `kv_state`. */
+export const NEXT_SEQ_KEY = 'm07.next_seq';
+
+/** SW-11: the saved next seqs; an unreadable or malformed row reads as none (the manifests then decide alone). */
+export function savedNextSeq(db: Db): Partial<Record<StreamName, bigint>> {
+  const r = createRepos().kv_state.get(db.reader(), { key: NEXT_SEQ_KEY });
+  if (r === null) return {};
+  try {
+    const v = JSON.parse(String(r.valueJson)) as Record<string, unknown>;
+    const out: Partial<Record<StreamName, bigint>> = {};
+    for (const [k, x] of Object.entries(v)) if (isStreamName(k) && typeof x === 'string' && /^\d{1,20}$/.test(x)) out[k] = BigInt(x);
+    return out;
+  } catch {
+    return {};
+  }
+}
 /** Ruling Z10-41: M04's verification count of the day (`{ day, count }`), in `kv_state`. */
 export const VERIFY_COUNT_KEY = 'm04.verify_count';
 /**
@@ -269,11 +286,18 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   // unit may write is always the one used; `recorder.data_dir` keeps its default, which is ENGINE_PATHS.mdDir.
   const dataDir = p.paths.mdDir;
   const recovery = SegmentWriter.recover({ dataDir, nowMs: nowMs(), log: wlog });
+  // SW-11: each stream's next seq is also kept in M24 at every rotation, so a stream whose segments were all received
+  // and deleted (DiskManager) never starts again at a seq it already used; the larger of that and the manifests wins.
+  const firstSeq = { ...recovery.nextSeq };
+  for (const [stream, seq] of Object.entries(savedNextSeq(db))) {
+    const had = firstSeq[stream as keyof typeof firstSeq];
+    if (had === undefined || seq > had) firstSeq[stream as keyof typeof firstSeq] = seq;
+  }
   // Finding F5 (rulings Z10-20, Z10-29): a day's universe manifest is about 420 bytes per eligible pool (the soak's
   // second day: 239 pools, 100,566 bytes), past the 64 KiB default, so that stream alone gets M07's largest cap (1 MiB,
   // ruling Z08-28: about 2,490 pools); every other stream keeps `recorder.record_max_bytes`.
   const queue = new RecorderQueue({
-    firstSeq: recovery.nextSeq, log: wlog,
+    firstSeq, log: wlog,
     config: { pollCloseGraceMs: configValue(cfg, 'bars.close_grace_ms'), recordMaxBytes: configValue(cfg, 'recorder.record_max_bytes'), streamMaxBytes: { universe_manifest: RECORD_MAX_BYTES_CAP } },
   });
   // The stored 1-minute bars (M08 `bar_1m`). The 15 s base bars feed only features and strategies, none of which runs in
@@ -292,8 +316,19 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         return taken;
       },
       drainGaps: () => queue.drainGaps(),
+      unwrite: (records, giveBackSeqs) => { queue.unwrite(records, giveBackSeqs); },
     },
+    onManifest: () => { seqsRotated = true; },
   }, recovery);
+  let seqsRotated = false;
+  /** SW-11: every stream's next seq as of now (each at least what is on disk), after a rotation. */
+  const saveNextSeq = (): void => {
+    if (!seqsRotated) return;
+    seqsRotated = false;
+    const v = Object.fromEntries(STREAM_NAMES.map((st) => [st, queue.peekNextSeq(st).toString()]));
+    const t = nowMs();
+    db.withTx((tx) => { repos.kv_state.upsert(tx, { key: NEXT_SEQ_KEY, valueJson: JSON.stringify(v), createdAt: t, updatedAt: t }); });
+  };
   const researchKey = p.researchKey ?? (() => { try { return createPublicKey(p.readFile(configValue(cfg, 'recorder.research_pubkey'))); } catch { return null; } });
   const key = researchKey();
   const disk = new DiskManager({
@@ -612,6 +647,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     // Z09-32: the queue's tick, the writer's pump (poll counts to M08), then M08's closeDue, with one `now`.
     await guard('queue_tick', () => queue.tick(now));
     await guard('pump', () => writer.pump());
+    await guard('next_seq', saveNextSeq);
     await guard('bars', () => { const closed = bars.closeDue(now); if (closed.length > 0) metrics.counter('bars_closed_total', {}).inc(closed.length); barStore.add(closed); });
     if (started) {
       await guard('universe', () => universe.tick());
@@ -662,6 +698,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         (tracker as PoolTracker<CpPoolState>).stop();
         rp.clock.stop();
         try { writer.pump(); writer.flush(); } catch { /* a failed final flush is recovered at the next start (crash recovery) */ }
+        try { seqsRotated = true; saveNextSeq(); } catch { /* the manifests still hold every seq on disk */ }
         try { barStore.flush(nowMs()); } catch { /* bars are re-derived from the recording */ }
         log.event('info', 'recorder.stopped', { reason: 'signal' });
         db.close();

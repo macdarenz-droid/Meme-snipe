@@ -1,7 +1,8 @@
 // A-M13-01 `phase0-report` input: reads a pulled Phase 0 dataset (M07 layout, A-M07-02) on the research machine and
 // builds `Phase0Input` (card Z09). Per day it reads the day's index of segment manifests:
-// - `universe_manifest`: the day's manifest (its SHA-256 is checked; a manifest that does not match is not used);
-// - `coverage`: the day's CoverageReport (`lowCoverage`); a day without one is not good;
+// - `universe_manifest`: the day's manifest (its SHA-256 is checked; a manifest that does not match is not used), found
+//   by its `dayUtc` in any day's folder (SW-9: it is written after the day ends, in D+1's);
+// - `coverage`: the day's CoverageReport (`lowCoverage`), found the same way; a day without one is not good;
 // - every stream's compressed bytes (the manifests) and decoded bytes (gzip segments read here; zstd counted unread);
 // - `ref_price`: the first SOL/USD price of the day;
 // - `pool_snapshot`, `pool_snapshot_tail` and `pool_snapshot_position`: change-only keyframes and deltas, rebuilt with
@@ -81,10 +82,28 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
   if (!Number.isFinite(r0)) throw { code: 'E_NO_SNAPSHOTS' } satisfies Phase0InputError;
   const r0Day = new Date(r0).toISOString().slice(0, 10);
   if (!o.days.includes(r0Day)) throw { code: 'E_R0_DAY_MISSING', r0Day } satisfies Phase0InputError;
+  // SW-9: day D's universe manifest and CoverageReport are written after D ends (00:00 and after 01:00 UTC of D+1, or
+  // at a later start when the recorder was down), so they sit in a later day's folder. Both streams are read from
+  // every day on disk and matched by their own `dayUtc`; the first valid one in path order wins.
+  const manifestOf = new Map<string, UniverseManifestFile>();
+  const lowOf = new Map<string, boolean>();
+  for (const d of [...allDays].sort()) {
+    for (const m of dayManifests(o.dataDir, d, fs).filter((x) => x.stream === 'universe_manifest' || x.stream === 'coverage').sort((a, b) => (a.path < b.path ? -1 : 1))) {
+      for (const l of linesOf(o.dataDir, m, fs).lines) {
+        if (m.stream === 'universe_manifest' && isManifestFile(l.payload)) {
+          const { sha256, ...body } = l.payload;
+          if (manifestSha256(body) === sha256 && typeof l.payload.dayUtc === 'string' && !manifestOf.has(l.payload.dayUtc)) manifestOf.set(l.payload.dayUtc, l.payload);
+        } else if (m.stream === 'coverage') {
+          const c = l.payload as Partial<CoverageReport>;
+          if (typeof c.dayUtc === 'string' && typeof c.lowCoverage === 'boolean' && !lowOf.has(c.dayUtc)) lowOf.set(c.dayUtc, c.lowCoverage);
+        }
+      }
+    }
+  }
   for (const dayUtc of [...o.days].sort()) {
     const manifests = dayManifests(o.dataDir, dayUtc, fs).sort((a, b) => (a.path < b.path ? -1 : 1));
-    let manifest: UniverseManifestFile | null = null;
-    let low = true;
+    const manifest = manifestOf.get(dayUtc) ?? null;
+    const low = lowOf.get(dayUtc) ?? true;
     const snapLines: Line[] = [];
     const polls = new Map<string, Map<number, number>>();               // pool → bar start → successful polls
     const bytes = new Map<string, StreamDayBytes>();
@@ -96,13 +115,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
       if (m.codec === 'zstd') b.codec = 'zstd';
       bytes.set(m.stream, b);
       for (const l of read.lines) {
-        if (m.stream === 'universe_manifest' && isManifestFile(l.payload)) {
-          const { sha256, ...body } = l.payload;
-          if (manifestSha256(body) === sha256 && l.payload.dayUtc === dayUtc) manifest = l.payload;
-        } else if (m.stream === 'coverage') {
-          const c = l.payload as Partial<CoverageReport>;
-          if (c.dayUtc === dayUtc && typeof c.lowCoverage === 'boolean') low = c.lowCoverage;
-        } else if (m.stream === 'poll_counts') {
+        if (m.stream === 'poll_counts') {
           const c = l.payload as { poolId?: unknown; barStartMs?: unknown; successfulPolls?: unknown; skippedBars?: unknown };
           if (typeof c.poolId === 'string' && Number.isSafeInteger(c.barStartMs) && (c.barStartMs as number) % POLL_BAR_MS === 0 && Number.isSafeInteger(c.successfulPolls) && c.skippedBars === undefined) {
             const pm = polls.get(c.poolId) ?? new Map<number, number>();
