@@ -6,8 +6,8 @@
 import { createHash } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
-import { gunzipSync } from 'node:zlib';
 import type { CoverageReport, UnixMs } from '@bot/types';
+import { frameLines, scanGzipFrames } from './frames.ts';
 import { computeCoverage, DAY_MS, dayStartOf, type CoverageDetail, type PollCountRecord } from './coverage.ts';
 import { isManifest, type ManifestGap, type SegmentManifest } from './manifest.ts';
 import { WatchLog } from './watch-log.ts';
@@ -34,18 +34,12 @@ export function* eachPollCount(dataDir: string, manifests: readonly SegmentManif
     if (m.stream !== 'poll_counts' || m.codec !== 'gzip') continue;
     const file = join(dataDir, m.path);
     if (!fs.existsSync(file)) continue;
-    let text: string;
-    try {
-      text = gunzipSync(fs.readFileSync(file) as Buffer).toString('utf8');
-    } catch {
-      continue;
-    }
-    for (let at = 0; at < text.length;) {
-      const nl = text.indexOf('\n', at);
-      const end = nl === -1 ? text.length : nl;
-      if (end > at) yield (JSON.parse(text.slice(at, end)) as { payload: PollCountRecord }).payload;
-      at = end + 1;
-    }
+    // SW-35: read one gzip member at a time, never the whole hour decoded as one buffer and one string: those large
+    // transient allocations at each day's coverage raised the recorder's resident memory in steps (soak, DECISIONS).
+    // A file that does not decode whole is skipped, as before; the first pass checks that.
+    const bytes = fs.readFileSync(file) as Buffer;
+    if (scanGzipFrames(bytes, () => undefined).stop !== null) continue;
+    for (const line of frameLines(bytes)) if (line !== '') yield (JSON.parse(line) as { payload: PollCountRecord }).payload;
   }
 }
 

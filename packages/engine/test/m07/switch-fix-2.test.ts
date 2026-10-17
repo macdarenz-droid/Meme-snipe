@@ -1,8 +1,12 @@
-// Card SWITCH-FIX-2 (the three red teams on 3439ee02): SW-29, md-pull's copy of a day's watch log.
+// Card SWITCH-FIX-2 (the three red teams on 3439ee02): SW-29, md-pull's copy of a day's watch log; SW-35, the daily
+// coverage's poll_counts reader.
 import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
+import { gzipSync } from 'node:zlib';
+import { eachPollCount } from '../../src/m07/daily.ts';
+import { frameLines, scanGzipFrames } from '../../src/m07/frames.ts';
 import { sftpTransport } from '../../src/m07/md-pull.ts';
 import { tempDir } from '../helpers.ts';
 
@@ -63,5 +67,37 @@ describe('SW-29: md-pull skips only a missing watch log; any other failure throw
   it('a failed listing throws (never read as "no log")', () => {
     const { root } = setup();
     assert.throws(() => sftpTransport('h', host({ md: [], get: 'ok', lsFails: true }).run).fetchWatch?.(DAY, root), /sftp exited 1/);
+  });
+});
+
+describe('SW-35: the daily coverage reads poll_counts one gzip member at a time', () => {
+  const rec = (i: number) => `${JSON.stringify({ seq: String(i), payload: { poolId: 'P', barStartMs: i * 15_000, successfulPolls: 15 } })}\n`;
+  const members = (n: number, per: number): Buffer => Buffer.concat(Array.from({ length: n }, (_, m) => gzipSync(Buffer.from(Array.from({ length: per }, (_, k) => rec(m * per + k)).join('')))));
+
+  it('frameLines yields the lines of every member in order, lazily, and returns why it stopped (fails before: no frameLines)', () => {
+    const buf = members(3, 4);
+    const it = frameLines(buf);
+    assert.equal(JSON.parse(it.next().value as string).seq, '0');               // the first member only, so far
+    const rest = [...it];
+    assert.equal(rest.length, 11);
+    const all: string[] = [];
+    scanGzipFrames(buf, (l) => all.push(l));
+    assert.deepEqual(rest, all.slice(1));
+    const torn = buf.subarray(0, buf.length - 5);
+    const g = frameLines(torn);
+    let r = g.next();
+    while (r.done !== true) r = g.next();
+    assert.equal(r.value, 'torn');
+  });
+
+  it('eachPollCount gives every record of a multi-member segment, and nothing for one that does not decode whole', () => {
+    const dir = tempDir('sw35');
+    fs.mkdirSync(join(dir, '2026-10-15', '10'), { recursive: true });
+    const good = members(3, 5);
+    fs.writeFileSync(join(dir, '2026-10-15', '10', 'poll_counts.ndjson.gz'), good);
+    fs.writeFileSync(join(dir, '2026-10-15', '10', 'poll_counts.1.ndjson.gz'), good.subarray(0, good.length - 3));
+    const m = (path: string) => ({ path, stream: 'poll_counts', codec: 'gzip' }) as never;
+    assert.deepEqual([...eachPollCount(dir, [m('2026-10-15/10/poll_counts.ndjson.gz')])].map((p) => p.barStartMs), Array.from({ length: 15 }, (_, i) => i * 15_000));
+    assert.deepEqual([...eachPollCount(dir, [m('2026-10-15/10/poll_counts.1.ndjson.gz')])], []);
   });
 });
