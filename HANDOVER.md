@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **17 Oct 11:15 AM: SW-1a ruling (backup budget).**
+  - The builder measured bot.db at about 2.4 GB on day 90 (bar_1m 90-day retention ≈ 2 GB). The R1 floor of 31 copies would be about 15 GB, over the 6 GB budget.
+  - Ruling: C plus 6 GB.
+    - bars.bar_1m_retention_days goes 90→14. That is inside SPEC's 7-365 range; the only consumer is the VM-10 display; bars are rebuildable from the recordings.
+    - DECISIONS records that the dashboard shows 14 days of OHLC until the R3 market/ledger split, which lands before M3.
+  - Required: a test that the 90-day projection fits under the budget at the default settings; the real compression ratio and the hourly backup run time added to the on-server watch list (a flag if over 60 s).
 - **17 Oct 11:05 AM: RT2 (data) FAIL on `bac1f88a`; card SWITCH-FIX started.**
   - RT2 findings:
     - **BLOCKER:** Phase 0 never finds day D's manifest or coverage, because they are written in D+1/00 and the Z09 fixture hides it.
