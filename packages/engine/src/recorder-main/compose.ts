@@ -160,7 +160,7 @@ export const VERIFY_COUNT_KEY = 'm04.verify_count';
  */
 export const UNANCHORED_MS = 600_000;
 /** Ruling Z10-41: critical codes that hold exactly while their condition does (never from the 15-minute window). */
-export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
+export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
 /**
  * Ruling Z10-24 (a new value: no SPEC or ARCH threshold exists): a critical line keeps the heartbeat critical for this
  * long after it was last raised. 15 minutes: at least three of the watchdog's 300 s repeats (`REPEAT_CRITICAL_S`).
@@ -588,6 +588,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (tracker?.verifyCapReached() === true) out.push('m04.verify_cap_reached');
     if (clockTrouble?.alerted === true) out.push('recorder.clock_suspect');
     if ((lastDisk?.unpulledOld ?? 0) > 0) out.push('m07.unpulled_segments');
+    // SW-31: held from 75% of the cap, so the owner hears of it days before recording halts at the cap.
+    if (lastDisk?.budgetHigh === true) out.push('m07.disk_budget_high');
     if (daily.manifestMissing(nowMs())) out.push('recorder.manifest_not_recorded');
     if (unanchored) out.push('recorder.unanchored');
     return out;
@@ -724,14 +726,14 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (mono - lastBarStoreMs >= FLUSH_BAR_STORE_MS) { lastBarStoreMs = mono; await guard('bar_store', () => barStore.flush(now)); }
     // SW-1(b): the database's own retention, daily, and the outbox drain each minute (retention.ts).
     if (mono - lastOutboxMs >= OUTBOX_DRAIN_EVERY_MS) { lastOutboxMs = mono; await guard('outbox', () => retention.drainOutbox()); }
-    if (mono - lastRetentionMs >= RETENTION_EVERY_MS) {
-      lastRetentionMs = mono;
-      await guard('retention', () => {
-        const r = retention.run();
-        if (r.bars > 0) metrics.counter('bar_1m_purged_total', {}).inc(r.bars);
-        log.event('info', 'recorder.retention', { rows: r.rows, bars: r.bars });
-      });
-    }
+    // SW-32: a pass starts daily and runs one bounded step a loop tick until it is through.
+    if (mono - lastRetentionMs >= RETENTION_EVERY_MS) { lastRetentionMs = mono; retention.start(); }
+    await guard('retention', () => {
+      const r = retention.step();
+      if (r === null || !r.done) return;
+      if (r.bars > 0) metrics.counter('bar_1m_purged_total', {}).inc(r.bars);
+      log.event('info', 'recorder.retention', { rows: r.rows, bars: r.bars });
+    });
     await guard('metrics_tick', () => metrics.tick());
   }
 

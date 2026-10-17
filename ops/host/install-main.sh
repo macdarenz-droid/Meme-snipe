@@ -219,12 +219,16 @@ getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker -
 if id -nG zeroed-worker 2>/dev/null | tr ' ' '\n' | grep -qx zeroed-signer; then gpasswd -d zeroed-worker zeroed-signer >/dev/null; fi
 # PATHS-FIX: the worker reads pull receipts through zeroed-pull and import bundles through zeroed-spool (never botops,
 # which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
+# SW-23: zeroed-spool comes only from the full unit body (SupplementaryGroups=), as zeroed-signer does (SW-18), so the
+# recorder's body leaves it out; a membership an older installer made is removed. Nothing else running as the worker's
+# user reads the spool (zeroed-record-upload@ reads the Zeroed recordings; worker-smoke gives each body's own groups).
 getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
 getent group zeroed-spool >/dev/null || groupadd --system zeroed-spool
 # PATHS-FIX ruling 21: the provider usage ledger is written by the engine and the sentinel; the sentinel joins this group.
 getent group zeroed-sentinel >/dev/null || groupadd --system zeroed-sentinel
 getent passwd zeroed-pull >/dev/null || useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull
-usermod -aG zeroed-pull,zeroed-spool zeroed-worker
+usermod -aG zeroed-pull zeroed-worker
+if id -nG zeroed-worker 2>/dev/null | tr ' ' '\n' | grep -qx zeroed-spool; then gpasswd -d zeroed-worker zeroed-spool >/dev/null; fi
 
 say "Files"
 # The SSH state of the running firewall, read before nftables.conf is replaced (an update keeps it).

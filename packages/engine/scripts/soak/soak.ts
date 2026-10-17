@@ -21,6 +21,7 @@
 // (CI passes the server's heap limit, so a heap the recorder could not hold on the server fails here too.)
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { constants as perf, createHistogram, monitorEventLoopDelay, PerformanceObserver } from 'node:perf_hooks';
 import { join } from 'node:path';
 import type { Pubkey, UnixMs } from '@bot/types';
 import { MINTS } from '@bot/venue/constants';
@@ -36,6 +37,26 @@ const MIB = 1_048_576;
 const gc = (globalThis as { gc?: () => void }).gc;
 if (gc === undefined) { process.stdout.write('run with --expose-gc\n'); process.exit(2); }
 
+// SW-35a: what the recorder costs on the CPU, per simulated hour: CPU time, scavenges (V8's young-generation GCs) and
+// their pause, the event loop's longest stalls (p99, max), and the real time each simulated second took; a second over
+// 1 s real is a tick the server would run late. Measured, not checked: they compare runs (DECISIONS SW-35).
+const loopLag = monitorEventLoopDelay({ resolution: 10 });
+loopLag.enable();
+const secondMs = createHistogram();
+let secondsOver1s = 0, scavenges = 0, scavengeMs = 0, cpuMark = process.cpuUsage();
+new PerformanceObserver((list) => {
+  for (const e of list.getEntries()) if ((e as { detail?: { kind?: number } }).detail?.kind === perf.NODE_PERFORMANCE_GC_MINOR) { scavenges++; scavengeMs += e.duration; }
+}).observe({ entryTypes: ['gc'] });
+interface Cost { cpuMs: number; scavenges: number; scavengeMs: number; loopLagP99Ms: number; loopLagMaxMs: number; secondP99Ms: number; secondMaxMs: number; secondsOver1s: number }
+/** The hour's cost (SW-35a), then the counters start again. */
+function costHour(): Cost {
+  const c = process.cpuUsage(cpuMark);
+  cpuMark = process.cpuUsage();
+  const out = { cpuMs: Math.round((c.user + c.system) / 1_000), scavenges, scavengeMs: Math.round(scavengeMs), loopLagP99Ms: loopLag.percentile(99) / 1e6,
+    loopLagMaxMs: loopLag.max / 1e6, secondP99Ms: secondMs.percentile(99), secondMaxMs: secondMs.max, secondsOver1s };
+  scavenges = 0; scavengeMs = 0; secondsOver1s = 0; loopLag.reset(); secondMs.reset();
+  return out;
+}
 let unhandled = 0;
 process.on('unhandledRejection', () => { unhandled++; });
 
@@ -71,7 +92,7 @@ let peakHeapTotal = 0;
 let peakRssAny = 0;
 let nextMigration = 0;
 let migrations = 0;
-const samples: Array<{ hour: number; heapMiB: number; rssMiB: number; rssAnonMiB: number; rssFileMiB: number; externalMiB: number; arrayBuffersMiB: number; ringMiB: number; metricsRingMiB: number; trackedPools: number; encoderStates: number; mdMiB: number; dbMiB: number; watched: number; queueDepth: number; wallS: number }> = [];
+const samples: Array<Cost & { hour: number; heapMiB: number; rssMiB: number; rssAnonMiB: number; rssFileMiB: number; externalMiB: number; arrayBuffersMiB: number; ringMiB: number; metricsRingMiB: number; trackedPools: number; encoderStates: number; mdMiB: number; dbMiB: number; watched: number; queueDepth: number; wallS: number }> = [];
 /** RssAnon and RssFile of /proc/self/status (Linux), in MiB; -1 elsewhere. */
 const procRss = (field: 'RssAnon' | 'RssFile'): number => {
   try { return Number(new RegExp(`^${field}:\\s+(\\d+) kB$`, 'm').exec(readFileSync('/proc/self/status', 'utf8'))?.[1] ?? -1024) / 1024; } catch { return -1; }
@@ -96,7 +117,11 @@ for (let s = 0; s < HOURS * 3_600; s++) {
         { venue: 'pumpswap', quoteMint: MINTS.wsol, feeTotalBps: model.feeTotalBps(v.value) ?? 10_000, effectiveQuoteLamports: model.effectiveQuote(v.value), observedAtMs: v.value.observedAtMs });
     });
   }
+  const sec0 = process.hrtime.bigint();
   await time.advance(1_000);
+  const secMs = Number(process.hrtime.bigint() - sec0) / 1e6;
+  secondMs.record(Math.max(1, Math.round(secMs)));
+  if (secMs > 1_000) secondsOver1s++;
   // Transient peaks (the 00:00 UTC jobs read a whole day): the committed heap and RSS each simulated minute, no GC.
   if ((s + 1) % 60 === 0) {
     const m = process.memoryUsage();
@@ -113,6 +138,7 @@ for (let s = 0; s < HOURS * 3_600; s++) {
       trackedPools: rig.rec.parts.tracker.ready().length, encoderStates: rig.rec.parts.queue.stats().encoderStates, mdMiB: du(rig.paths.mdDir) / MIB,
       dbMiB: ['', '-wal', '-shm'].reduce((n, x) => { try { return n + statSync(rig.paths.db + x).size; } catch { return n; } }, 0) / MIB, watched: st.watched, queueDepth: st.queueDepth,
       wallS: Number(process.hrtime.bigint() - started) / 1e9,
+      ...costHour(),
     });
     process.stdout.write(`${JSON.stringify(samples.at(-1))}\n`);
   }
@@ -135,6 +161,12 @@ const result = {
   peakRssMiB: Math.max(peak(samples, 'rssMiB'), peakRssAny / MIB), peakHeapCommittedMiB: peakHeapTotal / MIB, rssLimitMiB: LIMIT_RSS / MIB, recorderMiBEnd: samples.at(-1)?.mdMiB, dbMiBEnd: samples.at(-1)?.dbMiB,
   recorderMiBPerDay: ((samples.at(-1)?.mdMiB ?? 0) - (samples[23]?.mdMiB ?? 0)) / ((HOURS - 24) / 24 || 1),
   unknownCodes: unknown, internalErrors: internal, unhandledRejections: unhandled, wallSeconds: samples.at(-1)?.wallS,
+  // SW-35a: hours 24-48 (the second half), per hour on average, and the worst hour.
+  cost: (() => {
+    const xs = second.length > 0 ? second : samples, avg = (k: keyof Cost): number => xs.reduce((a, x) => a + x[k], 0) / xs.length, worst = (k: keyof Cost): number => Math.max(...xs.map((x) => x[k]));
+    return { cpuMsPerHour: avg('cpuMs'), scavengesPerHour: avg('scavenges'), scavengeMsPerHour: avg('scavengeMs'), loopLagP99MsWorstHour: worst('loopLagP99Ms'),
+      loopLagMaxMs: worst('loopLagMaxMs'), secondP99MsWorstHour: worst('secondP99Ms'), secondMaxMs: worst('secondMaxMs'), secondsOver1s: xs.reduce((a, x) => a + x.secondsOver1s, 0) };
+  })(),
 };
 const checks = {
   heapBounded: result.peakHeapSecondMiB <= result.peakHeapFirstMiB * 1.10 + 8,

@@ -219,12 +219,16 @@ getent passwd zeroed-worker >/dev/null || useradd --system --gid zeroed-worker -
 if id -nG zeroed-worker 2>/dev/null | tr ' ' '\n' | grep -qx zeroed-signer; then gpasswd -d zeroed-worker zeroed-signer >/dev/null; fi
 # PATHS-FIX: the worker reads pull receipts through zeroed-pull and import bundles through zeroed-spool (never botops,
 # which reaches the signer's ops socket). zeroed-pull is also the market-data pull account: sftp only, chrooted, no shell.
+# SW-23: zeroed-spool comes only from the full unit body (SupplementaryGroups=), as zeroed-signer does (SW-18), so the
+# recorder's body leaves it out; a membership an older installer made is removed. Nothing else running as the worker's
+# user reads the spool (zeroed-record-upload@ reads the Zeroed recordings; worker-smoke gives each body's own groups).
 getent group zeroed-pull >/dev/null || groupadd --system zeroed-pull
 getent group zeroed-spool >/dev/null || groupadd --system zeroed-spool
 # PATHS-FIX ruling 21: the provider usage ledger is written by the engine and the sentinel; the sentinel joins this group.
 getent group zeroed-sentinel >/dev/null || groupadd --system zeroed-sentinel
 getent passwd zeroed-pull >/dev/null || useradd --system --gid zeroed-pull --no-create-home --home-dir / --shell /usr/sbin/nologin zeroed-pull
-usermod -aG zeroed-pull,zeroed-spool zeroed-worker
+usermod -aG zeroed-pull zeroed-worker
+if id -nG zeroed-worker 2>/dev/null | tr ' ' '\n' | grep -qx zeroed-spool; then gpasswd -d zeroed-worker zeroed-spool >/dev/null; fi
 
 say "Files"
 # The SSH state of the running firewall, read before nftables.conf is replaced (an update keeps it).
@@ -3063,8 +3067,9 @@ StateDirectoryMode=0700
 # (2730, group zeroed-spool) are made by the installer with their own group and mode, and listed here; so is the
 # provider usage ledger's folder (2770, group zeroed-sentinel), which the sentinel writes too (ruling 21).
 ReadWritePaths=/var/lib/zeroed-md /var/lib/zeroed-usage
-# Not even listed: the signer's runtime and state folders ("-": a folder that is not there is not an error).
-InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer
+# Not even listed: the signer's runtime and state folders ("-": a folder that is not there is not an error), and (SW-23)
+# the import spool, which the worker's user owns, so leaving out the group alone would still let it list the names.
+InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer -/var/lib/zeroed-spool
 UMask=0077
 # Z10: kept for the keyless recorder from its 48 h soak: RSS peak 278 MiB after F7 (35%), its 75% alert at 600 MiB
 # (logic.sh).
@@ -3301,7 +3306,9 @@ mapfile -t entries < <(list "$SRC" ''; list "$USAGE_SRC" 'zeroed-usage/')
 dbs=()
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# SW-33: a failed or killed run never leaves its half-written bundle behind (it would hold disk the budget never counts).
+pending=""
+trap 'rm -rf "$work"; [ -z "$pending" ] || rm -f -- "$pending"' EXIT
 mkdir -p "$work/snap"
 for e in "${entries[@]}"; do
   src="${e%%|*}"
@@ -3316,9 +3323,14 @@ done
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
+# SW-33: and a run that could not clean up (power loss, SIGKILL) is swept by the next: any leftover .new not written
+# to for 10 minutes (a live run writes its bundle within seconds of starting it).
+find "$OUT" -maxdepth 1 -type f \( -name 'zeroed-*.age.new' -o -name 'budget.*.new' \) -mmin +10 -delete
 name="zeroed-$ts.tar.zst.age"
-tar -C "$work/snap" -c . | zstd -q -3 -T1 | age -R "$RECIPIENTS" -o "$OUT/$name.new"
-mv -f "$OUT/$name.new" "$OUT/$name"
+pending="$OUT/$name.new"
+tar -C "$work/snap" -c . | zstd -q -3 -T1 | age -R "$RECIPIENTS" -o "$pending"
+mv -f "$pending" "$OUT/$name"
+pending=""
 status="$(find "$OUT" -maxdepth 1 -type f -name 'zeroed-*.age' -printf '%f %s\n' | backup_keep "$FLOOR_HOURLY" "$FLOOR_DAILY" "$MAX_BYTES" "$KEEP" | while read -r what f rest; do
   if [ "$what" = delete ]; then rm -f -- "$OUT/$f"; else printf '%s %s %s\n' "$what" "$f" "$rest"; fi
 done)"

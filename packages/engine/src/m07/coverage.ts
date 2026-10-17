@@ -92,22 +92,37 @@ export function dayStartOf(dayUtc: string): UnixMs {
 }
 
 export function computeCoverage(input: CoverageInput): { report: CoverageReport; detail: CoverageDetail } {
+  const run = coverageRun(input);
+  for (const r of input.pollCounts) run.add(r);
+  while (!run.pools(Number.POSITIVE_INFINITY)) { /* every pool in one call */ }
+  return run.finish();
+}
+
+/**
+ * SW-36: computeCoverage in parts, so the recorder's daily job never holds its loop for long: `add` takes the poll
+ * counts one record at a time (the caller reads them in bounded batches), `pools` works through at most `max` watched
+ * pools and returns true once all are done, and `finish` builds the report. The same arithmetic as before, in the same
+ * order.
+ */
+export function coverageRun(input: Omit<CoverageInput, 'pollCounts'>): {
+  add(r: PollCountRecord): void; pools(max: number): boolean; finish(): { report: CoverageReport; detail: CoverageDetail };
+} {
   const a = dayStartOf(input.dayUtc);
   const b = a + DAY_MS;
-  const observed = new Set<string>();
-  const minuteOf = (ms: number): number => Math.floor(ms / MINUTE_MS) * MINUTE_MS;
-  const k = (poolId: string, ms: number): string => `${poolId}\u0000${minuteOf(ms)}`;
-  // One pass over the poll counts (they may be a stream): observed minutes, and the day's successful polls per stream.
+  // SW-35: the observed pool-minutes of the day as one bitmap of its 1,440 minutes per pool (1.4 KB), not a string per
+  // pool-minute: that Set (tens of thousands of keys a day) was the daily job's largest allocation. Only minutes inside
+  // the day are ever looked up, so a minute outside it is not kept.
+  const minutes = DAY_MS / MINUTE_MS;
+  const observed = new Map<string, Uint8Array>();
+  const observe = (poolId: string, ms: number): void => {
+    if (ms < a || ms >= b) return;
+    let bits = observed.get(poolId);
+    if (bits === undefined) { bits = new Uint8Array(minutes); observed.set(poolId, bits); }
+    bits[Math.floor((ms - a) / MINUTE_MS)] = 1;
+  };
+  const wasObserved = (poolId: string, ms: number): boolean => observed.get(poolId)?.[Math.floor((ms - a) / MINUTE_MS)] === 1;
+  // The poll counts (one pass, they may be a stream): observed minutes, and the day's successful polls per stream.
   const polledByStream = new Map<string, number>();
-  for (const r of input.pollCounts) {
-    if (r.barStartMs >= a && r.barStartMs < b) {
-      const s = STREAM_OF_CLASS[r.priorityClass as PriorityClass];
-      if (s !== undefined) polledByStream.set(s, (polledByStream.get(s) ?? 0) + r.successfulPolls);
-    }
-    if (r.skippedBars !== undefined) continue;
-    if (r.successfulPolls > 0) observed.add(k(r.poolId, r.barStartMs));
-    if (r.latePolls !== undefined && r.latePolls > 0 && r.lateFromBarStartMs !== undefined) observed.add(k(r.poolId, r.lateFromBarStartMs));
-  }
   const poolGaps = new Map<string, Array<{ fromMs: number; toMs: number }>>();
   const streamGaps: Array<{ fromMs: number; toMs: number }> = [];
   for (const { stream, gap } of input.gaps) {
@@ -126,46 +141,65 @@ export function computeCoverage(input: CoverageInput): { report: CoverageReport;
     list.push(w);
     byPool.set(w.poolId, list);
   }
+  const pending = byPool.entries();
   let watchedMs = 0;
   let missingMs = 0;
-  for (const [poolId, intervals] of byPool) {
-    const first = Math.max(a, Math.min(...intervals.map((i) => i.fromMs)));
-    const last = Math.min(b, Math.max(...intervals.map((i) => i.toMs)));
-    const pg = poolGaps.get(poolId) ?? [];
-    for (let m = Math.floor((first - a) / MINUTE_MS) * MINUTE_MS + a; m < last; m += MINUTE_MS) {
-      const inMinute = unionLength(intervals, m, m + MINUTE_MS);
-      if (inMinute === 0) continue;
-      watchedMs += inMinute;
-      const poolGapHere = pg.some((g) => clip(g.fromMs, g.toMs, m, m + MINUTE_MS) > 0);
-      if (!observed.has(k(poolId, m)) || poolGapHere) missingMs += inMinute;
-      else missingMs += overlapLength(intervals, streamGaps, m, m + MINUTE_MS);
-    }
-  }
-  const lowCoverage = watchedMs === 0 || missingMs * 10_000 > LOW_COVERAGE_BPS * watchedMs;
-
-  const streams = new Map<string, { stream: string; expected: number; recorded: number; gaps: Array<{ fromMs: UnixMs; toMs: UnixMs; reason: string }> }>();
-  const entry = (s: string): { stream: string; expected: number; recorded: number; gaps: Array<{ fromMs: UnixMs; toMs: UnixMs; reason: string }> } => {
-    let e = streams.get(s);
-    if (e === undefined) { e = { stream: s, expected: 0, recorded: 0, gaps: [] }; streams.set(s, e); }
-    return e;
+  return {
+    add(r: PollCountRecord): void {
+      if (r.barStartMs >= a && r.barStartMs < b) {
+        const s = STREAM_OF_CLASS[r.priorityClass as PriorityClass];
+        if (s !== undefined) polledByStream.set(s, (polledByStream.get(s) ?? 0) + r.successfulPolls);
+      }
+      if (r.skippedBars !== undefined) return;
+      if (r.successfulPolls > 0) observe(r.poolId, r.barStartMs);
+      if (r.latePolls !== undefined && r.latePolls > 0 && r.lateFromBarStartMs !== undefined) observe(r.poolId, r.lateFromBarStartMs);
+    },
+    pools(max: number): boolean {
+      for (let n = 0; n < max; n++) {
+        const next = pending.next();
+        if (next.done === true) return true;
+        const [poolId, intervals] = next.value;
+        const first = Math.max(a, Math.min(...intervals.map((i) => i.fromMs)));
+        const last = Math.min(b, Math.max(...intervals.map((i) => i.toMs)));
+        const pg = poolGaps.get(poolId) ?? [];
+        for (let m = Math.floor((first - a) / MINUTE_MS) * MINUTE_MS + a; m < last; m += MINUTE_MS) {
+          const inMinute = unionLength(intervals, m, m + MINUTE_MS);
+          if (inMinute === 0) continue;
+          watchedMs += inMinute;
+          const poolGapHere = pg.some((g) => clip(g.fromMs, g.toMs, m, m + MINUTE_MS) > 0);
+          if (!wasObserved(poolId, m) || poolGapHere) missingMs += inMinute;
+          else missingMs += overlapLength(intervals, streamGaps, m, m + MINUTE_MS);
+        }
+      }
+      return false;
+    },
+    finish(): { report: CoverageReport; detail: CoverageDetail } {
+      const lowCoverage = watchedMs === 0 || missingMs * 10_000 > LOW_COVERAGE_BPS * watchedMs;
+      const streams = new Map<string, { stream: string; expected: number; recorded: number; gaps: Array<{ fromMs: UnixMs; toMs: UnixMs; reason: string }> }>();
+      const entry = (s: string): { stream: string; expected: number; recorded: number; gaps: Array<{ fromMs: UnixMs; toMs: UnixMs; reason: string }> } => {
+        let e = streams.get(s);
+        if (e === undefined) { e = { stream: s, expected: 0, recorded: 0, gaps: [] }; streams.set(s, e); }
+        return e;
+      };
+      for (const [s, n] of Object.entries(input.records)) {
+        if (s.startsWith('pool_snapshot')) { entry(s); continue; }
+        const e = entry(s);
+        e.expected += n;
+        e.recorded += n;
+      }
+      for (const w of input.watched) {
+        const ms = clip(w.fromMs, w.toMs, a, b);
+        entry(STREAM_OF_CLASS[w.priorityClass]).expected += Math.floor(ms / w.pollIntervalMs);
+      }
+      for (const [s, n] of polledByStream) entry(s).recorded += n;
+      for (const { stream, gap } of input.gaps) entry(stream).gaps.push({ fromMs: gap.fromMs, toMs: gap.toMs, reason: gap.reason });
+      const report: CoverageReport = {
+        dayUtc: input.dayUtc,
+        streams: [...streams.values()].sort((x, y) => (x.stream < y.stream ? -1 : 1)),
+        universeManifestSha256: input.universeManifestSha256,
+        lowCoverage,
+      };
+      return { report, detail: { watchedMs, missingMs, missingBps: watchedMs === 0 ? 10_000 : Math.round((missingMs * 10_000) / watchedMs) } };
+    },
   };
-  for (const [s, n] of Object.entries(input.records)) {
-    if (s.startsWith('pool_snapshot')) { entry(s); continue; }
-    const e = entry(s);
-    e.expected += n;
-    e.recorded += n;
-  }
-  for (const w of input.watched) {
-    const ms = clip(w.fromMs, w.toMs, a, b);
-    entry(STREAM_OF_CLASS[w.priorityClass]).expected += Math.floor(ms / w.pollIntervalMs);
-  }
-  for (const [s, n] of polledByStream) entry(s).recorded += n;
-  for (const { stream, gap } of input.gaps) entry(stream).gaps.push({ fromMs: gap.fromMs, toMs: gap.toMs, reason: gap.reason });
-  const report: CoverageReport = {
-    dayUtc: input.dayUtc,
-    streams: [...streams.values()].sort((x, y) => (x.stream < y.stream ? -1 : 1)),
-    universeManifestSha256: input.universeManifestSha256,
-    lowCoverage,
-  };
-  return { report, detail: { watchedMs, missingMs, missingBps: watchedMs === 0 ? 10_000 : Math.round((missingMs * 10_000) / watchedMs) } };
 }

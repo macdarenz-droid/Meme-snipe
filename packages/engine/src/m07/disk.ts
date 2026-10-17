@@ -57,6 +57,8 @@ export interface DiskCheck {
   usedPct: number; freeBytes: number; recorderBytes: number; receipted: number; unreceipted: number;
   /** Ruling Z10-41: closed segments past retention with no valid receipt (the `M07.unpulled_segments` condition). */
   unpulledOld: number;
+  /** SW-31: the recorder is at or over 75% of `recorder.max_bytes` (the `m07.disk_budget_high` condition). */
+  budgetHigh: boolean;
   deleted: string[]; halted: boolean; reasons: string[];
 }
 
@@ -268,7 +270,7 @@ export class DiskManager {
     }
     return {
       usedPct: usedPct(), freeBytes, recorderBytes, receipted: left.filter(pulled).length, unreceipted: left.filter((s) => !pulled(s)).length, unpulledOld: unreceiptedOld,
-      deleted, halted: this.deps.writer.isHalted(), reasons,
+      budgetHigh: recorderBytes >= BUDGET_WARN_SHARE * p.maxBytes, deleted, halted: this.deps.writer.isHalted(), reasons,
     };
   }
 }

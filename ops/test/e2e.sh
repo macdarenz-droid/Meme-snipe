@@ -184,7 +184,10 @@ in_c "systemctl --version | head -1" >"$LOGS/systemd-version.txt"
 [ "$(in_c "stat -c '%a %U %G %n' /var/lib/zeroed-md /var/lib/zeroed-md/receipts /var/lib/zeroed-spool /var/lib/zeroed-usage /srv/zeroed_pull")" = "$(printf '%s\n' \
   '2750 zeroed-worker zeroed-pull /var/lib/zeroed-md' '2770 zeroed-worker zeroed-pull /var/lib/zeroed-md/receipts' \
   '2730 zeroed-worker zeroed-spool /var/lib/zeroed-spool' '2770 zeroed-worker zeroed-sentinel /var/lib/zeroed-usage' '755 root root /srv/zeroed_pull')" ] || fail "PATHS-FIX: folder owner, group or mode"
-in_c "id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-pull && id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-spool && ! id -nG zeroed-worker | tr ' ' '\n' | grep -qx botops" || fail "PATHS-FIX: worker groups"
+in_c "id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-pull && ! id -nG zeroed-worker | tr ' ' '\n' | grep -qx botops" || fail "PATHS-FIX: worker groups"
+# SW-23: the spool group comes from the full unit body only, never /etc/group (the live process is checked in step 6).
+in_c "! id -nG zeroed-worker | tr ' ' '\n' | grep -qx zeroed-spool" || fail "SW-23: zeroed-worker is in zeroed-spool in /etc/group"
+in_c "systemctl show -p SupplementaryGroups --value zeroed-worker" | tr ' ' '\n' | grep -qx zeroed-spool || fail "SW-23: the full worker unit does not give the spool group"
 [ "$(in_c "getent passwd zeroed-pull | cut -d: -f7")" = /usr/sbin/nologin ] || fail "PATHS-FIX: the pull account has a shell"
 in_c "systemctl is-active srv-zeroed_pull-md.mount srv-zeroed_pull-md-receipts.mount" >/dev/null || fail "PATHS-FIX: chroot binds not mounted"
 # Ruling 20: receipts/ is its own 64 MiB ext4 with 32,768 inodes, root-only image outside every bot path.
@@ -316,6 +319,10 @@ in_c "! id -nG zeroed-worker | tr ' ' '\\n' | grep -qx zeroed-signer" || fail "S
 in_c "systemctl show -p SupplementaryGroups --value zeroed-worker" | tr ' ' '\n' | grep -qx zeroed-signer || fail "SW-18: the full worker unit does not give the signer group"
 in_c "setpriv --reuid zeroed-worker --regid zeroed-worker --groups zeroed-signer node -e \"require('net').connect('/run/zeroed-signer/signer.sock').on('data',d=>{process.stdout.write(d);process.exit(0)}).write('status\\\\n')\"" | grep -q '"status":"not-ready"' || fail "worker cannot reach the signer socket"
 in_c "! setpriv --reuid nobody --regid nogroup --clear-groups test -w /run/zeroed-signer/signer.sock" || fail "signer socket reachable by other users"
+# SW-23: the running worker (full body) holds the spool and pull groups from its unit.
+wpid="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
+in_c "sed -n 's/^Groups:\t*//p' /proc/$wpid/status" | tr ' ' '\n' >"$LOGS/worker-groups.txt"
+for g in zeroed-spool zeroed-pull zeroed-signer; do grep -qx "$(in_c "getent group $g | cut -d: -f3")" "$LOGS/worker-groups.txt" || fail "SW-23: the running worker lacks $g"; done
 pass "hardening: signer no network (only lo, AF_UNIX, IPAddressDeny, MDWE, jitless), worker sandboxed, worker uid limited to 443/53 out, signer socket only for the worker group"
 
 # ---------- 7. Rotation and an older bundle ----------
@@ -1031,7 +1038,9 @@ in_c "cmp -s /usr/local/lib/zeroed/units/zeroed-worker.full.service /opt/zeroed/
 rpid="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 sgid="$(in_c "getent group zeroed-signer | cut -d: -f3")"
 in_c "sed -n 's/^Groups:\t*//p' /proc/$rpid/status" | tr ' ' '\n' | grep -qx "$sgid" && fail "SW-18: the recorder is in the zeroed-signer group"
-for d in /run/zeroed-signer /var/lib/zeroed-signer; do
+# SW-23: nor in the spool group, and the spool is not visible to it.
+in_c "sed -n 's/^Groups:\t*//p' /proc/$rpid/status" | tr ' ' '\n' | grep -qx "$(in_c "getent group zeroed-spool | cut -d: -f3")" && fail "SW-23: the recorder is in the zeroed-spool group"
+for d in /run/zeroed-signer /var/lib/zeroed-signer /var/lib/zeroed-spool; do
   in_c "test ! -e $d || { [ \"\$(stat -c %a /proc/$rpid/root$d)\" = 0 ] && [ -z \"\$(ls -A /proc/$rpid/root$d)\" ]; }" || fail "SW-18: the recorder can see $d"
 done
 in_c "ls /run/credentials/zeroed-worker.service" >"$LOGS/recorder-creds.txt" || fail "SW-18: the recorder's credentials cannot be listed"

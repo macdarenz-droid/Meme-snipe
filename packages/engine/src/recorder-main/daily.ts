@@ -10,8 +10,8 @@ import type { Db } from '../m24/db.ts';
 import { createRepos } from '../m24/repos.ts';
 import { buildUniverseManifest, eventsInOrder } from '../m05/manifest.ts';
 import { limitSetHash, type UniverseLimits } from '../m05/universe.ts';
-import { runDailyCoverage } from '../m07/daily.ts';
-import type { CandidateState, CoverageReport, Pubkey, UnixMs } from '@bot/types';
+import { dailyCoverageJob, type DailyCoverageJob } from '../m07/daily.ts';
+import type { CandidateState, Pubkey, UnixMs } from '@bot/types';
 import type { AppendInput, AppendResult } from '../recorder/queue.ts';
 import type { EvictionLog } from './evictions.ts';
 
@@ -52,6 +52,10 @@ export function createDailyJob(o: {
   let lastDay = '';
   /** Ruling Z10-49: catch-up days already recorded or refused in this process. */
   const settled = new Set<string>();
+  /** SW-28: catch-up days with a manifest whose D+1 hour 00 is not closed yet (day → the manifest's SHA-256). */
+  const waiting = new Map<string, string>();
+  /** SW-36: the coverage report being built, one step a tick. */
+  let job: { day: string; sha: string; run: DailyCoverageJob } | null = null;
   let recordedCount = 0;
   let missingMemo: { minute: number; recorded: number; missing: boolean } | null = null;
 
@@ -117,31 +121,54 @@ export function createDailyJob(o: {
   }
 
   function tickNow(nowMs: UnixMs): void {
+    // SW-36: a coverage report being built gets one bounded step a tick; the manifests below still go on (they have
+    // their own alert), and a second report waits until this one is saved.
+    if (job !== null) stepCoverage(nowMs);
     // Ruling Z10-49: every missing manifest of the 7-day window before yesterday, oldest first, so a recorder that was
     // down across a day boundary never leaves a day that cannot clear. A day found recorded, or refused once in this
     // process (its critical line already raised), is not looked at again.
+    // SW-28: and its coverage report, once D+1's hour 00 is closed (until then the day is looked at again, without a
+    // database read); a day whose manifest was refused gets none (Z10-F5).
     for (let k = 7; k >= 2; k--) {
       const ds = Math.floor(nowMs / DAY_MS) * DAY_MS - k * DAY_MS;
       const d = new Date(ds).toISOString().slice(0, 10);
-      if (ds + DAY_MS <= firstStart || settled.has(d)) continue;
-      if (!has('universe_manifest', d)) manifest(d, ds, nowMs);
+      if (ds + DAY_MS <= firstStart || settled.has(d) || job?.day === d) continue;
+      const sha = waiting.get(d) ?? manifest(d, ds, nowMs);
+      if (sha !== null && o.closedThrough() < `${new Date(ds + DAY_MS).toISOString().slice(0, 10)}T00`) { waiting.set(d, sha); continue; }
+      waiting.delete(d);
+      // SW-36: its coverage is built over the next ticks; the day is settled once the report is saved.
+      if (sha !== null && !has('coverage_report', d)) { coverage(d, sha, nowMs); continue; }
       settled.add(d);
     }
     const day = new Date(nowMs - DAY_MS).toISOString().slice(0, 10);
     const dayStart = Date.parse(`${day}T00:00:00.000Z`);
-    if (day === lastDay || dayStart + DAY_MS <= firstStart) return;
+    if (day === lastDay || dayStart + DAY_MS <= firstStart || job?.day === day) return;
     const sha = manifest(day, dayStart, nowMs);
     if (sha === null || has('coverage_report', day)) { lastDay = day; return; }
-    const done = runDailyCoverage({
-      dataDir: o.dataDir, nowMs, universeManifestSha256: sha, closedThrough: o.closedThrough,
-      append: (report: CoverageReport, atMs: UnixMs) => { o.append({ stream: 'coverage', recvMs: atMs, slot: null, commitment: null, source: 'm07', payload: report }); },
-      save: (report: CoverageReport) => {
-        o.db.withTx((tx) => { repos.coverage_report.insert(tx, { dayUtc: report.dayUtc, json: JSON.stringify(report), lowCoverage: report.lowCoverage, manifestSha256: sha, createdAt: nowMs }); });
-      },
-    });
-    if (done !== null) {
-      o.log.event('info', 'recorder.coverage_report', { day, low_coverage: done.report.lowCoverage });
-      lastDay = day;
-    }
+    coverage(day, sha, nowMs);
+  }
+
+  /**
+   * Starts day `day`'s CoverageReport once D+1's hour 00 is closed (SW-12; nothing before that). SW-36: it is built one
+   * bounded step a tick (dailyCoverageJob), then appended and saved, so the job never holds the loop for long.
+   */
+  function coverage(day: string, sha: string, nowMs: UnixMs): void {
+    if (job !== null) return;                                                 // one at a time
+    const next = new Date(Date.parse(`${day}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
+    if (o.closedThrough() < `${next}T00`) return;
+    job = { day, sha, run: dailyCoverageJob({ dataDir: o.dataDir, dayUtc: day, universeManifestSha256: sha }) };
+    stepCoverage(nowMs);
+  }
+
+  function stepCoverage(nowMs: UnixMs): void {
+    const j = job as { day: string; sha: string; run: DailyCoverageJob };
+    const done = j.run.step();
+    if (done === null) return;
+    job = null;
+    o.append({ stream: 'coverage', recvMs: nowMs, slot: null, commitment: null, source: 'm07', payload: done.report });
+    o.db.withTx((tx) => { repos.coverage_report.insert(tx, { dayUtc: done.report.dayUtc, json: JSON.stringify(done.report), lowCoverage: done.report.lowCoverage, manifestSha256: j.sha, createdAt: nowMs }); });
+    o.log.event('info', 'recorder.coverage_report', { day: j.day, low_coverage: done.report.lowCoverage });
+    settled.add(j.day);
+    if (j.day === new Date(nowMs - DAY_MS).toISOString().slice(0, 10)) lastDay = j.day;
   }
 }
