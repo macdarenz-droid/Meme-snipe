@@ -1,6 +1,8 @@
 // Ruling Z10-53 (2026-10-16): the daily manifest read every candidate_event row before the day's end in one array
 // (a year of events at the 366-day retention). It now reads them in pages along the `at` index and builds the
-// manifest from a stream; the result must be the same manifest the whole-table read gave.
+// manifest from a stream; the result must be the same manifest the whole-table read gave. SW-46: it reads only the
+// pools that can matter to the day (each with its whole history), still in pages of at most 2,000 rows. The candidate
+// rows are written as the M05 store writes them, in the event's transaction: state = the last event's `to`.
 import { strict as assert } from 'node:assert';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
@@ -39,9 +41,16 @@ async function seeded(): Promise<Db> {
   for (let p = 400; p < 2_900; p++) rows.push([p, D + 7_200_000, 'discovered', 'eligible', 'mr01']);
   for (let p = 400; p < 2_900; p++) rows.push([p, D - 1, null, 'discovered', 'migration']);
   rows.push([1, D + DAY_MS + 5, 'eligible', 'rejected', 'after_the_day']);              // after the day: never read
+  const last = new Map<number, { to: CandidateState; at: number; first: number }>();
   db.withTx((tx) => {
     for (const [p, at, from, to, reason] of rows) {
       repos.candidate_event.insert(tx, { eventId: ulid(id++), candidateId: ulid(1_000_000 + p), poolId: pubkey(10_000 + p), mint: pubkey(20_000 + p), fromState: from, toState: to, reason, at: ms(at), createdAt: ms(at) });
+      const l = last.get(p);
+      if (l === undefined || at >= l.at) last.set(p, { to, at, first: l?.first ?? at });
+    }
+    for (const [p, l] of last) {
+      repos.candidate.insert(tx, { candidateId: ulid(1_000_000 + p), mint: pubkey(20_000 + p), poolId: pubkey(10_000 + p), venue: 'pumpswap', state: l.to, reasons: '{}',
+        cooldownUntil: null, firstSeenAt: ms(l.first), lastScreenId: null, version: 1, createdAt: ms(l.first), updatedAt: ms(l.at) });
     }
   });
   return db;
@@ -55,9 +64,10 @@ function counted(db: Db, sizes: number[], builds: Array<{ endMs: number; rids: n
         return () => {
           const r = t.reader();
           return { ...r, all: (sql: string, ...ps: Parameters<typeof r.all>[1][]) => { const out = r.all(sql, ...ps);
-            if (sql.includes('candidate_event')) {
-              sizes.push(out.length);
-              if (ps[1] === 0) builds.push({ endMs: Number(ps[0]), rids: [] });               // a manifest's first page
+            if (sql.includes('candidate')) sizes.push(out.length);
+            // The per-candidate history reads: every row they return is fed to the manifest.
+            if (sql.includes('INDEXED BY "candidate_event_candidate"')) {
+              if (builds.at(-1)?.endMs !== Number(ps[1])) builds.push({ endMs: Number(ps[1]), rids: [] });   // a new day's build
               builds[builds.length - 1]?.rids.push(...out.map((x) => Number(x.rid)));
             }
             return out; } };
@@ -93,13 +103,16 @@ describe('Z10-53 manifest reads candidate events in pages', () => {
     assert.deepEqual(got.a24, want.a24);
     assert.ok(want.a24.eligibleCount > 2_500);
     assert.ok(sizes.length >= 4, `paged reads: ${sizes.join(',')}`);
-    // Ruling Z10-55: every row before the day's end streamed exactly once (fails on `rowid >= ?`: page edges twice).
+    // Ruling Z10-55, read with SW-46: every row before the day's end of a pool that can matter (an event since the
+    // day's start, or a candidate eligible now) streamed exactly once (page edges never twice).
     assert.ok(builds.length >= 1);
     for (const b of builds) {
-      const want = Number(db.reader().get('SELECT count(*) AS n FROM "candidate_event" WHERE "at" < ?', b.endMs)?.n);
+      const want = Number(db.reader().get(`SELECT count(*) AS n FROM "candidate_event" WHERE "at" < ? AND "pool_id" IN (SELECT "pool_id" FROM "candidate_event" WHERE "at" >= ?
+        UNION SELECT "pool_id" FROM "candidate" WHERE "state" IN ('eligible', 'watched', 'stale', 'signalled', 'in_position', 'cooldown', 'evicted'))`, b.endMs, D)?.n);
       assert.equal(b.rids.length, want, `rows streamed for the day ending ${b.endMs}`);
       assert.equal(new Set(b.rids).size, want);
     }
+    assert.equal(job.lastManifestRead()?.events, builds.at(-1)?.rids.length);
     assert.ok(Math.max(...sizes) <= 2_000, `largest read ${Math.max(...sizes)} rows`);
   }, 60_000);
 

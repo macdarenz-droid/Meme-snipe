@@ -162,7 +162,7 @@ export const VERIFY_COUNT_KEY = 'm04.verify_count';
  */
 export const UNANCHORED_MS = 600_000;
 /** Ruling Z10-41: critical codes that hold exactly while their condition does (never from the 15-minute window). */
-export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'recorder.retention_failed']);
+export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'recorder.retention_failed', 'recorder.coverage_failed']);
 /**
  * Ruling Z10-24 (a new value: no SPEC or ARCH threshold exists): a critical line keeps the heartbeat critical for this
  * long after it was last raised. 15 minutes: at least three of the watchdog's 300 s repeats (`REPEAT_CRITICAL_S`).
@@ -414,7 +414,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     },
     nowMs, maxHoldMs: () => 0, mode: () => rp.monitor.mode(),
     tracker: {
-      watch: (id, cls) => (tracker === null ? false : link.watch(tracker, id, cls)),
+      // SW-43: a pool watched again gets bars again (one stopped by closed() is quarantined, so never watched again).
+      watch: (id, cls) => { const ok = tracker !== null && link.watch(tracker, id, cls); if (ok) bars.resume(id); return ok; },
       unwatch: (id) => { tracker?.unwatch(id); },
     },
     universe,
@@ -491,8 +492,11 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         facts.set(s.pool.poolId, factOf(s));
         bars.onSnapshot(barSnapshotOf(s), cls === 'tail' ? settings.tailIntervalMs : settings.candidateIntervalMs);
       },
-      unwatched(id) { link.outputs.unwatched(id); bars.stop(id); },
-      closed(e) { bars.stop(e.poolId); universe.onQuarantine(e.poolId); },
+      // SW-41: a pool's metric series (M04's observation_lag_slots and pool_snapshot_age_ms) go with it (B-M27-01
+      // logic 1). Kept, they grew by every pool ever watched until m27.series_cap, and then every new pool's series
+      // were dropped. M04 asks for a new handle on each update, so none is left holding a released series.
+      unwatched(id) { link.outputs.unwatched(id); bars.stop(id, nowMs()); metrics.releaseWhere({ pool: id }); },
+      closed(e) { bars.stop(e.poolId, nowMs()); universe.onQuarantine(e.poolId); metrics.releaseWhere({ pool: e.poolId }); },
       stale(e) { universe.onStale(e.poolId, e.sinceMs); },
       fresh(e) { universe.onFresh(e.poolId); },
       quarantine(id) { universe.onQuarantine(id); },
@@ -596,6 +600,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (daily.manifestMissing(nowMs())) out.push('recorder.manifest_not_recorded');
     if (unanchored) out.push('recorder.unanchored');
     if (retentionTries.failing()) out.push('recorder.retention_failed');
+    // SW-45: a day's coverage child failed and the day has no report yet (retried every 15 min while in the window).
+    if (daily.coverageFailed()) out.push('recorder.coverage_failed');
     return out;
   };
   let lastOutboxMs = -Infinity, lastRetentionMs = -Infinity;
@@ -791,6 +797,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         backfill.stop();
         (tracker as PoolTracker<CpPoolState>).stop();
         rp.clock.stop();
+        await daily.stop();                                                    // SW-45: no coverage child outlives the recorder
         try { writer.pump(); writer.flush(); } catch { /* a failed final flush is recovered at the next start (crash recovery) */ }
         try { seqsRotated = true; saveNextSeq(); } catch { /* the manifests still hold every seq on disk */ }
         try { barStore.flush(nowMs()); } catch { /* bars are re-derived from the recording */ }

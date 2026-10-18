@@ -18,7 +18,9 @@ import { createHash } from 'node:crypto';
 import { canonicalJson, type CandidateState, type Pubkey, type UnixMs } from '@bot/types';
 
 const DAY = 86_400_000;
-const ELIGIBLE: ReadonlySet<CandidateState> = new Set<CandidateState>(['eligible', 'watched', 'stale', 'signalled', 'in_position', 'cooldown']);
+/** Candidate states that count as eligible (exported for the recorder's bounded read of a day's pools, SW-46). */
+export const ELIGIBLE_STATES: ReadonlySet<CandidateState> = new Set<CandidateState>(['eligible', 'watched', 'stale', 'signalled', 'in_position', 'cooldown']);
+const ELIGIBLE = ELIGIBLE_STATES;
 const NOT_ELIGIBLE_EVICTIONS: ReadonlySet<string> = new Set(['cooldown_rescreen_failed']);
 
 export interface ManifestEvent { poolId: Pubkey; mint: Pubkey; from: CandidateState | null; to: CandidateState; reason: string; atMs: number }

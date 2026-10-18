@@ -58,6 +58,22 @@ export function scanGzipFrames(buf: Uint8Array, onLine: (line: string) => void, 
   return out;
 }
 
+/**
+ * SW-35: the lines of `buf`'s valid members in order, decoding one member at a time, so a large segment is never held
+ * decoded as a whole (scanGzipFrames returns the same lines; it hands them to a callback). Returns why it stopped early,
+ * or null at the end of the file.
+ */
+export function* frameLines(buf: Uint8Array, caps: FrameCaps = FRAME_CAPS): Generator<string, FrameStop | null, undefined> {
+  let pos = 0;
+  while (pos < buf.length) {
+    const m = readMember(buf, pos, caps);
+    if (typeof m === 'string') return m;
+    pos = m.end;
+    yield* m.lines;
+  }
+  return null;
+}
+
 function readMember(buf: Uint8Array, pos: number, caps: FrameCaps): { end: number; lines: string[]; unterminated: boolean } | FrameStop {
   if (buf.length - pos < HEADER) return 'torn';
   // Magic 1f 8b, method 8 (deflate), flags 0: the writer (zlib's gzip) never sets a name, comment, extra field or header CRC.
