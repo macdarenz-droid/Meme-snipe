@@ -7,6 +7,7 @@ import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { join } from 'node:path';
+import { constants, getPriority } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { describe, it, vi } from 'vitest';
@@ -155,6 +156,16 @@ describe('SW-45: the coverage report is built in a child process', () => {
     assert.ok(pid !== null);
     await r.job.stop();
     assert.ok(gone(pid), 'stopped with the job');
+  }, 60_000);
+
+  it('SW-50: the child runs below the recorder from its start, before its own code lowers it (fails before: nice 0 until it loads)', async () => {
+    const r = await rig(day(), { args: () => ['-e', 'setTimeout(() => {}, 60_000)'] });
+    r.clock.t = T0 + DAY + 700_000;
+    r.job.tick(ms(r.clock.t));
+    const pid = r.job.coverageChild();
+    assert.ok(pid !== null, 'a child was started on this tick');
+    assert.equal(getPriority(pid), constants.priority.PRIORITY_BELOW_NORMAL);
+    await r.job.stop();
   }, 60_000);
 
   it('the recorder\'s stop kills a running child and leaves no orphan', async () => {

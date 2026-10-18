@@ -11,6 +11,7 @@ import { createRepos } from '../m24/repos.ts';
 import { buildUniverseManifest, ELIGIBLE_STATES, eventsInOrder, parseEvictionReason } from '../m05/manifest.ts';
 import { limitSetHash, type UniverseLimits } from '../m05/universe.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { constants as osConstants, setPriority } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { checkCoverageReport, COVERAGE_REPORT_MAX_BYTES } from '../m07/daily.ts';
 import type { CandidateState, Pubkey, UnixMs } from '@bot/types';
@@ -231,6 +232,9 @@ export function createDailyJob(o: {
     const f = failed.get(day);
     if (f !== undefined && nowMs < f + child.retryMs) return;
     const c = spawn(child.command, child.args(o.dataDir, day, sha), { env: {}, stdio: ['ignore', 'pipe', 'pipe'] });
+    // SW-50: below the recorder's loop from its first instruction (the child lowers itself too, but only once its modules
+    // have loaded). A child that has not started has no pid; one the system refuses to lower runs on.
+    if (c.pid !== undefined) { try { setPriority(c.pid, osConstants.priority.PRIORITY_BELOW_NORMAL); } catch { /* runs at the recorder's priority */ } }
     const r: Running = { day, sha, child: c, chunks: [], bytes: 0, stderr: '', failure: null, closed: null, timer: null };
     c.stdout?.on('data', (b: Buffer) => {
       if (r.failure !== null) return;
