@@ -138,6 +138,17 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 2:20 AM: 192 h gate on `31519bdd` FAILS narrowly; #336 does not merge.**
+  - RssAnon h96 191.34 → h192 193.67 MiB (+2.33 against the under-2 limit). Least-squares slope 0.031 MiB/h, which also fails a slope reading of the same limit (about 0.021 MiB/h).
+  - These pass: peak RssAnon 198.3, peak RSS 253.3, flat metricSeries.
+  - SW-43 removed the heap growth: JS heap +0.37 MiB, against +1.9 on `5e09441c`. About +1.9 MiB of native RssAnon is left, not yet explained.
+  - On disk the recording grows 461 → 925 MB and the db 147 → 286 MB, because the soak never deletes.
+  - Ruling: a probe soak on `31519bdd` (alone, no snapshots, no code change). Every 12 h it records the smaps Anonymous split ([heap], other anonymous mappings, the rest), heapTotal, the open fd count, md file count, db and WAL sizes, and SQLite's own memory figure only if its driver documents one.
+  - Cases:
+    - (a) tracks files or fds: model md-pull's receipt-and-delete in the soak, unit-test each cache's pruning, rerun the gate;
+    - (b) high-water ratchet: bound the transient with a test, rerun the gate;
+    - (c) a leak: fix it with a test.
+  - The gate's limits are unchanged.
 - **19 Oct 12:40 AM: #336 `31519bdd`: CI green on all 6 checks; RT1 PASS.** RT1 ran the new tests against `5e09441c` and 8 failed there. It found memory bounded and the eviction order right (stop, then resume).
   - RT1 MINOR, now ruling SW-44 for SWITCH-FIX-3: after a re-watch gap, the first bar opens at the old carried state, so its flow takes in the gap.
   - The SW-44 rule must give the same bars live and in replay, from recorded data only, and the builder proposes it before building.
