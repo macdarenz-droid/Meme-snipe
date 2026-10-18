@@ -55,3 +55,25 @@ describe('SW-34: a failing retention step backs off and is held', () => {
     }
   }, 120_000);
 });
+
+// SW-42 (red team on #336): a series refused at m27.series_cap was only counted; nothing reached the owner.
+describe('SW-42: refused metric series raise a held code', () => {
+  it('under the cap no code; once a series is refused m27.series_dropped is held and logged once (fails before: counted only)', async () => {
+    const r = await startRig(tempDir('sw42'), { config: { 'm27.series_cap': 100 } });
+    try {
+      await r.run(5_000);
+      assert.equal(r.rec.parts.metrics.droppedSeries(), 0);
+      assert.ok(!r.rec.status().activeCodes.includes('m27.series_dropped'));
+      // More pool series than the cap (the fake chain has too few pools to reach it by watching).
+      for (let i = 0; i < 120; i++) r.rec.parts.metrics.gauge('pool_snapshot_age_ms', { pool: `P${i}` }).set(1);
+      await r.run(2_000);
+      assert.ok(r.rec.parts.metrics.droppedSeries() > 0, `${r.rec.parts.metrics.size()} series held, none refused: the test needs the cap reached`);
+      assert.ok(r.rec.status().activeCodes.includes('m27.series_dropped'), String(r.rec.status().activeCodes));
+      assert.ok(STATE_CODES.has('m27.series_dropped'));
+      await r.run(10_000);
+      assert.equal(r.codes().filter((c) => c === 'm27.series_dropped').length, 1, 'one line, not one a tick');
+    } finally {
+      await r.rec.stop();
+    }
+  }, 120_000);
+});

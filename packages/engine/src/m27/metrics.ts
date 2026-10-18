@@ -212,6 +212,11 @@ export class MetricsRegistry {
     };
   }
 
+  /** SW-42: series refused at `m27.series_cap` since this registry started (`metrics_series_dropped_total`). */
+  droppedSeries(): number {
+    return this.droppedCounter.value;
+  }
+
   /** Number of series held (self-metric `metrics_series`). */
   size(): number {
     return this.series.size;

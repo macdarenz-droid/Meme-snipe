@@ -277,6 +277,10 @@ The Blueprint's keyless M1 recorder (`packages/engine/src/recorder-main/`) runs 
 1. Find the reason: `journalctl -u zeroed-worker | grep recorder.coverage_failed` (`timeout`, `exit_<n>`, `signal_<name>`, `oversized`, `bad_output`, `spawn_<code>`).
 2. Nothing to run when a later try succeeds: the code clears once the day's report is saved. If it keeps failing, keep the log lines and report them.
 
+**Runbook: metric series dropped (`m27.series_dropped`; SW-42).** The recorder keeps at most `m27.series_cap` metric series (5,000). A pool's series are released when it leaves the watchlist (SW-41), so the cap should never be reached; if it is, new series are refused and counted in `metrics_series_dropped_total`, and this code is held until the recorder restarts. Recording itself goes on.
+1. Note the time, and `journalctl -u zeroed-worker | grep m27.series_dropped` (one line: the series refused so far, the series held and the cap).
+2. Report it: something is creating series without releasing them. `systemctl restart zeroed-worker` clears the code.
+
 **Owner steps at switch-on (read providers; Z10-9).** Repository secrets `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` (the two URLs `provider-reads.yml` already uses) must both be set.
 1. On the server console (`linuxuser`, then `sudo -i`), run `zeroed-new-deploy-code` and note the 6 words.
 2. In GitHub, set the `DEPLOY_CODE` secret to those words, then run the Deploy workflow once.

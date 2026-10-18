@@ -162,7 +162,7 @@ export const VERIFY_COUNT_KEY = 'm04.verify_count';
  */
 export const UNANCHORED_MS = 600_000;
 /** Ruling Z10-41: critical codes that hold exactly while their condition does (never from the 15-minute window). */
-export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'recorder.retention_failed', 'recorder.coverage_failed']);
+export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'recorder.retention_failed', 'recorder.coverage_failed', 'm27.series_dropped']);
 /**
  * Ruling Z10-24 (a new value: no SPEC or ARCH threshold exists): a critical line keeps the heartbeat critical for this
  * long after it was last raised. 15 minutes: at least three of the watchdog's 300 s repeats (`REPEAT_CRITICAL_S`).
@@ -588,6 +588,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   /** Ruling Z10-51: the state codes as of the last loop tick, so /health and status() read no database. */
   let tickCodes: readonly string[] = [];
   let tickSolUsd = 'pending';
+  let seriesDropLogged = false;
   /** Ruling Z10-41: the state codes, each exactly while its condition holds. */
   const activeCodes = (): string[] => {
     const out: string[] = [];
@@ -602,6 +603,11 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (retentionTries.failing()) out.push('recorder.retention_failed');
     // SW-45: a day's coverage child failed and the day has no report yet (retried every 15 min while in the window).
     if (daily.coverageFailed()) out.push('recorder.coverage_failed');
+    // SW-42: a metric series was refused at m27.series_cap; held until a restart starts the registry again (one line).
+    if (metrics.droppedSeries() > 0) {
+      out.push('m27.series_dropped');
+      if (!seriesDropLogged) { seriesDropLogged = true; log.event('warn', 'm27.series_dropped', { dropped: metrics.droppedSeries(), series: metrics.size(), cap: m27.seriesCap }); }
+    }
     return out;
   };
   let lastOutboxMs = -Infinity, lastRetentionMs = -Infinity;
