@@ -138,6 +138,21 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **18 Oct 11:05 PM: probe cause found; ruling SW-43.** The probe ran for 192 h on `5e09441c`, alone, with heap snapshots at h96 and h192. #336's head is still `63469c3a`.
+  - Cause: a leak, not per-file state. M08 BarEngine keeps every stopped pool for ever.
+    - bars.ts:236 forgets a pool only when it is not stopped.
+    - stop() (bars.ts:252) adds an entry even for a pool the engine never saw.
+    - z09-bars.test.ts:241 pins this ("never forgotten", Z09-23).
+    - Evidence: entries with closedState went from 1,966 at h96 to 3,874 at h192, while about 50 pools stay watched. I checked the code myself.
+  - A second defect, found by reading: a re-watched pool stays stopped, so it never gets bars again.
+  - Ruling SW-43, sent to the builder:
+    - stop(poolId, nowMs) uses the caller's clock.
+    - A stopped pool is forgotten idleForgetMs after its stop. Its late events are refused inside that window.
+    - resume(poolId) runs at compose's watch hook (compose.ts:414). It keeps the carried state.
+    - Pinned assertion z09-bars.test.ts:241: change approved as a stricter memory bound. DECISIONS records SW-43 as an amendment to Z09-23.
+    - Tests must fail on `63469c3a`.
+  - Recorded as an open item, not built here: replay.ts never calls stop() or resume(), so a replay rebuild differs from the stored bar_1m for pools unwatched mid-bar. This belongs to the M3/M11 live-replay parity work.
+  - About 3 MiB of native growth is still unexplained. Next: rerun the gate alone with the same limits. If it fails, report the split; no "fragmentation" without a measurement that shows it. Then CI green on the exact head and an RT1 re-check of the SW-41 and SW-43 delta before merge.
 - **18 Oct 7:25 PM: 192 h gate on `5e09441c`: SW-41 works, gate still FAILS.**
   - metricSeries is flat at 138–158, and RssAnon is about 27 MiB lower than on `c83f9b15` at every hour.
   - RssAnon h96 191.9 → h192 197.4 MiB (+5.5 against the 2 MiB limit). Peak RssAnon 202.3 and peak RSS 260.7 both pass.
