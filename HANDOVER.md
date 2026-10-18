@@ -138,6 +138,12 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **18 Oct 5:05 PM: #336 at `5e09441c` (SW-41).** compose's unwatched and closed call metrics.releaseWhere({pool}).
+  - The emitter grep found only M04's two pool series; bar_missing_ratio{pool} is declared but never emitted.
+  - The test fails on `c83f9b15`.
+  - `pnpm test` 9,415 pass.
+  - The 192 h gate started at 06:01Z on `5e09441c`, alone, recording metricSeries hourly. ETA about 10:00Z.
+  - RT1 is re-checking the delta. CI runs on push.
 - **18 Oct 4:30 PM: SW-35 real root cause and ruling SW-41.**
   - Cause: pool-labelled metric series (M04 observation_lag_slots{pool,provider} at tracker.ts:520 and pool_snapshot_age_ms{pool} at tracker.ts:707) are never released when a pool is unwatched. compose.ts:491 outputs.unwatched calls only link and bars, against B-M27-01 logic 1.
   - Evidence: series rise linearly, about 490 per 12 h (542 → 3,976 by h96); heap grows about 2.6 KB per series. Only m27.series_cap = 5,000 bounds it (reached about h120), after which new pools' metrics are dropped. That is a functional loss on the server after about 5 days.
