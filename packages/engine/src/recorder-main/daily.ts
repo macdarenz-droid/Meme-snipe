@@ -30,6 +30,8 @@ export interface CoverageChildOptions {
   command: string; args(dataDir: string, day: string, sha: string): string[];
   /** Killed after this long (wall clock: a child runs in real time, also under a simulated clock). */
   timeoutMs: number; maxBytes: number;
+  /** SW-49: starts the timeout (default: an unref'd wall-clock timer); tests pass one they fire themselves. */
+  timer(fire: () => void, ms: number): { cancel(): void };
   /** A day whose child failed is tried again no sooner than this (the catch-up rule, without a tight loop). */
   retryMs: number;
 }
@@ -38,6 +40,7 @@ export const COVERAGE_CHILD: CoverageChildOptions = {
   command: process.execPath,
   args: (dataDir, day, sha) => ['--no-warnings', '--max-old-space-size=192', CHILD_ENTRY, dataDir, day, sha],
   timeoutMs: 15 * 60_000, maxBytes: COVERAGE_REPORT_MAX_BYTES, retryMs: 15 * 60_000,
+  timer: (fire, ms) => { const t = setTimeout(fire, ms); t.unref(); return { cancel: () => clearTimeout(t) }; },
 };
 
 export interface DailyJob {
@@ -244,9 +247,8 @@ export function createDailyJob(o: {
     c.stderr?.on('data', (b: Buffer) => { if (r.stderr.length < 300) r.stderr += b.toString('utf8').slice(0, 300 - r.stderr.length); });
     c.on('error', (e: NodeJS.ErrnoException) => { r.failure ??= `spawn_${e.code ?? 'failed'}`; });
     // 'close' follows 'exit', or 'error' when the child could not start (Node docs), once its pipes are drained.
-    c.on('close', (code, signal) => { r.closed = { code, signal }; if (r.timer !== null) clearTimeout(r.timer); });
-    r.timer = setTimeout(() => { if (r.closed === null) { r.failure ??= 'timeout'; c.kill('SIGKILL'); } }, child.timeoutMs);
-    r.timer.unref();
+    c.on('close', (code, signal) => { r.closed = { code, signal }; r.timer?.cancel(); });
+    r.timer = child.timer(() => { if (r.closed === null) { r.failure ??= 'timeout'; c.kill('SIGKILL'); } }, child.timeoutMs);
     job = r;
   }
 
@@ -278,5 +280,5 @@ export function createDailyJob(o: {
 /** SW-45: a running coverage child. */
 interface Running {
   day: string; sha: string; child: ChildProcess; chunks: Buffer[]; bytes: number; stderr: string;
-  failure: string | null; closed: { code: number | null; signal: NodeJS.Signals | null } | null; timer: NodeJS.Timeout | null;
+  failure: string | null; closed: { code: number | null; signal: NodeJS.Signals | null } | null; timer: { cancel(): void } | null;
 }

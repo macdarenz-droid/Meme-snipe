@@ -103,10 +103,16 @@ describe('SW-45: the coverage report is built in a child process', () => {
     const dir = day();
     let spawns = 0;
     let hang = true;
+    // SW-49: the timeout is fired by hand (a timer the job is given), so a slow machine never times out the good child.
+    const timers: Array<{ ms: number; fire: () => void; cancelled: boolean }> = [];
     const r = await rig(dir, {
-      timeoutMs: 300, retryMs: 600_000,
+      timeoutMs: 15 * 60_000, retryMs: 600_000,
+      timer: (fire, ms) => { const t = { ms, fire, cancelled: false }; timers.push(t); return { cancel: () => { t.cancelled = true; } }; },
       args: (d, dd, sha) => { spawns++; return hang ? ['-e', 'setTimeout(() => {}, 60_000)'] : COVERAGE_CHILD.args(d, dd, sha); },
     });
+    await r.until(() => r.job.coverageChild() !== null);
+    assert.deepEqual(timers.map((t) => [t.ms, t.cancelled]), [[15 * 60_000, false]], 'one timer, the configured timeout');
+    timers[0]?.fire();
     await r.until(() => r.failures().length > 0);
     assert.equal(r.failures()[0]?.f.reason, 'timeout');
     assert.equal(r.failures()[0]?.f.day, DAY0);
@@ -120,6 +126,7 @@ describe('SW-45: the coverage report is built in a child process', () => {
     hang = false;
     await r.until(() => r.payloads.length > 0, failedAt + 600_000);
     assert.equal(spawns, 2);
+    assert.equal(timers[1]?.cancelled, true, 'the good child\'s timer is cancelled when it exits, never fired');
     assert.equal(r.payloads.length, 1);
     assert.equal(r.job.coverageFailed(), false, 'cleared once the report is saved');
   }, 60_000);
