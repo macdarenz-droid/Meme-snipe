@@ -9,7 +9,9 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { describe, it } from 'vitest';
 import { WatchLog } from '../../src/m07/watch-log.ts';
-import { dailyCoverageJob, eachPollCount, type SegmentSkip } from '../../src/m07/daily.ts';
+import { checkCoverageReport, dailyCoverageJob, eachPollCount, type SegmentSkip } from '../../src/m07/daily.ts';
+import { computeCoverage } from '../../src/m07/coverage.ts';
+import type { UnixMs } from '@bot/types';
 import type { SegmentManifest } from '../../src/m07/manifest.ts';
 import { linesOf } from '../../src/m13/phase0-input.ts';
 import { tempDir } from '../helpers.ts';
@@ -69,5 +71,31 @@ describe('SW-37/38/39: a damaged segment is skipped whole and reported, by every
     assert.deepEqual(pc.gaps.filter((g) => g.reason === 'segment_unreadable').map((g) => [g.fromMs - T0, g.toMs - T0]), [[1, 2], [2, 3], [4, 5]].map(([a, b]) => [a! * 3_600_000, b! * 3_600_000]));
     const polled = done.report.streams.find((s) => s.stream === 'pool_snapshot')?.recorded;
     assert.equal(polled, 2 * 60 * 15, 'the skipped hours\' polls are not counted, none of them');
+  });
+});
+
+// SW-48 (a report format change): a stream's gaps are merged by reason where they overlap or touch. The report keeps no
+// pool id, so per-pool gaps of the same bars were the same interval once per pool (60 pools × 5,760 bars on a bad clock
+// day: over the 50,000 the coverage child's check allows, so the day lost its report).
+describe('SW-48: the report merges a stream\'s gaps by reason', () => {
+  it('60 pools × 2,880 one-bar gaps (every other bar) give 2,880 entries; the figures are the unmerged ones; the child\'s check takes it (fails before: 172,800 entries, refused)', () => {
+    const bars = Array.from({ length: 2_880 }, (_, i) => T0 + i * 30_000);
+    const gaps = Array.from({ length: 60 }, (_, p) => bars.map((b) => ({ stream: 'poll_counts', gap: { fromMs: b as UnixMs, toMs: (b + 15_000) as UnixMs, reason: 'moved', poolId: `P${p}` } }))).flat();
+    const watched = Array.from({ length: 60 }, (_, p) => ({ poolId: `P${p}`, priorityClass: 'candidate' as const, fromMs: T0 as UnixMs, toMs: (T0 + 86_400_000) as UnixMs, pollIntervalMs: 1_000 }));
+    const input = { dayUtc: DAY0, watched, pollCounts: [], gaps, records: { poll_counts: 0 }, universeManifestSha256: 'a'.repeat(64) };
+    const { report, detail } = computeCoverage(input);
+    const pc = report.streams.find((s) => s.stream === 'poll_counts');
+    assert.equal(pc?.gaps.length, 2_880);
+    assert.deepEqual(pc?.gaps[0], { fromMs: T0, toMs: T0 + 15_000, reason: 'moved' });
+    assert.notEqual(checkCoverageReport(JSON.stringify(report), DAY0, 'a'.repeat(64)), null, 'within the child check');
+    // The figures (missing time, low coverage, counts) come from the unmerged input: the same with one pool's gaps alone repeated.
+    const one = computeCoverage({ ...input, gaps: gaps.filter((g) => g.gap.poolId === 'P0').flatMap((g) => watched.map((w) => ({ ...g, gap: { ...g.gap, poolId: w.poolId } }))) });
+    assert.deepEqual([one.detail, one.report.lowCoverage], [detail, report.lowCoverage]);
+  });
+
+  it('touching or overlapping gaps of one reason merge; other reasons stay apart; a day with no overlap keeps its entries', () => {
+    const g = (a: number, b: number, reason: string) => ({ stream: 'poll_counts', gap: { fromMs: (T0 + a) as UnixMs, toMs: (T0 + b) as UnixMs, reason } });
+    const { report } = computeCoverage({ dayUtc: DAY0, watched: [], pollCounts: [], gaps: [g(0, 10, 'moved'), g(10, 20, 'moved'), g(15, 30, 'moved'), g(5, 8, 'clock_step'), g(40, 50, 'moved')], records: {}, universeManifestSha256: 'a'.repeat(64) });
+    assert.deepEqual(report.streams.find((s) => s.stream === 'poll_counts')?.gaps.map((x) => [x.fromMs - T0, x.toMs - T0, x.reason]), [[0, 30, 'moved'], [5, 8, 'clock_step'], [40, 50, 'moved']]);
   });
 });

@@ -19,6 +19,11 @@ describe('Z10 daily jobs', () => {
       assert.ok(r.rec.parts.tracker.watch(chain.pools[0]!.pool, 'candidate'));
       await r.run(85 * 60_000);                                           // SW-12: the report waits for D+1's hour 00 to close
       const rd = r.rec.parts.db.reader();
+      // SW-45: the report is built by a child process in real time; wait for it (at most 30 s), one simulated second a step.
+      for (let i = 0; i < 1_500 && rd.get('SELECT 1 AS x FROM "coverage_report"') === undefined; i++) {
+        await r.run(1_000);
+        await new Promise((res) => setTimeout(res, 20));
+      }
       const manifests = rd.all('SELECT "day_utc", "sha256" FROM "universe_manifest" ORDER BY "day_utc"') as Array<{ day_utc: string; sha256: string }>;
       assert.deepEqual(manifests.map((m) => m.day_utc), ['2026-10-06']);
       const reports = rd.all('SELECT "day_utc", "manifest_sha256", "low_coverage" FROM "coverage_report"') as Array<{ day_utc: string; manifest_sha256: string; low_coverage: unknown }>;

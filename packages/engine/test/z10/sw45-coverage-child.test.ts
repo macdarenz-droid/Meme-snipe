@@ -158,6 +158,73 @@ describe('SW-45: the coverage report is built in a child process', () => {
     assert.equal(r.failures().length, 0);
   }, 60_000);
 
+  it('SW-48: every failure backs off per day, 15 min doubling to 6 h; one line at the first failure and one when the reason changes; reset by a report (fails before: every 15 min, a line each time)', async () => {
+    let spawns = 0;
+    let script = 'process.exit(3)';
+    // Only DAY0's child is scripted; a later day (the run passes midnight) gets the real child and its report.
+    const r = await rig(day(), { args: (d, dd, sha) => { if (dd !== DAY0) return COVERAGE_CHILD.args(d, dd, sha); spawns++; return script === 'good' ? COVERAGE_CHILD.args(d, dd, sha) : ['-e', script]; } });
+    const starts: number[] = [];
+    // Ticks one simulated minute at a time; a child that started runs to its end (real time) before the next tick.
+    const minutes = async (n: number): Promise<void> => {
+      for (let i = 0; i < n; i++) {
+        const before = spawns;
+        r.job.tick(ms((r.clock.t += 60_000)));
+        if (spawns > before) starts.push(r.clock.t);
+        for (let k = 0; k < 500 && r.job.coverageChild() !== null; k++) await sleep(10);
+        r.job.tick(ms(r.clock.t));                                         // take in the child that ended
+      }
+    };
+    r.clock.t = T0 + DAY + 700_000;
+    await minutes(15 + 30 + 60 + 120 + 240 + 360 + 360 + 5);
+    const waits = starts.slice(1).map((t, i) => (t - (starts[i] as number)) / 60_000);
+    assert.deepEqual(waits, [15, 30, 60, 120, 240, 360, 360], `minutes between tries: ${waits.join(', ')}`);
+    assert.equal(r.failures().length, 1, 'one line while the reason stays the same');
+    script = 'process.exit(4)';
+    await minutes(361);
+    assert.deepEqual(r.failures().map((f) => f.f.reason), ['exit_3', 'exit_4'], `a new line when the reason changes; starts ${starts.map((t) => (t - starts[0]!) / 60_000).join(',')}, spawns ${spawns}`);
+    script = 'good';
+    await minutes(361);
+    assert.ok(r.db.reader().get('SELECT 1 AS x FROM "coverage_report" WHERE "day_utc" = ?', DAY0) !== undefined, 'DAY0\'s report saved');
+    assert.equal(r.job.coverageFailed(), false, 'cleared by the report');
+  }, 120_000);
+
+  it('SW-48: a timeout backs off the same way (fails before: retried every 15 min)', async () => {
+    const timers: Array<() => void> = [];
+    const r = await rig(day(), { args: () => ['-e', 'setTimeout(() => {}, 60_000)'], timer: (fire) => { timers.push(fire); return { cancel: () => undefined }; } });
+    const startsAt: number[] = [];
+    r.clock.t = T0 + DAY + 700_000;
+    for (let i = 0; i < 60 + 15 + 30 + 2; i++) {
+      r.job.tick(ms((r.clock.t += 60_000)));
+      if (r.job.coverageChild() !== null && startsAt.at(-1) !== r.clock.t && timers.length > startsAt.length) {
+        startsAt.push(r.clock.t);
+        timers.at(-1)?.();                                                  // the child times out at once
+        for (let k = 0; k < 500 && r.job.coverageChild() !== null; k++) { await sleep(10); r.job.tick(ms(r.clock.t)); }
+      }
+    }
+    const waits = startsAt.slice(1).map((t, i) => (t - (startsAt[i] as number)) / 60_000);
+    assert.deepEqual(waits, [15, 30, 60], `minutes between timed-out tries: ${waits.join(', ')}`);
+    assert.deepEqual(r.failures().map((f) => f.f.reason), ['timeout']);
+  }, 120_000);
+
+  it('SW-48: a child killed by our own stop is shutdown, not a failure', async () => {
+    const r = await rig(day(), { args: () => ['-e', 'setTimeout(() => {}, 60_000)'] });
+    await r.until(() => r.job.coverageChild() !== null);
+    await r.job.stop();
+    r.job.tick(ms((r.clock.t += 1_000)));
+    assert.equal(r.failures().length, 0);
+    assert.equal(r.job.coverageFailed(), false);
+  }, 60_000);
+
+  it('SW-40 (a): a spawn that throws is the day\'s failure (spawn_throw), held and backed off, never an error every tick (fails before: thrown out of tick)', async () => {
+    let tries = 0;
+    const r = await rig(day(), { args: () => { tries++; return ['bad\u0000arg']; } });
+    r.clock.t = T0 + DAY + 700_000;
+    for (let i = 0; i < 20; i++) r.job.tick(ms((r.clock.t += 60_000)));         // throws out of tick before the fix
+    assert.deepEqual(r.failures().map((f) => f.f.reason), ['spawn_throw']);
+    assert.equal(r.job.coverageFailed(), true);
+    assert.equal(tries, 2, 'once, then again after 15 min (20 min of ticks)');
+  }, 60_000);
+
   it('one child at a time, and the manifest catch-up goes on while it runs', async () => {
     const dir = day();
     let spawns = 0;
