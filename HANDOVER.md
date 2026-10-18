@@ -138,6 +138,11 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 9:40 AM: RT1 PASS on `8653d650`** (no BLOCKER or MAJOR).
+  - The SW-45 child: a SIGKILL timer at 15 min; strict output checks; no orphans (stop kills it, and systemd's KillMode=control-group covers a crash); no fd or zombie leaks; a failed day never blocks the catch-up; nice 10; about 100 MiB peak.
+  - SW-46: nothing left that grows with history. The eviction log's 8-day prune was already there.
+  - MINOR, now SW-50 for SWITCH-FIX-3: the child runs at nice 0 until its modules load, so set its priority from the parent after spawn.
+  - #336 waits only on the 192 h gate and the pinned-CPU stall figures.
 - **19 Oct 8:42 AM: RT2 PASS on `8653d650`** (no BLOCKER or MAJOR). It confirmed:
   - the SW-46 manifest is byte-identical for ties, events exactly at dayStart, the tail look-back, re-entry, multiple candidates and a purge;
   - the SW-45 report round trip is exact (strings, safe integers and booleans; key order checked; env {}).
