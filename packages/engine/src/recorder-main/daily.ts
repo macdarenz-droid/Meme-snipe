@@ -32,7 +32,7 @@ export interface CoverageChildOptions {
   /** A day whose child failed is tried again no sooner than this (the catch-up rule, without a tight loop). */
   retryMs: number;
 }
-const CHILD_ENTRY = fileURLToPath(new URL('../m07/coverage-child.ts', import.meta.url));
+const CHILD_ENTRY = fileURLToPath(new URL('../../scripts/coverage-child.ts', import.meta.url));
 export const COVERAGE_CHILD: CoverageChildOptions = {
   command: process.execPath,
   args: (dataDir, day, sha) => ['--no-warnings', '--max-old-space-size=192', CHILD_ENTRY, dataDir, day, sha],
@@ -221,7 +221,7 @@ export function createDailyJob(o: {
 
   /**
    * Starts day `day`'s CoverageReport once D+1's hour 00 is closed (SW-12; nothing before that). SW-45: it is built in a
-   * child process (m07/coverage-child.ts) with no environment, so its decode churn goes with the child; a day whose
+   * child process (scripts/coverage-child.ts) with no environment, so its decode churn goes with the child; a day whose
    * child failed waits `retryMs` before its next try.
    */
   function coverage(day: string, sha: string, nowMs: UnixMs): void {

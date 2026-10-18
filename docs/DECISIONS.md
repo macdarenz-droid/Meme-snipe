@@ -4474,7 +4474,7 @@ Builder decisions and readings for review. Every item has a test that fails on `
   - a 384 h soak to show the plateau (C): reads the gate differently;
   - glibc tunables (`MALLOC_ARENA_MAX`, the trim threshold, `malloc_trim`): mask the peak and would change guarded deploy files.
 
-  **Fix:** the recorder builds each day's report in a short-lived child, `m07/coverage-child.ts`.
+  **Fix:** the recorder builds each day's report in a short-lived child, `packages/engine/scripts/coverage-child.ts` (beside the recorder's own entry, outside `src`, so the import check never runs it).
   - The child runs the same reader (`dailyCoverage`) as the same user, with no environment (`env: {}`: no provider URL, no credential path) and `--max-old-space-size=192`.
   - It reads files only, opens no connection and writes only the report to stdout. It lowers its own priority to nice 10 (`os.setPriority(PRIORITY_BELOW_NORMAL)`, documented by Node; a refusal is printed and ignored; checked: nice 10 while it ran).
   - The parent caps the output at 4 MiB. It checks it (`checkCoverageReport`): exactly a CoverageReport of the day with the given manifest hash, every field typed and sized, and in `JSON.stringify` form, so the record and the saved row are the in-process job's bytes. It then appends and saves as before.

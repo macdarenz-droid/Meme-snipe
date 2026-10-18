@@ -1,6 +1,6 @@
 // Card SWITCH-FIX-2 SW-45 (case (b) of the 192 h probe): the daily coverage report decoded a day's poll_counts in the
 // recorder (one inflate a gzip member, about 12,660 a day), and the freed memory set glibc's [heap] high-water mark. It
-// now runs in a short-lived child (m07/coverage-child.ts): the recorder makes no decode call, the report is the
+// now runs in a short-lived child (scripts/coverage-child.ts): the recorder makes no decode call, the report is the
 // in-process job's byte for byte, a failed child is logged, held and retried without a tight loop, one child runs at
 // a time, and the recorder's stop leaves no child behind.
 import { strict as assert } from 'node:assert';
@@ -30,7 +30,7 @@ vi.mock('node:zlib', async (orig) => {
 const DAY0 = '2026-10-15';
 const T0 = Date.parse(`${DAY0}T00:00:00Z`);
 const DAY = 86_400_000;
-const ENTRY = fileURLToPath(new URL('../../src/m07/coverage-child.ts', import.meta.url));
+const ENTRY = fileURLToPath(new URL('../../scripts/coverage-child.ts', import.meta.url));
 const ms = (n: number): UnixMs => n as UnixMs;
 const sleep = (n: number): Promise<void> => new Promise((r) => setTimeout(r, n));
 

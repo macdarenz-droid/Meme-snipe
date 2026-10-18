@@ -5,7 +5,7 @@
 // passes no environment, checks the report before use, and kills this process on a timeout or at its own stop.
 //   node coverage-child.ts <dataDir> <YYYY-MM-DD> <universeManifestSha256 | ->
 import { constants, setPriority } from 'node:os';
-import { dailyCoverage } from './daily.ts';
+import { dailyCoverage } from '../src/m07/daily.ts';
 
 const [dataDir, day, sha] = process.argv.slice(2);
 if (dataDir === undefined || day === undefined || !/^\d{4}-\d{2}-\d{2}$/.test(day) || sha === undefined || !(sha === '-' || /^[0-9a-f]{64}$/.test(sha))) {
