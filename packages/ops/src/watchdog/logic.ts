@@ -229,13 +229,15 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
  * lists equal). Each holds exactly while its condition does, often for days (segments waiting for a pull, a stopped
  * provider waiting for its runbook), so after the ALERT its STILL line comes once a day, not every hour.
  */
-export const HELD_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
+export const HELD_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'recorder.coverage_failed']);
 const HELD_REPEAT_MS = 86_400_000;
 /** SW-2: the host command an alert names, for the codes that need one (ops/README.md, the runbooks). */
 const RUNBOOK: Readonly<Record<string, string>> = {
   'm14.provider_stopped': ' Find the cause, then run zeroed-provider-resume <provider> at the console (ops/README.md).',
   // SW-31: recording halts at the cap until segments are pulled (only md-pull's receipts let the host delete them).
   'm07.disk_budget_high': ' The recorder is over 75% of its disk cap; run md-pull before it halts at the cap (ops/README.md).',
+  // SW-45: the daily coverage report's child process failed; the recorder retries the day every 15 minutes.
+  'recorder.coverage_failed': ' The daily coverage report could not be built; the recorder retries every 15 minutes. Check its log for recorder.coverage_failed (ops/README.md).',
 };
 const isHeld = (key: string): boolean => key.startsWith('worker_critical:') && HELD_CODES.has(key.slice('worker_critical:'.length));
 

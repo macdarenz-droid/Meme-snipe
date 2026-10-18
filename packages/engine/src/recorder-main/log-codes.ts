@@ -57,6 +57,7 @@ export const RECORDER_LOG_CODES = {
   'recorder.anchored': { fields: { anchor_age_ms: 'integer', anchor_slot: 'string' } },
   'recorder.manifest_not_recorded': { fields: { day: 'string', eligible: 'integer', error_code: 'string' } },
   'recorder.coverage_report': { fields: { day: 'string', low_coverage: 'boolean' } },
+  'recorder.coverage_failed': { fields: { day: 'string', reason: 'string', detail: 'string' } },
   'recorder.sol_usd_check': { fields: { result: 'string' } },
   'recorder.retention': { fields: { rows: 'integer', bars: 'integer' } },
   'recorder.provider_resume': { fields: { provider: 'string', result: 'string' } },

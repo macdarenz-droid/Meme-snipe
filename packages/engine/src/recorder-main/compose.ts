@@ -160,7 +160,7 @@ export const VERIFY_COUNT_KEY = 'm04.verify_count';
  */
 export const UNANCHORED_MS = 600_000;
 /** Ruling Z10-41: critical codes that hold exactly while their condition does (never from the 15-minute window). */
-export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored']);
+export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'recorder.coverage_failed']);
 /**
  * Ruling Z10-24 (a new value: no SPEC or ARCH threshold exists): a critical line keeps the heartbeat critical for this
  * long after it was last raised. 15 minutes: at least three of the watchdog's 300 s repeats (`REPEAT_CRITICAL_S`).
@@ -596,6 +596,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (lastDisk?.budgetHigh === true) out.push('m07.disk_budget_high');
     if (daily.manifestMissing(nowMs())) out.push('recorder.manifest_not_recorded');
     if (unanchored) out.push('recorder.unanchored');
+    // SW-45: a day's coverage child failed and the day has no report yet (retried every 15 min while in the window).
+    if (daily.coverageFailed()) out.push('recorder.coverage_failed');
     return out;
   };
   let lastOutboxMs = -Infinity, lastRetentionMs = -Infinity;
@@ -775,6 +777,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         backfill.stop();
         (tracker as PoolTracker<CpPoolState>).stop();
         rp.clock.stop();
+        await daily.stop();                                                    // SW-45: no coverage child outlives the recorder
         try { writer.pump(); writer.flush(); } catch { /* a failed final flush is recovered at the next start (crash recovery) */ }
         try { seqsRotated = true; saveNextSeq(); } catch { /* the manifests still hold every seq on disk */ }
         try { barStore.flush(nowMs()); } catch { /* bars are re-derived from the recording */ }

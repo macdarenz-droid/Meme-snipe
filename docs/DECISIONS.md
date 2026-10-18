@@ -4459,4 +4459,40 @@ Builder decisions and readings for review. Every item has a test that fails on `
   - the M07 disk index, the closed-hour cache and the watch logs: they follow the files on disk, which md-pull's receipt-and-delete bounds;
   - metric rollups: per minute, rows expired by retention;
   - the bar store's reads: one pool's window.
+- **SW-45 · The daily coverage report runs in a child process (supervisor ruling SW-45; case (b) of the probe on `31519bdd`).** **Measured** on one recorded probe day (2026-10-10, 25 hour-files, local, scratch script), glibc `[heap]` Rss before → peak → after per run:
+  - Run 10 times as shipped: run 1 8.1 → 23.8; run 2 28.7; run 3 30.4; run 5 40.3; runs 7-10 flat at 41.6-41.7 (RssAnon 38 → 111).
+  - With `gc()` after every step: 12.3, then flat at 12.7. The peak is garbage that native memory backs until a GC runs, and glibc keeps the high-water mark afterwards.
+  - The source is `frameLines` (m07/frames.ts, from SW-35). It calls `inflateRawSync` once a gzip member, about 12,660 times a day here: 263 members of at most 18 KiB per hour-file × 24 files × 2 passes, because each file is decoded once to check it whole and again to read it. A bare loop of the same 12,660 calls takes `[heap]` from 1.9 to 35 MiB, and `gc()` gives none of it back.
+  - The same input plateaus only after about 7 runs, so the plateau would still rise inside the gate's h96-h192 window.
+
+  **Rejected:**
+  - `engine.close()` after each call (documented in zlib): plateau 37.7 against 37.6 as shipped, no effect;
+  - `gunzipSync` of each whole file: plateau 44.8, peak 60, worse;
+  - smaller steps: 1,000 lines a step about 33, 200 lines 31.7, a small effect only, no bound;
+  - `gc()` every step: a full GC about 180 times a day, too costly;
+  - dropping the second pass (B): halves the churn but bounds nothing;
+  - a 384 h soak to show the plateau (C): reads the gate differently;
+  - glibc tunables (`MALLOC_ARENA_MAX`, the trim threshold, `malloc_trim`): mask the peak and would change guarded deploy files.
+
+  **Fix:** the recorder builds each day's report in a short-lived child, `m07/coverage-child.ts`.
+  - The child runs the same reader (`dailyCoverage`) as the same user, with no environment (`env: {}`: no provider URL, no credential path) and `--max-old-space-size=192`.
+  - It reads files only, opens no connection and writes only the report to stdout. It lowers its own priority to nice 10 (`os.setPriority(PRIORITY_BELOW_NORMAL)`, documented by Node; a refusal is printed and ignored; checked: nice 10 while it ran).
+  - The parent caps the output at 4 MiB. It checks it (`checkCoverageReport`): exactly a CoverageReport of the day with the given manifest hash, every field typed and sized, and in `JSON.stringify` form, so the record and the saved row are the in-process job's bytes. It then appends and saves as before.
+  - On a timeout (15 min, wall clock) it kills the child. On a crash, a non-zero exit, a spawn failure, bad output or oversized output, it logs `recorder.coverage_failed` (day, reason, the start of stderr), holds that code (STATE_CODES, the watchdog's HELD_CODES with a runbook in ops/README.md) and drops the day's job. The day is tried again no sooner than 15 minutes, while it is in the catch-up window, so there is no tight loop.
+  - One child runs at a time. The universe manifests go on while it runs. The recorder's `stop()` awaits `daily.stop()`, which kills a running child and resolves once it has exited.
+
+  D25 check: the Blueprint's three always-on processes (ARCH 4.3) are unchanged. A short-lived daily child is not a fourth service, and `m07/md-pull.ts` already uses `child_process`. The entry ships in the release (a `git archive` of the repository).
+
+  On the probe day the child took 1.4 s and peaked at 119.5 MiB RSS. That memory is the child's, freed when it exits. While it runs, the recorder's cgroup holds both processes (MemoryMax 800M).
+
+  **Tests:** `test/z10/sw45-coverage-child.test.ts`; all 11 fail on `dd3a31ee`.
+  - Every `inflateRawSync` in the test process is counted: 0 while the job runs, and the in-process job's count is above 0, so the count works. The record and the saved row equal the in-process report byte for byte.
+  - A timeout is killed, logged, held, not retried before `retryMs` (590 s of ticks start nothing), and cleared by a good try.
+  - One test each for a non-zero exit, a crash (SIGABRT), bad JSON, a report of another day, oversized output and a child that cannot start.
+  - One child at a time, with every manifest built while it runs.
+  - The stop leaves no orphan (the pid is gone).
+  - The entry runs as a real child process (`execFileSync`, `env: {}`): the report on stdout, and bad arguments exit 2.
+  - SW-28's catch-up test now waits for the child in real time, with the same assertions.
+
+  The pinned-CPU soak (two daily windows, `taskset -c 0`) and its stall figures are below.
 - **SW-36 · The daily coverage in bounded steps (supervisor ruling SW-36).** In one call it held the recorder's loop for 1.3-1.6 s (soak days at 60 pools, 1 CPU: the parse about 1.2-1.4 s, the pools about 110-150 ms over about 540 pools), so the server's 1 s tick ran late once a day (the 48 h soak's one second over 1 s real, at the coverage). Now `dailyCoverageJob` (m07/daily.ts) runs one step a recorder loop tick: the setup (manifests, watch log), each poll_counts segment one gzip member at a time (checked whole first, then read; at most 5,000 lines a step), the watched pools 100 at a time (`coverageRun`), then the report; one coverage job at a time, and the manifests still build on the same tick. Measured on the soak's days: 183 steps a day, the longest 73.7 ms cold and 27-44 ms warm, 1.2-1.5 s in all spread over about 3 minutes of ticks; reports byte-identical to `512ee4c6`'s. 48 h soak, no flag: no second over 1 s (before: 1), loop-lag max 136 ms (before: 1,598 ms), CPU 46.1 s an hour (45.3 before). Tests (fail on `512ee4c6`): no step after setup parses more than its line bound and the report equals `computeCoverage` over every record; `coverageRun.pools(max)` is bounded. The SW-28 test now ticks until each report is saved (same assertions).

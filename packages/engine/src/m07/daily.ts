@@ -58,6 +58,37 @@ export function dailyCoverage(o: { dataDir: string; dayUtc: string; universeMani
   }
 }
 
+/** SW-45: the most bytes a coverage child may print (a report is about 1 KB at 60 pools; far over any day's gaps). */
+export const COVERAGE_REPORT_MAX_BYTES = 4_194_304;
+const MAX_STREAMS = 64;
+const MAX_GAPS = 50_000;
+
+/**
+ * SW-45: the coverage child's output, checked before the recorder uses it: exactly a CoverageReport of `dayUtc` with
+ * the manifest hash it was given (null: any 64-hex hash), every field of the right type and size, and printed in the
+ * form `JSON.stringify` gives (so the record and the saved row are the bytes the in-process job gave). Anything else
+ * is null.
+ */
+export function checkCoverageReport(text: string, dayUtc: string, sha: string | null): CoverageReport | null {
+  if (text.length > COVERAGE_REPORT_MAX_BYTES) return null;
+  let v: unknown;
+  try { v = JSON.parse(text); } catch { return null; }
+  const obj = (x: unknown, keys: readonly string[]): x is Record<string, unknown> =>
+    typeof x === 'object' && x !== null && !Array.isArray(x) && Object.keys(x).join(',') === keys.join(',');
+  const count = (x: unknown): boolean => Number.isSafeInteger(x) && (x as number) >= 0;
+  const str = (x: unknown, max: number): boolean => typeof x === 'string' && x.length > 0 && x.length <= max;
+  if (!obj(v, ['dayUtc', 'streams', 'universeManifestSha256', 'lowCoverage'])) return null;
+  if (v.dayUtc !== dayUtc || typeof v.lowCoverage !== 'boolean') return null;
+  if (typeof v.universeManifestSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(v.universeManifestSha256) || (sha !== null && v.universeManifestSha256 !== sha)) return null;
+  if (!Array.isArray(v.streams) || v.streams.length > MAX_STREAMS) return null;
+  for (const st of v.streams as unknown[]) {
+    if (!obj(st, ['stream', 'expected', 'recorded', 'gaps']) || !str(st.stream, 64) || !count(st.expected) || !count(st.recorded)) return null;
+    if (!Array.isArray(st.gaps) || st.gaps.length > MAX_GAPS) return null;
+    for (const g of st.gaps as unknown[]) if (!obj(g, ['fromMs', 'toMs', 'reason']) || !count(g.fromMs) || !count(g.toMs) || typeof g.reason !== 'string' || g.reason.length > 500) return null;
+  }
+  return JSON.stringify(v) === text ? (v as unknown as CoverageReport) : null;
+}
+
 /** SW-36: the most poll_counts lines one step of the daily coverage reads, and the most watched pools it works through. */
 export const COVERAGE_STEP_LINES = 5_000;
 export const COVERAGE_STEP_POOLS = 100;

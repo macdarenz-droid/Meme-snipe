@@ -268,6 +268,10 @@ The Blueprint's keyless M1 recorder (`packages/engine/src/recorder-main/`) runs 
 2. On the server console as root: `zeroed-provider-resume shyft` (or `chainstack`). It asks the running recorder to clear the stop, waits up to 30 s, and logs to the journal. The recorder writes `recorder.provider_resume` with `resumed`, `not_stopped` or `unknown`.
 3. Check: the alert clears at the next heartbeat, and `curl -s 127.0.0.1:8787/health` shows the recorder recording. If the provider limits us again, it is stopped again after three answers.
 
+**Runbook: the daily coverage report failed (`recorder.coverage_failed`; SW-45).** The recorder builds each day's coverage report in a short-lived child process (it reads the day's files and prints the report). If the child times out (15 min), crashes, exits non-zero or prints a report that does not check, the day gets no report yet. The recorder logs `recorder.coverage_failed` with the reason, holds the code and tries the day again every 15 minutes while the day is in the 7-day catch-up window. Recording and the universe manifests go on meanwhile.
+1. Find the reason: `journalctl -u zeroed-worker | grep recorder.coverage_failed` (`timeout`, `exit_<n>`, `signal_<name>`, `oversized`, `bad_output`, `spawn_<code>`).
+2. Nothing to run when a later try succeeds: the code clears once the day's report is saved. If it keeps failing, keep the log lines and report them.
+
 **Owner steps at switch-on (read providers; Z10-9).** Repository secrets `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` (the two URLs `provider-reads.yml` already uses) must both be set.
 1. On the server console (`linuxuser`, then `sudo -i`), run `zeroed-new-deploy-code` and note the 6 words.
 2. In GitHub, set the `DEPLOY_CODE` secret to those words, then run the Deploy workflow once.
