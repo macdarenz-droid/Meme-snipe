@@ -138,6 +138,11 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 12:40 AM: #336 `31519bdd`: CI green on all 6 checks; RT1 PASS.** RT1 ran the new tests against `5e09441c` and 8 failed there. It found memory bounded and the eviction order right (stop, then resume).
+  - RT1 MINOR, now ruling SW-44 for SWITCH-FIX-3: after a re-watch gap, the first bar opens at the old carried state, so its flow takes in the gap.
+  - The SW-44 rule must give the same bars live and in replay, from recorded data only, and the builder proposes it before building.
+  - No stored data is affected before then, because bar_1m is not recorded on the server until switch-on.
+  - #336 merges once the 192 h gate on `31519bdd` passes (expected about 14:55Z).
 - **18 Oct 11:50 PM: #336 pushed at `31519bdd` (SW-43).** The builder reports:
   - 7 new tests, each failing on the `63469c3a` source;
   - one amended assertion;
