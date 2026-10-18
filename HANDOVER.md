@@ -138,6 +138,16 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 5:00 AM: native probe on `31519bdd` done; it is case (b).**
+  - RssAnon h96→h192 +3.02 MiB, so this run fails the gate too.
+  - Of that, glibc's main-arena [heap] is +2.4 MiB (88.5 at h48 → 93.5 at h192, with partial returns). Other anonymous memory +0.6, with fixed size buckets: no new arenas and no new V8 pages.
+  - Case (a) is ruled out: fds stay at 38, the WAL is flat, and md files grow by 1,000 while [heap] does not follow.
+  - Every RssAnon step of 3 MiB or more falls in the daily window after the hour-00 seal: the universe manifest, then the coverage job. Retention runs on another cycle.
+  - SQLite memory figure: the node:sqlite docs list no memory API, so it was skipped.
+  - Ruling: the builder runs each job 20 times on one recorded day and records [heap] and the job's own peak working set. It runs a tagged 5-minute one-day soak only if that does not name the transient.
+  - The fix is pinned by a deterministic bound test that fails first (not RSS), plus byte-identical job outputs.
+  - No glibc tunables as the fix without a ruling. If the numbers show a plateau, the builder reports before building.
+  - Then CI green, the gate rerun with the same limits, and RT1 on the delta.
 - **19 Oct 2:20 AM: 192 h gate on `31519bdd` FAILS narrowly; #336 does not merge.**
   - RssAnon h96 191.34 → h192 193.67 MiB (+2.33 against the under-2 limit). Least-squares slope 0.031 MiB/h, which also fails a slope reading of the same limit (about 0.021 MiB/h).
   - These pass: peak RssAnon 198.3, peak RSS 253.3, flat metricSeries.
