@@ -4403,4 +4403,60 @@ Builder decisions and readings for review. Every item has a test that fails on `
   - `resume(poolId)` clears `stopped` and keeps `carried`, `closedThrough` and `closedState`, so bars restart from the next snapshot and open at the carried state. Compose calls it at the watchlist's tracker hook when `link.watch` returns true. A pool stopped by `closed()` stays out: the universe quarantines it.
   - Z09-23 now reads: a stopped pool is kept for `idleForgetMs` after its stop, then forgotten.
   Tests (each fails on `63469c3a`): `test/m08/switch-fix-2.test.ts` (kept inside the window and forgotten after it; late events refused inside the window and the window runs from the stop; a never-seen pool's stop forgotten after the window; 1,000 pools stopped stay bounded; a re-watched pool's bars open at the carried state); `test/z10/switch-fix-2.test.ts` SW-43 (re-watch through the watchlist gets bars; a closed pool gets no bars afterwards and its entry goes); `z09-bars.test.ts` "a stopped pool has no bars" now asserts kept for `idleForgetMs` after stop, then forgotten. The probe split leaves about 3 MiB native unexplained; this fix may not close the gate's gap, and the 192 h gate reruns alone, no snapshots, same limits. Open item, not built here (M3/M11 live-replay parity work): `m08/replay.ts` never calls `stop()` or `resume()`, so a replay rebuild already differs from the stored `bar_1m` for pools unwatched mid-bar (live discards the open bar) and for the poll_counts written at unwatch.
+- **SW-46 · The daily manifest reads a bounded set of pools (supervisor ruling SW-46; case (c) of the probe on `31519bdd`).** The 192 h gate on `31519bdd` failed at +2.33 MiB RssAnon h96-h192 (least-squares slope 0.031 MiB/h). The probe that followed showed:
+  - fds flat at 38 and the WAL flat, so the growth does not track files (case (a) ruled out);
+  - the growth is in glibc's main-arena `[heap]`, stepping each day in hours 8-10 of the soak day (00:30-03:30 UTC), where the universe manifest and the coverage report are built.
+
+  Each day's manifest (`recorder-main/daily.ts` → `m05/manifest.ts` `buildUniverseManifest`) read every candidate event since 0 and held a state entry for every pool ever seen. Counted on the probe's database: 1,950 events and 242 pools for 10-06, 23,843 and 3,031 for 10-10, 39,604 and 5,127 for 10-13. That is about +5,300 events and +700 pools a day, bounded only by the 1-year retention; at that rate, about 1.9 M events and 250 k pools on day 365.
+
+  **What the builder uses from before the day's start** (read in full):
+  - for each pool, its state at the start: whether a span is open (`in`), its start, its end cap `untilMs`, its `mint` and its `reason`;
+  - nothing else.
+
+  How that state comes about:
+  - The state at the start comes only from that pool's own events before the start, over all its candidates, in chain order within a millisecond (`eventsInOrder` orders per pool).
+  - `untilMs` is an eligible eviction's tail (the `;tail_until=` of the eviction's reason), cut by that pool's `tail_capacity`, `tail_degraded` or `tail_restart_cut` records in the eviction log. The log keeps 8 days (`KEEP_MS`); its input is unchanged.
+  - `reason` is the reason of the last move into `eligible`, else of the pool's first event.
+  - `mint` is from the event that opened the span.
+  - Spans, the peak (`edges`) and the `evicted` list come only from the day.
+  - The limit set's hash is config, and `migrationCoverage` is M03's 24 h window (pruned at 8 days).
+
+  A pool that is out at the start and has no event in the day adds nothing to the record.
+
+  **Fix:** `dayPoolEvents(dayStart)` reads only the pools that can matter, each with its whole history (all its candidates, along `candidate_event_candidate`), in `(at, rowid)` order, every read in pages of 2,000 rows (Z10-53 kept). A pool matters if any of these holds:
+  - (1) it has an event since the day's start;
+  - (2) its candidate is in an eligible state now. The `candidate` row and its event are written in one transaction (`m05/store.ts` `apply`), so its state is its last event's `to`; with no event since the start, that was its state at the start;
+  - (3) it is evicted, was written in the last `KEEP_MS`, and its eviction (its last event) carries a tail reaching the start. The builder caps an eviction's span at its tail's end, so no other evicted pool can count.
+
+  `candidate` is not an expiring table (not append-only), so a purge of old events leaves the rows; both reads then see the same remaining events.
+
+  Migration 0004 (indexes only, no new data): `candidate_pool (pool_id)` and `candidate_state_updated (state, updated_at)`.
+
+  Assumption, the same one the eviction log already makes: a tail (`universe.tail_extra_ms`, at most 24 h by config, plus the longest hold; 0 in the recorder) stays under 8 days. Added to the watch list for the trading worker's longest hold.
+
+  **Bound:** pools held = candidates in an eligible state now + evicted candidates whose tail reaches the start + pools with an event since the start. Rows read = those pools' histories + one row for each evicted candidate written in the last 8 days + the events since the start. None of these grow with the history.
+
+  **Tests:**
+  - `test/z10/sw46-manifest.test.ts` bound test (fails on `31519bdd`): 10 synthetic days of 100 pools. Rows read per build: 1,400 on day 0, then 1,020 rising 10 a day to 1,090 from day 8 (asserted at most 1,400; the whole-history read passes 1,400 by day 2 and 4,000 by day 8). Pools held: 120 from day 1 (asserted at most 120).
+  - Same file, byte-identical test: the record and its SHA-256 equal the whole-history read's on a history with these edge cases:
+    - a span open across midnight;
+    - evictions before the start (a tail into the day cut by `tail_capacity`, a tail that ended before the day, no tail);
+    - a pool eligible since a day with no event on the next two days (the recorder down);
+    - a retention purge through `deleteExpired` on the same database;
+    - a restart (a new job on the same database) building the next day.
+  - `test/z10/manifest-pages.test.ts` (Z10-53) now writes the candidate rows as the store does. It asserts the same record, at most 2,000 rows a read, and each row of the pools that matter read exactly once.
+  - On the probe's real database (a copy, scratch script, not committed), the record is byte-identical to the whole-history read on all 8 recorded days, 10-06 to 10-13. Events read per build: 1,950, 6,118, 6,168, 5,852, 5,831, 5,913, 5,603, 5,684 (before: 1,950 to 39,604). The copy is from h192, so its later events inflate the pool counts there.
+
+  **Audit of the daily and periodic jobs for a read from 0, or a read that grows with history:**
+  - the manifest: fixed here;
+  - the eviction log's `between(0, …)` and `restore()`: bounded, because the log is pruned to 8 days on append;
+  - the coverage report: reads one day's files and D+1's hour 00 (its native churn is SW-45);
+  - the retention pass: stepped (SW-32), and each pass deletes about one day of rows;
+  - the outbox drain: prunes published rows over 7 days;
+  - `manifestMissing`: at most 7 lookups, once a minute;
+  - M03's migration coverage: a 24 h window over a store pruned at 8 days;
+  - M05's `due`: batches of 1,000 along the partial `cooldown_until` index, holding only rows with a timer (retired rows have none);
+  - the M07 disk index, the closed-hour cache and the watch logs: they follow the files on disk, which md-pull's receipt-and-delete bounds;
+  - metric rollups: per minute, rows expired by retention;
+  - the bar store's reads: one pool's window.
 - **SW-36 · The daily coverage in bounded steps (supervisor ruling SW-36).** In one call it held the recorder's loop for 1.3-1.6 s (soak days at 60 pools, 1 CPU: the parse about 1.2-1.4 s, the pools about 110-150 ms over about 540 pools), so the server's 1 s tick ran late once a day (the 48 h soak's one second over 1 s real, at the coverage). Now `dailyCoverageJob` (m07/daily.ts) runs one step a recorder loop tick: the setup (manifests, watch log), each poll_counts segment one gzip member at a time (checked whole first, then read; at most 5,000 lines a step), the watched pools 100 at a time (`coverageRun`), then the report; one coverage job at a time, and the manifests still build on the same tick. Measured on the soak's days: 183 steps a day, the longest 73.7 ms cold and 27-44 ms warm, 1.2-1.5 s in all spread over about 3 minutes of ticks; reports byte-identical to `512ee4c6`'s. 48 h soak, no flag: no second over 1 s (before: 1), loop-lag max 136 ms (before: 1,598 ms), CPU 46.1 s an hour (45.3 before). Tests (fail on `512ee4c6`): no step after setup parses more than its line bound and the report equals `computeCoverage` over every record; `coverageRun.pools(max)` is bounded. The SW-28 test now ticks until each report is saved (same assertions).

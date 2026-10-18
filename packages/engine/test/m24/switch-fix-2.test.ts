@@ -85,7 +85,7 @@ describe('SW-32: retention in bounded steps', () => {
 
   it('each batch is found along an index or the primary key, never a scan of the table (fails before: no migration 0003)', async () => {
     const { db } = await migrated();
-    assert.equal(MIGRATIONS.at(-1)?.name, 'retention_indexes');
+    assert.ok(MIGRATIONS.some((m) => m.version === 3 && m.name === 'retention_indexes'));
     const plan = (sql: string, ...p: unknown[]): string => db.reader().all(`EXPLAIN QUERY PLAN ${sql}`, ...(p as never[])).map((r) => String(r.detail)).join(' | ');
     const ev = plan(`SELECT rowid FROM "candidate_event" WHERE "created_at" <= ? AND "created_at" <= unixepoch('now') * 1000 - ? LIMIT ?`, 1, 1, 1);
     assert.match(ev, /USING (COVERING )?INDEX candidate_event_created_at/);

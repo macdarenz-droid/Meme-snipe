@@ -8,15 +8,15 @@
 // (Z10 plan Q10: a new external endpoint on the host waits for the supervisor's ruling).
 import type { Db } from '../m24/db.ts';
 import { createRepos } from '../m24/repos.ts';
-import { buildUniverseManifest, eventsInOrder } from '../m05/manifest.ts';
+import { buildUniverseManifest, ELIGIBLE_STATES, eventsInOrder, parseEvictionReason } from '../m05/manifest.ts';
 import { limitSetHash, type UniverseLimits } from '../m05/universe.ts';
 import { dailyCoverageJob, type DailyCoverageJob } from '../m07/daily.ts';
 import type { CandidateState, Pubkey, UnixMs } from '@bot/types';
 import type { AppendInput, AppendResult } from '../recorder/queue.ts';
-import type { EvictionLog } from './evictions.ts';
+import { KEEP_MS, type EvictionLog } from './evictions.ts';
 
 const DAY_MS = 86_400_000;
-/** Ruling Z10-53: candidate events read per page when a manifest is built. */
+/** Ruling Z10-53: rows read per page when a manifest is built. */
 const PAGE_ROWS = 2_000;
 const FIRST_START_KEY = 'recorder.first_start_ms';
 /** A manifest built more than this after its day ended is `late`. */
@@ -31,6 +31,8 @@ export interface DailyJob {
    * rebuilds it.
    */
   manifestMissing(nowMs: UnixMs): boolean;
+  /** SW-46: the pools and candidate events the last manifest build read (bounded-read tests). */
+  lastManifestRead(): { pools: number; events: number } | null;
 }
 
 export function createDailyJob(o: {
@@ -56,29 +58,61 @@ export function createDailyJob(o: {
   const waiting = new Map<string, string>();
   /** SW-36: the coverage report being built, one step a tick. */
   let job: { day: string; sha: string; run: DailyCoverageJob } | null = null;
+  let readStats: { pools: number; events: number } | null = null;
   let recordedCount = 0;
   let missingMemo: { minute: number; recorded: number; missing: boolean } | null = null;
 
   /**
-   * Ruling Z10-53: the candidate events before `endMs`, in time order, read PAGE_ROWS at a time along the `at` index
-   * (rowid breaks ties, which is insertion order), so a year of events is never one array in memory.
+   * SW-46 (ruling Z10-53 kept: never one array of the whole history): the events before the day's end of the pools that
+   * can matter to the day, in (at, rowid) order, the order the whole-history read gave. A pool matters if it has an
+   * event since the day's start, or its state at the day's start may be eligible: its candidate is in an eligible state
+   * now (with no event since the start, that is its state then), or is evicted, was written in the last KEEP_MS (an
+   * eviction's tail, `universe.tail_extra_ms` plus the longest hold, stays far under KEEP_MS, as the eviction log already
+   * assumes) and its eviction's tail reaches the day's start. Every other pool is out at the day's start and has no event in the day, so it adds nothing to the
+   * manifest. Each pool's whole history is read (its own candidates, along `candidate_event_candidate`), so its state at
+   * the start is the one the whole read built. Bounded by the day's pools, not by the history (DECISIONS SW-46).
    */
-  function* candidateEvents(endMs: number): Generator<{ poolId: Pubkey; mint: Pubkey; fromState: CandidateState | null; toState: CandidateState; reason: string; at: number }> {
-    let at = 0, rowid = 0;
-    for (;;) {
-      const page = o.db.reader().all('SELECT rowid AS "rid", "pool_id", "mint", "from_state", "to_state", "reason", "at" FROM "candidate_event" INDEXED BY "candidate_event_at" WHERE "at" < ? AND ("at" > ? OR ("at" = ? AND rowid > ?)) ORDER BY "at", rowid LIMIT ?', endMs, at, at, rowid, PAGE_ROWS);
-      for (const r of page) yield { poolId: String(r.pool_id) as Pubkey, mint: String(r.mint) as Pubkey, fromState: (r.from_state ?? null) as CandidateState | null, toState: String(r.to_state) as CandidateState, reason: String(r.reason), at: Number(r.at) };
-      if (page.length < PAGE_ROWS) return;
-      const end = page[page.length - 1] as Record<string, unknown>;
-      at = Number(end.at); rowid = Number(end.rid);
+  function dayPoolEvents(dayStart: number): Array<{ poolId: Pubkey; mint: Pubkey; fromState: CandidateState | null; toState: CandidateState; reason: string; at: number }> {
+    const r = o.db.reader();
+    /** Ruling Z10-53: every read in pages of PAGE_ROWS, keyed on rowid (`sql` ends with `rowid > ?`). */
+    const paged = (sql: string, ...ps: Array<string | number>): Array<Record<string, unknown>> => {
+      const out: Array<Record<string, unknown>> = [];
+      for (let after = 0; ;) {
+        const page = r.all(`${sql} ORDER BY rowid LIMIT ?`, ...ps, after, PAGE_ROWS);
+        out.push(...page);
+        if (page.length < PAGE_ROWS) return out;
+        after = Number((page[page.length - 1] as Record<string, unknown>).rid);
+      }
+    };
+    const pools = new Set<string>();
+    const eligible = [...ELIGIBLE_STATES];
+    for (const x of paged(`SELECT rowid AS "rid", "pool_id" FROM "candidate" INDEXED BY "candidate_state" WHERE "state" IN (${eligible.map(() => '?').join(', ')}) AND rowid > ?`, ...eligible)) pools.add(String(x.pool_id));
+    // An evicted candidate's last event is its eviction (the state and the event are written together); it can count at
+    // the day's start only through a tail that reaches the start (the builder caps the span at the tail's end).
+    for (const x of paged('SELECT rowid AS "rid", "pool_id", "candidate_id" FROM "candidate" INDEXED BY "candidate_state_updated" WHERE "state" = ? AND "updated_at" >= ? AND rowid > ?', 'evicted', dayStart - KEEP_MS)) {
+      const last = r.get('SELECT "reason" FROM "candidate_event" INDEXED BY "candidate_event_candidate" WHERE "candidate_id" = ? ORDER BY "at" DESC, rowid DESC LIMIT 1', String(x.candidate_id));
+      const tail = last === undefined ? null : parseEvictionReason(String(last.reason)).tailUntilMs;
+      if (tail !== null && tail >= dayStart) pools.add(String(x.pool_id));
     }
+    for (const x of paged('SELECT rowid AS "rid", "pool_id" FROM "candidate_event" INDEXED BY "candidate_event_at" WHERE "at" >= ? AND rowid > ?', dayStart)) pools.add(String(x.pool_id));
+    const rows: Array<{ rid: number; poolId: Pubkey; mint: Pubkey; fromState: CandidateState | null; toState: CandidateState; reason: string; at: number }> = [];
+    for (const pool of pools) {
+      for (const c of paged('SELECT rowid AS "rid", "candidate_id" FROM "candidate" INDEXED BY "candidate_pool" WHERE "pool_id" = ? AND rowid > ?', pool)) {
+        for (const e of paged('SELECT rowid AS "rid", "pool_id", "mint", "from_state", "to_state", "reason", "at" FROM "candidate_event" INDEXED BY "candidate_event_candidate" WHERE "candidate_id" = ? AND "at" < ? AND rowid > ?', String(c.candidate_id), dayStart + DAY_MS)) {
+          rows.push({ rid: Number(e.rid), poolId: String(e.pool_id) as Pubkey, mint: String(e.mint) as Pubkey, fromState: (e.from_state ?? null) as CandidateState | null, toState: String(e.to_state) as CandidateState, reason: String(e.reason), at: Number(e.at) });
+        }
+      }
+    }
+    rows.sort((a, b) => a.at - b.at || a.rid - b.rid);
+    readStats = { pools: pools.size, events: rows.length };
+    return rows;
   }
 
   const manifest = (day: string, dayStart: number, now: number): string | null => {
     const row = o.db.reader().get('SELECT "sha256" FROM "universe_manifest" WHERE "day_utc" = ?', day) as { sha256: string } | undefined;
     if (row !== undefined) return row.sha256;
     const m = buildUniverseManifest({
-      dayUtc: day, events: eventsInOrder(candidateEvents(dayStart + DAY_MS)), watchlistEvictions: o.evictions.between(0, dayStart + DAY_MS),
+      dayUtc: day, events: eventsInOrder(dayPoolEvents(dayStart)), watchlistEvictions: o.evictions.between(0, dayStart + DAY_MS),
       crossCheck: { poolsOnlyInVendor: 0, otherDexPairs: 0, knownPoolsUnderOtherDex: 0, status: 'unavailable' },
       migrationCoverage: o.migrationCoverage(), limitSet: { id: o.limitSetId, paramHash: limitSetHash(o.limits) },
       enumerationCoverage: 'migrations_since_start', generatedAtMs: now, late: now > dayStart + DAY_MS + LATE_AFTER_MS, prefilterOnly: o.prefilterOnly,
@@ -97,6 +131,7 @@ export function createDailyJob(o: {
   };
 
   return {
+    lastManifestRead: () => readStats,
     manifestMissing(nowMs: UnixMs): boolean {
       // At most one look a minute (the loop asks every second); a manifest recorded since clears it at once.
       const minute = Math.floor(nowMs / 60_000);

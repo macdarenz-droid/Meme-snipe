@@ -28,12 +28,13 @@ import { tableStatements } from './ddl.ts';
 import { M0001_INITIAL } from './migrations/0001_initial.ts';
 import { M0002_CANDIDATE_COOLDOWN } from './migrations/0002_candidate_cooldown.ts';
 import { M0003_RETENTION_INDEXES } from './migrations/0003_retention_indexes.ts';
+import { M0004_MANIFEST_INDEXES } from './migrations/0004_manifest_indexes.ts';
 import { TABLES } from './schema.ts';
 
 export interface Migration { readonly version: number; readonly name: string; readonly statements: readonly string[] }
 
 /** Every migration of this build, in order. Append only. */
-export const MIGRATIONS: readonly Migration[] = [M0001_INITIAL, M0002_CANDIDATE_COOLDOWN, M0003_RETENTION_INDEXES];
+export const MIGRATIONS: readonly Migration[] = [M0001_INITIAL, M0002_CANDIDATE_COOLDOWN, M0003_RETENTION_INDEXES, M0004_MANIFEST_INDEXES];
 
 export type MigrateErrorCode = 'E_MIGRATION_CHECKSUM' | 'E_SCHEMA_NEWER' | 'E_BACKUP_FAILED' | 'E_MIGRATION_FAILED' | 'E_FOREIGN_DATABASE' | 'E_DATABASE_CORRUPT';
 export interface MigrateError { code: MigrateErrorCode; message: string; version: number | null }
