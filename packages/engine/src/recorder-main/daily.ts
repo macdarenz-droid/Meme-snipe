@@ -13,7 +13,7 @@ import { limitSetHash, type UniverseLimits } from '../m05/universe.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { constants as osConstants, setPriority } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { checkCoverageReport, COVERAGE_REPORT_MAX_BYTES } from '../m07/daily.ts';
+import { checkCoverageOutput, COVERAGE_REPORT_MAX_BYTES } from '../m07/daily.ts';
 import type { CandidateState, Pubkey, UnixMs } from '@bot/types';
 import type { AppendInput, AppendResult } from '../recorder/queue.ts';
 import { KEEP_MS, type EvictionLog } from './evictions.ts';
@@ -260,8 +260,13 @@ export function createDailyJob(o: {
     let report = null;
     if (reason === null && closed.code !== 0) reason = closed.signal !== null ? `signal_${closed.signal}` : `exit_${String(closed.code)}`;
     if (reason === null) {
-      report = checkCoverageReport(Buffer.concat(j.chunks).toString('utf8'), j.day, j.sha);
-      if (report === null) reason = 'bad_output';
+      const out = checkCoverageOutput(Buffer.concat(j.chunks).toString('utf8'), j.day, j.sha);
+      if (out === null) reason = 'bad_output';
+      else {
+        report = out.report;
+        // SW-37: each segment the child skipped whole (the report marks its hour: SW-38).
+        for (const k of out.skipped) o.log.event('warn', 'm07.segment_unreadable', { day: j.day, path: k.path, reason: k.reason });
+      }
     }
     if (report === null) {
       failed.set(j.day, nowMs);

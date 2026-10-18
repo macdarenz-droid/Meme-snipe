@@ -74,6 +74,24 @@ export function* frameLines(buf: Uint8Array, caps: FrameCaps = FRAME_CAPS): Gene
   return null;
 }
 
+/**
+ * SW-38/SW-39: one segment's records, all of them or none. A segment that does not decode to its end (its frames' stop
+ * reason) or has a line `parse` throws on (`parse_error`) is skipped whole, so no reader ever uses part of a damaged
+ * file. Used by the coverage report's readers and by Phase 0's (one rule for both).
+ */
+export function segmentRecords<T>(buf: Uint8Array, parse: (line: string) => T, caps: FrameCaps = FRAME_CAPS): { records: T[]; decodedBytes: number } | { skipped: FrameStop | 'parse_error' } {
+  const records: T[] = [];
+  let decodedBytes = 0;
+  const lines = frameLines(buf, caps);
+  for (;;) {
+    const r = lines.next();
+    if (r.done === true) return r.value === null ? { records, decodedBytes } : { skipped: r.value };
+    if (r.value === '') continue;
+    decodedBytes += Buffer.byteLength(r.value, 'utf8') + 1;
+    try { records.push(parse(r.value)); } catch { return { skipped: 'parse_error' }; }
+  }
+}
+
 function readMember(buf: Uint8Array, pos: number, caps: FrameCaps): { end: number; lines: string[]; unterminated: boolean } | FrameStop {
   if (buf.length - pos < HEADER) return 'torn';
   // Magic 1f 8b, method 8 (deflate), flags 0: the writer (zlib's gzip) never sets a name, comment, extra field or header CRC.

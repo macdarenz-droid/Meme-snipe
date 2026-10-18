@@ -13,7 +13,7 @@ import { gzipSync } from 'node:zlib';
 import { describe, it, vi } from 'vitest';
 import type { UnixMs } from '@bot/types';
 import { WatchLog } from '../../src/m07/watch-log.ts';
-import { checkCoverageReport, dailyCoverage } from '../../src/m07/daily.ts';
+import { checkCoverageOutput, checkCoverageReport, dailyCoverage } from '../../src/m07/daily.ts';
 import { COVERAGE_CHILD, createDailyJob, type CoverageChildOptions } from '../../src/recorder-main/daily.ts';
 import { STATE_CODES } from '../../src/recorder-main/compose.ts';
 import { kvEvictionLog } from '../../src/recorder-main/evictions.ts';
@@ -135,7 +135,7 @@ describe('SW-45: the coverage report is built in a child process', () => {
     ['a non-zero exit', node('process.exit(3)'), 'exit_3'],
     ['a crash', node('process.abort()'), 'signal_SIGABRT'],
     ['bad JSON', node('process.stdout.write("{not json")'), 'bad_output'],
-    ['a report of another day', node(`process.stdout.write(JSON.stringify({ dayUtc: '2026-01-01', streams: [], universeManifestSha256: '${'0'.repeat(64)}', lowCoverage: false }))`), 'bad_output'],
+    ['a report of another day', node(`process.stdout.write(JSON.stringify({ report: { dayUtc: '2026-01-01', streams: [], universeManifestSha256: '${'0'.repeat(64)}', lowCoverage: false }, skipped: [] }))`), 'bad_output'],
     ['oversized output', { ...node('process.stdout.write("x".repeat(5000))'), maxBytes: 1_000 }, 'oversized'],
     ['a child that cannot start', { command: '/nonexistent/node', args: () => [] }, 'spawn_ENOENT'],
   ] as const) {
@@ -148,6 +148,15 @@ describe('SW-45: the coverage report is built in a child process', () => {
       assert.equal(r.job.coverageFailed(), true);
     }, 60_000);
   }
+
+  it('SW-37: each segment the child skipped is logged as m07.segment_unreadable, and the report is saved (fails before: not logged)', async () => {
+    const out = (sha: string): string => JSON.stringify({ report: { dayUtc: DAY0, streams: [{ stream: 'poll_counts', expected: 1, recorded: 1, gaps: [{ fromMs: T0 + 3_600_000, toMs: T0 + 7_200_000, reason: 'segment_unreadable' }] }], universeManifestSha256: sha, lowCoverage: true },
+      skipped: [{ path: `${DAY0}/01/poll_counts.ndjson.gz`, hourUtc: `${DAY0}T01`, reason: 'torn' }] });
+    const r = await rig(day(), { args: (_d, _dd, sha) => ['-e', `process.stdout.write(${JSON.stringify(out(sha))})`] });
+    await r.until(() => r.payloads.length > 0);
+    assert.deepEqual(r.logs.filter((l) => l.code === 'm07.segment_unreadable').map((l) => l.f), [{ day: DAY0, path: `${DAY0}/01/poll_counts.ndjson.gz`, reason: 'torn' }]);
+    assert.equal(r.failures().length, 0);
+  }, 60_000);
 
   it('one child at a time, and the manifest catch-up goes on while it runs', async () => {
     const dir = day();
@@ -188,10 +197,13 @@ describe('SW-45: the coverage report is built in a child process', () => {
     const dir = day();
     const sha = 'b'.repeat(64);
     const out = execFileSync(process.execPath, ['--no-warnings', ENTRY, dir, DAY0, sha], { encoding: 'utf8', env: {} });
-    assert.equal(out, JSON.stringify(dailyCoverage({ dataDir: dir, dayUtc: DAY0, universeManifestSha256: sha }).report));
-    assert.notEqual(checkCoverageReport(out, DAY0, sha), null);
-    assert.equal(checkCoverageReport(out, DAY0, 'c'.repeat(64)), null, 'another manifest hash is refused');
-    assert.equal(checkCoverageReport(` ${out}`, DAY0, sha), null, 'not in JSON.stringify form');
+    // SW-37: the report and the segments skipped whole (none here).
+    assert.equal(out, JSON.stringify({ report: dailyCoverage({ dataDir: dir, dayUtc: DAY0, universeManifestSha256: sha }).report, skipped: [] }));
+    assert.notEqual(checkCoverageOutput(out, DAY0, sha), null);
+    assert.equal(checkCoverageOutput(out, DAY0, 'c'.repeat(64)), null, 'another manifest hash is refused');
+    assert.equal(checkCoverageOutput(` ${out}`, DAY0, sha), null, 'not in JSON.stringify form');
+    const report = (JSON.parse(out) as { report: unknown }).report;
+    assert.notEqual(checkCoverageReport(JSON.stringify(report), DAY0, sha), null);
     for (const args of [[dir, 'x', sha], [dir, DAY0, 'nothex'], [dir]]) {
       assert.throws(() => execFileSync(process.execPath, ['--no-warnings', ENTRY, ...args], { stdio: 'pipe', env: {} }), (e: unknown) => (e as { status: number }).status === 2);
     }

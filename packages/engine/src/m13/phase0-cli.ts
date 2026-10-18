@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { SimParamSet } from '../m10/params.ts';
 import { phase0Report, renderPhase0Csv, renderPhase0Markdown } from './phase0.ts';
 import { readPhase0Dataset, type RecordedPricing } from './phase0-input.ts';
+import type { SegmentSkip } from '../m07/daily.ts';
 
 export interface Phase0Args { data: string; days: string[]; out: string; solUsd: number | null }
 
@@ -22,9 +23,12 @@ export function parsePhase0Args(argv: readonly string[]): Phase0Args | string {
 }
 
 export function runPhase0Report(a: Phase0Args, deps: { pricing: RecordedPricing; simParams: SimParamSet; write(path: string, text: string): void }): { reportPath: string } {
-  const input = readPhase0Dataset({ dataDir: a.data, days: a.days, pricing: deps.pricing });
+  // SW-39: a damaged segment is skipped whole (the same rule as the recorder's coverage report) and named in the report.
+  const skipped: SegmentSkip[] = [];
+  const input = readPhase0Dataset({ dataDir: a.data, days: a.days, pricing: deps.pricing, onSkip: (k) => skipped.push(k) });
   const report = phase0Report({ ...input, solUsdD1: a.solUsd ?? input.solUsdD1, solUsdSource: a.solUsd === null ? input.solUsdSource : 'command line --sol-usd', simParams: deps.simParams });
   if (a.solUsd !== null) report.caveats.push(`SOL/USD given on the command line (${a.solUsd}), not the recorded D1 price.`);
+  for (const k of skipped) report.caveats.push(`Segment ${k.path} skipped whole (${k.reason}): it does not decode to its end or a line does not parse.`);
   const reportPath = join(a.out, `report-${report.window.d1}.md`);
   const csv = renderPhase0Csv(report);
   deps.write(reportPath, renderPhase0Markdown(report));

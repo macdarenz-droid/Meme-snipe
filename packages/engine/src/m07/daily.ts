@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import type { CoverageReport, UnixMs } from '@bot/types';
-import { frameLines, scanGzipFrames } from './frames.ts';
+import { frameLines, segmentRecords, type FrameStop } from './frames.ts';
 import { coverageRun, DAY_MS, dayStartOf, type CoverageDetail, type PollCountRecord } from './coverage.ts';
 import { isManifest, type ManifestGap, type SegmentManifest } from './manifest.ts';
 import { WatchLog } from './watch-log.ts';
@@ -29,17 +29,25 @@ export function dayManifests(dataDir: string, dayUtc: string, fs: ReadFs = nodeF
  * read adds nothing). Lazy: only the segment being read is in memory, so the daily job's heap is bounded by one hour of
  * poll_counts, not a whole day (card Z10: a day held at once kept about 100 MiB of RSS after the job).
  */
-export function* eachPollCount(dataDir: string, manifests: readonly SegmentManifest[], fs: ReadFs = nodeFs): Generator<PollCountRecord> {
+/** SW-37: a segment the coverage readers skipped whole, and why. */
+export interface SegmentSkip { path: string; hourUtc: string; reason: FrameStop | 'parse_error' }
+const pollCountOf = (line: string): PollCountRecord => {
+  const p = (JSON.parse(line) as { payload?: unknown }).payload;
+  if (typeof p !== 'object' || p === null) throw new TypeError('poll_counts line without a payload');
+  return p as PollCountRecord;
+};
+
+export function* eachPollCount(dataDir: string, manifests: readonly SegmentManifest[], fs: ReadFs = nodeFs, onSkip?: (s: SegmentSkip) => void): Generator<PollCountRecord> {
   for (const m of manifests) {
     if (m.stream !== 'poll_counts' || m.codec !== 'gzip') continue;
     const file = join(dataDir, m.path);
     if (!fs.existsSync(file)) continue;
     // SW-35: read one gzip member at a time, never the whole hour decoded as one buffer and one string: those large
     // transient allocations at each day's coverage raised the recorder's resident memory in steps (soak, DECISIONS).
-    // A file that does not decode whole is skipped, as before; the first pass checks that.
-    const bytes = fs.readFileSync(file) as Buffer;
-    if (scanGzipFrames(bytes, () => undefined).stop !== null) continue;
-    for (const line of frameLines(bytes)) if (line !== '') yield (JSON.parse(line) as { payload: PollCountRecord }).payload;
+    // SW-38: a file that does not decode whole, or has a line that does not parse, is skipped whole (and reported).
+    const read = segmentRecords(fs.readFileSync(file) as Buffer, pollCountOf);
+    if ('skipped' in read) { onSkip?.({ path: m.path, hourUtc: m.hourUtc, reason: read.skipped }); continue; }
+    yield* read.records;
   }
 }
 
@@ -89,6 +97,30 @@ export function checkCoverageReport(text: string, dayUtc: string, sha: string | 
   return JSON.stringify(v) === text ? (v as unknown as CoverageReport) : null;
 }
 
+/** SW-37: the most skipped segments a child may list (a day has 24 hour-files and D+1's first hour). */
+const MAX_SKIPS = 64;
+
+/**
+ * SW-37: the coverage child's whole output, `{"report":…,"skipped":[…]}`: the report as `checkCoverageReport` checks it,
+ * and the segments it skipped (each a path, its hour and a reason), in `JSON.stringify` form. Anything else is null.
+ */
+export function checkCoverageOutput(text: string, dayUtc: string, sha: string | null): { report: CoverageReport; skipped: SegmentSkip[] } | null {
+  if (text.length > COVERAGE_REPORT_MAX_BYTES) return null;
+  let v: unknown;
+  try { v = JSON.parse(text); } catch { return null; }
+  if (typeof v !== 'object' || v === null || Array.isArray(v) || Object.keys(v).join(',') !== 'report,skipped') return null;
+  const o = v as { report: unknown; skipped: unknown };
+  const report = checkCoverageReport(JSON.stringify(o.report), dayUtc, sha);
+  if (report === null || !Array.isArray(o.skipped) || o.skipped.length > MAX_SKIPS) return null;
+  for (const k of o.skipped as unknown[]) {
+    if (typeof k !== 'object' || k === null || Object.keys(k).join(',') !== 'path,hourUtc,reason') return null;
+    const x = k as Record<string, unknown>;
+    if (typeof x.path !== 'string' || x.path.length === 0 || x.path.length > 200 || typeof x.hourUtc !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(x.hourUtc)
+      || typeof x.reason !== 'string' || !/^[a-z0-9_]{1,32}$/.test(x.reason)) return null;
+  }
+  return JSON.stringify(v) === text ? { report, skipped: o.skipped as SegmentSkip[] } : null;
+}
+
 /** SW-36: the most poll_counts lines one step of the daily coverage reads, and the most watched pools it works through. */
 export const COVERAGE_STEP_LINES = 5_000;
 export const COVERAGE_STEP_POOLS = 100;
@@ -96,6 +128,27 @@ export const COVERAGE_STEP_POOLS = 100;
 export interface DailyCoverageJob {
   /** One bounded part of the job; the result once the last part is done, null before. */
   step(): DailyCoverage | null;
+  /** SW-37: the segments skipped whole so far (each also marks the report: SW-38). */
+  skipped(): readonly SegmentSkip[];
+}
+
+/**
+ * SW-38: a report with skipped segments says so: one `segment_unreadable` gap on `poll_counts` for each skipped
+ * segment's hour (its records are not counted), so a report is never silently partial.
+ */
+function markSkipped(report: CoverageReport, skipped: readonly SegmentSkip[]): CoverageReport {
+  if (skipped.length === 0) return report;
+  let pc = report.streams.find((x) => x.stream === 'poll_counts');
+  if (pc === undefined) {
+    pc = { stream: 'poll_counts', expected: 0, recorded: 0, gaps: [] };
+    report.streams.push(pc);
+    report.streams.sort((x, y) => (x.stream < y.stream ? -1 : 1));
+  }
+  for (const k of skipped) {
+    const fromMs = Date.parse(`${k.hourUtc}:00:00.000Z`);
+    pc.gaps.push({ fromMs: fromMs as UnixMs, toMs: (fromMs + 3_600_000) as UnixMs, reason: 'segment_unreadable' });
+  }
+  return report;
 }
 
 /**
@@ -116,7 +169,8 @@ export function dailyCoverageJob(o: {
   // The day's poll_counts segments, then the next day's first hour (only its records of the day count: SW-12).
   let files: Array<{ m: SegmentManifest; next: boolean }> = [];
   let fileAt = 0;
-  let open: { bytes: Buffer; lines: Generator<string, unknown, undefined>; checking: boolean; next: boolean } | null = null;
+  let open: { m: SegmentManifest; bytes: Buffer; lines: Generator<string, FrameStop | null, undefined>; checking: boolean; next: boolean; buf: PollCountRecord[] } | null = null;
+  const skipped: SegmentSkip[] = [];
   let poolsDone = false;
   const setup = (): void => {
     const next = new Date(start + DAY_MS).toISOString().slice(0, 10);
@@ -138,6 +192,7 @@ export function dailyCoverageJob(o: {
     run = coverageRun({ dayUtc: o.dayUtc, watched: WatchLog.readDay(o.dataDir, o.dayUtc, fs), gaps, records, universeManifestSha256: sha });
   };
   return {
+    skipped: () => skipped,
     step(): DailyCoverage | null {
       if (run === null) { setup(); return null; }
       if (open === null && fileAt < files.length) {
@@ -145,7 +200,7 @@ export function dailyCoverageJob(o: {
         const file = join(o.dataDir, f.m.path);
         if (!fs.existsSync(file)) return null;
         const bytes = fs.readFileSync(file) as Buffer;
-        open = { bytes, lines: frameLines(bytes), checking: true, next: f.next };
+        open = { m: f.m, bytes, lines: frameLines(bytes), checking: true, next: f.next, buf: [] };
         return null;
       }
       if (open !== null) {
@@ -153,18 +208,27 @@ export function dailyCoverageJob(o: {
         for (let n = 0; n < maxLines; n++) {
           const r = cur.lines.next();
           if (r.done === true) {
-            if (cur.checking && r.value === null) { open = { ...cur, lines: frameLines(cur.bytes), checking: false }; }
-            else open = null;                                               // read, or it does not decode whole: skipped
+            if (cur.checking && r.value === null) { open = { ...cur, lines: frameLines(cur.bytes), checking: false }; return null; }
+            if (cur.checking) skipped.push({ path: cur.m.path, hourUtc: cur.m.hourUtc, reason: r.value as FrameStop });   // does not decode whole
+            // SW-38: a file's records are added only once all of them parsed, so a damaged file adds nothing.
+            else for (const rec of cur.buf) if (!cur.next || (rec.barStartMs >= start && rec.barStartMs <= start + DAY_MS)) run.add(rec);
+            open = null;
             return null;
           }
           if (cur.checking || r.value === '') continue;
-          const rec = (JSON.parse(r.value) as { payload: PollCountRecord }).payload;
-          if (!cur.next || (rec.barStartMs >= start && rec.barStartMs <= start + DAY_MS)) run.add(rec);
+          let rec: PollCountRecord;
+          try { rec = pollCountOf(r.value); } catch {
+            skipped.push({ path: cur.m.path, hourUtc: cur.m.hourUtc, reason: 'parse_error' });
+            open = null;
+            return null;
+          }
+          cur.buf.push(rec);
         }
         return null;
       }
       if (!poolsDone) { poolsDone = run.pools(maxPools); return null; }
-      return run.finish();
+      const done = run.finish();
+      return { ...done, report: markSkipped(done.report, skipped) };
     },
   };
 }
