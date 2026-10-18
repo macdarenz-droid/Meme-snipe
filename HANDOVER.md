@@ -143,7 +143,9 @@
   - The test fails on `c83f9b15`.
   - `pnpm test` 9,415 pass.
   - The 192 h gate started at 06:01Z on `5e09441c`, alone, recording metricSeries hourly. ETA about 10:00Z.
-  - RT1 is re-checking the delta. CI runs on push.
+  - RT1 PASS on `5e09441c`: no M04 emit after unwatched or closed, no other pool or mint emitters, releaseWhere's cost is negligible, and retired series are kept until their rollup.
+  - CI 6/6 green on `5e09441c`.
+  - The merge now waits only on the 192 h gate (about 10:00Z).
 - **18 Oct 4:30 PM: SW-35 real root cause and ruling SW-41.**
   - Cause: pool-labelled metric series (M04 observation_lag_slots{pool,provider} at tracker.ts:520 and pool_snapshot_age_ms{pool} at tracker.ts:707) are never released when a pool is unwatched. compose.ts:491 outputs.unwatched calls only link and bars, against B-M27-01 logic 1.
   - Evidence: series rise linearly, about 490 per 12 h (542 → 3,976 by h96); heap grows about 2.6 KB per series. Only m27.series_cap = 5,000 bounds it (reached about h120), after which new pools' metrics are dropped. That is a functional loss on the server after about 5 days.
