@@ -411,7 +411,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     },
     nowMs, maxHoldMs: () => 0, mode: () => rp.monitor.mode(),
     tracker: {
-      watch: (id, cls) => (tracker === null ? false : link.watch(tracker, id, cls)),
+      // SW-43: a pool watched again gets bars again (one stopped by closed() is quarantined, so never watched again).
+      watch: (id, cls) => { const ok = tracker !== null && link.watch(tracker, id, cls); if (ok) bars.resume(id); return ok; },
       unwatch: (id) => { tracker?.unwatch(id); },
     },
     universe,
@@ -491,8 +492,8 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       // SW-41: a pool's metric series (M04's observation_lag_slots and pool_snapshot_age_ms) go with it (B-M27-01
       // logic 1). Kept, they grew by every pool ever watched until m27.series_cap, and then every new pool's series
       // were dropped. M04 asks for a new handle on each update, so none is left holding a released series.
-      unwatched(id) { link.outputs.unwatched(id); bars.stop(id); metrics.releaseWhere({ pool: id }); },
-      closed(e) { bars.stop(e.poolId); universe.onQuarantine(e.poolId); metrics.releaseWhere({ pool: e.poolId }); },
+      unwatched(id) { link.outputs.unwatched(id); bars.stop(id, nowMs()); metrics.releaseWhere({ pool: id }); },
+      closed(e) { bars.stop(e.poolId, nowMs()); universe.onQuarantine(e.poolId); metrics.releaseWhere({ pool: e.poolId }); },
       stale(e) { universe.onStale(e.poolId, e.sinceMs); },
       fresh(e) { universe.onFresh(e.poolId); },
       quarantine(id) { universe.onQuarantine(id); },

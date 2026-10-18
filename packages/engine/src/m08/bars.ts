@@ -21,6 +21,8 @@
 // A bar opens at the state carried in from before `startMs` (the last change seen), or at its first change when there
 // is none (DECISIONS Z09-B1). Its flow is close real vault − carried real vault (consecutive changes telescope).
 // Memory (ruling Z09-23): a pool with nothing open, no count pending and no event for `idleForgetMs` is forgotten.
+// A stopped pool is kept for `idleForgetMs` after its stop, refusing late events, then forgotten (SW-43); `resume`
+// lets a re-watched pool's bars start again from the next snapshot.
 //
 // Restarts (ruling Z09-40, rule (a)): a restarted worker's engine starts cold (no carried state, nothing open). A
 // replay does the same at each recorded `process_start` marker through `reset()` (see m08/replay.ts), so live and
@@ -98,6 +100,8 @@ interface PoolBars {
   counts: Map<number, number>;
   lastEventMs: number;
   stopped: boolean;
+  /** When stop() ran, by the caller's clock (SW-43). */
+  stoppedAtMs: number;
 }
 
 export interface BarEngineStats { droppedLate: number; skippedDecimals: number; skippedMalformed: number; unchanged: number; forgotten: number; lateCounts: number; earlyCounts: number }
@@ -106,8 +110,10 @@ export interface BarEngine {
   onPollCounts(r: PollCountsIn): void;
   closeDue(nowMs: UnixMs): Bar[];
   isComplete(b: Bar): boolean;
-  /** Pool quarantined or closed: its bars stop (edge case 2); open bars are discarded. */
-  stop(poolId: Pubkey): void;
+  /** Pool quarantined or closed: its bars stop (edge case 2); open bars are discarded. Kept `idleForgetMs` after `nowMs`. */
+  stop(poolId: Pubkey, nowMs: UnixMs): void;
+  /** Pool watched again: a stopped pool's bars restart from its next snapshot, opening at the carried state (SW-43). */
+  resume(poolId: Pubkey): void;
   stats(): BarEngineStats;
   /** Pools held in memory (bounded-memory tests). */
   size(): number;
@@ -130,7 +136,7 @@ export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS, log?: BarLog): Ba
   const poolOf = (id: Pubkey, nowMs: number): PoolBars => {
     let p = pools.get(id);
     if (p === undefined) {
-      p = { carried: null, bars: new Map(), closedThrough: -Infinity, closedState: null, counts: new Map(), lastEventMs: nowMs, stopped: false };
+      p = { carried: null, bars: new Map(), closedThrough: -Infinity, closedState: null, counts: new Map(), lastEventMs: nowMs, stopped: false, stoppedAtMs: 0 };
       pools.set(id, p);
     }
     return p;
@@ -233,7 +239,9 @@ export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS, log?: BarLog): Ba
       for (const [poolId, p] of [...pools]) {
         if (!p.stopped) closePool(out, poolId, p, lastDue);
         // Bounded memory: nothing open, nothing pending and idle for long → forgotten (a later event starts afresh).
-        if (!p.stopped && p.bars.size === 0 && p.counts.size === 0 && nowMs - p.lastEventMs >= cfg.idleForgetMs) {
+        const idle = p.stopped ? nowMs - p.stoppedAtMs >= cfg.idleForgetMs
+          : p.bars.size === 0 && p.counts.size === 0 && nowMs - p.lastEventMs >= cfg.idleForgetMs;
+        if (idle) {
           pools.delete(poolId);
           expected.delete(poolId);
           stats.forgotten += 1;
@@ -249,11 +257,17 @@ export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS, log?: BarLog): Ba
       return expectedN > 0 && BigInt(b.missing) * BPS <= BigInt(cfg.incompleteMissingBps) * BigInt(expectedN);
     },
 
-    stop(poolId) {
-      const p = poolOf(poolId, 0);
+    stop(poolId, nowMs) {
+      const p = poolOf(poolId, nowMs);
       p.stopped = true;
+      p.stoppedAtMs = nowMs;
       p.bars.clear();
       p.counts.clear();
+    },
+
+    resume(poolId) {
+      const p = pools.get(poolId);
+      if (p !== undefined) p.stopped = false;
     },
 
     stats: () => ({ ...stats }),

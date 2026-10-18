@@ -128,3 +128,51 @@ describe('SW-41: a pool\'s metric series go when it leaves the watchlist', () =>
     }
   }, 120_000);
 });
+
+describe('SW-43: bars of a pool that leaves the watchlist, through the composition root', () => {
+  const barsOf = (r: Awaited<ReturnType<typeof startRig>>, pool: string, fromMs: number): number =>
+    Number(r.rec.parts.db.reader().get('SELECT count(*) AS n FROM "bar_1m" WHERE "pool_id" = ? AND "minute" >= ?', pool, fromMs)?.n ?? 0);
+
+  it('a pool watched again through the watchlist gets bars again (fails before: stopped for good at its unwatch)', async () => {
+    const r = await startRig(tempDir('sw43-rewatch'));
+    try {
+      await r.run(5_000);
+      const p = r.chain.pools[0]!.pool;
+      r.rec.parts.tracker.unwatch(p);                                    // the watchlist may have taken it already
+      r.rec.parts.watchlist.pinForPosition(p);
+      await r.run(3 * 60_000 + 70_000);
+      assert.ok(barsOf(r, p, 0) >= 1, 'bars while first watched');
+      r.rec.parts.tracker.unwatch(p);                                    // M04 drops it: compose stops its bars
+      await r.run(60_000);
+      const back = r.time.nowMs();
+      r.rec.parts.watchlist.unpin(p);                                    // re-classed: watched again through compose's hook
+      r.rec.parts.watchlist.pinForPosition(p);
+      await r.run(4 * 60_000 + 70_000);
+      assert.ok(barsOf(r, p, back) >= 2, `bars after the re-watch: ${barsOf(r, p, back)}`);
+    } finally {
+      await r.rec.stop();
+    }
+  }, 120_000);
+
+  it('a closed pool gets no bars afterwards, and its entry goes after idleForgetMs (fails before: kept for ever)', async () => {
+    const r = await startRig(tempDir('sw43-closed'));
+    try {
+      await r.run(5_000);
+      const fp = r.chain.pools[1]!;
+      assert.ok(r.rec.parts.tracker.watch(fp.pool, 'candidate'));
+      await r.run(3 * 60_000 + 70_000);
+      assert.ok(barsOf(r, fp.pool, 0) >= 1, 'bars while open');
+      const before = r.rec.parts.bars.size();
+      r.chain.dropPool(fp);                                              // the pool account is gone: M04 publishes closed
+      await r.run(10_000);
+      const closedAt = r.time.nowMs();
+      assert.ok(r.lines.some((l) => l.includes('m04.pool_closed') && l.includes(fp.pool)), 'M04 saw the close');
+      await r.run(12 * 60_000);
+      assert.equal(barsOf(r, fp.pool, closedAt), 0, 'no bar after the close');
+      assert.equal(r.rec.parts.tracker.latest(fp.pool), null, 'not watched again');
+      assert.ok(r.rec.parts.bars.size() < before, `${r.rec.parts.bars.size()} bar-engine pools, ${before} before the close`);
+    } finally {
+      await r.rec.stop();
+    }
+  }, 120_000);
+});

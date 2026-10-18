@@ -233,12 +233,14 @@ describe('A-M08-01 logic and edges', () => {
     e.onSnapshot(snap(T0 + 76_000, 0n), 1_000);
     assert.deepEqual([e.stats().skippedDecimals, e.stats().skippedMalformed], [1, 2]);
     e.onSnapshot(snap(T0 + 90_000, 102n), 1_000);
-    e.stop('pool-a');
+    e.stop('pool-a', (T0 + 90_500) as UnixMs);
     e.onSnapshot(snap(T0 + 91_000, 103n), 1_000);
     e.onPollCounts(counts(T0 + 90_000, 30));
     e.onPollCounts({ ...counts(T0 + 120_000, 30), receivedAtMs: Number.NaN as UnixMs });   // no receipt time: ignored
+    assert.equal(e.closeDue((T0 + 90_500 + 599_999) as UnixMs).length, 0);
+    assert.equal(e.size(), 1);                                                         // kept for idleForgetMs after stop (SW-43)
     assert.equal(e.closeDue((T0 + 2_000_000) as UnixMs).length, 0);
-    assert.equal(e.size(), 1);                                                         // a stopped pool is never forgotten
+    assert.equal(e.size(), 0);                                                         // then forgotten
   });
 
   it('2 Hz pools expect 30 snapshots a bar; 60 s bars expect 60 at 1 Hz and sum their four windows', () => {
