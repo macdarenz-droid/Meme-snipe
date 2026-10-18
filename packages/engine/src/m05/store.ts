@@ -79,8 +79,13 @@ export function m24CandidateStore(db: Db, o: { newId(): string; nowMs(): UnixMs 
           const u = repos.candidate.updateVersioned(tx, { candidateId: prev.candidateId }, prev.version, { state: next.state, reasons, cooldownUntil: timerOf(next), updatedAt: now });
           if (!u.ok) return u;
         }
+        // SW-47: a candidate's events never go back in time. After a backward clock step a transition is stamped no
+        // earlier than the candidate's last event, so its events stay in their written order and its last event is its
+        // state (both manifest builders read it so).
+        const last = tx.get('SELECT "at" FROM "candidate_event" INDEXED BY "candidate_event_candidate" WHERE "candidate_id" = ? ORDER BY "at" DESC LIMIT 1', t.candidateId);
+        const at = last === undefined ? t.atMs : Math.max(t.atMs, Number(last.at));
         repos.candidate_event.insert(tx, {
-          eventId: o.newId(), candidateId: t.candidateId, poolId: t.poolId, mint: t.mint, fromState: t.from, toState: t.to, reason: t.reason.slice(0, 500), at: t.atMs, createdAt: now,
+          eventId: o.newId(), candidateId: t.candidateId, poolId: t.poolId, mint: t.mint, fromState: t.from, toState: t.to, reason: t.reason.slice(0, 500), at: at as UnixMs, createdAt: now,
         });
         db.outbox.append(tx, CANDIDATE_TOPIC, { candidateId: t.candidateId, poolId: t.poolId, mint: t.mint, from: t.from, to: t.to, reason: t.reason, atMs: t.atMs });
         return { ok: true as const, value: undefined };
