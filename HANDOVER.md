@@ -138,6 +138,15 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 5:15 AM: the manifest build grows with history; ruling SW-46.**
+  - Each day, recorder-main/daily.ts manifest() → m05 buildUniverseManifest reads every candidate event since 0 and every eviction since 0, and holds state for every pool ever seen.
+  - In the soak, each build reads about +5,300 events and holds about +700 pools more than the day before. Only the 1-year retention bounds it: by day 365, about 1.9 M events and 250 k pools.
+  - This is case (c). It runs in the same daily window as the [heap] steps.
+  - Ruling SW-46, built before SW-45, then one gate after both:
+    - the day's build starts from each pool's state at dayStart, taken by indexed queries with no new stored checkpoint (an index-only migration is allowed);
+    - bound tests that fail first;
+    - byte-identical manifests on the recorded days 10-06..10-13, plus edge cases (a span across midnight, an eviction before dayStart, a tail cut, a mid-day restart, a down day, a post-purge day);
+    - an audit of every periodic job for reads from 0 or reads that grow with history.
 - **19 Oct 5:10 AM: transient named; ruling SW-45.** The builder ran the coverage job alone 10 times on one recorded day:
   - [heap] peak 23.8 → plateau 41.7 MiB;
   - with gc() after every step it stays flat at 12.7.
