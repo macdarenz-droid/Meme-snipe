@@ -138,6 +138,14 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 10:25 AM: SWITCH-FIX-3 at local `3b4f4d03`; SW-44 ruled.**
+  - Done, each with a test that fails first: SW-47 and SW-48, plus SW-40 (a). No consumer counts or sums gap entries, so no field was added. DECISIONS now has the #336 gate and stall figures and the watch list.
+  - SW-44 Rule G approved with amendments:
+    - a gap is a previous bar with no successful poll (no record, 0 polls or skipped; all four windows for 60 s bars);
+    - the first bar after a gap behaves exactly like a cold start (the test oracle is a reset engine);
+    - tests cover the outage case and both durations;
+    - no bar test is loosened, and SW-44 is marked as a spec change to A-M08-01.
+  - Rig tests wait on the child's completion event, with 30 s only as a safety timeout.
 - **19 Oct 10:10 AM: SWITCH-FIX-3 progress and rulings.** `claude/switch-fix-3` was base-merged at `844a5cdf`.
   - Local commits, not pushed yet: SW-50 (nice set by the parent), SW-49 (injected timer), SW-42 (m27.series_dropped), and SW-37/38/39 (a shared all-or-none segment reader for coverage, the child and Phase 0).
   - Rulings:
