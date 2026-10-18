@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 10:10 AM: SWITCH-FIX-3 progress and rulings.** `claude/switch-fix-3` was base-merged at `844a5cdf`.
+  - Local commits, not pushed yet: SW-50 (nice set by the parent), SW-49 (injected timer), SW-42 (m27.series_dropped), and SW-37/38/39 (a shared all-or-none segment reader for coverage, the child and Phase 0).
+  - Rulings:
+    - SW-48: keep the 192 MB heap cap (measure a 60-pool server day at switch-on) and the 4 MiB report cap.
+    - The gap merge by reason is approved only once no consumer depends on how many entries there are; otherwise keep the figure in an added field. Recorded as a format change.
+    - Every failure reason backs off per day, 15 min doubling to 6 h (timeouts included). Log on the first failure and on each change of reason.
+    - SW-40 (a): a synchronous spawn throw becomes spawn_throw, under the same back-off.
 - **19 Oct 9:47 AM: #336 MERGED at `fd8d4fea`** (parents `3439ee02` and `8653d650`; default branch checked with git ls-remote). Evidence on the exact head `8653d650`:
   - RT1 and RT2 PASS;
   - CI green on all 6 checks (e2e on attempt 2; 10d is not this PR's, see the tracked item);
