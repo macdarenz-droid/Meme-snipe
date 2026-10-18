@@ -140,8 +140,9 @@ export const TABLES = {
       cooldownUntil: opt(c.ms), firstSeenAt: c.ms, lastScreenId: opt(c.ulid), version: c.int, createdAt: c.ms, updatedAt: c.ms,
     },
     key: ['candidateId'], appendOnly: false, retention: Y1, unique: [['mint', 'poolId']],
-    // Migration 0002 (Z10, Z09-23): M05's `due` scan by retry time.
-    indexes: [{ name: 'candidate_state', columns: ['state'] }, { name: 'candidate_cooldown_until', columns: ['cooldownUntil'], where: '"cooldown_until" IS NOT NULL' }],
+    // Migration 0002 (Z10, Z09-23): M05's `due` scan by retry time. Migration 0004 (SW-46): the manifest's pools.
+    indexes: [{ name: 'candidate_state', columns: ['state'] }, { name: 'candidate_cooldown_until', columns: ['cooldownUntil'], where: '"cooldown_until" IS NOT NULL' },
+      { name: 'candidate_pool', columns: ['poolId'] }, { name: 'candidate_state_updated', columns: ['state', 'updatedAt'] }],
   },
   signal: {
     columns: {
@@ -345,6 +346,8 @@ export const TABLES = {
       snapshots: c.int, createdAt: c.ms,
     },
     key: ['poolId', 'minute'], appendOnly: false, retention: { days: 90 },
+    // SW-32 (migration 0003): the purge's bounded batches seek by minute instead of scanning the table.
+    indexes: [{ name: 'bar_1m_minute', columns: ['minute'] }],
   },
   equity_point: {
     columns: { minute: c.ms, mode: oneOf(...MODES), equityLamports: c.lamports, flowAdjustedIndex: c.decimal, drawdownBps: c.int, createdAt: c.ms },
@@ -437,7 +440,8 @@ export const TABLES = {
       toState: oneOf(...CANDIDATE_STATES), reason: c.text, at: c.ms, createdAt: c.ms,
     },
     key: ['eventId'], appendOnly: true, retention: Y1,
-    indexes: [{ name: 'candidate_event_candidate', columns: ['candidateId'] }, { name: 'candidate_event_at', columns: ['at'] }],
+    // SW-32 (migration 0003): candidate_event_created_at serves the retention job's bounded batches.
+    indexes: [{ name: 'candidate_event_candidate', columns: ['candidateId'] }, { name: 'candidate_event_at', columns: ['at'] }, { name: 'candidate_event_created_at', columns: ['createdAt'] }],
   },
   blacklist: {
     columns: { mint: c.pubkey, reason: c.text, until: opt(c.ms), setBy: c.text, createdAt: c.ms, updatedAt: c.ms },

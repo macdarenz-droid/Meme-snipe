@@ -376,8 +376,8 @@ describe('A-M07-03 md-pull and the daily coverage job', () => {
     assert.throws(() => sftpBatch([['get', 'a b']]), /unsafe/);
     // SW-17: the day's watch log comes too (the coverage denominator).
     seen.length = 0;
-    t.fetchWatch?.('2026-10-15', '/tmp/x');
-    assert.deepEqual(seen.map((s) => s.batch), ['lcd /tmp/x\n-get md/watch/2026-10-15.ndjson watch/2026-10-15.ndjson\n']);
+    t.fetchWatch?.('2026-10-15', '/tmp/x');                              // SW-29: not listed, so not fetched
+    assert.deepEqual(seen.map((s) => s.batch), ['ls -1 md\n']);
     assert.throws(() => sftpTransport('evil host'), RangeError);
     const failing = sftpTransport('h', () => ({ status: 255, stdout: '' }));
     assert.throws(() => failing.listDays(), /sftp exited 255/);

@@ -9,12 +9,13 @@
 //   the recorder's decoder. Each state of a pool the day's manifest lists as eligible is clipped to the pool's eligible
 //   INTERVALS (gaps excluded) and weighted by the pool's ACTUAL successful polls from `poll_counts` over that time,
 //   per 15-second bar (rulings Z09-25 and Z09-32: 1 Hz watched, 0.1 Hz in the tail; a state no poll saw has weight 0 and is left
-//   out). A state from before the day (a quiet pool's carry-over) is not read: each day is read on its own.
+//   out). The counts are D's own plus those in D+1's first hour whose bar starts inside D (SW-25). A state from before the day (a quiet pool's carry-over) is not read: each day is read on its own.
 // The pricing of a recorded state comes from the caller (`pricing`), which binds the venue maths (the engine does not
 // depend on @bot/venue). Reads files only; never a provider.
 import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import type { CoverageReport } from '@bot/types';
+import { DAY_MS } from '../m07/coverage.ts';
 import { dayManifests } from '../m07/daily.ts';
 import { scanGzipFrames } from '../m07/frames.ts';
 import type { SegmentManifest } from '../m07/manifest.ts';
@@ -64,6 +65,16 @@ export function pollsIn(bars: ReadonlyMap<number, number> | undefined, intervals
     }
   }
   return Math.round(w);
+}
+
+/** Adds one `poll_counts` record's successful polls to its pool's bar (a skipped-bars record carries none). */
+function addPolls(polls: Map<string, Map<number, number>>, payload: unknown): void {
+  const c = payload as { poolId?: unknown; barStartMs?: unknown; successfulPolls?: unknown; skippedBars?: unknown };
+  if (typeof c.poolId === 'string' && Number.isSafeInteger(c.barStartMs) && (c.barStartMs as number) % POLL_BAR_MS === 0 && Number.isSafeInteger(c.successfulPolls) && c.skippedBars === undefined) {
+    const pm = polls.get(c.poolId) ?? new Map<number, number>();
+    pm.set(c.barStartMs as number, (pm.get(c.barStartMs as number) ?? 0) + (c.successfulPolls as number));
+    polls.set(c.poolId, pm);
+  }
 }
 
 const isManifestFile = (v: unknown): v is UniverseManifestFile =>
@@ -116,12 +127,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
       bytes.set(m.stream, b);
       for (const l of read.lines) {
         if (m.stream === 'poll_counts') {
-          const c = l.payload as { poolId?: unknown; barStartMs?: unknown; successfulPolls?: unknown; skippedBars?: unknown };
-          if (typeof c.poolId === 'string' && Number.isSafeInteger(c.barStartMs) && (c.barStartMs as number) % POLL_BAR_MS === 0 && Number.isSafeInteger(c.successfulPolls) && c.skippedBars === undefined) {
-            const pm = polls.get(c.poolId) ?? new Map<number, number>();
-            pm.set(c.barStartMs as number, (pm.get(c.barStartMs as number) ?? 0) + (c.successfulPolls as number));
-            polls.set(c.poolId, pm);
-          }
+          addPolls(polls, l.payload);
         } else if (m.stream === 'ref_price') {
           const p = l.payload as { kind?: string; usdE6PerSol?: string };
           if (p.kind === 'price' && typeof p.usdE6PerSol === 'string' && /^\d+$/.test(p.usdE6PerSol) && !solUsd.has(dayUtc)) solUsd.set(dayUtc, Number(p.usdE6PerSol) / 1e6);
@@ -129,6 +135,16 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
       }
       // Each segment decodes on its own (a keyframe opens every pool in a segment).
       if (SNAPSHOT_STREAMS.has(m.stream)) snapLines.push(...read.lines.map((l) => ({ ...l, payload: { seg: m.path, e: l.payload } })));
+    }
+    // SW-25: D's last bars are stamped at their close plus a grace, so their counts (and any of D's counts moved late)
+    // are in D+1's first hour; read those whose bar starts inside D, as dailyCoverage does (SW-12). Their bytes stay D+1's.
+    const start = Date.parse(`${dayUtc}T00:00:00Z`);
+    const next = new Date(start + DAY_MS).toISOString().slice(0, 10);
+    for (const m of dayManifests(o.dataDir, next, fs).filter((x) => x.stream === 'poll_counts' && x.hourUtc === `${next}T00`).sort((a, b) => (a.path < b.path ? -1 : 1))) {
+      for (const l of linesOf(o.dataDir, m, fs).lines) {
+        const c = l.payload as { barStartMs?: unknown };
+        if (Number.isSafeInteger(c.barStartMs) && (c.barStartMs as number) >= start && (c.barStartMs as number) < start + DAY_MS) addPolls(polls, l.payload);
+      }
     }
     streams.push(...bytes.values());
     days.push({ dayUtc, lowCoverage: low, manifest });

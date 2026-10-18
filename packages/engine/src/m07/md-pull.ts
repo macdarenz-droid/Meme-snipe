@@ -25,7 +25,8 @@ export interface PullTransport {
   fetchDay(day: string, localRoot: string): void;
   /**
    * SW-17: copies the host's `watch/<day>.ndjson` (the day's watch log, the coverage denominator; Z10-26) into
-   * `<localRoot>/watch/<day>.ndjson`, if the host has it. A day still running is copied as it stands and copied again by
+   * `<localRoot>/watch/<day>.ndjson`, if the host has it (SW-29: a missing log is skipped, any other failure throws and
+   * leaves no local copy of the day). A day still running is copied as it stands and copied again by
    * the next pull. Never verified or receipted: the host keeps it until the day's segments are all gone.
    */
   fetchWatch?(day: string, localRoot: string): void;
@@ -124,7 +125,8 @@ export function sftpBatch(lines: ReadonlyArray<readonly string[]>): string {
 }
 
 /** The production transport: `sftp -b` in batch mode against the pull account on the tailnet host. */
-export function sftpTransport(host: string, run: (args: string[], batch: string) => { status: number; stdout: string } = runSftp): PullTransport {
+export function sftpTransport(host: string, run: (args: string[], batch: string) => { status: number; stdout: string } = runSftp,
+  local: Pick<typeof nodeFs, 'renameSync' | 'rmSync'> = nodeFs): PullTransport {
   if (!/^[A-Za-z0-9.-]+$/.test(host)) throw new RangeError('--host must be a tailnet name');
   const target = `zeroed-pull@${host}`;
   const call = (batch: string): string => {
@@ -140,8 +142,24 @@ export function sftpTransport(host: string, run: (args: string[], batch: string)
       call(sftpBatch([['lcd', localRoot], ['get', '-r', `md/${day}`]]));
     },
     fetchWatch(day: string, localRoot: string): void {
-      // `-get`: a day with no watch log (nothing was watched) is not an error.
-      call(sftpBatch([['lcd', localRoot], ['-get', `md/watch/${day}.ndjson`, `watch/${day}.ndjson`]]));
+      // SW-29: only a missing log is skipped (nothing was watched that day, or the folder does not exist yet), found by
+      // listing, never by ignoring a failed `get`. Any other failure throws, and leaves no local copy of the day: the
+      // download lands in a `.part` file, renamed only once complete, and an older copy is removed (the host still has
+      // the log, so the next pull brings it whole).
+      const base = (l: string): string => l.trim().replace(/^.*\//, '');
+      if (!call(sftpBatch([['ls', '-1', 'md']])).split('\n').map(base).includes('watch')) return;
+      const name = `${day}.ndjson`;
+      if (!call(sftpBatch([['ls', '-1', 'md/watch']])).split('\n').map(base).includes(name)) return;
+      const part = join(localRoot, 'watch', `${name}.part`);
+      const final = join(localRoot, 'watch', name);
+      try {
+        call(sftpBatch([['lcd', localRoot], ['get', `md/watch/${name}`, `watch/${name}.part`]]));
+        local.renameSync(part, final);
+      } catch (e) {
+        local.rmSync(part, { force: true });
+        local.rmSync(final, { force: true });
+        throw e;
+      }
     },
     putReceipts(files): void {
       call(sftpBatch(files.map((f) => ['put', f.local, `md/receipts/${f.name}`])));

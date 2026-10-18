@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/bcc7c66e4f1bcb63d243a2964ff4fcf3db833af5/ops/install.sh -o i && echo '286ef1c21298729f6b8d6a9d3cef53405945a7e877220b7f621b456f171203bf  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/653cecd14daece0aa882eb1f301f7580648a9ccf/ops/install.sh -o i && echo '3777a49cfdcedf8b93e58348319d025ceece3908eba1c0619f4d0e0a09447c62  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -23,7 +23,7 @@ The console screen can be left at any time (Ctrl+C); setup carries on in the bac
 
 The installer turns SSH off (unless it ran with `--ssh-key`), so the way in after install is Vultr's **View Console**, logged in as in step 1 (`linuxuser`, then `sudo -i`). There, `zeroed-status` shows where setup stands, and shows the deploy code and the pairing code again while they are still waiting to be used.
 
-SHA-256 of `install.sh`: `286ef1c21298729f6b8d6a9d3cef53405945a7e877220b7f621b456f171203bf`
+SHA-256 of `install.sh`: `3777a49cfdcedf8b93e58348319d025ceece3908eba1c0619f4d0e0a09447c62`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -267,6 +267,10 @@ The Blueprint's keyless M1 recorder (`packages/engine/src/recorder-main/`) runs 
 1. Find out why: the provider's dashboard (usage, rate limits, a changed plan) and `journalctl -u zeroed-worker | grep m14.provider` for the stop line and its reason. Resume only once the cause is understood; the 50% rate rule still applies.
 2. On the server console as root: `zeroed-provider-resume shyft` (or `chainstack`). It asks the running recorder to clear the stop, waits up to 30 s, and logs to the journal. The recorder writes `recorder.provider_resume` with `resumed`, `not_stopped` or `unknown`.
 3. Check: the alert clears at the next heartbeat, and `curl -s 127.0.0.1:8787/health` shows the recorder recording. If the provider limits us again, it is stopped again after three answers.
+
+**Runbook: the daily coverage report failed (`recorder.coverage_failed`; SW-45).** The recorder builds each day's coverage report in a short-lived child process (it reads the day's files and prints the report). If the child times out (15 min), crashes, exits non-zero or prints a report that does not check, the day gets no report yet. The recorder logs `recorder.coverage_failed` with the reason, holds the code and tries the day again every 15 minutes while the day is in the 7-day catch-up window. Recording and the universe manifests go on meanwhile.
+1. Find the reason: `journalctl -u zeroed-worker | grep recorder.coverage_failed` (`timeout`, `exit_<n>`, `signal_<name>`, `oversized`, `bad_output`, `spawn_<code>`).
+2. Nothing to run when a later try succeeds: the code clears once the day's report is saved. If it keeps failing, keep the log lines and report them.
 
 **Owner steps at switch-on (read providers; Z10-9).** Repository secrets `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` (the two URLs `provider-reads.yml` already uses) must both be set.
 1. On the server console (`linuxuser`, then `sudo -i`), run `zeroed-new-deploy-code` and note the 6 words.
