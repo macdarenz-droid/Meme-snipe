@@ -138,6 +138,13 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **18 Oct 7:25 PM: 192 h gate on `5e09441c`: SW-41 works, gate still FAILS.**
+  - metricSeries is flat at 138–158, and RssAnon is about 27 MiB lower than on `c83f9b15` at every hour.
+  - RssAnon h96 191.9 → h192 197.4 MiB (+5.5 against the 2 MiB limit). Peak RssAnon 202.3 and peak RSS 260.7 both pass.
+  - The rest splits into JS heap +1.9 (steady), external +0.4 and about 3.2 native. On disk the md folder grows from 461 to 925 MB because the soak never runs md-pull, so nothing is deleted.
+  - Ruling: a probe soak with heap snapshots at h96 and h192, diffed.
+    - If the growth is per-file state that grows with undeleted files, it needs a unit test that deletion prunes it, plus the soak modelling the md-pull delete cycle (realistic, not looser), then a gate rerun.
+    - If nothing bounds it, it is a leak: fix it with a test.
 - **18 Oct 5:05 PM: #336 at `5e09441c` (SW-41).** compose's unwatched and closed call metrics.releaseWhere({pool}).
   - The emitter grep found only M04's two pool series; bar_missing_ratio{pool} is declared but never emitted.
   - The test fails on `c83f9b15`.
