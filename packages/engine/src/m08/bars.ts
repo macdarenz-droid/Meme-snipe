@@ -20,6 +20,9 @@
 //
 // A bar opens at the state carried in from before `startMs` (the last change seen), or at its first change when there
 // is none (DECISIONS Z09-B1). Its flow is close real vault − carried real vault (consecutive changes telescope).
+// SW-44 (rule G, a change to A-M08-01's open rule): a bar whose previous bar had no successful poll for its pool starts
+// as a cold engine would: it opens at its own first change, its flow and range are its own changes', and with no change
+// it is not emitted. Decided at the bar's close from the poll counts, so live and replay agree.
 // Memory (ruling Z09-23): a pool with nothing open, no count pending and no event for `idleForgetMs` is forgotten.
 // A stopped pool is kept for `idleForgetMs` after its stop, refusing late events, then forgotten (SW-43); `resume`
 // lets a re-watched pool's bars start again from the next snapshot.
@@ -90,7 +93,8 @@ export function renderSpot(v: bigint): DecimalStr {
 }
 
 interface State { price: bigint; depth: bigint; real: bigint; atMs: number }
-interface Open { open: State; first: State | null; high: bigint; low: bigint; close: State; changedBy: number[] }
+/** `own`: the bar's first change and the range of its changes alone, its open and range after a gap (SW-44, rule G). */
+interface Open { open: State; first: State | null; high: bigint; low: bigint; close: State; changedBy: number[]; own: { first: State; high: bigint; low: bigint } }
 interface PoolBars {
   carried: State | null;
   bars: Map<number, Open>;
@@ -98,6 +102,8 @@ interface PoolBars {
   closedThrough: number; closedState: State | null;
   /** Successful polls per 15-second window start, from records received by the containing bar's close. */
   counts: Map<number, number>;
+  /** SW-44: the start of the last closed bar with a successful poll (-Infinity: none yet). */
+  polledThrough: number;
   lastEventMs: number;
   stopped: boolean;
   /** When stop() ran, by the caller's clock (SW-43). */
@@ -136,7 +142,7 @@ export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS, log?: BarLog): Ba
   const poolOf = (id: Pubkey, nowMs: number): PoolBars => {
     let p = pools.get(id);
     if (p === undefined) {
-      p = { carried: null, bars: new Map(), closedThrough: -Infinity, closedState: null, counts: new Map(), lastEventMs: nowMs, stopped: false, stoppedAtMs: 0 };
+      p = { carried: null, bars: new Map(), closedThrough: -Infinity, closedState: null, counts: new Map(), polledThrough: -Infinity, lastEventMs: nowMs, stopped: false, stoppedAtMs: 0 };
       pools.set(id, p);
     }
     return p;
@@ -174,12 +180,19 @@ export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS, log?: BarLog): Ba
         n += c === undefined ? changed : Math.max(c, changed);
         p.counts.delete(w);
       }
+      // SW-44 (rule G): the previous bar had no successful poll (not watched, an outage, the recorder down, or its
+      // counts refused as late), so this bar starts as a cold engine would: it opens at its own first change, its
+      // flow and range are its own changes', and with no change there is no bar (no flat bar at the old state).
+      const afterGap = p.polledThrough !== s - D;
+      if (n > 0) p.polledThrough = s;
       if (b !== undefined) {
         p.closedState = b.close;
-        emit(out, poolId, s, b, n);                                                    // n ≥ its changed snapshots ≥ 1
+        emit(out, poolId, s, afterGap ? { ...b, open: b.own.first, first: null, high: b.own.high, low: b.own.low } : b, n);   // n ≥ its changed snapshots ≥ 1
+      } else if (afterGap) {
+        // nothing: a bar after a gap needs a change of its own
       } else if (p.closedState !== null && n > 0) {
         const c = p.closedState;
-        emit(out, poolId, s, { open: c, first: c, high: c.price, low: c.price, close: c, changedBy: [] }, n);
+        emit(out, poolId, s, { open: c, first: c, high: c.price, low: c.price, close: c, changedBy: [], own: { first: c, high: c.price, low: c.price } }, n);
       }
       p.bars.delete(s);
     }
@@ -204,11 +217,13 @@ export function createBarEngine(cfg: BarConfig = BAR_DEFAULTS, log?: BarLog): Ba
       let b = p.bars.get(startMs);
       if (b === undefined) {
         const open = c ?? st;
-        b = { open, first: c, high: open.price, low: open.price, close: st, changedBy: new Array<number>(windows).fill(0) };
+        b = { open, first: c, high: open.price, low: open.price, close: st, changedBy: new Array<number>(windows).fill(0), own: { first: st, high: st.price, low: st.price } };
         p.bars.set(startMs, b);
       }
       if (st.price > b.high) b.high = st.price;
       if (st.price < b.low) b.low = st.price;
+      if (st.price > b.own.high) b.own.high = st.price;
+      if (st.price < b.own.low) b.own.low = st.price;
       b.close = st;
       const i = Math.floor((s.observedAtMs - startMs) / BAR_MS);
       b.changedBy[i] = (b.changedBy[i] as number) + 1;

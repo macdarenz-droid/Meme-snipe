@@ -55,7 +55,7 @@ import { isStreamName, STREAM_NAMES, type StreamName } from '../recorder/streams
 import { createAgreedChainState, ANCHOR_EVERY_MS, type AgreedChainState } from './chain.ts';
 import { m07Log, RECORDER_LOG_TABLE } from './log-codes.ts';
 import { createReadPath, type ReadPath } from './rpc.ts';
-import { createDailyJob } from './daily.ts';
+import { createDailyJob, type DailyJob } from './daily.ts';
 import { kvEvictionLog, type EvictionLog } from './evictions.ts';
 import { ulid } from './ids.ts';
 import { OUTBOX_DRAIN_EVERY_MS, recorderRetention, RETENTION_EVERY_MS, retentionGate, type RecorderRetention } from './retention.ts';
@@ -126,6 +126,8 @@ export interface RunningRecorder {
     /** SW-34: the retention pass (start a pass in a test). */
     retention: RecorderRetention;
     tickOnce(): Promise<void>;
+    /** The daily jobs (a test awaits the coverage child: `childClosed`). */
+    daily: DailyJob;
   };
 }
 
@@ -812,7 +814,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       },
       parts: {
         db, config, log, metrics, read: rp, chain, queue, writer, disk, tracker: tracker as PoolTracker<CpPoolState>, universe, watchlist, bars, barStore,
-        backfill, venue, venueRecorder, evictions, model, facts, retention, tickOnce,
+        backfill, venue, venueRecorder, evictions, model, facts, retention, tickOnce, daily,
       },
     },
   };

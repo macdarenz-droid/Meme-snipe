@@ -69,7 +69,7 @@ describe('SW-43: stopped pools in the bar engine', () => {
     assert.ok(e.stats().forgotten >= 989);
   });
 
-  it('a re-watched pool gets bars again, opening at its carried state (fails before: no bar after a stop)', () => {
+  it('a re-watched pool gets bars again, opening at its first change after the gap (SW-44 rule G; fails before: no bar after a stop)', () => {
     const e = createBarEngine();
     e.onSnapshot(snap(T0, 100n), 1_000);
     e.onPollCounts(counts(T0, 15));
@@ -82,7 +82,7 @@ describe('SW-43: stopped pools in the bar engine', () => {
     const bars = e.closeDue(at(b0 + CLOSE));
     assert.equal(bars.length, 1);
     assert.equal(bars[0]?.startMs, b0);
-    assert.equal(bars[0]?.open, renderSpot(100n), 'opens at the carried state, as replay would');
+    assert.equal(bars[0]?.open, renderSpot(105n), 'SW-44: the bar after a gap opens at its own first change, not the carried state');
     assert.equal(bars[0]?.close, renderSpot(105n));
     e.closeDue(at(b0 + CLOSE + FORGET));
     assert.equal(e.size(), 0, 'a resumed pool idles out as any other');

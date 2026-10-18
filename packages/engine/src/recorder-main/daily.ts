@@ -63,6 +63,8 @@ export interface DailyJob {
   coverageChild(): number | null;
   /** SW-45: kills a running coverage child and resolves once it has exited (the recorder's stop: no orphan). */
   stop(): Promise<void>;
+  /** Resolves once the running coverage child has exited (at once when none runs); the next tick takes it in. */
+  childClosed(): Promise<void>;
 }
 
 export function createDailyJob(o: {
@@ -168,6 +170,11 @@ export function createDailyJob(o: {
     lastManifestRead: () => readStats,
     coverageFailed: () => failed.size > 0,
     coverageChild: () => job?.child.pid ?? null,
+    childClosed: () => new Promise<void>((resolve) => {
+      const j = job;
+      if (j === null || j.closed !== null) { resolve(); return; }
+      j.child.once('close', () => resolve());
+    }),
     stop: () => new Promise<void>((resolve) => {
       const j = job;
       if (j === null || j.closed !== null) { resolve(); return; }
