@@ -488,8 +488,11 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
         facts.set(s.pool.poolId, factOf(s));
         bars.onSnapshot(barSnapshotOf(s), cls === 'tail' ? settings.tailIntervalMs : settings.candidateIntervalMs);
       },
-      unwatched(id) { link.outputs.unwatched(id); bars.stop(id); },
-      closed(e) { bars.stop(e.poolId); universe.onQuarantine(e.poolId); },
+      // SW-41: a pool's metric series (M04's observation_lag_slots and pool_snapshot_age_ms) go with it (B-M27-01
+      // logic 1). Kept, they grew by every pool ever watched until m27.series_cap, and then every new pool's series
+      // were dropped. M04 asks for a new handle on each update, so none is left holding a released series.
+      unwatched(id) { link.outputs.unwatched(id); bars.stop(id); metrics.releaseWhere({ pool: id }); },
+      closed(e) { bars.stop(e.poolId); universe.onQuarantine(e.poolId); metrics.releaseWhere({ pool: e.poolId }); },
       stale(e) { universe.onStale(e.poolId, e.sinceMs); },
       fresh(e) { universe.onFresh(e.poolId); },
       quarantine(id) { universe.onQuarantine(id); },

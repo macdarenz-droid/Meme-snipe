@@ -100,3 +100,31 @@ describe('SW-31: the 75% disk warning reaches the heartbeat as a held state code
     }
   }, 120_000);
 });
+
+describe('SW-41: a pool\'s metric series go when it leaves the watchlist', () => {
+  it('watch then unwatch pools: none of their series is left, the count falls by at least one a pool, nothing is dropped (fails before: kept until m27.series_cap)', async () => {
+    const r = await startRig(tempDir('sw41'));
+    try {
+      await r.run(5_000);
+      const m = r.rec.parts.metrics;
+      const pools = r.chain.pools.slice(0, 6).map((p) => p.pool);
+      for (const p of pools) r.rec.parts.tracker.unwatch(p);              // the watchlist may have taken some already
+      await r.run(65_000);
+      const baseline = m.size();
+      for (const p of pools) assert.ok(r.rec.parts.tracker.watch(p, 'candidate'), p);
+      await r.run(65_000);
+      const held = (p: string): boolean => m.render().includes(`pool="${p}"`);
+      assert.ok(pools.every(held), 'each watched pool has its series');
+      const watching = m.size();
+      assert.ok(watching >= baseline + pools.length, `${watching} series watching, ${baseline} before`);
+      for (const p of pools) r.rec.parts.tracker.unwatch(p);
+      await r.run(65_000);
+      assert.deepEqual(pools.filter(held), [], 'no series of an unwatched pool is left');
+      // At least one series a pool (pool_snapshot_age_ms) goes; series without a pool label may come meanwhile.
+      assert.ok(m.size() <= watching - pools.length, `${m.size()} series after, ${watching} while watching`);
+      assert.doesNotMatch(m.render(), /^metrics_series_dropped_total [1-9]/m);
+    } finally {
+      await r.rec.stop();
+    }
+  }, 120_000);
+});

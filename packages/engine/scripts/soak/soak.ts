@@ -92,7 +92,7 @@ let peakHeapTotal = 0;
 let peakRssAny = 0;
 let nextMigration = 0;
 let migrations = 0;
-const samples: Array<Cost & { hour: number; heapMiB: number; rssMiB: number; rssAnonMiB: number; rssFileMiB: number; externalMiB: number; arrayBuffersMiB: number; ringMiB: number; metricsRingMiB: number; trackedPools: number; encoderStates: number; mdMiB: number; dbMiB: number; watched: number; queueDepth: number; wallS: number }> = [];
+const samples: Array<Cost & { hour: number; metricSeries: number; heapMiB: number; rssMiB: number; rssAnonMiB: number; rssFileMiB: number; externalMiB: number; arrayBuffersMiB: number; ringMiB: number; metricsRingMiB: number; trackedPools: number; encoderStates: number; mdMiB: number; dbMiB: number; watched: number; queueDepth: number; wallS: number }> = [];
 /** RssAnon and RssFile of /proc/self/status (Linux), in MiB; -1 elsewhere. */
 const procRss = (field: 'RssAnon' | 'RssFile'): number => {
   try { return Number(new RegExp(`^${field}:\\s+(\\d+) kB$`, 'm').exec(readFileSync('/proc/self/status', 'utf8'))?.[1] ?? -1024) / 1024; } catch { return -1; }
@@ -133,7 +133,7 @@ for (let s = 0; s < HOURS * 3_600; s++) {
     const m = process.memoryUsage();
     const st = rig.rec.status();
     samples.push({
-      hour: (s + 1) / 3_600, heapMiB: m.heapUsed / MIB, rssMiB: m.rss / MIB, rssAnonMiB: procRss('RssAnon'), rssFileMiB: procRss('RssFile'),
+      hour: (s + 1) / 3_600, metricSeries: rig.rec.parts.metrics.size(), heapMiB: m.heapUsed / MIB, rssMiB: m.rss / MIB, rssAnonMiB: procRss('RssAnon'), rssFileMiB: procRss('RssFile'),
       externalMiB: m.external / MIB, arrayBuffersMiB: m.arrayBuffers / MIB, ringMiB: rig.rec.parts.tracker.ringBytes() / MIB, metricsRingMiB: rig.rec.parts.metrics.ringBytes() / MIB,
       trackedPools: rig.rec.parts.tracker.ready().length, encoderStates: rig.rec.parts.queue.stats().encoderStates, mdMiB: du(rig.paths.mdDir) / MIB,
       dbMiB: ['', '-wal', '-shm'].reduce((n, x) => { try { return n + statSync(rig.paths.db + x).size; } catch { return n; } }, 0) / MIB, watched: st.watched, queueDepth: st.queueDepth,
