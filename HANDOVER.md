@@ -138,6 +138,16 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 9:47 AM: #336 MERGED at `fd8d4fea`** (parents `3439ee02` and `8653d650`; default branch checked with git ls-remote). Evidence on the exact head `8653d650`:
+  - RT1 and RT2 PASS;
+  - CI green on all 6 checks (e2e on attempt 2; 10d is not this PR's, see the tracked item);
+  - the 192 h gate PASS: RssAnon h96→h192 +1.51 MiB against a limit under 2; slope 0.0141 MiB/h; peak RssAnon 190.3; peak RSS 245.7; metricSeries flat; 8 coverage reports built, all by the child;
+  - a 48 h soak pinned to one CPU: loop-lag max 63-90 ms in the child's hours, 182 ms overall (startup), 0 seconds over 1 s.
+  - SWITCH-FIX-3 started on `claude/switch-fix-3` (`caebee47`, base merge first) with SW-34, SW-37..40, SW-42, SW-44 (rule to the supervisor first) and SW-47..50.
+    - It also carries the gate and stall figures in DECISIONS, and the longest-hold watch item.
+    - Before review: CI, plus a 192 h gate on its final head.
+  - RT3 (`session_017i994s5DxvLf4fLQxjmNGg`) is archived: all its findings merged in #335, and SWITCH-FIX-3 has none of its items. The switch-on PR gets a fresh security red team.
+  - Tracked minor: e2e 10d "key alert repeated". A send counted twice may duplicate an owner alert, and the e2e artifact lacks telegram.jsonl.
 - **19 Oct 9:40 AM: RT1 PASS on `8653d650`** (no BLOCKER or MAJOR).
   - The SW-45 child: a SIGKILL timer at 15 min; strict output checks; no orphans (stop kills it, and systemd's KillMode=control-group covers a crash); no fd or zombie leaks; a failed day never blocks the catch-up; nice 10; about 100 MiB peak.
   - SW-46: nothing left that grows with history. The eviction log's 8-day prune was already there.
