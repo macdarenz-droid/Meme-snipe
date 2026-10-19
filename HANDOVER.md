@@ -138,6 +138,17 @@
   - Owner question (3:10 PM): keep or undo the PM-01 round 2 work, after the re-routed refusal (see the #294 correction above).
 - **9 Oct about 12:27 AM: IDL-REPIN blocked by a safety refusal** (the classifier refused test runs after vendoring the `8cda1fa3` pump IDLs from GitHub). Not worked around, not re-routed. Put to the owner (owner waits). `pump_post_complete_buy` stays decoder-local (no frozen-types bump). The Z03 builder does #304's base merge first.
 - **9 Oct about 12:25 AM:** #310 OLD-SERVER-COPY runbook (draft, `7028a38a`): the old server serves files over its tailnet with `tailscale serve`; the new host pulls them into `/var/lib/zeroed-archive/old-server`, checked with sha256 and SQLite integrity. Builder MAJOR: on boot the old timers re-set the Telegram webhook and pull a deploy within about 2 min. Reviewer + red team `session_0138fsn8QYHHe227K9RWwim5` is asked for a race-free stop first. #309 round 2 (first-hour alert hold) sent to the ops builder.
+- **19 Oct 1:06 PM: #337 MERGED at `d9f6904f`** (parents `fd8d4fea` and `668424ec`; default branch checked with git ls-remote). Evidence:
+  - RT1 and RT2 PASS on `3f8f0cff` (`668424ec` adds one test file);
+  - CI green on all 6 checks of `668424ec`;
+  - the 192 h gate PASS on `668424ec`: RssAnon h96→h192 +1.33 MiB; slope 0.0145 MiB/h; peak RssAnon 190.9; peak RSS 247.8; 0 seconds over 1 s.
+  - The SWITCH-FIX category is complete: every red-team finding before switch-on is merged (#335, #336, #337).
+  - The builder (`session_01TdPUVeRXzgeM3SGmtTXL4u`), RT1 and RT2 are parked, not archived: SW-51 and the SW-43 parity item ride the switch-on PR.
+  - Held until Thu 22 Oct 3 PM Melbourne (the seven_day usage rule) or the owner's go:
+    - the switch-on PR ("worker": "recorder"; SW-51; the parity item in DECISIONS; a fresh security red team);
+    - R3-SPLIT;
+    - the OF re-arm PR.
+  - Owner switch-on steps after that PR deploys: RPC URLs by a fresh deploy code plus Deploy; the md-pull key pair and PullReceipt producer; SSH for the pull account on tailscale0.
 - **19 Oct 11:40 AM: RT1 PASS on #337 `3f8f0cff`** (no BLOCKER or MAJOR; 422 tests run; every back-off, timer and held code checked).
   - The head moved to `668424ec`: test-only (+11 lines in one test, for 100% branch coverage of frames.ts). I accept the `3f8f0cff` gate for its runtime code, as no src changed.
   - CI on `668424ec`: 5 of 6 green, check still running.
