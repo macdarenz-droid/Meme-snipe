@@ -44,7 +44,9 @@ Conservative scenario, PumpSwap: an exit attempt fails 44% of the time and each 
 | u1-1.15 | $5 | 55.2% | 44.3% | 40.6% | 33.3% |
 | u1-1.15 | $20 | 50.7% | 42.0% | 39.1% | 32.3% |
 
-As the outcome stage scores a trade (`outcome.ts` with RENT-1, #114: the same constants, derived from the same configuration; a parity test checks the two agree); the backtest's congestion, landing-tail and ladder costs are higher. A parity test checks that the outcome stage's mean loss on a still pool equals this cost math. The pump curve is not in the table: the proof's fills land on PumpSwap only, and the curve is paper-only research (§3.1); on the curve, fees are the same 1.25% per side but landing is worse (40% conservative).
+As the outcome stage scores a trade (`outcome.ts` with RENT-1, #114: the same constants, derived from the same configuration). Left out of both tables, as the outcome stage leaves them out: congestion, ladder escalation (the landed exit pays the first rung's priority, and every failed attempt the third rung's) and the exit retry haircut. The backtest charges all three, so its costs are higher.
+
+The table's exit sells at the pre-entry price: our own entry impact never comes back. On a still pool the outcome stage sells into the pool our buy left and gets part of it back, so the table's break-even is higher by that amount: 0.01–0.04 points at $2, up to 0.38 points (young PumpSwap, $20). Two parity tests in `edge.test.ts`: on a still pool, the outcome stage's mean loss equals this cost math within its sampling error; and with the draws forced (every attempt lands; the close always lands, always fails, or the account always gets dust), every trade's loss equals the fees, impact and fixed terms here to the lamport, less the impact given back. The pump curve is not in the table: the proof's fills land on PumpSwap only, and the curve is paper-only research (§3.1); on the curve, fees are the same 1.25% per side but landing is worse (40% conservative).
 
 The second table is the break-even win rate of a bracket exit (+W / −L gross), cost included: p = (L + c) / (W + L).
 
