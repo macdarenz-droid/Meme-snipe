@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { redactRpc } from '../../redact-rpc.ts';
 
 const RPC = process.env['SOLANA_RPC'] ?? 'https://api.mainnet-beta.solana.com';
 const PUMP = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
@@ -250,7 +251,7 @@ const curate = (dir: string) => {
         pool: { address: e.event['pool'], canonical: pool['canonical'], quote: pool['quote_mint'] === WSOL ? 'sol' : 'exotic', quote_mint: pool['quote_mint'], creator_fee_bps: pool['creator_fee_bps'], base_mint: pool['base_mint'], account_slot: pool['slot'] } }];
     });
   const old = (() => { try { return JSON.parse(readFileSync(join(dir, 'golden.json'), 'utf8')) as { vaultDeltas?: unknown[] }; } catch { return {}; } })();
-  const out = { vaultDeltas: old.vaultDeltas ?? [], source: cap.rpc, fetchedAt: cap.fetchedAt, selection: 'every successful non-mayhem trade in the captured pages: SOL-quoted curves; PumpSwap pools quoted in SOL or an exotic mint (USDC excluded)', curve, pumpswap };
+  const out = { vaultDeltas: old.vaultDeltas ?? [], source: redactRpc(cap.rpc), fetchedAt: cap.fetchedAt, selection: 'every successful non-mayhem trade in the captured pages: SOL-quoted curves; PumpSwap pools quoted in SOL or an exotic mint (USDC excluded)', curve, pumpswap };
   writeFileSync(join(dir, 'golden.json'), JSON.stringify(out, null, 1));
   console.error(`golden: ${curve.length} curve, ${pumpswap.length} pumpswap`);
 };
@@ -329,7 +330,7 @@ const main = async () => {
     feeConfigs[name] = { address, slot, ...decodeFeeConfig(Buffer.from(info.value.data[0], 'base64')) };
   }
   const events = [...(await capture(PUMP, pages)), ...(await capture(PUMP_AMM, pages))];
-  writeFileSync(join(dir, 'raw-capture.json'), JSON.stringify({ rpc: RPC, fetchedAt: new Date().toISOString(), feeConfigs, events }, null, 1));
+  writeFileSync(join(dir, 'raw-capture.json'), JSON.stringify({ rpc: redactRpc(RPC), fetchedAt: new Date().toISOString(), feeConfigs, events }, null, 1));
   console.error(`wrote ${events.length} events`);
   await enrichPools(join(dir, 'raw-capture.json'));
 };

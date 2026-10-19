@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { redactRpc } from '../../redact-rpc.ts';
 import {
   type Address, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, addressBytes, bondingCurveAddress, decodePool, findProgramAddress,
   fromBase64, recordFromRpc, transactionEvents,
@@ -97,7 +98,7 @@ const out = wanted.flatMap((w, i) => {
   return [{ label: w.label, address: w.address, slot: String(res.context.slot), owner: v.owner, lamports: String(v.lamports), dataBase64: v.data[0] }];
 });
 const meta = {
-  rpc: RPC,
+  rpc: redactRpc(RPC),
   fetchedAt: new Date().toISOString(),
   sources: { mayhemCreate: create.signature, buyEvent: buy.signature, graduatedPool: GRADUATED_POOL, poolOfBuy: buy.data.pool },
   creator: create.data.creator,

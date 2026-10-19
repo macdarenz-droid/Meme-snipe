@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { redactRpc } from '../../redact-rpc.ts';
 import { accountKeys, decodePool, decodeTokenAccount, decodeTransaction, firstFunder, fromBase64, recordFromRpc, transactionEvents, type Address, type RpcTransactionBase64 } from '../../../src/chain/index.ts';
 
 const RPC = process.env['SOLANA_RPC'] ?? 'https://api.mainnet-beta.solana.com';
@@ -211,7 +212,7 @@ const coinbase = await (await fetch(`https://api.exchange.coinbase.com/products/
 
 save();
 writeFileSync(join(OUT, 'facts.json'), JSON.stringify({
-  meta: { rpc: RPC, fetchedAt: new Date(fetchedAt).toISOString(), calls, mint: MINT, pool: POOL, migrationSlot: MIGRATION_SLOT, creationSlot: s0, creator, asOfSlot: String(AS_OF), firstBuyers: buyers },
+  meta: { rpc: redactRpc(RPC), fetchedAt: new Date(fetchedAt).toISOString(), calls, mint: MINT, pool: POOL, migrationSlot: MIGRATION_SLOT, creationSlot: s0, creator, asOfSlot: String(AS_OF), firstBuyers: buyers },
   transactions: txs, funders, accountsRead, holdersRaw, holdersComplete, thirdParty, coinbase,
 }, null, 1) + '\n');
 console.log(`wrote facts.json: ${txs.length} transactions, ${funders.length} funders, ${calls} RPC calls`);

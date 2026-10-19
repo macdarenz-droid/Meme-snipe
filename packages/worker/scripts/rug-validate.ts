@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
 import { TRIAL_POLICY } from '../../core/src/config/policy.ts';
 import { analyzeLaunch, collapses, collapsesSustained, misses, saleBuckets, sustainedPeak, sweep, type FullRpcTransaction, type LaunchReport } from '../src/research/rug-validate.ts';
+import { redactRpc } from '../../core/test/redact-rpc.ts';
 
 const [mintsFile, outFile, cacheDir = '.rug-validate-cache', maxArg = '3000'] = process.argv.slice(2);
 if (mintsFile === undefined || outFile === undefined) throw new Error('usage: rug-validate.ts <mints.txt> <out.json> [cacheDir] [maxTxs]');
@@ -123,7 +124,7 @@ const describe = (rs: LaunchReport[]) => {
 const SOL = 1_000_000_000n;
 const minPeaks = [0n, SOL / 10n, SOL / 2n, SOL, 5n * SOL, 20n * SOL];
 const out = {
-  config: RUG_CONFIG.version, rpc: RPC.replace(/api-key=[^&]+/, 'api-key=…'), ranAt: new Date().toISOString(), calls,
+  config: RUG_CONFIG.version, rpc: redactRpc(RPC), ranAt: new Date().toISOString(), calls,
   launches: reports.length, excluded,
   sweeps: Object.fromEntries([['loss>=0.1SOL', SOL / 10n], ['loss>=1SOL', SOL]].map(([name, loss]) => [name, sweep(reports, RUG_CONFIG, minPeaks, loss as bigint)])),
   misses: misses(reports, RUG_CONFIG),

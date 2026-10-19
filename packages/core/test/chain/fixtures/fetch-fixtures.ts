@@ -5,6 +5,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { redactRpc } from '../../redact-rpc.ts';
 import {
   type Address,
   PUMP_AMM_FEE_CONFIG,
@@ -223,7 +224,7 @@ let mode = 'full';
 
 function write() {
   runs.push({ mode, finishedAt: new Date().toISOString(), calls });
-  const meta = { rpc: RPC.replace(/api-key=[^&]+/, 'api-key=…'), runs };
+  const meta = { rpc: redactRpc(RPC), runs };
   writeFileSync(join(OUT, 'accounts.json'), JSON.stringify({ meta, accounts }, null, 1) + '\n');
   writeFileSync(join(OUT, 'transactions.json'), JSON.stringify({ meta, transactions: txs }, null, 1) + '\n');
   console.log(`wrote ${accounts.length} accounts and ${txs.length} transactions with ${calls} RPC calls`);

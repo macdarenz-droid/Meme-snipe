@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { redactRpc } from '../../../core/test/redact-rpc.ts';
 
 const RPC = process.env['SOLANA_RPC'] ?? 'https://api.mainnet-beta.solana.com';
 const CACHE = process.env['CACHE_DIR'];
@@ -72,5 +73,5 @@ for (const c of CASES) {
   }
   cases.push({ name: c.name, mint: c.mint, partial: c.partial, transactions });
 }
-writeFileSync(OUT, `${JSON.stringify({ meta: { rpc: RPC.replace(/api-key=[^&]+/, 'api-key=…'), fetchedAt: new Date().toISOString(), calls }, cases }, null, 1)}\n`);
+writeFileSync(OUT, `${JSON.stringify({ meta: { rpc: redactRpc(RPC), fetchedAt: new Date().toISOString(), calls }, cases }, null, 1)}\n`);
 console.log(`wrote ${cases.map((c) => `${c.name}: ${c.transactions.length}`).join(', ')} with ${calls} calls`);

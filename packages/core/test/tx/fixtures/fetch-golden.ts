@@ -7,6 +7,7 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { redactRpc } from '../../redact-rpc.ts';
 import {
   NATIVE_MINT,
   PUMP_AMM_GLOBAL_CONFIG,
@@ -203,6 +204,6 @@ await scan(PUMP_AMM_PROGRAM);
 const fetchedAt = new Date().toISOString();
 writeFileSync(
   join(OUT, 'golden.json'),
-  JSON.stringify({ source: RPC, fetchedAt, calls, accounts, golden, samples }, null, 1) + '\n',
+  JSON.stringify({ source: redactRpc(RPC), fetchedAt, calls, accounts, golden, samples }, null, 1) + '\n',
 );
 console.log(`wrote ${golden.length} golden transactions, ${samples.length} samples, ${accounts.length} accounts in ${calls} calls`);

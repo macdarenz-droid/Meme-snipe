@@ -1,4 +1,4 @@
-// WORKER-1e: S0's diagnostic set (supervisor ruling 2026-10-04). Three named parts, each only relaxing its own check
+// WORKER-1e: S0's diagnostic set (supervisor ruling 2026-10-04). Four named parts, each only relaxing its own check
 // and each reported where it was relied on; without the set every check is judged as before.
 import { describe, expect, it } from 'vitest';
 import { OFF_CHAIN } from '../../src/engine/index.ts';
