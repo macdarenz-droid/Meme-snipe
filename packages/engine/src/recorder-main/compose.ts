@@ -55,10 +55,10 @@ import { isStreamName, STREAM_NAMES, type StreamName } from '../recorder/streams
 import { createAgreedChainState, ANCHOR_EVERY_MS, type AgreedChainState } from './chain.ts';
 import { m07Log, RECORDER_LOG_TABLE } from './log-codes.ts';
 import { createReadPath, type ReadPath } from './rpc.ts';
-import { createDailyJob } from './daily.ts';
+import { createDailyJob, type DailyJob } from './daily.ts';
 import { kvEvictionLog, type EvictionLog } from './evictions.ts';
 import { ulid } from './ids.ts';
-import { OUTBOX_DRAIN_EVERY_MS, recorderRetention, RETENTION_EVERY_MS } from './retention.ts';
+import { OUTBOX_DRAIN_EVERY_MS, recorderRetention, RETENTION_EVERY_MS, retentionGate, type RecorderRetention } from './retention.ts';
 
 /** Where the recorder writes (ENGINE_PATHS on the host; a scratch folder in the smoke trial and the soak). */
 export interface RecorderPaths {
@@ -123,7 +123,11 @@ export interface RunningRecorder {
     model: ReturnType<typeof createPumpSwapPoolModel>;
     /** SW-6: the prefilter facts held per pool. */
     facts: ReadonlyMap<Pubkey, PrefilterFacts> & { set(k: Pubkey, v: PrefilterFacts): unknown };
+    /** SW-34: the retention pass (start a pass in a test). */
+    retention: RecorderRetention;
     tickOnce(): Promise<void>;
+    /** The daily jobs (a test awaits the coverage child: `childClosed`). */
+    daily: DailyJob;
   };
 }
 
@@ -160,7 +164,7 @@ export const VERIFY_COUNT_KEY = 'm04.verify_count';
  */
 export const UNANCHORED_MS = 600_000;
 /** Ruling Z10-41: critical codes that hold exactly while their condition does (never from the 15-minute window). */
-export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'recorder.coverage_failed']);
+export const STATE_CODES: ReadonlySet<string> = new Set(['m14.provider_stopped', 'm04.verify_cap_reached', 'recorder.clock_suspect', 'm07.unpulled_segments', 'm07.disk_budget_high', 'recorder.manifest_not_recorded', 'recorder.unanchored', 'recorder.retention_failed', 'recorder.coverage_failed', 'm27.series_dropped']);
 /**
  * Ruling Z10-24 (a new value: no SPEC or ARCH threshold exists): a critical line keeps the heartbeat critical for this
  * long after it was last raised. 15 minutes: at least three of the watchdog's 300 s repeats (`REPEAT_CRITICAL_S`).
@@ -349,6 +353,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     db.withTx((tx) => { repos.kv_state.upsert(tx, { key: NEXT_SEQ_KEY, valueJson: JSON.stringify(v), createdAt: t, updatedAt: t }); });
   };
   const retention = recorderRetention({ db, clock, barStore, rollupSink });
+  const retentionTries = retentionGate();
   const researchKey = p.researchKey ?? (() => { try { return createPublicKey(p.readFile(configValue(cfg, 'recorder.research_pubkey'))); } catch { return null; } });
   const key = researchKey();
   const disk = new DiskManager({
@@ -585,6 +590,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
   /** Ruling Z10-51: the state codes as of the last loop tick, so /health and status() read no database. */
   let tickCodes: readonly string[] = [];
   let tickSolUsd = 'pending';
+  let seriesDropLogged = false;
   /** Ruling Z10-41: the state codes, each exactly while its condition holds. */
   const activeCodes = (): string[] => {
     const out: string[] = [];
@@ -596,8 +602,14 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (lastDisk?.budgetHigh === true) out.push('m07.disk_budget_high');
     if (daily.manifestMissing(nowMs())) out.push('recorder.manifest_not_recorded');
     if (unanchored) out.push('recorder.unanchored');
+    if (retentionTries.failing()) out.push('recorder.retention_failed');
     // SW-45: a day's coverage child failed and the day has no report yet (retried every 15 min while in the window).
     if (daily.coverageFailed()) out.push('recorder.coverage_failed');
+    // SW-42: a metric series was refused at m27.series_cap; held until a restart starts the registry again (one line).
+    if (metrics.droppedSeries() > 0) {
+      out.push('m27.series_dropped');
+      if (!seriesDropLogged) { seriesDropLogged = true; log.event('warn', 'm27.series_dropped', { dropped: metrics.droppedSeries(), series: metrics.size(), cap: m27.seriesCap }); }
+    }
     return out;
   };
   let lastOutboxMs = -Infinity, lastRetentionMs = -Infinity;
@@ -734,12 +746,28 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
     if (mono - lastOutboxMs >= OUTBOX_DRAIN_EVERY_MS) { lastOutboxMs = mono; await guard('outbox', () => retention.drainOutbox()); }
     // SW-32: a pass starts daily and runs one bounded step a loop tick until it is through.
     if (mono - lastRetentionMs >= RETENTION_EVERY_MS) { lastRetentionMs = mono; retention.start(); }
-    await guard('retention', () => {
-      const r = retention.step();
-      if (r === null || !r.done) return;
-      if (r.bars > 0) metrics.counter('bar_1m_purged_total', {}).inc(r.bars);
-      log.event('info', 'recorder.retention', { rows: r.rows, bars: r.bars });
-    });
+    // SW-34: a failed step backs off (retentionGate), one line a failure, and from the third the held code is up.
+    if (retentionTries.due(mono)) {
+      let r: ReturnType<typeof retention.step> = null;
+      let ok = true;
+      try {
+        r = retention.step();
+      } catch (e) {
+        ok = false;
+        const b = retentionTries.failed(mono);
+        log.event('error', 'recorder.retention_failed', { error_code: String((e as { code?: unknown })?.code ?? 'E_THROWN'), failures: b.failures, retry_in_ms: b.waitMs });
+      }
+      if (ok && r !== null) {
+        retentionTries.succeeded();
+        const pass = r;
+        if (pass.done) {
+          await guard('retention', () => {
+            if (pass.bars > 0) metrics.counter('bar_1m_purged_total', {}).inc(pass.bars);
+            log.event('info', 'recorder.retention', { rows: pass.rows, bars: pass.bars });
+          });
+        }
+      }
+    }
     await guard('metrics_tick', () => metrics.tick());
   }
 
@@ -786,7 +814,7 @@ export async function createRecorder(p: RecorderPorts): Promise<Result<RunningRe
       },
       parts: {
         db, config, log, metrics, read: rp, chain, queue, writer, disk, tracker: tracker as PoolTracker<CpPoolState>, universe, watchlist, bars, barStore,
-        backfill, venue, venueRecorder, evictions, model, facts, tickOnce,
+        backfill, venue, venueRecorder, evictions, model, facts, retention, tickOnce, daily,
       },
     },
   };

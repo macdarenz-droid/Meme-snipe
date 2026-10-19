@@ -18,7 +18,7 @@
 // - Every length is in milliseconds of wall time; nothing is converted through a slot time (Zeroed bug B1:
 //   `coverage-journal.ts:5` measured gaps with SLOT_MS = 400).
 import type { CoverageReport, UnixMs } from '@bot/types';
-import type { ManifestGap } from './manifest.ts';
+import { mergeGaps, type ManifestGap } from './manifest.ts';
 
 export const DAY_MS = 86_400_000;
 export const MINUTE_MS = 60_000;
@@ -193,6 +193,10 @@ export function coverageRun(input: Omit<CoverageInput, 'pollCounts'>): {
       }
       for (const [s, n] of polledByStream) entry(s).recorded += n;
       for (const { stream, gap } of input.gaps) entry(stream).gaps.push({ fromMs: gap.fromMs, toMs: gap.toMs, reason: gap.reason });
+      // SW-48 (a report format change): a stream's gaps merged by reason where they overlap or touch. The report keeps
+      // no pool id, so per-pool gaps of one bar were the same interval many times over (about 345,600 entries on a bad
+      // clock day at 60 pools); the figures above come from the unmerged input and are unchanged.
+      for (const e of streams.values()) e.gaps = mergeGaps(e.gaps).map((g) => ({ fromMs: g.fromMs, toMs: g.toMs, reason: g.reason }));
       const report: CoverageReport = {
         dayUtc: input.dayUtc,
         streams: [...streams.values()].sort((x, y) => (x.stream < y.stream ? -1 : 1)),

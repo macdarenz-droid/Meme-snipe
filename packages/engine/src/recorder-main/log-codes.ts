@@ -28,6 +28,8 @@ export const M07_LOG_CODES = {
   'm07.segment_rotated': { fields: { stream: 'string', records: 'integer', sha256: 'string' } },
   'm07.receipts_swept': { fields: { category: 'string', deleted: 'integer', stuck: 'integer', over_cap: 'integer' } },
   'm07.segment_deleted': { fields: { path: 'string', sha256: 'string' } },
+  // SW-37: a segment the coverage report's reader skipped whole (it does not decode, or a line does not parse).
+  'm07.segment_unreadable': { fields: { day: 'string', path: 'string', reason: 'string' } },
   'm07.watch_deleted': { fields: { day: 'string' } },
   'm07.segment_delete_failed': { fields: { path: 'string', error_code: 'string' } },
   'm07.unpulled_segments': { fields: { count: 'integer', retention_days: 'integer' } },
@@ -60,6 +62,7 @@ export const RECORDER_LOG_CODES = {
   'recorder.coverage_failed': { fields: { day: 'string', reason: 'string', detail: 'string' } },
   'recorder.sol_usd_check': { fields: { result: 'string' } },
   'recorder.retention': { fields: { rows: 'integer', bars: 'integer' } },
+  'recorder.retention_failed': { fields: { error_code: 'string', failures: 'integer', retry_in_ms: 'integer' } },
   'recorder.provider_resume': { fields: { provider: 'string', result: 'string' } },
   'recorder.memory_high': { fields: { memory_bytes: 'integer', limit_bytes: 'integer', pct: 'integer', source: 'string' } },
 } as const satisfies LogCodes;

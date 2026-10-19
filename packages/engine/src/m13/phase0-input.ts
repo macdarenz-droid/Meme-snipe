@@ -16,8 +16,8 @@ import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import type { CoverageReport } from '@bot/types';
 import { DAY_MS } from '../m07/coverage.ts';
-import { dayManifests } from '../m07/daily.ts';
-import { scanGzipFrames } from '../m07/frames.ts';
+import { dayManifests, type SegmentSkip } from '../m07/daily.ts';
+import { segmentRecords } from '../m07/frames.ts';
 import type { SegmentManifest } from '../m07/manifest.ts';
 import { SnapshotDecoder, type EncodedSnapshot } from '../recorder/delta.ts';
 import { POLL_BAR_MS } from '../recorder/queue.ts';
@@ -34,18 +34,18 @@ const SNAPSHOT_STREAMS = new Set(['pool_snapshot', 'pool_snapshot_tail', 'pool_s
 export type RecordedPricing = (fields: Readonly<Record<string, unknown>>, pool: { poolId: string; mint: string }) => PoolPricing | null;
 
 interface Line { seq: bigint; recvMs: number; payload: unknown }
-function linesOf(dataDir: string, m: SegmentManifest, fs: ReadFs): { lines: Line[]; decodedBytes: number | null } {
+/** SW-39: the same damaged-segment rule as the coverage report's reader: a segment that does not decode whole, or has a
+ * line that does not parse, is skipped whole (read as unread: no lines, no decoded bytes) and reported to `onSkip`. */
+export function linesOf(dataDir: string, m: SegmentManifest, fs: ReadFs = nodeFs, onSkip?: (s: SegmentSkip) => void): { lines: Line[]; decodedBytes: number | null } {
   const file = join(dataDir, m.path);
   if (m.codec !== 'gzip' || !fs.existsSync(file)) return { lines: [], decodedBytes: null };
-  const lines: Line[] = [];
-  let decoded = 0;
-  scanGzipFrames(fs.readFileSync(file) as Buffer, (line) => {
-    if (line === '') return;
-    decoded += Buffer.byteLength(line, 'utf8') + 1;
+  const read = segmentRecords(fs.readFileSync(file) as Buffer, (line): Line => {
     const o = JSON.parse(line) as { seq: string; recvMs: number; payload: unknown };
-    lines.push({ seq: BigInt(o.seq), recvMs: o.recvMs, payload: o.payload });
+    if (typeof o.payload !== 'object' || o.payload === null) throw new TypeError('record line without a payload');   // as the coverage reader
+    return { seq: BigInt(o.seq), recvMs: o.recvMs, payload: o.payload };
   });
-  return { lines, decodedBytes: decoded };
+  if ('skipped' in read) { onSkip?.({ path: m.path, hourUtc: m.hourUtc, reason: read.skipped }); return { lines: [], decodedBytes: null }; }
+  return { lines: read.records, decodedBytes: read.decodedBytes };
 }
 
 /**
@@ -80,7 +80,7 @@ function addPolls(polls: Map<string, Map<number, number>>, payload: unknown): vo
 const isManifestFile = (v: unknown): v is UniverseManifestFile =>
   typeof v === 'object' && v !== null && (v as { manifestVersion?: unknown }).manifestVersion === 1 && typeof (v as { sha256?: unknown }).sha256 === 'string';
 
-export function readPhase0Dataset(o: { dataDir: string; days: readonly string[]; pricing: RecordedPricing; fs?: ReadFs }): Omit<Phase0Input, 'simParams' | 'slippage'> {
+export function readPhase0Dataset(o: { dataDir: string; days: readonly string[]; pricing: RecordedPricing; fs?: ReadFs; onSkip?: (s: SegmentSkip) => void }): Omit<Phase0Input, 'simParams' | 'slippage'> {
   const fs = o.fs ?? nodeFs;
   const days: Phase0Day[] = [];
   const streams: StreamDayBytes[] = [];
@@ -100,7 +100,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
   const lowOf = new Map<string, boolean>();
   for (const d of [...allDays].sort()) {
     for (const m of dayManifests(o.dataDir, d, fs).filter((x) => x.stream === 'universe_manifest' || x.stream === 'coverage').sort((a, b) => (a.path < b.path ? -1 : 1))) {
-      for (const l of linesOf(o.dataDir, m, fs).lines) {
+      for (const l of linesOf(o.dataDir, m, fs, o.onSkip).lines) {
         if (m.stream === 'universe_manifest' && isManifestFile(l.payload)) {
           const { sha256, ...body } = l.payload;
           if (manifestSha256(body) === sha256 && typeof l.payload.dayUtc === 'string' && !manifestOf.has(l.payload.dayUtc)) manifestOf.set(l.payload.dayUtc, l.payload);
@@ -119,7 +119,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
     const polls = new Map<string, Map<number, number>>();               // pool → bar start → successful polls
     const bytes = new Map<string, StreamDayBytes>();
     for (const m of manifests) {
-      const read = linesOf(o.dataDir, m, fs);
+      const read = linesOf(o.dataDir, m, fs, o.onSkip);
       const b = bytes.get(m.stream) ?? { dayUtc, stream: m.stream, codec: m.codec, compressedBytes: 0, decodedBytes: 0 };
       b.compressedBytes += m.bytes;
       b.decodedBytes = b.decodedBytes === null || read.decodedBytes === null ? null : b.decodedBytes + read.decodedBytes;
@@ -141,7 +141,7 @@ export function readPhase0Dataset(o: { dataDir: string; days: readonly string[];
     const start = Date.parse(`${dayUtc}T00:00:00Z`);
     const next = new Date(start + DAY_MS).toISOString().slice(0, 10);
     for (const m of dayManifests(o.dataDir, next, fs).filter((x) => x.stream === 'poll_counts' && x.hourUtc === `${next}T00`).sort((a, b) => (a.path < b.path ? -1 : 1))) {
-      for (const l of linesOf(o.dataDir, m, fs).lines) {
+      for (const l of linesOf(o.dataDir, m, fs, o.onSkip).lines) {
         const c = l.payload as { barStartMs?: unknown };
         if (Number.isSafeInteger(c.barStartMs) && (c.barStartMs as number) >= start && (c.barStartMs as number) < start + DAY_MS) addPolls(polls, l.payload);
       }

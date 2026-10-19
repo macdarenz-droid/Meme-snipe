@@ -3,9 +3,10 @@
 // the recorder's own high-water mark (DECISIONS "SWITCH-FIX" SW-45). The same reader as the recorder's in-process job
 // (`dailyCoverage`); it reads files only, writes nothing but the report to stdout, and opens no connection. The parent
 // passes no environment, checks the report before use, and kills this process on a timeout or at its own stop.
+// stdout: {"report": CoverageReport, "skipped": [{path, hourUtc, reason}]} (SW-37).
 //   node coverage-child.ts <dataDir> <YYYY-MM-DD> <universeManifestSha256 | ->
 import { constants, setPriority } from 'node:os';
-import { dailyCoverage } from '../src/m07/daily.ts';
+import { dailyCoverageJob } from '../src/m07/daily.ts';
 
 const [dataDir, day, sha] = process.argv.slice(2);
 if (dataDir === undefined || day === undefined || !/^\d{4}-\d{2}-\d{2}$/.test(day) || sha === undefined || !(sha === '-' || /^[0-9a-f]{64}$/.test(sha))) {
@@ -14,6 +15,9 @@ if (dataDir === undefined || day === undefined || !/^\d{4}-\d{2}-\d{2}$/.test(da
 } else {
   // Below the recorder's loop on the server's one vCPU (nice 10). Refused (a sandbox that filters setpriority): run on.
   try { setPriority(constants.priority.PRIORITY_BELOW_NORMAL); } catch { process.stderr.write('priority_unchanged\n'); }
-  const { report } = dailyCoverage({ dataDir, dayUtc: day, universeManifestSha256: sha === '-' ? null : sha });
-  process.stdout.write(JSON.stringify(report));
+  const job = dailyCoverageJob({ dataDir, dayUtc: day, universeManifestSha256: sha === '-' ? null : sha });
+  let done = job.step();
+  while (done === null) done = job.step();
+  // SW-37: the segments skipped whole go back with the report; the recorder logs each (m07.segment_unreadable).
+  process.stdout.write(JSON.stringify({ report: done.report, skipped: job.skipped() }));
 }

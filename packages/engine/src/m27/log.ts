@@ -30,6 +30,8 @@ export const LIMITS = { symbol: 32, name: 64, string: 1_024, json: 4_096 } as co
 /** M27's own codes. */
 export const M27_LOG_CODES = {
   'm27.unknown_code': { fields: { unknown_code: 'string' } },
+  // SW-42: once, when the first series is refused at m27.series_cap.
+  'm27.series_dropped': { fields: { dropped: 'integer', series: 'integer', cap: 'integer' } },
   'm27.rollup_write_failed': { fields: { minute_start_ms: 'integer', row_count: 'integer', error_message: 'string' } },
 } as const satisfies LogCodes;
 

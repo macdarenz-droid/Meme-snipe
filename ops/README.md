@@ -268,9 +268,18 @@ The Blueprint's keyless M1 recorder (`packages/engine/src/recorder-main/`) runs 
 2. On the server console as root: `zeroed-provider-resume shyft` (or `chainstack`). It asks the running recorder to clear the stop, waits up to 30 s, and logs to the journal. The recorder writes `recorder.provider_resume` with `resumed`, `not_stopped` or `unknown`.
 3. Check: the alert clears at the next heartbeat, and `curl -s 127.0.0.1:8787/health` shows the recorder recording. If the provider limits us again, it is stopped again after three answers.
 
+**Runbook: the database retention keeps failing (`recorder.retention_failed`; SW-34).** The recorder deletes expired database rows in small steps each day. A step that fails is tried again after 1 s, then 2 s, 4 s and so on up to 1 h; after three failures in a row the alert `Worker critical: recorder.retention_failed` stays up until a step works. Recording goes on, but the database stops shrinking.
+1. Find the error: `journalctl -u zeroed-worker | grep recorder.retention_failed` (each line names `error_code`, the failures so far and the next wait).
+2. Check the disk (`df -h /var/lib/zeroed`) and the last backup run (`journalctl -u zeroed-backup`: every copy of the database is integrity-checked).
+3. The alert clears by itself at the first step that works. A restart of the worker also retries at once.
+
 **Runbook: the daily coverage report failed (`recorder.coverage_failed`; SW-45).** The recorder builds each day's coverage report in a short-lived child process (it reads the day's files and prints the report). If the child times out (15 min), crashes, exits non-zero or prints a report that does not check, the day gets no report yet. The recorder logs `recorder.coverage_failed` with the reason, holds the code and tries the day again every 15 minutes while the day is in the 7-day catch-up window. Recording and the universe manifests go on meanwhile.
 1. Find the reason: `journalctl -u zeroed-worker | grep recorder.coverage_failed` (`timeout`, `exit_<n>`, `signal_<name>`, `oversized`, `bad_output`, `spawn_<code>`).
 2. Nothing to run when a later try succeeds: the code clears once the day's report is saved. If it keeps failing, keep the log lines and report them.
+
+**Runbook: metric series dropped (`m27.series_dropped`; SW-42).** The recorder keeps at most `m27.series_cap` metric series (5,000). A pool's series are released when it leaves the watchlist (SW-41), so the cap should never be reached; if it is, new series are refused and counted in `metrics_series_dropped_total`, and this code is held until the recorder restarts. Recording itself goes on.
+1. Note the time, and `journalctl -u zeroed-worker | grep m27.series_dropped` (one line: the series refused so far, the series held and the cap).
+2. Report it: something is creating series without releasing them. `systemctl restart zeroed-worker` clears the code.
 
 **Owner steps at switch-on (read providers; Z10-9).** Repository secrets `RPC_SHYFT_URL` and `RPC_CHAINSTACK_URL` (the two URLs `provider-reads.yml` already uses) must both be set.
 1. On the server console (`linuxuser`, then `sudo -i`), run `zeroed-new-deploy-code` and note the 6 words.

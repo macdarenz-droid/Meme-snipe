@@ -7,12 +7,13 @@ import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { join } from 'node:path';
+import { constants, getPriority } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { describe, it, vi } from 'vitest';
 import type { UnixMs } from '@bot/types';
 import { WatchLog } from '../../src/m07/watch-log.ts';
-import { checkCoverageReport, dailyCoverage } from '../../src/m07/daily.ts';
+import { checkCoverageOutput, checkCoverageReport, dailyCoverage } from '../../src/m07/daily.ts';
 import { COVERAGE_CHILD, createDailyJob, type CoverageChildOptions } from '../../src/recorder-main/daily.ts';
 import { STATE_CODES } from '../../src/recorder-main/compose.ts';
 import { kvEvictionLog } from '../../src/recorder-main/evictions.ts';
@@ -102,10 +103,16 @@ describe('SW-45: the coverage report is built in a child process', () => {
     const dir = day();
     let spawns = 0;
     let hang = true;
+    // SW-49: the timeout is fired by hand (a timer the job is given), so a slow machine never times out the good child.
+    const timers: Array<{ ms: number; fire: () => void; cancelled: boolean }> = [];
     const r = await rig(dir, {
-      timeoutMs: 300, retryMs: 600_000,
+      timeoutMs: 15 * 60_000, retryMs: 600_000,
+      timer: (fire, ms) => { const t = { ms, fire, cancelled: false }; timers.push(t); return { cancel: () => { t.cancelled = true; } }; },
       args: (d, dd, sha) => { spawns++; return hang ? ['-e', 'setTimeout(() => {}, 60_000)'] : COVERAGE_CHILD.args(d, dd, sha); },
     });
+    await r.until(() => r.job.coverageChild() !== null);
+    assert.deepEqual(timers.map((t) => [t.ms, t.cancelled]), [[15 * 60_000, false]], 'one timer, the configured timeout');
+    timers[0]?.fire();
     await r.until(() => r.failures().length > 0);
     assert.equal(r.failures()[0]?.f.reason, 'timeout');
     assert.equal(r.failures()[0]?.f.day, DAY0);
@@ -119,6 +126,7 @@ describe('SW-45: the coverage report is built in a child process', () => {
     hang = false;
     await r.until(() => r.payloads.length > 0, failedAt + 600_000);
     assert.equal(spawns, 2);
+    assert.equal(timers[1]?.cancelled, true, 'the good child\'s timer is cancelled when it exits, never fired');
     assert.equal(r.payloads.length, 1);
     assert.equal(r.job.coverageFailed(), false, 'cleared once the report is saved');
   }, 60_000);
@@ -127,7 +135,7 @@ describe('SW-45: the coverage report is built in a child process', () => {
     ['a non-zero exit', node('process.exit(3)'), 'exit_3'],
     ['a crash', node('process.abort()'), 'signal_SIGABRT'],
     ['bad JSON', node('process.stdout.write("{not json")'), 'bad_output'],
-    ['a report of another day', node(`process.stdout.write(JSON.stringify({ dayUtc: '2026-01-01', streams: [], universeManifestSha256: '${'0'.repeat(64)}', lowCoverage: false }))`), 'bad_output'],
+    ['a report of another day', node(`process.stdout.write(JSON.stringify({ report: { dayUtc: '2026-01-01', streams: [], universeManifestSha256: '${'0'.repeat(64)}', lowCoverage: false }, skipped: [] }))`), 'bad_output'],
     ['oversized output', { ...node('process.stdout.write("x".repeat(5000))'), maxBytes: 1_000 }, 'oversized'],
     ['a child that cannot start', { command: '/nonexistent/node', args: () => [] }, 'spawn_ENOENT'],
   ] as const) {
@@ -140,6 +148,82 @@ describe('SW-45: the coverage report is built in a child process', () => {
       assert.equal(r.job.coverageFailed(), true);
     }, 60_000);
   }
+
+  it('SW-37: each segment the child skipped is logged as m07.segment_unreadable, and the report is saved (fails before: not logged)', async () => {
+    const out = (sha: string): string => JSON.stringify({ report: { dayUtc: DAY0, streams: [{ stream: 'poll_counts', expected: 1, recorded: 1, gaps: [{ fromMs: T0 + 3_600_000, toMs: T0 + 7_200_000, reason: 'segment_unreadable' }] }], universeManifestSha256: sha, lowCoverage: true },
+      skipped: [{ path: `${DAY0}/01/poll_counts.ndjson.gz`, hourUtc: `${DAY0}T01`, reason: 'torn' }] });
+    const r = await rig(day(), { args: (_d, _dd, sha) => ['-e', `process.stdout.write(${JSON.stringify(out(sha))})`] });
+    await r.until(() => r.payloads.length > 0);
+    assert.deepEqual(r.logs.filter((l) => l.code === 'm07.segment_unreadable').map((l) => l.f), [{ day: DAY0, path: `${DAY0}/01/poll_counts.ndjson.gz`, reason: 'torn' }]);
+    assert.equal(r.failures().length, 0);
+  }, 60_000);
+
+  it('SW-48: every failure backs off per day, 15 min doubling to 6 h; one line at the first failure and one when the reason changes; reset by a report (fails before: every 15 min, a line each time)', async () => {
+    let spawns = 0;
+    let script = 'process.exit(3)';
+    // Only DAY0's child is scripted; a later day (the run passes midnight) gets the real child and its report.
+    const r = await rig(day(), { args: (d, dd, sha) => { if (dd !== DAY0) return COVERAGE_CHILD.args(d, dd, sha); spawns++; return script === 'good' ? COVERAGE_CHILD.args(d, dd, sha) : ['-e', script]; } });
+    const starts: number[] = [];
+    // Ticks one simulated minute at a time; a child that started runs to its end (real time) before the next tick.
+    const minutes = async (n: number): Promise<void> => {
+      for (let i = 0; i < n; i++) {
+        const before = spawns;
+        r.job.tick(ms((r.clock.t += 60_000)));
+        if (spawns > before) starts.push(r.clock.t);
+        for (let k = 0; k < 500 && r.job.coverageChild() !== null; k++) await sleep(10);
+        r.job.tick(ms(r.clock.t));                                         // take in the child that ended
+      }
+    };
+    r.clock.t = T0 + DAY + 700_000;
+    await minutes(15 + 30 + 60 + 120 + 240 + 360 + 360 + 5);
+    const waits = starts.slice(1).map((t, i) => (t - (starts[i] as number)) / 60_000);
+    assert.deepEqual(waits, [15, 30, 60, 120, 240, 360, 360], `minutes between tries: ${waits.join(', ')}`);
+    assert.equal(r.failures().length, 1, 'one line while the reason stays the same');
+    script = 'process.exit(4)';
+    await minutes(361);
+    assert.deepEqual(r.failures().map((f) => f.f.reason), ['exit_3', 'exit_4'], `a new line when the reason changes; starts ${starts.map((t) => (t - starts[0]!) / 60_000).join(',')}, spawns ${spawns}`);
+    script = 'good';
+    await minutes(361);
+    assert.ok(r.db.reader().get('SELECT 1 AS x FROM "coverage_report" WHERE "day_utc" = ?', DAY0) !== undefined, 'DAY0\'s report saved');
+    assert.equal(r.job.coverageFailed(), false, 'cleared by the report');
+  }, 120_000);
+
+  it('SW-48: a timeout backs off the same way (fails before: retried every 15 min)', async () => {
+    const timers: Array<() => void> = [];
+    const r = await rig(day(), { args: () => ['-e', 'setTimeout(() => {}, 60_000)'], timer: (fire) => { timers.push(fire); return { cancel: () => undefined }; } });
+    const startsAt: number[] = [];
+    r.clock.t = T0 + DAY + 700_000;
+    for (let i = 0; i < 60 + 15 + 30 + 2; i++) {
+      r.job.tick(ms((r.clock.t += 60_000)));
+      if (r.job.coverageChild() !== null && startsAt.at(-1) !== r.clock.t && timers.length > startsAt.length) {
+        startsAt.push(r.clock.t);
+        timers.at(-1)?.();                                                  // the child times out at once
+        for (let k = 0; k < 500 && r.job.coverageChild() !== null; k++) { await sleep(10); r.job.tick(ms(r.clock.t)); }
+      }
+    }
+    const waits = startsAt.slice(1).map((t, i) => (t - (startsAt[i] as number)) / 60_000);
+    assert.deepEqual(waits, [15, 30, 60], `minutes between timed-out tries: ${waits.join(', ')}`);
+    assert.deepEqual(r.failures().map((f) => f.f.reason), ['timeout']);
+  }, 120_000);
+
+  it('SW-48: a child killed by our own stop is shutdown, not a failure', async () => {
+    const r = await rig(day(), { args: () => ['-e', 'setTimeout(() => {}, 60_000)'] });
+    await r.until(() => r.job.coverageChild() !== null);
+    await r.job.stop();
+    r.job.tick(ms((r.clock.t += 1_000)));
+    assert.equal(r.failures().length, 0);
+    assert.equal(r.job.coverageFailed(), false);
+  }, 60_000);
+
+  it('SW-40 (a): a spawn that throws is the day\'s failure (spawn_throw), held and backed off, never an error every tick (fails before: thrown out of tick)', async () => {
+    let tries = 0;
+    const r = await rig(day(), { args: () => { tries++; return ['bad\u0000arg']; } });
+    r.clock.t = T0 + DAY + 700_000;
+    for (let i = 0; i < 20; i++) r.job.tick(ms((r.clock.t += 60_000)));         // throws out of tick before the fix
+    assert.deepEqual(r.failures().map((f) => f.f.reason), ['spawn_throw']);
+    assert.equal(r.job.coverageFailed(), true);
+    assert.equal(tries, 2, 'once, then again after 15 min (20 min of ticks)');
+  }, 60_000);
 
   it('one child at a time, and the manifest catch-up goes on while it runs', async () => {
     const dir = day();
@@ -157,6 +241,16 @@ describe('SW-45: the coverage report is built in a child process', () => {
     assert.ok(gone(pid), 'stopped with the job');
   }, 60_000);
 
+  it('SW-50: the child runs below the recorder from its start, before its own code lowers it (fails before: nice 0 until it loads)', async () => {
+    const r = await rig(day(), { args: () => ['-e', 'setTimeout(() => {}, 60_000)'] });
+    r.clock.t = T0 + DAY + 700_000;
+    r.job.tick(ms(r.clock.t));
+    const pid = r.job.coverageChild();
+    assert.ok(pid !== null, 'a child was started on this tick');
+    assert.equal(getPriority(pid), constants.priority.PRIORITY_BELOW_NORMAL);
+    await r.job.stop();
+  }, 60_000);
+
   it('the recorder\'s stop kills a running child and leaves no orphan', async () => {
     const r = await rig(day(), { args: () => ['-e', 'setTimeout(() => {}, 60_000)'] });
     await r.until(() => r.job.coverageChild() !== null);
@@ -170,10 +264,13 @@ describe('SW-45: the coverage report is built in a child process', () => {
     const dir = day();
     const sha = 'b'.repeat(64);
     const out = execFileSync(process.execPath, ['--no-warnings', ENTRY, dir, DAY0, sha], { encoding: 'utf8', env: {} });
-    assert.equal(out, JSON.stringify(dailyCoverage({ dataDir: dir, dayUtc: DAY0, universeManifestSha256: sha }).report));
-    assert.notEqual(checkCoverageReport(out, DAY0, sha), null);
-    assert.equal(checkCoverageReport(out, DAY0, 'c'.repeat(64)), null, 'another manifest hash is refused');
-    assert.equal(checkCoverageReport(` ${out}`, DAY0, sha), null, 'not in JSON.stringify form');
+    // SW-37: the report and the segments skipped whole (none here).
+    assert.equal(out, JSON.stringify({ report: dailyCoverage({ dataDir: dir, dayUtc: DAY0, universeManifestSha256: sha }).report, skipped: [] }));
+    assert.notEqual(checkCoverageOutput(out, DAY0, sha), null);
+    assert.equal(checkCoverageOutput(out, DAY0, 'c'.repeat(64)), null, 'another manifest hash is refused');
+    assert.equal(checkCoverageOutput(` ${out}`, DAY0, sha), null, 'not in JSON.stringify form');
+    const report = (JSON.parse(out) as { report: unknown }).report;
+    assert.notEqual(checkCoverageReport(JSON.stringify(report), DAY0, sha), null);
     for (const args of [[dir, 'x', sha], [dir, DAY0, 'nothex'], [dir]]) {
       assert.throws(() => execFileSync(process.execPath, ['--no-warnings', ENTRY, ...args], { stdio: 'pipe', env: {} }), (e: unknown) => (e as { status: number }).status === 2);
     }

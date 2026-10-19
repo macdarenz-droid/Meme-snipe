@@ -11,8 +11,9 @@ import { createRepos } from '../m24/repos.ts';
 import { buildUniverseManifest, ELIGIBLE_STATES, eventsInOrder, parseEvictionReason } from '../m05/manifest.ts';
 import { limitSetHash, type UniverseLimits } from '../m05/universe.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { constants as osConstants, setPriority } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { checkCoverageReport, COVERAGE_REPORT_MAX_BYTES } from '../m07/daily.ts';
+import { checkCoverageOutput, COVERAGE_REPORT_MAX_BYTES } from '../m07/daily.ts';
 import type { CandidateState, Pubkey, UnixMs } from '@bot/types';
 import type { AppendInput, AppendResult } from '../recorder/queue.ts';
 import { KEEP_MS, type EvictionLog } from './evictions.ts';
@@ -29,14 +30,20 @@ export interface CoverageChildOptions {
   command: string; args(dataDir: string, day: string, sha: string): string[];
   /** Killed after this long (wall clock: a child runs in real time, also under a simulated clock). */
   timeoutMs: number; maxBytes: number;
-  /** A day whose child failed is tried again no sooner than this (the catch-up rule, without a tight loop). */
-  retryMs: number;
+  /** SW-49: starts the timeout (default: an unref'd wall-clock timer); tests pass one they fire themselves. */
+  timer(fire: () => void, ms: number): { cancel(): void };
+  /**
+   * SW-48: a day whose child failed waits `retryMs` before its next try, doubling with each failure in a row up to
+   * `retryMaxMs` (every reason, timeouts too: one vCPU), and back to `retryMs` once a report is saved.
+   */
+  retryMs: number; retryMaxMs: number;
 }
 const CHILD_ENTRY = fileURLToPath(new URL('../../scripts/coverage-child.ts', import.meta.url));
 export const COVERAGE_CHILD: CoverageChildOptions = {
   command: process.execPath,
   args: (dataDir, day, sha) => ['--no-warnings', '--max-old-space-size=192', CHILD_ENTRY, dataDir, day, sha],
-  timeoutMs: 15 * 60_000, maxBytes: COVERAGE_REPORT_MAX_BYTES, retryMs: 15 * 60_000,
+  timeoutMs: 15 * 60_000, maxBytes: COVERAGE_REPORT_MAX_BYTES, retryMs: 15 * 60_000, retryMaxMs: 6 * 3_600_000,
+  timer: (fire, ms) => { const t = setTimeout(fire, ms); t.unref(); return { cancel: () => clearTimeout(t) }; },
 };
 
 export interface DailyJob {
@@ -56,6 +63,8 @@ export interface DailyJob {
   coverageChild(): number | null;
   /** SW-45: kills a running coverage child and resolves once it has exited (the recorder's stop: no orphan). */
   stop(): Promise<void>;
+  /** Resolves once the running coverage child has exited (at once when none runs); the next tick takes it in. */
+  childClosed(): Promise<void>;
 }
 
 export function createDailyJob(o: {
@@ -82,8 +91,9 @@ export function createDailyJob(o: {
   const child: CoverageChildOptions = { ...COVERAGE_CHILD, ...o.coverageChild };
   /** SW-45: the coverage report being built, in a child process (one at a time). */
   let job: Running | null = null;
-  /** SW-45: days whose child failed (day → when), until their report is saved or they leave the catch-up window. */
-  const failed = new Map<string, number>();
+  /** SW-45/48: days whose child failed (when, the wait before the next try, the last reason), until their report is saved
+   * or they leave the catch-up window. */
+  const failed = new Map<string, { atMs: number; waitMs: number; reason: string }>();
   let readStats: { pools: number; events: number } | null = null;
   let recordedCount = 0;
   let missingMemo: { minute: number; recorded: number; missing: boolean } | null = null;
@@ -160,10 +170,15 @@ export function createDailyJob(o: {
     lastManifestRead: () => readStats,
     coverageFailed: () => failed.size > 0,
     coverageChild: () => job?.child.pid ?? null,
+    childClosed: () => new Promise<void>((resolve) => {
+      const j = job;
+      if (j === null || j.closed !== null) { resolve(); return; }
+      j.child.once('close', () => resolve());
+    }),
     stop: () => new Promise<void>((resolve) => {
       const j = job;
       if (j === null || j.closed !== null) { resolve(); return; }
-      j.failure ??= 'stopped';
+      j.failure = 'stopped';                                                // shutdown, never the day's failure
       j.child.once('close', () => resolve());
       j.child.kill('SIGKILL');
     }),
@@ -229,8 +244,13 @@ export function createDailyJob(o: {
     const next = new Date(Date.parse(`${day}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
     if (o.closedThrough() < `${next}T00`) return;
     const f = failed.get(day);
-    if (f !== undefined && nowMs < f + child.retryMs) return;
-    const c = spawn(child.command, child.args(o.dataDir, day, sha), { env: {}, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (f !== undefined && nowMs < f.atMs + f.waitMs) return;
+    let c: ChildProcess;
+    // SW-40 (a): a spawn that throws (a bad argument) is a failure of the day's child, under the same back-off.
+    try { c = spawn(child.command, child.args(o.dataDir, day, sha), { env: {}, stdio: ['ignore', 'pipe', 'pipe'] }); } catch { fail(day, 'spawn_throw', '', nowMs); return; }
+    // SW-50: below the recorder's loop from its first instruction (the child lowers itself too, but only once its modules
+    // have loaded). A child that has not started has no pid; one the system refuses to lower runs on.
+    if (c.pid !== undefined) { try { setPriority(c.pid, osConstants.priority.PRIORITY_BELOW_NORMAL); } catch { /* runs at the recorder's priority */ } }
     const r: Running = { day, sha, child: c, chunks: [], bytes: 0, stderr: '', failure: null, closed: null, timer: null };
     c.stdout?.on('data', (b: Buffer) => {
       if (r.failure !== null) return;
@@ -240,10 +260,20 @@ export function createDailyJob(o: {
     c.stderr?.on('data', (b: Buffer) => { if (r.stderr.length < 300) r.stderr += b.toString('utf8').slice(0, 300 - r.stderr.length); });
     c.on('error', (e: NodeJS.ErrnoException) => { r.failure ??= `spawn_${e.code ?? 'failed'}`; });
     // 'close' follows 'exit', or 'error' when the child could not start (Node docs), once its pipes are drained.
-    c.on('close', (code, signal) => { r.closed = { code, signal }; if (r.timer !== null) clearTimeout(r.timer); });
-    r.timer = setTimeout(() => { if (r.closed === null) { r.failure ??= 'timeout'; c.kill('SIGKILL'); } }, child.timeoutMs);
-    r.timer.unref();
+    c.on('close', (code, signal) => { r.closed = { code, signal }; r.timer?.cancel(); });
+    r.timer = child.timer(() => { if (r.closed === null) { r.failure ??= 'timeout'; c.kill('SIGKILL'); } }, child.timeoutMs);
     job = r;
+  }
+
+  /**
+   * SW-48: one more failure of `day`'s child. The next try waits `retryMs`, doubling to `retryMaxMs`; one line at the
+   * first failure and one each time the reason changes (not one every try).
+   */
+  function fail(day: string, reason: string, stderr: string, nowMs: UnixMs): void {
+    const prev = failed.get(day);
+    const waitMs = prev === undefined ? child.retryMs : Math.min(prev.waitMs * 2, child.retryMaxMs);
+    failed.set(day, { atMs: nowMs, waitMs, reason });
+    if (prev === undefined || prev.reason !== reason) o.log.event('error', 'recorder.coverage_failed', { day, reason, detail: stderr.trim().slice(0, 200) });
   }
 
   function finishCoverage(nowMs: UnixMs): void {
@@ -254,14 +284,16 @@ export function createDailyJob(o: {
     let report = null;
     if (reason === null && closed.code !== 0) reason = closed.signal !== null ? `signal_${closed.signal}` : `exit_${String(closed.code)}`;
     if (reason === null) {
-      report = checkCoverageReport(Buffer.concat(j.chunks).toString('utf8'), j.day, j.sha);
-      if (report === null) reason = 'bad_output';
+      const out = checkCoverageOutput(Buffer.concat(j.chunks).toString('utf8'), j.day, j.sha);
+      if (out === null) reason = 'bad_output';
+      else {
+        report = out.report;
+        // SW-37: each segment the child skipped whole (the report marks its hour: SW-38).
+        for (const k of out.skipped) o.log.event('warn', 'm07.segment_unreadable', { day: j.day, path: k.path, reason: k.reason });
+      }
     }
-    if (report === null) {
-      failed.set(j.day, nowMs);
-      o.log.event('error', 'recorder.coverage_failed', { day: j.day, reason: reason ?? 'unknown', detail: j.stderr.trim().slice(0, 200) });
-      return;
-    }
+    if (j.failure === 'stopped') return;                                     // our own stop(): shutdown, not a failure
+    if (report === null) { fail(j.day, reason ?? 'unknown', j.stderr, nowMs); return; }
     failed.delete(j.day);
     o.append({ stream: 'coverage', recvMs: nowMs, slot: null, commitment: null, source: 'm07', payload: report });
     o.db.withTx((tx) => { repos.coverage_report.insert(tx, { dayUtc: report.dayUtc, json: JSON.stringify(report), lowCoverage: report.lowCoverage, manifestSha256: j.sha, createdAt: nowMs }); });
@@ -274,5 +306,5 @@ export function createDailyJob(o: {
 /** SW-45: a running coverage child. */
 interface Running {
   day: string; sha: string; child: ChildProcess; chunks: Buffer[]; bytes: number; stderr: string;
-  failure: string | null; closed: { code: number | null; signal: NodeJS.Signals | null } | null; timer: NodeJS.Timeout | null;
+  failure: string | null; closed: { code: number | null; signal: NodeJS.Signals | null } | null; timer: { cancel(): void } | null;
 }
