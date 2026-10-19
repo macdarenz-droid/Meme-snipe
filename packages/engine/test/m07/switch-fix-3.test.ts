@@ -11,6 +11,7 @@ import { describe, it } from 'vitest';
 import { WatchLog } from '../../src/m07/watch-log.ts';
 import { checkCoverageReport, dailyCoverageJob, eachPollCount, type SegmentSkip } from '../../src/m07/daily.ts';
 import { computeCoverage } from '../../src/m07/coverage.ts';
+import { segmentRecords } from '../../src/m07/frames.ts';
 import type { UnixMs } from '@bot/types';
 import type { SegmentManifest } from '../../src/m07/manifest.ts';
 import { linesOf } from '../../src/m13/phase0-input.ts';
@@ -97,5 +98,15 @@ describe('SW-48: the report merges a stream\'s gaps by reason', () => {
     const g = (a: number, b: number, reason: string) => ({ stream: 'poll_counts', gap: { fromMs: (T0 + a) as UnixMs, toMs: (T0 + b) as UnixMs, reason } });
     const { report } = computeCoverage({ dayUtc: DAY0, watched: [], pollCounts: [], gaps: [g(0, 10, 'moved'), g(10, 20, 'moved'), g(15, 30, 'moved'), g(5, 8, 'clock_step'), g(40, 50, 'moved')], records: {}, universeManifestSha256: 'a'.repeat(64) });
     assert.deepEqual(report.streams.find((s) => s.stream === 'poll_counts')?.gaps.map((x) => [x.fromMs - T0, x.toMs - T0, x.reason]), [[0, 30, 'moved'], [5, 8, 'clock_step'], [40, 50, 'moved']]);
+  });
+});
+
+describe('segmentRecords (the shared all-or-none reader)', () => {
+  it('blank lines are skipped and not counted; every other line is parsed; a stop is the frame reason', () => {
+    const buf = gzipSync(Buffer.from('{"a":1}\n\n{"a":2}\n\n'));
+    const r = segmentRecords(buf, (l) => (JSON.parse(l) as { a: number }).a);
+    assert.deepEqual(r, { records: [1, 2], decodedBytes: 2 * ('{"a":1}'.length + 1) });
+    assert.deepEqual(segmentRecords(buf.subarray(0, buf.length - 3), (l) => l), { skipped: 'torn' });
+    assert.deepEqual(segmentRecords(buf, () => { throw new Error('x'); }), { skipped: 'parse_error' });
   });
 });
