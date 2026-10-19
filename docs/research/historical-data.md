@@ -333,6 +333,76 @@ Old Faithful refuses our scanner (see `docs/DECISIONS.md`, "The archive's block 
 
   A record is explained only when everything but its log is equal and its log is exactly the archive's log under that rule. Three of these blocks are test fixtures (`rpcscan/testdata/rpc`; 452277901 holds a truncated record). They are taken from inside the holdout window, for data integrity only: no gate, label or outcome is computed on them.
 
+## Storage for paid history (DATA-STORE)
+
+Design and research only (4 Oct 2026); nothing here is built. If the owner buys Helius Developer for about 77 history days plus October, about 80 helius days must be kept where the backtest jobs can read them. Today they go only to the Actions cache (`data-rpc-assets-DAY-*`, DATA-PUB), which holds about one day (10 GB per repository, least-recently-used eviction, entries idle for 7 days removed; [GitHub docs](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)). So the paid pull would evict itself.
+
+### Helius's terms
+
+Source: the Cloud Services Agreement at [helius.dev/terms](https://www.helius.dev/terms), "Last Updated: September 28, 2026" (read 4 Oct 2026). It links only the [privacy policy](https://www.helius.dev/privacy-policy); no data or API-use policy exists that we could find (the [FAQ](https://www.helius.dev/docs/faqs) has none). No clause names API responses, output, results or blockchain data. The clauses that touch them:
+- §3.1: a licence "to access and use the features and functions of the Services … Such use is limited to Customer's business purposes, including integration of the Services into Customer's own products and services."
+- §3.2: Customer will not "(ii) … sell, resell, sublicense, rent, distribute, or provide the Services to third parties except as expressly authorized; … (iv) copy, modify, or create derivative works of the Services; … (vii) use the Services to develop a competing service; … (xi) use or access the Services in any personal, household, or familial capacity, or for any purpose other than a lawful business purpose."
+- §1: "'Services' means the products, services, software, APIs, websites, applications, and related offerings that Helius makes available".
+- §2.1: no licence is granted "including any right to obtain possession of any source code, data, or other technical material relating to the Services."
+- §12.1: "the Services, Documentation, and all enhancements and improvements thereto will be considered Confidential Information of Helius"; §12.3(a) excludes information that "becomes generally available to the public through no fault of the Receiving Party".
+
+Plain reading:
+- **(a) Storing responses:** nothing forbids it. Keeping them for our own backtest is ordinary business use (§3.1). Fairly clear.
+- **(b) Redistributing raw responses:** unclear. If a `getBlock` response counts as "the Services", §3.2(ii) and (iv) forbid it; the agreement never says whether output is part of the Services. The blocks themselves are public chain data (§12.3(a)), but the response is Helius's copy. Keep raw private (DATA-PUB stands).
+- **(c) Publishing derived data** (decoded trade rows, hourly volume, our labels, backtest results): no clause covers it. Rows decoded from public chain data are hardly "derivative works of the Services", and labels and results are our own work, but the text does not say so. Likely allowed; only Helius can confirm.
+- **(d) A public GitHub repository:** not mentioned. It is "distribution to third parties" for raw data and "publishing" for derived data, so it falls under (b) and (c).
+- **Also:** §3.2(xi) bars use "in any personal … capacity". The owner runs Zeroed as a person; whether that is a "lawful business purpose" is for Helius (and the owner) to say. It affects the Developer purchase itself, not only storage.
+- Terms change with 30 days' notice (preamble), so the answer is tied to the 28 Sep 2026 version.
+
+Question for the owner to send Helius (only Helius can answer (b)–(d) and §3.2(xi)):
+
+> Hi Helius team. I'm on (or about to buy) the Developer plan and will use getBlock to read about 80 days of Solana mainnet blocks to backtest my own trading bot. Under your 28 Sep 2026 terms, can you confirm: (1) I may keep the getBlock responses in a private GitHub repository for my own use; (2) I may publish in a public GitHub repository only data I derive from them (decoded pump.fun trade rows, hourly volume, my own labels and backtest results), never the raw responses; (3) one person building and running this bot as a sole trader counts as a "lawful business purpose" under section 3.2(xi). Thanks.
+
+### Size of one helius day
+
+The 09-21 chain (run 37185822426) was still running when this was written, so these are estimates, not measurements.
+- **What is packaged** (`ci/package-day.sh`): the day's units as `units-DAY.tar.part*` (1,900 MiB parts), `events-DAY.tar` (each unit's events, stats and blocks), and the small QA, parity, manifest and checksum files. An RPC unit has the same files as an archive unit (`rpcscan/rpcunit.go:177`).
+- **`raw.jsonl.zst` is not whole `getBlock` responses.** It holds one record per kept transaction (wire bytes plus meta, `scanner/raw.go`): the 5% hash sample's pump and PumpSwap transactions plus every create and migration. The rest of each response is dropped.
+- **Raw share, estimated:** the pilot baseline unit (1 Oct, 4,496 blocks) has 17,614 raw records, 45,600 curve rows and 142,598 PumpSwap rows (`pilot/baseline-…json.zst`, stats). A day is about 72 such units, so about 1.27M raw records. Units built from the three fixture blocks (`rpcscan/testdata/rpc`, run locally) give about 14 KB per raw record uncompressed and 2.8 to 3.1 KB compressed in tiny files; rows compress from about 300 B there to the 185 B measured in full files, so raw is put at about 1.9 to 3.1 KB. That gives about 2.4 to 3.9 GB of raw a day.
+- **Day total, one basis (the sum of these components):** raw 2.4 to 3.9 GB, curve and PumpSwap rows about 2.5 GB (3.3M and 10.3M rows at about 185 B), movements about 0.1 GB, so **about 5.0 to 6.5 GB a day, raw about 48 to 60% of it**, and about 2.6 GB a day without raw. Error is about ±50% with the hour of day.
+- **Against the earlier estimate** ("Sizes against GitHub's release limits": 6.4 to 8.5 GB): that one counts canonical pools at up to 3.8 GB, where the 1 Oct unit's PumpSwap count gives about 1.9 GB. The two overlap inside the ±50%; this section uses the component sum, and the first measured helius day replaces both.
+- **80 days:** about 400 to 520 GB with raw, about 210 GB without (±50%).
+
+### Options
+
+| Option | Cost | Helius terms | Readable by Actions backtest | Durable | Code |
+|---|---|---|---|---|---|
+| **Private GitHub repository, releases** | Free. Releases are not a metered product ([plan usage](https://docs.github.com/en/billing/reference/product-usage-included) lists Actions, Codespaces, Packages and LFS only); each file under 2 GiB, up to 1,000 per release, "no limit on the total size of a release, nor bandwidth usage" ([releases](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)). Jobs still run in this public repo, so minutes stay free ([Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)); a private repo's own jobs would use the Free plan's 2,000 minutes a month | Private storage for our own use: fits (a). Nothing reaches a third party | Yes, with a fine-grained token scoped to that repository (the job's own `GITHUB_TOKEN` reaches only this repository) | Yes: no eviction or retention limit | Small (below) |
+| Actions artifacts | Public repo: anyone signed in can download them, so this is publishing raw data; retention at most 90 days. Private repo: 500 MB on Free, then US$0.25 per GB-month (about US$100–130 a month at 80 days): paid, needs the owner ([retention](https://docs.github.com/en/organizations/managing-organization-settings/configuring-the-retention-period-for-github-actions-artifacts-and-logs-in-your-organization), [billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)) | Public: breaks (b). Private: fits | Yes | No: deleted after retention | Small |
+| Actions cache, limit raised | Above 10 GB at US$0.07 per GB-month (about US$27–36 a month): paid | Fits (private to the repo's jobs) | Yes | No: 7-day idle eviction still applies | One setting |
+| Derived-only units (drop `raw.jsonl.zst`) | Halves size; still needs a home from this list | Depends on (c) if published; raw never leaves the scan job | Only after code changes: finalize reads `raw.jsonl.zst` for every schema-2 window unit (`scanner/finalize.go:697`), and assemble runs strict QA and decoder parity, which need raw | As its home | Medium: finalize, assemble, QA and parity must accept a day whose parity already passed in its scan job |
+| Only what the backtest reads | Smallest: `loadDay` reads curve, PumpSwap, blocks and events; holder rebuilds read movements (`packages/backtest/src/dataset/dataset.ts:50-55,73-76`) | As derived-only | Same changes as derived-only, plus a new pack format | As its home | Most; and loses raw for later back-fills (`docs/DECISIONS.md:314`) |
+
+### Recommendation
+
+A **private GitHub repository** (for example `macdarenz-droid/zeroed-data`) holding each helius day as release `data-day-DAY`, with the full units including raw. It is free, durable, keeps raw away from any third party, keeps QA, parity and assemble unchanged, and the backtest reads it from this repository's jobs. Derived-only stays a fallback if Helius forbids keeping raw (not suggested by the terms) or GitHub asks us to shrink the repository ([large files](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github): "If your repository excessively impacts our infrastructure, you might receive an email from GitHub Support"; [acceptable use §9](https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies) on excessive bandwidth). Nothing derived from a helius day is published in this public repository until Helius answers (c).
+
+Owner steps (no agent can do them: an account action and a secret):
+1. Create a private repository (for example `zeroed-data`) under the owner's account.
+2. Create a fine-grained personal access token with access to that repository only (no other repository), permission Contents: read and write, and an expiry long enough for the proof; put a calendar reminder a week before the expiry. An expired token fails closed: the publish step refuses, and that day then lives only in the 7-day cache until a new token is added.
+3. Add it to this repository as the Actions secret `DATA_STORE_TOKEN`, and the repository name as the variable `DATA_REPO`.
+
+Minimum code change (one builder card, `.github` changes approved by the supervisor). DATA-PUB's guarantee holds on every path: nothing from a helius day reaches this public repository or anyone outside the private one.
+- **One fail-closed check before every upload of helius data**, shared by all paths: `gh api repos/$DATA_REPO --jq .private` prints `true`, and `$DATA_REPO` differs from `$GITHUB_REPOSITORY` compared case-insensitively. Anything else (unset, public, unreadable, same repository) refuses before any upload.
+- `ci/publish-day.sh`: a helius day (manifest unit with `root_cid` `rpc:getBlock`) goes to `$DATA_REPO` only, after the check. Archive days are unchanged.
+- `ci/publish-volume.sh` and `ci/volume-day.sh` (volume back-fill): the same check before any `data-volume-DAY` upload of a helius day.
+- `ci/assemble.sh`: reads a day from `$DATA_REPO` when it is not in this repository. A window containing a helius day runs the same check and creates its `data-FROM-TO` release in `$DATA_REPO` only; assembled datasets carry raw files (`scanner/finalize.go:292`).
+- `data-scan.yml`: the helius publish is its own helius-only step whose `GH_TOKEN` is `secrets.DATA_STORE_TOKEN`, never `github.token`; the archive publish step keeps `github.token` and never runs for helius. The same holds for the assemble and volume steps that touch `$DATA_REPO`. The `day-DAY` artifact stays off for helius (the `inputs.source != 'helius'` condition on `upload-artifact` stays). The `data-rpc-assets` cache save can stay as a same-week fallback.
+- A gate test (as #127 does for the ledger steps) fails if `DATA_STORE_TOKEN` appears in any step other than the named helius steps.
+- `ci/test-ci.sh`: a helius day never targets this repository; a public, missing or same-name (any case) `DATA_REPO` is refused on each path (publish, volume, assemble); an archive day still publishes here.
+
+Risks:
+- **Leaks through public logs and artifacts:** jobs in this public repository print no data rows, and no helius file is uploaded as an artifact (the DATA-PUB rule stays). Mitigation: the tests above, plus the existing refusal in `publish-day.sh`.
+- **Token scope:** a leaked token reaches only the private data repository. Mitigation: fine-grained, one repository, used in named steps only.
+- **Visibility change (owner):** never make the data repository public, or change its visibility at all. The check runs only at publish time, so it cannot protect files already stored there.
+- **GitHub capacity:** about 0.4 to 0.5 TB (±50%) is far more than GitHub's guidance for repositories, though releases have no stated cap. Mitigation: derived-only as the fallback; size per day is logged in each job summary.
+- **Terms change:** recheck helius.dev/terms before each paid month.
+
 ## How to extend
 
 **No local scans** (supervisor ruling, 2026-10-03): the archive is read only by `data-scan.yml` on its one lane. Never run `zeroed-scan run` or `unit` against the archive from a container or a laptop next to CI, since that adds a second lane. The commands below are for the CI scripts and for `finalize`, QA and parity on units already downloaded from releases.
