@@ -1,0 +1,80 @@
+{
+  "study": "EDGE-HUNT-U1-B: do H1-B and H6-B make money in SOL after the bot's real costs on the full graduation list?",
+  "written": "2026-10-07 (Melbourne), on branch claude/edge-hunt-u1b cut from claude/edge-hunt-u1 @ 0cc4556, BEFORE any new data was fetched or any new outcome read. The only outcomes known are EDGE-HUNT-U1's screen on its 8% sample (research/edge-hunt-u1/REPORT.md, results/cost_diag_screen.json).",
+  "frozen": "Everything below is fixed. A later change is appended under 'amendments' with its time and reason, and the report says whether it came before or after an outcome was read.",
+
+  "rules": {
+    "source": "research/edge/preregistration.json thresholds, measured on candles exactly as research/edge-hunt-u1/05_signals.py (candle proxies, exploratory: f_2side60 is not observable and is left out, so H1 is looser than registered)",
+    "H1": "at a 5-minute bar end T: f_dd = close / highest high since migration - 1 <= -0.35; f_ret60 = close / close as of T-60min - 1 >= -0.03; f_hl = 1 (low of [T-30m,T] incl. the price at T-30m > low of [T-60m,T-30m] incl. the price at T-60m); f_liqchg60 = sqrt(p/p60) - 1 >= -0.10. Stop 15% below spot.",
+    "H6": "H1 and f_sol24 = ln(SOL/USD hourly close as of T / as of T-24h) >= 0. Stop 15% below spot.",
+    "stopCheck": "core checkStopDistance as BT-2/U1: stop distance <= 20% of spot (policy loss.stopMaxBps 2000) and <= 3 x ATR(14 contiguous 5-min bars, Wilder, as core atr()); else no entry.",
+    "freshness": "no entry check when the last 5-min bar ended more than 60 min before T (as U1).",
+    "perMint": "per rule and pool: one entry per UTC day, none while a position is open, none for 24 h after a price-stop exit (policy positions), as U1 07_sim.py run().",
+    "control": "S0-B (random U1 check, U1's hash rule, stop 15%): a control, not a trial."
+  },
+
+  "universe": {
+    "graduations": "every successful pump.fun migration (account 39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg, log 'Instruction: Migrate') with blockTime in [2026-08-02T14:00Z, 2026-09-21T14:00Z), read from the public keyless RPC, decoded as U1 02_migrations.mjs + 02b_redecode.mjs (pool = the owner holding the most of the coin among owners that also hold WSOL). No selection on anything known after the migration: survivorship-free.",
+    "solQuoted": "pools holding WSOL with more than 1 SOL real quote at migration (USDC pools and sub-1-SOL pools are outside U1, as U1; the bot's H8 dust check also rejects the latter).",
+    "B": "at the check time T: coin age in [1 d, 14 d]; quote proxy q = sqrt(k_real * p) >= 100 SOL AND q * SOL/USD(T) >= $50,000 (policy liquidity.u1FloorUsd). k_real = real WSOL x tokens at migration (U1's proxy, the definition under which the effect was seen). It omits the pool's virtual quote, so q is about 11% below the bot's effective reserve: every B check also passes the bot's H8 at that price; the bot would additionally allow a thin band of slightly smaller pools, which this study leaves out.",
+    "pricingFilter": "GeckoTerminal is called only for pools whose newest 1,000 signatures (getSignaturesForAddress on the pool, read at fetch time) do not reach back to migration + 1 d ('busy': more than 1,000 transactions since day 1), plus a fixed random audit of the other pools: sha256(signature) fraction in [0.08, 0.09). The audit reports how many B checks and signals the filter lost. Reason: a coin at the B floor (about $1.2M market cap) trades thousands of times a day; U1's audit found 0 lost signals in A.",
+    "sampleTag": "a coin is 'U1-sample' when sha256(migration signature) fraction < 0.08 (exactly EDGE-HUNT-U1's sample), else 'new'."
+  },
+
+  "periods": {
+    "clock": "entry check time T; days are Melbourne days. No bar that ends at or after the RES-3 wall 2026-09-21T14:00Z is fetched or stored (research/signals/window.json); entries need T <= wall - 125 min.",
+    "train": "Melbourne 2026-08-17 .. 2026-09-11, U1-sample coins only. This is the data the effect was seen on; it is recomputed here with this study's cost code and is never used as evidence.",
+    "walkForward": {
+      "coins": "'new' coins only (never read by any study)",
+      "folds": { "WF1": "2026-08-17 .. 2026-08-25", "WF2": "2026-08-26 .. 2026-09-03", "WF3": "2026-09-04 .. 2026-09-11" },
+      "note": "the rules have no fitted parameters, so nothing is refit between folds; the folds show whether the result holds through time. The walk-forward is out of sample in coins, not in calendar time (it shares calendar days with train)."
+    },
+    "holdout": "Melbourne 2026-09-12 .. 2026-09-21 (entries up to wall - 125 min), ALL coins (U1-sample and new). Never read by EDGE-HUNT-U1 (its holdout was not opened) or any other study. Read once, by at most one candidate.",
+    "embargo": "positions last at most 120 min + 1 min, and U1-B holds no state across the split, so no embargo beyond the per-mint rules is needed; a trade belongs to the period of its entry check T."
+  },
+
+  "sizes": {
+    "primary": "$20 (fixed in advance: the size at which U1 saw H1-B +0.9% and H6-B +2.0%).",
+    "reported": ["$2", "$5", "$20", "$100", "$1,000", "$10,000"],
+    "conversion": "USD size -> lamports at the SOL/USD hourly close as of T (GeckoTerminal Raydium SOL/USDC 58oQChx4...). Every P&L is in SOL; dollars only size the trade.",
+    "exitsPerSize": "exits are re-simulated at each size (R and the take-profit depend on costs).",
+    "botAllowed": "per size, also reported: the trades the bot itself would take: R12 liquidity floor max($15k, 1,000 x size, $50k) on q x SOL/USD, and entry price impact <= 1% (policy liquidity.maxImpactBps 100)."
+  },
+
+  "fills": "entry fills at the close of the next 1-minute bar [T, T+60s) (never the signal's own wick); exits judged at each 1-minute bar end with core decideExit's U1 block exactly as research/edge-hunt-u1/07_sim.py: price stop (bar low <= stop, filled at min(stop, next bar open)), negative flow (5 contiguous minutes each closing lower), time-flat (0.5 R not reached by 30 min, on closes), T_max 120 min, take-profit on closes (2 R or 10% of cost basis: half off, one partial), then break-even and trail peak - 3 x ATR; state exits fill at the next bar's open.",
+
+  "costs": {
+    "venue": "the bot's own quote code, packages/core/src/amm/pump-swap.ts (poolBuyExactQuoteIn for the entry, poolSell for each exit), ported to integer Python in costs.py and checked equal to the TypeScript on a grid of states (parity test, run before any outcome). Fee schedule: canonical SOL pool, market-cap tier from research/edge/snapshot/fee-configs.json (2026-10-03), creator fee charged, ceil per component.",
+    "reserves": "effective reserves at the candle price p: effective quote = sqrt(k_eff * p), base = sqrt(k_eff / p), k_eff = (real WSOL + 17.6 SOL BOOST virtual quote, when real > 50 SOL) x tokens at migration (edge-costs.ts 'young' pool; EDGE-HUNT-U2). Price impact is therefore the constant product at the real size. LP fee growth is ignored (slightly overstates impact: conservative).",
+    "fixed": "414,009 lamports per position (network fees, expected failed exit attempts, expected rent loss; research/edge/costs.json conservative) + 149,784 per extra exit transaction, at every size.",
+    "decomposition": "per trade: gross = the same price path with no fee, no impact and no fixed cost; then percentage fees, price impact and fixed costs are reported separately.",
+    "notModelled": "deployer-sell exits, quote failures and no-route exits, landing drift inside the 1-minute fill delay, fee configs before 2026-09-09 (taken equal to the snapshot)."
+  },
+
+  "statistics": {
+    "unit": "net return per trade in SOL = net SOL P&L / SOL notional.",
+    "ci": "95% coin-cluster bootstrap of the mean (resample whole coins, 4,000 resamples, seed 7), as U1.",
+    "reported": "per period (train, WF1-3, WF pooled, holdout if read) and size: n, coins, days, win rate, mean, median, CI, gross, fees, impact, fixed, entries per day.",
+    "luck": "deflated Sharpe ratio (Bailey & Lopez de Prado 2014) with N = every trial run so far: 72 (graduation-window grid, empirical.md) + 120 (copy-trading cells, copytrading.md) + 8 (U1) + 6 (U2) + 2 (this study) = 208, the variance of trial Sharpe ratios taken from the trials whose per-trade series are on hand (U1, U2, this study). PBO by CSCV over 8 day-blocks on the walk-forward, across the U1 family that can be run on the same data (H1, H2, H3, H6 in B at $2 and $20)."
+  },
+
+  "selection": "Candidate = the one of {H1-B, H6-B} at $20 with the higher walk-forward (pooled WF1-3) lower 95% bound, among those with WF n >= 30, WF pooled mean net > 0 and a positive mean in at least 2 of the 3 folds. If neither qualifies: no candidate, the verdict is NO and the holdout is not read (it stays clean).",
+
+  "decision": {
+    "PASS": "the candidate's holdout 95% CI of mean net return in SOL at $20 lies above zero (lower bound > 0).",
+    "INCONCLUSIVE": "holdout mean > 0 but the lower bound <= 0.",
+    "NO": "no candidate, or holdout mean <= 0.",
+    "scope": "PASS here is not pre-funding gate item 6 (that needs >= 300 out-of-sample trades and the RES-3 sealed window); it would only make the rule the candidate for that test."
+  },
+
+  "power": {
+    "method": "two-sided alpha 0.05, power 0.80: n = ((1.960 + 0.842) x sd / mu)^2, with sd the per-trade SD implied by U1's coin-cluster CI at $20 (SE = CI width / 3.92, sd = SE x sqrt(n)), so clustering is included.",
+    "H6-B": "mu +1.96%, sd 5.5% -> n about 62 trades",
+    "H1-B": "mu +0.88%, sd 7.5% -> n about 573 trades",
+    "available": "U1 saw 13 H1-B and 10 H6-B screen trades on 8% of coins over 26 days: about 6.3 and 4.8 a day at 100%. Holdout (10 days, all coins): about 60 H1-B and 48 H6-B trades. So the holdout can reach about 70% power for H6-B at the effect seen, and only about 15% for H1-B: H1-B cannot be settled with the data before the wall. The effects seen on 6 coins are likely inflated (winner's curse), so the real power is lower still. Stated before any data is read.",
+    "gateItem6": "300 out-of-sample trades are about 60 days of H6-B: not reachable before the wall."
+  },
+
+  "reproducibility": "every input file listed with sha256 in manifest.json; the analysis (05_signals.py, 07_sim.py, 08_report.py) is run twice from the same inputs and must give byte-identical result files.",
+  "amendments": []
+}
