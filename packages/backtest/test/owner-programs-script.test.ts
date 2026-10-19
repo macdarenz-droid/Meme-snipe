@@ -14,7 +14,7 @@ import { bps } from '../../core/src/units/index.ts';
 import { manifestHash } from '../src/dataset/dataset.ts';
 import { readOwnerPrograms, OWNER_PROGRAMS_FILE, OWNER_PROGRAMS_MANIFEST } from '../src/dataset/owner-programs.ts';
 import type { AmmSwapRow, EventRow, MovementRow } from '../src/dataset/rows.ts';
-import { writeDataset } from './dataset-writer.ts';
+import { writeDataset } from '../src/dataset/writer.ts';
 
 const SCRIPT = fileURLToPath(new URL('../scripts/owner-programs.ts', import.meta.url));
 const raw = (label: string): string => encodeBase58(createHash('sha256').update(label).digest());

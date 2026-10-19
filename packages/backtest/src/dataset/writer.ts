@@ -1,10 +1,11 @@
 // Writes rows in DATA-1's on-disk layout (schema 3, with raw records when given): manifest.json and
-// days/<day>/<table>-000.<csv|jsonl>.zst.
+// days/<day>/<table>-000.<csv|jsonl>.zst. The manifest always says `synthetic: true` (no opt-out, not even through
+// `manifest`): a window written here is never gate evidence (BT-WALL W1).
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
-import type { CoverageRow, DatasetRow, MovementRow } from '../src/dataset/rows.ts';
+import type { CoverageRow, DatasetRow, MovementRow } from './rows.ts';
 
 // DATA-1's column lists (research/historical/scanner/scan.go, schema 3).
 export const AMM_COLS = ['slot', 'block_time', 'tx_idx', 'ev_idx', 'signature', 'signer', 'tx_fee', 'cu', 'pool', 'base_mint', 'quote_mint', 'side', 'base_amount',
@@ -106,7 +107,9 @@ export const writeDataset = (dir: string, rows: readonly DatasetRow[], extra: Wr
   const first = rows[0]!;
   const last = rows[rows.length - 1]!;
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
-    schema: extra.schema ?? 3, ...(extra.manifest ?? {}),
+    // Everything this writer makes is synthetic, always marked so (BT-WALL W1): never gate evidence. It goes after the
+    // extra manifest fields, so they cannot unset it.
+    schema: extra.schema ?? 3, ...(extra.manifest ?? {}), synthetic: true,
     window: {
       from: days[0]!.day, to_exclusive: new Date(Date.parse(`${days[days.length - 1]!.day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10),
       ...(extra.leadInDays === undefined ? {} : { lead_in_days: extra.leadInDays }), ...((extra.manifest?.['window'] as object | undefined) ?? {}),

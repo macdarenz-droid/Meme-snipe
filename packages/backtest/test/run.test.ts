@@ -9,13 +9,14 @@ import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { attemptAlpha, authoriseHoldout, endAttempt, holdoutConfigId, type HoldoutPlan, openSealedHoldout, readHoldoutStore, recordHoldoutG1, type RegistryVcs, registerAttempt, researchDays, runAndSealHoldout, runHoldout, setHoldoutPlan, writeHoldoutStore } from '../src/holdout.ts';
 import { gitRegistryVcs } from '../src/registry-git.ts';
 import { holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
-import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
+import type { FeedEvent } from '../../core/src/engine/index.ts';
+import { leakTest, replayHashes, type ScoredStream, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
 import { economics } from '../src/economics.ts';
 import { runBacktest, type RunOptions } from '../src/run.ts';
 import { burstSweep, ladderCongestion } from '../src/stress.ts';
 import { tradesOf } from '../src/trades.ts';
-import { key, SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+import { key, SOL_USD, syntheticRows, T0 } from '../src/dataset/synthetic.ts';
 
 const rows = syntheticRows({ mints: 4, slots: 2.5 * 3600 * 6 });
 // The synthetic day stands in for the holdout window in holdout tests (research runs here never read the CLI's guard).
@@ -143,6 +144,13 @@ describe('S0 through the real engine', () => {
   });
 });
 
+/** A scoring stage: swaps per pool at or after `fromMs`, read from the stream it is given (the planted one). */
+const futureSwaps = (fromMs: number) => (stream: ScoredStream): Record<string, number> => {
+  const swaps: Record<string, number> = {};
+  for (let it = stream.rows(), r = it.next(); !r.done; r = it.next()) if (r.value.kind === 'amm' && r.value.blockTime * 1000 >= fromMs) swaps[r.value.pool] = (swaps[r.value.pool] ?? 0) + 1;
+  return swaps;
+};
+
 describe('proofs on a dataset run', () => {
   test('10 runs give identical decision-log hashes; another seed differs', () => {
     const h = replayHashes(opts(), 10);
@@ -166,8 +174,41 @@ describe('proofs on a dataset run', () => {
         { kind: 'market', id: `plant:pool`, moment: at, key: `pool:${pool}`, value: view },
         { kind: 'market', id: `plant:acct`, moment: { ...at, ixIndex: 1 }, key: `life:${fill.mint}`, value: { event: 'AccountState', fields: { marker: token } } },
       ],
-    }, { labels: [{ mint: fill.mint, y_tb: 1, note: token }] });
+    }, futureSwaps(at.receivedAt - 400));
     expect(report.violations).toEqual([]);
+  });
+
+  test('leak test: labels scored from a stream without the plant fail it (the labels check can fire, BT-WALL b)', () => {
+    const r = runBacktest(opts());
+    const fill = r.attempts.find((a) => a.purpose === 'entry' && a.outcome === 'filled')!;
+    const token = 'FUTURE-ONLY-UNSCORED';
+    const slot = fill.landedSlot! + 200n;
+    const at = { slot, txIndex: 5, ixIndex: 0, receivedAt: fill.landedAt! + 80_000 };
+    const plant = { ...(rows.find((x) => x.kind === 'amm' && x.slot > slot) as Extract<typeof rows[number], { kind: 'amm' }>), signature: `plant-${token}`, pool: token, txIdx: 9_000, slot };
+    const marker = { token, at, rows: [plant], events: [{ kind: 'market' as const, id: 'plant:acct', moment: at, key: `life:${fill.mint}`, value: { event: 'AccountState', fields: { marker: token } } }] };
+    // A scoring stage that reads the clean data instead of the stream it is given never sees the plant.
+    const clean = futureSwaps(at.receivedAt - 400);
+    const report = leakTest(opts(), marker, () => clean({ rows: () => rows[Symbol.iterator](), events: [] }));
+    expect(report.violations).toEqual(['the labels scored from the planted stream do not carry the marker token']);
+    expect(leakTest(opts(), marker, clean).violations).toEqual([]);
+  });
+
+  test('leak test catches a module that carries the future across runs (a cache shared by the planted and clean runs)', () => {
+    const token = 'CACHED-MARKER';
+    const at = { slot: rows[rows.length - 1]!.slot - 10n, txIndex: 0, ixIndex: 0, receivedAt: T0 + 5 * 3_600_000 };
+    const planted = [{ kind: 'market' as const, id: 'plant:x', moment: at, key: 'x', value: token }];
+    // A module-level cache: the planted run sees the marker at its time and stores it; the clean run, which runs after
+    // it, then decides differently from its first event on.
+    const cache = new Set<string>();
+    const leaky = () => ({
+      onMarket: (e: FeedEvent) => {
+        if (e.kind === 'market' && e.value === token) cache.add(token);
+        return cache.size > 0 ? [{ action: null, reasons: ['knows the future'] }] : [];
+      },
+    });
+    const report = leakTest(opts({ strategy: leaky }), { token, at, events: planted }, () => token);
+    expect(report.ok).toBe(false);
+    expect(report.violations.some((v) => v.startsWith('decisions before the marker differ from the clean run'))).toBe(true);
   });
 
   test('leak test catches a strategy that peeks at the future', () => {
@@ -176,7 +217,7 @@ describe('proofs on a dataset run', () => {
     // A leaky strategy: reads the planted key at a moment far ahead (the store refuses), then cheats with a
     // captured reference to the planted events.
     const planted = [{ kind: 'market' as const, id: 'plant:x', moment: at, key: 'x', value: token }];
-    const report = leakTest(opts({ strategy: () => ({ onMarket: () => [{ action: null, reasons: [String(planted[0]!.value)] }] }) }), { token, at, events: planted }, { token });
+    const report = leakTest(opts({ strategy: () => ({ onMarket: () => [{ action: null, reasons: [String(planted[0]!.value)] }] }) }), { token, at, events: planted }, () => token);
     expect(report.ok).toBe(false);
   });
 

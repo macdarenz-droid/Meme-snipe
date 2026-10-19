@@ -6,7 +6,12 @@
 //
 // Gate mode needs each window assembled with its 14 lead-in days and verified against SHA256SUMS. The labelled
 // no-lead-in mode checks determinism on a window without its lead-in; its output says gate: false and is never gate
-// evidence.
+// evidence. The synthetic mode proves the run itself on a gate-shaped synthetic window (its manifest says
+// `synthetic: true`); its output says gate: false too, gate mode refuses a synthetic window, and the synthetic mode
+// refuses any other.
+//
+// Every mode reads practice days only (H1, the study CLI's wall): a window with any day at or after the reserved holdout
+// start, or inside a registered holdout window, is refused before anything runs.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
@@ -15,6 +20,7 @@ import type { ScenarioName } from '../../core/src/fills/index.ts';
 import { dayFilesRead, loadDay, loadManifest, locate, manifestHash, regimeBoundariesOf, sumsListed, verifySums } from './dataset/dataset.ts';
 import type { OffchainSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
+import { type HoldoutStore, researchDays } from './holdout.ts';
 import { runBacktest, type RunOptions, type RunResult } from './run.ts';
 
 /** The lead-in every gate window needs (DATA-1: finalize -lead-in-days 14). */
@@ -29,9 +35,19 @@ export interface EvidenceWindow {
   readonly release?: string;
 }
 
+export type EvidenceMode = 'gate' | 'no-lead-in' | 'synthetic';
+
+/** An assembled window release's tag (DATA-1 mode=assemble): gate evidence comes from one of these only (BT-WALL W1). */
+export const RELEASE_TAG = /^data-\d{4}-\d{2}-\d{2}-\d{4}-\d{2}-\d{2}$/;
+
+/** Whether a window's manifest marks it synthetic (written by the synthetic evidence run, never by a release). */
+export const isSynthetic = (manifest: { readonly [key: string]: unknown }): boolean => manifest['synthetic'] === true;
+
 export interface EvidenceInput {
   readonly windows: readonly EvidenceWindow[];
-  readonly mode: 'gate' | 'no-lead-in';
+  readonly mode: EvidenceMode;
+  /** The shared holdout registry (synced from its remote branch by the caller), or null when none exists yet. */
+  readonly holdouts: HoldoutStore | null;
   readonly replays: number;
   readonly scenario: ScenarioName;
   readonly seed: string;
@@ -73,8 +89,8 @@ export interface WindowEvidence {
 
 export interface Evidence {
   readonly kind: 'pre-funding gate items 1 and 2';
-  readonly mode: 'gate' | 'no-lead-in';
-  /** True only in gate mode: a no-lead-in run is never gate evidence. */
+  readonly mode: EvidenceMode;
+  /** True only in gate mode: a no-lead-in or synthetic run is never gate evidence. */
   readonly gate: boolean;
   readonly commit: string;
   readonly replays: number;
@@ -90,11 +106,24 @@ const sha256File = (path: string): string => createHash('sha256').update(readFil
 export const runEvidence = (input: EvidenceInput): Evidence => {
   if (!Number.isSafeInteger(input.replays) || input.replays < 2) throw new RangeError('evidence needs at least two replays');
   if (input.windows.length === 0) throw new RangeError('evidence needs at least one window');
+  // Every window is checked before any runs, so a refused one leaves no ledger or evidence behind.
+  for (const w of input.windows) {
+    const manifest = loadManifest(w.dir);
+    if (input.mode === 'synthetic' && !isSynthetic(manifest)) throw new RangeError(`${w.dir}: the synthetic mode runs synthetic windows only`);
+    if (input.mode === 'gate' && !RELEASE_TAG.test(w.release ?? '')) {
+      throw new RangeError(`${w.dir}: gate evidence comes from an assembled window release (data-FROM-TO), not ${w.release === undefined ? 'a local folder' : w.release}`);
+    }
+    if (input.mode !== 'synthetic' && isSynthetic(manifest)) throw new RangeError(`${w.dir}: a synthetic window is never ${input.mode} evidence (use the synthetic mode)`);
+    // Throws on any holdout day: research and evidence runs never read one.
+    researchDays(manifest.days.map((d) => d.day), input.research, input.holdouts, true);
+  }
+  // The synthetic mode is held to the gate's checks (it proves the gate run itself), but is never gate evidence.
+  const gateChecks = input.mode !== 'no-lead-in';
   const windows = input.windows.map((w, k): WindowEvidence => {
     const filesChecked = verifySums(w.dir);
-    if (input.mode === 'gate' && filesChecked === 0) throw new RangeError(`${w.dir}: gate evidence needs the release's SHA256SUMS`);
+    if (gateChecks && filesChecked === 0) throw new RangeError(`${w.dir}: gate evidence needs the release's SHA256SUMS`);
     const manifest = loadManifest(w.dir);
-    if (input.mode === 'gate') {
+    if (gateChecks) {
       // Everything the replay reads must be covered by the release's SHA256SUMS: the manifest and every day file loadDay
       // opens. The manifest's own digests are not enough, because the manifest is only as good as its listing.
       const listed = sumsListed(w.dir);
@@ -103,7 +132,7 @@ export const runEvidence = (input: EvidenceInput): Evidence => {
       if (unlisted.length > 0) throw new RangeError(`${w.dir}: SHA256SUMS does not list ${unlisted.map((p) => relative(w.dir, p)).join(', ')}`);
     }
     const leadInDays = Number((manifest.window as { lead_in_days?: number }).lead_in_days ?? 0);
-    if (input.mode === 'gate' && leadInDays < GATE_LEAD_IN_DAYS) {
+    if (gateChecks && leadInDays < GATE_LEAD_IN_DAYS) {
       throw new RangeError(`${w.dir}: assembled with ${leadInDays} lead-in days; gate evidence needs ${GATE_LEAD_IN_DAYS} (use the labelled no-lead-in mode for a determinism-only check)`);
     }
     const units = (manifest['units'] ?? []) as readonly { readonly scanner_revision?: string }[];

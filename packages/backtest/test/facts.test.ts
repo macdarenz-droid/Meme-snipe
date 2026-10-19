@@ -14,7 +14,7 @@ import { FactProjector, type FactOptions, LANDED_PREFIX, mintHashFraction, tieHa
 import { landings, READ_LATENCY } from '../src/study/reads.ts';
 import { producerOptions } from '../../core/src/facts/index.ts';
 import { Market, rowMoment } from '../src/sim/market.ts';
-import { SOL_USD } from './synthetic.ts';
+import { SOL_USD } from '../src/dataset/synthetic.ts';
 import { SLOT_MS, studyWorld, SUPPLY, W0, type MintPlan } from './study-world.ts';
 
 const MIN = 60_000 / SLOT_MS;

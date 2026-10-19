@@ -4,7 +4,7 @@
 // Prints one JSON line: { [scenario]: { [mode]: { blocked, exits, failed } } }.
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { runBacktest } from '../src/run.ts';
-import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+import { SOL_USD, syntheticRows, T0 } from '../src/dataset/synthetic.ts';
 
 type Mode = 'always' | 'real' | 'none';
 const RESEARCH = { ...RESEARCH_CONFIG, holdout: { ...RESEARCH_CONFIG.holdout, fromDay: '2026-09-20', entryCutoffDay: '2026-09-21', tailEndDay: '2026-09-21' } };

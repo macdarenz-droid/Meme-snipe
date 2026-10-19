@@ -518,8 +518,8 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
 
 /**
  * The leak test on study data: a future-only token planted at the middle of the walk-forward (a create, a pool swap
- * and an account fact) must reach no module and change no decision before its moment; the scored labels carry it
- * and are never handed to the run.
+ * and an account fact) must reach no module and change no decision before its moment; the labels, scored from the
+ * planted stream, carry it and are never handed to the run.
  */
 export const studyLeak = (o: ReturnType<typeof studyRunOptions>, days: readonly string[], seed: string): ProofReport => {
   // The middle of the blocks the days actually hold (a partly covered day ends where its data ends).
@@ -558,7 +558,17 @@ export const studyLeak = (o: ReturnType<typeof studyRunOptions>, days: readonly 
       { kind: 'market', id: 'plant:event', moment: { ...m, txIndex: OFF_CHAIN - 3 }, key: `life:${token}`, value: { event: 'Planted', fields: { marker: token } } },
       { kind: 'market', id: 'plant:account', moment: { ...m, txIndex: OFF_CHAIN - 3, ixIndex: 1 }, key: `gates/mint:${token}`, value: { owner: token } },
     ],
-  }, { labels: [{ note: token }] });
+  }, ({ rows: stream }) => {
+    // The scoring stage's view from the marker's moment on (it runs after the engine and may read the future): the mints
+    // created. The planted create is one of them, so the labels carry the marker only when the plant reached the data
+    // outcomes are scored from (BT-WALL b).
+    const labels: { note: string }[] = [];
+    for (let it = stream(), r = it.next(); !r.done; r = it.next()) {
+      const v = r.value;
+      if (v.kind === 'event' && v.event === 'CreateEvent' && v.blockTime * 1000 >= m.receivedAt) labels.push({ note: String(v.fields['mint']) });
+    }
+    return { labels };
+  });
 };
 
 export const MIN_G_DAYS = MIN_DAYS;

@@ -5,7 +5,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/confi
 import { runStudy } from '../src/study/run.ts';
 import { STUDY_CONFIG } from '../src/strategy/config.ts';
 import { type MintPlan, POOL_ACCOUNTS, studyWorld, W0 } from './study-world.ts';
-import { SOL_USD } from './synthetic.ts';
+import { SOL_USD } from '../src/dataset/synthetic.ts';
 
 const seen = vi.hoisted(() => [] as string[]);
 // The gates module itself: the staged evaluation (core gates/staged.ts) calls evaluateHardRejects from it directly.
