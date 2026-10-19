@@ -11,7 +11,7 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatTag, RETIRED_KEEP, FUNDER_KEEP_MS, cappedAdd } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatTag, RETIRED_KEEP, FUNDER_KEEP_MS, cappedAdd, mergeStretches } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { recordFromRpc } from '../../src/chain/index.ts';
@@ -1030,18 +1030,39 @@ describe('graduate survival', () => {
       expect(built).toHaveLength(1);
       for (const source of ['persist', 'data-1']) {
         expect(items(new FactWorld().push(seed(built, mark + 30_000, mark + 30_000, source)))).toEqual(built);
-        // The same graduate from the live build and the seed: counted once.
+        // The same graduate from the live build and the seed: counted once. The seed adds no graduate but still marks
+        // its hole (R2-6), so a new fact goes out.
         const both = live().push(seed(built, mark + 30_000, mark + 40_000, source));
-        expect(both.facts(GRADUATES_KEY)).toHaveLength(1);
+        expect(both.facts(GRADUATES_KEY)).toHaveLength(2);
         expect(items(both)).toEqual(built);
+        expect((both.last(GRADUATES_KEY) as { unobserved?: unknown }).unobserved).toEqual([{ fromMs: mark + 30_000, toMs: mark + 40_000 + 30 * 60_000 }]);
       }
     });
 
     it('is as-of honest: a seed dated after its release is refused, and an entry whose mark is after the seed\'s moment does not count', () => {
       const built = items(live())!;
       expect(new FactWorld().push(seed(built, mark + 30_000, mark + 29_999)).facts(GRADUATES_KEY)).toEqual([]);
-      expect(new FactWorld().push(seed(built, mark - 1, mark + 30_000)).facts(GRADUATES_KEY)).toEqual([]);
+      // R2-6: the entry does not count, but the seed's hole is marked.
+      expect(new FactWorld().push(seed(built, mark - 1, mark + 30_000)).facts(GRADUATES_KEY).map((f) => f.value)).toEqual([
+        expect.objectContaining({ items: [], unobserved: [{ fromMs: mark - 1, toMs: mark + 30_000 + 30 * 60_000 }] }),
+      ]);
       expect(items(new FactWorld().push(seed(built, mark, mark + 30_000)))).toEqual(built);
+    });
+
+    it('R2-6 F1: the seed\'s earlier stretches are carried and this restart\'s is added; one past the keep line is pruned', () => {
+      // The keep window is 16 d 30 min (FactWorld's options): the 40-day-old stretch is past it.
+      const earlier = { fromMs: mark - 5 * 3_600_000, toMs: mark - 4 * 3_600_000 };
+      const old = { fromMs: mark - 40 * 86_400_000, toMs: mark - 39 * 86_400_000 };
+      const w = new FactWorld().push(offchain(RAW.graduatesSeed, { source: 'persist', asOfMs: mark + 30_000, items: [], unobserved: [old, earlier] }, migrate.slot + 5000n, mark + 40_000));
+      expect((w.last(GRADUATES_KEY) as { unobserved?: unknown }).unobserved).toEqual([earlier, { fromMs: mark + 30_000, toMs: mark + 40_000 + 30 * 60_000 }]);
+      // A malformed stretch refuses the seed.
+      const bad = new FactWorld().push(offchain(RAW.graduatesSeed, { source: 'persist', asOfMs: mark + 30_000, items: [], unobserved: [{ fromMs: 2, toMs: 1 }] }, migrate.slot + 5000n, mark + 40_000));
+      expect(bad.last(GRADUATES_SEED_KEY)).toEqual(expect.objectContaining({ accepted: false, reason: 'malformed seed' }));
+    });
+
+    it('R2-6: carried stretches are sorted and merged where they overlap or touch', () => {
+      expect(mergeStretches([{ fromMs: 30, toMs: 40 }, { fromMs: 0, toMs: 10 }, { fromMs: 10, toMs: 20 }, { fromMs: 35, toMs: 38 }, { fromMs: 21, toMs: 22 }]))
+        .toEqual([{ fromMs: 0, toMs: 20 }, { fromMs: 21, toMs: 22 }, { fromMs: 30, toMs: 40 }]);
     });
 
     it('a graduate this process measures replaces its seeded entry: counted once, at the live value', () => {

@@ -212,3 +212,27 @@ export const liveWatchToClose = (coverage: readonly MarketEvent[]): { readonly v
   if (via === null) return null;
   return open.has(via) ? { via, fromSlot: open.get(via) ?? null } : { via, fromSlot: null };
 };
+
+/**
+ * R2-1: every saved watch (creates and rugs, but the seed's backfill) that was started and had no open gap at the end:
+ * the watches a restart must gap, as `loadState` does on the persist path, so neither half of H14 reads as covered
+ * across the downtime.
+ */
+export const startedWatches = (coverage: readonly MarketEvent[]): { readonly stream: 'creates' | 'rugs'; readonly via: string }[] => {
+  const val = (e: MarketEvent): Record<string, unknown> | null => (isObj(e.value) && isObj(e.value['value']) ? e.value['value'] : isObj(e.value) ? e.value : null);
+  const started = new Map<string, { stream: 'creates' | 'rugs'; via: string }>();
+  const open = new Set<string>();
+  for (const e of coverage) {
+    const m = /^coverage:(creates|rugs):(start|gap|resume)$/.exec(e.key);
+    const v = m === null ? null : val(e);
+    if (m === null || v === null || typeof v['via'] !== 'string' || v['via'] === 'seed') continue;
+    const stream = m[1] as 'creates' | 'rugs';
+    const sv = `${stream}|${v['via']}`;
+    if (m[2] === 'start') {
+      started.set(sv, { stream, via: v['via'] });
+      open.delete(sv);
+    } else if (m[2] === 'gap' && v['toSlot'] === null) open.add(sv);
+    else open.delete(sv);
+  }
+  return [...started].filter(([sv]) => !open.has(sv)).map(([, w]) => w);
+};

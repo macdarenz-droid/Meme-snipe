@@ -142,7 +142,8 @@ describe('deployer index', () => {
     const idx = started();
     const line = T - 15 * DAY_MS;
     const ages = [2 * DAY_MS, 14 * DAY_MS, 15 * DAY_MS - 1_000, 15 * DAY_MS + 1_000, 20 * DAY_MS];
-    ages.forEach((age, k) => idx.observe(marketOf(`logs:pump:CreateEvent:A${k}`, createEvent(`A${k}`, DEV, T - age, SLOT - 6_000_000n + BigInt(k)), at(T - 29 * DAY_MS + k, SLOT - 6_000_000n + BigInt(k)))));
+    // Each received at its block time (a block time ahead of its receipt is clamped to it, R2-7).
+    ages.forEach((age, k) => idx.observe(marketOf(`logs:pump:CreateEvent:A${k}`, createEvent(`A${k}`, DEV, T - age, SLOT - 6_000_000n + BigInt(k)), at(T - age, SLOT - 6_000_000n + BigInt(k)))));
     idx.observe(marketOf('rug:OldRug', { mint: 'OldRug', creator: DEV }, at(T - 16 * DAY_MS, SLOT - 3_000_000n)));
     idx.observe(marketOf('rug:NewRug', { mint: 'NewRug', creator: DEV }, at(T - 3 * DAY_MS, SLOT - 600_000n)));
     const saved = idx.snapshot(NOW, line);
@@ -156,6 +157,15 @@ describe('deployer index', () => {
     // Every mint inside the H14 look-back (14 days) still counts, as before the prune.
     const inside = (f: typeof before) => f.mints.filter((m) => m.createdAtMs >= T - 14 * DAY_MS).map((m) => m.mint);
     expect(inside(after)).toEqual(inside(before));
+  });
+
+  it('R2-7: a block time ahead of receipt, by any amount, is taken as the receipt time; one behind keeps its chain time', () => {
+    const idx = new DeployerIndex();
+    idx.observe(marketOf('logs:pump:CreateEvent:S1', createEvent('S1', DEV, T - 1_000 + CHAIN_SKEW_MS, SLOT - 4n), at(T - 1_000, SLOT - 4n)));
+    // A host clock more than CHAIN_SKEW_MS behind (F2).
+    idx.observe(marketOf('logs:pump:CreateEvent:S2', createEvent('S2', DEV, T - 1_000 + CHAIN_SKEW_MS + 1_000, SLOT - 3n), at(T - 1_000, SLOT - 3n)));
+    idx.observe(marketOf('logs:pump:CreateEvent:S3', createEvent('S3', DEV, T - 3_000, SLOT - 2n), at(T - 1_000, SLOT - 2n)));
+    expect(idx.factFor(DEV, NOW, 0).mints).toEqual([{ mint: 'S1', createdAtMs: T - 1_000 }, { mint: 'S2', createdAtMs: T - 1_000 }, { mint: 'S3', createdAtMs: T - 3_000 }]);
   });
 
   it('counts each create once across logs and fetched transactions, per creator, as of now', () => {
@@ -364,10 +374,23 @@ describe('on-demand deployer check (RUG-1c)', () => {
     expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'prior-rug', detail: `${DEV} rugged P1 (creator-dump), P2 (collapse) within 14 days`, value: '2' }));
   });
 
+  it('R2-2: a checked rug counts only from the look-back start; one with no date is counted and noted', () => {
+    const lab = (atMs: number) => ({ mint: 'P1', creator: DEV, rule: 'collapse', evidence: 'observed', atMs, slot: 1n, version: 'v', detail: '', venue: 'curve', amounts: { peak: 2n, level: 0n } }) as never;
+    const rug = (label?: never) => h([check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'rug', detail: 'collapse', ...(label === undefined ? {} : { label }) }])]);
+    const prior = (r: ReturnType<typeof h>) => r.reasons.filter((x) => x.code === 'prior-rug');
+    expect(prior(rug(lab(T - 14 * DAY_MS)))).toHaveLength(1);
+    expect(prior(rug(lab(T - 14 * DAY_MS - 1)))).toEqual([]);
+    // A date that is not a whole ms is no date: counted.
+    expect(prior(rug(lab(Number.NaN)))).toHaveLength(1);
+    const undated = rug();
+    expect(prior(undated)).toHaveLength(1);
+    expect(undated.notes).toContainEqual(expect.objectContaining({ gate: 'H14', code: 'rug-undated' }));
+  });
+
   it('a rug known to the index without a kind takes the kind the check found', () => {
     const idx = withPrior();
     idx.observe(marketOf('rug:P1', { mint: 'P1', creator: DEV }, old(2)));
-    const lab = { mint: 'P1', creator: DEV, rule: 'collapse', evidence: 'observed', atMs: 0, slot: 1n, version: 'v', detail: '', venue: 'curve', amounts: { peak: 2n, level: 0n } };
+    const lab = { mint: 'P1', creator: DEV, rule: 'collapse', evidence: 'observed', atMs: T - 3 * DAY_MS + 60_000, slot: 1n, version: 'v', detail: '', venue: 'curve', amounts: { peak: 2n, level: 0n } };
     const r = h([check({}, [{ mint: 'P1', createdAtMs: T - 3 * DAY_MS, status: 'rug', detail: 'collapse', label: lab as never }])], idx);
     expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'prior-rug', detail: `${DEV} rugged P1 (collapse) within 14 days` }));
   });

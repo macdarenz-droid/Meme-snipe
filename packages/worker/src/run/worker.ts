@@ -31,7 +31,7 @@ import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents, openPositions } from './desk.ts';
-import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
+import { DeployerStore, liveWatchToClose, startedWatches, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
 import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
@@ -800,7 +800,7 @@ export class Worker {
       onFrame: (f) => this.#onFrame(f),
       onRelease: (e, r) => this.#onRelease(e, r),
     });
-    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
+    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), volumeDaysMissing: (days) => this.#volumeDaysMissing(days), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
     // RC-H4: a restored intent that is not final keeps its age across the restart: its first ledger row's time, so a stuck
@@ -2534,6 +2534,14 @@ export class Worker {
       // A restart without a fill: the downtime is an open gap on the saved watch, settled by its new start as lossy.
       extra.push({ kind: 'market', id: 'worker:downtime-gap', moment: { ...asOf }, key: 'coverage:creates:gap', value: { value: { fromSlot: saved.last.slot + 1n, toSlot: null, reason: 'worker down; no downtime fill', via: close.via }, source: 'worker', backfilled: false, seq: 0 } });
     }
+    if (saved.last !== null) {
+      // R2-1: every other started watch, rugs included, gets the downtime gap too (the downtime fill reads the live creates
+      // watch only), as `loadState` does on the persist path, which already left those gaps open so none is added twice.
+      for (const w of startedWatches(saved.coverage)) {
+        if (w.stream === 'creates' && w.via === close?.via) continue;
+        extra.push({ kind: 'market', id: `worker:downtime-gap:${w.stream}:${w.via}`, moment: { ...asOf }, key: `coverage:${w.stream}:gap`, value: { value: { fromSlot: saved.last.slot + 1n, toSlot: null, reason: 'worker down', via: w.via }, source: 'worker', backfilled: false, seq: 0 } });
+      }
+    }
     const order = (xs: readonly MarketEvent[]) => {
       const byId = new Map(xs.map((e) => [e.id, e]));
       return [...byId.values()].sort(compareEvents);
@@ -2557,6 +2565,21 @@ export class Worker {
     for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
     this.#noteCreates(result.creates);
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
+  }
+
+  /**
+   * NT-1: the regime judged curve volume without some days of its window (not published, uncovered or tampered): a named
+   * critical alert in the journal (counted in the daily summary) and the log; cleared once every day is present again.
+   */
+  #volumeDaysMissing(days: readonly number[]): void {
+    const names = days.map((d) => new Date(d * 86_400_000).toISOString().slice(0, 10));
+    if (days.length === 0) {
+      this.#journal.write('alert', { level: 'cleared', code: 'volume_days_missing', reasons: ['every curve volume day of the window is present again'] });
+      return;
+    }
+    const why = `curve volume judged without ${days.length} day(s) of its window: ${names.join(', ')}`;
+    this.#journal.write('alert', { level: 'critical', code: 'volume_days_missing', reasons: [why] });
+    this.#d.log(`ALERT ${why}`);
   }
 
   /** Trades with an exit planned, requested or signed and not yet final, or a due exit waiting for its first fresh quote (EXIT-1c): what a restart must not lose (RUN-1d). */

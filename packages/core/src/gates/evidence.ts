@@ -70,6 +70,11 @@ export class Evidence {
     return this.#ctx.now;
   }
 
+  /** The observed tip, never past now: the slot chain-slot-bearing reads are judged against. */
+  get tip(): bigint {
+    return this.#ctx.observedTip < this.now.slot ? this.#ctx.observedTip : this.now.slot;
+  }
+
   /** The raw value of `key` as of now, or undefined when there is none. Lookups never ask past now. */
   raw(key: string): unknown {
     return this.entry(key)?.value;
@@ -111,7 +116,7 @@ export class Evidence {
     if (obs.slot === null) return evidenceReason(name, 'malformed', neededBy, `${name} is chain state without a slot`);
     const lag = BigInt(maxStateSlotLag);
     // Never past now: a tip ahead of the clock cannot have been observed.
-    const tip = this.#ctx.observedTip < now.slot ? this.#ctx.observedTip : now.slot;
+    const tip = this.tip;
     if (obs.stream === undefined) {
       const behind = tip - obs.slot;
       return behind > lag ? evidenceReason(name, 'stale', neededBy, `${name} read at slot ${obs.slot}, ${behind} slots behind`, String(behind), String(lag)) : null;
