@@ -142,7 +142,15 @@ export interface Harness {
  * The conservative paper scenario, with every attempt landing, in its regular landing window, unless a test asks
  * otherwise (RUN-1d). The draws are the same in every process anyway: the boot is pinned (`boot-<n>`).
  */
-export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n }, landingTail: { ...FILL_CONFIG.scenarios[PAPER_SCENARIO].landingTail, ppm: 0n } };
+const CONSERVATIVE = FILL_CONFIG.scenarios[PAPER_SCENARIO];
+/**
+ * Every attempt lands: no landing tail, no congested window and no send-path outage (N2 added the last two to paper,
+ * as the backtest has them). The congestion and repeated-exit haircut tests use the paper scenario itself.
+ */
+export const LANDS = {
+  ...CONSERVATIVE, landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n }, landingTail: { ...CONSERVATIVE.landingTail, ppm: 0n },
+  congestion: { ...CONSERVATIVE.congestion, network: { enterPpm: 0n, activityEnterPpmPerSol: 0n, maxEnterPpm: 0n, stayPpm: 0n }, providerFailPpm: 0n },
+};
 
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();

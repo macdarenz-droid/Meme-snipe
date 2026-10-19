@@ -227,6 +227,15 @@ export const chooseMarket = (pool: PoolFact | null, snap: SnapshotFact | null, c
   return { kind: 'pool', pool, atMs: at!.receivedAt, carried, confirmedAtMs: null };
 };
 
+/**
+ * The market a paper attempt lands on at `landingSlot` (BT-parity F2, EXIT-FILL-FIXES): `chooseMarket`, with a carry
+ * only when it proves the reserves unchanged through the landing slot itself. An earlier carry says nothing about the
+ * pool at landing, so the pool fact keeps its own date. Entries and exits land alike; an entry's decision still never
+ * prices from a carry (`#market` with `carry: false`).
+ */
+export const landingMarket = (pool: PoolFact | null, snap: SnapshotFact | null, carry: CarryFact | null, landingSlot: bigint): MarketChoice =>
+  chooseMarket(pool, snap, carry !== null && carry.slot >= landingSlot ? carry : null);
+
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
 // FACTS-1f's staged hard rejects live in core (one implementation with the backtest study, BT review of #41).

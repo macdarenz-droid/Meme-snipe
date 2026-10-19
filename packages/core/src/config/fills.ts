@@ -13,6 +13,7 @@
 // |   activity term, provider failures)|                                                | assumption  | landing: these stay as set through it   |
 // | dropPpm                            | stress margin                                  | assumption  |                                         |
 // | exitRetryHaircutPpm                | proxy for sellers ahead of us                  | assumption  | exit fills of the canary                |
+// | exitRetryHaircutWindowMs (10 min)  | supervisor ruling: one exit episode            | assumption  | exit fills of the canary                |
 // | closeSuccessPpm, dustPpm           | none measured                                  | assumption  | no refinement source yet                |
 // | delays.measured                    | today's base values (2 slots + 200 ms)         | unmeasured  | the worker recorder on the VPS          |
 // | delays.adverse, delays.stress      | ruling values (2+6 slots + 1 s, 4+12 + 2 s)    | stress      | kept as stress budgets                  |
@@ -39,7 +40,7 @@ const LAND_HIGH = { pumpswap: 760_000n, 'pump-curve': 590_000n } as const;
 const WINDOW = 150;
 
 const VALUES: FillConfig = {
-  version: 'fills-3',
+  version: 'fills-4',
   provisional: true,
   network: {
     signaturesPerTx: 1n,
@@ -58,7 +59,8 @@ const VALUES: FillConfig = {
   // - congestion: one persistent network state shared by every position and provider, whose entry probability rises
   //   with the previous window's market volume (never congestion on its own); landing falls and latency rises for
   //   every attempt at once; provider failures drop attempts on top.
-  // - exitRetryHaircutPpm: each repeated exit on a position gets that much less, as other sellers drain the pool.
+  // - exitRetryHaircutPpm: each repeated exit on a position gets that much less, as other sellers drain the pool; only
+  //   the position's exit sends in the last exitRetryHaircutWindowMs count (fills-4, EXIT-FILL-FIXES ruling).
   // - closeSuccessPpm, dustPpm: the atomic sell-and-close outcome that decides whether rent comes back.
   scenarios: {
     // Slots are about 0.3 s. Discovery: two free feeds, p50 within a second or two (§6.1, data.md §7).
@@ -66,7 +68,7 @@ const VALUES: FillConfig = {
       name: 'base', landPpm: LAND, dropPpm: 300_000n,
       landingTail: { ppm: 30_000n, slots: [15, 30, 60] },
       congestion: { windowSlots: WINDOW, network: { enterPpm: 40_000n, activityEnterPpmPerSol: 500n, maxEnterPpm: 200_000n, stayPpm: 600_000n }, providerFailPpm: 5_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
-      exitRetryHaircutPpm: 25_000n,
+      exitRetryHaircutPpm: 25_000n, exitRetryHaircutWindowMs: 10 * 60_000,
       delay: 'measured',
       discoverySlots: [2, 3, 4, 5, 8], landingSlots: [1, 2, 2, 3, 4],
       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick',
@@ -78,7 +80,7 @@ const VALUES: FillConfig = {
       name: 'conservative', landPpm: LAND_LOW, dropPpm: 200_000n,
       landingTail: { ppm: 50_000n, slots: [30, 60, 120] },
       congestion: { windowSlots: WINDOW, network: { enterPpm: 60_000n, activityEnterPpmPerSol: 1_000n, maxEnterPpm: 400_000n, stayPpm: 750_000n }, providerFailPpm: 20_000n, landFactorPpm: 400_000n, extraLandingSlots: 20 },
-      exitRetryHaircutPpm: 50_000n,
+      exitRetryHaircutPpm: 50_000n, exitRetryHaircutWindowMs: 10 * 60_000,
       delay: 'adverse',
       discoverySlots: [17], landingSlots: [6],
       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_500_000n, takeProfit: 'close',
@@ -88,7 +90,7 @@ const VALUES: FillConfig = {
       name: 'optimistic', landPpm: LAND_HIGH, dropPpm: 400_000n,
       landingTail: { ppm: 10_000n, slots: [8, 15] },
       congestion: { windowSlots: WINDOW, network: { enterPpm: 10_000n, activityEnterPpmPerSol: 200n, maxEnterPpm: 100_000n, stayPpm: 500_000n }, providerFailPpm: 1_000n, landFactorPpm: 800_000n, extraLandingSlots: 2 },
-      exitRetryHaircutPpm: 10_000n,
+      exitRetryHaircutPpm: 10_000n, exitRetryHaircutWindowMs: 10 * 60_000,
       delay: 'measured',
       discoverySlots: [1, 2], landingSlots: [1],
       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick',

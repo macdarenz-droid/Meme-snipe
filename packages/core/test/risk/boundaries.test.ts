@@ -3,7 +3,8 @@
 import { describe, expect, test } from 'vitest';
 import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
 import { costAtSize, feasibleSize, fixedCosts } from '../../src/costs/index.ts';
-import { type EntryAllowed, evaluateEntry, evaluateExit, maxTradeCosts, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
+import { type EntryAllowed, SLOW_RETRY_RESERVE_MS, evaluateEntry, evaluateExit, maxTradeCosts, melbourneWeek, opsReserve } from '../../src/risk/index.ts';
+import { slowRetriesWithin } from '../../src/exits/index.ts';
 import { type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv, solPriceMicroUsd } from '../../src/units/index.ts';
 import {
   DAY_START, DEEP_POOL, HOUR, MINT_A, MINT_B, NETWORK, NOW, PRICE, RENT, SOL, WEEK_START, account, baseInput, baseRequest,
@@ -197,7 +198,10 @@ describe('R4 reserve and cash', () => {
   test('the reserve is computed live and never below the floor', () => {
     const per = costs.perExitAttempt;
     const big = { ...RENT, oneTime: 3_000_000n, transient: 20_000_000n };
-    const attempts = BigInt(TRIAL_POLICY.reserve.exitAttempts + TRIAL_POLICY.exits.blockedRetryAttempts);
+    // RB-5 risk ruling: the first day of slow blocked-exit retries too (4 at the trial's one-minute blockedRetryMs).
+    const slow = slowRetriesWithin(TRIAL_POLICY.exits.blockedRetryMs, SLOW_RETRY_RESERVE_MS);
+    expect(slow).toBe(4);
+    const attempts = BigInt(TRIAL_POLICY.reserve.exitAttempts + TRIAL_POLICY.exits.blockedRetryAttempts + slow);
     expect(opsReserve(TRIAL_POLICY, { rent: big }, per)).toBe(big.tokenAccount + big.oneTime + big.transient + attempts * per);
     expect(opsReserve(TRIAL_POLICY, { rent: RENT }, per)).toBe(TRIAL_POLICY.reserve.opsFloor);
   });
