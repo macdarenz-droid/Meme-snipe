@@ -161,7 +161,10 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     boot: `boot-${n}`,
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
-    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }), ...o.strategy },
+    // LATE-LOG: the harness's scenarios (kills, restarts, settlement, retire, the API) were written for an entry proposed
+    // on the evaluation that passes, so they run with no entry wait; the wait itself (the production default,
+    // CONFIRM_LAG_SLOTS) is proven in entry-confirm-wait.test.ts, and a test that wants it sets `strategy.confirmLagSlots`.
+    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), confirmLagSlots: 0, ...(o.universe === undefined ? {} : { universe: o.universe }), ...o.strategy },
     scenario: o.scenario ?? LANDS, network: FILL_CONFIG.network, timers,
     sources: o.sources ?? (() => {
       order.push('sources');

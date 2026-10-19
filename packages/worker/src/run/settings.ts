@@ -5,6 +5,7 @@ import type { FillScenario } from '../../../core/src/fills/index.ts';
 import { PPM } from '../../../core/src/costs/index.ts';
 import { MAX_CREATED_ACCOUNT_BYTES, USER_VOLUME_ACCUMULATOR_SIZE, rentExempt } from '../../../core/src/tx/rent.ts';
 import { CREATE_KEEP_MS, type StrategyConfig } from '../engine/strategy.ts';
+import { CONFIRM_LAG_SLOTS } from '../../../core/src/facts/index.ts';
 
 /** The paper fill scenario: conservative (the safe side) until the dry run measures our own latency (§11). */
 export const PAPER_SCENARIO = 'conservative';
@@ -46,6 +47,7 @@ export const strategyConfig = (
     rent: { tokenAccount: net.tokenAccountRent, tokenAccountClosedOnExit: true, oneTime: oneTimeRent(fills), transient: net.tokenAccountRent },
     blockhashValidBlocks: net.blockhashValidBlocks,
     evaluateEveryMs: policy.gates.maxQuoteAgeMs,
+    confirmLagSlots: CONFIRM_LAG_SLOTS,
     barMs: exitsFor(policy.exits, 'U2').atrBarMs,
     // Mainnet's slot target is 350 ms since epoch 1020 (August 2026; 400 ms from genesis, about 360 ms measured after the
     // change); 500 ms bounds the mean from above, so a fill dated from its slot is never dated later than it happened.

@@ -11,7 +11,7 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatTag, RETIRED_KEEP, FUNDER_KEEP_MS, cappedAdd } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatTag, RETIRED_KEEP, FUNDER_KEEP_MS, cappedAdd, CONFIRM_LAG_SLOTS } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { recordFromRpc } from '../../src/chain/index.ts';
@@ -290,10 +290,14 @@ describe('candles', () => {
     let at = atOf(swaps.at(-1)!) + 60_000;
     let slot = swaps.at(-1)!.slot + 100n;
     const next = (): Moment => ({ slot: (slot += 10n), txIndex: 0, ixIndex: 0, receivedAt: (at += 1_000) });
-    /** A new trade (its own signature, the last trade's reserves) stamped `atMs`, released after everything so far. */
+    /**
+     * A new trade (its own signature, the last trade's reserves) stamped `atMs`, released after everything so far, in its
+     * own slot (LATE-LOG: two swaps of one slot must chain, and these share their reserves).
+     */
     const newer = (atMs: number, n: number): MarketEvent => {
       const v = base.value as Ev;
-      return { ...base, id: `ev:newer:${n}`, moment: next(), value: { ...v, event: { ...v.event, signature: `newer${n}`, data: { ...v.event.data, timestamp: BigInt(Math.floor(atMs / 1000)) } } } };
+      const moment = next();
+      return { ...base, id: `ev:newer:${n}`, moment, value: { ...v, txSlot: moment.slot, event: { ...v.event, signature: `newer${n}`, data: { ...v.event.data, timestamp: BigInt(Math.floor(atMs / 1000)) } } } };
     };
     /** The first trade again as a confirmed log line, released now. */
     const repeat = (): MarketEvent => {
@@ -1005,6 +1009,15 @@ describe('series: SOL/USD and chain volume', () => {
   });
 });
 
+/**
+ * LATE-LOG: the slot notice at a survival mark, then the two that bring the head `CONFIRM_LAG_SLOTS` past it (the head
+ * moves to a notice's slot after the notice is judged). Returns the receipt time of the event that settles the mark.
+ */
+const settle = (w: FactWorld, atMark: number): number => {
+  w.push(slotNotice(migrate.slot + 4600n, atMark), slotNotice(migrate.slot + 4600n + BigInt(CONFIRM_LAG_SLOTS), atMark + 2_400), slotNotice(migrate.slot + 4601n + BigInt(CONFIRM_LAG_SLOTS), atMark + 2_800));
+  return atMark + 2_800;
+};
+
 describe('graduate survival', () => {
   it('a read of the pool within a minute after +30 min dates the graduate; a later one does not', () => {
     const mark = 1_791_032_673_000 + 30 * 60_000;
@@ -1076,18 +1089,33 @@ describe('graduate survival', () => {
     const w = new FactWorld();
     w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
     w.push(...txEvents(migrate), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
-    w.push(slotNotice(migrate.slot + 4600n, 1_791_032_673_000 + 30 * 60_000 + 5));
+    settle(w, 1_791_032_673_000 + 30 * 60_000 + 5);
     const g = w.last(GRADUATES_KEY) as { items: { reserveAfter: bigint }[] };
     // After the migration's own buy: vault 67,405,853,773 + 2,469,629,629 lp-adjusted, plus 17,584,505,289 virtual.
     expect(g.items).toEqual([{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }]);
   });
+  it('LATE-LOG: survival is settled only once the released slots are confirmLagSlots past the mark', () => {
+    const w = new FactWorld();
+    w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
+    w.push(...txEvents(migrate), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
+    const mark = 1_791_032_673_000 + 30 * 60_000;
+    w.push(slotNotice(migrate.slot + 4600n, mark + 5));
+    w.push(slotNotice(migrate.slot + 4600n + BigInt(CONFIRM_LAG_SLOTS), mark + 2_400));
+    // Until the head is the lag past the mark's slot a confirmed pool log could still arrive for a slot before the mark:
+    // nothing is settled (the head moves to a notice's slot after the notice is judged).
+    expect(w.facts(GRADUATES_KEY)).toEqual([]);
+    w.push(slotNotice(migrate.slot + 4601n + BigInt(CONFIRM_LAG_SLOTS), mark + 2_800));
+    const g = w.last(GRADUATES_KEY) as { items: { reserveAfter: bigint }[] };
+    expect(g.items).toEqual([{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }]);
+  });
+
   it('review N2: a pool let go before its survival mark keeps its trade stream until the mark dates it, then drops it', () => {
     const w = new FactWorld();
     w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
     w.push(...txEvents(migrate), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
     w.producer.retire([MINT, POOL]);
     expect(w.producer.sizes().streams).toBe(1);
-    w.push(slotNotice(migrate.slot + 4600n, 1_791_032_673_000 + 30 * 60_000 + 5));
+    settle(w, 1_791_032_673_000 + 30 * 60_000 + 5);
     const g = w.last(GRADUATES_KEY) as { items: { reserveAfter: bigint }[] };
     expect(g.items).toEqual([{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }]);
     expect(w.producer.sizes()).toMatchObject({ streams: 0, chains: 0 });
@@ -1099,8 +1127,7 @@ describe('graduates fact (pinned across the graduatesFact refactor)', () => {
     const w = new FactWorld();
     w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
     w.push(...txEvents(migrate), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
-    const at = 1_791_032_673_000 + 30 * 60_000 + 5;
-    w.push(slotNotice(migrate.slot + 4600n, at));
+    const at = settle(w, 1_791_032_673_000 + 30 * 60_000 + 5);
     expect(w.last(GRADUATES_KEY)).toEqual({
       obs: { provider: 'facts', slot: null, receivedAt: at, quality: [] },
       items: [{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }],
@@ -1127,7 +1154,7 @@ describe('graduate survival without trades', () => {
     const w = new FactWorld();
     w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
     w.push(...txEvents(migrate).filter((e) => !e.key.startsWith('pump_amm:BuyEvent:')), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
-    w.push(slotNotice(migrate.slot + 4600n, 1_791_032_673_000 + 30 * 60_000 + 5));
+    settle(w, 1_791_032_673_000 + 30 * 60_000 + 5);
     expect((w.last(GRADUATES_KEY) as { items: { reserveAfter: bigint }[] }).items).toEqual([{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 17_584_505_289n }]);
   });
 });

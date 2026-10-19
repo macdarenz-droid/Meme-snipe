@@ -326,6 +326,13 @@ export interface StrategyConfig {
   readonly blockhashValidBlocks: bigint;
   /** A candidate is evaluated at most once per this many ms. */
   readonly evaluateEveryMs: number;
+  /**
+   * LATE-LOG (S1 ruling): an entry that passes every gate is held until the release point is this many slots past the
+   * slot it passed at, then judged again on the facts as of then and proposed only if it passes again, so a confirmed
+   * pool log delivered late (at most 5 slots past its release, measured) is in the facts it is judged on. 0 never holds.
+   * Exits never wait.
+   */
+  readonly confirmLagSlots: number;
   /** Width of the price bars kept per mint (the policy's ATR bar). */
   /**
    * An upper bound on mainnet's mean slot time, used only to date a fill the strategy did not see (a restart whose saved
@@ -416,7 +423,12 @@ interface Candidate {
   creator?: string | null;
   /** ENTRY-MEMO: S0's drawn entry moment, drawn once (its window is fixed: the migration time and the config). */
   entryAt?: number;
+  /** LATE-LOG: the released slot at which it last passed every gate, while its entry is held (`confirmLagSlots`). */
+  confirmFrom?: bigint | undefined;
 }
+
+/** LATE-LOG: the reason text of an entry held for `confirmLagSlots` after it passed (not a gate's refusal). */
+export const CONFIRM_WAIT = 'confirm wait';
 
 /**
  * RESTART-KEEP: a candidate as saved with the state (public chain data and the strategy's own evaluation state), so a
@@ -2303,6 +2315,8 @@ export class LiveStrategy implements Strategy {
       const cf = created.ok ? parseCreate(created.value) : null;
       if (cf !== null) cand.creator = cf.creator;
       const r = this.#evaluate(cand, ctx, gctx, out);
+      // LATE-LOG: any refusal ends a held pass; the next pass waits again from its own slot.
+      if (r !== null && !r.startsWith(CONFIRM_WAIT)) cand.confirmFrom = undefined;
       cand.gates = r === null ? [] : this.#lastNeeds;
       // A reject is logged when its reason changes (numbers aside), so a long wait does not fill the journal.
       // The S0 diagnostic parts relied on count too: the same reason with a different set is a new line.
@@ -2405,6 +2419,17 @@ export class LiveStrategy implements Strategy {
     const st = this.#stopAt(cand, ctx, quoter, spend);
     if (!st.ok) return this.#fail(st.text, [st.line]);
     const { stopPrice, stopBps } = st;
+    // LATE-LOG: held until the release point is `confirmLagSlots` past the slot it first passed at; every gate above ran
+    // again on the facts as of now on each evaluation, so it is proposed only on a pass that late frames could reach.
+    const lag = BigInt(c.confirmLagSlots);
+    if (lag > 0n) {
+      cand.confirmFrom ??= ctx.now.slot;
+      if (ctx.now.slot < cand.confirmFrom + lag) {
+        const detail = `passed at slot ${cand.confirmFrom}; proposed once slot ${cand.confirmFrom + lag} is released and it passes again`;
+        return this.#fail(`${CONFIRM_WAIT}: ${detail}`, [{ gate: 'worker', code: 'confirm-wait', detail }]);
+      }
+    }
+    cand.confirmFrom = undefined;
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
     // Past every entry intent the book holds for the mint and every try saved before a restart (RESTART-KEEP): ids never repeat.
     cand.tries = 1 + Math.max(cand.tries, Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length);

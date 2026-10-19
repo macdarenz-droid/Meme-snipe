@@ -1245,7 +1245,8 @@ export class Worker {
     const m = e as unknown as MarketEvent;
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
     if (!r.late) this.#deployerStore.keep(m);
-    // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
+    // A slot notice released out of order (recordings made before LATE-LOG) is refused by the engine: the paper height
+    // follows only accepted ones. Since LATE-LOG a late notice is placed off-chain and accepted; the height never moves back.
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) {
       this.#lastSlot = m.value['slot'];
       this.#lastSlotAt = this.#d.timers.now();
@@ -1574,7 +1575,8 @@ export class Worker {
     if (this.#createVias.has(via) && !this.#rugVias.has(via)) return this.#cutCreateLog(v['signature']);
     if (!this.#rugVias.has(via)) return;
     const sig = v['signature'];
-    const slot = m.moment.slot;
+    // LATE-LOG: the transaction's own slot; an off-chain (late) placement's slot is later.
+    const slot = typeof v['txSlot'] === 'bigint' ? v['txSlot'] : m.moment.slot;
     void this.#d.fetchTx(sig, 'cut-log').catch(() => false).then((found) => {
       if (found || this.#stopping) return;
       this.#feed.ingest('worker', { type: 'offchain', key: 'coverage:rugs:gap', value: { fromSlot: slot, toSlot: slot, reason: `cut trade log ${sig}, transaction not found`, via } }, { receivedAt: this.#d.timers.now() });

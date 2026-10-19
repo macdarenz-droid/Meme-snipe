@@ -1,8 +1,10 @@
 // The live Feed and Clock the engine runs on (docs/ARCHITECTURE.md §16.1, docs/DECISIONS.md "Engine").
 // Providers hand raw inputs to `ingest`; the feed stamps arrival order, drops duplicates (first copy wins),
-// holds facts behind a slot horizon and releases them in the engine's total order. A fact that arrives after its
-// slot was released is still released, marked late, and the engine refuses it as `out_of_order`; the recorder
-// keeps the release sequence so the parity replay feeds exactly what live fed.
+// holds facts behind a slot horizon and releases them in the engine's total order. LATE-LOG: a fact that arrives after
+// its slot was released is never released out of order (the engine would refuse it, and every fact the producer wrote
+// from it, as `out_of_order`, silently); it is placed off-chain at the open slot, marked `late`, and released in order,
+// and the producer judges it by its own slot. The recorder keeps the release sequence so the parity replay feeds
+// exactly what live fed.
 //
 // Everything that reads wall time happens in `ingest` and `advance`, which the worker calls. `next` and the
 // clock only pop and compare, so they run inside the engine's runtime trap.
@@ -38,7 +40,10 @@ export interface Release {
   /** The frame the event came from. */
   readonly frameSeq: number;
   readonly eventId: string;
-  /** Its slot was already released when the frame arrived; the engine refuses it if it is not after the last event. */
+  /**
+   * Released out of the total order (the engine refuses it if it is not after the last event). Only in recordings made
+   * before LATE-LOG: since then a late frame is placed off-chain (`Frame.late`) and this is always false.
+   */
   readonly late: boolean;
 }
 
@@ -228,13 +233,14 @@ export class LiveFeed implements Feed {
     const lost = shedFirst && (place.at === 'offchain' || place.slot <= this.#released);
     const promoted = shedFirst && !lost && this.#shedKeys.delete(key!);
     if (promoted) echo = false;
-    if (echo || promoted) {
-      duplicate = false;
-      // Its slot already released: placed after everything, so its hole is never refused as out of order (fail closed).
-      if (place.at === 'chain' && place.slot <= this.#released) place = { at: 'offchain', slot: this.openSlot, arrival: true };
-    }
+    if (echo || promoted) duplicate = false;
+    // LATE-LOG: its slot already released: placed after everything, so neither it nor any fact made from it is refused
+    // as out of order (an echo's hole included). The producer judges it by its own slot (`txSlot`, `slot`): a swap behind
+    // a newer one on its pool fails closed (WATCH-1c stale, candles partial), one still in order is taken as on time.
+    const late = !duplicate && place.at === 'chain' && place.slot <= this.#released;
+    if (late) place = { at: 'offchain', slot: this.openSlot, arrival: true };
     // Frozen one level down: the body may hold transaction bytes, and a typed array with elements cannot be frozen.
-    const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt, source, backfilled, place: Object.freeze(place), duplicate, ...(echo ? { echo: true as const } : {}), ...(lost ? { lost: true as const } : {}), body: Object.freeze(body) });
+    const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt, source, backfilled, place: Object.freeze(place), duplicate, ...(echo ? { echo: true as const } : {}), ...(lost ? { lost: true as const } : {}), ...(late ? { late: true as const } : {}), body: Object.freeze(body) });
     this.#opts.onFrame?.(frame);
     if (duplicate) {
       this.#duplicates++;
@@ -252,12 +258,7 @@ export class LiveFeed implements Feed {
       this.#tipAt = receivedAt;
       this.#stale = false;
     }
-    if (place.slot <= this.#released) {
-      // Late: its slot is gone. Released now, in arrival order, for the engine to refuse or accept by the total order.
-      this.#late++;
-      for (const r of this.#eventsOf([frame], place.slot)) this.#ready.push({ ...r, late: true });
-      return frame;
-    }
+    if (late) this.#late++;
     const held = this.#held.get(place.slot);
     if (held === undefined) this.#held.set(place.slot, [frame]);
     else held.push(frame);
