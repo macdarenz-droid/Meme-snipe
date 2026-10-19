@@ -78,7 +78,7 @@ On the check-days, with one exit for every rule (STATS-1's triple barrier throug
 - s_creator_surv, s_creator_rugs and s_market_surv see only graduates in DATA's sample; they are rates within the sample.
 - One exit design for every rule; the bot's real exits (policy per universe) may score differently.
 - Days are few: with the practice days DATA-1 publishes (09-21 back to 08-29), a feature needs a large effect to pass Holm across 45 tests.
-- The permutation test shuffles labels within day × stratum cells, which assumes the decisions in a cell are exchangeable. When survival is strongly shared by graduates of the same creator, it is anti-conservative: in the review's extreme case a rule was chosen in 23 of 40 null runs. s_creator_surv and s_creator_rugs are the features this touches; a creator-block permutation for those two is not built.
+- The permutation test shuffles labels within day × stratum cells, which assumes the decisions in a cell are exchangeable. When survival is shared by graduates of the same creator, that fails for features fixed per creator (in the review's extreme case a rule was chosen in 23 of 40 null runs). s_creator_surv and s_creator_rugs are therefore tested on creator blocks (RES-5c): a creator is one unit across the whole side (find days or check days), with all its decisions in every day and stratum, high or low by its first decision's value; the permutation shuffles high and low among whole creators that share a first day and first stratum. Other features keep the decision-level test; a feature that is nearly fixed per creator without being one of these two would still be anti-conservative. A creator alone in its first-day × first-stratum group never changes side under the shuffle: that is conservative, but it loses power when repeat creators are rare (stats review of RES-5c).
 - s_market_surv barely changes within a day, so its within-day test has almost no power: a "no" for it says little.
 
 ## 7a. Code and how to run
@@ -109,6 +109,9 @@ node packages/backtest/src/research/survival-cli.ts check --dataset <DATA dir> -
   - Both null calibrations use the exact one-sided binomial criterion: at most 4 of 40 runs choose a rule (P(X ≥ 5) = 0.048 at a true rate of α).
   - One look enforced in git: the fixed paths and the refusals in §7a.
   - The exchangeability and s_market_surv limits in §7.
+
+- 2026-10-05, before any data was read (RES-5c, owner's rule that paper money is real money): the creator-block test for s_creator_surv and s_creator_rugs. Two null calibrations are added: creator-clustered (3 creators of 10 per cell, survival 0.05 or 0.7 per creator, creator features drawn apart from it) and creator features under a day effect. Each must choose a rule at most 4 times in 40. The old decision-level test chose 16 of 40 on the first; blocks that ignore the day chose 35 of 40 on the second. A real creator-level signal is still found (p at the floor).
+- 2026-10-05, stats review of RES-5c at e7c7826: the first version cut creator blocks at the day × stratum cell. Repeat creators graduate across days and strata, and in the reviewer's null (40 creators at 0.1 or 0.6, 2 graduates a day over 10 days, both strata) it rejected at p < 0.05 in 75 of 200 runs. Now a creator is one unit across the whole side, shuffled among creators with the same first day and first stratum. Same null: 4 of 200 (the test allows 5% + 2 SE). The per-cell version fails both new tests: the size check and the full-selection calibration (at most 4 of 40).
 
 ## 9. Results
 
