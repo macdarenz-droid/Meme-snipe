@@ -1,0 +1,31 @@
+{
+  "written": "2026-10-06T23:04+1100 (Melbourne), before any screen trade result was computed (only the pipeline smoke test on one pool ran)",
+  "note": "Every rule or variant this study evaluates on trade outcomes is listed here as a trial, in order. A trial added later is appended with its time and counts toward the deflation.",
+  "window": {
+    "graduations": "pump.fun migrations 2026-08-02T14:00Z .. 2026-09-21T14:00Z (uniform 8% random sample by sha256(signature))",
+    "entries": "Melbourne days 2026-08-17 .. 2026-09-21 (35 days); nothing on or after the RES-3 wall (Melbourne 2026-09-22)",
+    "screen": "Melbourne days 2026-08-17 .. 2026-09-11 (26 days)",
+    "holdout": "Melbourne days 2026-09-12 .. 2026-09-21 (10 days, 28.6%); read once, by at most one candidate"
+  },
+  "selection": "Candidate = the primary trial with the highest lower 95% bound (coin-cluster bootstrap) of mean net return per trade on the screen, among trials with n >= 30 and screen mean net > 0. If no trial qualifies: no candidate, and the holdout is not read.",
+  "holdoutVerdict": "pass = holdout mean net > 0 and lower 95% bound > 0; unclear = mean > 0 but the bound <= 0; fail = mean <= 0.",
+  "control": "S0 (random U1 entry, same exits and costs) in A and B: a control, not a trial.",
+  "primary": [
+    "H1-A",
+    "H2-A",
+    "H3-A",
+    "H6-A",
+    "H1-B",
+    "H2-B",
+    "H3-B",
+    "H6-B"
+  ],
+  "variants": [],
+  "outcome": {
+    "written": "2026-10-07T02:35+11:00 (Melbourne)",
+    "screen": "results/screen.json",
+    "candidate": null,
+    "why": "no primary trial had n >= 30 and a positive screen mean (H6-B +0.14% has n = 10)",
+    "holdout": "not read"
+  }
+}
