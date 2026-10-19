@@ -342,6 +342,67 @@ Every strategy runs alongside **S0, a random-entry control** with the same eligi
 - Determine whether the 2026 rise in the profitable share reflects real conditions or survivorship and the realized-only metric. It could change the regime gate.
 - Check whether /build with direct PumpSwap routing is reliable enough to avoid the 50 bps Jupiter new-token fee (execution-topic research).
 
+## 10. Loss review (R8) and a return-based monitor
+
+Synthetic results from `research/risk/loss_review.py`. They describe the two rules on invented return models, not the bot's performance. 20,000 paths × 100 episodes. h was chosen on seed 810 and every table below runs on the independent seed 281011. The calibration rule was registered in DECISIONS before the run.
+
+**R8 as coded** (`core/src/risk/evaluate.ts`, R8 review): pause for review when any window of the last 20 trades since the last review, shorter prefixes included, holds 5 or more losses. It counts signs only.
+
+Exact chance of 5 or more losses in one window of 20 independent trades, by win rate p:
+
+| p | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 |
+|---|---|---|---|---|---|
+| P(review) | 99.97% | 99.41% | 94.90% | 76.25% | 37.04% |
+
+- **Signs are not outcomes.** Take two sequences with the same signs, 16 wins and 4 losses in 20:
+  - A: wins +30%, losses −2%; compounded ×61.4.
+  - B: wins +1%, losses −95%; compounded ×0.0000.
+  - R8 pauses neither and cannot tell them apart. The CUSUM below reaches 0.015 on A and 3.6 on B.
+- **R8 pauses every profitable model tried.** In all three in-control models (S2 and S3 net of v, and 10% at +100% / 90% at −5%), 100% of paths are paused within 100 episodes. The median first pause comes at episode 9, 10 and 5. At these loss rates R8's review measures the loss rate, not whether the strategy works.
+
+**The candidate monitor** is a CUSUM on episode net returns: S_i = max(0, S_{i−1} − z_i − κ), with κ = 0.005 and an alarm at S_i ≥ h.
+- h = 7.1: the smallest value with at most 5% alarms within 100 episodes for every in-control model. The first grid (to 4.00) held none, so it was extended on the training seed before validation; DECISIONS records this.
+- The binding model is S2 net (+1.75% a trade). Its path maximum has median 3.4 and 95th percentile 7.05.
+
+| In control (validation seed) | mean | R8 paused | CUSUM alarm |
+|---|---|---|---|
+| S2 marginal, net | +1.75% | 100% | 4.89% (bound 5.31%) |
+| S3 positive, net | +12.94% | 100% | 0.07% |
+| 10% at +100%, 90% at −5% | +5.50% | 100% | 0.00% |
+
+| Stress | mean | R8 | CUSUM |
+|---|---|---|---|
+| Clustered losses (S3 shape; the mean is negative, so alarms are wanted) | −3.62% | 100% | 51.9% |
+| S3 with 1% at −105% | +11.77% | 100% | 0.18% |
+| S3 with deviations doubled (same mean) | +12.91% | 100% | 34.6% |
+
+**False pauses accumulate.** The 5% target is per 100 episodes, not a fixed-level test. Over a longer in-control run the share of paths falsely paused keeps growing (validation seed):
+
+| In control | by 100 | by 250 | by 500 | by 1,000 episodes |
+|---|---|---|---|---|
+| S2 marginal, net | 5.05% | 22.2% | 44.0% | 71.4% |
+| S3 positive, net | 0.06% | 0.18% | 0.41% | 1.02% |
+
+So "paused" is evidence to be read against the number of episodes observed. A marginal strategy will eventually be flagged.
+
+The CUSUM also alarms on a rise in variance at the same positive mean: 34.6% of S3 paths alarm when every deviation is doubled. It reads severe losses, whether they come from a worse mean or from a wider spread.
+
+**Change detection.** The first 50 episodes are at the design edge (S3's shape shifted to +5%); the last 50 are shifted. Columns give alarms in the first 50, alarms in the last 50, and the median delay.
+
+| Change | R8 | CUSUM |
+|---|---|---|
+| −2 points, every return lower | paused before the change on every path | 0.66% / 4.46% / 33 |
+| −2 points, more losses of the same sizes | paused before the change on every path | 0.56% / 4.70% / 32 |
+| −8 points (+5% → −3%, losing) | paused before the change on every path | 0.54% / 16.6% / 35 |
+
+- κ does not rescue it. With h re-chosen by the same rule, κ = 0, −0.01 and −0.02 give h = 7.4, 8.05 and 8.8, and the −8 point detection stays at 15–16%.
+- **The limit is the data, not the rule.** One episode's return has an SD of about 0.40–0.47, so the mean of 50 episodes has a standard error of about 6 points. A −8 point drop is 1.2–1.4 standard errors. No rule holding 5% false alarms on a +1.75% strategy can reliably see it within 50 episodes.
+
+**What follows** (observation only; the supervisor's card, no rule changes):
+- R8's review is close to certain for any profitable meme strategy with a 40–60% loss rate, and blind to loss size. A return-based monitor sees what R8 cannot: severe losses with few losing signs, and a negative mean.
+- Within about 50 episodes the CUSUM catches catastrophic decay, not modest decay. Modest decay is G3's and the demotion e-process's job, over longer windows.
+- Replacing or loosening R8 is a loosening and stays the owner's decision. STRATEGY-HEALTH-OBS records the monitor's states beside every decision so that this question can later be answered on the bot's own episodes.
+
 ## Sources (accessed 2026-10-03)
 - MemeTrans, Hu et al., arXiv 2602.13480, 2026-02-13: https://arxiv.org/html/2602.13480v1
 - Marino, Naviglio, Tarantelli, Lillo, arXiv 2602.14860, 2026-02-16: https://arxiv.org/html/2602.14860v1

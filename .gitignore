@@ -17,3 +17,6 @@ data/
 
 # Local copy of the holdout registry; the shared copy is the remote holdout-registry branch.
 research/holdout/registry.json
+
+# Python bytecode from research scripts.
+__pycache__/
